@@ -1,0 +1,9 @@
+landmark_labels: [L1, L2, L3, L4]
+captures_per_landmark: 5
+nominal_landmarks_robot_xyz_mm:
+  L1: [0.0, 0.0, 0.0]
+  L2: [30.0, 0.0, 0.0]
+  L3: [0.0, 30.0, 0.0]
+  L4: [0.0, 0.0, 30.0]
+validation:
+  max_fre_mm: 2.0

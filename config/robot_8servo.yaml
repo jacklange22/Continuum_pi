@@ -1,0 +1,4 @@
+mode: "8-servo"
+spool_diameter_cm: 1.2
+servo_ids: [1, 2, 3, 4, 5, 6, 7, 8]
+tendon_to_servo: [1, 2, 3, 4, 5, 6, 7, 8]

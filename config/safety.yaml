@@ -1,0 +1,4 @@
+position_min_offset_ticks: -600
+position_max_offset_ticks: 600
+max_current_ma: 850
+pretension_current_balance_tolerance_ma: 120

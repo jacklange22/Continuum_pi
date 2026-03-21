@@ -1,0 +1,5 @@
+aurora_port: ""
+openrb_port: ""
+baudrate: 115200
+mock_mode: true
+poll_rate_hz: 30
