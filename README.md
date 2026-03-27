@@ -1,116 +1,123 @@
 # Continuum Robot (Scaffold)
 
-This repository contains a modular scaffold for a Raspberry Pi-hosted tendon-driven continuum robot stack.
+This repository contains a Raspberry Pi-focused continuum robot stack where:
 
-## Transform Convention (strict)
+- `tracker_bridge` (C++) owns the Aurora lifecycle through NDI `CombinedApi`
+- Python remains the top-level operator app (GUI/controllers/registration/diagnostics)
+
+## Transform Convention
 
 All transforms follow:
 
-- `T_A_B` means **transform from frame B into frame A**.
-- Composition rule: `T_A_C = T_A_B @ T_B_C`.
+- `T_A_B` transforms coordinates from frame **B** into frame **A**
+- `T_A_C = T_A_B @ T_B_C`
 
-Example used throughout tracking:
+## Tracker Architecture
 
-- `T_robot_aurora`
-- `T_aurora_coil`
-- `T_coil_tip`
-- `T_robot_tip = T_robot_aurora @ T_aurora_coil @ T_coil_tip`
+Aurora tracking is handled by `tracker_bridge`:
 
-## Current Scope
+1. connect to Aurora serial device (for example `/dev/ttyUSB0`)
+2. `initialize()`
+3. initialize/enable tool handles
+4. `startTracking()`
+5. poll `getTrackingDataBX(...)`
+6. emit line-delimited JSON over a Unix domain socket
 
-Implemented in this phase:
+Python consumes that socket stream via:
 
-- real Aurora serial client (open/close/read/write)
-- Aurora framing and DLE unstuffing
-- transform packet parsing for tools `0A` and `0B`
-- CRC validation for transform packets
-- `T_robot_tip` computation from `0A` + saved calibration transforms
-- tracker diagnostics script (no GUI coupling)
+- `continuum_robot/tracking/tracker_socket_client.py`
+- `continuum_robot/tracking/tracker_service_manager.py`
 
-Not implemented yet:
+## tracker_bridge Message Format
 
-- OpenRB/DYNAMIXEL hardware control
-- GUI integration for live tracking
+Each line is a JSON object.
 
-## Aurora Packet Assumptions (explicit)
+Status message fields:
 
-These assumptions are based on reference behavior and should be validated against live captures:
+- `type: "status"`
+- `timestamp`
+- `level` (`info|warning|error`)
+- `state` (`connecting|initialized|tools_found|tool_enabled|tracking_started|tracking_stopped|...`)
+- `message`
+- `details` object
 
-- Frame format: `DLE STX <stuffed payload> DLE ETX`
-- Payload format:
-  - byte `0`: packet type (`0x01` expected)
-  - byte `1`: tool record count
-  - bytes `2..5`: frame number (`uint32`, little-endian)
-  - bytes `6..N-2`: tool records (`36` bytes each)
-  - byte `N-1`: CRC-8 over payload bytes except CRC byte
-- Tool record layout (`36` bytes):
-  - bytes `0..1`: tool id ASCII (`0A`, `0B`, ...)
-  - byte `2`: status byte
-  - byte `3`: reserved
-  - bytes `4..35`: eight `float32` values (`quat[4]`, `translation[3]`, `quality_or_error`)
+Transform message fields:
 
-If your Aurora firmware stream differs, parser constants may need updates.
+- `type: "transform"`
+- `timestamp`
+- `frame_number`
+- `tool_id`
+- `valid`
+- `status`
+- `quaternion` (`[w, x, y, z]`)
+- `translation_mm` (`[x, y, z]`)
+- `quality`
 
-## Registration/Calibration Files Expected
+## Build tracker_bridge (Raspberry Pi)
 
-Tracker diagnostics expects this JSON by default:
-
-- `/Users/jacklange/Continuum/pi_code/data/registrations/latest_registration.json`
-
-Required keys:
-
-- `T_robot_aurora`: `4x4` homogeneous transform
-- `T_coil_tip`: `4x4` homogeneous transform
-
-Diagnostics **fails clearly** when this file is missing/malformed and reports that `T_robot_tip` is unavailable.
-
-## Experiment Input File Format
-
-`CSV` with header. Required and optional columns:
-
-- required: `index`
-- required: tendon displacement columns (`dl_1`, `dl_2`, ..., `dl_N`)
-- optional: `settle_time_s`
-- optional: `repeat`
-
-Example:
-
-```csv
-index,dl_1,dl_2,dl_3,dl_4,settle_time_s,repeat
-0,0.0,0.0,0.0,0.0,2.0,1
-1,-6.0,0.0,6.0,0.0,3.0,2
-```
-
-## Run
-
-### GUI scaffold
+Set SDK paths and build:
 
 ```bash
-python3 /Users/jacklange/Continuum/pi_code/scripts/run_gui.py
+export NDI_SDK_INCLUDE_DIR=/path/to/ndi/include
+export NDI_SDK_LIB_DIR=/path/to/ndi/lib
+# Optional, default is CombinedApi:
+# export NDI_SDK_LIBS="CombinedApi ndicapi"
+
+scripts/build_tracker_bridge.sh
 ```
 
-### Tracker diagnostics
+Binary output:
+
+- `bin/tracker_bridge`
+
+## Run tracker_bridge
 
 ```bash
-python3 /Users/jacklange/Continuum/pi_code/scripts/run_diagnostics.py --tracker-port /dev/ttyUSB0 --packets 10
+AURORA_PORT=/dev/ttyUSB0 scripts/run_tracker_bridge.sh
 ```
 
-Useful options:
+Optional env vars:
 
-- `--baudrate 115200`
-- `--timeout 1.0`
-- `--registration-file /path/to/latest_registration.json`
+- `TRACKER_BRIDGE_BIN`
+- `TRACKER_SOCKET_PATH` (default `/tmp/tracker_bridge.sock`)
+- `TRACKER_POLL_MS` (default `20`)
 
-Expected diagnostics output includes:
+## Python Diagnostics
 
-- connection status
-- packet frame number and CRC
-- tool presence/status for `0A` and `0B`
-- `T_aurora_coil` translation from `0A`
-- `T_robot_tip` translation when registration/calibration is available
-
-## Install
+Start diagnostics (spawns and monitors `tracker_bridge`):
 
 ```bash
-python3 -m pip install -e ".[dev]"
+python3 scripts/run_diagnostics.py --tracker-port /dev/ttyUSB0 --packets 10
 ```
+
+Print raw socket stream (bridge must already be running):
+
+```bash
+python3 scripts/print_tracker_stream.py --socket-path /tmp/tracker_bridge.sock
+```
+
+## Registration Outputs
+
+Registration results are saved under:
+
+- `data/registrations/`
+- latest file: `data/registrations/latest_registration.json`
+
+Diagnostics and GUI continue running when registration is missing, and clearly report `T_robot_tip` as unavailable.
+
+## Config
+
+Key tracker settings are in `config/system.yaml`:
+
+- `aurora_port`
+- `tracker_socket_path`
+- `tracker_bridge_executable`
+- `tracker_poll_ms`
+
+## GUI Entry
+
+```bash
+python3 scripts/run_gui.py
+```
+
+Current GUI classes are scaffolded but now wired to tracker manager/controller state so a PySide view layer can subscribe without blocking.

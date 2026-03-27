@@ -1,5 +1,8 @@
 aurora_port: ""
 openrb_port: ""
 baudrate: 115200
+tracker_socket_path: "/tmp/tracker_bridge.sock"
+tracker_bridge_executable: "bin/tracker_bridge"
+tracker_poll_ms: 20
 mock_mode: true
 poll_rate_hz: 30

@@ -13,7 +13,8 @@ class ConfigLoader:
     """Loads YAML config files into typed settings."""
 
     def __init__(self, base_dir: Path | None = None) -> None:
-        self.base_dir = base_dir or Path("/Users/jacklange/Continuum/pi_code/config")
+        project_root = Path(__file__).resolve().parents[2]
+        self.base_dir = base_dir or (project_root / "config")
 
     def load_settings(self) -> Settings:
         """Load core configs from template files.
@@ -34,6 +35,9 @@ class ConfigLoader:
             aurora_port=serial_data.get("aurora_port", ""),
             openrb_port=serial_data.get("openrb_port", ""),
             baudrate=serial_data.get("baudrate", 115200),
+            tracker_socket_path=serial_data.get("tracker_socket_path", "/tmp/tracker_bridge.sock"),
+            tracker_bridge_executable=serial_data.get("tracker_bridge_executable", "bin/tracker_bridge"),
+            tracker_poll_ms=int(serial_data.get("tracker_poll_ms", 20)),
         )
         safety = SafetyConfig(
             position_min_offset_ticks=safety_data.get("position_min_offset_ticks", -600),

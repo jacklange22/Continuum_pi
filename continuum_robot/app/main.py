@@ -4,6 +4,7 @@ This file keeps startup shallow and delegates setup details to bootstrap.
 """
 
 from continuum_robot.app.bootstrap import build_app_context
+from continuum_robot.gui.app_window import AppWindow
 
 
 def main() -> int:
@@ -11,8 +12,11 @@ def main() -> int:
 
     Returns a process-style status code.
     """
-    _context = build_app_context()
-    print("GUI scaffold bootstrapped. Integrate PySide6 window launch here.")
+    context = build_app_context()
+    window = AppWindow(context)
+    window.show()
+    # Real PySide event loop integration can call refresh() on a timer and
+    # invoke window.shutdown() on application exit.
     return 0
 
 

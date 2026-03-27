@@ -31,7 +31,8 @@ class RegistrationRepository:
     """Save/load registration records."""
 
     def __init__(self, root_dir: Path | None = None) -> None:
-        self.root_dir = root_dir or Path("/Users/jacklange/Continuum/pi_code/data/registrations")
+        project_root = Path(__file__).resolve().parents[2]
+        self.root_dir = root_dir or (project_root / "data" / "registrations")
         self.root_dir.mkdir(parents=True, exist_ok=True)
 
     def save_record(self, record: RegistrationRecord) -> Path:

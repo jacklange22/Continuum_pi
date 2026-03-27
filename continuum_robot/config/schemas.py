@@ -20,6 +20,9 @@ class SerialConfig:
     aurora_port: str = ""
     openrb_port: str = ""
     baudrate: int = 115200
+    tracker_socket_path: str = "/tmp/tracker_bridge.sock"
+    tracker_bridge_executable: str = "bin/tracker_bridge"
+    tracker_poll_ms: int = 20
 
 
 @dataclass

@@ -13,7 +13,8 @@ class NeutralCalibrationService:
     """Stores and retrieves manually calibrated neutral setpoints."""
 
     def __init__(self, path: Path | None = None) -> None:
-        self.path = path or Path("/Users/jacklange/Continuum/pi_code/data/calibrations/neutral_setpoints.json")
+        project_root = Path(__file__).resolve().parents[2]
+        self.path = path or (project_root / "data" / "calibrations" / "neutral_setpoints.json")
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
     def save_neutral_setpoints(self, setpoints_by_id: dict[int, int]) -> None:
