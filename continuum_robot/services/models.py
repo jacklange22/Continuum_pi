@@ -63,6 +63,7 @@ class TrackingSnapshot:
     backend_connected: bool | None = None
     bridge_running: bool | None = None
     socket_connected: bool | None = None
+    backend_frame_counter: int = 0
     backend_status_message: str | None = None
     last_error: str | None = None
     packets_received_count: int = 0
@@ -74,6 +75,11 @@ class TrackingSnapshot:
     tracker_data_age_s: float | None = None
     tracker_data_stale: bool = False
     first_frame_latency_s: float | None = None
+    raw_live_tool_ids: list[str] = field(default_factory=list)
+    normalized_live_tool_ids: list[str] = field(default_factory=list)
+    backend_tool_mappings: dict[str, str] = field(default_factory=dict)
+    runtime_role_mappings: dict[str, str] = field(default_factory=dict)
+    unmapped_live_tool_ids: list[str] = field(default_factory=list)
     packet_capture_path: str | None = None
     packet_capture_enabled: bool = False
     tools: dict[str, ToolTrackingSnapshot] = field(default_factory=dict)

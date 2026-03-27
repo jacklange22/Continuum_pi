@@ -25,6 +25,7 @@ class MockTrackerManager:
             backend_running=False,
             socket_connected=False,
             bridge_running=False,
+            backend_frame_counter=0,
             latest_frame_number=None,
             latest_timestamp=None,
             last_status_message="Mock tracker idle",
@@ -52,8 +53,14 @@ class MockTrackerManager:
             self._state.socket_connected = False
             self._state.bridge_running = False
             self._state.tools = {}
+            self._state.backend_frame_counter = 0
             self._state.latest_frame_number = None
             self._state.latest_timestamp = None
+            self._state.raw_tool_ids = []
+            self._state.normalized_tool_ids = []
+            self._state.tool_id_mapping = {}
+            self._state.runtime_role_mappings = {}
+            self._state.unmapped_tool_ids = []
             self._state.last_status_message = "Mock tracker disconnected"
 
     def is_alive(self) -> bool:
@@ -123,4 +130,10 @@ class MockTrackerManager:
             )
             self._state.tools = {"0A": tool_0a, "0B": tool_0b}
             self._state.latest_frame_number = frame_number
+            self._state.backend_frame_counter = frame_number
             self._state.latest_timestamp = timestamp
+            self._state.raw_tool_ids = ["0A", "0B"]
+            self._state.normalized_tool_ids = ["0A", "0B"]
+            self._state.tool_id_mapping = {"0A": "0A", "0B": "0B"}
+            self._state.runtime_role_mappings = {"0A": "0A", "0B": "0B"}
+            self._state.unmapped_tool_ids = []

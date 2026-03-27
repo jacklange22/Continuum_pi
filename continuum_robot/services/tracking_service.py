@@ -481,6 +481,8 @@ class TrackingService:
         latest_timestamp = snapshot.latest_timestamp or synced_at_utc
         previous_frame = self._state.last_frame_number
         current_frame = snapshot.latest_frame_number
+        previous_backend_frame_counter = self._state.backend_frame_counter
+        current_backend_frame_counter = int(getattr(snapshot, "backend_frame_counter", previous_backend_frame_counter) or 0)
 
         self._state.connection_state = snapshot.connection_state
         backend_running = getattr(snapshot, "backend_running", None)
@@ -493,14 +495,29 @@ class TrackingService:
         self._state.backend_connected = backend_connected
         self._state.bridge_running = getattr(snapshot, "bridge_running", self._state.backend_running)
         self._state.socket_connected = getattr(snapshot, "socket_connected", self._state.backend_connected)
+        self._state.backend_frame_counter = current_backend_frame_counter
         self._state.backend_status_message = snapshot.last_status_message or None
+        self._state.raw_live_tool_ids = list(getattr(snapshot, "raw_tool_ids", []))
+        self._state.normalized_live_tool_ids = list(getattr(snapshot, "normalized_tool_ids", []))
+        self._state.backend_tool_mappings = dict(getattr(snapshot, "tool_id_mapping", {}))
+        self._state.runtime_role_mappings = dict(getattr(snapshot, "runtime_role_mappings", {}))
+        self._state.unmapped_live_tool_ids = list(getattr(snapshot, "unmapped_tool_ids", []))
         self._state.health.state = snapshot.connection_state
         if snapshot.last_error:
             self._state.health.last_error = snapshot.last_error
             self._state.last_error = snapshot.last_error
 
+        if current_backend_frame_counter > previous_backend_frame_counter:
+            self._state.packets_received_count = current_backend_frame_counter
+            self._state.last_packet_utc = latest_timestamp
+            self._state.health.last_successful_update_utc = latest_timestamp
+            self._last_frame_monotonic = synced_at_monotonic
+            if self._started_monotonic is not None and self._state.first_frame_latency_s is None:
+                self._state.first_frame_latency_s = max(0.0, synced_at_monotonic - self._started_monotonic)
+
         if current_frame is not None and current_frame != previous_frame:
-            self._state.packets_received_count += 1
+            if current_backend_frame_counter <= previous_backend_frame_counter:
+                self._state.packets_received_count += 1
             self._state.last_frame_number = current_frame
             self._state.last_packet_utc = latest_timestamp
             self._state.health.last_successful_update_utc = latest_timestamp
@@ -789,8 +806,17 @@ class TrackingService:
             self._state.packets_received_count = 0
             self._state.bad_packets_count = 0
             self._state.crc_failures_count = 0
+            self._state.backend_frame_counter = 0
             self._state.last_frame_number = None
             self._state.last_packet_utc = None
+            self._state.tracker_data_age_s = None
+            self._state.tracker_data_stale = False
+            self._state.first_frame_latency_s = None
+            self._state.raw_live_tool_ids = []
+            self._state.normalized_live_tool_ids = []
+            self._state.backend_tool_mappings = {}
+            self._state.runtime_role_mappings = {}
+            self._state.unmapped_live_tool_ids = []
             self._state.T_robot_tip = None
             self._state.tip_pose_timestamp_utc = None
             self._state.last_good_T_robot_tip = None
@@ -863,6 +889,7 @@ class TrackingService:
             "crc_failures_count": self._state.crc_failures_count,
             "registration_state": self._state.registration_state,
             "tip_pose_status": self._state.tip_pose_status,
+            "backend_frame_counter": self._state.backend_frame_counter,
             "backend_running": self._state.backend_running,
             "backend_connected": self._state.backend_connected,
             "bridge_running": self._state.bridge_running,
@@ -871,6 +898,11 @@ class TrackingService:
             "tracker_data_age_s": self._state.tracker_data_age_s,
             "tracker_data_stale": self._state.tracker_data_stale,
             "first_frame_latency_s": self._state.first_frame_latency_s,
+            "raw_live_tool_ids": list(self._state.raw_live_tool_ids),
+            "normalized_live_tool_ids": list(self._state.normalized_live_tool_ids),
+            "backend_tool_mappings": dict(self._state.backend_tool_mappings),
+            "runtime_role_mappings": dict(self._state.runtime_role_mappings),
+            "unmapped_live_tool_ids": list(self._state.unmapped_live_tool_ids),
         }
 
         if any(fault in self._FAILED_FAULTS for fault in faults):

@@ -10,6 +10,7 @@ from continuum_robot.registration.rigid_solver import RigidRegistrationSolver
 from continuum_robot.registration.validation_tools import (
     compare_registration_outputs,
     evaluate_runtime_sanity_from_capture,
+    evaluate_runtime_sanity_live,
     load_pose_samples_from_saved_session,
     load_registration_output,
     run_registration_validation_from_csv,
@@ -205,3 +206,21 @@ def test_runtime_sanity_reports_invalid_registration_transform(tmp_path: Path) -
     assert report.passed is False
     assert report.registration_state == "invalid_registration"
     assert report.tip_pose_status == "invalid_registration"
+
+
+def test_runtime_sanity_live_reports_missing_registration_file(tmp_path: Path) -> None:
+    class _UnusedTrackingService:
+        def start(self) -> None:  # pragma: no cover - should not be reached
+            raise AssertionError("tracking should not start when registration is missing")
+
+    missing_path = tmp_path / "missing_registration.json"
+    report = evaluate_runtime_sanity_live(
+        tracking_service=_UnusedTrackingService(),
+        registration_path=missing_path,
+        expected_runtime_coil_tool_id="0A",
+    )
+
+    assert report.passed is False
+    assert report.registration_state == "missing_registration"
+    assert report.tip_pose_status == "missing_registration"
+    assert "Missing registration file" in (report.last_error or "")

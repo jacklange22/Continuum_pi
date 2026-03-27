@@ -38,6 +38,7 @@ class SerialConfig:
     tracker_freshness_timeout_s: float = 0.5
     tracker_ports_to_probe: list[str] = field(default_factory=list)
     tracker_settings_overrides: dict = field(default_factory=dict)
+    tracker_tool_id_aliases: dict = field(default_factory=dict)
     tracker_socket_path: str = "/tmp/tracker_bridge.sock"
     tracker_bridge_executable: str = "bin/tracker_bridge"
     tracker_poll_ms: int = 20

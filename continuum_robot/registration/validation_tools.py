@@ -521,6 +521,22 @@ def evaluate_runtime_sanity_live(
     timeout_s: float = 5.0,
 ) -> RuntimeSanityReport:
     """Compute T_robot_tip from live TrackingService data and summarize the result."""
+    if not registration_path.exists():
+        return _runtime_failure_report(
+            source_kind="live_tracker",
+            registration_path=registration_path,
+            expected_runtime_coil_tool_id=expected_runtime_coil_tool_id,
+            stored_coil_tool_id=None,
+            registration_state="missing_registration",
+            tip_pose_status="missing_registration",
+            connection_state="not_started",
+            last_error=(
+                f"Missing registration file: {registration_path}. "
+                "Run the registration workflow first to create latest_registration.json, "
+                "or use scripts/run_diagnostics.py and scripts/run_tracker_benchmark.py "
+                "to validate tracker connectivity without registration."
+            ),
+        )
     try:
         payload = json.loads(registration_path.read_text(encoding="utf-8"))
         tip_service = TipPoseService.from_registration_file(registration_path)

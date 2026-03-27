@@ -15,6 +15,7 @@ def _snapshot(
     timestamp: str,
     tool_0a_state: str,
     tool_0b_state: str,
+    backend_frame_counter: int = 0,
     tracker_data_age_s: float | None = 0.01,
     tracker_data_stale: bool = False,
     tip_pose_status: str = "missing_registration",
@@ -61,6 +62,7 @@ def _snapshot(
         baudrate=115200,
         backend_running=True,
         backend_connected=True,
+        backend_frame_counter=backend_frame_counter,
         last_frame_number=frame_number,
         last_packet_utc=timestamp,
         tracker_data_age_s=tracker_data_age_s,
@@ -77,9 +79,9 @@ def _snapshot(
 
 def test_tracker_benchmark_report_passes_on_good_stream() -> None:
     samples = [
-        (0.00, _snapshot(frame_number=1, timestamp="2026-01-01T00:00:00.000Z", tool_0a_state="tracked", tool_0b_state="tracked")),
-        (0.05, _snapshot(frame_number=2, timestamp="2026-01-01T00:00:00.050Z", tool_0a_state="tracked", tool_0b_state="tracked", registration_state="loaded", tip_pose_status="ok")),
-        (0.10, _snapshot(frame_number=3, timestamp="2026-01-01T00:00:00.100Z", tool_0a_state="tracked", tool_0b_state="tracked", registration_state="loaded", tip_pose_status="ok")),
+        (0.00, _snapshot(frame_number=1, backend_frame_counter=1, timestamp="2026-01-01T00:00:00.000Z", tool_0a_state="tracked", tool_0b_state="tracked")),
+        (0.05, _snapshot(frame_number=2, backend_frame_counter=2, timestamp="2026-01-01T00:00:00.050Z", tool_0a_state="tracked", tool_0b_state="tracked", registration_state="loaded", tip_pose_status="ok")),
+        (0.10, _snapshot(frame_number=3, backend_frame_counter=3, timestamp="2026-01-01T00:00:00.100Z", tool_0a_state="tracked", tool_0b_state="tracked", registration_state="loaded", tip_pose_status="ok")),
     ]
 
     report = compute_tracker_benchmark_report(
@@ -103,9 +105,9 @@ def test_tracker_benchmark_report_passes_on_good_stream() -> None:
 
 def test_tracker_benchmark_report_fails_on_missing_and_invalid_data() -> None:
     samples = [
-        (0.00, _snapshot(frame_number=1, timestamp="2026-01-01T00:00:00.000Z", tool_0a_state="missing", tool_0b_state="tracked", tracker_data_age_s=0.30, tracker_data_stale=True)),
-        (0.20, _snapshot(frame_number=2, timestamp="2026-01-01T00:00:00.200Z", tool_0a_state="missing", tool_0b_state="invalid", tracker_data_age_s=0.31, tracker_data_stale=True)),
-        (0.40, _snapshot(frame_number=3, timestamp="2026-01-01T00:00:00.400Z", tool_0a_state="missing", tool_0b_state="tracked", tracker_data_age_s=0.29, tracker_data_stale=True)),
+        (0.00, _snapshot(frame_number=1, backend_frame_counter=1, timestamp="2026-01-01T00:00:00.000Z", tool_0a_state="missing", tool_0b_state="tracked", tracker_data_age_s=0.30, tracker_data_stale=True)),
+        (0.20, _snapshot(frame_number=2, backend_frame_counter=2, timestamp="2026-01-01T00:00:00.200Z", tool_0a_state="missing", tool_0b_state="invalid", tracker_data_age_s=0.31, tracker_data_stale=True)),
+        (0.40, _snapshot(frame_number=3, backend_frame_counter=3, timestamp="2026-01-01T00:00:00.400Z", tool_0a_state="missing", tool_0b_state="tracked", tracker_data_age_s=0.29, tracker_data_stale=True)),
     ]
 
     report = compute_tracker_benchmark_report(
@@ -124,3 +126,25 @@ def test_tracker_benchmark_report_fails_on_missing_and_invalid_data() -> None:
     assert any("Required tool 0A never reached tracked state" in item for item in report.failures)
     assert any("Tool 0A missing streak" in item for item in report.failures)
     assert any("Tool 0B reported 1 invalid transform" in item for item in report.failures)
+
+
+def test_tracker_benchmark_uses_backend_frame_counter_when_device_frame_number_missing() -> None:
+    samples = [
+        (0.00, _snapshot(frame_number=None, backend_frame_counter=1, timestamp="2026-01-01T00:00:00.000Z", tool_0a_state="tracked", tool_0b_state="tracked")),
+        (0.05, _snapshot(frame_number=None, backend_frame_counter=2, timestamp="2026-01-01T00:00:00.050Z", tool_0a_state="tracked", tool_0b_state="tracked")),
+        (0.10, _snapshot(frame_number=None, backend_frame_counter=3, timestamp="2026-01-01T00:00:00.100Z", tool_0a_state="tracked", tool_0b_state="tracked")),
+    ]
+
+    report = compute_tracker_benchmark_report(
+        samples,
+        thresholds=TrackerBenchmarkThresholds(
+            min_effective_fps=10.0,
+            max_stale_interval_s=0.25,
+            max_consecutive_missing_frames=2,
+            require_valid_transforms=True,
+        ),
+    )
+
+    assert report.passed is True
+    assert report.unique_frames_observed == 3
+    assert report.backend_frame_counter_final == 3

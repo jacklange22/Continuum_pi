@@ -60,6 +60,10 @@ class ConfigLoader:
             tracker_freshness_timeout_s=float(system_data.get("tracker_freshness_timeout_s", 0.5)),
             tracker_ports_to_probe=[str(v) for v in system_data.get("tracker_ports_to_probe", [])],
             tracker_settings_overrides=dict(system_data.get("tracker_settings_overrides", {}) or {}),
+            tracker_tool_id_aliases={
+                str(key): str(value)
+                for key, value in (system_data.get("tracker_tool_id_aliases", {}) or {}).items()
+            },
             tracker_socket_path=str(system_data.get("tracker_socket_path", "/tmp/tracker_bridge.sock")),
             tracker_bridge_executable=str(system_data.get("tracker_bridge_executable", "bin/tracker_bridge")),
             tracker_poll_ms=int(system_data.get("tracker_poll_ms", 20)),

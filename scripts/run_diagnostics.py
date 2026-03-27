@@ -49,6 +49,23 @@ def _render_tool_summary(snapshot, tool_id: str) -> str:
     )
 
 
+def _render_failure_causes(snapshot) -> list[str]:
+    causes: list[str] = []
+    if snapshot.backend_frame_counter <= 0:
+        causes.append("no_live_frames_returned")
+    if not snapshot.raw_live_tool_ids:
+        causes.append("no_live_tool_returned")
+    elif snapshot.unmapped_live_tool_ids:
+        causes.append("mapping_mismatch")
+    for tool_id in ("0A", "0B"):
+        tool = snapshot.tools[tool_id]
+        if tool.tracking_state == "invalid":
+            causes.append(f"{tool_id}_invalid_transform")
+    if snapshot.registration_state == "missing_registration":
+        causes.append("registration_missing")
+    return causes
+
+
 def main() -> int:
     args = _parse_args()
     ctx = build_app_context()
@@ -98,7 +115,7 @@ def main() -> int:
         return 2
 
     printed = 0
-    last_frame_number = None
+    last_frame_key = None
     last_connection_state = None
     try:
         while printed < args.frames:
@@ -115,17 +132,29 @@ def main() -> int:
                     print(f"  error: {snapshot.last_error}")
                 last_connection_state = snapshot.connection_state
 
-            if snapshot.last_frame_number is None or snapshot.last_frame_number == last_frame_number:
+            frame_key = snapshot.backend_frame_counter if snapshot.backend_frame_counter > 0 else snapshot.last_frame_number
+            if frame_key is None or frame_key == last_frame_key:
                 time.sleep(0.05)
                 continue
 
-            last_frame_number = snapshot.last_frame_number
+            last_frame_key = frame_key
             printed += 1
             print(
                 f"Frame #{printed} frame_number={snapshot.last_frame_number} "
-                f"packets={snapshot.packets_received_count} faults={snapshot.faults} "
+                f"backend_frames={snapshot.backend_frame_counter} packets={snapshot.packets_received_count} faults={snapshot.faults} "
                 f"stale={snapshot.tracker_data_stale} age_s={snapshot.tracker_data_age_s}"
             )
+            print(f"  raw_live_tool_ids={snapshot.raw_live_tool_ids}")
+            print(f"  normalized_live_tool_ids={snapshot.normalized_live_tool_ids}")
+            print(f"  backend_tool_mappings={snapshot.backend_tool_mappings}")
+            print(f"  runtime_role_mappings={snapshot.runtime_role_mappings}")
+            print(
+                "  required_role_mapping="
+                f"{{'0A': {bool(snapshot.runtime_role_mappings.get('0A'))}, "
+                f"'0B': {bool(snapshot.runtime_role_mappings.get('0B'))}}}"
+            )
+            if snapshot.unmapped_live_tool_ids:
+                print(f"  unmapped_live_tool_ids={snapshot.unmapped_live_tool_ids}")
             print(f"  {_render_tool_summary(snapshot, '0A')}")
             print(f"  {_render_tool_summary(snapshot, '0B')}")
             print(
@@ -134,11 +163,14 @@ def main() -> int:
                 f"coil={snapshot.stored_registration_coil_tool_id})"
             )
             print(f"  tip_pose_status={snapshot.tip_pose_status}")
+            print(f"  likely_causes={_render_failure_causes(snapshot)}")
             if snapshot.T_robot_tip is None:
                 print("  T_robot_tip: unavailable")
             else:
                 translation = tuple(round(float(snapshot.T_robot_tip[row][3]), 3) for row in range(3))
                 print(f"  T_robot_tip translation: {translation}")
+            if snapshot.registration_state == "missing_registration":
+                print("  registration_hint=run the registration workflow to create data/registrations/latest_registration.json")
 
         return 0
     finally:

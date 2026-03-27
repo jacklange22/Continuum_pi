@@ -4,9 +4,16 @@ from continuum_robot.tracking.ndi_backend import TrackerBackendNDI, normalize_to
 
 
 def test_normalize_tool_id_maps_expected_handles() -> None:
-    assert normalize_tool_id(b"0A\x00") == "0A"
-    assert normalize_tool_id("port-0b") == "0B"
-    assert normalize_tool_id(" 0A ") == "0A"
+    assert normalize_tool_id(b"0A\x00")[0] == "0A"
+    assert normalize_tool_id("port-0b")[0] == "0B"
+    assert normalize_tool_id(" 0A ")[0] == "0A"
+
+
+def test_normalize_tool_id_applies_alias_mapping() -> None:
+    normalized, raw_text, mapped = normalize_tool_id("port-01", tool_id_aliases={"PORT01": "0B"})
+    assert normalized == "0B"
+    assert raw_text == "port-01"
+    assert mapped is True
 
 
 def test_ndi_backend_parses_tracked_and_missing_tools() -> None:
@@ -22,7 +29,10 @@ def test_ndi_backend_parses_tracked_and_missing_tools() -> None:
         [0.15, 0.22],
     )
 
-    tools, latest_frame = backend._parse_frame_payload(frame_payload, observed_at_utc="2026-01-01T00:00:00.000Z")
+    tools, latest_frame, debug = backend._parse_frame_payload(
+        frame_payload,
+        observed_at_utc="2026-01-01T00:00:00.000Z",
+    )
 
     assert latest_frame == 12
     assert tools["0A"].status == "tracked"
@@ -31,6 +41,29 @@ def test_ndi_backend_parses_tracked_and_missing_tools() -> None:
     assert tools["0B"].status == "missing"
     assert tools["0B"].valid is False
     assert tools["0B"].validity_known is True
+    assert debug["runtime_role_mappings"] == {"0A": "0A", "0B": "Port-0B"}
+
+
+def test_ndi_backend_applies_tool_aliases_to_runtime_roles() -> None:
+    backend = TrackerBackendNDI(
+        "/dev/ttyUSB0",
+        tracker_factory=lambda _settings: object(),
+        tool_id_aliases={"PORT01": "0A", "PORT02": "0B"},
+    )
+    frame_payload = (
+        ["port-01", "port-02"],
+        [1710000000.0, 1710000000.1],
+        [18, 18],
+        [np.eye(4), np.eye(4)],
+        [0.15, 0.18],
+    )
+
+    tools, latest_frame, debug = backend._parse_frame_payload(frame_payload, observed_at_utc="2026-01-01T00:00:00.000Z")
+
+    assert latest_frame == 18
+    assert sorted(tools) == ["0A", "0B"]
+    assert debug["runtime_role_mappings"] == {"0A": "port-01", "0B": "port-02"}
+    assert debug["unmapped_tool_ids"] == []
 
 
 def test_ndi_backend_marks_invalid_transform_explicitly() -> None:
@@ -45,7 +78,10 @@ def test_ndi_backend_marks_invalid_transform_explicitly() -> None:
         [0.11],
     )
 
-    tools, latest_frame = backend._parse_frame_payload(frame_payload, observed_at_utc="2026-01-01T00:00:00.000Z")
+    tools, latest_frame, _debug = backend._parse_frame_payload(
+        frame_payload,
+        observed_at_utc="2026-01-01T00:00:00.000Z",
+    )
 
     assert latest_frame == 7
     assert tools["0A"].valid is False

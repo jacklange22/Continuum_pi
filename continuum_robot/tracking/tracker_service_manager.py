@@ -48,10 +48,16 @@ class TrackerRuntimeState:
     backend_connected: bool = False
     socket_connected: bool = False
     bridge_running: bool = False
+    backend_frame_counter: int = 0
     latest_frame_number: int | None = None
     latest_timestamp: str | None = None
     last_status_message: str = ""
     last_error: str | None = None
+    raw_tool_ids: list[str] = field(default_factory=list)
+    normalized_tool_ids: list[str] = field(default_factory=list)
+    tool_id_mapping: dict[str, str] = field(default_factory=dict)
+    runtime_role_mappings: dict[str, str] = field(default_factory=dict)
+    unmapped_tool_ids: list[str] = field(default_factory=list)
     tools: dict[str, TrackerToolState] = field(default_factory=dict)
 
 

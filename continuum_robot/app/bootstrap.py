@@ -90,6 +90,7 @@ def build_app_context() -> AppContext:
                 reconnect_delay_s=settings.serial.reconnect_delay_s,
                 ports_to_probe=settings.serial.tracker_ports_to_probe,
                 settings_overrides=settings.serial.tracker_settings_overrides,
+                tool_id_aliases=settings.serial.tracker_tool_id_aliases,
             )
         elif tracker_backend_name == "bridge":
             tracker_manager = TrackerServiceManager(

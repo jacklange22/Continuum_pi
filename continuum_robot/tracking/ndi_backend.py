@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+import re
+import sys
 import threading
 import time
 from typing import Any, Callable
@@ -50,22 +52,68 @@ def load_ndi_tracker_class():
     )
 
 
-def normalize_tool_id(raw_handle: Any) -> str:
-    """Normalize a library handle/port identifier into the app's string form."""
+def _stringify_raw_handle(raw_handle: Any) -> str:
+    """Convert a tracker-library handle/object into a stable debug string."""
     if raw_handle is None:
         return ""
     if isinstance(raw_handle, bytes):
-        text = raw_handle.decode("ascii", errors="replace")
-    else:
-        text = str(raw_handle)
-    text = text.replace("\x00", "").strip().upper()
-    if text in {"0A", "0B"}:
-        return text
-    if text.endswith("0A"):
-        return "0A"
-    if text.endswith("0B"):
-        return "0B"
-    return text
+        return raw_handle.decode("ascii", errors="replace")
+    if isinstance(raw_handle, np.ndarray):
+        return np.array2string(raw_handle, separator=",")
+    return str(raw_handle)
+
+
+def _handle_candidates(raw_handle: Any) -> list[str]:
+    """Return normalized candidate strings for handle-to-role matching.
+
+    The library contract is not fully pinned down in this repo. In practice,
+    the handle may arrive as a byte string, a short text token, or some other
+    object whose string form still contains useful information. We therefore
+    try a few stable canonicalizations before giving up and treating the handle
+    as unmapped.
+    """
+    text = _stringify_raw_handle(raw_handle).replace("\x00", " ").strip().upper()
+    if not text:
+        return []
+    candidates: list[str] = [text]
+    collapsed = re.sub(r"[^A-Z0-9]+", "", text)
+    if collapsed and collapsed not in candidates:
+        candidates.append(collapsed)
+    for token in re.findall(r"[A-Z0-9]+", text):
+        if token not in candidates:
+            candidates.append(token)
+    return candidates
+
+
+def normalize_tool_id(
+    raw_handle: Any,
+    *,
+    tool_id_aliases: dict[str, str] | None = None,
+) -> tuple[str, str, bool]:
+    """Normalize one live tracker handle into an app tool id.
+
+    Returns ``(normalized_tool_id, raw_handle_text, mapped_to_runtime_role)``.
+    If the returned id is not one of the expected runtime roles, the caller
+    should treat it as an observed-but-unmapped live tool until the operator
+    supplies an explicit alias in config.
+    """
+    raw_text = _stringify_raw_handle(raw_handle).replace("\x00", " ").strip()
+    alias_map = {str(key).upper(): str(value).upper() for key, value in (tool_id_aliases or {}).items()}
+    candidates = _handle_candidates(raw_handle)
+    for candidate in candidates:
+        alias = alias_map.get(candidate)
+        if alias in {"0A", "0B"}:
+            return alias, raw_text, True
+    for candidate in candidates:
+        if candidate in {"0A", "0B"}:
+            return candidate, raw_text, True
+        if candidate.endswith("0A"):
+            return "0A", raw_text, True
+        if candidate.endswith("0B"):
+            return "0B", raw_text, True
+    if candidates:
+        return candidates[0], raw_text, False
+    return "", raw_text, False
 
 
 def _coerce_list(value: Any) -> list[Any]:
@@ -87,6 +135,37 @@ def _expand_list(value: Any, target_len: int) -> list[Any]:
     if len(values) < target_len:
         return values + [None] * (target_len - len(values))
     return values[:target_len]
+
+
+def _split_tracking_values(value: Any) -> list[Any]:
+    """Split tracker transform payloads into one item per observed tool."""
+    if isinstance(value, np.ndarray):
+        array = np.asarray(value)
+        if array.shape == (4, 4) or array.shape == (16,) or array.shape == (1, 16):
+            return [array]
+        if array.ndim == 3 and array.shape[-2:] == (4, 4):
+            return [array[index] for index in range(array.shape[0])]
+        if array.ndim == 2 and array.shape[1] == 16:
+            return [array[index] for index in range(array.shape[0])]
+        return [array]
+    if isinstance(value, (list, tuple)):
+        if len(value) == 4 and all(isinstance(item, (list, tuple, np.ndarray)) for item in value):
+            matrix = np.asarray(value, dtype=float)
+            if matrix.shape == (4, 4):
+                return [matrix]
+        return list(value)
+    return [value]
+
+
+def _tracking_state_rank(status: str) -> int:
+    normalized = (status or "").strip().lower()
+    if normalized.startswith("tracked") or normalized in {"visible", "ok"}:
+        return 3
+    if normalized.startswith("invalid"):
+        return 2
+    if normalized == "missing":
+        return 1
+    return 0
 
 
 def _timestamp_to_iso(raw_timestamp: Any, fallback_utc: str) -> str:
@@ -133,6 +212,8 @@ class TrackerBackendNDI:
         reconnect_delay_s: float = 1.0,
         ports_to_probe: list[Any] | None = None,
         settings_overrides: dict[str, Any] | None = None,
+        tool_id_aliases: dict[str, str] | None = None,
+        debug_frames_to_log: int = 12,
         tracker_factory: Callable[[dict[str, Any]], Any] | None = None,
         expected_tool_ids: tuple[str, ...] = ("0A", "0B"),
     ) -> None:
@@ -142,6 +223,8 @@ class TrackerBackendNDI:
         self.reconnect_delay_s = max(0.1, float(reconnect_delay_s))
         self.ports_to_probe = list(ports_to_probe or [])
         self.settings_overrides = dict(settings_overrides or {})
+        self.tool_id_aliases = {str(key).upper(): str(value).upper() for key, value in (tool_id_aliases or {}).items()}
+        self.debug_frames_to_log = max(0, int(debug_frames_to_log))
         self.expected_tool_ids = tuple(str(v).upper() for v in expected_tool_ids)
         self._tracker_factory = tracker_factory
 
@@ -150,16 +233,25 @@ class TrackerBackendNDI:
         self._thread: threading.Thread | None = None
         self._tracker = None
         self._synthetic_frame_number = 0
+        self._frames_received_total = 0
+        self._remaining_debug_frames = self.debug_frames_to_log
+        self._last_debug_signature: tuple[Any, ...] | None = None
         self._state = TrackerRuntimeState(
             connection_state="disconnected",
             backend_running=False,
             backend_connected=False,
             bridge_running=False,
             socket_connected=False,
+            backend_frame_counter=0,
             latest_frame_number=None,
             latest_timestamp=None,
             last_status_message="NDI tracker backend idle",
             last_error=None,
+            raw_tool_ids=[],
+            normalized_tool_ids=[],
+            tool_id_mapping={},
+            runtime_role_mappings={},
+            unmapped_tool_ids=[],
             tools={},
         )
 
@@ -167,14 +259,24 @@ class TrackerBackendNDI:
         if self.is_alive():
             return
         self._stop_event.clear()
+        self._frames_received_total = 0
+        self._synthetic_frame_number = 0
+        self._remaining_debug_frames = self.debug_frames_to_log
+        self._last_debug_signature = None
         with self._lock:
             self._state.connection_state = "starting"
             self._state.backend_running = True
             self._state.backend_connected = False
             self._state.bridge_running = False
             self._state.socket_connected = False
+            self._state.backend_frame_counter = 0
             self._state.last_error = None
             self._state.last_status_message = "Starting Python NDI tracker backend"
+            self._state.raw_tool_ids = []
+            self._state.normalized_tool_ids = []
+            self._state.tool_id_mapping = {}
+            self._state.runtime_role_mappings = {}
+            self._state.unmapped_tool_ids = []
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
 
@@ -191,6 +293,7 @@ class TrackerBackendNDI:
             self._state.backend_connected = False
             self._state.bridge_running = False
             self._state.socket_connected = False
+            self._state.backend_frame_counter = self._frames_received_total
             self._state.last_status_message = "NDI tracker backend stopped"
 
     def is_alive(self) -> bool:
@@ -205,10 +308,16 @@ class TrackerBackendNDI:
                 backend_connected=self._state.backend_connected,
                 socket_connected=self._state.socket_connected,
                 bridge_running=self._state.bridge_running,
+                backend_frame_counter=self._state.backend_frame_counter,
                 latest_frame_number=self._state.latest_frame_number,
                 latest_timestamp=self._state.latest_timestamp,
                 last_status_message=self._state.last_status_message,
                 last_error=self._state.last_error,
+                raw_tool_ids=list(self._state.raw_tool_ids),
+                normalized_tool_ids=list(self._state.normalized_tool_ids),
+                tool_id_mapping=dict(self._state.tool_id_mapping),
+                runtime_role_mappings=dict(self._state.runtime_role_mappings),
+                unmapped_tool_ids=list(self._state.unmapped_tool_ids),
                 tools=tools,
             )
 
@@ -326,11 +435,19 @@ class TrackerBackendNDI:
         return get_frame_fn()
 
     def _apply_frame_payload(self, frame_payload: Any, *, observed_at_utc: str) -> None:
-        tools, latest_frame = self._parse_frame_payload(frame_payload, observed_at_utc=observed_at_utc)
+        tools, latest_frame, debug = self._parse_frame_payload(frame_payload, observed_at_utc=observed_at_utc)
+        self._frames_received_total += 1
+        self._maybe_log_debug_frame(debug, latest_frame=latest_frame)
         with self._lock:
             self._state.tools = tools
+            self._state.backend_frame_counter = self._frames_received_total
             self._state.latest_timestamp = observed_at_utc
             self._state.last_error = None
+            self._state.raw_tool_ids = list(debug["raw_tool_ids"])
+            self._state.normalized_tool_ids = list(debug["normalized_tool_ids"])
+            self._state.tool_id_mapping = dict(debug["tool_id_mapping"])
+            self._state.runtime_role_mappings = dict(debug["runtime_role_mappings"])
+            self._state.unmapped_tool_ids = list(debug["unmapped_tool_ids"])
             if latest_frame is not None:
                 self._state.latest_frame_number = latest_frame
 
@@ -339,7 +456,7 @@ class TrackerBackendNDI:
         frame_payload: Any,
         *,
         observed_at_utc: str,
-    ) -> tuple[dict[str, TrackerToolState], int | None]:
+    ) -> tuple[dict[str, TrackerToolState], int | None, dict[str, Any]]:
         if not isinstance(frame_payload, (list, tuple)) or len(frame_payload) < 5:
             raise RuntimeError(
                 "NDITracker.get_frame() returned an unsupported payload shape. "
@@ -348,17 +465,43 @@ class TrackerBackendNDI:
             )
 
         raw_handles = _coerce_list(frame_payload[0])
-        raw_timestamps = _expand_list(frame_payload[1], len(raw_handles))
-        raw_frame_numbers = _expand_list(frame_payload[2], len(raw_handles))
-        raw_tracking = _expand_list(frame_payload[3], len(raw_handles))
-        raw_quality = _expand_list(frame_payload[4], len(raw_handles))
+        tracking_values = _split_tracking_values(frame_payload[3])
+        sample_count = max(
+            len(raw_handles),
+            len(tracking_values),
+            len(_coerce_list(frame_payload[4])),
+            0,
+        )
+        if len(raw_handles) < sample_count:
+            raw_handles = raw_handles + [f"tool[{index}]" for index in range(len(raw_handles), sample_count)]
+        raw_timestamps = _expand_list(frame_payload[1], sample_count)
+        raw_frame_numbers = _expand_list(frame_payload[2], sample_count)
+        raw_tracking = _expand_list(tracking_values, sample_count)
+        raw_quality = _expand_list(frame_payload[4], sample_count)
 
         tools: dict[str, TrackerToolState] = {}
         observed_frames: list[int] = []
-        for index, raw_handle in enumerate(raw_handles):
-            tool_id = normalize_tool_id(raw_handle)
+        raw_tool_ids: list[str] = []
+        normalized_tool_ids: list[str] = []
+        tool_id_mapping: dict[str, str] = {}
+        runtime_role_mappings: dict[str, str] = {}
+        unmapped_tool_ids: list[str] = []
+
+        for index in range(sample_count):
+            raw_handle = raw_handles[index]
+            tool_id, raw_text, mapped_to_runtime_role = normalize_tool_id(
+                raw_handle,
+                tool_id_aliases=self.tool_id_aliases,
+            )
             if not tool_id:
                 continue
+            raw_tool_ids.append(raw_text)
+            normalized_tool_ids.append(tool_id)
+            tool_id_mapping[raw_text] = tool_id
+            if mapped_to_runtime_role and tool_id in self.expected_tool_ids and tool_id not in runtime_role_mappings:
+                runtime_role_mappings[tool_id] = raw_text
+            if not mapped_to_runtime_role:
+                unmapped_tool_ids.append(raw_text)
 
             frame_number = self._coerce_frame_number(raw_frame_numbers[index])
             if frame_number is not None:
@@ -369,7 +512,7 @@ class TrackerBackendNDI:
             raw_transform = raw_tracking[index]
 
             if raw_transform is None:
-                tools[tool_id] = TrackerToolState(
+                candidate = TrackerToolState(
                     tool_id=tool_id,
                     frame_number=frame_number,
                     valid=False,
@@ -380,43 +523,55 @@ class TrackerBackendNDI:
                     quality=quality,
                     timestamp=timestamp,
                 )
-                continue
+            else:
+                try:
+                    T_aurora_tool = coerce_transform_matrix(raw_transform, tool_id=tool_id)
+                    quaternion = rotmat_to_quat_wxyz(T_aurora_tool[0:3, 0:3])
+                    translation = tuple(float(v) for v in T_aurora_tool[0:3, 3])
+                    candidate = TrackerToolState(
+                        tool_id=tool_id,
+                        frame_number=frame_number,
+                        valid=None,
+                        validity_known=False,
+                        status="tracked",
+                        quaternion=quaternion,
+                        translation_mm=translation,
+                        quality=quality,
+                        timestamp=timestamp,
+                    )
+                except Exception as exc:
+                    candidate = TrackerToolState(
+                        tool_id=tool_id,
+                        frame_number=frame_number,
+                        valid=False,
+                        validity_known=True,
+                        status=f"invalid_transform: {exc}",
+                        quaternion=None,
+                        translation_mm=None,
+                        quality=quality,
+                        timestamp=timestamp,
+                    )
 
-            try:
-                T_aurora_tool = coerce_transform_matrix(raw_transform, tool_id=tool_id)
-                quaternion = rotmat_to_quat_wxyz(T_aurora_tool[0:3, 0:3])
-                translation = tuple(float(v) for v in T_aurora_tool[0:3, 3])
-                tools[tool_id] = TrackerToolState(
-                    tool_id=tool_id,
-                    frame_number=frame_number,
-                    valid=None,
-                    validity_known=False,
-                    status="tracked",
-                    quaternion=quaternion,
-                    translation_mm=translation,
-                    quality=quality,
-                    timestamp=timestamp,
-                )
-            except Exception as exc:
-                tools[tool_id] = TrackerToolState(
-                    tool_id=tool_id,
-                    frame_number=frame_number,
-                    valid=False,
-                    validity_known=True,
-                    status=f"invalid_transform: {exc}",
-                    quaternion=None,
-                    translation_mm=None,
-                    quality=quality,
-                    timestamp=timestamp,
-                )
+            existing = tools.get(tool_id)
+            if existing is None or _tracking_state_rank(candidate.status) >= _tracking_state_rank(existing.status):
+                tools[tool_id] = candidate
 
-        latest_frame = max(observed_frames) if observed_frames else None
+        latest_frame = max(observed_frames) if observed_frames else self._coerce_frame_number(frame_payload[2])
         if latest_frame is None and tools:
             self._synthetic_frame_number += 1
             latest_frame = self._synthetic_frame_number
             for tool in tools.values():
-                tool.frame_number = latest_frame
-        return tools, latest_frame
+                if tool.frame_number is None:
+                    tool.frame_number = latest_frame
+
+        debug = {
+            "raw_tool_ids": list(dict.fromkeys(raw_tool_ids)),
+            "normalized_tool_ids": list(dict.fromkeys(normalized_tool_ids)),
+            "tool_id_mapping": dict(tool_id_mapping),
+            "runtime_role_mappings": dict(runtime_role_mappings),
+            "unmapped_tool_ids": list(dict.fromkeys(unmapped_tool_ids)),
+        }
+        return tools, latest_frame, debug
 
     @staticmethod
     def _coerce_frame_number(raw_frame_number: Any) -> int | None:
@@ -435,6 +590,30 @@ class TrackerBackendNDI:
             return float(raw_quality)
         except Exception:
             return None
+
+    def _maybe_log_debug_frame(self, debug: dict[str, Any], *, latest_frame: int | None) -> None:
+        if self._remaining_debug_frames <= 0:
+            return
+        signature = (
+            tuple(debug.get("raw_tool_ids", [])),
+            tuple(debug.get("normalized_tool_ids", [])),
+            tuple(sorted((debug.get("tool_id_mapping", {}) or {}).items())),
+            tuple(sorted((debug.get("runtime_role_mappings", {}) or {}).items())),
+            tuple(debug.get("unmapped_tool_ids", [])),
+        )
+        if signature == self._last_debug_signature:
+            return
+        self._last_debug_signature = signature
+        self._remaining_debug_frames -= 1
+        print(
+            "[ndi_backend] "
+            f"frame={latest_frame} raw_tool_ids={debug.get('raw_tool_ids', [])} "
+            f"normalized_tool_ids={debug.get('normalized_tool_ids', [])} "
+            f"runtime_role_mappings={debug.get('runtime_role_mappings', {})} "
+            f"unmapped={debug.get('unmapped_tool_ids', [])}",
+            file=sys.stderr,
+            flush=True,
+        )
 
     def _set_state(self, **updates) -> None:
         with self._lock:

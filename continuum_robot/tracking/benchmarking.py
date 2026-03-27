@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import math
 import statistics
 import time
 
@@ -58,6 +57,7 @@ class TrackerBenchmarkReport:
     duration_s: float
     samples_observed: int
     unique_frames_observed: int
+    backend_frame_counter_final: int
     frame_interval_s: NumericStats
     effective_frame_rate_hz: float | None
     stale_sample_count: int
@@ -68,6 +68,10 @@ class TrackerBenchmarkReport:
     tip_pose_computable: bool
     final_connection_state: str
     final_last_error: str | None
+    raw_live_tool_ids_final: list[str]
+    normalized_live_tool_ids_final: list[str]
+    runtime_role_mappings_final: dict[str, str]
+    unmapped_live_tool_ids_final: list[str]
     tool_metrics: dict[str, ToolBenchmarkMetrics]
     thresholds: TrackerBenchmarkThresholds
     passed: bool
@@ -116,14 +120,14 @@ def compute_tracker_benchmark_report(
     metrics = {tool_id: ToolBenchmarkMetrics(tool_id=tool_id) for tool_id in sorted(tool_ids)}
 
     unique_frame_samples: list[tuple[float, TrackingSnapshot]] = []
-    previous_frame_number = object()
+    previous_frame_key = object()
     for offset_s, snapshot in samples:
-        frame_number = snapshot.last_frame_number
-        if frame_number is None:
+        frame_key = snapshot.backend_frame_counter if snapshot.backend_frame_counter > 0 else snapshot.last_frame_number
+        if frame_key is None:
             continue
-        if frame_number != previous_frame_number:
+        if frame_key != previous_frame_key:
             unique_frame_samples.append((offset_s, snapshot))
-            previous_frame_number = frame_number
+            previous_frame_key = frame_key
 
     stale_values = [float(snapshot.tracker_data_age_s) for _, snapshot in samples if snapshot.tracker_data_age_s is not None]
     stale_sample_count = sum(1 for _, snapshot in samples if snapshot.tracker_data_stale)
@@ -207,6 +211,10 @@ def compute_tracker_benchmark_report(
         tool_metrics = metrics[tool_id]
         if tool_metrics.tracked_frames <= 0:
             failures.append(f"Required tool {tool_id} never reached tracked state")
+            if final_snapshot.raw_live_tool_ids and not final_snapshot.runtime_role_mappings.get(tool_id):
+                failures.append(
+                    f"Required tool {tool_id} is not mapped from live ids {final_snapshot.raw_live_tool_ids}"
+                )
         if tool_metrics.max_consecutive_missing_frames > thresholds.max_consecutive_missing_frames:
             failures.append(
                 f"Tool {tool_id} missing streak {tool_metrics.max_consecutive_missing_frames} exceeds "
@@ -222,6 +230,7 @@ def compute_tracker_benchmark_report(
         duration_s=duration_s,
         samples_observed=len(samples),
         unique_frames_observed=len(unique_frame_samples),
+        backend_frame_counter_final=final_snapshot.backend_frame_counter,
         frame_interval_s=_build_numeric_stats(frame_interval_values),
         effective_frame_rate_hz=effective_frame_rate_hz,
         stale_sample_count=stale_sample_count,
@@ -232,6 +241,10 @@ def compute_tracker_benchmark_report(
         tip_pose_computable=tip_pose_computable,
         final_connection_state=final_snapshot.connection_state,
         final_last_error=final_snapshot.last_error,
+        raw_live_tool_ids_final=list(final_snapshot.raw_live_tool_ids),
+        normalized_live_tool_ids_final=list(final_snapshot.normalized_live_tool_ids),
+        runtime_role_mappings_final=dict(final_snapshot.runtime_role_mappings),
+        unmapped_live_tool_ids_final=list(final_snapshot.unmapped_live_tool_ids),
         tool_metrics=metrics,
         thresholds=thresholds,
         passed=not failures,

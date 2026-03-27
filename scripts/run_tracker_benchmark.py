@@ -140,10 +140,16 @@ def main() -> int:
 
     print(f"Connection state: {report.final_connection_state}")
     print(f"Unique frames observed: {report.unique_frames_observed}")
+    print(f"Backend frame counter: {report.backend_frame_counter_final}")
     print(f"Effective FPS: {report.effective_frame_rate_hz}")
     print(f"Frame interval stats: {report.frame_interval_s}")
     print(f"Max data age (s): {report.max_data_age_s}")
     print(f"First frame latency (s): {report.first_frame_latency_s}")
+    print(f"Raw live tool ids: {report.raw_live_tool_ids_final}")
+    print(f"Normalized live tool ids: {report.normalized_live_tool_ids_final}")
+    print(f"Runtime role mappings: {report.runtime_role_mappings_final}")
+    if report.unmapped_live_tool_ids_final:
+        print(f"Unmapped live tool ids: {report.unmapped_live_tool_ids_final}")
     print(f"Registration loaded: {report.registration_loaded}")
     print(f"T_robot_tip computable: {report.tip_pose_computable}")
     for tool_id in sorted(report.tool_metrics):

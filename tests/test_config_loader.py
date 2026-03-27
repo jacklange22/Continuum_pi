@@ -18,6 +18,7 @@ def test_config_loader_reads_runtime_registration_and_experiment_settings(tmp_pa
                 "poll_rate_hz: 7",
                 "tracker_freshness_timeout_s: 0.75",
                 "tracker_ports_to_probe: [0A, 0B]",
+                "tracker_tool_id_aliases: {PORT1: 0A, PORT2: 0B}",
                 "tracker_min_effective_fps: 18.0",
                 'latest_registration_path: "data/registrations/latest_registration.json"',
             ]
@@ -83,6 +84,7 @@ def test_config_loader_reads_runtime_registration_and_experiment_settings(tmp_pa
     assert settings.serial.tracker_type == "aurora"
     assert settings.serial.tracker_freshness_timeout_s == 0.75
     assert settings.serial.tracker_ports_to_probe == ["0A", "0B"]
+    assert settings.serial.tracker_tool_id_aliases == {"PORT1": "0A", "PORT2": "0B"}
     assert settings.serial.tracker_min_effective_fps == 18.0
     assert settings.safety.pretension_current_balance_tolerance_ma == 75
     assert settings.registration.capture_tool_id == "0B"
