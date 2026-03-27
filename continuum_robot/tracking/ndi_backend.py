@@ -31,6 +31,14 @@ from continuum_robot.tracking.tracker_service_manager import TrackerRuntimeState
 from continuum_robot.tracking.transforms import assert_rigid_transform_matrix, rotmat_to_quat_wxyz
 from continuum_robot.utils.time_utils import utc_now_iso
 
+DEFAULT_AURORA_TOOL_ID_ALIASES = {
+    # Observed on the Raspberry Pi Aurora session. scikit-surgerynditracker
+    # reports these raw handle ids while the rest of the app expects the
+    # historical runtime roles 0A/0B.
+    "10": "0A",
+    "11": "0B",
+}
+
 
 def load_ndi_tracker_class():
     """Import and return the NDITracker class with a clear error on failure."""
@@ -98,7 +106,8 @@ def normalize_tool_id(
     supplies an explicit alias in config.
     """
     raw_text = _stringify_raw_handle(raw_handle).replace("\x00", " ").strip()
-    alias_map = {str(key).upper(): str(value).upper() for key, value in (tool_id_aliases or {}).items()}
+    alias_map = dict(DEFAULT_AURORA_TOOL_ID_ALIASES)
+    alias_map.update({str(key).upper(): str(value).upper() for key, value in (tool_id_aliases or {}).items()})
     candidates = _handle_candidates(raw_handle)
     for candidate in candidates:
         alias = alias_map.get(candidate)
