@@ -10,10 +10,13 @@ adjustment on real hardware captures:
   - bytes 6..N-2: tool records (36 bytes each)
   - byte N-1: CRC-8 over payload without CRC byte
 - Tool record layout (36 bytes):
-  - bytes 0..1: tool id ASCII (for example '0A')
-  - byte 2: status byte
-  - byte 3: reserved
+  - bytes 0..3: tool serial number uint32 little-endian
+    - convention used here: low two bytes may decode to display ids like "0A"/"0B"
+    - uncertainty: this display-id mapping is an implementation convenience, not a
+      guaranteed protocol rule
   - bytes 4..35: 8 float32 little-endian values
+    - convention used here: quat[4], translation[3], tracker_error
+    - uncertainty: final float naming can vary across legacy scripts ("quality"/"error")
 """
 
 from __future__ import annotations

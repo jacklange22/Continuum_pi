@@ -66,11 +66,9 @@ class AuroraFramer:
 
         start = self._find_start_index(data)
         if start is None:
-            # Keep at most one trailing DLE as possible start prefix.
-            if data and data[-1] == DLE:
-                self._buffer = bytearray([DLE])
-            else:
-                self._buffer = bytearray()
+            # Keep trailing DLE run so odd/even parity before STX is preserved.
+            trailing_dles = self._count_trailing_dles(data)
+            self._buffer = bytearray([DLE] * trailing_dles)
             return None
 
         # Drop noise before valid start marker.
@@ -96,7 +94,23 @@ class AuroraFramer:
 
     @staticmethod
     def _find_start_index(data: bytearray) -> int | None:
-        for i in range(0, len(data) - 1):
-            if data[i] == DLE and data[i + 1] == STX:
-                return i
+        for i in range(1, len(data)):
+            if data[i] != STX:
+                continue
+            dle_count = 0
+            j = i - 1
+            while j >= 0 and data[j] == DLE:
+                dle_count += 1
+                j -= 1
+            if dle_count % 2 == 1:
+                return i - 1
         return None
+
+    @staticmethod
+    def _count_trailing_dles(data: bytearray) -> int:
+        count = 0
+        i = len(data) - 1
+        while i >= 0 and data[i] == DLE:
+            count += 1
+            i -= 1
+        return count

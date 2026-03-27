@@ -31,3 +31,13 @@ def test_framer_recovers_frame_after_noise_and_stuffed_dle() -> None:
     assert frame[1] == STX
     assert frame[-2] == DLE
     assert frame[-1] == ETX
+
+
+def test_find_start_index_rejects_even_dle_run_before_stx() -> None:
+    data = bytearray([0x99, DLE, DLE, STX, 0x01, DLE, ETX])
+    assert AuroraFramer._find_start_index(data) is None
+
+
+def test_find_start_index_accepts_odd_dle_run_before_stx() -> None:
+    data = bytearray([0x99, DLE, DLE, DLE, STX, 0x01, DLE, ETX])
+    assert AuroraFramer._find_start_index(data) == 3

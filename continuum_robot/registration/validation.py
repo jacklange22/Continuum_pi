@@ -4,7 +4,7 @@
 def compute_fre_mm(residuals_xyz_mm: list[list[float]]) -> float:
     """Compute fiducial registration error from residual vectors."""
     if not residuals_xyz_mm:
-        return 0.0
+        raise ValueError("residuals_xyz_mm must not be empty")
     total = 0.0
     count = 0
     for x, y, z in residuals_xyz_mm:

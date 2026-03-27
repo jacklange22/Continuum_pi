@@ -16,7 +16,8 @@ class AuroraToolMeasurement:
     tool_id: str
     quat_wxyz: tuple[float, float, float, float]
     translation_xyz: tuple[float, float, float]
-    quality: float | None
-    status_byte: int
-    valid: bool
-    status_text: str
+    quality: float | None = None
+    tool_sn: int | None = None
+    status_byte: int | None = None
+    valid: bool = True
+    status_text: str = "status_not_available_in_transform_record"

@@ -34,7 +34,7 @@ class TipPoseService:
 
     @classmethod
     def from_registration_file(cls, registration_path: Path) -> "TipPoseService":
-        """Load ``T_robot_aurora`` and ``T_coil_tip`` from registration JSON."""
+        """Load transforms from current or legacy registration JSON schemas."""
         if not registration_path.exists():
             raise FileNotFoundError(
                 f"Missing registration file: {registration_path}. "
@@ -42,15 +42,32 @@ class TipPoseService:
             )
 
         payload = json.loads(registration_path.read_text(encoding="utf-8"))
-        try:
-            T_robot_aurora = np.asarray(payload["T_robot_aurora"], dtype=float)
-            T_coil_tip = np.asarray(payload["T_coil_tip"], dtype=float)
-        except KeyError as exc:
-            raise KeyError(
-                f"Registration file {registration_path} is missing required key: {exc}"
-            ) from exc
+        T_robot_aurora = cls._load_T_robot_aurora(payload, registration_path)
+        T_coil_tip = cls._load_T_coil_tip(payload, registration_path)
 
         return cls(TipPoseInputs(T_robot_aurora=T_robot_aurora, T_coil_tip=T_coil_tip))
+
+    @staticmethod
+    def _load_T_robot_aurora(payload: dict, registration_path: Path) -> np.ndarray:
+        if "T_robot_aurora" in payload:
+            return np.asarray(payload["T_robot_aurora"], dtype=float)
+        if "T_aurora_2_model" in payload:
+            # Legacy naming maps to the same direction under T_A_B convention.
+            return np.asarray(payload["T_aurora_2_model"], dtype=float)
+        raise KeyError(
+            f"Registration file {registration_path} is missing T_robot_aurora/T_aurora_2_model"
+        )
+
+    @staticmethod
+    def _load_T_coil_tip(payload: dict, registration_path: Path) -> np.ndarray:
+        if "T_coil_tip" in payload:
+            return np.asarray(payload["T_coil_tip"], dtype=float)
+        if "T_tip_2_coil" in payload:
+            T_tip_coil = np.asarray(payload["T_tip_2_coil"], dtype=float)
+            return np.linalg.inv(T_tip_coil)
+        raise KeyError(
+            f"Registration file {registration_path} is missing T_coil_tip/T_tip_2_coil"
+        )
 
     @staticmethod
     def compute_T_robot_tip(

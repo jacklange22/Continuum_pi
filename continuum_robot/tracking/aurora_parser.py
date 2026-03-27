@@ -80,8 +80,8 @@ class AuroraParser:
             if len(record) != TOOL_RECORD_SIZE:
                 raise ValueError("Incomplete tool record")
 
+            tool_sn = int.from_bytes(record[0:4], "little")
             tool_id = record[0:2].decode("ascii", errors="replace")
-            status_byte = int(record[2])
 
             vals = [
                 struct.unpack("<f", record[4 + 4 * i : 8 + 4 * i])[0]
@@ -91,30 +91,14 @@ class AuroraParser:
             trans = (float(vals[4]), float(vals[5]), float(vals[6]))
             quality = float(vals[7])
 
-            valid = self._status_is_valid(status_byte)
-            status_text = self._status_to_text(status_byte)
-
             output[tool_id] = AuroraToolMeasurement(
                 tool_id=tool_id,
                 quat_wxyz=quat,
                 translation_xyz=trans,
                 quality=quality,
-                status_byte=status_byte,
-                valid=valid,
-                status_text=status_text,
+                tool_sn=tool_sn,
+                status_byte=None,
+                valid=True,
+                status_text="status_not_available_in_transform_record",
             )
         return output
-
-    @staticmethod
-    def _status_is_valid(status_byte: int) -> bool:
-        """Return coarse validity flag for tool status.
-
-        Assumption: non-zero status indicates tracking issue/missing tool.
-        """
-        return status_byte == 0
-
-    @staticmethod
-    def _status_to_text(status_byte: int) -> str:
-        if status_byte == 0:
-            return "ok"
-        return f"status_0x{status_byte:02X}"
