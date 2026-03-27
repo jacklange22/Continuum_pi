@@ -1,4 +1,9 @@
-"""Aurora transform packet parser."""
+"""Legacy client-packet Aurora transform parser.
+
+This parser is retained for replay, regression tests, and compatibility with
+the historical DLE/STX/ETX client packet format. It is not the primary live
+Aurora runtime path for the app.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +22,7 @@ from continuum_robot.tracking.tool_models import AuroraToolMeasurement
 
 
 class AuroraParser:
-    """Parse framed Aurora packets into tool measurements for 0A/0B."""
+    """Parse legacy framed packets into tool measurements for 0A/0B."""
 
     def parse_transform_packet(self, framed_packet: bytes) -> dict[str, AuroraToolMeasurement]:
         """Parse one framed transform packet.
@@ -98,7 +103,7 @@ class AuroraParser:
                 quality=quality,
                 tool_sn=tool_sn,
                 status_byte=None,
-                valid=True,
-                status_text="status_not_available_in_transform_record",
+                valid=None,
+                status_text="validity_not_available_in_compatibility_packet",
             )
         return output

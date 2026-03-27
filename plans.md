@@ -12,7 +12,7 @@ After this plan is complete, a lab operator can boot a Raspberry Pi, launch a lo
 
 - [x] (2026-03-27 02:25Z) Audited the repository baseline. Tracking, transform math, registration solving, registration persistence, experiment CSV loading, and `.dat` writing already exist. Servo bus control, OpenRB preparation, experiment execution, and most GUI tabs/controllers are still scaffolds.
 - [x] (2026-03-27 02:25Z) Verified the repo boundaries and protected assets. `references/` and `tools/` are read-only reference inputs and must not be edited as part of this build.
-- [x] (2026-03-27 02:25Z) Identified environment blockers. `pyproject.toml` requires Python 3.11, but the host `pytest -q` path currently resolves to Python 3.9 and fails during test collection.
+- [x] (2026-03-27 02:25Z) Identified environment blockers. The host `pytest -q` path resolved to Python 3.9 and failed during test collection; later audit work confirmed the repo is compatible with Python 3.10+.
 - [x] (2026-03-27 03:10Z) Completed Milestone 1. Config loading now includes runtime, registration, experiment, and calibration settings; bootstrap wires mock and hardware-facing services; and the application launches end-to-end in mock mode.
 - [x] (2026-03-27 03:10Z) Replaced the placeholder GUI shell with a real PySide6 `QMainWindow` and usable System, Servos, Tracking, Registration, and Experiment tabs backed by real controllers.
 - [x] (2026-03-27 03:10Z) Implemented mock-mode tracker, servo, registration, and experiment flows deeply enough to validate the operator workflow without hardware. This includes synthetic `0A`/`0B` tracking, neutral calibration persistence, current-balance pretension validation, registration save/load, and `.dat` run output.
@@ -24,8 +24,9 @@ After this plan is complete, a lab operator can boot a Raspberry Pi, launch a lo
 - [x] (2026-03-27 04:35Z) Hardened the hardware boundaries for tomorrow's bench test. `DxlBus` and `OpenRbClient` now fail closed in hardware mode instead of pretending to connect successfully, while dedicated mock implementations keep the validated operator workflow available in mock mode.
 - [x] (2026-03-27 04:35Z) Added registration capture support for an optional probe-tip transform via `capture_tool_tip_transform` in `config/registration.yaml`, surfaced that geometry state in the Registration tab, and added regression coverage for the transform seam.
 - [x] (2026-03-27 04:35Z) Strengthened experiment and calibration safety behavior. Experiment runs now require servo connection, tracker connection, registration, neutral calibration, and a valid `0A` sample. Neutral calibration saves now archive the previous latest file before overwrite.
-- [x] (2026-03-27 04:35Z) Expanded regression coverage around hardware seams, tracker-manager startup guards, neutral-calibration archival, registration tip-transform capture, and experiment prerequisite gating. Current verified result: `51 passed`.
-- [x] (2026-03-27 04:35Z) Revalidated the external bring-up paths after hardening changes. Verified outputs: `python3.11 -m compileall continuum_robot scripts tests`, `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q` -> `51 passed`, `.venv/bin/python scripts/run_diagnostics.py --packets 2` in mock mode, offscreen `AppWindow` smoke launch with the expected title and 5 tabs, and a fresh bootstrap run via `VENV_DIR=/tmp/pi_code_bootstrap_smoke_20260326 PYTHON_BIN=python3.11 scripts/bootstrap.sh`.
+- [x] (2026-03-27 04:35Z) Expanded regression coverage around hardware seams, tracker-manager startup guards, neutral-calibration archival, registration tip-transform capture, and experiment prerequisite gating. Verified result at that stage: `51 passed`.
+- [x] (2026-03-27 05:15Z) Revalidated the final Pi preflight state. Verified outputs: `python3.11 -m compileall continuum_robot scripts tests`, `QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q` -> `53 passed`, `.venv/bin/python scripts/run_diagnostics.py --packets 2` in mock mode, offscreen `AppWindow` smoke launch with the expected title and 5 tabs, and a fresh bootstrap run via `VENV_DIR=/tmp/pi_code_bootstrap_smoke_py3 PYTHON_BIN=python3 scripts/bootstrap.sh`.
+- [x] (2026-03-27 05:05Z) Final Pi preflight adjustment: lowered the supported Python floor from 3.11 to 3.10 after verifying that every file in `continuum_robot/`, `scripts/`, and `tests/` parses with Python 3.10 grammar. Updated bootstrap and README so Raspberry Pi bring-up uses `python3`/`python3-venv` instead of assuming `python3.11` packages exist.
 - [x] Milestone 1: Harden configuration, bootstrap, and service wiring so the app runs end-to-end in mock mode on a Pi or laptop.
 - [ ] Milestone 2: Implement production DYNAMIXEL/OpenRB servo control, neutral calibration, and a current-safe pretension routine for 4-servo and 8-servo robots.
 - [ ] Milestone 3: Complete the tracker-to-tip runtime chain and guided registration using tool `0B` with persisted acceptance metrics.
@@ -35,8 +36,8 @@ After this plan is complete, a lab operator can boot a Raspberry Pi, launch a lo
 
 ## Surprises & Discoveries
 
-- Observation: The test suite currently depends on Python 3.11 syntax, but a plain `pytest -q` on this machine invokes Python 3.9 and fails during collection.
-  Evidence: `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'` from `tests/test_live_registration_service.py` when run with system Python 3.9.
+- Observation: The original validation failure was caused by Python 3.9 being too old, not by a hard Python 3.11 requirement in the repo.
+  Evidence: `TypeError: unsupported operand type(s) for |: 'type' and 'NoneType'` from `tests/test_live_registration_service.py` when run with system Python 3.9, followed later by a full Python 3.10 grammar parse of the repo.
 - Observation: Current registration capture stores raw tracker translation samples only, which is insufficient if the physical registration point is the pen tip rather than the sensor coil origin.
   Evidence: `LiveRegistrationService.capture_current_sample()` in `continuum_robot/registration/live_registration_service.py` records `tool.translation_mm` directly without applying a probe-tip transform.
 - Observation: The tracking runtime is already Pi-native even though it is split across C++ and Python.
@@ -55,6 +56,10 @@ After this plan is complete, a lab operator can boot a Raspberry Pi, launch a lo
   Evidence: relative registration/output paths were already resolved correctly in bootstrap for some services but `TrackingController` and related GUI surfaces still built paths from raw config strings until the audit pass fixed them.
 - Observation: The experiment tab previously allowed runs with no live tracker sample or servo connection.
   Evidence: `ExperimentController.refresh_prerequisites()` only checked for file, neutral calibration, and registration before the audit pass tightened it to require tracker connection, valid `0A`, and servo connection.
+- Observation: The repo no longer appears to require Python 3.11 specifically.
+  Evidence: every file under `continuum_robot/`, `scripts/`, and `tests/` parsed successfully under Python 3.10 grammar using `ast.parse(..., feature_version=(3, 10))`.
+- Observation: A Pi OS image may not provide `python3.11` packages by name even when the default `python3` is sufficient.
+  Evidence: the user's Raspberry Pi apt output failed to locate `python3.11` and `python3.11-venv`, which made the older bring-up instructions too specific for the actual deployment target.
 
 ## Decision Log
 
@@ -100,6 +105,9 @@ After this plan is complete, a lab operator can boot a Raspberry Pi, launch a lo
 - Decision: Support an optional `capture_tool_tip_transform` directly in `config/registration.yaml`.
   Rationale: this matches the intent of the legacy rigid-registration workflow while keeping the transform explicit, testable, and operator-visible.
   Date/Author: 2026-03-27 / Codex
+- Decision: Lower the documented and packaging minimum from Python 3.11 to Python 3.10.
+  Rationale: this reduces Raspberry Pi bring-up friction while remaining consistent with the repo's current syntax and type-annotation usage.
+  Date/Author: 2026-03-27 / Codex
 
 ## Outcomes & Retrospective
 
@@ -123,7 +131,7 @@ The most important gap between current code and the requested platform is that t
 
 ### Milestone 1: Make the scaffold runnable as a real application in mock mode
 
-At the end of this milestone, a contributor can bootstrap the repo with Python 3.11, launch a real PySide6 window on a Pi or laptop, switch between System, Servos, Tracking, Registration, and Experiment tabs, and exercise the full UI flow in mock mode without hardware attached. Nothing should block on missing serial devices. The acceptance proof is that the GUI launches, mock tracker data updates live, mock servo telemetry refreshes, and `.venv/bin/python -m pytest -q` passes on a bootstrapped environment.
+At the end of this milestone, a contributor can bootstrap the repo with Python 3.10 or newer, launch a real PySide6 window on a Pi or laptop, switch between System, Servos, Tracking, Registration, and Experiment tabs, and exercise the full UI flow in mock mode without hardware attached. Nothing should block on missing serial devices. The acceptance proof is that the GUI launches, mock tracker data updates live, mock servo telemetry refreshes, and `.venv/bin/python -m pytest -q` passes on a bootstrapped environment.
 
 This milestone starts by turning configuration into a real runtime model. Extend `continuum_robot/config/schemas.py`, `continuum_robot/config/settings.py`, and `continuum_robot/config/config_loader.py` so they load not just the current robot, serial, and safety settings, but also explicit mock-mode, registration, experiment, and calibration settings. `config/system.yaml`, `config/safety.yaml`, `config/registration.yaml`, `config/experiment.yaml`, `config/robot_4servo.yaml`, and `config/robot_8servo.yaml` should become the authoritative templates. `config/system.local.example.yaml` should document machine-specific serial ports and any Pi-specific overrides.
 
@@ -179,7 +187,7 @@ Use `references/repeatability.py` as the behavioral reference, not as a file to 
 
 At the end of this milestone, a fresh Raspberry Pi can be prepared by following the README, the bridge can be built after the NDI SDK is installed, the GUI and diagnostic scripts run with clear instructions, mock mode remains available for development, and the repo includes example configs for 4-servo and 8-servo modes plus an example experiment file. The acceptance proof is that a new operator can follow the documented setup on a clean Pi and reach the GUI without tribal knowledge.
 
-Update `README.md`, `requirements.txt`, `pyproject.toml`, `scripts/bootstrap.sh`, `scripts/run_gui.sh`, `scripts/run_diagnostics.py`, and any additional launch scripts needed for production use. The README must document the Pi wiring model, how tendon displacement converts to servo ticks, how neutral setpoints are established, how registration is performed, how experiment files are structured, and what the `.dat` outputs contain. It must also document the Python 3.11 requirement explicitly so contributors do not repeat the current validation failure.
+Update `README.md`, `requirements.txt`, `pyproject.toml`, `scripts/bootstrap.sh`, `scripts/run_gui.sh`, `scripts/run_diagnostics.py`, and any additional launch scripts needed for production use. The README must document the Pi wiring model, how tendon displacement converts to servo ticks, how neutral setpoints are established, how registration is performed, how experiment files are structured, and what the `.dat` outputs contain. It must also document the Python 3.10+ requirement explicitly so contributors do not repeat the current validation failure.
 
 Create or update tests across `tests/` to cover every new service boundary. The minimum expected additions are unit tests for the DYNAMIXEL mapping and safety logic, neutral calibration persistence, pretension routine behavior, controller state transitions, experiment execution with mock services, and compatibility loading for registration outputs. Use mock classes or replayed tracker data so most tests run without hardware. Reserve only a small manual acceptance checklist for the actual Pi and robot.
 
@@ -203,14 +211,14 @@ Work from the repository root:
 
     cd /Users/jacklange/Continuum/pi_code
 
-Bootstrap a Python 3.11 environment before running tests or the GUI:
+Bootstrap a Python 3.10+ environment before running tests or the GUI:
 
-    PYTHON_BIN=python3.11 scripts/bootstrap.sh
+    PYTHON_BIN=python3 scripts/bootstrap.sh
 
 Expected result:
 
     Project root: /Users/jacklange/Continuum/pi_code
-    Using Python: python3.11
+    Using Python: python3
     ...
     Bootstrap complete.
 
@@ -218,13 +226,13 @@ Run the unit test suite from the bootstrapped environment, not the system Python
 
     .venv/bin/python -m pytest -q
 
-Before `scripts/bootstrap.sh`, it is expected that `python3.11 -m pytest -q` may fail with `No module named pytest`. After bootstrap, the same command through `.venv/bin/python` should succeed.
+Before `scripts/bootstrap.sh`, it is expected that `python3 -m pytest -q` may fail with `No module named pytest`. After bootstrap, the same command through `.venv/bin/python` should succeed.
 
 When working on tracker integration and the NDI SDK is installed, build the bridge like this:
 
     export NDI_SDK_INCLUDE_DIR=/opt/ndi_sdk/include
     export NDI_SDK_LIB_DIR=/opt/ndi_sdk/lib
-    BUILD_TRACKER_BRIDGE=1 PYTHON_BIN=python3.11 scripts/bootstrap.sh
+    BUILD_TRACKER_BRIDGE=1 PYTHON_BIN=python3 scripts/bootstrap.sh
 
 For machine-local serial paths, copy the local override file once:
 
@@ -248,7 +256,7 @@ The window should open locally on the Pi. In mock mode it must not require hardw
 
 A milestone is not complete when the code merely imports. It is complete when a human can observe the intended behavior.
 
-For Milestone 1, acceptance means a contributor can bootstrap with Python 3.11, open the GUI, switch tabs, see live mock data, and run the test suite successfully from `.venv/bin/python`.
+For Milestone 1, acceptance means a contributor can bootstrap with Python 3.10 or newer, open the GUI, switch tabs, see live mock data, and run the test suite successfully from `.venv/bin/python`.
 
 For Milestone 2, acceptance means the Servos tab can connect to a real or mock bus, scan IDs, jog a servo, save neutral setpoints, map a tendon displacement to predictable goal ticks, and reject any command that exceeds configured travel or current thresholds. On hardware, intentionally commanding an out-of-bounds displacement must produce a visible error and no motion.
 
@@ -313,7 +321,7 @@ Relevant current scaffolds that must be completed are:
 
 ## Interfaces and Dependencies
 
-Use Python 3.11 and PySide6 for the local GUI. Keep `numpy`, `PyYAML`, and `pyserial` as the core Python dependencies already present in `pyproject.toml`. If the DYNAMIXEL Python SDK is needed, add it explicitly and wrap it inside `continuum_robot/hardware/dxl_bus.py` rather than exposing SDK types across the codebase.
+Use Python 3.10+ and PySide6 for the local GUI. Keep `numpy`, `PyYAML`, and `pyserial` as the core Python dependencies already present in `pyproject.toml`. If the DYNAMIXEL Python SDK is needed, add it explicitly and wrap it inside `continuum_robot/hardware/dxl_bus.py` rather than exposing SDK types across the codebase.
 
 At the end of Milestone 1, `continuum_robot/config/settings.py` should define a single `Settings` object that includes, directly or via nested dataclasses, serial settings, robot mode settings, safety limits, registration settings, experiment defaults, calibration paths, and a `mock_mode` flag.
 

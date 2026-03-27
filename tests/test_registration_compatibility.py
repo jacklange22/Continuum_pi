@@ -27,6 +27,7 @@ def test_repository_save_record_writes_legacy_tip_key(tmp_path: Path) -> None:
 
     path = repo.save_record(record)
     payload = json.loads(path.read_text(encoding="utf-8"))
+    assert "T_aurora_2_model" in payload
     assert "T_coil_tip" in payload
     assert "T_tip_2_coil" in payload
     assert np.allclose(np.asarray(payload["T_tip_2_coil"], dtype=float), np.eye(4))

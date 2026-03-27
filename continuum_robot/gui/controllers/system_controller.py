@@ -17,8 +17,9 @@ class SystemViewState:
     openrb_port: str
     baudrate: int
     tracker_connection_state: str = "disconnected"
-    tracker_bridge_running: bool = False
-    tracker_socket_connected: bool = False
+    tracker_backend_identity: str = ""
+    tracker_backend_running: bool = False
+    tracker_backend_connected: bool = False
     openrb_connected: bool = False
     dynamixel_connected: bool = False
     openrb_status: str = "OpenRB disconnected."
@@ -31,8 +32,8 @@ class SystemViewState:
 class SystemController:
     """Owns system-level connect/disconnect and setup actions."""
 
-    def __init__(self, tracker_manager, openrb_client, servo_service, settings: Settings) -> None:
-        self.tracker_manager = tracker_manager
+    def __init__(self, tracking_service, openrb_client, servo_service, settings: Settings) -> None:
+        self.tracking_service = tracking_service
         self.openrb_client = openrb_client
         self.servo_service = servo_service
         self.settings = settings
@@ -42,6 +43,7 @@ class SystemController:
             openrb_port=settings.serial.openrb_port,
             baudrate=settings.serial.baudrate,
             config_summary=self._build_config_summary(settings),
+            status_message=self._initial_status_message(settings),
         )
         self.rescan_ports()
 
@@ -60,8 +62,7 @@ class SystemController:
 
     def set_aurora_port(self, port: str) -> None:
         self.state.aurora_port = port
-        if hasattr(self.tracker_manager, "aurora_port"):
-            self.tracker_manager.aurora_port = port
+        self.tracking_service.set_port(port)
 
     def set_openrb_port(self, port: str) -> None:
         self.state.openrb_port = port
@@ -70,9 +71,7 @@ class SystemController:
         try:
             if not self.settings.runtime.mock_mode and not self.state.aurora_port:
                 raise RuntimeError("Aurora port is empty. Set the tracker port before connecting.")
-            if hasattr(self.tracker_manager, "aurora_port"):
-                self.tracker_manager.aurora_port = self.state.aurora_port
-            self.tracker_manager.start()
+            self.tracking_service.start(self.state.aurora_port)
             self.state.status_message = "Tracker connection requested."
             self.state.last_error = None
         except Exception as exc:
@@ -82,7 +81,7 @@ class SystemController:
 
     def disconnect_tracker(self) -> None:
         try:
-            self.tracker_manager.stop()
+            self.tracking_service.stop()
             self.state.status_message = "Tracker disconnected."
             self.state.last_error = None
         except Exception as exc:
@@ -129,10 +128,19 @@ class SystemController:
         self.refresh()
 
     def refresh(self) -> SystemViewState:
-        tracker_state = self.tracker_manager.get_state_snapshot()
+        tracker_state = self.tracking_service.get_snapshot()
         self.state.tracker_connection_state = tracker_state.connection_state
-        self.state.tracker_bridge_running = tracker_state.bridge_running
-        self.state.tracker_socket_connected = tracker_state.socket_connected
+        self.state.tracker_backend_identity = tracker_state.backend_identity
+        self.state.tracker_backend_running = bool(
+            tracker_state.backend_running
+            if tracker_state.backend_running is not None
+            else tracker_state.bridge_running
+        )
+        self.state.tracker_backend_connected = bool(
+            tracker_state.backend_connected
+            if tracker_state.backend_connected is not None
+            else tracker_state.socket_connected
+        )
         self.state.openrb_connected = self.openrb_client.is_connected
         self.state.dynamixel_connected = self.servo_service.is_connected
         self.state.openrb_status = self.openrb_client.last_status
@@ -142,10 +150,29 @@ class SystemController:
 
     @staticmethod
     def _build_config_summary(settings: Settings) -> str:
+        hardware_note = (
+            "Servo hardware path: mock backend validated."
+            if settings.runtime.mock_mode
+            else "Servo hardware path: real OpenRB/DYNAMIXEL transport still pending."
+        )
         return (
             f"Mode: {settings.robot.mode}\n"
             f"Servo IDs: {settings.robot.servo_ids}\n"
             f"Mock mode: {settings.runtime.mock_mode}\n"
-            f"Tracker socket: {settings.serial.tracker_socket_path}\n"
-            f"Robot config: {settings.runtime.robot_config}"
+            f"Tracker backend: {settings.serial.tracker_backend}\n"
+            f"Tracker type: {settings.serial.tracker_type}\n"
+            f"Tracker freshness timeout: {settings.serial.tracker_freshness_timeout_s}s\n"
+            f"Runtime coil tool: {settings.registration.coil_tool_id}\n"
+            f"Registration tool: {settings.registration.capture_tool_id}\n"
+            f"Robot config: {settings.runtime.robot_config}\n"
+            f"{hardware_note}"
+        )
+
+    @staticmethod
+    def _initial_status_message(settings: Settings) -> str:
+        if settings.runtime.mock_mode:
+            return "Mock mode ready. Tracker, registration, and servo workflows can be exercised without hardware."
+        return (
+            "Hardware mode ready for Aurora tracker bring-up. "
+            "OpenRB/DYNAMIXEL transport is still blocked pending implementation."
         )

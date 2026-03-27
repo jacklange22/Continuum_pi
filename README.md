@@ -37,7 +37,7 @@ Still hardware-pending:
 - real DYNAMIXEL/OpenRB transport in [continuum_robot/hardware/dxl_bus.py](/Users/jacklange/Continuum/pi_code/continuum_robot/hardware/dxl_bus.py)
 - real OpenRB prep/status transport in [continuum_robot/hardware/openrb_client.py](/Users/jacklange/Continuum/pi_code/continuum_robot/hardware/openrb_client.py)
 - physical pretension stepping algorithm
-- on-hardware validation of Aurora tracking through `tracker_bridge`
+- on-hardware validation of Aurora tracking through `scikit-surgerynditracker`
 - measurement and acceptance of the registration pen tip transform, if the pen tip is offset from the tracked coil
 
 Important safety change:
@@ -49,7 +49,7 @@ Important safety change:
 - `continuum_robot/`
   Python application code: bootstrap, GUI, controllers, tracking, registration, servo services, experiments, config loading, and utilities
 - `tracker_bridge/`
-  C++ Aurora bridge using the NDI SDK and streaming JSON over a Unix socket
+  legacy compatibility Aurora bridge using the NDI SDK and streaming JSON over a Unix socket
 - `config/`
   runtime YAML configuration templates
 - `scripts/`
@@ -76,9 +76,26 @@ Primary operator/runtime path:
 
 Tracker integration path:
 
+- [ndi_backend.py](/Users/jacklange/Continuum/pi_code/continuum_robot/tracking/ndi_backend.py)
+- [tracking_service.py](/Users/jacklange/Continuum/pi_code/continuum_robot/services/tracking_service.py)
+- [tip_pose_service.py](/Users/jacklange/Continuum/pi_code/continuum_robot/tracking/tip_pose_service.py)
+
+Actual live runtime path:
+
+- Aurora hardware is owned directly by `scikit-surgerynditracker.NDITracker`
+- `TrackerBackendNDI` owns tracker configuration, start/stop, polling, and tool-state conversion
+- `TrackingService` is the app-visible source of truth for live `0A` and `0B` poses, freshness, faults, and `T_robot_tip`
+- registration, diagnostics, and the GUI consume `TrackingService`
+
+Legacy compatibility paths retained but not default:
+
+- [aurora_packet.py](/Users/jacklange/Continuum/pi_code/continuum_robot/tracking/aurora_packet.py)
+- [aurora_parser.py](/Users/jacklange/Continuum/pi_code/continuum_robot/tracking/aurora_parser.py)
+- [aurora_framer.py](/Users/jacklange/Continuum/pi_code/continuum_robot/tracking/aurora_framer.py)
 - [tracker_bridge.cpp](/Users/jacklange/Continuum/pi_code/tracker_bridge/tracker_bridge.cpp)
 - [tracker_service_manager.py](/Users/jacklange/Continuum/pi_code/continuum_robot/tracking/tracker_service_manager.py)
-- [tip_pose_service.py](/Users/jacklange/Continuum/pi_code/continuum_robot/tracking/tip_pose_service.py)
+
+Those modules are retained for replay, regression tests, historical client-packet compatibility, and optional bridge comparison. They are not the default live hardware backend.
 
 Transform convention:
 
@@ -96,6 +113,7 @@ Aurora:
 - Aurora serial connection goes directly to the Pi
 - tool `0A` is the robot coil used for runtime tip pose
 - tool `0B` is the registration probe
+- the registration backend can also reproduce the legacy `0A`-probe / `0B`-coil mapping when driven from saved CSV data
 
 OpenRB-150:
 
@@ -113,15 +131,18 @@ Robotis XC330-M288:
 
 Required:
 
-- Python 3.11 or newer
+- Python 3.10 or newer
 - `venv`
 - `pip`
 - `numpy`
 - `PyYAML`
 - `pyserial`
+- `scikit-surgerynditracker`
 - `PySide6`
 
-Tracker bridge hardware mode also requires:
+Default Python-native Aurora mode also depends on whatever low-level tracker bindings your local `scikit-surgerynditracker` installation requires. This repo does not bundle or auto-detect those vendor/runtime dependencies.
+
+Legacy bridge compatibility mode also requires:
 
 - NDI SDK installed outside this repo
 - working `CombinedApi` headers and libraries
@@ -135,7 +156,7 @@ Practical note:
 From the repo root:
 
 ```bash
-PYTHON_BIN=python3.11 scripts/bootstrap.sh
+PYTHON_BIN=python3 scripts/bootstrap.sh
 ```
 
 What it does:
@@ -143,17 +164,17 @@ What it does:
 - creates `.venv/`
 - installs the package and dev dependencies
 - creates `data/calibrations`, `data/logs`, `data/registrations`, `data/tracker_captures`, and `data/runs`
-- optionally builds `tracker_bridge` if `BUILD_TRACKER_BRIDGE=1`
+- optionally builds `tracker_bridge` if `BUILD_TRACKER_BRIDGE=1` for legacy bridge compatibility
 
 Bootstrap hardening:
 
-- fails early if `PYTHON_BIN` is older than Python 3.11
+- fails early if `PYTHON_BIN` is older than Python 3.10
 - recreates the virtualenv if the existing env was created with a different Python major/minor version
 
 Fresh-bootstrap smoke without touching `.venv`:
 
 ```bash
-VENV_DIR=/tmp/pi_code_bootstrap_smoke_20260326 PYTHON_BIN=python3.11 scripts/bootstrap.sh
+VENV_DIR=/tmp/pi_code_bootstrap_smoke_20260326 PYTHON_BIN=python3 scripts/bootstrap.sh
 ```
 
 ## Raspberry Pi Bring-Up
@@ -161,8 +182,15 @@ VENV_DIR=/tmp/pi_code_bootstrap_smoke_20260326 PYTHON_BIN=python3.11 scripts/boo
 Recommended Pi sequence:
 
 1. Clone the repo onto the Pi.
-2. Run `PYTHON_BIN=python3.11 scripts/bootstrap.sh`.
-3. Copy the machine-local config:
+2. Check the system Python version:
+
+```bash
+python3 --version
+```
+
+3. If `python3` is 3.10 or newer, run `PYTHON_BIN=python3 scripts/bootstrap.sh`.
+4. If `python3` is older than 3.10, upgrade the Pi OS image or install a newer Python before continuing.
+5. Copy the machine-local config:
 
 ```bash
 cp config/system.local.example.yaml config/system.local.yaml
@@ -176,14 +204,35 @@ cp config/system.local.example.yaml config/system.local.yaml
 - choose `robot_config`
 - adjust any local paths if needed
 
-5. If using Aurora hardware mode, build `tracker_bridge`.
-6. Launch the GUI with `scripts/run_gui.sh`.
+5. Install and validate the local dependency chain required by `scikit-surgerynditracker`.
+6. Only if you need bridge compatibility mode, build `tracker_bridge`.
+7. Launch the GUI with `scripts/run_gui.sh`.
 
 Repo-relative paths are resolved from the project root inside the app, so launch behavior no longer depends on the shell cwd.
 
+## Python Aurora Backend
+
+Default live hardware tracking now uses [ndi_backend.py](/Users/jacklange/Continuum/pi_code/continuum_robot/tracking/ndi_backend.py), not `tracker_bridge`.
+
+Config fields controlling this path:
+
+- `tracker_backend: "ndi"`
+- `tracker_type: "aurora"`
+- `aurora_port`
+- `tracker_poll_ms`
+- `tracker_freshness_timeout_s`
+- `tracker_ports_to_probe`
+- `tracker_settings_overrides`
+- `tracker_min_effective_fps`
+- `tracker_max_stale_interval_s`
+- `tracker_max_consecutive_missing_frames`
+- `tracker_require_valid_transforms`
+
+The backend converts library output into the app transform model, validates 4x4 rigid transforms, normalizes tool ids, and feeds `TrackingService`.
+
 ## Tracker Bridge Build
 
-Needed only for hardware tracker mode.
+Needed only for legacy comparison or compatibility mode.
 
 ```bash
 export NDI_SDK_INCLUDE_DIR=/opt/ndi_sdk/include
@@ -196,7 +245,7 @@ Or as part of bootstrap:
 ```bash
 export NDI_SDK_INCLUDE_DIR=/opt/ndi_sdk/include
 export NDI_SDK_LIB_DIR=/opt/ndi_sdk/lib
-BUILD_TRACKER_BRIDGE=1 PYTHON_BIN=python3.11 scripts/bootstrap.sh
+BUILD_TRACKER_BRIDGE=1 PYTHON_BIN=python3 scripts/bootstrap.sh
 ```
 
 Expected output:
@@ -222,13 +271,38 @@ Important fields:
 - `mock_mode`
 - `aurora_port`
 - `openrb_port`
+- `tracker_backend`
+- `tracker_type`
+- `tracker_freshness_timeout_s`
+- `tracker_ports_to_probe`
+- `tracker_settings_overrides`
+- `tracker_min_effective_fps`
+- `tracker_max_stale_interval_s`
+- `tracker_max_consecutive_missing_frames`
+- `tracker_require_valid_transforms`
 - `tracker_socket_path`
 - `tracker_bridge_executable`
 - `neutral_setpoints_path`
 - `latest_registration_path`
+- `capture_tool_id`
+- `coil_tool_id`
+- `model_points_file`
+- `tip_points_file`
+- `T_sw_2_model_file`
+- `T_sw_2_tip_file`
+- `penprobe_file`
 - `capture_tool_tip_transform`
 
-`capture_tool_tip_transform` is optional and lives in [registration.yaml](/Users/jacklange/Continuum/pi_code/config/registration.yaml). It is a 4x4 transform from the tracked registration-coil frame into the physical pen-tip frame.
+Registration now has a rigorous protected-asset path:
+
+- load protected model/tip point files from `tools/`
+- load `T_sw_2_model` and `T_sw_2_tip`
+- load the protected penprobe file
+- capture repeated measurement-tool and coil-tool samples
+- solve `T_aurora_2_model`, `T_aurora_2_tip`, and `T_tip_2_coil`
+- save strict keys plus legacy aliases in `latest_registration.json`
+
+`capture_tool_tip_transform` is optional and lives in [registration.yaml](/Users/jacklange/Continuum/pi_code/config/registration.yaml). When present, it overrides the translation-only penprobe file with an explicit 4x4 measurement-tool-to-point transform.
 
 ## Launching Mock Mode
 
@@ -251,9 +325,17 @@ Validated mock-mode behavior:
 Tracker-only hardware mode:
 
 1. set `mock_mode: false`
-2. build `tracker_bridge`
+2. set `tracker_backend: "ndi"`
 3. set `aurora_port`
 4. launch `scripts/run_gui.sh`
+
+Optional legacy bridge comparison mode:
+
+1. set `mock_mode: false`
+2. set `tracker_backend: "bridge"`
+3. build `tracker_bridge`
+4. set `aurora_port`
+5. launch `scripts/run_gui.sh`
 
 Full servo hardware mode:
 
@@ -289,7 +371,9 @@ Current limitation:
 
 - connect/disconnect tracker backend
 - inspect tool state for `0A` and `0B`
-- monitor frame count and quality
+- monitor frame count, freshness, and backend identity
+- inspect tracked/missing/invalid/unknown state per tool
+- see whether validity is known or still unknown from the live backend
 - inspect tip status and tip position
 - view a simple XY plot of tools and tip
 
@@ -298,9 +382,10 @@ Current limitation:
 - begin a guided session
 - capture repeated landmark samples
 - monitor counts per landmark
-- see whether capture uses coil origin or an explicit tip transform
+- capture paired measurement-tool and coil-tool poses
+- see whether capture uses the protected penprobe file or an explicit tip transform
 - solve/save registration
-- inspect FRE and residuals
+- inspect overall/model/tip FRE and residuals
 
 Latest accepted registration:
 
@@ -349,25 +434,43 @@ Not implemented yet:
 
 ## Registration Workflow
 
-Default config:
+Default runtime config:
 
-- 4 landmarks
 - 5 captures per landmark
-- capture tool `0B`
+- measurement tool `0B`
+- coil tool `0A`
+- protected model points from [12_model_registration_points_in_sw](/Users/jacklange/Continuum/pi_code/tools/12_model_registration_points_in_sw)
+- protected tip points from [all_tip_registration_points_in_sw](/Users/jacklange/Continuum/pi_code/tools/all_tip_registration_points_in_sw)
+- protected penprobe vector from [penprobe_08_09_24c](/Users/jacklange/Continuum/pi_code/tools/penprobe_08_09_24c)
+
+Legacy reference note:
+
+- the historical script used `0A` as the measured pen-probe tool and `0B` as the averaged coil tool
+- the new backend keeps those roles configurable, so the old mapping can still be reproduced exactly when needed
 
 Process:
 
 1. start tracker
 2. open Registration tab
 3. click `Begin Session`
-4. move the probe to each landmark
+4. move the measurement tool through the ordered model and tip landmarks
 5. click `Capture Sample` for each repetition
 6. click `Solve + Save`
-7. review FRE and residuals
+7. review overall/model/tip FRE and residuals
 
-If the probe tip is offset from the tracked coil:
+Backend behavior:
 
-- set `capture_tool_tip_transform` in [registration.yaml](/Users/jacklange/Continuum/pi_code/config/registration.yaml)
+- expands truth points by repetition count using the same contiguous-per-landmark order as the legacy script
+- splits measured points into model and tip groups
+- performs two rigid SVD solves
+- averages the coil-tool transform explicitly
+- computes and saves `T_aurora_2_model`, `T_aurora_2_tip`, `T_tip_2_coil`, and strict `T_coil_tip`
+- saves raw measured points, raw tool poses, grouped labels, and validation metrics
+
+If the measurement point is offset from the tracked measurement tool:
+
+- leave the protected `penprobe_file` configured for translation-only legacy behavior, or
+- set `capture_tool_tip_transform` in [registration.yaml](/Users/jacklange/Continuum/pi_code/config/registration.yaml) to override it with a full 4x4 transform
 
 ## Experiment Workflow
 
@@ -409,7 +512,69 @@ Runtime artifacts live under `data/`:
 Tracker diagnostics:
 
 ```bash
-.venv/bin/python scripts/run_diagnostics.py --packets 3
+.venv/bin/python scripts/run_diagnostics.py --frames 3
+```
+
+Tracker benchmark with acceptance thresholds:
+
+```bash
+.venv/bin/python scripts/run_tracker_benchmark.py \
+  --tracker-port /dev/ttyUSB0 \
+  --duration-s 5 \
+  --save-report data/logs/tracker_benchmark.json
+```
+
+Registration from a saved Aurora CSV:
+
+```bash
+.venv/bin/python scripts/run_registration_from_csv.py references/RegistrationPoints.csv \
+  --measurement-tool-id 0A \
+  --coil-tool-id 0B
+```
+
+This path is the easiest way to validate compatibility with the legacy CSV-driven workflow without touching the GUI.
+
+Rigorous registration validation from saved data:
+
+```bash
+.venv/bin/python scripts/run_registration_validation.py \
+  --registration-csv references/RegistrationPoints.csv \
+  --measurement-tool-id 0A \
+  --coil-tool-id 0B \
+  --save-report data/registrations/validation_reference.json
+```
+
+Rerun from a saved registration/session artifact:
+
+```bash
+.venv/bin/python scripts/run_registration_validation.py \
+  --session-json data/registrations/registration_<timestamp>.json \
+  --save-report data/registrations/validation_rerun.json
+```
+
+Compare legacy-style outputs against the new path:
+
+```bash
+.venv/bin/python scripts/compare_registration_outputs.py \
+  /path/to/legacy_output_dir \
+  data/registrations/validation_reference.json
+```
+
+Runtime sanity from replayed Aurora packets:
+
+```bash
+.venv/bin/python scripts/run_registration_runtime_sanity.py \
+  --registration-file data/registrations/latest_registration.json \
+  --capture-jsonl data/tracker_captures/<capture>.jsonl
+```
+
+Runtime sanity from live Aurora data on the Pi:
+
+```bash
+.venv/bin/python scripts/run_registration_runtime_sanity.py \
+  --registration-file data/registrations/latest_registration.json \
+  --live \
+  --tracker-port /dev/ttyUSB0
 ```
 
 Expected output includes:
@@ -417,6 +582,10 @@ Expected output includes:
 - backend name
 - connection-state transitions
 - tool frames
+- per-tool state for `0A` and `0B`
+- explicit `valid=unknown` when the live backend cannot prove a validity bit
+- freshness and stale-data status from `TrackingService`
+- registration role assignment loaded from the saved registration
 - optional `T_robot_tip` output when a registration file exists
 
 GUI smoke:
@@ -440,25 +609,27 @@ QT_QPA_PLATFORM=offscreen .venv/bin/python -m pytest -q
 
 Currently revalidated:
 
-- `51 passed`
+- `72 passed`
 - offscreen GUI smoke shows title `Continuum Robot Operator Console` and `5` tabs
 - mock-mode diagnostics run
 - fresh bootstrap smoke with `VENV_DIR=/tmp/pi_code_bootstrap_smoke_20260326`
+- repo code and scripts parse under Python 3.10 grammar
 
 ## Tomorrow Hardware Test
 
 Validated already:
 
-- test suite passes with `51 passed`
+- test suite passes with `72 passed`
 - GUI bootstraps in offscreen mode
 - mock tracker diagnostics work
-- fresh bootstrap path succeeds with Python 3.11
+- fresh bootstrap path succeeds on a clean env
 
 Requires tomorrow’s hardware acceptance:
 
-- Aurora serial connectivity through `tracker_bridge`
+- Aurora serial connectivity through `scikit-surgerynditracker`
 - real `0A` and `0B` tool visibility on the Pi
-- physical `capture_tool_tip_transform` value if the pen tip is offset
+- confirmation of the actual measurement-tool / coil-tool mapping on hardware
+- physical `capture_tool_tip_transform` value only if you intend to override the protected penprobe file
 - real OpenRB/DYNAMIXEL transport
 - physical pretension stepping behavior
 
@@ -466,9 +637,14 @@ Recommended command sequence on the Pi:
 
 ```bash
 cd /path/to/pi_code
-PYTHON_BIN=python3.11 scripts/bootstrap.sh
+sudo apt update
+sudo apt install -y git python3 python3-venv build-essential
+python3 --version
+PYTHON_BIN=python3 scripts/bootstrap.sh
 cp config/system.local.example.yaml config/system.local.yaml
 ```
+
+If `python3 --version` prints lower than `3.10`, stop there and upgrade the Pi OS image or install a newer Python first.
 
 Edit `config/system.local.yaml`:
 
@@ -476,28 +652,95 @@ Edit `config/system.local.yaml`:
 - set `aurora_port`
 - set `openrb_port`
 
-If the registration pen tip is offset, edit [registration.yaml](/Users/jacklange/Continuum/pi_code/config/registration.yaml) and set `capture_tool_tip_transform`.
-
-Build bridge:
-
-```bash
-export NDI_SDK_INCLUDE_DIR=/opt/ndi_sdk/include
-export NDI_SDK_LIB_DIR=/opt/ndi_sdk/lib
-scripts/build_tracker_bridge.sh
-```
+If you need to override the protected penprobe file, edit [registration.yaml](/Users/jacklange/Continuum/pi_code/config/registration.yaml) and set `capture_tool_tip_transform`.
 
 Tracker-only preflight:
 
 ```bash
-.venv/bin/python scripts/run_diagnostics.py --tracker-port /dev/ttyUSB0 --packets 5
+.venv/bin/python scripts/run_diagnostics.py --tracker-port /dev/ttyUSB0 --frames 5
+```
+
+Tracker acceptance benchmark:
+
+```bash
+.venv/bin/python scripts/run_tracker_benchmark.py \
+  --tracker-port /dev/ttyUSB0 \
+  --duration-s 5
+```
+
+Registration validation procedure on the Pi:
+
+1. Run the tracker preflight above and confirm `0A` and `0B` are visible.
+2. Capture and save one Aurora registration CSV from the real registration sequence.
+3. Run the validation CLI on that CSV:
+
+```bash
+.venv/bin/python scripts/run_registration_validation.py \
+  --registration-csv /path/to/reg_capture.csv \
+  --measurement-tool-id 0A \
+  --coil-tool-id 0B \
+  --save-report data/registrations/reg_capture_validation.json
+```
+
+4. Save the runtime-usable registration JSON:
+
+```bash
+.venv/bin/python scripts/run_registration_from_csv.py \
+  /path/to/reg_capture.csv \
+  --measurement-tool-id 0A \
+  --coil-tool-id 0B
+```
+
+5. If you have legacy outputs for the same run, compare them:
+
+```bash
+.venv/bin/python scripts/compare_registration_outputs.py \
+  /path/to/legacy_output_dir \
+  data/registrations/reg_capture_validation.json
+```
+
+6. Replay a packet capture or use live Aurora data to verify `T_robot_tip`:
+
+```bash
+.venv/bin/python scripts/run_registration_runtime_sanity.py \
+  --registration-file data/registrations/latest_registration.json \
+  --capture-jsonl data/tracker_captures/<capture>.jsonl
 ```
 
 Expected success signals:
 
-- `Tracker backend: TrackerServiceManager`
+- `Tracker backend: ndi`
 - `State: tracking`
 - repeated frame lines for `0A`
 - `T_robot_tip translation: ...` if registration exists
+- benchmark prints `passed=True`
+- registration validation prints `T_aurora_2_model`, `T_aurora_2_tip`, `T_tip_2_coil`, and `T_coil_tip`
+- registration validation prints `repetition_count`, per-label counts, and tool-role assignment
+- comparison utility prints `passed=True`
+- runtime sanity prints `passed=True` and `tip_pose_status=ok`
+
+Archive these files from one real registration run:
+
+- the raw Aurora registration CSV
+- the validation report JSON from `scripts/run_registration_validation.py`
+- the accepted registration JSON: `data/registrations/registration_<timestamp>.json`
+- the current `data/registrations/latest_registration.json`
+- the packet capture JSONL used for runtime sanity, if you recorded one
+- the comparison report JSON, if you ran the comparison utility with `--save-report`
+
+Reasonable default comparison thresholds for one run on identical data:
+
+- translation difference `<= 0.25 mm`
+- rotation difference `<= 0.25 deg`
+- FRE difference `<= 0.05 mm`
+
+What "pass" looks like:
+
+- the validation CLI reports the expected measurement tool, coil tool, point counts, and repetition count
+- all four saved transforms are present and finite
+- overall/model/tip FRE values are finite and consistent with the run quality you expect
+- the comparison utility passes within tolerance against the legacy result on the same dataset
+- runtime sanity passes with the saved registration and valid `T_robot_tip` from live or replayed `0A`
 
 Launch GUI:
 
@@ -516,12 +759,16 @@ Likely failure modes:
 
 - `ERROR: no Aurora port is configured`
   fix `config/system.local.yaml` or pass `--tracker-port`
-- `tracker_bridge executable not found`
-  build failed or `tracker_bridge_executable` is wrong
 - tracker state stays `connecting` or `reconnecting`
-  wrong serial port, Aurora not responding, or NDI runtime issue
-- Registration shows `coil origin / no explicit tip offset`
-  no pen-tip transform is configured
+  wrong serial port, Aurora not responding, or Python tracker dependency/runtime issue
+- Registration shows `protected penprobe file`
+  this is expected default behavior for the rigorous legacy-compatible path
+- Registration solve fails on count mismatch or missing tool poses
+  the current backend now validates repetition counts and paired tool-pose availability explicitly
+- runtime sanity fails with `role_mismatch`
+  the saved registration was solved with a different coil-tool assignment than the runtime currently assumes
+- comparison utility fails on translation/rotation tolerance
+  the new output does not yet match the legacy output closely enough on the same dataset
 - OpenRB connect reports `not implemented`
   expected with the current codebase; servo hardware transport is still pending
 - no local display warning from `scripts/run_gui.sh`
@@ -546,6 +793,12 @@ Bootstrap keeps the wrong Python version:
 
 - `scripts/bootstrap.sh` now recreates the virtualenv when the existing env uses a different Python major/minor
 
+Pi cannot install `python3.11` packages by name:
+
+- use `python3` and `python3-venv`
+- run `python3 --version`
+- this repo now requires Python 3.10 or newer, not specifically Python 3.11
+
 GUI has no tip pose:
 
 - registration is missing or invalid
@@ -554,15 +807,27 @@ GUI has no tip pose:
 Diagnostics say registration is missing:
 
 - expected until a registration file exists
-- also verify `capture_tool_tip_transform` if the probe tip is offset
+- also verify `capture_tool_id`, `coil_tool_id`, and the protected registration asset paths in [registration.yaml](/Users/jacklange/Continuum/pi_code/config/registration.yaml)
+
+Runtime sanity says `role_mismatch`:
+
+- the saved registration was created with a different `coil_tool_id` than runtime tip-pose currently expects
+- inspect `coil_tool_id` in the saved registration JSON and in [registration.yaml](/Users/jacklange/Continuum/pi_code/config/registration.yaml)
+
+Comparison utility fails:
+
+- rerun both pipelines on the exact same registration capture
+- verify measurement/coil tool ids match between the two outputs
+- verify the legacy output directory contains the right `T_aurora_2_model` and `T_tip_2_coil`
 
 Hardware tracker mode does not start:
 
 - check `mock_mode: false`
 - check `aurora_port`
-- check `tracker_bridge_executable`
-- check NDI SDK paths and runtime libraries
-- check `bin/tracker_bridge` exists
+- check `tracker_backend: "ndi"`
+- check that `scikit-surgerynditracker` imports inside `.venv`
+- if the library expects extra vendor/runtime components on your Pi, verify those outside the repo first
+- if you intentionally selected bridge mode, check `tracker_bridge_executable`, NDI SDK paths, and `bin/tracker_bridge`
 
 OpenRB/DYNAMIXEL reports `not implemented`:
 

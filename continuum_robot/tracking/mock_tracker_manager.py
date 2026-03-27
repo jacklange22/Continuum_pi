@@ -13,12 +13,16 @@ from continuum_robot.tracking.tracker_service_manager import TrackerRuntimeState
 class MockTrackerManager:
     """Small in-process tracker manager that mimics the live service interface."""
 
+    backend_identity = "mock_tracker_manager"
+
     def __init__(self, poll_hz: int = 10) -> None:
         self.poll_hz = max(1, int(poll_hz))
         self._started_at: float | None = None
         self._lock = threading.Lock()
         self._state = TrackerRuntimeState(
             connection_state="disconnected",
+            backend_connected=False,
+            backend_running=False,
             socket_connected=False,
             bridge_running=False,
             latest_frame_number=None,
@@ -30,6 +34,8 @@ class MockTrackerManager:
         with self._lock:
             self._started_at = time.monotonic()
             self._state.connection_state = "tracking"
+            self._state.backend_connected = True
+            self._state.backend_running = True
             self._state.socket_connected = True
             self._state.bridge_running = True
             self._state.last_error = None
@@ -41,6 +47,8 @@ class MockTrackerManager:
         with self._lock:
             self._started_at = None
             self._state.connection_state = "disconnected"
+            self._state.backend_connected = False
+            self._state.backend_running = False
             self._state.socket_connected = False
             self._state.bridge_running = False
             self._state.tools = {}
@@ -58,6 +66,8 @@ class MockTrackerManager:
             tools = {tool_id: replace(tool) for tool_id, tool in self._state.tools.items()}
             return TrackerRuntimeState(
                 connection_state=self._state.connection_state,
+                backend_running=self._state.backend_running,
+                backend_connected=self._state.backend_connected,
                 socket_connected=self._state.socket_connected,
                 bridge_running=self._state.bridge_running,
                 latest_frame_number=self._state.latest_frame_number,
@@ -85,6 +95,7 @@ class MockTrackerManager:
                 tool_id="0A",
                 frame_number=frame_number,
                 valid=True,
+                validity_known=True,
                 status="tracked",
                 quaternion=(1.0, 0.0, 0.0, 0.0),
                 translation_mm=(
@@ -99,6 +110,7 @@ class MockTrackerManager:
                 tool_id="0B",
                 frame_number=frame_number,
                 valid=True,
+                validity_known=True,
                 status="tracked",
                 quaternion=(1.0, 0.0, 0.0, 0.0),
                 translation_mm=(

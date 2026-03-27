@@ -20,9 +20,10 @@ from continuum_robot.experiments.experiment_loader import ExperimentLoader
 from continuum_robot.experiments.experiment_runner import ExperimentRunner
 from continuum_robot.hardware.mock_dxl_bus import MockDxlBus
 from continuum_robot.hardware.mock_openrb_client import MockOpenRbClient
-from continuum_robot.registration.live_registration_service import LiveRegistrationService
 from continuum_robot.registration.repository import RegistrationRepository
 from continuum_robot.registration.rigid_solver import RigidRegistrationSolver
+from continuum_robot.services.registration_service import RegistrationService
+from continuum_robot.services.tracking_service import TrackingService
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
 from continuum_robot.servos.neutral_calibration_service import NeutralCalibrationService
 from continuum_robot.servos.pretension_validation_service import PretensionValidationService
@@ -72,25 +73,66 @@ def _servo_service(tmp_path: Path) -> ServoService:
     )
 
 
+def _tracking_service(settings: Settings, tmp_path: Path) -> TrackingService:
+    return TrackingService(
+        live_backend=MockTrackerManager(poll_hz=10),
+        port=settings.serial.aurora_port,
+        registration_path=tmp_path / "latest_registration.json",
+        config_source="test",
+        runtime_coil_tool_id=settings.registration.coil_tool_id,
+        registration_tool_id=settings.registration.capture_tool_id,
+    )
+
+
+def _registration_service(settings: Settings, tmp_path: Path, tracking_service: TrackingService) -> RegistrationService:
+    config_path = tmp_path / "registration.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "landmark_labels: [L1, L2, L3]",
+                "captures_per_landmark: 1",
+                "capture_tool_id: \"0B\"",
+                "coil_tool_id: \"0A\"",
+                "nominal_landmarks_robot_xyz_mm:",
+                "  L1: [5.0, 5.0, 0.0]",
+                "  L2: [23.0, 5.0, 0.0]",
+                "  L3: [5.0, 23.0, 0.0]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return RegistrationService(
+        tracking_service=tracking_service,
+        repository=RegistrationRepository(root_dir=tmp_path),
+        solver=RigidRegistrationSolver(),
+        config_path=config_path,
+        config_source=str(config_path),
+    )
+
+
 def test_system_controller_connects_mock_tracker_and_openrb(tmp_path: Path) -> None:
     settings = _settings()
-    tracker_manager = MockTrackerManager(poll_hz=10)
+    tracking_service = _tracking_service(settings, tmp_path)
     servo_service = _servo_service(tmp_path)
     controller = SystemController(
-        tracker_manager=tracker_manager,
+        tracking_service=tracking_service,
         openrb_client=MockOpenRbClient(),
         servo_service=servo_service,
         settings=settings,
     )
+    try:
+        controller.connect_tracker()
+        controller.connect_openrb()
+        state = controller.refresh()
 
-    controller.connect_tracker()
-    controller.connect_openrb()
-    state = controller.refresh()
-
-    assert any(port.device == "/dev/mock-aurora" for port in state.available_ports)
-    assert state.tracker_connection_state == "tracking"
-    assert state.openrb_connected is True
-    assert state.dynamixel_connected is True
+        assert any(port.device == "/dev/mock-aurora" for port in state.available_ports)
+        assert state.tracker_connection_state == "tracking"
+        assert state.tracker_backend_identity == "mock_tracker_manager"
+        assert state.openrb_connected is True
+        assert state.dynamixel_connected is True
+    finally:
+        controller.disconnect_tracker()
+        controller.disconnect_openrb()
 
 
 def test_servos_controller_captures_neutral_and_applies_displacement(tmp_path: Path) -> None:
@@ -108,16 +150,14 @@ def test_servos_controller_captures_neutral_and_applies_displacement(tmp_path: P
 
 
 def test_registration_controller_guides_capture_and_save(tmp_path: Path) -> None:
-    tracker_manager = MockTrackerManager(poll_hz=10)
-    tracker_manager.start()
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(settings, tmp_path, tracking_service)
+    tracking_service.start()
     try:
         controller = RegistrationController(
-            live_registration=LiveRegistrationService(
-                tracker_manager=tracker_manager,
-                repository=RegistrationRepository(root_dir=tmp_path),
-                solver=RigidRegistrationSolver(),
-            ),
-            registration_config=_settings().registration,
+            registration_service=registration_service,
+            registration_config=settings.registration,
         )
 
         controller.begin_session()
@@ -126,7 +166,7 @@ def test_registration_controller_guides_capture_and_save(tmp_path: Path) -> None
         controller.capture_current_label_sample()
         result = controller.finish_session()
     finally:
-        tracker_manager.stop()
+        tracking_service.stop()
 
     assert result.output_path.exists()
     assert controller.state.fre_mm is not None

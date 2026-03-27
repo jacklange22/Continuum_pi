@@ -6,7 +6,7 @@ GUI_PYTHON_BIN="${GUI_PYTHON_BIN:-$ROOT_DIR/.venv/bin/python}"
 
 if [[ ! -x "$GUI_PYTHON_BIN" ]]; then
   echo "Python environment not found at $GUI_PYTHON_BIN" >&2
-  echo "Run scripts/bootstrap.sh first." >&2
+  echo "Run PYTHON_BIN=python3 scripts/bootstrap.sh first." >&2
   exit 1
 fi
 

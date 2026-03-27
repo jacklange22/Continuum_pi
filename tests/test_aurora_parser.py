@@ -9,8 +9,8 @@ def test_parser_parses_valid_packet_and_filters_to_0A_0B() -> None:
     out = parser.parse_transform_packet(frame)
 
     assert set(out.keys()) == {"0A", "0B"}
-    assert out["0A"].valid is True
-    assert out["0B"].valid is True
+    assert out["0A"].valid is None
+    assert out["0B"].valid is None
     assert out["0A"].tool_sn == 0x00004130
     assert out["0B"].tool_sn == 0x00004230
     assert out["0A"].translation_xyz == (10.0, 20.0, 30.0)

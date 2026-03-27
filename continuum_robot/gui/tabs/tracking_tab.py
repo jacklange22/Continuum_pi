@@ -64,7 +64,8 @@ class TrackingTab(QWidget):
 
     def update(self, state: TrackingViewState) -> None:
         self.connection_label.setText(
-            f"{state.connection_state} | bridge={state.bridge_running} | socket={state.socket_connected}"
+            f"{state.connection_state} | backend={state.backend_identity} "
+            f"| running={state.backend_running} | connected={state.backend_connected}"
         )
         self.frame_label.setText(str(state.latest_frame_number) if state.latest_frame_number is not None else "none")
         self.registration_label.setText(state.registration_path or "missing")
@@ -77,17 +78,32 @@ class TrackingTab(QWidget):
         plot_points: dict[str, tuple[float, float]] = {}
         for row, tool_id in enumerate(sorted(state.tools)):
             tool = state.tools[tool_id]
+            translation = (
+                str(tuple(round(v, 2) for v in tool["translation_mm"]))
+                if tool["translation_mm"] is not None
+                else "unavailable"
+            )
+            valid_text = str(tool["valid"]) if tool["validity_known"] else "unknown"
+            status = f'{tool["tracking_state"]}: {tool["status"]}'
             self.tools_table.setItem(row, 0, QTableWidgetItem(tool_id))
-            self.tools_table.setItem(row, 1, QTableWidgetItem(str(tool["valid"])))
-            self.tools_table.setItem(row, 2, QTableWidgetItem(str(tool["status"])))
-            self.tools_table.setItem(row, 3, QTableWidgetItem(str(tuple(round(v, 2) for v in tool["translation_mm"]))))
+            self.tools_table.setItem(row, 1, QTableWidgetItem(valid_text))
+            self.tools_table.setItem(row, 2, QTableWidgetItem(status))
+            self.tools_table.setItem(row, 3, QTableWidgetItem(translation))
             self.tools_table.setItem(row, 4, QTableWidgetItem(str(tool["quality"])))
-            plot_points[tool_id] = (tool["translation_mm"][0], tool["translation_mm"][1])
+            if tool["translation_mm"] is not None:
+                plot_points[tool_id] = (tool["translation_mm"][0], tool["translation_mm"][1])
         if state.tip_position_mm:
             plot_points["tip"] = (state.tip_position_mm[0], state.tip_position_mm[1])
         self.plot_widget.set_points(plot_points)
 
         lines = [state.last_status_message or "No tracker messages yet."]
+        if state.latest_timestamp:
+            lines.append(f"latest_timestamp={state.latest_timestamp}")
+        if state.tracker_data_age_s is not None:
+            lines.append(f"data_age_s={state.tracker_data_age_s:.3f}")
+        lines.append(f"data_stale={state.tracker_data_stale}")
+        if state.first_frame_latency_s is not None:
+            lines.append(f"first_frame_latency_s={state.first_frame_latency_s:.3f}")
         if state.last_error:
             lines.append(f"Error: {state.last_error}")
         self.status_text.setPlainText("\n".join(lines))

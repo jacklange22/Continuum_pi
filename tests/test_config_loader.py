@@ -12,8 +12,13 @@ def test_config_loader_reads_runtime_registration_and_experiment_settings(tmp_pa
                 'robot_config: "robot_8servo.yaml"',
                 'aurora_port: "/dev/ttyUSB0"',
                 'openrb_port: "/dev/ttyUSB1"',
+                'tracker_backend: "ndi"',
+                'tracker_type: "aurora"',
                 "mock_mode: true",
                 "poll_rate_hz: 7",
+                "tracker_freshness_timeout_s: 0.75",
+                "tracker_ports_to_probe: [0A, 0B]",
+                "tracker_min_effective_fps: 18.0",
                 'latest_registration_path: "data/registrations/latest_registration.json"',
             ]
         ),
@@ -74,8 +79,15 @@ def test_config_loader_reads_runtime_registration_and_experiment_settings(tmp_pa
     assert settings.runtime.robot_config == "robot_8servo.yaml"
     assert settings.robot.mode == "8-servo"
     assert settings.robot.servo_ids == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert settings.serial.tracker_backend == "ndi"
+    assert settings.serial.tracker_type == "aurora"
+    assert settings.serial.tracker_freshness_timeout_s == 0.75
+    assert settings.serial.tracker_ports_to_probe == ["0A", "0B"]
+    assert settings.serial.tracker_min_effective_fps == 18.0
     assert settings.safety.pretension_current_balance_tolerance_ma == 75
     assert settings.registration.capture_tool_id == "0B"
+    assert settings.registration.coil_tool_id == "0A"
     assert settings.registration.captures_per_landmark == 3
+    assert settings.registration.model_points_file == "tools/12_model_registration_points_in_sw"
     assert settings.experiment.output_dir == "data/custom_runs"
     assert settings.calibration.latest_registration_path == "data/registrations/latest_registration.json"

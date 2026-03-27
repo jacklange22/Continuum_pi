@@ -36,6 +36,7 @@ class RegistrationTab(QWidget):
         self.retry_button.clicked.connect(lambda: self._safe_call(self.controller.retry_session))
 
         self.tool_label = QLabel()
+        self.coil_tool_label = QLabel()
         self.current_label = QLabel()
         self.geometry_label = QLabel()
         self.fre_label = QLabel()
@@ -44,6 +45,7 @@ class RegistrationTab(QWidget):
         summary_box = QGroupBox("Registration Summary")
         summary_layout = QFormLayout(summary_box)
         summary_layout.addRow("Capture tool", self.tool_label)
+        summary_layout.addRow("Coil tool", self.coil_tool_label)
         summary_layout.addRow("Capture geometry", self.geometry_label)
         summary_layout.addRow("Current landmark", self.current_label)
         summary_layout.addRow("FRE (mm)", self.fre_label)
@@ -70,6 +72,7 @@ class RegistrationTab(QWidget):
 
     def update(self, state: RegistrationViewState) -> None:
         self.tool_label.setText(state.capture_tool_id)
+        self.coil_tool_label.setText(state.coil_tool_id)
         self.geometry_label.setText(state.capture_geometry_status)
         self.current_label.setText(state.current_label or "complete")
         self.fre_label.setText(f"{state.fre_mm:.3f}" if state.fre_mm is not None else "not computed")
@@ -93,11 +96,11 @@ class RegistrationTab(QWidget):
 
         nominal = {
             label: (
-                float(self.controller.config.nominal_landmarks_robot_xyz_mm[label][0]),
-                float(self.controller.config.nominal_landmarks_robot_xyz_mm[label][1]),
+                float(state.truth_points_in_sw_by_label[label][0]),
+                float(state.truth_points_in_sw_by_label[label][1]),
             )
-            for label in self.controller.config.landmark_labels
-            if label in self.controller.config.nominal_landmarks_robot_xyz_mm
+            for label in state.landmark_labels
+            if label in state.truth_points_in_sw_by_label
         }
         self.plot_widget.set_data(nominal=nominal, captured=captured_plot)
 

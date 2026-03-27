@@ -51,13 +51,24 @@ class ConfigLoader:
         serial = SerialConfig(
             aurora_port=str(system_data.get("aurora_port", "")),
             openrb_port=str(system_data.get("openrb_port", "")),
+            tracker_backend=str(system_data.get("tracker_backend", "ndi")),
+            tracker_type=str(system_data.get("tracker_type", "aurora")),
             baudrate=int(system_data.get("baudrate", 115200)),
             read_timeout_s=float(system_data.get("read_timeout_s", 0.05)),
             frame_timeout_s=float(system_data.get("frame_timeout_s", 0.5)),
             reconnect_delay_s=float(system_data.get("reconnect_delay_s", 1.0)),
+            tracker_freshness_timeout_s=float(system_data.get("tracker_freshness_timeout_s", 0.5)),
+            tracker_ports_to_probe=[str(v) for v in system_data.get("tracker_ports_to_probe", [])],
+            tracker_settings_overrides=dict(system_data.get("tracker_settings_overrides", {}) or {}),
             tracker_socket_path=str(system_data.get("tracker_socket_path", "/tmp/tracker_bridge.sock")),
             tracker_bridge_executable=str(system_data.get("tracker_bridge_executable", "bin/tracker_bridge")),
             tracker_poll_ms=int(system_data.get("tracker_poll_ms", 20)),
+            tracker_min_effective_fps=float(system_data.get("tracker_min_effective_fps", 20.0)),
+            tracker_max_stale_interval_s=float(system_data.get("tracker_max_stale_interval_s", 0.25)),
+            tracker_max_consecutive_missing_frames=int(
+                system_data.get("tracker_max_consecutive_missing_frames", 20)
+            ),
+            tracker_require_valid_transforms=bool(system_data.get("tracker_require_valid_transforms", True)),
             packet_capture_dir=str(system_data.get("packet_capture_dir", "data/tracker_captures")),
         )
         safety = SafetyConfig(
@@ -76,9 +87,18 @@ class ConfigLoader:
                 for k, values in registration_data.get("nominal_landmarks_robot_xyz_mm", {}).items()
             },
             capture_tool_id=str(registration_data.get("capture_tool_id", "0B")),
+            coil_tool_id=str(registration_data.get("coil_tool_id", "0A")),
             capture_tool_tip_transform=self._maybe_matrix(
                 registration_data.get("capture_tool_tip_transform")
             ),
+            model_points_file=self._maybe_path(registration_data.get("model_points_file", "tools/12_model_registration_points_in_sw")),
+            tip_points_file=self._maybe_path(registration_data.get("tip_points_file", "tools/all_tip_registration_points_in_sw")),
+            T_sw_2_model_file=self._maybe_path(registration_data.get("T_sw_2_model_file", "tools/T_sw_2_model")),
+            T_sw_2_tip_file=self._maybe_path(registration_data.get("T_sw_2_tip_file", "tools/T_sw_2_tip")),
+            penprobe_file=self._maybe_path(registration_data.get("penprobe_file", "tools/penprobe_08_09_24c")),
+            quaternion_average_method=str(registration_data.get("quaternion_average_method", "sign_aligned_mean")),
+            model_tre_reference_radius_mm=float(registration_data.get("model_tre_reference_radius_mm", 5.0)),
+            tip_tre_reference_radius_mm=float(registration_data.get("tip_tre_reference_radius_mm", 3.0)),
             max_fre_mm=self._maybe_float(
                 (registration_data.get("validation", {}) or {}).get("max_fre_mm", 2.0)
             ),
@@ -120,6 +140,12 @@ class ConfigLoader:
         if len(rows) != 4 or any(len(row) != 4 for row in rows):
             raise ValueError("capture_tool_tip_transform must be a 4x4 matrix when provided")
         return rows
+
+    @staticmethod
+    def _maybe_path(value) -> str | None:
+        if value in (None, ""):
+            return None
+        return str(value)
 
     @staticmethod
     def _read_yaml(path: Path) -> dict:

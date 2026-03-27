@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from typing import Any
 import numpy as np
 
 
@@ -25,6 +26,14 @@ class RegistrationRecord:
     T_robot_aurora: list[list[float]]
     T_coil_tip: list[list[float]]
     config_used: dict
+    T_aurora_2_tip: list[list[float]] | None = None
+    measurement_tool_id: str | None = None
+    coil_tool_id: str | None = None
+    raw_measurement_tool_samples_by_label: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    raw_coil_samples_by_label: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    truth_points_in_sw_by_label: dict[str, list[float]] = field(default_factory=dict)
+    group_by_label: dict[str, str] = field(default_factory=dict)
+    validation_metrics: dict[str, Any] = field(default_factory=dict)
 
 
 class RegistrationRepository:
@@ -48,8 +57,18 @@ class RegistrationRepository:
     @staticmethod
     def _to_payload(record: RegistrationRecord) -> dict:
         payload = asdict(record)
+        T_robot_aurora = np.asarray(record.T_robot_aurora, dtype=float)
+        if T_robot_aurora.shape == (4, 4):
+            payload["T_aurora_2_model"] = T_robot_aurora.tolist()
         T_coil_tip = np.asarray(record.T_coil_tip, dtype=float)
         if T_coil_tip.shape == (4, 4):
             # Legacy compatibility for reference-style tooling.
             payload["T_tip_2_coil"] = np.linalg.inv(T_coil_tip).tolist()
+        if record.T_aurora_2_tip is not None:
+            T_aurora_2_tip = np.asarray(record.T_aurora_2_tip, dtype=float)
+            if T_aurora_2_tip.shape == (4, 4):
+                payload["T_aurora_2_tip"] = T_aurora_2_tip.tolist()
+        # The existing field names are historical; add precise aliases as well.
+        payload["raw_captured_landmarks_aurora_xyz"] = payload["raw_captured_landmarks_robot_xyz"]
+        payload["averaged_landmarks_aurora_xyz"] = payload["averaged_landmarks_robot_xyz"]
         return payload

@@ -35,3 +35,4 @@ def test_system_health_snapshot_has_tracking_and_registration_sections(tmp_path:
     assert snapshot.tracking.name == "tracking_service"
     assert snapshot.registration.name == "registration_service"
     assert "tracking_faults" in snapshot.summary
+    assert "tracking_backend_identity" in snapshot.summary

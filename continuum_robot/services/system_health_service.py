@@ -44,7 +44,8 @@ class SystemHealthService:
 
     def get_snapshot(self) -> SystemHealthSnapshot:
         """Return an aggregated health snapshot."""
-        tracking = self.tracking_service.get_snapshot().health
+        tracking_snapshot = self.tracking_service.get_snapshot()
+        tracking = tracking_snapshot.health
         registration = self.registration_service.get_snapshot().health
 
         if HEALTH_FAILED in {tracking.health, registration.health}:
@@ -72,6 +73,7 @@ class SystemHealthService:
             registration=copy.deepcopy(registration),
             summary={
                 "tracking_faults": list(tracking.details.get("faults", [])),
+                "tracking_backend_identity": tracking_snapshot.backend_identity,
                 "registration_fre_mm": registration.details.get("fre_mm"),
                 "registration_pending_accept": registration.details.get("pending_accept"),
             },

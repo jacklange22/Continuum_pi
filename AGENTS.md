@@ -14,6 +14,14 @@
 - Treat everything under `references/` as read-only reference material. Do not modify, rename, delete, or reformat files in this directory unless the user explicitly asks for it.
 - Treat everything under `tools/` as read-only reference input. Do not modify, rename, delete, or reformat files in this directory unless the user explicitly asks for it.
 - This protection includes SolidWorks-derived registration-point files, transform exports, pen-probe geometry files, and any other lab artifacts stored in `tools/`.
+- The following files are especially critical to registration and must stay read-only unless the user explicitly overrides this:
+  - `tools/12_model_registration_points_in_sw`
+  - `tools/T_sw_2_model`
+  - `tools/T_sw_2_tip`
+  - `tools/camarillo_stiffness`
+  - `tools/penprobe_08_09_24c`
+  - `tools/5_model_registration_points_in_sw`
+  - `tools/all_tip_registration_points_in_sw`
 
 ## Working Rules
 

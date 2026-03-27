@@ -7,6 +7,7 @@ import numpy as np
 from continuum_robot.hardware.mock_aurora_client import MockAuroraClient
 from continuum_robot.services.packet_capture import PacketCaptureWriter
 from continuum_robot.services.tracking_service import TrackingService
+from continuum_robot.tracking.tracker_service_manager import TrackerRuntimeState, TrackerToolState
 from tests.fixtures.aurora_samples import (
     build_tool_0A_record,
     build_tool_0B_record,
@@ -35,20 +36,170 @@ class _ReconnectClient(MockAuroraClient):
         return super().read_bytes(nbytes)
 
 
-def _write_registration_file(path: Path) -> None:
+class _FakeLiveBackend:
+    def __init__(self, state: TrackerRuntimeState) -> None:
+        self._state = state
+        self._alive = False
+
+    def start(self) -> None:
+        self._alive = True
+
+    def stop(self) -> None:
+        self._alive = False
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+    def get_state_snapshot(self) -> TrackerRuntimeState:
+        return self._state
+
+    def set_state(self, state: TrackerRuntimeState) -> None:
+        self._state = state
+
+
+def _write_registration_file(path: Path, *, measurement_tool_id: str = "0B", coil_tool_id: str = "0A") -> None:
     path.write_text(
         json.dumps(
             {
                 "T_robot_aurora": np.eye(4).tolist(),
                 "T_coil_tip": np.eye(4).tolist(),
-                "config_used": {"tip_calibration_source": "test_identity"},
+                "config_used": {
+                    "tip_calibration_source": "test_identity",
+                    "measurement_tool_id": measurement_tool_id,
+                    "coil_tool_id": coil_tool_id,
+                },
             }
         ),
         encoding="utf-8",
     )
 
 
-def test_tracking_service_reports_missing_registration_and_missing_0b(tmp_path: Path) -> None:
+def _tracked_tool(tool_id: str, *, frame_number: int, xyz=(1.0, 2.0, 3.0), quat=(1.0, 0.0, 0.0, 0.0), status="tracked") -> TrackerToolState:
+    return TrackerToolState(
+        tool_id=tool_id,
+        frame_number=frame_number,
+        valid=True,
+        status=status,
+        quaternion=quat,
+        translation_mm=tuple(float(v) for v in xyz),
+        quality=0.1,
+        timestamp="2026-01-01T00:00:00Z",
+    )
+
+
+def _live_state(*, frame_number: int | None, tools: dict[str, TrackerToolState], connection_state: str = "tracking") -> TrackerRuntimeState:
+    return TrackerRuntimeState(
+        connection_state=connection_state,
+        socket_connected=True,
+        bridge_running=True,
+        latest_frame_number=frame_number,
+        latest_timestamp="2026-01-01T00:00:00Z" if frame_number is not None else None,
+        last_status_message="tracker ok",
+        last_error=None,
+        tools=tools,
+    )
+
+
+def test_tracking_service_live_backend_reports_tracked_tools_with_unknown_validity(tmp_path: Path) -> None:
+    registration_path = tmp_path / "latest_registration.json"
+    _write_registration_file(registration_path)
+    backend = _FakeLiveBackend(
+        _live_state(
+            frame_number=7,
+            tools={
+                "0A": _tracked_tool("0A", frame_number=7, xyz=(10.0, 20.0, 30.0)),
+                "0B": _tracked_tool("0B", frame_number=7, xyz=(1.0, 2.0, 3.0)),
+            },
+        )
+    )
+    service = TrackingService(
+        live_backend=backend,
+        port="/dev/ttyUSB0",
+        registration_path=registration_path,
+        config_source="test",
+    )
+
+    service.start()
+    try:
+        snapshot = service.get_snapshot()
+    finally:
+        service.stop()
+
+    assert snapshot.backend_identity == "tracker_bridge_json"
+    assert snapshot.packets_received_count == 1
+    assert snapshot.tools["0A"].tracking_state == "tracked"
+    assert snapshot.tools["0A"].valid is None
+    assert snapshot.tools["0A"].validity_known is False
+    assert snapshot.tip_pose_status == "ok"
+    assert snapshot.T_robot_tip is not None
+
+
+def test_tracking_service_live_backend_detects_role_mismatch(tmp_path: Path) -> None:
+    registration_path = tmp_path / "latest_registration.json"
+    _write_registration_file(registration_path, measurement_tool_id="0A", coil_tool_id="0B")
+    backend = _FakeLiveBackend(_live_state(frame_number=5, tools={"0A": _tracked_tool("0A", frame_number=5)}))
+    service = TrackingService(
+        live_backend=backend,
+        port="/dev/ttyUSB0",
+        registration_path=registration_path,
+        config_source="test",
+        runtime_coil_tool_id="0A",
+        registration_tool_id="0B",
+    )
+
+    service.start()
+    try:
+        snapshot = service.get_snapshot()
+    finally:
+        service.stop()
+
+    assert snapshot.tip_pose_status == "role_mismatch"
+    assert "registration_role_mismatch" in snapshot.faults
+    assert snapshot.stored_registration_coil_tool_id == "0B"
+    assert snapshot.stored_registration_measurement_tool_id == "0A"
+
+
+def test_tracking_service_live_backend_marks_invalid_transform(tmp_path: Path) -> None:
+    backend = _FakeLiveBackend(
+        _live_state(
+            frame_number=3,
+            tools={"0A": _tracked_tool("0A", frame_number=3, quat=(0.0, 0.0, 0.0, 0.0))},
+        )
+    )
+    service = TrackingService(
+        live_backend=backend,
+        port="/dev/ttyUSB0",
+        registration_path=tmp_path / "missing_registration.json",
+        config_source="test",
+    )
+
+    service.start()
+    try:
+        snapshot = service.get_snapshot()
+    finally:
+        service.stop()
+
+    assert snapshot.tools["0A"].tracking_state == "invalid"
+    assert snapshot.tools["0A"].valid is False
+    assert snapshot.tools["0A"].validity_known is True
+    assert "invalid_0A" in snapshot.faults
+
+
+def test_tracking_service_reports_unknown_before_live_frames_arrive(tmp_path: Path) -> None:
+    backend = _FakeLiveBackend(_live_state(frame_number=None, tools={}, connection_state="connecting"))
+    service = TrackingService(
+        live_backend=backend,
+        port="/dev/ttyUSB0",
+        registration_path=tmp_path / "missing_registration.json",
+        config_source="test",
+    )
+
+    snapshot = service.get_snapshot()
+    assert snapshot.tools["0A"].tracking_state == "unknown"
+    assert snapshot.tools["0B"].tracking_state == "unknown"
+
+
+def test_tracking_service_compatibility_parser_reports_missing_registration_and_missing_0b(tmp_path: Path) -> None:
     service = TrackingService(
         MockAuroraClient(),
         port="/dev/null",
@@ -63,6 +214,9 @@ def test_tracking_service_reports_missing_registration_and_missing_0b(tmp_path: 
     assert "missing_registration" in snapshot.faults
     assert "missing_0B" in snapshot.faults
     assert snapshot.tip_pose_status == "missing_registration"
+    assert snapshot.tools["0A"].tracking_state == "tracked"
+    assert snapshot.tools["0A"].valid is None
+    assert snapshot.tools["0A"].validity_known is False
 
 
 def test_tracking_service_replay_updates_tip_pose_when_registration_exists(tmp_path: Path) -> None:

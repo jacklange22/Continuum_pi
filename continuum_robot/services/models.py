@@ -31,7 +31,9 @@ class ToolTrackingSnapshot:
 
     tool_id: str
     present: bool = False
-    valid: bool = False
+    valid: bool | None = None
+    validity_known: bool = False
+    tracking_state: str = "unknown"
     status: str = "no_sample"
     frame_number: int | None = None
     last_update_utc: str | None = None
@@ -52,20 +54,34 @@ class TrackingSnapshot:
 
     health: ServiceHealthSnapshot
     connection_state: str
+    backend_identity: str
     port: str
     baudrate: int
+    runtime_coil_tool_id: str = "0A"
+    registration_tool_id: str = "0B"
+    backend_running: bool | None = None
+    backend_connected: bool | None = None
+    bridge_running: bool | None = None
+    socket_connected: bool | None = None
+    backend_status_message: str | None = None
+    last_error: str | None = None
     packets_received_count: int = 0
     bad_packets_count: int = 0
     crc_failures_count: int = 0
     reconnect_count: int = 0
     last_frame_number: int | None = None
     last_packet_utc: str | None = None
+    tracker_data_age_s: float | None = None
+    tracker_data_stale: bool = False
+    first_frame_latency_s: float | None = None
     packet_capture_path: str | None = None
     packet_capture_enabled: bool = False
     tools: dict[str, ToolTrackingSnapshot] = field(default_factory=dict)
     faults: list[str] = field(default_factory=list)
     registration_state: str = "missing_registration"
     registration_path: str | None = None
+    stored_registration_measurement_tool_id: str | None = None
+    stored_registration_coil_tool_id: str | None = None
     tip_calibration_source: str | None = None
     tip_pose_status: str = "missing_registration"
     T_robot_tip: list[list[float]] | None = None
@@ -97,6 +113,11 @@ class RegistrationSnapshot:
     latest_accepted_path: str | None = None
     config_path: str | None = None
     nominal_landmarks_robot_xyz_mm: dict[str, list[float]] = field(default_factory=dict)
+    truth_points_in_sw_by_label: dict[str, list[float]] = field(default_factory=dict)
+    group_by_label: dict[str, str] = field(default_factory=dict)
+    raw_measurement_tool_samples_by_label: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    raw_coil_samples_by_label: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    validation_metrics: dict[str, Any] = field(default_factory=dict)
     pending_record: dict[str, Any] | None = None
 
 

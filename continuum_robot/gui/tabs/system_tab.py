@@ -86,7 +86,8 @@ class SystemTab(QWidget):
     def update(self, state: SystemViewState) -> None:
         self.mock_mode_label.setText("enabled" if state.mock_mode else "disabled")
         self.tracker_status_label.setText(
-            f"{state.tracker_connection_state} | bridge={state.tracker_bridge_running} | socket={state.tracker_socket_connected}"
+            f"{state.tracker_connection_state} | backend={state.tracker_backend_identity} "
+            f"| running={state.tracker_backend_running} | connected={state.tracker_backend_connected}"
         )
         self.openrb_status_label.setText(
             f"{state.openrb_status} | bus connected={state.dynamixel_connected}"

@@ -31,6 +31,11 @@ class ServosController:
             connected=servo_service.is_connected,
             servo_ids=list(settings.robot.servo_ids),
             tendon_displacements_cm=[0.0] * len(settings.robot.tendon_to_servo),
+            status_message=(
+                "Mock servo backend ready."
+                if settings.runtime.mock_mode
+                else "Real OpenRB/DYNAMIXEL transport is not implemented yet. Servo controls are mock-validated only."
+            ),
         )
         self.load_neutral_setpoints()
         self.refresh()

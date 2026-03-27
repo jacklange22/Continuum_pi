@@ -1,4 +1,8 @@
-"""Aurora packet models and CRC/framing helpers.
+"""Legacy Aurora client-packet models and CRC/framing helpers.
+
+These helpers model the historical DLE/STX/ETX client packet format used by
+older tracker-server tooling. They are kept for replay and compatibility tests,
+not as the default live Aurora backend.
 
 Packet assumptions are based on observed behavior from legacy code and may need
 adjustment on real hardware captures:

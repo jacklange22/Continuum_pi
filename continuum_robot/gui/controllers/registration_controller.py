@@ -1,14 +1,11 @@
-"""Registration tab controller for live tracker-backed workflows."""
+"""Registration tab controller backed by the shared registration service."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from continuum_robot.config.schemas import RegistrationWorkflowConfig
-from continuum_robot.registration.live_registration_service import (
-    LiveRegistrationService,
-    RegistrationResult,
-)
 
 
 @dataclass
@@ -17,11 +14,14 @@ class RegistrationViewState:
 
     active: bool = False
     capture_tool_id: str = "0B"
+    coil_tool_id: str = "0A"
     landmark_labels: list[str] = field(default_factory=list)
     current_label: str | None = None
     captures_per_landmark: int = 0
     captured_counts: dict[str, int] = field(default_factory=dict)
     latest_sample_by_label: dict[str, list[float]] = field(default_factory=dict)
+    truth_points_in_sw_by_label: dict[str, list[float]] = field(default_factory=dict)
+    group_by_label: dict[str, str] = field(default_factory=dict)
     last_error: str | None = None
     last_result_path: str | None = None
     fre_mm: float | None = None
@@ -30,42 +30,45 @@ class RegistrationViewState:
     status_message: str = "Registration idle."
 
 
+@dataclass
+class RegistrationActionResult:
+    """Small controller return payload after one registration save."""
+
+    output_path: Path
+    payload: dict
+
+
 class RegistrationController:
     """Owns guided landmark capture and registration actions."""
 
     def __init__(
         self,
-        live_registration: LiveRegistrationService,
+        registration_service,
         registration_config: RegistrationWorkflowConfig,
     ) -> None:
-        self.live_registration = live_registration
+        self.registration_service = registration_service
         self.config = registration_config
+        initial = self.registration_service.get_snapshot()
         self.state = RegistrationViewState(
-            capture_tool_id=registration_config.capture_tool_id,
-            landmark_labels=list(registration_config.landmark_labels),
-            captures_per_landmark=registration_config.captures_per_landmark,
-            captured_counts={label: 0 for label in registration_config.landmark_labels},
-            current_label=registration_config.landmark_labels[0] if registration_config.landmark_labels else None,
+            capture_tool_id=initial.capture_tool_id,
+            coil_tool_id=registration_config.coil_tool_id,
+            landmark_labels=list(initial.labels),
+            captures_per_landmark=initial.captures_per_landmark,
+            captured_counts={label: 0 for label in initial.labels},
+            current_label=initial.current_label,
             capture_geometry_status=self._capture_geometry_status(registration_config),
         )
+        self._apply_snapshot(initial)
 
     def begin_session(self, capture_tool_id: str | None = None) -> None:
-        self.live_registration.begin_session(
-            labels=self.config.landmark_labels,
-            captures_per_landmark=self.config.captures_per_landmark,
-            nominal_landmarks_robot_xyz_mm=self.config.nominal_landmarks_robot_xyz_mm,
-            capture_tool_id=capture_tool_id or self.config.capture_tool_id,
-            capture_tool_tip_transform=self.config.capture_tool_tip_transform,
-        )
-        self.state.active = True
-        self.state.last_error = None
-        self.state.fre_mm = None
-        self.state.residuals_by_label = {}
+        if capture_tool_id is not None and capture_tool_id != self.config.capture_tool_id:
+            raise RuntimeError(
+                f"Registration controller is configured for capture tool {self.config.capture_tool_id}; "
+                f"override {capture_tool_id} is not supported from the GUI controller"
+            )
+        snapshot = self.registration_service.begin_session()
+        self._apply_snapshot(snapshot)
         self.state.latest_sample_by_label = {}
-        self.state.captured_counts = {label: 0 for label in self.config.landmark_labels}
-        self.state.current_label = self.config.landmark_labels[0] if self.config.landmark_labels else None
-        self.state.capture_tool_id = capture_tool_id or self.config.capture_tool_id
-        self.state.capture_geometry_status = self._capture_geometry_status(self.config)
         self.state.status_message = (
             "Registration session started. "
             f"Capture geometry: {self.state.capture_geometry_status}."
@@ -78,11 +81,14 @@ class RegistrationController:
 
     def capture_label_sample(self, label: str) -> list[float]:
         try:
-            sample = self.live_registration.capture_current_sample(label)
+            sample = self.registration_service.capture_sample(label)
+            snapshot = self.registration_service.get_snapshot()
+            if snapshot.captured_counts.get(label, 0) >= snapshot.captures_per_landmark and snapshot.current_label == label:
+                self.registration_service.complete_landmark()
+                snapshot = self.registration_service.get_snapshot()
+            self._apply_snapshot(snapshot)
             self.state.last_error = None
             self.state.latest_sample_by_label[label] = sample
-            self.state.captured_counts[label] = self.state.captured_counts.get(label, 0) + 1
-            self.state.current_label = self._next_incomplete_label()
             self.state.status_message = f"Captured sample for {label}."
             return sample
         except Exception as exc:
@@ -90,37 +96,29 @@ class RegistrationController:
             self.state.status_message = f"Capture failed: {exc}"
             raise
 
-    def finish_session(self) -> RegistrationResult:
+    def finish_session(self) -> RegistrationActionResult:
         try:
-            result = self.live_registration.complete_registration(
-                config_used={
-                    "capture_tool_id": self.live_registration.capture_tool_id,
-                    "landmark_labels": self.config.landmark_labels,
-                    "captures_per_landmark": self.config.captures_per_landmark,
-                    "capture_tool_tip_transform_configured": self.config.capture_tool_tip_transform is not None,
-                },
-                max_fre_mm=self.config.max_fre_mm,
-            )
-            self.state.active = False
-            self.state.last_result_path = str(result.output_path)
-            self.state.last_error = None
-            self.state.fre_mm = result.record.fre_mm
-            self.state.residuals_by_label = result.record.residuals_robot_xyz_mm
-            self.state.status_message = f"Registration saved to {result.output_path.name}."
-            return result
+            payload = self.registration_service.solve_registration()
+            output_path = self.registration_service.accept_registration()
+            snapshot = self.registration_service.get_snapshot()
+            self._apply_snapshot(snapshot)
+            self.state.status_message = f"Registration saved to {output_path.name}."
+            return RegistrationActionResult(output_path=output_path, payload=payload)
         except Exception as exc:
             self.state.last_error = str(exc)
             self.state.status_message = f"Registration failed: {exc}"
             raise
 
     def retry_session(self) -> None:
-        self.begin_session(self.state.capture_tool_id)
+        snapshot = self.registration_service.retry_session()
+        self._apply_snapshot(snapshot)
+        self.state.latest_sample_by_label = {}
         self.state.status_message = "Registration restarted."
 
     def load_latest_result(self) -> None:
-        latest = self.live_registration.repository.root_dir / "latest_registration.json"
-        if latest.exists():
-            self.state.last_result_path = str(latest)
+        payload = self.registration_service.load_latest_accepted()
+        if payload is not None:
+            self._apply_snapshot(self.registration_service.get_snapshot())
 
     def is_ready_to_finish(self) -> bool:
         return all(
@@ -128,14 +126,25 @@ class RegistrationController:
             for label in self.state.landmark_labels
         )
 
-    def _next_incomplete_label(self) -> str | None:
-        for label in self.state.landmark_labels:
-            if self.state.captured_counts.get(label, 0) < self.state.captures_per_landmark:
-                return label
-        return None
+    def _apply_snapshot(self, snapshot) -> None:
+        self.state.active = snapshot.active
+        self.state.capture_tool_id = snapshot.capture_tool_id
+        self.state.coil_tool_id = self.config.coil_tool_id
+        self.state.landmark_labels = list(snapshot.labels)
+        self.state.current_label = snapshot.current_label
+        self.state.captures_per_landmark = snapshot.captures_per_landmark
+        self.state.captured_counts = dict(snapshot.captured_counts)
+        self.state.truth_points_in_sw_by_label = dict(snapshot.truth_points_in_sw_by_label)
+        self.state.group_by_label = dict(snapshot.group_by_label)
+        self.state.fre_mm = snapshot.fre_mm
+        self.state.residuals_by_label = dict(snapshot.residuals_by_label)
+        self.state.last_result_path = snapshot.accepted_output_path or snapshot.latest_accepted_path
+        self.state.last_error = snapshot.health.last_error
 
     @staticmethod
     def _capture_geometry_status(config: RegistrationWorkflowConfig) -> str:
         if config.capture_tool_tip_transform is None:
+            if config.penprobe_file:
+                return "protected penprobe file"
             return "coil origin / no explicit tip offset"
-        return "tip transform applied"
+        return "explicit 4x4 tip transform applied"

@@ -1,3 +1,10 @@
+// Legacy compatibility Aurora bridge.
+//
+// The main live runtime path now uses the Python-native NDITracker backend via
+// scikit-surgerynditracker. This executable is retained only for side-by-side
+// migration debugging or lab environments that still need the CombinedApi
+// bridge path.
+
 #include <CombinedApi.h>
 
 #include <chrono>

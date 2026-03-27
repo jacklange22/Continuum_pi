@@ -1,4 +1,8 @@
-"""Aurora tool measurement models."""
+"""Aurora tool measurement models.
+
+These models are used by the legacy client-packet compatibility path, not the
+primary live Aurora runtime path.
+"""
 
 from __future__ import annotations
 
@@ -19,5 +23,5 @@ class AuroraToolMeasurement:
     quality: float | None = None
     tool_sn: int | None = None
     status_byte: int | None = None
-    valid: bool = True
+    valid: bool | None = None
     status_text: str = "status_not_available_in_transform_record"

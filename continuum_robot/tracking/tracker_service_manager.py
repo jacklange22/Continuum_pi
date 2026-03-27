@@ -1,4 +1,9 @@
-"""Lifecycle manager for the C++ tracker_bridge process and socket stream."""
+"""Legacy compatibility manager for the C++ tracker_bridge process and socket stream.
+
+The main live hardware path now uses the Python-native NDI backend. This module
+is retained so the bridge can still be launched for comparison or migration
+debugging, but it is no longer the default runtime source of truth.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import copy
 import logging
+import os
 import subprocess
 import threading
 import time
@@ -23,13 +29,14 @@ class TrackerToolState:
     """Latest known state for one tracked tool."""
 
     tool_id: str
-    frame_number: int
-    valid: bool
-    status: str
-    quaternion: tuple[float, float, float, float]
-    translation_mm: tuple[float, float, float]
-    quality: float | None
-    timestamp: str
+    frame_number: int | None = None
+    valid: bool | None = None
+    validity_known: bool = False
+    status: str = "unknown"
+    quaternion: tuple[float, float, float, float] | None = None
+    translation_mm: tuple[float, float, float] | None = None
+    quality: float | None = None
+    timestamp: str | None = None
 
 
 @dataclass
@@ -37,6 +44,8 @@ class TrackerRuntimeState:
     """Shared runtime state for GUI/diagnostics polling."""
 
     connection_state: str = "disconnected"
+    backend_running: bool = False
+    backend_connected: bool = False
     socket_connected: bool = False
     bridge_running: bool = False
     latest_frame_number: int | None = None
@@ -48,6 +57,8 @@ class TrackerRuntimeState:
 
 class TrackerServiceManager:
     """Starts tracker_bridge and consumes tracker JSON events from Unix socket."""
+
+    backend_identity = "tracker_bridge_json"
 
     def __init__(
         self,
@@ -82,7 +93,9 @@ class TrackerServiceManager:
         except Exception as exc:
             self._set_state(
                 bridge_running=False,
+                backend_running=False,
                 socket_connected=False,
+                backend_connected=False,
                 connection_state="error",
                 last_error=str(exc),
                 last_status_message=f"Tracker start failed: {exc}",
@@ -133,7 +146,9 @@ class TrackerServiceManager:
 
         self._set_state(
             bridge_running=False,
+            backend_running=False,
             socket_connected=False,
+            backend_connected=False,
             connection_state="disconnected",
             last_status_message="Tracker disconnected",
         )
@@ -154,7 +169,18 @@ class TrackerServiceManager:
         if not self.aurora_port:
             raise RuntimeError("Aurora port is empty. Configure aurora_port before starting tracker_bridge.")
         if not self.bridge_executable.exists():
-            raise FileNotFoundError(f"tracker_bridge executable not found: {self.bridge_executable}")
+            raise FileNotFoundError(
+                f"tracker_bridge executable not found: {self.bridge_executable}. "
+                "Build it with scripts/build_tracker_bridge.sh after setting "
+                "NDI_SDK_INCLUDE_DIR and NDI_SDK_LIB_DIR."
+            )
+        if not self.bridge_executable.is_file():
+            raise FileNotFoundError(f"tracker_bridge path is not a file: {self.bridge_executable}")
+        if not os.access(self.bridge_executable, os.X_OK):
+            raise PermissionError(
+                f"tracker_bridge is not executable: {self.bridge_executable}. "
+                "Rebuild it or run chmod +x if the binary exists but lacks execute permission."
+            )
 
         cmd = [
             str(self.bridge_executable),
@@ -173,14 +199,16 @@ class TrackerServiceManager:
             text=True,
             bufsize=1,
         )
-        self._set_state(bridge_running=True)
+        self._set_state(bridge_running=True, backend_running=True)
 
     def _receiver_loop(self) -> None:
         while not self._stop_event.is_set():
             if self._process is not None and self._process.poll() is not None and not self._client.is_connected:
                 self._set_state(
                     bridge_running=False,
+                    backend_running=False,
                     socket_connected=False,
+                    backend_connected=False,
                     connection_state="error",
                     last_error=f"tracker_bridge exited with code {self._process.returncode}",
                 )
@@ -190,7 +218,7 @@ class TrackerServiceManager:
                 if not self._client.is_connected:
                     self._set_state(connection_state="connecting", last_status_message="Connecting to tracker socket")
                     self._client.connect(timeout_s=1.0)
-                    self._set_state(socket_connected=True, connection_state="connected")
+                    self._set_state(socket_connected=True, backend_connected=True, connection_state="connected")
 
                 line = self._client.read_line(timeout_s=0.5)
                 if line is None:
@@ -205,6 +233,7 @@ class TrackerServiceManager:
                 self._client.close()
                 self._set_state(
                     socket_connected=False,
+                    backend_connected=False,
                     connection_state="reconnecting",
                     last_error=str(exc),
                 )
@@ -229,6 +258,7 @@ class TrackerServiceManager:
             tool_id=msg.tool_id,
             frame_number=msg.frame_number,
             valid=msg.valid,
+            validity_known=msg.valid is not None,
             status=msg.status,
             quaternion=msg.quaternion,
             translation_mm=msg.translation_mm,

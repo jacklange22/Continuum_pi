@@ -33,6 +33,43 @@ def quat_wxyz_to_rotmat(quat_wxyz: tuple[float, float, float, float]) -> np.ndar
     )
 
 
+def rotmat_to_quat_wxyz(R_A_B: np.ndarray) -> tuple[float, float, float, float]:
+    """Convert a proper 3x3 rotation matrix to a quaternion ``(w, x, y, z)``."""
+    assert_rotation_matrix(R_A_B, "R_A_B")
+    trace = float(R_A_B[0, 0] + R_A_B[1, 1] + R_A_B[2, 2])
+
+    if trace > 0.0:
+        s = np.sqrt(trace + 1.0) * 2.0
+        qw = 0.25 * s
+        qx = (R_A_B[2, 1] - R_A_B[1, 2]) / s
+        qy = (R_A_B[0, 2] - R_A_B[2, 0]) / s
+        qz = (R_A_B[1, 0] - R_A_B[0, 1]) / s
+    elif R_A_B[0, 0] > R_A_B[1, 1] and R_A_B[0, 0] > R_A_B[2, 2]:
+        s = np.sqrt(1.0 + R_A_B[0, 0] - R_A_B[1, 1] - R_A_B[2, 2]) * 2.0
+        qw = (R_A_B[2, 1] - R_A_B[1, 2]) / s
+        qx = 0.25 * s
+        qy = (R_A_B[0, 1] + R_A_B[1, 0]) / s
+        qz = (R_A_B[0, 2] + R_A_B[2, 0]) / s
+    elif R_A_B[1, 1] > R_A_B[2, 2]:
+        s = np.sqrt(1.0 + R_A_B[1, 1] - R_A_B[0, 0] - R_A_B[2, 2]) * 2.0
+        qw = (R_A_B[0, 2] - R_A_B[2, 0]) / s
+        qx = (R_A_B[0, 1] + R_A_B[1, 0]) / s
+        qy = 0.25 * s
+        qz = (R_A_B[1, 2] + R_A_B[2, 1]) / s
+    else:
+        s = np.sqrt(1.0 + R_A_B[2, 2] - R_A_B[0, 0] - R_A_B[1, 1]) * 2.0
+        qw = (R_A_B[1, 0] - R_A_B[0, 1]) / s
+        qx = (R_A_B[0, 2] + R_A_B[2, 0]) / s
+        qy = (R_A_B[1, 2] + R_A_B[2, 1]) / s
+        qz = 0.25 * s
+
+    quat = np.asarray([qw, qx, qy, qz], dtype=float)
+    quat /= np.linalg.norm(quat)
+    if quat[0] < 0.0:
+        quat *= -1.0
+    return tuple(float(v) for v in quat)
+
+
 def make_transform_A_B(
     quat_wxyz: tuple[float, float, float, float],
     translation_xyz: tuple[float, float, float],
@@ -60,8 +97,27 @@ def assert_transform_matrix(T_A_B: np.ndarray, name: str) -> None:
         raise ValueError(f"{name} last row is not [0, 0, 0, 1]")
 
 
+def assert_rotation_matrix(R_A_B: np.ndarray, name: str, *, atol: float = 1e-5) -> None:
+    """Validate that ``R_A_B`` is a proper rotation matrix."""
+    if R_A_B.shape != (3, 3):
+        raise ValueError(f"{name} must have shape (3, 3)")
+    if not np.isfinite(R_A_B).all():
+        raise ValueError(f"{name} contains non-finite values")
+    if not np.allclose(R_A_B.T @ R_A_B, np.eye(3), atol=atol):
+        raise ValueError(f"{name} is not orthonormal")
+    determinant = float(np.linalg.det(R_A_B))
+    if not np.isclose(determinant, 1.0, atol=atol):
+        raise ValueError(f"{name} determinant must be +1, got {determinant:.6f}")
+
+
+def assert_rigid_transform_matrix(T_A_B: np.ndarray, name: str, *, atol: float = 1e-5) -> None:
+    """Validate that ``T_A_B`` is a finite rigid transform with a proper rotation."""
+    assert_transform_matrix(T_A_B, name)
+    assert_rotation_matrix(T_A_B[0:3, 0:3], f"{name}[0:3,0:3]", atol=atol)
+
+
 def compose_T_A_C(T_A_B: np.ndarray, T_B_C: np.ndarray) -> np.ndarray:
     """Compose transforms using ``T_A_C = T_A_B @ T_B_C``."""
-    assert_transform_matrix(T_A_B, "T_A_B")
-    assert_transform_matrix(T_B_C, "T_B_C")
+    assert_rigid_transform_matrix(T_A_B, "T_A_B")
+    assert_rigid_transform_matrix(T_B_C, "T_B_C")
     return T_A_B @ T_B_C

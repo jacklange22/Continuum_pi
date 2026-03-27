@@ -12,8 +12,9 @@ echo "Using Python: $PYTHON_BIN"
 echo "Virtualenv: $VENV_DIR"
 
 REQUESTED_PYTHON_MM="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
-if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
-  echo "Python 3.11 or newer is required. $PYTHON_BIN resolved to Python $REQUESTED_PYTHON_MM." >&2
+if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+  echo "Python 3.10 or newer is required. $PYTHON_BIN resolved to Python $REQUESTED_PYTHON_MM." >&2
+  echo "On Raspberry Pi OS, install python3 and python3-venv, then rerun with PYTHON_BIN=python3." >&2
   exit 1
 fi
 if [[ -x "$VENV_DIR/bin/python" ]]; then
@@ -49,7 +50,8 @@ if [[ "$BUILD_TRACKER_BRIDGE" == "1" ]]; then
   "$ROOT_DIR/scripts/build_tracker_bridge.sh"
 else
   echo "Skipping tracker_bridge build."
-  echo "Set BUILD_TRACKER_BRIDGE=1 after installing the NDI SDK to build bin/tracker_bridge."
+  echo "The default live tracker path is Python-native via scikit-surgerynditracker."
+  echo "Set BUILD_TRACKER_BRIDGE=1 only if you need the legacy bridge compatibility backend."
 fi
 
 echo

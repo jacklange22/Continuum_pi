@@ -11,6 +11,12 @@ import threading
 import numpy as np
 import yaml
 
+from continuum_robot.registration.legacy_compat import (
+    AuroraPoseSample,
+    RegistrationAssetPaths,
+    load_registration_assets,
+    solve_registration_from_tool_samples,
+)
 from continuum_robot.registration.repository import RegistrationRecord, RegistrationRepository
 from continuum_robot.registration.rigid_solver import RigidRegistrationSolver
 from continuum_robot.registration.validation import compute_fre_mm
@@ -22,6 +28,7 @@ from continuum_robot.services.models import (
     ServiceHealthSnapshot,
 )
 from continuum_robot.services.tracking_service import TrackingService
+from continuum_robot.tracking.transforms import compose_T_A_C
 from continuum_robot.utils.time_utils import utc_now_iso
 
 
@@ -32,13 +39,22 @@ class RegistrationConfig:
     labels: list[str]
     captures_per_landmark: int
     nominal_landmarks_robot_xyz_mm: dict[str, list[float]]
+    measurement_tool_id: str
+    coil_tool_id: str
+    capture_tool_tip_transform: list[list[float]] | None
+    model_points_file: str | None
+    tip_points_file: str | None
+    T_sw_2_model_file: str | None
+    T_sw_2_tip_file: str | None
+    penprobe_file: str | None
+    quaternion_average_method: str
+    model_tre_reference_radius_mm: float
+    tip_tre_reference_radius_mm: float
     max_fre_mm: float | None
 
 
 class RegistrationService:
     """Own registration session state, solving, acceptance, and persistence."""
-
-    CAPTURE_TOOL_ID = "0B"
 
     def __init__(
         self,
@@ -57,8 +73,12 @@ class RegistrationService:
 
         self._lock = threading.Lock()
         self._config = self._load_config(config_path)
+        self._assets = self._load_assets_if_configured(config_path, self._config)
         self._pending_record: RegistrationRecord | None = None
 
+        initial_labels = (
+            [*self._assets.model_labels, *self._assets.tip_labels] if self._assets is not None else list(self._config.labels)
+        )
         self._state = RegistrationSnapshot(
             health=ServiceHealthSnapshot(
                 name="registration_service",
@@ -68,12 +88,15 @@ class RegistrationService:
                 current_config_source=config_source,
             ),
             active=False,
-            capture_tool_id=self.CAPTURE_TOOL_ID,
-            labels=list(self._config.labels),
+            capture_tool_id=self._config.measurement_tool_id,
+            labels=initial_labels,
             captures_per_landmark=self._config.captures_per_landmark,
             config_path=str(config_path),
             nominal_landmarks_robot_xyz_mm=copy.deepcopy(self._config.nominal_landmarks_robot_xyz_mm),
         )
+        if self._assets is not None:
+            self._state.truth_points_in_sw_by_label = self._truth_points_in_sw_by_label()
+            self._state.group_by_label = self._group_by_label()
         self.load_latest_accepted()
         with self._lock:
             self._recompute_health_locked()
@@ -86,18 +109,30 @@ class RegistrationService:
         nominal_landmarks_robot_xyz_mm: dict[str, list[float]] | None = None,
     ) -> RegistrationSnapshot:
         """Start a new registration session."""
-        labels = list(labels or self._config.labels)
+        use_legacy_assets = self._assets is not None and nominal_landmarks_robot_xyz_mm is None
+        if use_legacy_assets:
+            labels = list(labels or [*self._assets.model_labels, *self._assets.tip_labels])
+            nominal = {}
+            truth_points_in_sw_by_label = self._truth_points_in_sw_by_label()
+            group_by_label = self._group_by_label()
+        else:
+            labels = list(labels or self._config.labels)
+            nominal = copy.deepcopy(nominal_landmarks_robot_xyz_mm or self._config.nominal_landmarks_robot_xyz_mm)
+            truth_points_in_sw_by_label = {}
+            group_by_label = {}
         captures_per_landmark = int(captures_per_landmark or self._config.captures_per_landmark)
-        nominal = copy.deepcopy(nominal_landmarks_robot_xyz_mm or self._config.nominal_landmarks_robot_xyz_mm)
 
         with self._lock:
             self._pending_record = None
             self._state.active = True
+            self._state.capture_tool_id = self._config.measurement_tool_id
             self._state.labels = labels
             self._state.captures_per_landmark = captures_per_landmark
             self._state.current_landmark_index = 0
             self._state.current_label = labels[0] if labels else None
             self._state.raw_points_by_label = {label: [] for label in labels}
+            self._state.raw_measurement_tool_samples_by_label = {label: [] for label in labels}
+            self._state.raw_coil_samples_by_label = {label: [] for label in labels}
             self._state.averaged_points_by_label = {}
             self._state.captured_counts = {label: 0 for label in labels}
             self._state.residuals_by_label = {}
@@ -105,6 +140,9 @@ class RegistrationService:
             self._state.last_sample_xyz_mm = None
             self._state.pending_accept = False
             self._state.nominal_landmarks_robot_xyz_mm = nominal
+            self._state.truth_points_in_sw_by_label = truth_points_in_sw_by_label
+            self._state.group_by_label = group_by_label
+            self._state.validation_metrics = {}
             self._state.pending_record = None
             self._state.health.last_error = None
             self._state.health.last_successful_update_utc = utc_now_iso()
@@ -113,7 +151,7 @@ class RegistrationService:
             return copy.deepcopy(self._state)
 
     def capture_sample(self, label: str | None = None) -> list[float]:
-        """Capture one sample from tool 0B for the requested or current landmark."""
+        """Capture one registration sample from the configured tools."""
         with self._lock:
             if not self._state.active:
                 raise RuntimeError("Registration session has not been started")
@@ -123,13 +161,17 @@ class RegistrationService:
             if target_label not in self._state.raw_points_by_label:
                 raise ValueError(f"Unknown registration label: {target_label}")
 
-        tool = self.tracking_service.get_latest_tool(self.CAPTURE_TOOL_ID)
-        if tool is None or not tool.present or not tool.valid or tool.translation_mm is None:
-            raise RuntimeError("Tool 0B is not currently tracked")
+        measurement_tool = self._require_tool_snapshot(self._config.measurement_tool_id)
+        sample = self._measurement_point_from_tool_snapshot(measurement_tool)
 
-        sample = [float(tool.translation_mm[0]), float(tool.translation_mm[1]), float(tool.translation_mm[2])]
         with self._lock:
             self._state.raw_points_by_label[target_label].append(sample)
+            self._state.raw_measurement_tool_samples_by_label[target_label].append(
+                self._tool_snapshot_to_dict(measurement_tool)
+            )
+            if self._assets is not None:
+                coil_tool = self._require_tool_snapshot(self._config.coil_tool_id)
+                self._state.raw_coil_samples_by_label[target_label].append(self._tool_snapshot_to_dict(coil_tool))
             self._state.captured_counts[target_label] = len(self._state.raw_points_by_label[target_label])
             self._state.last_sample_xyz_mm = sample
             self._state.health.last_error = None
@@ -163,69 +205,10 @@ class RegistrationService:
             return self._state.current_label
 
     def solve_registration(self) -> dict:
-        """Solve rigid registration and keep the result pending until acceptance."""
-        with self._lock:
-            if not self._state.active:
-                raise RuntimeError("Registration session has not been started")
-            labels = list(self._state.labels)
-            captures = copy.deepcopy(self._state.raw_points_by_label)
-            nominal = copy.deepcopy(self._state.nominal_landmarks_robot_xyz_mm)
-            captures_per_landmark = self._state.captures_per_landmark
-
-        for label in labels:
-            points = captures.get(label, [])
-            if len(points) < captures_per_landmark:
-                raise RuntimeError(
-                    f"Landmark {label} has {len(points)} capture(s); requires {captures_per_landmark}"
-                )
-            if label not in nominal:
-                raise RuntimeError(f"Missing nominal landmark for label {label}")
-
-        averaged = {
-            label: np.asarray(points, dtype=float).mean(axis=0).tolist()
-            for label, points in captures.items()
-        }
-        measured = np.asarray([averaged[label] for label in labels], dtype=float)
-        truth = np.asarray([nominal[label] for label in labels], dtype=float)
-        T_robot_aurora = self.solver.solve_T_robot_aurora(measured, truth)
-        transformed = (T_robot_aurora[0:3, 0:3] @ measured.T).T + T_robot_aurora[0:3, 3]
-        residuals = truth - transformed
-        residuals_by_label = {
-            label: residuals[idx, :].tolist()
-            for idx, label in enumerate(labels)
-        }
-        fre_mm = float(compute_fre_mm(list(residuals_by_label.values())))
-        T_coil_tip, tip_calibration_source = self._load_tip_calibration()
-
-        record = RegistrationRecord(
-            timestamp_utc=utc_now_iso(),
-            landmark_labels=labels,
-            raw_captured_landmarks_robot_xyz=captures,
-            averaged_landmarks_robot_xyz=averaged,
-            residuals_robot_xyz_mm=residuals_by_label,
-            fre_mm=fre_mm,
-            T_robot_aurora=T_robot_aurora.tolist(),
-            T_coil_tip=T_coil_tip.tolist(),
-            config_used={
-                "registration_config_path": str(self.config_path),
-                "capture_tool_id": self.CAPTURE_TOOL_ID,
-                "max_fre_mm": self._config.max_fre_mm,
-                "tip_calibration_source": tip_calibration_source,
-            },
-        )
-
-        with self._lock:
-            self._pending_record = record
-            self._state.averaged_points_by_label = averaged
-            self._state.residuals_by_label = residuals_by_label
-            self._state.fre_mm = fre_mm
-            self._state.pending_accept = True
-            self._state.pending_record = asdict(record)
-            self._state.health.last_error = None
-            self._state.health.last_successful_update_utc = utc_now_iso()
-            self._state.health.state = "solved"
-            self._recompute_health_locked()
-            return copy.deepcopy(self._state.pending_record)
+        """Solve registration and keep the result pending until acceptance."""
+        if self._assets is not None and self._state.truth_points_in_sw_by_label:
+            return self._solve_legacy_compatible_registration()
+        return self._solve_simple_registration()
 
     def accept_registration(self) -> Path:
         """Persist the pending registration as the latest accepted registration."""
@@ -273,6 +256,254 @@ class RegistrationService:
         with self._lock:
             return copy.deepcopy(self._state)
 
+    def _solve_legacy_compatible_registration(self) -> dict:
+        with self._lock:
+            if not self._state.active:
+                raise RuntimeError("Registration session has not been started")
+            labels = list(self._state.labels)
+            grouped_measurement = copy.deepcopy(self._state.raw_measurement_tool_samples_by_label)
+            grouped_coil = copy.deepcopy(self._state.raw_coil_samples_by_label)
+            captures_per_landmark = self._state.captures_per_landmark
+
+        for label in labels:
+            measurement_count = len(grouped_measurement.get(label, []))
+            coil_count = len(grouped_coil.get(label, []))
+            if measurement_count != captures_per_landmark:
+                raise RuntimeError(
+                    f"Label {label} has {measurement_count} measurement-tool pose(s); expected {captures_per_landmark}"
+                )
+            if coil_count != captures_per_landmark:
+                raise RuntimeError(f"Label {label} has {coil_count} coil-tool pose(s); expected {captures_per_landmark}")
+
+        measurement_samples = self._flatten_pose_samples(grouped_measurement, labels)
+        coil_samples = self._flatten_pose_samples(grouped_coil, labels)
+        result = solve_registration_from_tool_samples(
+            assets=self._assets,
+            measurement_tool_samples=measurement_samples,
+            coil_tool_samples=coil_samples,
+            repetitions=captures_per_landmark,
+            measurement_tool_id=self._config.measurement_tool_id,
+            coil_tool_id=self._config.coil_tool_id,
+            solver=self.solver,
+            quaternion_average_method=self._config.quaternion_average_method,
+            model_tre_reference_radius_mm=self._config.model_tre_reference_radius_mm,
+            tip_tre_reference_radius_mm=self._config.tip_tre_reference_radius_mm,
+        )
+        self._validate_fre_limits(result.validation_metrics)
+        record = self._record_from_legacy_result(result)
+
+        with self._lock:
+            self._pending_record = record
+            self._state.raw_points_by_label = result.raw_points_by_label
+            self._state.averaged_points_by_label = result.averaged_points_by_label
+            self._state.residuals_by_label = result.residuals_by_label
+            self._state.fre_mm = float(result.validation_metrics["overall_fre_mm"])
+            self._state.validation_metrics = copy.deepcopy(result.validation_metrics)
+            self._state.pending_accept = True
+            self._state.pending_record = asdict(record)
+            self._state.health.last_error = None
+            self._state.health.last_successful_update_utc = utc_now_iso()
+            self._state.health.state = "solved"
+            self._recompute_health_locked()
+            return copy.deepcopy(self._state.pending_record)
+
+    def _solve_simple_registration(self) -> dict:
+        with self._lock:
+            if not self._state.active:
+                raise RuntimeError("Registration session has not been started")
+            labels = list(self._state.labels)
+            captures = copy.deepcopy(self._state.raw_points_by_label)
+            nominal = copy.deepcopy(self._state.nominal_landmarks_robot_xyz_mm)
+            captures_per_landmark = self._state.captures_per_landmark
+
+        for label in labels:
+            points = captures.get(label, [])
+            if len(points) < captures_per_landmark:
+                raise RuntimeError(
+                    f"Landmark {label} has {len(points)} capture(s); requires {captures_per_landmark}"
+                )
+            if label not in nominal:
+                raise RuntimeError(f"Missing nominal landmark for label {label}")
+
+        averaged = {
+            label: np.asarray(points, dtype=float).mean(axis=0).tolist()
+            for label, points in captures.items()
+        }
+        measured = np.asarray([averaged[label] for label in labels], dtype=float)
+        truth = np.asarray([nominal[label] for label in labels], dtype=float)
+        T_robot_aurora = self.solver.solve_T_robot_aurora(measured, truth)
+        transformed = self.solver.apply_transform(T_robot_aurora, measured)
+        residuals = truth - transformed
+        residuals_by_label = {
+            label: residuals[idx, :].tolist()
+            for idx, label in enumerate(labels)
+        }
+        fre_mm = float(compute_fre_mm(list(residuals_by_label.values())))
+        if self._config.max_fre_mm is not None and fre_mm > self._config.max_fre_mm:
+            raise RuntimeError(f"Registration FRE {fre_mm:.3f} mm exceeds limit {self._config.max_fre_mm:.3f} mm")
+        T_coil_tip = self._load_tip_calibration()[0]
+
+        record = RegistrationRecord(
+            timestamp_utc=utc_now_iso(),
+            landmark_labels=labels,
+            raw_captured_landmarks_robot_xyz=captures,
+            averaged_landmarks_robot_xyz=averaged,
+            residuals_robot_xyz_mm=residuals_by_label,
+            fre_mm=fre_mm,
+            T_robot_aurora=T_robot_aurora.tolist(),
+            T_coil_tip=T_coil_tip.tolist(),
+            measurement_tool_id=self._config.measurement_tool_id,
+            coil_tool_id=self._config.coil_tool_id,
+            raw_measurement_tool_samples_by_label=copy.deepcopy(self._state.raw_measurement_tool_samples_by_label),
+            raw_coil_samples_by_label=copy.deepcopy(self._state.raw_coil_samples_by_label),
+            validation_metrics={"overall_fre_mm": fre_mm, "registration_mode": "simple"},
+            config_used={
+                "registration_config_path": str(self.config_path),
+                "capture_tool_id": self._config.measurement_tool_id,
+                "measurement_tool_id": self._config.measurement_tool_id,
+                "coil_tool_id": self._config.coil_tool_id,
+                "registration_mode": "simple",
+            },
+        )
+
+        with self._lock:
+            self._pending_record = record
+            self._state.averaged_points_by_label = averaged
+            self._state.residuals_by_label = residuals_by_label
+            self._state.fre_mm = fre_mm
+            self._state.validation_metrics = {"overall_fre_mm": fre_mm, "registration_mode": "simple"}
+            self._state.pending_accept = True
+            self._state.pending_record = asdict(record)
+            self._state.health.last_error = None
+            self._state.health.last_successful_update_utc = utc_now_iso()
+            self._state.health.state = "solved"
+            self._recompute_health_locked()
+            return copy.deepcopy(self._state.pending_record)
+
+    def _record_from_legacy_result(self, result) -> RegistrationRecord:
+        return RegistrationRecord(
+            timestamp_utc=utc_now_iso(),
+            landmark_labels=result.ordered_labels,
+            raw_captured_landmarks_robot_xyz=result.raw_points_by_label,
+            averaged_landmarks_robot_xyz=result.averaged_points_by_label,
+            residuals_robot_xyz_mm=result.residuals_by_label,
+            fre_mm=float(result.validation_metrics["overall_fre_mm"]),
+            T_robot_aurora=result.T_aurora_2_model.tolist(),
+            T_coil_tip=result.T_coil_tip.tolist(),
+            T_aurora_2_tip=result.T_aurora_2_tip.tolist(),
+            measurement_tool_id=result.measurement_tool_id,
+            coil_tool_id=result.coil_tool_id,
+            raw_measurement_tool_samples_by_label=result.raw_measurement_tool_samples_by_label,
+            raw_coil_samples_by_label=result.raw_coil_samples_by_label,
+            truth_points_in_sw_by_label=result.truth_points_in_sw_by_label,
+            group_by_label=result.group_by_label,
+            validation_metrics=result.validation_metrics,
+            config_used={
+                "registration_config_path": str(self.config_path),
+                "capture_tool_id": result.measurement_tool_id,
+                "measurement_tool_id": result.measurement_tool_id,
+                "coil_tool_id": result.coil_tool_id,
+                "captures_per_landmark": result.repetitions,
+                "quaternion_average_method": self._config.quaternion_average_method,
+                "registration_mode": "legacy_compatible",
+                "model_points_file": self._config.model_points_file,
+                "tip_points_file": self._config.tip_points_file,
+                "T_sw_2_model_file": self._config.T_sw_2_model_file,
+                "T_sw_2_tip_file": self._config.T_sw_2_tip_file,
+                "penprobe_file": self._config.penprobe_file,
+            },
+        )
+
+    def _measurement_point_from_tool_snapshot(self, tool) -> list[float]:
+        if tool.quaternion_wxyz is None or tool.translation_mm is None:
+            raise RuntimeError(f"Tool {tool.tool_id} is missing quaternion/translation data")
+        T_aurora_tool = np.asarray(tool.T_aurora_tool, dtype=float) if tool.T_aurora_tool is not None else None
+        if T_aurora_tool is None or T_aurora_tool.shape != (4, 4):
+            raise RuntimeError(f"Tool {tool.tool_id} is missing a valid T_aurora_tool transform")
+        if self._assets is not None:
+            T_aurora_point = compose_T_A_C(T_aurora_tool, self._assets.T_measurement_point)
+        else:
+            T_aurora_point = compose_T_A_C(T_aurora_tool, self._coerce_transform(self._config.capture_tool_tip_transform))
+        return [float(v) for v in T_aurora_point[0:3, 3]]
+
+    def _require_tool_snapshot(self, tool_id: str):
+        tool = self.tracking_service.get_latest_tool(tool_id)
+        if tool is None:
+            raise RuntimeError(f"Tool {tool_id} has no runtime snapshot")
+        if tool.tracking_state != "tracked":
+            raise RuntimeError(f"Tool {tool_id} is not currently tracked ({tool.status})")
+        if tool.T_aurora_tool is None:
+            raise RuntimeError(f"Tool {tool_id} does not have a valid rigid transform")
+        return tool
+
+    @staticmethod
+    def _tool_snapshot_to_dict(tool) -> dict[str, object]:
+        return {
+            "tool_id": tool.tool_id,
+            "tracking_state": tool.tracking_state,
+            "valid": tool.valid,
+            "validity_known": tool.validity_known,
+            "status": tool.status,
+            "quaternion_wxyz": list(tool.quaternion_wxyz) if tool.quaternion_wxyz is not None else None,
+            "translation_mm": list(tool.translation_mm) if tool.translation_mm is not None else None,
+            "quality": tool.quality,
+            "source_row": tool.frame_number,
+            "source_token": tool.last_update_utc,
+        }
+
+    @staticmethod
+    def _flatten_pose_samples(grouped_samples: dict[str, list[dict]], ordered_labels: list[str]) -> list[AuroraPoseSample]:
+        output: list[AuroraPoseSample] = []
+        for label in ordered_labels:
+            for raw in grouped_samples.get(label, []):
+                if raw.get("quaternion_wxyz") is None or raw.get("translation_mm") is None:
+                    raise RuntimeError(f"Label {label} contains a tool sample without quaternion/translation data")
+                output.append(
+                    AuroraPoseSample(
+                        tool_id=str(raw["tool_id"]),
+                        quaternion_wxyz=tuple(float(v) for v in raw["quaternion_wxyz"]),
+                        translation_mm=tuple(float(v) for v in raw["translation_mm"]),
+                        quality=float(raw["quality"]) if raw.get("quality") is not None else None,
+                        source_row=int(raw["source_row"]) if raw.get("source_row") is not None else None,
+                        source_token=str(raw.get("source_token", "")),
+                    )
+                )
+        return output
+
+    def _group_by_label(self) -> dict[str, str]:
+        if self._assets is None:
+            return {}
+        return {label: "model" for label in self._assets.model_labels} | {
+            label: "tip" for label in self._assets.tip_labels
+        }
+
+    def _truth_points_in_sw_by_label(self) -> dict[str, list[float]]:
+        if self._assets is None:
+            return {}
+        output = {
+            label: self._assets.model_truth_in_sw[:, idx].astype(float).tolist()
+            for idx, label in enumerate(self._assets.model_labels)
+        }
+        output.update(
+            {
+                label: self._assets.tip_truth_in_sw[:, idx].astype(float).tolist()
+                for idx, label in enumerate(self._assets.tip_labels)
+            }
+        )
+        return output
+
+    def _validate_fre_limits(self, validation_metrics: dict[str, object]) -> None:
+        if self._config.max_fre_mm is None:
+            return
+        offending = {
+            key: float(validation_metrics[key])
+            for key in ("model_fre_mm", "tip_fre_mm", "overall_fre_mm")
+            if key in validation_metrics and validation_metrics[key] is not None and float(validation_metrics[key]) > self._config.max_fre_mm
+        }
+        if offending:
+            rendered = ", ".join(f"{key}={value:.3f}" for key, value in offending.items())
+            raise RuntimeError(f"Registration FRE exceeds limit {self._config.max_fre_mm:.3f} mm: {rendered}")
+
     @staticmethod
     def _load_config(path: Path) -> RegistrationConfig:
         payload = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
@@ -286,7 +517,45 @@ class RegistrationService:
             labels=labels,
             captures_per_landmark=captures,
             nominal_landmarks_robot_xyz_mm=nominal,
+            measurement_tool_id=str(payload.get("capture_tool_id", "0B")),
+            coil_tool_id=str(payload.get("coil_tool_id", "0A")),
+            capture_tool_tip_transform=payload.get("capture_tool_tip_transform"),
+            model_points_file=payload.get("model_points_file"),
+            tip_points_file=payload.get("tip_points_file"),
+            T_sw_2_model_file=payload.get("T_sw_2_model_file"),
+            T_sw_2_tip_file=payload.get("T_sw_2_tip_file"),
+            penprobe_file=payload.get("penprobe_file"),
+            quaternion_average_method=str(payload.get("quaternion_average_method", "sign_aligned_mean")),
+            model_tre_reference_radius_mm=float(payload.get("model_tre_reference_radius_mm", 5.0)),
+            tip_tre_reference_radius_mm=float(payload.get("tip_tre_reference_radius_mm", 3.0)),
             max_fre_mm=float(max_fre) if max_fre is not None else None,
+        )
+
+    @staticmethod
+    def _load_assets_if_configured(config_path: Path, config: RegistrationConfig):
+        if not (
+            config.model_points_file
+            and config.tip_points_file
+            and config.T_sw_2_model_file
+            and config.T_sw_2_tip_file
+            and config.penprobe_file
+        ):
+            return None
+        project_root = config_path.resolve().parents[1]
+
+        def _resolve(raw: str) -> Path:
+            path = Path(raw)
+            return path if path.is_absolute() else project_root / path
+
+        return load_registration_assets(
+            RegistrationAssetPaths(
+                model_points_file=_resolve(config.model_points_file),
+                tip_points_file=_resolve(config.tip_points_file),
+                T_sw_2_model_file=_resolve(config.T_sw_2_model_file),
+                T_sw_2_tip_file=_resolve(config.T_sw_2_tip_file),
+                penprobe_file=_resolve(config.penprobe_file),
+            ),
+            measurement_point_transform=config.capture_tool_tip_transform,
         )
 
     def _load_tip_calibration(self) -> tuple[np.ndarray, str]:
@@ -309,6 +578,15 @@ class RegistrationService:
             return np.eye(4), "default_identity"
 
         return np.eye(4), "default_identity"
+
+    @staticmethod
+    def _coerce_transform(transform: list[list[float]] | None) -> np.ndarray:
+        if transform is None:
+            return np.eye(4)
+        matrix = np.asarray(transform, dtype=float)
+        if matrix.shape != (4, 4):
+            raise ValueError("capture_tool_tip_transform must be 4x4")
+        return matrix
 
     def _recompute_health_locked(self) -> None:
         faults: list[str] = []
@@ -340,6 +618,7 @@ class RegistrationService:
             "pending_accept": self._state.pending_accept,
             "fre_mm": self._state.fre_mm,
             "latest_accepted_path": self._state.latest_accepted_path,
+            "registration_mode": "legacy_compatible" if self._assets is not None else "simple",
         }
 
         if self._state.health.state == "accepted":
@@ -352,6 +631,9 @@ class RegistrationService:
             else:
                 self._state.health.status = f"Registration solved with FRE {self._state.fre_mm:.3f} mm"
         elif self._state.active:
-            self._state.health.status = "Registration session capturing tool 0B landmarks"
+            self._state.health.status = (
+                f"Registration session capturing measurement tool {self._config.measurement_tool_id} "
+                f"and coil tool {self._config.coil_tool_id}"
+            )
         else:
             self._state.health.status = "Registration service ready"

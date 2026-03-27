@@ -26,26 +26,27 @@ class AppWindow(QMainWindow):
         self.context = context
         settings = context.settings
         tracker_manager = context.services.get("tracker_manager")
-        live_registration = context.services.get("live_registration")
+        tracking_service = context.services.get("tracking_service")
+        registration_service = context.services.get("registration_service")
         servo_service = context.services.get("servo_service")
         openrb_client = context.services.get("openrb_client")
         experiment_loader = context.services.get("experiment_loader")
         experiment_runner = context.services.get("experiment_runner")
 
         self.system_controller = SystemController(
-            tracker_manager=tracker_manager,
+            tracking_service=tracking_service,
             openrb_client=openrb_client,
             servo_service=servo_service,
             settings=settings,
         )
         self.servos_controller = ServosController(servo_service=servo_service, settings=settings)
         self.tracking_controller = TrackingController(
-            tracker_manager=tracker_manager,
+            tracking_service=tracking_service,
             settings=settings,
             registration_path=context.project_root / settings.calibration.latest_registration_path,
         )
         self.registration_controller = RegistrationController(
-            live_registration=live_registration,
+            registration_service=registration_service,
             registration_config=settings.registration,
         )
         self.registration_controller.load_latest_result()
