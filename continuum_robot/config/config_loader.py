@@ -22,7 +22,10 @@ class ConfigLoader:
         The default implementation is intentionally shallow for scaffold use.
         """
         robot_data = self._read_yaml(self.base_dir / "robot_4servo.yaml")
-        serial_data = self._read_yaml(self.base_dir / "system.yaml")
+        serial_data = self._merge_dicts(
+            self._read_yaml(self.base_dir / "system.yaml"),
+            self._read_yaml(self.base_dir / "system.local.yaml"),
+        )
         safety_data = self._read_yaml(self.base_dir / "safety.yaml")
 
         robot = RobotConfig(
@@ -55,3 +58,9 @@ class ConfigLoader:
         if not isinstance(data, dict):
             raise ValueError(f"Expected mapping in {path}")
         return data
+
+    @staticmethod
+    def _merge_dicts(base: dict, override: dict) -> dict:
+        merged = dict(base)
+        merged.update(override)
+        return merged

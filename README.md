@@ -5,6 +5,64 @@ This repository contains a Raspberry Pi-focused continuum robot stack where:
 - `tracker_bridge` (C++) owns the Aurora lifecycle through NDI `CombinedApi`
 - Python remains the top-level operator app (GUI/controllers/registration/diagnostics)
 
+## GitHub Sync
+
+GitHub only syncs files that are committed and pushed.
+
+- Source code, scripts, config templates, and tracked reference assets sync through git
+- Local virtual environments, the built `bin/tracker_bridge` binary, and runtime output under `data/` do not
+- Machine-specific serial settings can live in `config/system.local.yaml`, which is intentionally ignored by git
+
+Typical workflow:
+
+```bash
+git add -A
+git commit -m "describe your change"
+git push origin main
+```
+
+On another machine:
+
+```bash
+git pull origin main
+```
+
+## Bootstrap A New Machine
+
+Clone the repo, create the virtualenv, install Python dependencies, and optionally build the Aurora bridge:
+
+```bash
+git clone https://github.com/jacklange22/Continuum_pi.git
+cd Continuum_pi
+scripts/bootstrap.sh
+```
+
+That script:
+
+- creates `.venv/`
+- installs the package and dev dependencies from `pyproject.toml`
+- creates expected runtime directories under `data/`
+- optionally builds `tracker_bridge` if you set `BUILD_TRACKER_BRIDGE=1`
+
+## Host Prerequisites
+
+Before running the bootstrap script on a fresh Raspberry Pi or Linux workstation, install the basic host tools you need for Python virtualenvs and C++ builds:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y python3 python3-venv g++
+```
+
+## Local Machine Overrides
+
+For machine-specific ports and paths:
+
+```bash
+cp config/system.local.example.yaml config/system.local.yaml
+```
+
+Then edit `config/system.local.yaml` for the local Pi or workstation. The loader automatically merges it over `config/system.yaml`.
+
 ## Transform Convention
 
 All transforms follow:
@@ -55,15 +113,30 @@ Transform message fields:
 
 ## Build tracker_bridge (Raspberry Pi)
 
+`tracker_bridge` links against the NDI SDK and cannot be installed from `requirements.txt` or `pyproject.toml` alone. The Python dependencies can be auto-installed, but the NDI SDK is a separate vendor C++ dependency that must already exist on the machine.
+
+Recommended layout on the target machine:
+
+- install or unpack the NDI SDK outside the repo, for example under `/opt/ndi_sdk`
+- point the build at its `include/` and `lib/` directories
+
 Set SDK paths and build:
 
 ```bash
-export NDI_SDK_INCLUDE_DIR=/path/to/ndi/include
-export NDI_SDK_LIB_DIR=/path/to/ndi/lib
+export NDI_SDK_INCLUDE_DIR=/opt/ndi_sdk/include
+export NDI_SDK_LIB_DIR=/opt/ndi_sdk/lib
 # Optional, default is CombinedApi:
 # export NDI_SDK_LIBS="CombinedApi ndicapi"
 
 scripts/build_tracker_bridge.sh
+```
+
+You can also have `scripts/bootstrap.sh` build it in the same step:
+
+```bash
+export NDI_SDK_INCLUDE_DIR=/opt/ndi_sdk/include
+export NDI_SDK_LIB_DIR=/opt/ndi_sdk/lib
+BUILD_TRACKER_BRIDGE=1 scripts/bootstrap.sh
 ```
 
 Binary output:
@@ -117,7 +190,7 @@ Key tracker settings are in `config/system.yaml`:
 ## GUI Entry
 
 ```bash
-python3 scripts/run_gui.py
+scripts/run_gui.sh
 ```
 
 Current GUI classes are scaffolded but now wired to tracker manager/controller state so a PySide view layer can subscribe without blocking.

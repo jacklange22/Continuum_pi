@@ -1,6 +1,38 @@
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 .venv/
+venv/
 *.egg-info/
-/data/runs/*.dat
+build/
+dist/
+
+# Local machine config overrides
+config/*.local.yaml
+
+# Native build output
+bin/
+
+# Runtime data
+data/calibrations/*
+!data/calibrations/.gitkeep
+data/logs/*
+!data/logs/.gitkeep
+data/registrations/*
+!data/registrations/.gitkeep
+data/runs/*
+!data/runs/.gitkeep

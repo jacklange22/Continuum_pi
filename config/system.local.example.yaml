@@ -1,0 +1,9 @@
+# Copy this file to config/system.local.yaml and edit for each machine.
+# system.local.yaml is intentionally ignored by git so each computer can keep
+# its own serial ports and local bridge path without creating git noise.
+
+aurora_port: "/dev/ttyUSB0"
+openrb_port: "/dev/ttyUSB1"
+tracker_socket_path: "/tmp/tracker_bridge.sock"
+tracker_bridge_executable: "bin/tracker_bridge"
+tracker_poll_ms: 20
