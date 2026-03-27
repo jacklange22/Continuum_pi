@@ -62,6 +62,12 @@ class AuroraFramer:
         data = self._buffer
         n = len(data)
         if n < 4:
+            start = self._find_start_index(data)
+            if start is not None and start > 0:
+                del data[:start]
+            elif start is None:
+                trailing_dles = self._count_trailing_dles(data)
+                self._buffer = bytearray([DLE] * trailing_dles)
             return None
 
         start = self._find_start_index(data)

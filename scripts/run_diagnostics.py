@@ -1,4 +1,4 @@
-"""Tracker diagnostics using tracker_bridge Unix socket stream."""
+"""Tracker diagnostics using the configured tracker manager."""
 
 from __future__ import annotations
 
@@ -8,17 +8,16 @@ import time
 
 from continuum_robot.app.bootstrap import build_app_context
 from continuum_robot.tracking.tip_pose_service import TipPoseService
-from continuum_robot.tracking.tracker_service_manager import TrackerServiceManager
 from continuum_robot.tracking.transforms import make_transform_A_B
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="tracker_bridge diagnostics")
+    parser = argparse.ArgumentParser(description="Continuum robot tracker diagnostics")
     parser.add_argument("--tracker-port", type=str, default="", help="Aurora device path (for example /dev/ttyUSB0)")
-    parser.add_argument("--socket-path", type=Path, default=None, help="Unix socket path used by tracker_bridge")
-    parser.add_argument("--bridge-exec", type=Path, default=None, help="Path to tracker_bridge executable")
-    parser.add_argument("--poll-ms", type=int, default=None, help="tracker_bridge poll period in milliseconds")
-    parser.add_argument("--packets", type=int, default=10, help="Number of transform samples to inspect")
+    parser.add_argument("--socket-path", type=Path, default=None, help="Override tracker socket path")
+    parser.add_argument("--bridge-exec", type=Path, default=None, help="Override tracker bridge executable")
+    parser.add_argument("--poll-ms", type=int, default=None, help="Override tracker poll period in milliseconds")
+    parser.add_argument("--packets", type=int, default=10, help="Number of tool samples to inspect")
     parser.add_argument("--tool-id", type=str, default="0A", help="Tool id to report")
     parser.add_argument(
         "--registration-file",
@@ -29,68 +28,80 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _resolve_registration_default(project_root: Path) -> Path:
-    return project_root / "data" / "registrations" / "latest_registration.json"
+def _resolve_registration_path(project_root: Path, configured_path: str) -> Path:
+    path = Path(configured_path)
+    if path.is_absolute():
+        return path
+    return project_root / path
 
 
 def main() -> int:
     args = _parse_args()
     ctx = build_app_context()
-    settings = ctx.config_loader.load_settings()
+    settings = ctx.settings
+    project_root = ctx.project_root
+    tracker_manager = ctx.services.get("tracker_manager")
 
-    project_root = Path(__file__).resolve().parents[1]
-    bridge_exec = args.bridge_exec or Path(settings.serial.tracker_bridge_executable)
-    if not bridge_exec.is_absolute():
-        bridge_exec = project_root / bridge_exec
+    if args.tracker_port and hasattr(tracker_manager, "aurora_port"):
+        tracker_manager.aurora_port = args.tracker_port
+    if args.socket_path is not None and hasattr(tracker_manager, "socket_path"):
+        tracker_manager.socket_path = args.socket_path
+    if args.bridge_exec is not None and hasattr(tracker_manager, "bridge_executable"):
+        tracker_manager.bridge_executable = args.bridge_exec
+    if args.poll_ms is not None and hasattr(tracker_manager, "poll_ms"):
+        tracker_manager.poll_ms = args.poll_ms
 
-    socket_path = args.socket_path or Path(settings.serial.tracker_socket_path)
-    tracker_port = args.tracker_port or settings.serial.aurora_port
-    poll_ms = args.poll_ms if args.poll_ms is not None else settings.serial.tracker_poll_ms
-
-    if not tracker_port:
-        print("ERROR: tracker port is not set. Pass --tracker-port or set config/system.yaml aurora_port.")
+    configured_tracker_port = args.tracker_port or getattr(tracker_manager, "aurora_port", "") or settings.serial.aurora_port
+    if not settings.runtime.mock_mode and not configured_tracker_port:
+        print("ERROR: no Aurora port is configured. Set config/system.local.yaml or pass --tracker-port.")
         return 2
+    tracker_port = configured_tracker_port or "/dev/mock-aurora"
+    if hasattr(tracker_manager, "aurora_port"):
+        tracker_manager.aurora_port = tracker_port
+    registration_path = args.registration_file or _resolve_registration_path(
+        project_root,
+        settings.calibration.latest_registration_path,
+    )
 
-    registration_path = args.registration_file or _resolve_registration_default(project_root)
     tip_service = None
     if registration_path.exists():
         try:
             tip_service = TipPoseService.from_registration_file(registration_path)
         except Exception as exc:
             print(f"WARNING: registration unavailable: {exc}")
-            print("         Diagnostics will continue without T_robot_tip.")
     else:
         print("WARNING: registration file missing; T_robot_tip is unavailable.")
 
-    manager = TrackerServiceManager(
-        bridge_executable=bridge_exec,
-        socket_path=socket_path,
-        aurora_port=tracker_port,
-        poll_ms=poll_ms,
-    )
+    print(f"Mock mode: {settings.runtime.mock_mode}")
+    print(f"Tracker port: {tracker_port}")
+    print(f"Tracker backend: {tracker_manager.__class__.__name__}")
+    if args.socket_path is not None:
+        print(f"Socket override: {args.socket_path}")
+    if args.bridge_exec is not None:
+        print(f"Bridge override: {args.bridge_exec}")
+    print(f"Registration file: {registration_path}")
 
-    print(f"Starting tracker_bridge: {bridge_exec}")
-    print(f"Aurora port: {tracker_port}")
-    print(f"Socket: {socket_path}")
-
-    manager.start()
-
-    seen_frames: set[int] = set()
+    try:
+        tracker_manager.start()
+    except Exception as exc:
+        print(f"ERROR: failed to start tracker backend: {exc}")
+        return 2
     printed = 0
+    seen_frames: set[int] = set()
     last_state = None
 
     try:
         while printed < args.packets:
-            state = manager.get_state_snapshot()
+            state = tracker_manager.get_state_snapshot()
             if state.connection_state != last_state:
                 print(f"State: {state.connection_state}")
-                if state.last_error:
-                    print(f"  error: {state.last_error}")
                 if state.last_status_message:
                     print(f"  status: {state.last_status_message}")
+                if state.last_error:
+                    print(f"  error: {state.last_error}")
                 last_state = state.connection_state
 
-            tool = manager.get_latest_tool(args.tool_id)
+            tool = tracker_manager.get_latest_tool(args.tool_id)
             if tool is None or tool.frame_number in seen_frames:
                 time.sleep(0.05)
                 continue
@@ -103,12 +114,8 @@ def main() -> int:
                 f"t_mm={tuple(round(v, 3) for v in tool.translation_mm)} quality={tool.quality}"
             )
 
-            if not tool.valid:
-                print("  T_robot_tip: unavailable (tool not valid)")
-                continue
-
-            if tip_service is None:
-                print("  T_robot_tip: unavailable (missing registration)")
+            if not tool.valid or tip_service is None:
+                print("  T_robot_tip: unavailable")
                 continue
 
             try:
@@ -124,8 +131,8 @@ def main() -> int:
 
         return 0
     finally:
-        manager.stop()
-        print("Tracker bridge stopped")
+        tracker_manager.stop()
+        print("Tracker diagnostics stopped")
 
 
 if __name__ == "__main__":

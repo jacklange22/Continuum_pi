@@ -17,4 +17,7 @@ class ServiceRegistry:
         self.services[name] = service
 
     def get(self, name: str) -> Any:
+        if name not in self.services:
+            available = ", ".join(sorted(self.services))
+            raise KeyError(f"Service {name!r} is not registered. Available services: {available}")
         return self.services[name]

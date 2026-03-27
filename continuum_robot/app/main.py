@@ -1,23 +1,22 @@
-"""GUI entrypoint wiring.
+"""GUI entrypoint wiring."""
 
-This file keeps startup shallow and delegates setup details to bootstrap.
-"""
+from __future__ import annotations
+
+from PySide6.QtWidgets import QApplication
 
 from continuum_robot.app.bootstrap import build_app_context
 from continuum_robot.gui.app_window import AppWindow
 
 
 def main() -> int:
-    """Start the application in GUI mode.
-
-    Returns a process-style status code.
-    """
+    """Start the application in GUI mode."""
+    app = QApplication.instance() or QApplication([])
     context = build_app_context()
     window = AppWindow(context)
     window.show()
-    # Real PySide event loop integration can call refresh() on a timer and
-    # invoke window.shutdown() on application exit.
-    return 0
+    exit_code = app.exec()
+    window.shutdown()
+    return int(exit_code)
 
 
 if __name__ == "__main__":

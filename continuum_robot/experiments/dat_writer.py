@@ -39,8 +39,16 @@ class DatRunWriter:
     def _row_to_line(row: dict) -> str:
         """Serialize one row into CSV-like .dat body line."""
         values = [
+            row.get("timestamp_utc", ""),
             row.get("index", 0),
+            row.get("repeat_index", 0),
             *row.get("commanded_displacement_cm", []),
+            *row.get("commanded_goal_ticks", []),
+            *row.get("servo_position_ticks", []),
+            *row.get("servo_current_ma", []),
+            *row.get("servo_voltage_mv", []),
+            *row.get("tool_0A_translation_mm", []),
+            *row.get("tool_0B_translation_mm", []),
             *row.get("tip_position_xyz", []),
             *row.get("tip_tangent_xyz", []),
         ]

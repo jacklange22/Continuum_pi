@@ -16,8 +16,10 @@ class SafetyGuard:
             if delta < self.min_offset_ticks or delta > self.max_offset_ticks:
                 raise ValueError(f"Unsafe position offset: {delta}")
 
-    def validate_currents(self, currents_ma: list[int]) -> None:
+    def validate_currents(self, currents_ma: list[int | None]) -> None:
         """Raise ValueError when any current exceeds threshold."""
         for current in currents_ma:
+            if current is None:
+                continue
             if current > self.max_current_ma:
                 raise ValueError(f"Current threshold exceeded: {current} mA")

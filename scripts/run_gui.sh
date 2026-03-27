@@ -10,4 +10,11 @@ if [[ ! -x "$GUI_PYTHON_BIN" ]]; then
   exit 1
 fi
 
+if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" && -z "${QT_QPA_PLATFORM:-}" ]]; then
+  echo "No DISPLAY/WAYLAND session detected." >&2
+  echo "For a local desktop session on the Pi, launch from the graphical login." >&2
+  echo "For a smoke test over SSH, set QT_QPA_PLATFORM=offscreen." >&2
+fi
+
+cd "$ROOT_DIR"
 exec "$GUI_PYTHON_BIN" "$ROOT_DIR/scripts/run_gui.py"

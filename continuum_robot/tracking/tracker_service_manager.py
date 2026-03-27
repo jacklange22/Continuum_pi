@@ -77,7 +77,17 @@ class TrackerServiceManager:
 
         self._stop_event.clear()
         self._set_state(connection_state="starting", last_error=None, last_status_message="Starting tracker bridge")
-        self._launch_bridge_process()
+        try:
+            self._launch_bridge_process()
+        except Exception as exc:
+            self._set_state(
+                bridge_running=False,
+                socket_connected=False,
+                connection_state="error",
+                last_error=str(exc),
+                last_status_message=f"Tracker start failed: {exc}",
+            )
+            raise
 
         self._receiver_thread = threading.Thread(target=self._receiver_loop, daemon=True)
         self._receiver_thread.start()
@@ -104,6 +114,12 @@ class TrackerServiceManager:
         if self._receiver_thread is not None:
             self._receiver_thread.join(timeout=timeout_s)
             self._receiver_thread = None
+        if self._stdout_thread is not None:
+            self._stdout_thread.join(timeout=timeout_s)
+            self._stdout_thread = None
+        if self._stderr_thread is not None:
+            self._stderr_thread.join(timeout=timeout_s)
+            self._stderr_thread = None
 
         if self._process is not None:
             if self._process.poll() is None:
@@ -135,6 +151,8 @@ class TrackerServiceManager:
             return copy.deepcopy(tool) if tool is not None else None
 
     def _launch_bridge_process(self) -> None:
+        if not self.aurora_port:
+            raise RuntimeError("Aurora port is empty. Configure aurora_port before starting tracker_bridge.")
         if not self.bridge_executable.exists():
             raise FileNotFoundError(f"tracker_bridge executable not found: {self.bridge_executable}")
 

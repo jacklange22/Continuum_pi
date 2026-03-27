@@ -11,6 +11,20 @@ echo "Project root: $ROOT_DIR"
 echo "Using Python: $PYTHON_BIN"
 echo "Virtualenv: $VENV_DIR"
 
+REQUESTED_PYTHON_MM="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
+if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'; then
+  echo "Python 3.11 or newer is required. $PYTHON_BIN resolved to Python $REQUESTED_PYTHON_MM." >&2
+  exit 1
+fi
+if [[ -x "$VENV_DIR/bin/python" ]]; then
+  EXISTING_PYTHON_MM="$("$VENV_DIR/bin/python" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
+  if [[ "$EXISTING_PYTHON_MM" != "$REQUESTED_PYTHON_MM" ]]; then
+    echo "Existing virtualenv uses Python $EXISTING_PYTHON_MM but $PYTHON_BIN is Python $REQUESTED_PYTHON_MM."
+    echo "Recreating virtualenv at $VENV_DIR to match the requested interpreter."
+    rm -rf "$VENV_DIR"
+  fi
+fi
+
 "$PYTHON_BIN" -m venv "$VENV_DIR"
 "$VENV_DIR/bin/python" -m pip install --upgrade pip
 
@@ -26,6 +40,7 @@ mkdir -p \
   "$ROOT_DIR/data/calibrations" \
   "$ROOT_DIR/data/logs" \
   "$ROOT_DIR/data/registrations" \
+  "$ROOT_DIR/data/tracker_captures" \
   "$ROOT_DIR/data/runs"
 
 if [[ "$BUILD_TRACKER_BRIDGE" == "1" ]]; then

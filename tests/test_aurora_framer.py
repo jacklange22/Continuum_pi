@@ -41,3 +41,19 @@ def test_find_start_index_rejects_even_dle_run_before_stx() -> None:
 def test_find_start_index_accepts_odd_dle_run_before_stx() -> None:
     data = bytearray([0x99, DLE, DLE, DLE, STX, 0x01, DLE, ETX])
     assert AuroraFramer._find_start_index(data) == 3
+
+
+def test_framer_preserves_trailing_dle_noise_until_frame_completes() -> None:
+    framer = AuroraFramer()
+    framer._buffer.extend(bytearray([0x99, DLE]))
+    assert framer.try_pop_frame() is None
+    assert bytes(framer._buffer) == bytes([DLE])
+
+
+def test_framer_recovers_split_frame_after_partial_prefix() -> None:
+    framer = AuroraFramer()
+    framer._buffer.extend(bytearray([DLE]))
+    assert framer.try_pop_frame() is None
+    framer._buffer.extend(bytearray([STX, 0x01, DLE, ETX]))
+    frame = framer.try_pop_frame()
+    assert frame == bytes([DLE, STX, 0x01, DLE, ETX])

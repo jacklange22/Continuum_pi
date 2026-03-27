@@ -13,6 +13,7 @@ from continuum_robot.registration.capture_session import RegistrationSession
 from continuum_robot.registration.repository import RegistrationRecord, RegistrationRepository
 from continuum_robot.registration.rigid_solver import RigidRegistrationSolver
 from continuum_robot.registration.validation import compute_fre_mm
+from continuum_robot.tracking.transforms import compose_T_A_C, make_transform_A_B
 from continuum_robot.tracking.tracker_service_manager import TrackerServiceManager
 
 
@@ -32,20 +33,23 @@ class LiveRegistrationService:
         tracker_manager: TrackerServiceManager,
         repository: RegistrationRepository,
         solver: RigidRegistrationSolver,
+        capture_tool_tip_transform: list[list[float]] | None = None,
     ) -> None:
         self.tracker_manager = tracker_manager
         self.repository = repository
         self.solver = solver
         self.session: RegistrationSession | None = None
         self.nominal_landmarks_robot_xyz_mm: dict[str, list[float]] = {}
-        self.capture_tool_id = "0A"
+        self.capture_tool_id = "0B"
+        self.capture_tool_tip_transform = self._coerce_transform(capture_tool_tip_transform)
 
     def begin_session(
         self,
         labels: list[str],
         captures_per_landmark: int,
         nominal_landmarks_robot_xyz_mm: dict[str, list[float]],
-        capture_tool_id: str = "0A",
+        capture_tool_id: str = "0B",
+        capture_tool_tip_transform: list[list[float]] | None = None,
     ) -> RegistrationSession:
         self.session = RegistrationSession(
             labels=labels,
@@ -54,6 +58,8 @@ class LiveRegistrationService:
         )
         self.nominal_landmarks_robot_xyz_mm = nominal_landmarks_robot_xyz_mm
         self.capture_tool_id = capture_tool_id
+        if capture_tool_tip_transform is not None:
+            self.capture_tool_tip_transform = self._coerce_transform(capture_tool_tip_transform)
         return self.session
 
     def capture_current_sample(self, label: str) -> list[float]:
@@ -69,7 +75,9 @@ class LiveRegistrationService:
         if not tool.valid:
             raise RuntimeError(f"Latest sample for {self.capture_tool_id} is not valid ({tool.status})")
 
-        sample = [float(tool.translation_mm[0]), float(tool.translation_mm[1]), float(tool.translation_mm[2])]
+        T_aurora_tool = make_transform_A_B(tool.quaternion, tool.translation_mm)
+        T_aurora_capture = compose_T_A_C(T_aurora_tool, self.capture_tool_tip_transform)
+        sample = [float(v) for v in T_aurora_capture[0:3, 3]]
         self.session.raw_points_by_label[label].append(sample)
         return sample
 
@@ -144,3 +152,12 @@ class LiveRegistrationService:
             return np.eye(4)
 
         return np.eye(4)
+
+    @staticmethod
+    def _coerce_transform(transform: list[list[float]] | None) -> np.ndarray:
+        if transform is None:
+            return np.eye(4)
+        matrix = np.asarray(transform, dtype=float)
+        if matrix.shape != (4, 4):
+            raise ValueError("capture_tool_tip_transform must be 4x4")
+        return matrix

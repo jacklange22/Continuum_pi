@@ -1,5 +1,15 @@
 landmark_labels: [L1, L2, L3, L4]
 captures_per_landmark: 5
+# This runtime uses tool 0B for registration capture.
+capture_tool_id: "0B"
+# Optional 4x4 transform from the tracked registration-coil frame into the
+# physical pen-tip frame. Leave unset if the tracked coil origin and probe tip
+# are effectively coincident for your workflow.
+# capture_tool_tip_transform:
+#   - [1.0, 0.0, 0.0, 0.0]
+#   - [0.0, 1.0, 0.0, 0.0]
+#   - [0.0, 0.0, 1.0, 0.0]
+#   - [0.0, 0.0, 0.0, 1.0]
 nominal_landmarks_robot_xyz_mm:
   L1: [0.0, 0.0, 0.0]
   L2: [30.0, 0.0, 0.0]

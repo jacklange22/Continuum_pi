@@ -37,3 +37,24 @@ def build_valid_transform_frame(frame_number: int = 123) -> bytes:
     )
     payload = build_transform_payload(frame_number=frame_number, records_blob=records)
     return frame_payload(payload)
+
+
+def build_transform_frame_from_records(frame_number: int, records: list[bytes]) -> bytes:
+    payload = build_transform_payload(frame_number=frame_number, records_blob=b"".join(records))
+    return frame_payload(payload)
+
+
+def build_tool_0A_record(
+    translation_xyz: tuple[float, float, float] = (10.0, 20.0, 30.0),
+    quat_wxyz: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
+    tracker_error: float = 0.01,
+) -> bytes:
+    return build_tool_record(0x00004130, quat_wxyz, translation_xyz, tracker_error)
+
+
+def build_tool_0B_record(
+    translation_xyz: tuple[float, float, float] = (11.0, 21.0, 31.0),
+    quat_wxyz: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0),
+    tracker_error: float = 0.02,
+) -> bytes:
+    return build_tool_record(0x00004230, quat_wxyz, translation_xyz, tracker_error)

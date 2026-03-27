@@ -5,7 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 import yaml
 
-from continuum_robot.config.schemas import RobotConfig, SafetyConfig, SerialConfig
+from continuum_robot.config.schemas import (
+    CalibrationConfig,
+    ExperimentConfig,
+    RegistrationWorkflowConfig,
+    RobotConfig,
+    RuntimeConfig,
+    SafetyConfig,
+    SerialConfig,
+)
 from continuum_robot.config.settings import Settings
 
 
@@ -17,37 +25,101 @@ class ConfigLoader:
         self.base_dir = base_dir or (project_root / "config")
 
     def load_settings(self) -> Settings:
-        """Load core configs from template files.
-
-        The default implementation is intentionally shallow for scaffold use.
-        """
-        robot_data = self._read_yaml(self.base_dir / "robot_4servo.yaml")
-        serial_data = self._merge_dicts(
+        """Load core configs from template files."""
+        system_data = self._merge_dicts(
             self._read_yaml(self.base_dir / "system.yaml"),
             self._read_yaml(self.base_dir / "system.local.yaml"),
         )
+        robot_path = self.base_dir / str(system_data.get("robot_config", "robot_4servo.yaml"))
+        robot_data = self._read_yaml(robot_path)
         safety_data = self._read_yaml(self.base_dir / "safety.yaml")
+        registration_data = self._read_yaml(self.base_dir / "registration.yaml")
+        experiment_data = self._read_yaml(self.base_dir / "experiment.yaml")
 
+        runtime = RuntimeConfig(
+            mock_mode=bool(system_data.get("mock_mode", True)),
+            poll_rate_hz=int(system_data.get("poll_rate_hz", 5)),
+            robot_config=robot_path.name,
+        )
         robot = RobotConfig(
-            mode=robot_data.get("mode", "4-servo"),
-            spool_diameter_cm=robot_data.get("spool_diameter_cm", 1.2),
-            servo_ids=robot_data.get("servo_ids", [1, 2, 3, 4]),
-            tendon_to_servo=robot_data.get("tendon_to_servo", [1, 2, 3, 4]),
+            mode=str(robot_data.get("mode", "4-servo")),
+            spool_diameter_cm=float(robot_data.get("spool_diameter_cm", 1.2)),
+            ticks_per_revolution=int(robot_data.get("ticks_per_revolution", 4096)),
+            servo_ids=[int(v) for v in robot_data.get("servo_ids", [1, 2, 3, 4])],
+            tendon_to_servo=[int(v) for v in robot_data.get("tendon_to_servo", [1, 2, 3, 4])],
         )
         serial = SerialConfig(
-            aurora_port=serial_data.get("aurora_port", ""),
-            openrb_port=serial_data.get("openrb_port", ""),
-            baudrate=serial_data.get("baudrate", 115200),
-            tracker_socket_path=serial_data.get("tracker_socket_path", "/tmp/tracker_bridge.sock"),
-            tracker_bridge_executable=serial_data.get("tracker_bridge_executable", "bin/tracker_bridge"),
-            tracker_poll_ms=int(serial_data.get("tracker_poll_ms", 20)),
+            aurora_port=str(system_data.get("aurora_port", "")),
+            openrb_port=str(system_data.get("openrb_port", "")),
+            baudrate=int(system_data.get("baudrate", 115200)),
+            read_timeout_s=float(system_data.get("read_timeout_s", 0.05)),
+            frame_timeout_s=float(system_data.get("frame_timeout_s", 0.5)),
+            reconnect_delay_s=float(system_data.get("reconnect_delay_s", 1.0)),
+            tracker_socket_path=str(system_data.get("tracker_socket_path", "/tmp/tracker_bridge.sock")),
+            tracker_bridge_executable=str(system_data.get("tracker_bridge_executable", "bin/tracker_bridge")),
+            tracker_poll_ms=int(system_data.get("tracker_poll_ms", 20)),
+            packet_capture_dir=str(system_data.get("packet_capture_dir", "data/tracker_captures")),
         )
         safety = SafetyConfig(
-            position_min_offset_ticks=safety_data.get("position_min_offset_ticks", -600),
-            position_max_offset_ticks=safety_data.get("position_max_offset_ticks", 600),
-            max_current_ma=safety_data.get("max_current_ma", 850),
+            position_min_offset_ticks=int(safety_data.get("position_min_offset_ticks", -600)),
+            position_max_offset_ticks=int(safety_data.get("position_max_offset_ticks", 600)),
+            max_current_ma=int(safety_data.get("max_current_ma", 850)),
+            pretension_current_balance_tolerance_ma=int(
+                safety_data.get("pretension_current_balance_tolerance_ma", 120)
+            ),
         )
-        return Settings(robot=robot, serial=serial, safety=safety)
+        registration = RegistrationWorkflowConfig(
+            landmark_labels=[str(v) for v in registration_data.get("landmark_labels", ["L1", "L2", "L3", "L4"])],
+            captures_per_landmark=int(registration_data.get("captures_per_landmark", 5)),
+            nominal_landmarks_robot_xyz_mm={
+                str(k): [float(v) for v in values]
+                for k, values in registration_data.get("nominal_landmarks_robot_xyz_mm", {}).items()
+            },
+            capture_tool_id=str(registration_data.get("capture_tool_id", "0B")),
+            capture_tool_tip_transform=self._maybe_matrix(
+                registration_data.get("capture_tool_tip_transform")
+            ),
+            max_fre_mm=self._maybe_float(
+                (registration_data.get("validation", {}) or {}).get("max_fre_mm", 2.0)
+            ),
+        )
+        experiment = ExperimentConfig(
+            default_settle_time_s=float(experiment_data.get("default_settle_time_s", 2.0)),
+            sample_count_per_point=int(experiment_data.get("sample_count_per_point", 1)),
+            output_dir=str(experiment_data.get("output_dir", "data/runs")),
+        )
+        calibration = CalibrationConfig(
+            neutral_setpoints_path=str(
+                system_data.get("neutral_setpoints_path", "data/calibrations/neutral_setpoints.json")
+            ),
+            latest_registration_path=str(
+                system_data.get("latest_registration_path", "data/registrations/latest_registration.json")
+            ),
+        )
+        return Settings(
+            runtime=runtime,
+            robot=robot,
+            serial=serial,
+            safety=safety,
+            registration=registration,
+            experiment=experiment,
+            calibration=calibration,
+        )
+
+    @staticmethod
+    def _maybe_float(value) -> float | None:
+        if value in (None, ""):
+            return None
+        return float(value)
+
+    @staticmethod
+    def _maybe_matrix(value) -> list[list[float]] | None:
+        if value in (None, ""):
+            return None
+        rows = [[float(item) for item in row] for row in value]
+        if len(rows) != 4 or any(len(row) != 4 for row in rows):
+            raise ValueError("capture_tool_tip_transform must be a 4x4 matrix when provided")
+        return rows
 
     @staticmethod
     def _read_yaml(path: Path) -> dict:
