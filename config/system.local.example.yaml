@@ -14,7 +14,9 @@ reconnect_delay_s: 1.0
 tracker_freshness_timeout_s: 0.5
 tracker_ports_to_probe: []
 tracker_settings_overrides: {}
-tracker_tool_id_aliases: {}
+tracker_tool_id_aliases:
+  "10": "0A"
+  "11": "0B"
 tracker_socket_path: "/tmp/tracker_bridge.sock"
 tracker_bridge_executable: "bin/tracker_bridge"
 tracker_poll_ms: 20
