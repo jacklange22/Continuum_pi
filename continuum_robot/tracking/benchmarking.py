@@ -86,11 +86,21 @@ def collect_tracking_snapshots(
     *,
     duration_s: float,
     sample_period_s: float = 0.05,
+    wait_for_first_frame_s: float = 0.0,
 ) -> list[tuple[float, TrackingSnapshot]]:
     """Collect timestamped tracking snapshots for a fixed window."""
+    poll_period = max(0.01, float(sample_period_s))
+    if wait_for_first_frame_s > 0.0:
+        deadline = time.monotonic() + max(0.0, float(wait_for_first_frame_s))
+        while time.monotonic() < deadline:
+            snapshot = tracking_service.get_snapshot()
+            frame_key = snapshot.backend_frame_counter if snapshot.backend_frame_counter > 0 else snapshot.last_frame_number
+            if frame_key is not None:
+                break
+            time.sleep(poll_period)
+
     start = time.monotonic()
     deadline = start + max(0.1, float(duration_s))
-    poll_period = max(0.01, float(sample_period_s))
     samples: list[tuple[float, TrackingSnapshot]] = []
 
     while True:
@@ -194,6 +204,12 @@ def compute_tracker_benchmark_report(
     failures: list[str] = []
     if not unique_frame_samples:
         failures.append("No tracker frames were observed during the benchmark window")
+        if final_snapshot.connection_state not in {"tracking", "reconnecting"}:
+            failures.append(f"Final connection state remained {final_snapshot.connection_state}")
+        if final_snapshot.raw_live_tool_ids:
+            failures.append(
+                "Live tools were detected but no advancing backend frame counter was observed in benchmark samples"
+            )
     elif effective_frame_rate_hz is None or effective_frame_rate_hz < thresholds.min_effective_fps:
         failures.append(
             f"Effective frame rate {effective_frame_rate_hz or 0.0:.2f} Hz is below "

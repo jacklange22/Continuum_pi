@@ -3,6 +3,17 @@ import numpy as np
 from continuum_robot.tracking.ndi_backend import TrackerBackendNDI, normalize_tool_id
 
 
+class _PoseFields:
+    def __init__(self, *, q0: float, qx: float, qy: float, qz: float, tx: float, ty: float, tz: float) -> None:
+        self.q0 = q0
+        self.qx = qx
+        self.qy = qy
+        self.qz = qz
+        self.tx = tx
+        self.ty = ty
+        self.tz = tz
+
+
 def test_normalize_tool_id_maps_expected_handles() -> None:
     assert normalize_tool_id(b"0A\x00")[0] == "0A"
     assert normalize_tool_id("port-0b")[0] == "0B"
@@ -102,6 +113,52 @@ def test_ndi_backend_maps_observed_live_handles_to_runtime_roles_by_default() ->
     assert debug["tool_id_mapping"] == {"10": "0A", "11": "0B"}
     assert debug["runtime_role_mappings"] == {"0A": "10", "0B": "11"}
     assert debug["unmapped_tool_ids"] == []
+
+
+def test_ndi_backend_parses_n_by_8_pose_vectors() -> None:
+    backend = TrackerBackendNDI("/dev/ttyUSB0", tracker_factory=lambda _settings: object())
+    frame_payload = (
+        ["10", "11"],
+        [1710000000.0, 1710000000.1],
+        [31, 31],
+        np.asarray(
+            [
+                [1.0, 0.0, 0.0, 0.0, 10.0, 20.0, 30.0, 0.15],
+                [1.0, 0.0, 0.0, 0.0, 40.0, 50.0, 60.0, 0.18],
+            ],
+            dtype=float,
+        ),
+        [None, None],
+    )
+
+    tools, latest_frame, debug = backend._parse_frame_payload(frame_payload, observed_at_utc="2026-01-01T00:00:00.000Z")
+
+    assert latest_frame == 31
+    assert tools["0A"].status == "tracked"
+    assert tools["0A"].translation_mm == (10.0, 20.0, 30.0)
+    assert tools["0A"].quality == 0.15
+    assert tools["0B"].status == "tracked"
+    assert tools["0B"].translation_mm == (40.0, 50.0, 60.0)
+    assert tools["0B"].quality == 0.18
+    assert debug["tool_payload_summaries"]["10"].endswith("pose_vector_wxyz_xyzq")
+
+
+def test_ndi_backend_parses_scalar_pose_fields() -> None:
+    backend = TrackerBackendNDI("/dev/ttyUSB0", tracker_factory=lambda _settings: object())
+    frame_payload = (
+        ["10"],
+        [1710000000.0],
+        [44],
+        [_PoseFields(q0=1.0, qx=0.0, qy=0.0, qz=0.0, tx=1.0, ty=2.0, tz=3.0)],
+        [0.12],
+    )
+
+    tools, latest_frame, debug = backend._parse_frame_payload(frame_payload, observed_at_utc="2026-01-01T00:00:00.000Z")
+
+    assert latest_frame == 44
+    assert tools["0A"].status == "tracked"
+    assert tools["0A"].translation_mm == (1.0, 2.0, 3.0)
+    assert debug["tool_payload_summaries"]["10"].endswith("scalar_pose_fields")
 
 
 def test_ndi_backend_marks_invalid_transform_explicitly() -> None:

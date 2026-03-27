@@ -51,6 +51,8 @@ def _render_tool_summary(snapshot, tool_id: str) -> str:
 
 def _render_failure_causes(snapshot) -> list[str]:
     causes: list[str] = []
+    if snapshot.connection_state not in {"tracking", "reconnecting"}:
+        causes.append(f"connection_state={snapshot.connection_state}")
     if snapshot.backend_frame_counter <= 0:
         causes.append("no_live_frames_returned")
     if not snapshot.raw_live_tool_ids:
@@ -60,7 +62,7 @@ def _render_failure_causes(snapshot) -> list[str]:
     for tool_id in ("0A", "0B"):
         tool = snapshot.tools[tool_id]
         if tool.tracking_state == "invalid":
-            causes.append(f"{tool_id}_invalid_transform")
+            causes.append(f"{tool_id}_invalid_transform_extraction")
     if snapshot.registration_state == "missing_registration":
         causes.append("registration_missing")
     return causes

@@ -5,6 +5,7 @@ from continuum_robot.services.models import (
 )
 from continuum_robot.tracking.benchmarking import (
     TrackerBenchmarkThresholds,
+    collect_tracking_snapshots,
     compute_tracker_benchmark_report,
 )
 
@@ -75,6 +76,17 @@ def _snapshot(
         else None,
         tools=tools,
     )
+
+
+class _FakeTrackingService:
+    def __init__(self, snapshots):
+        self._snapshots = list(snapshots)
+        self._index = 0
+
+    def get_snapshot(self):
+        snapshot = self._snapshots[min(self._index, len(self._snapshots) - 1)]
+        self._index += 1
+        return snapshot
 
 
 def test_tracker_benchmark_report_passes_on_good_stream() -> None:
@@ -148,3 +160,24 @@ def test_tracker_benchmark_uses_backend_frame_counter_when_device_frame_number_m
     assert report.passed is True
     assert report.unique_frames_observed == 3
     assert report.backend_frame_counter_final == 3
+
+
+def test_collect_tracking_snapshots_waits_for_first_frame_before_window() -> None:
+    service = _FakeTrackingService(
+        [
+            _snapshot(frame_number=None, backend_frame_counter=0, timestamp="2026-01-01T00:00:00.000Z", tool_0a_state="unknown", tool_0b_state="unknown"),
+            _snapshot(frame_number=None, backend_frame_counter=0, timestamp="2026-01-01T00:00:00.010Z", tool_0a_state="unknown", tool_0b_state="unknown"),
+            _snapshot(frame_number=7, backend_frame_counter=1, timestamp="2026-01-01T00:00:00.020Z", tool_0a_state="tracked", tool_0b_state="tracked"),
+            _snapshot(frame_number=8, backend_frame_counter=2, timestamp="2026-01-01T00:00:00.030Z", tool_0a_state="tracked", tool_0b_state="tracked"),
+        ]
+    )
+
+    samples = collect_tracking_snapshots(
+        service,
+        duration_s=0.05,
+        sample_period_s=0.01,
+        wait_for_first_frame_s=0.05,
+    )
+
+    assert samples
+    assert samples[0][1].backend_frame_counter >= 1

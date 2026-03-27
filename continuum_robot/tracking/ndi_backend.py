@@ -28,7 +28,7 @@ from typing import Any, Callable
 import numpy as np
 
 from continuum_robot.tracking.tracker_service_manager import TrackerRuntimeState, TrackerToolState
-from continuum_robot.tracking.transforms import assert_rigid_transform_matrix, rotmat_to_quat_wxyz
+from continuum_robot.tracking.transforms import assert_rigid_transform_matrix, make_transform_A_B, rotmat_to_quat_wxyz
 from continuum_robot.utils.time_utils import utc_now_iso
 
 DEFAULT_AURORA_TOOL_ID_ALIASES = {
@@ -133,6 +133,28 @@ def _coerce_list(value: Any) -> list[Any]:
     return [value]
 
 
+def _is_scalar_sequence(value: Any) -> bool:
+    if isinstance(value, np.ndarray):
+        array = np.asarray(value)
+        if array.ndim != 1:
+            return False
+        try:
+            np.asarray(value, dtype=float)
+            return True
+        except Exception:
+            return False
+    if not isinstance(value, (list, tuple)):
+        return False
+    for item in value:
+        if isinstance(item, (list, tuple, dict, np.ndarray)):
+            return False
+        try:
+            float(item)
+        except Exception:
+            return False
+    return True
+
+
 def _expand_list(value: Any, target_len: int) -> list[Any]:
     values = _coerce_list(value)
     if target_len <= 0:
@@ -150,14 +172,16 @@ def _split_tracking_values(value: Any) -> list[Any]:
     """Split tracker transform payloads into one item per observed tool."""
     if isinstance(value, np.ndarray):
         array = np.asarray(value)
-        if array.shape == (4, 4) or array.shape == (16,) or array.shape == (1, 16):
+        if array.shape in {(4, 4), (16,), (1, 16), (7,), (1, 7), (8,), (1, 8)}:
             return [array]
         if array.ndim == 3 and array.shape[-2:] == (4, 4):
             return [array[index] for index in range(array.shape[0])]
-        if array.ndim == 2 and array.shape[1] == 16:
+        if array.ndim == 2 and array.shape[1] in {7, 8, 16}:
             return [array[index] for index in range(array.shape[0])]
         return [array]
     if isinstance(value, (list, tuple)):
+        if _is_scalar_sequence(value):
+            return [list(value)]
         if len(value) == 4 and all(isinstance(item, (list, tuple, np.ndarray)) for item in value):
             matrix = np.asarray(value, dtype=float)
             if matrix.shape == (4, 4):
@@ -190,6 +214,189 @@ def _timestamp_to_iso(raw_timestamp: Any, fallback_utc: str) -> str:
         except Exception:
             return fallback_utc
     return fallback_utc
+
+
+def _coerce_vector(value: Any, length: int, *, field_name: str) -> tuple[float, ...]:
+    array = np.asarray(value, dtype=float)
+    if array.shape == (length,):
+        return tuple(float(v) for v in array)
+    if array.shape == (1, length):
+        return tuple(float(v) for v in array.reshape(length))
+    raise ValueError(f"{field_name} must have shape ({length},), got {array.shape}")
+
+
+def _quality_from_value(raw_quality: Any, *, fallback: float | None = None) -> float | None:
+    if raw_quality in (None, ""):
+        return fallback
+    try:
+        return float(raw_quality)
+    except Exception:
+        return fallback
+
+
+def _read_mapping_or_attr(container: Any, *names: str) -> Any:
+    if isinstance(container, dict):
+        for name in names:
+            if name in container:
+                return container[name]
+    for name in names:
+        if hasattr(container, name):
+            return getattr(container, name)
+    return None
+
+
+def _payload_summary(raw_transform: Any) -> str:
+    if raw_transform is None:
+        return "none"
+    if isinstance(raw_transform, np.ndarray):
+        return f"ndarray{tuple(raw_transform.shape)}"
+    if isinstance(raw_transform, dict):
+        keys = sorted(str(key) for key in raw_transform.keys())[:6]
+        return f"dict(keys={keys})"
+    if isinstance(raw_transform, (list, tuple)):
+        if _is_scalar_sequence(raw_transform):
+            return f"{type(raw_transform).__name__}[len={len(raw_transform)}]"
+        return f"{type(raw_transform).__name__}[len={len(raw_transform)}]"
+    return type(raw_transform).__name__
+
+
+def _matrix_from_quat_translation(
+    quat_wxyz: tuple[float, float, float, float],
+    translation_mm: tuple[float, float, float],
+    *,
+    tool_id: str,
+) -> tuple[np.ndarray, tuple[float, float, float, float], tuple[float, float, float]]:
+    T_aurora_tool = make_transform_A_B(quat_wxyz, translation_mm)
+    assert_rigid_transform_matrix(T_aurora_tool, f"T_aurora_{tool_id}")
+    quaternion = rotmat_to_quat_wxyz(T_aurora_tool[0:3, 0:3])
+    translation = tuple(float(v) for v in T_aurora_tool[0:3, 3])
+    return T_aurora_tool, quaternion, translation
+
+
+def _extract_pose_from_numeric_sequence(
+    raw_transform: Any,
+    *,
+    tool_id: str,
+) -> tuple[np.ndarray, tuple[float, float, float, float], tuple[float, float, float], str]:
+    values = np.asarray(raw_transform, dtype=float).reshape(-1)
+    if values.size == 7:
+        quat = tuple(float(v) for v in values[0:4])
+        translation = tuple(float(v) for v in values[4:7])
+        matrix, quaternion, translation = _matrix_from_quat_translation(quat, translation, tool_id=tool_id)
+        return matrix, quaternion, translation, "pose_vector_wxyz_xyz"
+    if values.size == 8:
+        quat = tuple(float(v) for v in values[0:4])
+        translation = tuple(float(v) for v in values[4:7])
+        matrix, quaternion, translation = _matrix_from_quat_translation(quat, translation, tool_id=tool_id)
+        return matrix, quaternion, translation, "pose_vector_wxyz_xyzq"
+    if values.size == 16:
+        matrix = coerce_transform_matrix(values, tool_id=tool_id)
+        quaternion = rotmat_to_quat_wxyz(matrix[0:3, 0:3])
+        translation = tuple(float(v) for v in matrix[0:3, 3])
+        return matrix, quaternion, translation, "matrix_vector_16"
+    raise ValueError(f"unsupported pose-vector length {values.size}")
+
+
+def _extract_pose_from_named_fields(
+    raw_transform: Any,
+    *,
+    tool_id: str,
+) -> tuple[np.ndarray, tuple[float, float, float, float], tuple[float, float, float], str] | None:
+    nested_matrix = _read_mapping_or_attr(raw_transform, "transform", "matrix", "T", "tracking", "pose")
+    if nested_matrix is not None and nested_matrix is not raw_transform:
+        try:
+            matrix = coerce_transform_matrix(nested_matrix, tool_id=tool_id)
+            quaternion = rotmat_to_quat_wxyz(matrix[0:3, 0:3])
+            translation = tuple(float(v) for v in matrix[0:3, 3])
+            return matrix, quaternion, translation, "named_matrix_field"
+        except Exception:
+            pass
+
+    quat_value = _read_mapping_or_attr(
+        raw_transform,
+        "quaternion_wxyz",
+        "quaternion",
+        "quat",
+        "orientation",
+        "rotation",
+    )
+    translation_value = _read_mapping_or_attr(
+        raw_transform,
+        "translation_mm",
+        "translation_xyz",
+        "translation",
+        "position_mm",
+        "position",
+    )
+    if quat_value is not None or translation_value is not None:
+        if quat_value is None or translation_value is None:
+            raise ValueError("missing quaternion/translation fields")
+        quat = _coerce_vector(quat_value, 4, field_name="quaternion")
+        translation = _coerce_vector(translation_value, 3, field_name="translation")
+        matrix, quaternion, translation = _matrix_from_quat_translation(quat, translation, tool_id=tool_id)
+        return matrix, quaternion, translation, "named_quaternion_translation"
+
+    qx = _read_mapping_or_attr(raw_transform, "qx")
+    qy = _read_mapping_or_attr(raw_transform, "qy")
+    qz = _read_mapping_or_attr(raw_transform, "qz")
+    qw = _read_mapping_or_attr(raw_transform, "q0", "qw")
+    tx = _read_mapping_or_attr(raw_transform, "tx", "x")
+    ty = _read_mapping_or_attr(raw_transform, "ty", "y")
+    tz = _read_mapping_or_attr(raw_transform, "tz", "z")
+    if all(value is not None for value in (qx, qy, qz, qw, tx, ty, tz)):
+        quat = (float(qw), float(qx), float(qy), float(qz))
+        translation = (float(tx), float(ty), float(tz))
+        matrix, quaternion, translation = _matrix_from_quat_translation(quat, translation, tool_id=tool_id)
+        return matrix, quaternion, translation, "scalar_pose_fields"
+
+    return None
+
+
+def _extract_transform_payload(
+    raw_transform: Any,
+    *,
+    tool_id: str,
+    fallback_quality: float | None,
+) -> tuple[np.ndarray, tuple[float, float, float, float], tuple[float, float, float], float | None, str]:
+    summary = _payload_summary(raw_transform)
+
+    named = _extract_pose_from_named_fields(raw_transform, tool_id=tool_id)
+    if named is not None:
+        matrix, quaternion, translation, parse_mode = named
+        payload_quality = _quality_from_value(
+            _read_mapping_or_attr(raw_transform, "quality", "error", "tracking_error"),
+            fallback=fallback_quality,
+        )
+        return matrix, quaternion, translation, payload_quality, f"{summary}:{parse_mode}"
+
+    if isinstance(raw_transform, np.ndarray):
+        matrix_or_pose = np.asarray(raw_transform)
+        if matrix_or_pose.shape in {(4, 4), (16,), (1, 16)}:
+            matrix = coerce_transform_matrix(matrix_or_pose, tool_id=tool_id)
+            quaternion = rotmat_to_quat_wxyz(matrix[0:3, 0:3])
+            translation = tuple(float(v) for v in matrix[0:3, 3])
+            return matrix, quaternion, translation, fallback_quality, f"{summary}:matrix"
+        matrix, quaternion, translation, parse_mode = _extract_pose_from_numeric_sequence(
+            matrix_or_pose,
+            tool_id=tool_id,
+        )
+        payload_quality = fallback_quality
+        if matrix_or_pose.reshape(-1).size == 8:
+            payload_quality = _quality_from_value(matrix_or_pose.reshape(-1)[7], fallback=fallback_quality)
+        return matrix, quaternion, translation, payload_quality, f"{summary}:{parse_mode}"
+
+    if _is_scalar_sequence(raw_transform):
+        matrix, quaternion, translation, parse_mode = _extract_pose_from_numeric_sequence(
+            raw_transform,
+            tool_id=tool_id,
+        )
+        flat = np.asarray(raw_transform, dtype=float).reshape(-1)
+        payload_quality = fallback_quality
+        if flat.size == 8:
+            payload_quality = _quality_from_value(flat[7], fallback=fallback_quality)
+        return matrix, quaternion, translation, payload_quality, f"{summary}:{parse_mode}"
+
+    raise ValueError(f"unsupported tracking payload {summary}")
 
 
 def coerce_transform_matrix(raw_transform: Any, *, tool_id: str) -> np.ndarray:
@@ -495,6 +702,7 @@ class TrackerBackendNDI:
         tool_id_mapping: dict[str, str] = {}
         runtime_role_mappings: dict[str, str] = {}
         unmapped_tool_ids: list[str] = []
+        tool_payload_summaries: dict[str, str] = {}
 
         for index in range(sample_count):
             raw_handle = raw_handles[index]
@@ -521,6 +729,7 @@ class TrackerBackendNDI:
             raw_transform = raw_tracking[index]
 
             if raw_transform is None:
+                tool_payload_summaries[raw_text or tool_id] = "none:missing"
                 candidate = TrackerToolState(
                     tool_id=tool_id,
                     frame_number=frame_number,
@@ -534,9 +743,12 @@ class TrackerBackendNDI:
                 )
             else:
                 try:
-                    T_aurora_tool = coerce_transform_matrix(raw_transform, tool_id=tool_id)
-                    quaternion = rotmat_to_quat_wxyz(T_aurora_tool[0:3, 0:3])
-                    translation = tuple(float(v) for v in T_aurora_tool[0:3, 3])
+                    _T_aurora_tool, quaternion, translation, quality, payload_summary = _extract_transform_payload(
+                        raw_transform,
+                        tool_id=tool_id,
+                        fallback_quality=quality,
+                    )
+                    tool_payload_summaries[raw_text or tool_id] = payload_summary
                     candidate = TrackerToolState(
                         tool_id=tool_id,
                         frame_number=frame_number,
@@ -549,6 +761,7 @@ class TrackerBackendNDI:
                         timestamp=timestamp,
                     )
                 except Exception as exc:
+                    tool_payload_summaries[raw_text or tool_id] = f"{_payload_summary(raw_transform)}:error={exc}"
                     candidate = TrackerToolState(
                         tool_id=tool_id,
                         frame_number=frame_number,
@@ -579,6 +792,7 @@ class TrackerBackendNDI:
             "tool_id_mapping": dict(tool_id_mapping),
             "runtime_role_mappings": dict(runtime_role_mappings),
             "unmapped_tool_ids": list(dict.fromkeys(unmapped_tool_ids)),
+            "tool_payload_summaries": dict(tool_payload_summaries),
         }
         return tools, latest_frame, debug
 
@@ -609,6 +823,7 @@ class TrackerBackendNDI:
             tuple(sorted((debug.get("tool_id_mapping", {}) or {}).items())),
             tuple(sorted((debug.get("runtime_role_mappings", {}) or {}).items())),
             tuple(debug.get("unmapped_tool_ids", [])),
+            tuple(sorted((debug.get("tool_payload_summaries", {}) or {}).items())),
         )
         if signature == self._last_debug_signature:
             return
@@ -619,7 +834,8 @@ class TrackerBackendNDI:
             f"frame={latest_frame} raw_tool_ids={debug.get('raw_tool_ids', [])} "
             f"normalized_tool_ids={debug.get('normalized_tool_ids', [])} "
             f"runtime_role_mappings={debug.get('runtime_role_mappings', {})} "
-            f"unmapped={debug.get('unmapped_tool_ids', [])}",
+            f"unmapped={debug.get('unmapped_tool_ids', [])} "
+            f"payloads={debug.get('tool_payload_summaries', {})}",
             file=sys.stderr,
             flush=True,
         )

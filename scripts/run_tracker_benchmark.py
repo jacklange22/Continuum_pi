@@ -116,6 +116,7 @@ def main() -> int:
     print(f"Runtime backend identity: {tracking_service.backend_identity}")
     print(f"Tracker port: {configured_tracker_port or '/dev/mock-aurora'}")
     print(f"Benchmark duration: {args.duration_s:.2f}s")
+    print(f"Startup wait: {max(2.0, float(args.duration_s)):.2f}s")
     print(
         "Thresholds: "
         f"min_fps={thresholds.min_effective_fps:.2f}, "
@@ -130,6 +131,7 @@ def main() -> int:
             tracking_service,
             duration_s=args.duration_s,
             sample_period_s=args.sample_period_s,
+            wait_for_first_frame_s=max(2.0, float(args.duration_s)),
         )
         report = compute_tracker_benchmark_report(samples, thresholds=thresholds)
     except Exception as exc:

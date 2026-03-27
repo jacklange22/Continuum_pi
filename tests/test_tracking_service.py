@@ -185,6 +185,42 @@ def test_tracking_service_live_backend_marks_invalid_transform(tmp_path: Path) -
     assert "invalid_0A" in snapshot.faults
 
 
+def test_tracking_service_preserves_backend_invalid_reason_when_pose_missing(tmp_path: Path) -> None:
+    backend = _FakeLiveBackend(
+        _live_state(
+            frame_number=9,
+            tools={
+                "0A": TrackerToolState(
+                    tool_id="0A",
+                    frame_number=9,
+                    valid=False,
+                    validity_known=True,
+                    status="invalid_transform: ndarray(2, 8): unsupported payload",
+                    quaternion=None,
+                    translation_mm=None,
+                    quality=0.1,
+                    timestamp="2026-01-01T00:00:00Z",
+                )
+            },
+        )
+    )
+    service = TrackingService(
+        live_backend=backend,
+        port="/dev/ttyUSB0",
+        registration_path=tmp_path / "missing_registration.json",
+        config_source="test",
+    )
+
+    service.start()
+    try:
+        snapshot = service.get_snapshot()
+    finally:
+        service.stop()
+
+    assert snapshot.tools["0A"].tracking_state == "invalid"
+    assert snapshot.tools["0A"].status == "invalid_transform: ndarray(2, 8): unsupported payload"
+
+
 def test_tracking_service_reports_unknown_before_live_frames_arrive(tmp_path: Path) -> None:
     backend = _FakeLiveBackend(_live_state(frame_number=None, tools={}, connection_state="connecting"))
     service = TrackingService(

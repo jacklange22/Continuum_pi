@@ -589,12 +589,15 @@ class TrackingService:
         quat = tuple(float(v) for v in (raw_tool.quaternion or ()))
         translation = tuple(float(v) for v in (raw_tool.translation_mm or ()))
         if len(quat) != 4 or len(translation) != 3:
+            status = raw_tool.status
+            if tracking_state != "invalid":
+                status = "invalid_transform: missing quaternion/translation payload"
             self._set_tool_state_locked(
                 tool_state,
                 frame_number=raw_frame_number,
                 packet_timestamp=raw_timestamp,
                 tracking_state="invalid",
-                status="invalid_transform: missing quaternion/translation payload",
+                status=status,
                 valid=False,
                 validity_known=True,
                 quat=None,
