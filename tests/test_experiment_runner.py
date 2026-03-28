@@ -1,9 +1,15 @@
-import json
 from pathlib import Path
 
-import numpy as np
-
-from continuum_robot.experiments.dat_writer import DatRunWriter
+from continuum_robot.config.schemas import (
+    CalibrationConfig,
+    ExperimentConfig,
+    RegistrationWorkflowConfig,
+    RobotConfig,
+    RuntimeConfig,
+    SafetyConfig,
+    SerialConfig,
+)
+from continuum_robot.config.settings import Settings
 from continuum_robot.experiments.experiment_models import ExperimentPoint
 from continuum_robot.experiments.experiment_runner import ExperimentRunner
 from continuum_robot.hardware.mock_dxl_bus import MockDxlBus
@@ -16,18 +22,28 @@ from continuum_robot.servos.servo_service import ServoService
 from continuum_robot.tracking.mock_tracker_manager import MockTrackerManager
 
 
-def test_experiment_runner_writes_one_dat_file_per_run(tmp_path: Path) -> None:
-    registration_path = tmp_path / "latest_registration.json"
-    registration_path.write_text(
-        json.dumps(
-            {
-                "T_robot_aurora": np.eye(4).tolist(),
-                "T_coil_tip": np.eye(4).tolist(),
-            }
+def _settings() -> Settings:
+    return Settings(
+        runtime=RuntimeConfig(mock_mode=True, poll_rate_hz=20, robot_config="robot_4servo.yaml"),
+        robot=RobotConfig(mode="4-servo", spool_diameter_cm=1.2, ticks_per_revolution=4096, servo_ids=[1, 2, 3, 4]),
+        serial=SerialConfig(aurora_port="/dev/mock-aurora", openrb_port="/dev/mock-openrb", baudrate=115200),
+        safety=SafetyConfig(
+            position_min_offset_ticks=-600,
+            position_max_offset_ticks=600,
+            max_current_ma=850,
+            pretension_current_balance_tolerance_ma=120,
         ),
-        encoding="utf-8",
+        registration=RegistrationWorkflowConfig(capture_tool_id="0B", coil_tool_id="0A", max_fre_mm=None),
+        experiment=ExperimentConfig(default_settle_time_s=0.0, sample_count_per_point=1, output_dir="data/experiments"),
+        calibration=CalibrationConfig(
+            neutral_setpoints_path="data/calibrations/neutral_setpoints.json",
+            latest_registration_path="data/registrations/latest_registration.json",
+        ),
     )
 
+
+def test_experiment_runner_routes_csv_points_through_canonical_dataset(tmp_path: Path) -> None:
+    settings = _settings()
     servo_service = ServoService(
         dxl_bus=MockDxlBus([1, 2, 3, 4]),
         mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
@@ -35,32 +51,34 @@ def test_experiment_runner_writes_one_dat_file_per_run(tmp_path: Path) -> None:
         neutral_calibration=NeutralCalibrationService(path=tmp_path / "neutral.json"),
         pretension_validation=PretensionValidationService(),
     )
-    servo_service.connect("/dev/mock-openrb", 115200)
-    servo_service.save_neutral_setpoints(servo_service.capture_neutral_setpoints([1, 2, 3, 4]))
-
     tracking_service = TrackingService(
-        live_backend=MockTrackerManager(poll_hz=10),
-        port="/dev/mock-aurora",
-        registration_path=registration_path,
+        live_backend=MockTrackerManager(poll_hz=30),
+        port=settings.serial.aurora_port,
+        registration_path=tmp_path / "latest_registration.json",
         config_source="test",
+        runtime_coil_tool_id=settings.registration.coil_tool_id,
+        registration_tool_id=settings.registration.capture_tool_id,
     )
-    tracking_service.start()
-    try:
-        runner = ExperimentRunner(
-            servo_service=servo_service,
-            tracking_service=tracking_service,
-            dat_writer=DatRunWriter(tmp_path / "runs"),
-            neutral_servo_ids=[1, 2, 3, 4],
-            default_settle_time_s=0.0,
-            registration_path=registration_path,
-            sleep_fn=lambda _seconds: None,
-        )
-        summary = runner.run([ExperimentPoint(index=0, tendon_displacement_cm=[0.0, 0.1, -0.1, 0.0])])
-    finally:
-        tracking_service.stop()
+    runner = ExperimentRunner(
+        project_root=Path(__file__).resolve().parents[1],
+        settings=settings,
+        tracking_service=tracking_service,
+        servo_service=servo_service,
+        output_dir=tmp_path / "runs",
+        default_settle_time_s=0.0,
+        registration_path=tmp_path / "latest_registration.json",
+        sleep_fn=lambda _seconds: None,
+    )
 
-    text = summary.output_path.read_text(encoding="utf-8")
-    assert summary.rows_written == 1
+    summary = runner.run(
+        [
+            ExperimentPoint(index=0, tendon_displacement_cm=[0.0, 0.1, -0.1, 0.0]),
+            ExperimentPoint(index=1, tendon_displacement_cm=[0.1, 0.0, 0.0, 0.0], repeat=2),
+        ]
+    )
+
+    assert summary.rows_written == 12
     assert summary.output_path.exists()
-    assert "NUM_MEASUREMENTS: 1" in text
-    assert "0,0,0.0,0.1,-0.1,0.0" in text
+    assert (summary.output_path / "metadata.json").exists()
+    assert (summary.output_path / "samples.jsonl").exists()
+    assert (summary.output_path / "summary.json").exists()

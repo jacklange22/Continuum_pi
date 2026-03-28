@@ -1,0 +1,11 @@
+dry_run: true
+sample_count_per_point: 2
+settle_time_s: 0.0
+command_schedule:
+  kind: "trajectory"
+  dimensions: 4
+  trajectory_points_cm:
+    - [0.0, 0.0, 0.0, 0.0]
+    - [0.1, 0.0, 0.0, 0.0]
+    - [0.0, 0.1, 0.0, 0.0]
+    - [0.0, 0.0, -0.1, 0.0]

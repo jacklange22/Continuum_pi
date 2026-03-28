@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "pivot_calibration",
+  "run_id": "8e7c52a7b76a",
+  "success": true,
+  "sample_counts": {
+    "total": 10,
+    "phase::pivot_sample": 10
+  },
+  "dropped_frames": 0,
+  "invalid_transforms": 0,
+  "stage_pass_fail": {
+    "setup": "passed",
+    "precheck": "passed",
+    "execute": "passed",
+    "finalize": "passed"
+  },
+  "status": "success",
+  "experiment_metrics": {
+    "tip_vector_local_mm": [
+      9.999999999999998,
+      19.999999999999996,
+      99.99999999999994
+    ],
+    "pivot_point_tracker_mm": [
+      24.99999999999999,
+      -10.000000000000004,
+      39.99999999999997
+    ],
+    "rmse_mm": 4.828701872720809e-14,
+    "sample_count_total": 10,
+    "sample_count_used": 10,
+    "sample_count_rejected": 0,
+    "tip_output_file": "/Users/jacklange/Continuum/pi_code/data/tip_cals/generated_penprobe_tip.csv",
+    "tip_calibration_available": true,
+    "status": "success",
+    "summary_requirements": {
+      "force_status": "success"
+    }
+  },
+  "warning_messages": [],
+  "error_messages": []
+}

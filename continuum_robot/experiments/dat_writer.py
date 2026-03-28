@@ -1,4 +1,7 @@
-"""Run output writer for one .dat file per experiment run."""
+"""Legacy `.dat` writer retained only for compatibility.
+
+Prefer the canonical dataset writer in `continuum_robot.experiments.dataset_io`.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +10,7 @@ from pathlib import Path
 
 
 class DatRunWriter:
-    """Write a repeatability-style .dat output file."""
+    """Write a repeatability-style `.dat` output file."""
 
     def __init__(self, output_dir: Path) -> None:
         self.output_dir = output_dir

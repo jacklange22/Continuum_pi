@@ -1,0 +1,148 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "aurora_grid_accuracy",
+  "run_id": "3e2687f53486",
+  "success": true,
+  "sample_counts": {
+    "total": 54,
+    "phase::sample": 54
+  },
+  "dropped_frames": 0,
+  "invalid_transforms": 0,
+  "stage_pass_fail": {
+    "setup": "passed",
+    "precheck": "passed",
+    "execute": "passed",
+    "finalize": "passed"
+  },
+  "status": "success",
+  "experiment_metrics": {
+    "status": "success",
+    "per_point_metrics": {
+      "0": {
+        "count": 6,
+        "mean_measured_position_mm": [
+          0.17457399420562916,
+          0.03584206493377928,
+          0.08192341266188023
+        ],
+        "sample_spread_rms_mm": 0.3286353138140502,
+        "outlier_count": 0,
+        "rms_error_mm": 0.38271836655620833
+      },
+      "1": {
+        "count": 6,
+        "mean_measured_position_mm": [
+          25.454230429817656,
+          -0.13090555605065327,
+          -0.07564470106584645
+        ],
+        "sample_spread_rms_mm": 0.33679732227737436,
+        "outlier_count": 0,
+        "rms_error_mm": 0.3731377241926757
+      },
+      "2": {
+        "count": 6,
+        "mean_measured_position_mm": [
+          51.05589694261642,
+          -0.1724784626075002,
+          0.1038652123138792
+        ],
+        "sample_spread_rms_mm": 0.3562501813807277,
+        "outlier_count": 0,
+        "rms_error_mm": 0.48263261324395224
+      },
+      "3": {
+        "count": 6,
+        "mean_measured_position_mm": [
+          51.05693930564444,
+          25.258579756310294,
+          0.08097168691796186
+        ],
+        "sample_spread_rms_mm": 0.3273508694007873,
+        "outlier_count": 0,
+        "rms_error_mm": 0.44691441897761225
+      },
+      "4": {
+        "count": 6,
+        "mean_measured_position_mm": [
+          25.738669116227147,
+          25.14779861804195,
+          0.17145936641375895
+        ],
+        "sample_spread_rms_mm": 0.41004317648484706,
+        "outlier_count": 0,
+        "rms_error_mm": 0.6130546698789738
+      },
+      "5": {
+        "count": 6,
+        "mean_measured_position_mm": [
+          0.23334047743126538,
+          25.24936495106591,
+          0.10006933021522425
+        ],
+        "sample_spread_rms_mm": 0.3957067618331193,
+        "outlier_count": 0,
+        "rms_error_mm": 0.4936966767007879
+      },
+      "6": {
+        "count": 6,
+        "mean_measured_position_mm": [
+          0.31225771603274927,
+          50.606725980319425,
+          0.17074857427463366
+        ],
+        "sample_spread_rms_mm": 0.4496103012416973,
+        "outlier_count": 0,
+        "rms_error_mm": 0.6051150522875327
+      },
+      "7": {
+        "count": 6,
+        "mean_measured_position_mm": [
+          25.682231515223943,
+          50.65471244560457,
+          -0.04609071959204197
+        ],
+        "sample_spread_rms_mm": 0.37741578182332935,
+        "outlier_count": 0,
+        "rms_error_mm": 0.49530811466160474
+      },
+      "8": {
+        "count": 6,
+        "mean_measured_position_mm": [
+          50.94308354233764,
+          50.723381510069686,
+          0.2731417481937975
+        ],
+        "sample_spread_rms_mm": 0.3963217424531628,
+        "outlier_count": 0,
+        "rms_error_mm": 0.5079573124137142
+      }
+    },
+    "pointwise_rms_error_mm": {
+      "0": 0.38271836655620833,
+      "1": 0.3731377241926757,
+      "2": 0.48263261324395224,
+      "3": 0.44691441897761225,
+      "4": 0.6130546698789738,
+      "5": 0.4936966767007879,
+      "6": 0.6051150522875327,
+      "7": 0.49530811466160474,
+      "8": 0.5079573124137142
+    },
+    "overall_rms_error_mm": 0.49525069629283985,
+    "per_axis_bias_mm": [
+      0.22791367105965557,
+      -0.13633096581250106,
+      0.09560487892591638
+    ],
+    "outlier_count": 0,
+    "registration_available": false,
+    "tip_calibration_available": true,
+    "summary_requirements": {
+      "force_status": "success"
+    }
+  },
+  "warning_messages": [],
+  "error_messages": []
+}

@@ -47,6 +47,7 @@ Legacy registration compatibility is preserved:
 
 - `continuum_robot/`: Python app, services, tracking, registration, GUI, config loading
 - `config/`: runtime YAML configuration
+- `docs/`: migration notes and operator-facing design notes
 - `scripts/`: bootstrap, diagnostics, benchmark, validation, launch helpers
 - `tests/`: unit and mock-backed integration coverage
 - `data/`: runtime outputs for registrations, captures, runs, logs, calibrations
@@ -506,6 +507,183 @@ In mock mode:
 - backend identity is `mock_tracker_manager`
 - tools `0A` and `0B` are synthetic but valid
 - GUI, registration flow, and experiments can be exercised without Aurora hardware
+
+## Canonical Experiment Framework
+
+The experiment subsystem now uses one shared path instead of one-off scripts:
+
+- [framework.py](/Users/jacklange/Continuum/pi_code/continuum_robot/experiments/framework.py) defines experiment lifecycle hooks and declared hardware requirements
+- [schemas.py](/Users/jacklange/Continuum/pi_code/continuum_robot/experiments/schemas.py) defines canonical metadata, timeseries, and summary schemas
+- [schedules.py](/Users/jacklange/Continuum/pi_code/continuum_robot/experiments/schedules.py) generates deterministic sweep, grid, trajectory, and babble schedules
+- [dataset_io.py](/Users/jacklange/Continuum/pi_code/continuum_robot/experiments/dataset_io.py) writes and reloads canonical datasets
+- [builtins.py](/Users/jacklange/Continuum/pi_code/continuum_robot/experiments/builtins.py) contains the generic built-in diagnostics and compatibility experiment
+- [critical_experiments.py](/Users/jacklange/Continuum/pi_code/continuum_robot/experiments/critical_experiments.py) contains the project-critical first-class experiments
+- [metrics.py](/Users/jacklange/Continuum/pi_code/continuum_robot/experiments/metrics.py), [pivot_utils.py](/Users/jacklange/Continuum/pi_code/continuum_robot/experiments/pivot_utils.py), and [validation.py](/Users/jacklange/Continuum/pi_code/continuum_robot/experiments/validation.py) provide shared analysis and status classification
+- [experiment_runner.py](/Users/jacklange/Continuum/pi_code/continuum_robot/experiments/experiment_runner.py) is the canonical runner and compatibility seam for the current GUI
+- [run_experiment.py](/Users/jacklange/Continuum/pi_code/scripts/run_experiment.py) is the canonical CLI entry path
+
+Architecture:
+
+```text
+Experiment CLI / GUI
+  -> ExperimentRunner
+      -> registered experiment definition
+      -> TrackingService / ServoService as needed
+      -> canonical dataset writer
+          -> metadata.json
+          -> samples.jsonl
+          -> summary.json
+```
+
+Every run writes one directory under `data/experiments/` containing:
+
+- `metadata.json`
+- `samples.jsonl`
+- `summary.json`
+
+### Project-Critical Experiments
+
+- `pivot_calibration`
+  - purpose: generate the pen-probe tip file before registration
+  - prerequisites: no registration required; can run from an existing CSV or canonical dataset
+  - inspect: `tip_vector_local_mm`, `rmse_mm`, `sample_count_used`, `sample_count_rejected`
+  - outputs: canonical dataset bundle plus the configured tip vector file
+- `aurora_grid_accuracy`
+  - purpose: characterize Aurora tracker bias, RMS error, and spread independently of robot repeatability
+  - prerequisites: no registration if the truth grid is in tracker frame; tip calibration optional/configurable
+  - inspect: `overall_rms_error_mm`, `per_axis_bias_mm`, `per_point_metrics`, `outlier_count`
+  - outputs: canonical raw samples in `samples.jsonl` and reduced per-point metrics in `summary.json`
+- `repeatability_dataset`
+  - purpose: the main command-plus-pose dataset experiment for robot repeatability
+  - prerequisites: none for tracker-frame dry-run/mock datasets; registration required only for robot-frame pose analysis
+  - inspect: `per_target_metrics`, `overall_repeatability_rms_mm`, `approach_conditioned_spread_mm`, dropped/invalid counts
+  - outputs: canonical metadata, phase-aware timeseries samples, and repeatability summary metrics
+
+Recommended hardware workflow:
+
+1. Run `pivot_calibration` to generate or refresh the pen-probe tip file.
+2. Run `aurora_grid_accuracy` to verify the tracker is healthy before doing registration.
+3. Run registration.
+4. Run `repeatability_dataset` to collect the main robot dataset.
+
+### GUI Experiment Workspace
+
+Launch the full operator app:
+
+```bash
+scripts/run_gui.sh
+```
+
+The `Experiment` tab is now the canonical operator workspace for:
+
+- `repeatability_dataset`
+- `aurora_grid_accuracy`
+- `pivot_calibration`
+
+What the workspace shows:
+
+- a dedicated selector for the three critical experiments
+- a YAML config panel backed by the same canonical experiment runner used by the CLI
+- a preflight panel with per-check status and one overall run state:
+  - `ok_to_run`
+  - `ok_with_warning`
+  - `blocked`
+- a compact run checklist card showing experiment, backend, dry-run/live mode, tool ids, tip file, registration file, and planned output path
+- an interactive 3D view for live or reloaded samples
+- an embedded results viewer with summary text and experiment-specific plots
+- run history loading so prior runs can be reviewed without hardware attached
+
+What the 3D view shows:
+
+- `repeatability_dataset`
+  - logged sample points
+  - target centroids
+  - coloring by target, validity, phase, or revisit index
+- `aurora_grid_accuracy`
+  - measured sample points
+  - truth grid points when available
+  - coloring by point, validity, phase, or repetition
+- `pivot_calibration`
+  - pivot sample cloud
+  - inlier/outlier coloring after a solved run
+
+How preflight validation works:
+
+- runs are blocked for invalid config, missing required files, missing live prerequisites in live mode, or dimensionality mismatches
+- warnings are used only for optional-but-important conditions such as missing registration for tracker-frame repeatability runs or coil-origin fallback in grid accuracy
+- pivot runs require explicit overwrite confirmation when the configured tip output file already exists
+
+How to review prior runs:
+
+1. Launch the GUI.
+2. Open the `Experiment` tab.
+3. Use `Open Run Folder` or double-click a run in `Run History`.
+4. The config snapshot, summary, plots, and 3D sample view are repopulated from the saved dataset bundle.
+
+### Run Without Hardware
+
+List available experiments:
+
+```bash
+.venv/bin/python scripts/run_experiment.py --list
+```
+
+Diagnostic experiments that work in mock/offline mode:
+
+```bash
+.venv/bin/python scripts/run_experiment.py --experiment tracker_pipeline_mock
+.venv/bin/python scripts/run_experiment.py --experiment transform_chain_validation
+.venv/bin/python scripts/run_experiment.py --experiment command_schedule_validation --config config/experiment_command_schedule_validation.example.yaml
+.venv/bin/python scripts/run_experiment.py --experiment dataset_schema_roundtrip
+```
+
+Replay a previous dataset:
+
+```bash
+.venv/bin/python scripts/run_experiment.py --experiment replay_runner --config config/experiment_replay_runner.example.yaml
+```
+
+Project-critical experiments that work before hardware is back:
+
+```bash
+.venv/bin/python scripts/run_experiment.py \
+  --experiment repeatability_dataset \
+  --config config/experiment_repeatability_dataset.example.yaml
+
+.venv/bin/python scripts/run_experiment.py \
+  --experiment aurora_grid_accuracy \
+  --config config/experiment_aurora_grid_accuracy.example.yaml
+
+.venv/bin/python scripts/run_experiment.py \
+  --experiment pivot_calibration \
+  --config config/experiment_pivot_calibration.example.yaml
+```
+
+What the repeatability and grid datasets record:
+
+- lifecycle phases such as `setup`, `neutral_home`, `command_sequence`, `settle`, `sample`, and `finalize`
+- commanded cable deltas
+- commanded motor values when available or computable in dry-run
+- tracker frame ids, tool ids seen, transform validity, freshness, and backend health
+- pose in tracker frame
+- pose in robot/model frame when registration exists
+- explicit status flags when registration is missing versus when full pose is available
+
+The older `collect_pose_command_dataset` experiment remains available as a generic compatibility path for the current GUI and for ad hoc command schedules, but the three experiments above are now the canonical project-facing workflow.
+
+### Hardware-Backed Fit Later
+
+When Aurora and OpenRB are available again:
+
+- `repeatability_dataset` can switch from `dry_run: true` to `dry_run: false`
+- `aurora_grid_accuracy` can run against the real pen probe and a measured grid truth set
+- `pivot_calibration` can collect live pivot poses instead of replaying an existing file
+- servo-connected runs will send real commands through `ServoService`
+- tracker-backed runs will continue to consume the canonical `TrackingService`
+- registration will remain optional for tracker-frame datasets but required for robot-frame pose outputs
+- future timing, hysteresis, transient, and tensioning studies should be implemented as new registered experiments or schedule/config variants, not as standalone helper scripts
+
+Migration notes for the old experiment ideas are in [experiments_migration.md](/Users/jacklange/Continuum/pi_code/docs/experiments_migration.md).
 
 ## Legacy Compatibility Path
 

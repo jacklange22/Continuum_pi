@@ -1,5 +1,12 @@
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 from pathlib import Path
 import json
+
+import numpy as np
+from PySide6.QtWidgets import QApplication
 
 from continuum_robot.config.schemas import RegistrationWorkflowConfig
 from continuum_robot.config.settings import Settings
@@ -15,7 +22,7 @@ from continuum_robot.gui.controllers.registration_controller import Registration
 from continuum_robot.gui.controllers.servos_controller import ServosController
 from continuum_robot.gui.controllers.system_controller import SystemController
 from continuum_robot.gui.controllers.experiment_controller import ExperimentController
-from continuum_robot.experiments.dat_writer import DatRunWriter
+from continuum_robot.gui.tabs.experiment_tab import ExperimentTab
 from continuum_robot.experiments.experiment_loader import ExperimentLoader
 from continuum_robot.experiments.experiment_runner import ExperimentRunner
 from continuum_robot.hardware.mock_dxl_bus import MockDxlBus
@@ -30,7 +37,13 @@ from continuum_robot.servos.pretension_validation_service import PretensionValid
 from continuum_robot.servos.safety_guard import SafetyGuard
 from continuum_robot.servos.servo_service import ServoService
 from continuum_robot.tracking.mock_tracker_manager import MockTrackerManager
-import numpy as np
+
+
+def _app() -> QApplication:
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    return app
 
 
 def _settings() -> Settings:
@@ -110,6 +123,34 @@ def _registration_service(settings: Settings, tmp_path: Path, tracking_service: 
     )
 
 
+def _experiment_runner(settings: Settings, tmp_path: Path, tracking_service: TrackingService, servo_service: ServoService, registration_path: Path) -> ExperimentRunner:
+    return ExperimentRunner(
+        project_root=Path(__file__).resolve().parents[1],
+        settings=settings,
+        tracking_service=tracking_service,
+        servo_service=servo_service,
+        output_dir=tmp_path / "runs",
+        default_settle_time_s=0.0,
+        registration_path=registration_path,
+        sleep_fn=lambda _seconds: None,
+    )
+
+
+def _experiment_controller(tmp_path: Path) -> ExperimentController:
+    settings = _settings()
+    servo_service = _servo_service(tmp_path)
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_path = tmp_path / "latest_registration.json"
+    runner = _experiment_runner(settings, tmp_path, tracking_service, servo_service, registration_path)
+    return ExperimentController(
+        experiment_loader=ExperimentLoader(),
+        experiment_runner=runner,
+        registration_path=registration_path,
+        servo_service=servo_service,
+        tracking_service=tracking_service,
+    )
+
+
 def test_system_controller_connects_mock_tracker_and_openrb(tmp_path: Path) -> None:
     settings = _settings()
     tracking_service = _tracking_service(settings, tmp_path)
@@ -173,44 +214,127 @@ def test_registration_controller_guides_capture_and_save(tmp_path: Path) -> None
     assert controller.state.current_label is None
 
 
-def test_experiment_controller_requires_tracker_and_servo_ready(tmp_path: Path) -> None:
-    settings = _settings()
-    servo_service = _servo_service(tmp_path)
-    tracking_service = _tracking_service(settings, tmp_path)
-    registration_path = tmp_path / "latest_registration.json"
-    registration_path.write_text(
-        json.dumps({"T_robot_aurora": np.eye(4).tolist(), "T_coil_tip": np.eye(4).tolist()}),
+def test_experiment_workspace_selection_binds_example_config(tmp_path: Path) -> None:
+    controller = _experiment_controller(tmp_path)
+
+    controller.select_experiment("pivot_calibration")
+    state = controller.refresh()
+
+    assert state.selected_experiment == "pivot_calibration"
+    assert "input_path" in state.config_text
+    assert state.experiment_title == "Pivot Calibration"
+
+
+def test_experiment_workspace_preflight_warns_for_repeatability_without_registration(tmp_path: Path) -> None:
+    controller = _experiment_controller(tmp_path)
+    controller.select_experiment("repeatability_dataset")
+
+    state = controller.refresh()
+
+    assert state.preflight_report.overall_status == "ok_with_warning"
+    assert any("Registration file is missing" in message for message in state.preflight_report.warning_messages)
+
+
+def test_experiment_workspace_blocks_grid_accuracy_without_tip_calibration(tmp_path: Path) -> None:
+    controller = _experiment_controller(tmp_path)
+    controller.select_experiment("aurora_grid_accuracy")
+    controller.set_config_text(
+        "\n".join(
+            [
+                "dry_run: true",
+                "dimensions: [2, 2]",
+                "repetitions_per_point: 1",
+                "samples_per_point: 1",
+                "tool_id: \"0B\"",
+                "truth_frame: \"tracker\"",
+                "use_tip_calibration: true",
+                "allow_coil_origin_fallback: false",
+            ]
+        )
+    )
+
+    state = controller.refresh()
+
+    assert state.preflight_report.overall_status == "blocked"
+    assert any("Tip calibration is required" in message for message in state.preflight_report.blocking_messages)
+
+
+def test_experiment_workspace_requires_confirmation_before_pivot_overwrite(tmp_path: Path) -> None:
+    controller = _experiment_controller(tmp_path)
+    input_csv = tmp_path / "pivot.csv"
+    input_csv.write_text(
+        "\n".join(
+            [
+                "0B,1,0,0,0,15,-30,-60",
+                "0B,0,1,0,0,15,10,140",
+                "0B,0,0,1,0,35,-30,140",
+                "0B,0,0,0,1,35,10,-60",
+                "0B,0.70710678,0.70710678,0,0,15,90,20",
+                "0B,0.70710678,-0.70710678,0,0,15,-110,60",
+                "0B,0.70710678,0,0.70710678,0,-75,-30,50",
+                "0B,0.70710678,0,-0.70710678,0,125,-30,30",
+            ]
+        ),
         encoding="utf-8",
     )
-    servo_service.save_neutral_setpoints({1: 2048, 2: 2048, 3: 2048, 4: 2048})
-    experiment_csv = tmp_path / "points.csv"
-    experiment_csv.write_text("index,dl_1,dl_2,dl_3,dl_4\n0,0,0,0,0\n", encoding="utf-8")
-    controller = ExperimentController(
-        experiment_loader=ExperimentLoader(),
-        experiment_runner=ExperimentRunner(
-            servo_service=servo_service,
-            tracking_service=tracking_service,
-            dat_writer=DatRunWriter(tmp_path / "runs"),
-            neutral_servo_ids=[1, 2, 3, 4],
-            default_settle_time_s=0.0,
-            registration_path=registration_path,
-            sleep_fn=lambda _seconds: None,
-        ),
-        registration_path=registration_path,
-        servo_service=servo_service,
-        tracking_service=tracking_service,
+    existing_tip = tmp_path / "tip.csv"
+    existing_tip.write_text("0,0,100\n", encoding="utf-8")
+    controller.select_experiment("pivot_calibration")
+    controller.set_config_text(
+        "\n".join(
+            [
+                "tool_id: \"0B\"",
+                f"input_path: \"{input_csv}\"",
+                f"output_tip_file: \"{existing_tip}\"",
+                "min_samples: 8",
+            ]
+        )
     )
-    controller.load_file(experiment_csv)
 
-    state = controller.refresh_prerequisites()
-    assert state.prerequisites_ok is False
-    assert "OpenRB/DYNAMIXEL connection" in state.prerequisite_message
-    assert "tracker connection" in state.prerequisite_message
+    state = controller.refresh()
 
-    servo_service.connect("/dev/mock-openrb", 115200)
-    tracking_service.start()
+    assert state.preflight_report.overall_status == "ok_with_warning"
+    assert state.preflight_report.requires_confirmation is True
     try:
-        state = controller.refresh_prerequisites()
-        assert state.prerequisites_ok is True
+        controller.run()
+    except RuntimeError as exc:
+        assert "overwrite confirmation" in str(exc)
+    else:
+        raise AssertionError("Expected overwrite confirmation error.")
+
+
+def test_experiment_workspace_loads_prior_run_and_history(tmp_path: Path) -> None:
+    controller = _experiment_controller(tmp_path)
+    result = controller.experiment_runner.run_experiment(
+        "pivot_calibration",
+        config={
+            "tool_id": "0B",
+            "input_path": "data/examples/pivot_calibration_sample.csv",
+            "output_tip_file": str(tmp_path / "generated_tip.csv"),
+            "min_samples": 8,
+        },
+        output_dir=tmp_path / "runs",
+        output_dir_name="saved_pivot_run",
+    )
+    assert result.success is True
+
+    state = controller.refresh()
+    assert any("saved_pivot_run" in entry.path for entry in state.history)
+
+    controller.load_run(result.paths.output_dir)
+    loaded = controller.refresh()
+    assert loaded.loaded_run_path == str(result.paths.output_dir)
+    assert loaded.selected_experiment == "pivot_calibration"
+    assert loaded.visualization_model.summary_lines
+
+
+def test_experiment_workspace_tab_updates_without_crashing_in_mock_mode(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    try:
+        tab.update(controller.refresh())
+        controller.select_experiment("aurora_grid_accuracy")
+        tab.update(controller.refresh())
     finally:
-        tracking_service.stop()
+        controller.shutdown()

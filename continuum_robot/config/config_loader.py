@@ -112,7 +112,7 @@ class ConfigLoader:
         experiment = ExperimentConfig(
             default_settle_time_s=float(experiment_data.get("default_settle_time_s", 2.0)),
             sample_count_per_point=int(experiment_data.get("sample_count_per_point", 1)),
-            output_dir=str(experiment_data.get("output_dir", "data/runs")),
+            output_dir=str(experiment_data.get("output_dir", "data/experiments")),
         )
         calibration = CalibrationConfig(
             neutral_setpoints_path=str(

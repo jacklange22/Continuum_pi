@@ -88,7 +88,7 @@ class ExperimentConfig:
 
     default_settle_time_s: float = 2.0
     sample_count_per_point: int = 1
-    output_dir: str = "data/runs"
+    output_dir: str = "data/experiments"
 
 
 @dataclass

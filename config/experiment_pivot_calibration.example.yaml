@@ -1,0 +1,5 @@
+tool_id: "0B"
+input_path: "data/examples/pivot_calibration_sample.csv"
+output_tip_file: "data/tip_cals/generated_penprobe_tip.csv"
+std_dev_threshold: 3.0
+min_samples: 8

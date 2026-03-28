@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "aurora_grid_accuracy",
+  "run_id": "3e2687f53486",
+  "timestamp_utc": "2026-03-28T15:58:44.700176+00:00",
+  "git_commit": "74b34455afd68d9060f5c3ec296bb1c1f414506c",
+  "backend_info": {
+    "mock_mode": true,
+    "tracking_backend_configured": "ndi",
+    "tracking_backend_selected": "",
+    "tracking_backend_identity": "tracking_backend_router",
+    "tracking_state": "disconnected",
+    "servo_connected": false
+  },
+  "registration_info": {
+    "path": "/Users/jacklange/Continuum/pi_code/data/registrations/latest_registration.json",
+    "exists": false,
+    "tracking_registration_state": "missing_registration",
+    "tip_pose_status": "missing_registration"
+  },
+  "config_used": {
+    "spacing_mm": 25.4,
+    "dimensions": [
+      3,
+      3
+    ],
+    "point_ordering": "snake",
+    "repetitions_per_point": 2,
+    "samples_per_point": 3,
+    "settle_time_s": 0.0,
+    "truth_points_mm": [],
+    "truth_points_file": null,
+    "truth_frame": "tracker",
+    "tool_id": "0B",
+    "use_tip_calibration": true,
+    "tip_vector_mm": [
+      0.0,
+      0.0,
+      125.0
+    ],
+    "tip_file": null,
+    "allow_coil_origin_fallback": true,
+    "dry_run": true,
+    "seed": 11,
+    "synthetic_noise_std_mm": 0.25,
+    "synthetic_bias_mm": [
+      0.2,
+      -0.1,
+      0.05
+    ],
+    "outlier_threshold_mm": 1.0
+  },
+  "operator_notes": ""
+}

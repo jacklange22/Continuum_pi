@@ -14,9 +14,11 @@ class ExperimentPoint:
     - tendon_displacement_cm: displacement vector
     - settle_time_s: optional per-point settle override
     - repeat: optional number of repeated acquisitions
+    - label: optional human-readable label
     """
 
     index: int
     tendon_displacement_cm: list[float]
     settle_time_s: float | None = None
     repeat: int = 1
+    label: str = ""

@@ -1,0 +1,7 @@
+schedule:
+  kind: "babble"
+  dimensions: 4
+  amplitude_cm: 0.2
+  babble_count: 16
+  seed: 7
+  repeats: 1

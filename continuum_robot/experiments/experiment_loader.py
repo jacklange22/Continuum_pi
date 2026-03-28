@@ -1,4 +1,8 @@
-"""Experiment CSV loader with explicit supported format."""
+"""Legacy CSV point loader retained for GUI compatibility.
+
+Prefer registered experiments plus YAML/JSON config files via `scripts/run_experiment.py`
+for new experiment work.
+"""
 
 from __future__ import annotations
 

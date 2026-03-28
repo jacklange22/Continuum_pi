@@ -1,0 +1,15 @@
+dry_run: true
+tool_id: "0A"
+synthetic_noise_std_mm: 0.35
+synthetic_hysteresis_mm: 0.8
+schedule:
+  target_points_cm:
+    - [0.00, 0.00, 0.00, 0.00]
+    - [0.10, 0.00, 0.00, 0.00]
+    - [0.00, 0.10, 0.00, 0.00]
+    - [0.00, 0.00, 0.10, 0.00]
+  revisit_count: 3
+  randomize_approach_order: false
+  seed: 7
+  settle_time_s: 0.0
+  samples_per_point: 3

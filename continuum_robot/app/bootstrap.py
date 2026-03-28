@@ -6,7 +6,7 @@ from pathlib import Path
 from continuum_robot.app.service_registry import ServiceRegistry
 from continuum_robot.config.config_loader import ConfigLoader
 from continuum_robot.config.settings import Settings
-from continuum_robot.experiments.dat_writer import DatRunWriter
+from continuum_robot.experiments.dataset_io import ExperimentDatasetLoader, ExperimentDatasetWriter
 from continuum_robot.experiments.experiment_loader import ExperimentLoader
 from continuum_robot.experiments.experiment_runner import ExperimentRunner
 from continuum_robot.hardware.dxl_bus import DxlBus
@@ -154,12 +154,16 @@ def build_app_context() -> AppContext:
         pretension_validation=pretension_validation,
     )
     experiment_loader = ExperimentLoader()
-    dat_writer = DatRunWriter(output_dir=experiment_output_dir)
+    experiment_dataset_writer = ExperimentDatasetWriter(output_root=experiment_output_dir)
+    experiment_dataset_loader = ExperimentDatasetLoader()
     experiment_runner = ExperimentRunner(
-        servo_service=servo_service,
+        project_root=project_root,
+        settings=settings,
         tracking_service=tracking_service,
-        dat_writer=dat_writer,
-        neutral_servo_ids=settings.robot.servo_ids,
+        servo_service=servo_service,
+        output_dir=experiment_output_dir,
+        dataset_writer=experiment_dataset_writer,
+        dataset_loader=experiment_dataset_loader,
         default_settle_time_s=settings.experiment.default_settle_time_s,
         registration_path=registration_path,
     )
@@ -175,6 +179,8 @@ def build_app_context() -> AppContext:
     services.register("openrb_client", openrb_client)
     services.register("experiment_loader", experiment_loader)
     services.register("experiment_runner", experiment_runner)
+    services.register("experiment_dataset_writer", experiment_dataset_writer)
+    services.register("experiment_dataset_loader", experiment_dataset_loader)
 
     return AppContext(
         project_root=project_root,

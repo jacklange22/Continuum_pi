@@ -1,1 +1,1 @@
-"""Experiment execution package."""
+"""Canonical experiment framework, built-ins, and dataset IO."""
