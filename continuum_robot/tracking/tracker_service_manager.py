@@ -7,7 +7,6 @@ debugging, but it is no longer the default runtime source of truth.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from pathlib import Path
 import copy
 import logging
@@ -21,44 +20,8 @@ from continuum_robot.tracking.tracker_protocol import (
     TrackerTransformMessage,
     parse_tracker_json_line,
 )
+from continuum_robot.tracking.runtime_models import TrackerRuntimeState, TrackerToolState
 from continuum_robot.tracking.tracker_socket_client import TrackerSocketClient
-
-
-@dataclass
-class TrackerToolState:
-    """Latest known state for one tracked tool."""
-
-    tool_id: str
-    frame_number: int | None = None
-    valid: bool | None = None
-    validity_known: bool = False
-    status: str = "unknown"
-    quaternion: tuple[float, float, float, float] | None = None
-    translation_mm: tuple[float, float, float] | None = None
-    quality: float | None = None
-    timestamp: str | None = None
-
-
-@dataclass
-class TrackerRuntimeState:
-    """Shared runtime state for GUI/diagnostics polling."""
-
-    connection_state: str = "disconnected"
-    backend_running: bool = False
-    backend_connected: bool = False
-    socket_connected: bool = False
-    bridge_running: bool = False
-    backend_frame_counter: int = 0
-    latest_frame_number: int | None = None
-    latest_timestamp: str | None = None
-    last_status_message: str = ""
-    last_error: str | None = None
-    raw_tool_ids: list[str] = field(default_factory=list)
-    normalized_tool_ids: list[str] = field(default_factory=list)
-    tool_id_mapping: dict[str, str] = field(default_factory=dict)
-    runtime_role_mappings: dict[str, str] = field(default_factory=dict)
-    unmapped_tool_ids: list[str] = field(default_factory=list)
-    tools: dict[str, TrackerToolState] = field(default_factory=dict)
 
 
 class TrackerServiceManager:
@@ -86,6 +49,8 @@ class TrackerServiceManager:
         self._stdout_thread: threading.Thread | None = None
         self._stderr_thread: threading.Thread | None = None
         self._state = TrackerRuntimeState()
+        self._state.backend_identity = self.backend_identity
+        self._state.canonical_state = "disconnected"
 
     def start(self) -> None:
         """Launch bridge process and begin receiving tracker events."""
@@ -93,7 +58,12 @@ class TrackerServiceManager:
             return
 
         self._stop_event.clear()
-        self._set_state(connection_state="starting", last_error=None, last_status_message="Starting tracker bridge")
+        self._set_state(
+            connection_state="starting",
+            canonical_state="connecting",
+            last_error=None,
+            last_status_message="Starting tracker bridge",
+        )
         try:
             self._launch_bridge_process()
         except Exception as exc:
@@ -103,6 +73,7 @@ class TrackerServiceManager:
                 socket_connected=False,
                 backend_connected=False,
                 connection_state="error",
+                canonical_state="error",
                 last_error=str(exc),
                 last_status_message=f"Tracker start failed: {exc}",
             )
@@ -156,6 +127,7 @@ class TrackerServiceManager:
             socket_connected=False,
             backend_connected=False,
             connection_state="disconnected",
+            canonical_state="disconnected",
             last_status_message="Tracker disconnected",
         )
 
@@ -216,15 +188,25 @@ class TrackerServiceManager:
                     socket_connected=False,
                     backend_connected=False,
                     connection_state="error",
+                    canonical_state="error",
                     last_error=f"tracker_bridge exited with code {self._process.returncode}",
                 )
                 return
 
             try:
                 if not self._client.is_connected:
-                    self._set_state(connection_state="connecting", last_status_message="Connecting to tracker socket")
+                    self._set_state(
+                        connection_state="connecting",
+                        canonical_state="connecting",
+                        last_status_message="Connecting to tracker socket",
+                    )
                     self._client.connect(timeout_s=1.0)
-                    self._set_state(socket_connected=True, backend_connected=True, connection_state="connected")
+                    self._set_state(
+                        socket_connected=True,
+                        backend_connected=True,
+                        connection_state="connected",
+                        canonical_state="connecting",
+                    )
 
                 line = self._client.read_line(timeout_s=0.5)
                 if line is None:
@@ -241,6 +223,7 @@ class TrackerServiceManager:
                     socket_connected=False,
                     backend_connected=False,
                     connection_state="reconnecting",
+                    canonical_state="connecting",
                     last_error=str(exc),
                 )
                 time.sleep(0.25)
@@ -252,11 +235,14 @@ class TrackerServiceManager:
         }
         if msg.level == "error":
             updates["connection_state"] = "error"
+            updates["canonical_state"] = "error"
             updates["last_error"] = msg.message
         elif msg.state in {"connecting", "initialized", "tracking_started"}:
             updates["connection_state"] = msg.state
+            updates["canonical_state"] = "connecting"
         elif msg.state == "tracking_stopped":
             updates["connection_state"] = "stopped"
+            updates["canonical_state"] = "disconnected"
         self._set_state(**updates)
 
     def _apply_transform(self, msg: TrackerTransformMessage) -> None:
@@ -279,6 +265,7 @@ class TrackerServiceManager:
             self._state.last_error = None
             if self._state.connection_state not in {"error", "disconnected"}:
                 self._state.connection_state = "tracking"
+                self._state.canonical_state = "streaming_healthy"
 
     def _set_state(self, **updates) -> None:
         with self._lock:

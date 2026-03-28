@@ -52,6 +52,8 @@ class TrackerBenchmarkReport:
     """Serializable tracker benchmark summary."""
 
     generated_at_utc: str
+    configured_backend_name: str
+    selected_backend_name: str
     backend_identity: str
     port: str
     duration_s: float
@@ -66,8 +68,13 @@ class TrackerBenchmarkReport:
     first_frame_latency_s: float | None
     registration_loaded: bool
     tip_pose_computable: bool
+    canonical_state_final: str
     final_connection_state: str
     final_last_error: str | None
+    warning_messages_final: list[str]
+    error_messages_final: list[str]
+    registration_state_final: str
+    tip_pose_status_final: str
     raw_live_tool_ids_final: list[str]
     normalized_live_tool_ids_final: list[str]
     runtime_role_mappings_final: dict[str, str]
@@ -241,6 +248,8 @@ def compute_tracker_benchmark_report(
 
     return TrackerBenchmarkReport(
         generated_at_utc=utc_now_iso(),
+        configured_backend_name=final_snapshot.configured_backend_name,
+        selected_backend_name=final_snapshot.selected_backend_name,
         backend_identity=final_snapshot.backend_identity,
         port=final_snapshot.port,
         duration_s=duration_s,
@@ -255,8 +264,13 @@ def compute_tracker_benchmark_report(
         first_frame_latency_s=first_frame_latency_s,
         registration_loaded=registration_loaded,
         tip_pose_computable=tip_pose_computable,
+        canonical_state_final=final_snapshot.canonical_state,
         final_connection_state=final_snapshot.connection_state,
         final_last_error=final_snapshot.last_error,
+        warning_messages_final=list(final_snapshot.warning_messages),
+        error_messages_final=list(final_snapshot.error_messages),
+        registration_state_final=final_snapshot.registration_state,
+        tip_pose_status_final=final_snapshot.tip_pose_status,
         raw_live_tool_ids_final=list(final_snapshot.raw_live_tool_ids),
         normalized_live_tool_ids_final=list(final_snapshot.normalized_live_tool_ids),
         runtime_role_mappings_final=dict(final_snapshot.runtime_role_mappings),

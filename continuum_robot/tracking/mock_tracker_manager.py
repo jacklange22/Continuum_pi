@@ -7,7 +7,7 @@ import math
 import threading
 import time
 
-from continuum_robot.tracking.tracker_service_manager import TrackerRuntimeState, TrackerToolState
+from continuum_robot.tracking.runtime_models import TrackerRuntimeState, TrackerToolState
 
 
 class MockTrackerManager:
@@ -21,6 +21,8 @@ class MockTrackerManager:
         self._lock = threading.Lock()
         self._state = TrackerRuntimeState(
             connection_state="disconnected",
+            canonical_state="disconnected",
+            backend_identity=self.backend_identity,
             backend_connected=False,
             backend_running=False,
             socket_connected=False,
@@ -35,6 +37,7 @@ class MockTrackerManager:
         with self._lock:
             self._started_at = time.monotonic()
             self._state.connection_state = "tracking"
+            self._state.canonical_state = "mock"
             self._state.backend_connected = True
             self._state.backend_running = True
             self._state.socket_connected = True
@@ -48,6 +51,7 @@ class MockTrackerManager:
         with self._lock:
             self._started_at = None
             self._state.connection_state = "disconnected"
+            self._state.canonical_state = "disconnected"
             self._state.backend_connected = False
             self._state.backend_running = False
             self._state.socket_connected = False
@@ -73,14 +77,23 @@ class MockTrackerManager:
             tools = {tool_id: replace(tool) for tool_id, tool in self._state.tools.items()}
             return TrackerRuntimeState(
                 connection_state=self._state.connection_state,
+                canonical_state=self._state.canonical_state,
+                backend_identity=self.backend_identity,
                 backend_running=self._state.backend_running,
                 backend_connected=self._state.backend_connected,
                 socket_connected=self._state.socket_connected,
                 bridge_running=self._state.bridge_running,
+                backend_frame_counter=self._state.backend_frame_counter,
                 latest_frame_number=self._state.latest_frame_number,
                 latest_timestamp=self._state.latest_timestamp,
                 last_status_message=self._state.last_status_message,
                 last_error=self._state.last_error,
+                raw_tool_ids=list(self._state.raw_tool_ids),
+                normalized_tool_ids=list(self._state.normalized_tool_ids),
+                tool_id_mapping=dict(self._state.tool_id_mapping),
+                runtime_role_mappings=dict(self._state.runtime_role_mappings),
+                unmapped_tool_ids=list(self._state.unmapped_tool_ids),
+                backend_details={"mock_mode": True, "poll_hz": self.poll_hz},
                 tools=tools,
             )
 

@@ -52,14 +52,10 @@ def main() -> int:
         )
     else:
         tracking_service = ctx.services.get("tracking_service")
-        tracker_backend = ctx.services.get("tracker_backend")
-        if args.tracker_port:
-            tracking_service.set_port(args.tracker_port)
-        if args.poll_ms is not None:
-            if hasattr(tracker_backend, "poll_interval_ms"):
-                tracker_backend.poll_interval_ms = args.poll_ms
-            elif hasattr(tracker_backend, "poll_ms"):
-                tracker_backend.poll_ms = args.poll_ms
+        tracking_service.configure_live_backend(
+            tracker_port=args.tracker_port or None,
+            poll_ms=args.poll_ms,
+        )
         report = evaluate_runtime_sanity_live(
             tracking_service=tracking_service,
             registration_path=registration_path,

@@ -30,6 +30,8 @@ class SerialConfig:
     aurora_port: str = ""
     openrb_port: str = ""
     tracker_backend: str = "ndi"
+    tracker_fallback_backend: str | None = "bridge"
+    tracker_fallback_enabled: bool = True
     tracker_type: str = "aurora"
     baudrate: int = 115200
     read_timeout_s: float = 0.05

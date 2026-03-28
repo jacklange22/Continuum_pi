@@ -1,4 +1,8 @@
-"""Connect to tracker_bridge socket and print live status/transform messages."""
+"""Legacy bridge-only socket reader for tracker_bridge debugging.
+
+This bypasses the canonical TrackingService path and should only be used when
+debugging the fallback bridge backend itself.
+"""
 
 from __future__ import annotations
 

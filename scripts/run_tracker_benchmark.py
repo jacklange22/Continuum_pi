@@ -7,8 +7,12 @@ import json
 from pathlib import Path
 
 from continuum_robot.app.bootstrap import build_app_context
+from continuum_robot.tracking.cli_tools import (
+    apply_tracking_runtime_overrides,
+    build_tracker_thresholds,
+    required_tool_ids_from_settings,
+)
 from continuum_robot.tracking.benchmarking import (
-    TrackerBenchmarkThresholds,
     collect_tracking_snapshots,
     compute_tracker_benchmark_report,
 )
@@ -18,6 +22,18 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark live Aurora tracking performance")
     parser.add_argument("--tracker-port", type=str, default="", help="Aurora device path (for example /dev/ttyUSB0)")
     parser.add_argument(
+        "--socket-path",
+        type=Path,
+        default=None,
+        help="Override tracker socket path when bridge fallback/debug mode is used",
+    )
+    parser.add_argument(
+        "--bridge-exec",
+        type=Path,
+        default=None,
+        help="Override tracker bridge executable when bridge fallback/debug mode is used",
+    )
+    parser.add_argument(
         "--duration-s",
         type=float,
         default=5.0,
@@ -26,7 +42,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sample-period-s",
         type=float,
-        default=0.05,
+        default=0.02,
         help="Tracking snapshot sample period in seconds",
     )
     parser.add_argument(
@@ -73,47 +89,31 @@ def main() -> int:
     ctx = build_app_context()
     settings = ctx.settings
     tracking_service = ctx.services.get("tracking_service")
-    tracker_backend = ctx.services.get("tracker_backend")
-
-    if args.tracker_port:
-        tracking_service.set_port(args.tracker_port)
-    configured_tracker_port = args.tracker_port or tracking_service.port or settings.serial.aurora_port
+    configured_tracker_port = apply_tracking_runtime_overrides(
+        tracking_service,
+        settings,
+        tracker_port=args.tracker_port,
+        poll_ms=args.poll_ms,
+        socket_path=args.socket_path,
+        bridge_executable=args.bridge_exec,
+        registration_file=args.registration_file,
+    )
     if not settings.runtime.mock_mode and not configured_tracker_port:
         print("ERROR: no Aurora port is configured. Set config/system.local.yaml or pass --tracker-port.")
         return 2
 
-    if args.registration_file is not None:
-        tracking_service.registration_path = args.registration_file
-        tracking_service.refresh_registration()
-
-    if args.poll_ms is not None:
-        if hasattr(tracker_backend, "poll_interval_ms"):
-            tracker_backend.poll_interval_ms = args.poll_ms
-        elif hasattr(tracker_backend, "poll_ms"):
-            tracker_backend.poll_ms = args.poll_ms
-
-    thresholds = TrackerBenchmarkThresholds(
-        min_effective_fps=(
-            float(args.min_effective_fps)
-            if args.min_effective_fps is not None
-            else float(settings.serial.tracker_min_effective_fps)
-        ),
-        max_stale_interval_s=(
-            float(args.max_stale_interval_s)
-            if args.max_stale_interval_s is not None
-            else float(settings.serial.tracker_max_stale_interval_s)
-        ),
-        max_consecutive_missing_frames=(
-            int(args.max_consecutive_missing_frames)
-            if args.max_consecutive_missing_frames is not None
-            else int(settings.serial.tracker_max_consecutive_missing_frames)
-        ),
-        require_valid_transforms=not args.allow_invalid_transforms
-        and bool(settings.serial.tracker_require_valid_transforms),
+    thresholds = build_tracker_thresholds(
+        settings,
+        min_effective_fps=args.min_effective_fps,
+        max_stale_interval_s=args.max_stale_interval_s,
+        max_consecutive_missing_frames=args.max_consecutive_missing_frames,
+        require_valid_transforms=not args.allow_invalid_transforms,
     )
+    required_tool_ids = required_tool_ids_from_settings(settings)
 
     print(f"Tracker backend: {settings.serial.tracker_backend}")
-    print(f"Runtime backend identity: {tracking_service.backend_identity}")
+    print(f"Configured fallback backend: {settings.serial.tracker_fallback_backend}")
+    print(f"Fallback enabled: {settings.serial.tracker_fallback_enabled}")
     print(f"Tracker port: {configured_tracker_port or '/dev/mock-aurora'}")
     print(f"Benchmark duration: {args.duration_s:.2f}s")
     print(f"Startup wait: {max(2.0, float(args.duration_s)):.2f}s")
@@ -133,7 +133,11 @@ def main() -> int:
             sample_period_s=args.sample_period_s,
             wait_for_first_frame_s=max(2.0, float(args.duration_s)),
         )
-        report = compute_tracker_benchmark_report(samples, thresholds=thresholds)
+        report = compute_tracker_benchmark_report(
+            samples,
+            thresholds=thresholds,
+            required_tool_ids=required_tool_ids,
+        )
     except Exception as exc:
         print(f"ERROR: benchmark failed: {exc}")
         return 2
@@ -141,6 +145,9 @@ def main() -> int:
         tracking_service.stop()
 
     print(f"Connection state: {report.final_connection_state}")
+    print(f"Configured backend: {report.configured_backend_name}")
+    print(f"Selected backend: {report.selected_backend_name}")
+    print(f"Canonical state: {report.canonical_state_final}")
     print(f"Unique frames observed: {report.unique_frames_observed}")
     print(f"Backend frame counter: {report.backend_frame_counter_final}")
     print(f"Effective FPS: {report.effective_frame_rate_hz}")
@@ -150,9 +157,13 @@ def main() -> int:
     print(f"Raw live tool ids: {report.raw_live_tool_ids_final}")
     print(f"Normalized live tool ids: {report.normalized_live_tool_ids_final}")
     print(f"Runtime role mappings: {report.runtime_role_mappings_final}")
+    print(f"Warnings: {report.warning_messages_final}")
+    print(f"Errors: {report.error_messages_final}")
     if report.unmapped_live_tool_ids_final:
         print(f"Unmapped live tool ids: {report.unmapped_live_tool_ids_final}")
     print(f"Registration loaded: {report.registration_loaded}")
+    print(f"Registration state: {report.registration_state_final}")
+    print(f"Tip pose status: {report.tip_pose_status_final}")
     print(f"T_robot_tip computable: {report.tip_pose_computable}")
     for tool_id in sorted(report.tool_metrics):
         metrics = report.tool_metrics[tool_id]

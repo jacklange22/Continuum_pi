@@ -9,6 +9,7 @@ Compatibility path retained for replay and parser regression tests:
 
 from __future__ import annotations
 
+from collections import deque
 import copy
 import json
 from pathlib import Path
@@ -113,6 +114,8 @@ class TrackingService:
         self._backend_started_here = False
         self._started_monotonic: float | None = None
         self._last_frame_monotonic: float | None = None
+        self._last_unique_frame_key: int | None = None
+        self._frame_time_history: deque[float] = deque(maxlen=120)
 
         initial_connection_state = "disconnected" if self._uses_live_backend else "stopped"
         self._state = TrackingSnapshot(
@@ -124,13 +127,17 @@ class TrackingService:
                 current_config_source=config_source,
             ),
             connection_state=initial_connection_state,
+            canonical_state="disconnected" if self._uses_live_backend else "disabled",
             backend_identity=self.backend_identity,
+            configured_backend_name=getattr(live_backend, "preferred_backend", self.backend_identity),
+            selected_backend_name="",
             port=port,
             baudrate=baudrate,
             runtime_coil_tool_id=runtime_coil_tool_id,
             registration_tool_id=registration_tool_id,
             backend_running=False if self._uses_live_backend else None,
             backend_connected=False if self._uses_live_backend else None,
+            backend_details={},
             tools={tool_id: self._blank_tool(tool_id) for tool_id in self.SUPPORTED_TOOL_IDS},
         )
         self.refresh_registration()
@@ -144,6 +151,41 @@ class TrackingService:
             self.live_backend.aurora_port = port
         with self._lock:
             self._state.port = port
+
+    def configure_live_backend(
+        self,
+        *,
+        tracker_port: str | None = None,
+        poll_ms: int | None = None,
+        socket_path: Path | None = None,
+        bridge_executable: Path | None = None,
+    ) -> None:
+        """Apply runtime backend overrides through the canonical tracking service."""
+        if tracker_port is not None:
+            self.set_port(tracker_port)
+        if self.live_backend is not None and hasattr(self.live_backend, "apply_runtime_overrides"):
+            self.live_backend.apply_runtime_overrides(
+                tracker_port=tracker_port,
+                poll_ms=poll_ms,
+                socket_path=socket_path,
+                bridge_executable=bridge_executable,
+            )
+        elif self.live_backend is not None:
+            if poll_ms is not None:
+                if hasattr(self.live_backend, "poll_interval_ms"):
+                    self.live_backend.poll_interval_ms = poll_ms
+                elif hasattr(self.live_backend, "poll_ms"):
+                    self.live_backend.poll_ms = poll_ms
+            if socket_path is not None and hasattr(self.live_backend, "socket_path"):
+                self.live_backend.socket_path = socket_path
+            if bridge_executable is not None and hasattr(self.live_backend, "bridge_executable"):
+                self.live_backend.bridge_executable = bridge_executable
+
+    def probe_live_backend_capabilities(self) -> dict[str, dict]:
+        """Return preflight capability checks for the configured live backend."""
+        if self.live_backend is not None and hasattr(self.live_backend, "probe_capabilities"):
+            return self.live_backend.probe_capabilities()
+        return {}
 
     def start(self, port: str | None = None) -> None:
         """Start the live backend poll loop or the compatibility serial loop."""
@@ -163,6 +205,8 @@ class TrackingService:
         self._stop_event.clear()
         self._started_monotonic = time.monotonic()
         self._last_frame_monotonic = None
+        self._last_unique_frame_key = None
+        self._frame_time_history.clear()
         self.refresh_registration()
 
         if self._uses_live_backend:
@@ -201,8 +245,11 @@ class TrackingService:
         self.disable_packet_capture()
         self._started_monotonic = None
         self._last_frame_monotonic = None
+        self._last_unique_frame_key = None
+        self._frame_time_history.clear()
         with self._lock:
             self._state.connection_state = "stopped"
+            self._state.canonical_state = "disconnected"
             if self._uses_live_backend:
                 self._state.backend_running = False
                 self._state.backend_connected = False
@@ -335,6 +382,7 @@ class TrackingService:
                 )
                 self._update_tip_pose_locked(packet_timestamp)
                 self._state.connection_state = "tracking"
+                self._state.canonical_state = "streaming_healthy"
                 self._state.health.state = "tracking"
                 self._state.health.last_error = None
                 self._state.last_error = None
@@ -349,6 +397,7 @@ class TrackingService:
                 self._state.last_error = parse_error
                 if self._state.connection_state != "stopped":
                     self._state.connection_state = "degraded"
+                    self._state.canonical_state = "streaming_degraded"
                     self._state.health.state = "degraded"
                 self._recompute_health_locked()
         finally:
@@ -374,6 +423,7 @@ class TrackingService:
         self.refresh_registration()
         with self._lock:
             self._state.connection_state = "replay"
+            self._state.canonical_state = "connecting"
             self._state.health.state = "replay"
             self._state.health.status = f"Replaying capture from {capture_path}"
             self._recompute_health_locked()
@@ -443,6 +493,7 @@ class TrackingService:
                 with self._lock:
                     self._state.reconnect_count += 1
                     self._state.connection_state = "reconnecting"
+                    self._state.canonical_state = "connecting"
                     self._state.health.state = "reconnecting"
                     self._state.health.last_error = str(exc)
                     self._state.last_error = str(exc)
@@ -453,11 +504,13 @@ class TrackingService:
     def _connect_client(self) -> None:
         with self._lock:
             self._state.connection_state = "connecting"
+            self._state.canonical_state = "connecting"
             self._state.health.state = "connecting"
             self._recompute_health_locked()
         self.aurora_client.connect(self.port, baudrate=self.baudrate, timeout_s=self.read_timeout_s)
         with self._lock:
             self._state.connection_state = "waiting_for_packets"
+            self._state.canonical_state = "connecting"
             self._state.health.state = "waiting_for_packets"
             self._recompute_health_locked()
 
@@ -483,8 +536,25 @@ class TrackingService:
         current_frame = snapshot.latest_frame_number
         previous_backend_frame_counter = self._state.backend_frame_counter
         current_backend_frame_counter = int(getattr(snapshot, "backend_frame_counter", previous_backend_frame_counter) or 0)
+        current_unique_frame_key = (
+            current_backend_frame_counter
+            if current_backend_frame_counter > 0
+            else current_frame
+        )
 
         self._state.connection_state = snapshot.connection_state
+        self._state.canonical_state = getattr(snapshot, "canonical_state", self._state.canonical_state)
+        self._state.backend_identity = getattr(snapshot, "backend_identity", self._state.backend_identity) or self.backend_identity
+        self._state.configured_backend_name = getattr(
+            snapshot, "configured_backend_name", self._state.configured_backend_name
+        )
+        self._state.selected_backend_name = getattr(
+            snapshot, "selected_backend_name", self._state.selected_backend_name
+        )
+        self._state.fallback_backend_name = getattr(
+            snapshot, "fallback_backend_name", self._state.fallback_backend_name
+        )
+        self._state.fallback_used = bool(getattr(snapshot, "fallback_used", self._state.fallback_used))
         backend_running = getattr(snapshot, "backend_running", None)
         if not backend_running and getattr(snapshot, "bridge_running", False):
             backend_running = True
@@ -502,10 +572,17 @@ class TrackingService:
         self._state.backend_tool_mappings = dict(getattr(snapshot, "tool_id_mapping", {}))
         self._state.runtime_role_mappings = dict(getattr(snapshot, "runtime_role_mappings", {}))
         self._state.unmapped_live_tool_ids = list(getattr(snapshot, "unmapped_tool_ids", []))
+        self._state.backend_startup_messages = list(getattr(snapshot, "startup_messages", []))
+        self._state.backend_capability_report = dict(getattr(snapshot, "capability_report", {}))
+        self._state.backend_details = dict(getattr(snapshot, "backend_details", {}))
+        self._state.warning_messages = list(getattr(snapshot, "warning_messages", []))
+        self._state.error_messages = list(getattr(snapshot, "error_messages", []))
         self._state.health.state = snapshot.connection_state
         if snapshot.last_error:
             self._state.health.last_error = snapshot.last_error
             self._state.last_error = snapshot.last_error
+        else:
+            self._state.last_error = None
 
         if current_backend_frame_counter > previous_backend_frame_counter:
             self._state.packets_received_count = current_backend_frame_counter
@@ -525,6 +602,11 @@ class TrackingService:
             if self._started_monotonic is not None and self._state.first_frame_latency_s is None:
                 self._state.first_frame_latency_s = max(0.0, synced_at_monotonic - self._started_monotonic)
 
+        if current_unique_frame_key is not None and current_unique_frame_key != self._last_unique_frame_key:
+            self._last_unique_frame_key = int(current_unique_frame_key)
+            self._state.unique_frames_observed += 1
+            self._frame_time_history.append(synced_at_monotonic)
+
         for tool_id in self.SUPPORTED_TOOL_IDS:
             self._apply_live_tool_snapshot_locked(
                 tool_id=tool_id,
@@ -539,6 +621,25 @@ class TrackingService:
         else:
             self._state.tracker_data_age_s = max(0.0, synced_at_monotonic - self._last_frame_monotonic)
             self._state.tracker_data_stale = self._state.tracker_data_age_s > self.stale_after_s
+            if self._state.max_observed_data_age_s is None:
+                self._state.max_observed_data_age_s = self._state.tracker_data_age_s
+            else:
+                self._state.max_observed_data_age_s = max(
+                    self._state.max_observed_data_age_s,
+                    self._state.tracker_data_age_s,
+                )
+
+        if len(self._frame_time_history) >= 2:
+            intervals = [
+                max(0.0, self._frame_time_history[index] - self._frame_time_history[index - 1])
+                for index in range(1, len(self._frame_time_history))
+            ]
+            if intervals:
+                self._state.frame_interval_min_s = min(intervals)
+                self._state.frame_interval_max_s = max(intervals)
+                self._state.frame_interval_mean_s = sum(intervals) / len(intervals)
+                if self._state.frame_interval_mean_s > 0:
+                    self._state.effective_frame_rate_hz = 1.0 / self._state.frame_interval_mean_s
 
     def _apply_live_tool_snapshot_locked(
         self,
@@ -815,6 +916,12 @@ class TrackingService:
             self._state.tracker_data_age_s = None
             self._state.tracker_data_stale = False
             self._state.first_frame_latency_s = None
+            self._state.unique_frames_observed = 0
+            self._state.effective_frame_rate_hz = None
+            self._state.frame_interval_min_s = None
+            self._state.frame_interval_max_s = None
+            self._state.frame_interval_mean_s = None
+            self._state.max_observed_data_age_s = None
             self._state.raw_live_tool_ids = []
             self._state.normalized_live_tool_ids = []
             self._state.backend_tool_mappings = {}
@@ -826,63 +933,74 @@ class TrackingService:
             self._state.last_good_tip_pose_utc = None
             self._state.latest_measurements = {}
             self._state.tools = {tool_id: self._blank_tool(tool_id) for tool_id in self.SUPPORTED_TOOL_IDS}
+            self._state.warning_messages = []
+            self._state.error_messages = []
+            self._state.backend_details = {}
             self._state.health.last_error = None
             self._state.last_error = None
             self._recompute_health_locked()
 
     def _recompute_health_locked(self) -> None:
-        faults: list[str] = []
+        tracker_faults: list[str] = []
+        pipeline_faults: list[str] = []
 
         if self._uses_live_backend:
             if self._state.connection_state == "stopped":
-                faults.append("service_stopped")
+                tracker_faults.append("service_stopped")
             elif self._state.connection_state == "error":
-                faults.append("no_serial_connection")
+                tracker_faults.append("no_serial_connection")
             elif self._state.connection_state in {"starting", "connecting", "reconnecting"}:
-                faults.append("no_serial_connection")
+                tracker_faults.append("no_serial_connection")
             elif self._state.backend_running is False:
-                faults.append("backend_not_running")
+                tracker_faults.append("backend_not_running")
             elif self._state.backend_connected is False:
-                faults.append("backend_not_connected")
+                tracker_faults.append("backend_not_connected")
             if self._state.connection_state == "tracking" and self._state.packets_received_count == 0:
-                faults.append("no_packets")
+                tracker_faults.append("no_packets")
             if self._state.tracker_data_stale:
-                faults.append("stale_tracker_data")
+                tracker_faults.append("stale_tracker_data")
         else:
             if self._state.connection_state in {"connecting", "reconnecting"}:
-                faults.append("no_serial_connection")
+                tracker_faults.append("no_serial_connection")
             elif self._state.connection_state == "waiting_for_packets" and self._state.packets_received_count == 0:
-                faults.append("no_packets")
+                tracker_faults.append("no_packets")
             elif self._state.connection_state == "stopped":
-                faults.append("service_stopped")
+                tracker_faults.append("service_stopped")
 
         if self._state.bad_packets_count > 0:
-            faults.append("bad_packets")
+            tracker_faults.append("bad_packets")
 
         for tool_id in self.SUPPORTED_TOOL_IDS:
             tool = self._state.tools[tool_id]
             if self._state.packets_received_count <= 0:
                 continue
             if tool.tracking_state == "missing":
-                faults.append(f"missing_{tool_id}")
+                tracker_faults.append(f"missing_{tool_id}")
             elif tool.tracking_state == "invalid":
-                faults.append(f"invalid_{tool_id}")
+                tracker_faults.append(f"invalid_{tool_id}")
 
         if self._state.registration_state == "missing_registration":
-            faults.append("missing_registration")
+            pipeline_faults.append("missing_registration")
         elif self._state.registration_state == "invalid_registration":
-            faults.append("invalid_registration")
+            pipeline_faults.append("invalid_registration")
         if self._registration_role_error is not None:
-            faults.append("registration_role_mismatch")
+            pipeline_faults.append("registration_role_mismatch")
         if self._state.tip_pose_status == "invalid_transform_chain":
-            faults.append("invalid_transform_chain")
+            pipeline_faults.append("invalid_transform_chain")
 
+        faults = tracker_faults + pipeline_faults
         self._state.faults = faults
+        self._state.tracker_faults = tracker_faults
+        self._state.pipeline_faults = pipeline_faults
         self._state.health.current_config_source = self.config_source
         self._state.last_error = self._state.health.last_error
+        if self._state.last_error and self._state.last_error not in self._state.error_messages:
+            self._state.error_messages = [*self._state.error_messages, self._state.last_error]
         self._state.health.details = {
-            "backend_identity": self.backend_identity,
+            "backend_identity": self._state.backend_identity,
             "faults": list(faults),
+            "tracker_faults": list(tracker_faults),
+            "pipeline_faults": list(pipeline_faults),
             "runtime_coil_tool_id": self.runtime_coil_tool_id,
             "registration_tool_id": self.registration_tool_id,
             "stored_registration_measurement_tool_id": self._registration_measurement_tool_id,
@@ -901,39 +1019,59 @@ class TrackingService:
             "tracker_data_age_s": self._state.tracker_data_age_s,
             "tracker_data_stale": self._state.tracker_data_stale,
             "first_frame_latency_s": self._state.first_frame_latency_s,
+            "unique_frames_observed": self._state.unique_frames_observed,
+            "effective_frame_rate_hz": self._state.effective_frame_rate_hz,
+            "frame_interval_min_s": self._state.frame_interval_min_s,
+            "frame_interval_max_s": self._state.frame_interval_max_s,
+            "frame_interval_mean_s": self._state.frame_interval_mean_s,
+            "max_observed_data_age_s": self._state.max_observed_data_age_s,
             "raw_live_tool_ids": list(self._state.raw_live_tool_ids),
             "normalized_live_tool_ids": list(self._state.normalized_live_tool_ids),
             "backend_tool_mappings": dict(self._state.backend_tool_mappings),
             "runtime_role_mappings": dict(self._state.runtime_role_mappings),
             "unmapped_live_tool_ids": list(self._state.unmapped_live_tool_ids),
+            "canonical_state": self._state.canonical_state,
+            "configured_backend_name": self._state.configured_backend_name,
+            "selected_backend_name": self._state.selected_backend_name,
+            "fallback_backend_name": self._state.fallback_backend_name,
+            "fallback_used": self._state.fallback_used,
+            "backend_details": dict(self._state.backend_details),
+            "warning_messages": list(self._state.warning_messages),
+            "error_messages": list(self._state.error_messages),
         }
 
-        if any(fault in self._FAILED_FAULTS for fault in faults):
+        if any(fault in self._FAILED_FAULTS for fault in tracker_faults):
             health = HEALTH_FAILED
-        elif faults:
+        elif tracker_faults:
             health = HEALTH_DEGRADED
         else:
             health = HEALTH_HEALTHY
 
         self._state.health.health = health
         if health == HEALTH_HEALTHY:
-            self._state.health.status = (
-                f"Tracking healthy via {self.backend_identity}: "
-                f"tools 0A/0B tracked and registration loaded"
-            )
+            if pipeline_faults:
+                self._state.health.status = (
+                    f"Tracking healthy via {self._state.backend_identity}; "
+                    f"pose pipeline pending/degraded: {', '.join(pipeline_faults)}"
+                )
+            else:
+                self._state.health.status = (
+                    f"Tracking healthy via {self._state.backend_identity}: "
+                    f"tools {self.runtime_coil_tool_id}/{self.registration_tool_id} tracked"
+                )
             return
 
         if self._state.connection_state == "stopped":
             self._state.health.status = "Tracking service stopped"
             return
 
-        if faults:
+        if tracker_faults:
             self._state.health.status = (
-                f"Tracking {health} via {self.backend_identity}: " + ", ".join(faults)
+                f"Tracking {health} via {self._state.backend_identity}: " + ", ".join(tracker_faults)
             )
             return
 
-        self._state.health.status = f"Tracking state unavailable via {self.backend_identity}"
+        self._state.health.status = f"Tracking state unavailable via {self._state.backend_identity}"
 
     def _build_registration_role_error(
         self,

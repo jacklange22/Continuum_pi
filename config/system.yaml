@@ -2,6 +2,8 @@ robot_config: "robot_4servo.yaml"
 aurora_port: ""
 openrb_port: ""
 tracker_backend: "ndi"
+tracker_fallback_backend: "bridge"
+tracker_fallback_enabled: true
 tracker_type: "aurora"
 baudrate: 115200
 mock_mode: true

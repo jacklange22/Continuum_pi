@@ -7,7 +7,7 @@ from continuum_robot.experiments.dat_writer import DatRunWriter
 from continuum_robot.experiments.experiment_models import ExperimentPoint
 from continuum_robot.experiments.experiment_runner import ExperimentRunner
 from continuum_robot.hardware.mock_dxl_bus import MockDxlBus
-from continuum_robot.registration.repository import RegistrationRepository
+from continuum_robot.services.tracking_service import TrackingService
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
 from continuum_robot.servos.neutral_calibration_service import NeutralCalibrationService
 from continuum_robot.servos.pretension_validation_service import PretensionValidationService
@@ -38,12 +38,17 @@ def test_experiment_runner_writes_one_dat_file_per_run(tmp_path: Path) -> None:
     servo_service.connect("/dev/mock-openrb", 115200)
     servo_service.save_neutral_setpoints(servo_service.capture_neutral_setpoints([1, 2, 3, 4]))
 
-    tracker_manager = MockTrackerManager(poll_hz=10)
-    tracker_manager.start()
+    tracking_service = TrackingService(
+        live_backend=MockTrackerManager(poll_hz=10),
+        port="/dev/mock-aurora",
+        registration_path=registration_path,
+        config_source="test",
+    )
+    tracking_service.start()
     try:
         runner = ExperimentRunner(
             servo_service=servo_service,
-            tracker_manager=tracker_manager,
+            tracking_service=tracking_service,
             dat_writer=DatRunWriter(tmp_path / "runs"),
             neutral_servo_ids=[1, 2, 3, 4],
             default_settle_time_s=0.0,
@@ -52,7 +57,7 @@ def test_experiment_runner_writes_one_dat_file_per_run(tmp_path: Path) -> None:
         )
         summary = runner.run([ExperimentPoint(index=0, tendon_displacement_cm=[0.0, 0.1, -0.1, 0.0])])
     finally:
-        tracker_manager.stop()
+        tracking_service.stop()
 
     text = summary.output_path.read_text(encoding="utf-8")
     assert summary.rows_written == 1

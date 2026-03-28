@@ -176,7 +176,7 @@ def test_registration_controller_guides_capture_and_save(tmp_path: Path) -> None
 def test_experiment_controller_requires_tracker_and_servo_ready(tmp_path: Path) -> None:
     settings = _settings()
     servo_service = _servo_service(tmp_path)
-    tracker_manager = MockTrackerManager(poll_hz=10)
+    tracking_service = _tracking_service(settings, tmp_path)
     registration_path = tmp_path / "latest_registration.json"
     registration_path.write_text(
         json.dumps({"T_robot_aurora": np.eye(4).tolist(), "T_coil_tip": np.eye(4).tolist()}),
@@ -189,7 +189,7 @@ def test_experiment_controller_requires_tracker_and_servo_ready(tmp_path: Path) 
         experiment_loader=ExperimentLoader(),
         experiment_runner=ExperimentRunner(
             servo_service=servo_service,
-            tracker_manager=tracker_manager,
+            tracking_service=tracking_service,
             dat_writer=DatRunWriter(tmp_path / "runs"),
             neutral_servo_ids=[1, 2, 3, 4],
             default_settle_time_s=0.0,
@@ -198,7 +198,7 @@ def test_experiment_controller_requires_tracker_and_servo_ready(tmp_path: Path) 
         ),
         registration_path=registration_path,
         servo_service=servo_service,
-        tracker_manager=tracker_manager,
+        tracking_service=tracking_service,
     )
     controller.load_file(experiment_csv)
 
@@ -208,9 +208,9 @@ def test_experiment_controller_requires_tracker_and_servo_ready(tmp_path: Path) 
     assert "tracker connection" in state.prerequisite_message
 
     servo_service.connect("/dev/mock-openrb", 115200)
-    tracker_manager.start()
+    tracking_service.start()
     try:
         state = controller.refresh_prerequisites()
         assert state.prerequisites_ok is True
     finally:
-        tracker_manager.stop()
+        tracking_service.stop()

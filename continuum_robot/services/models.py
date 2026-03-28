@@ -54,11 +54,16 @@ class TrackingSnapshot:
 
     health: ServiceHealthSnapshot
     connection_state: str
-    backend_identity: str
-    port: str
-    baudrate: int
+    canonical_state: str = "disconnected"
+    backend_identity: str = ""
+    configured_backend_name: str = ""
+    selected_backend_name: str = ""
+    port: str = ""
+    baudrate: int = 115200
     runtime_coil_tool_id: str = "0A"
     registration_tool_id: str = "0B"
+    fallback_backend_name: str | None = None
+    fallback_used: bool = False
     backend_running: bool | None = None
     backend_connected: bool | None = None
     bridge_running: bool | None = None
@@ -82,8 +87,21 @@ class TrackingSnapshot:
     unmapped_live_tool_ids: list[str] = field(default_factory=list)
     packet_capture_path: str | None = None
     packet_capture_enabled: bool = False
+    backend_startup_messages: list[str] = field(default_factory=list)
+    backend_capability_report: dict[str, Any] = field(default_factory=dict)
+    backend_details: dict[str, Any] = field(default_factory=dict)
+    unique_frames_observed: int = 0
+    effective_frame_rate_hz: float | None = None
+    frame_interval_min_s: float | None = None
+    frame_interval_max_s: float | None = None
+    frame_interval_mean_s: float | None = None
+    max_observed_data_age_s: float | None = None
     tools: dict[str, ToolTrackingSnapshot] = field(default_factory=dict)
     faults: list[str] = field(default_factory=list)
+    tracker_faults: list[str] = field(default_factory=list)
+    pipeline_faults: list[str] = field(default_factory=list)
+    warning_messages: list[str] = field(default_factory=list)
+    error_messages: list[str] = field(default_factory=list)
     registration_state: str = "missing_registration"
     registration_path: str | None = None
     stored_registration_measurement_tool_id: str | None = None

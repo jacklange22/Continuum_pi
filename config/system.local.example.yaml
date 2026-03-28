@@ -6,6 +6,8 @@ robot_config: "robot_4servo.yaml"
 aurora_port: "/dev/ttyUSB0"
 openrb_port: "/dev/ttyUSB1"
 tracker_backend: "ndi"
+tracker_fallback_backend: "bridge"
+tracker_fallback_enabled: true
 tracker_type: "aurora"
 mock_mode: false
 read_timeout_s: 0.05

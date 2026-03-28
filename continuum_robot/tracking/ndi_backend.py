@@ -27,7 +27,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from continuum_robot.tracking.tracker_service_manager import TrackerRuntimeState, TrackerToolState
+from continuum_robot.tracking.runtime_models import TrackerRuntimeState, TrackerToolState
 from continuum_robot.tracking.transforms import assert_rigid_transform_matrix, make_transform_A_B, rotmat_to_quat_wxyz
 from continuum_robot.utils.time_utils import utc_now_iso
 
@@ -454,6 +454,8 @@ class TrackerBackendNDI:
         self._last_debug_signature: tuple[Any, ...] | None = None
         self._state = TrackerRuntimeState(
             connection_state="disconnected",
+            canonical_state="disconnected",
+            backend_identity=self.backend_identity,
             backend_running=False,
             backend_connected=False,
             bridge_running=False,
@@ -481,6 +483,7 @@ class TrackerBackendNDI:
         self._last_debug_signature = None
         with self._lock:
             self._state.connection_state = "starting"
+            self._state.canonical_state = "connecting"
             self._state.backend_running = True
             self._state.backend_connected = False
             self._state.bridge_running = False
@@ -505,6 +508,7 @@ class TrackerBackendNDI:
         self._cleanup_tracker()
         with self._lock:
             self._state.connection_state = "disconnected"
+            self._state.canonical_state = "disconnected"
             self._state.backend_running = False
             self._state.backend_connected = False
             self._state.bridge_running = False
@@ -520,6 +524,8 @@ class TrackerBackendNDI:
             tools = {tool_id: replace(tool) for tool_id, tool in self._state.tools.items()}
             return TrackerRuntimeState(
                 connection_state=self._state.connection_state,
+                canonical_state=self._state.canonical_state,
+                backend_identity=self.backend_identity,
                 backend_running=self._state.backend_running,
                 backend_connected=self._state.backend_connected,
                 socket_connected=self._state.socket_connected,
@@ -846,5 +852,17 @@ class TrackerBackendNDI:
                 updates["bridge_running"] = bool(updates["backend_running"])
             if "backend_connected" in updates and "socket_connected" not in updates:
                 updates["socket_connected"] = bool(updates["backend_connected"])
+            if "connection_state" in updates and "canonical_state" not in updates:
+                updates["canonical_state"] = self._canonical_state_for_connection(str(updates["connection_state"]))
             for key, value in updates.items():
                 setattr(self._state, key, value)
+
+    @staticmethod
+    def _canonical_state_for_connection(connection_state: str) -> str:
+        if connection_state in {"starting", "connecting", "reconnecting"}:
+            return "connecting"
+        if connection_state in {"tracking"}:
+            return "streaming_healthy"
+        if connection_state in {"error"}:
+            return "error"
+        return "disconnected"

@@ -32,13 +32,13 @@ class ExperimentController:
         experiment_runner,
         registration_path: Path,
         servo_service,
-        tracker_manager,
+        tracking_service,
     ) -> None:
         self.experiment_loader = experiment_loader
         self.experiment_runner = experiment_runner
         self.registration_path = registration_path
         self.servo_service = servo_service
-        self.tracker_manager = tracker_manager
+        self.tracking_service = tracking_service
         self.points = []
         self.state = ExperimentViewState()
         self._stop_event = threading.Event()
@@ -63,10 +63,10 @@ class ExperimentController:
     def refresh_prerequisites(self) -> ExperimentViewState:
         has_neutral = bool(self.servo_service.load_neutral_setpoints())
         has_registration = self.registration_path.exists()
-        tracker_state = self.tracker_manager.get_state_snapshot()
-        tracker_connected = tracker_state.connection_state == "tracking"
+        tracker_state = self.tracking_service.get_snapshot()
+        tracker_connected = tracker_state.canonical_state in {"mock", "streaming_healthy", "streaming_degraded"}
         tool_0a = tracker_state.tools.get("0A")
-        tool_0a_valid = bool(tool_0a and tool_0a.valid)
+        tool_0a_valid = bool(tool_0a and tool_0a.tracking_state == "tracked")
         servo_connected = self.servo_service.is_connected
         self.state.prerequisites_ok = (
             has_neutral

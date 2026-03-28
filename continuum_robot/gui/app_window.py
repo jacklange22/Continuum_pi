@@ -25,7 +25,6 @@ class AppWindow(QMainWindow):
         super().__init__()
         self.context = context
         settings = context.settings
-        tracker_manager = context.services.get("tracker_manager")
         tracking_service = context.services.get("tracking_service")
         registration_service = context.services.get("registration_service")
         servo_service = context.services.get("servo_service")
@@ -55,7 +54,7 @@ class AppWindow(QMainWindow):
             experiment_runner=experiment_runner,
             registration_path=self.tracking_controller.registration_path,
             servo_service=servo_service,
-            tracker_manager=tracker_manager,
+            tracking_service=tracking_service,
         )
 
         self.tab_widget = QTabWidget()

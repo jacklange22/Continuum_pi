@@ -61,11 +61,27 @@ Do not modify `references/` or `tools/` unless you intentionally want to change 
 Primary live tracking path:
 
 - [bootstrap.py](/Users/jacklange/Continuum/pi_code/continuum_robot/app/bootstrap.py) wires the configured tracker backend into the app context
+- [backend_router.py](/Users/jacklange/Continuum/pi_code/continuum_robot/tracking/backend_router.py) is the single live-backend selector and fallback policy seam
 - [ndi_backend.py](/Users/jacklange/Continuum/pi_code/continuum_robot/tracking/ndi_backend.py) owns `NDITracker`, live polling, raw-id normalization, payload extraction, and first-frame debug instrumentation
 - [tracking_service.py](/Users/jacklange/Continuum/pi_code/continuum_robot/services/tracking_service.py) is the app-visible source of truth for tool state, freshness, faults, and `T_robot_tip`
-- [run_diagnostics.py](/Users/jacklange/Continuum/pi_code/scripts/run_diagnostics.py) and [run_tracker_benchmark.py](/Users/jacklange/Continuum/pi_code/scripts/run_tracker_benchmark.py) both consume `TrackingService`
+- [diagnostics.py](/Users/jacklange/Continuum/pi_code/continuum_robot/tracking/diagnostics.py) owns staged validation, failure classification, and doctor reports
+- [run_tracker_doctor.py](/Users/jacklange/Continuum/pi_code/scripts/run_tracker_doctor.py), [run_tracker_smoke.py](/Users/jacklange/Continuum/pi_code/scripts/run_tracker_smoke.py), and [run_tracker_benchmark.py](/Users/jacklange/Continuum/pi_code/scripts/run_tracker_benchmark.py) all consume `TrackingService`
 - [registration_service.py](/Users/jacklange/Continuum/pi_code/continuum_robot/services/registration_service.py) consumes live `0B`
 - [tip_pose_service.py](/Users/jacklange/Continuum/pi_code/continuum_robot/tracking/tip_pose_service.py) consumes live `0A` plus saved registration
+
+Architecture diagram:
+
+```text
+Aurora USB/serial
+  -> TrackingBackendRouter
+      -> TrackerBackendNDI (preferred)
+      -> TrackerServiceManager / tracker_bridge (fallback/debug only)
+  -> TrackingService
+      -> GUI Tracking/System panels
+      -> RegistrationService
+      -> ExperimentRunner
+      -> tracker doctor / smoke / benchmark
+```
 
 What the backend does:
 
@@ -77,6 +93,16 @@ What the backend does:
 - validates rigid transforms strictly
 - publishes `tracked`, `missing`, `invalid`, or `unknown`
 - logs only the first few raw payload summaries to stderr for bring-up debugging
+
+Canonical backend states:
+
+- `disabled`
+- `mock`
+- `connecting`
+- `streaming_healthy`
+- `streaming_degraded`
+- `disconnected`
+- `error`
 
 ## Hardware And Software Prerequisites
 
@@ -137,6 +163,8 @@ For live Aurora on the Pi, the important fields are:
 mock_mode: false
 aurora_port: "/dev/ttyUSB0"
 tracker_backend: "ndi"
+tracker_fallback_backend: "bridge"
+tracker_fallback_enabled: true
 tracker_type: "aurora"
 tracker_poll_ms: 20
 tracker_freshness_timeout_s: 0.5
@@ -147,6 +175,8 @@ tracker_tool_id_aliases:
 
 Notes:
 
+- backend selection is explicit: the router tries `tracker_backend` first and only tries `tracker_fallback_backend` if fallback is enabled and the primary backend is unavailable or fails during startup
+- fallback is always recorded in startup messages and diagnostics; it is never silent
 - raw live ids `10` and `11` are the current observed Aurora tool ids on the Pi
 - the app runtime still uses `0A` and `0B`
 - `system.local.yaml` overrides `system.yaml`
@@ -154,30 +184,40 @@ Notes:
 ## Recommended Order Of Operations
 
 1. Verify Python environment and config
-2. Verify tracker connection and tool visibility without registration
-3. Run the tracker benchmark
-4. Perform registration and create `data/registrations/latest_registration.json`
-5. Validate tip pose/runtime sanity
+2. Run tracker doctor to verify backend selection and startup preflight
+3. Run tracker smoke to verify pre-registration tracking readiness
+4. Run the tracker benchmark for timing and freshness
+5. Perform registration and create `data/registrations/latest_registration.json`
+6. Run registration readiness validation to confirm `T_robot_tip`
 6. Launch the full GUI/app
 
 ## Stage 1: Tracker Bring-Up Without Registration
 
-Tracker-only diagnostics:
+Tracker doctor:
 
 ```bash
-.venv/bin/python scripts/run_diagnostics.py --tracker-port /dev/ttyUSB0 --frames 5
+.venv/bin/python scripts/run_tracker_doctor.py --tracker-port /dev/ttyUSB0
 ```
 
 What good output looks like:
 
-- `State: tracking`
-- backend identity is `ndi_tracker_python`
+- `selected_backend=ndi`
+- `backend_identity=ndi_tracker_python`
+- `tracker_ready=True`
+- `full_pose_pipeline_ready=False`
+- `Stage 1` through `Stage 4` pass
+- `Stage 5` reports `pending` when registration has not been done yet
 - `raw_live_tool_ids=['10', '11']`
 - `normalized_live_tool_ids=['0A', '0B']`
 - `runtime_role_mappings={'0A': '10', '0B': '11'}`
-- `0A` and `0B` are present
-- if transform extraction is correct, tool state reaches `tracked`
-- if registration is still missing, `registration=missing_registration` is expected at this stage
+
+Pre-registration smoke test:
+
+```bash
+.venv/bin/python scripts/run_tracker_smoke.py --tracker-port /dev/ttyUSB0
+```
+
+This is the quickest acceptance check before touching registration. It exits success when the tracker is healthy even if registration is still pending.
 
 Tracker benchmark:
 
@@ -187,12 +227,14 @@ Tracker benchmark:
 
 What good output looks like:
 
-- connection state reaches `tracking`
+- `Configured backend: ndi`
+- `Selected backend: ndi`
+- `Canonical state: streaming_healthy` or `streaming_degraded`
 - `Unique frames observed` is greater than zero
 - `Backend frame counter` is greater than zero
 - raw/normalized ids and runtime mappings are populated
 - tracked counts for `0A` and `0B` are greater than zero
-- failures list is empty or only registration-related checks are absent from the benchmark output
+- failures list is empty
 
 Benchmark behavior note:
 
@@ -232,18 +274,26 @@ Saved CSV-to-registration flow remains available:
 
 ## Stage 3: Runtime Tip-Pose Validation After Registration
 
-Runtime sanity validation:
+Registration readiness validation:
 
 ```bash
-.venv/bin/python scripts/run_registration_runtime_sanity.py --live --tracker-port /dev/ttyUSB0
+.venv/bin/python scripts/run_tracker_smoke.py \
+  --tracker-port /dev/ttyUSB0 \
+  --require-registration \
+  --registration-file data/registrations/latest_registration.json
 ```
 
 What good output looks like:
 
-- `registration_state=loaded`
-- `tip_pose_status=ok`
-- `passed=True`
-- `tip_translation_mm=[...]`
+- `tracker_ready=True`
+- `full_pose_pipeline_ready=True`
+- `Stage 5: T_robot_tip computable: passed`
+
+Deeper runtime tip-pose debugging remains available:
+
+```bash
+.venv/bin/python scripts/run_registration_runtime_sanity.py --live --tracker-port /dev/ttyUSB0
+```
 
 If registration has not been done yet, failure is expected and should explicitly report `missing_registration`.
 
@@ -278,7 +328,7 @@ Typical causes:
 Checks:
 
 ```bash
-.venv/bin/python scripts/run_diagnostics.py --tracker-port /dev/ttyUSB0 --frames 5
+.venv/bin/python scripts/run_tracker_doctor.py --tracker-port /dev/ttyUSB0
 ```
 
 Look for:
@@ -411,28 +461,37 @@ tracker_tool_id_aliases:
 6. Verify tracker-only diagnostics:
 
 ```bash
-.venv/bin/python scripts/run_diagnostics.py --tracker-port /dev/ttyUSB0 --frames 5
+.venv/bin/python scripts/run_tracker_doctor.py --tracker-port /dev/ttyUSB0
 ```
 
-7. Run tracker benchmark:
+7. Run pre-registration smoke:
+
+```bash
+.venv/bin/python scripts/run_tracker_smoke.py --tracker-port /dev/ttyUSB0
+```
+
+8. Run tracker benchmark:
 
 ```bash
 .venv/bin/python scripts/run_tracker_benchmark.py --tracker-port /dev/ttyUSB0 --duration-s 5
 ```
 
-8. Perform registration in the GUI and create `data/registrations/latest_registration.json`:
+9. Perform registration in the GUI and create `data/registrations/latest_registration.json`:
 
 ```bash
 scripts/run_gui.sh
 ```
 
-9. Validate runtime tip pose after registration:
+10. Validate runtime tip pose after registration:
 
 ```bash
-.venv/bin/python scripts/run_registration_runtime_sanity.py --live --tracker-port /dev/ttyUSB0
+.venv/bin/python scripts/run_tracker_smoke.py \
+  --tracker-port /dev/ttyUSB0 \
+  --require-registration \
+  --registration-file data/registrations/latest_registration.json
 ```
 
-10. Launch the full operator app:
+11. Launch the full operator app:
 
 ```bash
 scripts/run_gui.sh

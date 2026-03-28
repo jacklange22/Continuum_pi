@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from continuum_robot.tracking.benchmarking import TrackerBenchmarkThresholds
+from continuum_robot.tracking.diagnostics import build_live_stage_results, render_live_tracking_lines
 from continuum_robot.config.settings import Settings
 
 
@@ -13,6 +15,10 @@ class TrackingViewState:
     """UI-facing snapshot of live tracker state."""
 
     device_path: str
+    canonical_state: str = "disconnected"
+    configured_backend_name: str = ""
+    selected_backend_name: str = ""
+    fallback_used: bool = False
     backend_identity: str = ""
     connection_state: str = "disconnected"
     backend_running: bool = False
@@ -22,8 +28,23 @@ class TrackingViewState:
     tracker_data_age_s: float | None = None
     tracker_data_stale: bool = False
     first_frame_latency_s: float | None = None
+    unique_frames_observed: int = 0
+    effective_frame_rate_hz: float | None = None
     last_status_message: str = ""
     last_error: str | None = None
+    raw_live_tool_ids: list[str] = field(default_factory=list)
+    normalized_live_tool_ids: list[str] = field(default_factory=list)
+    runtime_role_mappings: dict[str, str] = field(default_factory=dict)
+    backend_startup_messages: list[str] = field(default_factory=list)
+    backend_capability_report: dict[str, dict] = field(default_factory=dict)
+    backend_details: dict[str, object] = field(default_factory=dict)
+    tracker_faults: list[str] = field(default_factory=list)
+    pipeline_faults: list[str] = field(default_factory=list)
+    warning_messages: list[str] = field(default_factory=list)
+    error_messages: list[str] = field(default_factory=list)
+    tracker_ready: bool = False
+    full_pose_pipeline_ready: bool = False
+    diagnostic_lines: list[str] = field(default_factory=list)
     tools: dict[str, dict] = field(default_factory=dict)
     registration_path: str = ""
     tip_position_mm: tuple[float, float, float] | None = None
@@ -39,6 +60,16 @@ class TrackingController:
     def __init__(self, tracking_service, settings: Settings, registration_path: Path | None = None) -> None:
         self.tracking_service = tracking_service
         self.registration_path = registration_path or Path(settings.calibration.latest_registration_path)
+        self.thresholds = TrackerBenchmarkThresholds(
+            min_effective_fps=float(settings.serial.tracker_min_effective_fps),
+            max_stale_interval_s=float(settings.serial.tracker_max_stale_interval_s),
+            max_consecutive_missing_frames=int(settings.serial.tracker_max_consecutive_missing_frames),
+            require_valid_transforms=bool(settings.serial.tracker_require_valid_transforms),
+        )
+        self.required_tool_ids = (
+            settings.registration.coil_tool_id,
+            settings.registration.capture_tool_id,
+        )
         self.state = TrackingViewState(
             device_path=str(settings.serial.aurora_port),
             registration_path=str(self.registration_path),
@@ -68,6 +99,10 @@ class TrackingController:
 
     def refresh(self) -> TrackingViewState:
         snapshot = self.tracking_service.get_snapshot()
+        self.state.canonical_state = snapshot.canonical_state
+        self.state.configured_backend_name = snapshot.configured_backend_name
+        self.state.selected_backend_name = snapshot.selected_backend_name
+        self.state.fallback_used = snapshot.fallback_used
         self.state.backend_identity = snapshot.backend_identity
         self.state.connection_state = snapshot.connection_state
         self.state.backend_running = bool(
@@ -81,8 +116,20 @@ class TrackingController:
         self.state.tracker_data_age_s = snapshot.tracker_data_age_s
         self.state.tracker_data_stale = snapshot.tracker_data_stale
         self.state.first_frame_latency_s = snapshot.first_frame_latency_s
+        self.state.unique_frames_observed = snapshot.unique_frames_observed
+        self.state.effective_frame_rate_hz = snapshot.effective_frame_rate_hz
         self.state.last_status_message = snapshot.backend_status_message or snapshot.health.status
         self.state.last_error = snapshot.last_error
+        self.state.raw_live_tool_ids = list(snapshot.raw_live_tool_ids)
+        self.state.normalized_live_tool_ids = list(snapshot.normalized_live_tool_ids)
+        self.state.runtime_role_mappings = dict(snapshot.runtime_role_mappings)
+        self.state.backend_startup_messages = list(snapshot.backend_startup_messages)
+        self.state.backend_capability_report = dict(snapshot.backend_capability_report)
+        self.state.backend_details = dict(snapshot.backend_details)
+        self.state.tracker_faults = list(snapshot.tracker_faults)
+        self.state.pipeline_faults = list(snapshot.pipeline_faults)
+        self.state.warning_messages = list(snapshot.warning_messages)
+        self.state.error_messages = list(snapshot.error_messages)
         self.state.runtime_coil_tool_id = snapshot.runtime_coil_tool_id
         self.state.registration_tool_id = snapshot.registration_tool_id
         self.state.tools = {
@@ -100,6 +147,18 @@ class TrackingController:
             }
             for tool_id, tool in snapshot.tools.items()
         }
+        self.state.diagnostic_lines = render_live_tracking_lines(
+            snapshot,
+            thresholds=self.thresholds,
+            required_tool_ids=self.required_tool_ids,
+        )
+        stages = build_live_stage_results(
+            snapshot,
+            thresholds=self.thresholds,
+            required_tool_ids=self.required_tool_ids,
+        )
+        self.state.tracker_ready = all(stage.status == "passed" for stage in stages[:4])
+        self.state.full_pose_pipeline_ready = self.state.tracker_ready and stages[4].status == "passed"
         self._refresh_tip_pose(snapshot)
         return self.state
 

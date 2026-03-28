@@ -33,6 +33,8 @@ class TrackingTab(QWidget):
 
         self.connection_label = QLabel()
         self.frame_label = QLabel()
+        self.tracker_ready_label = QLabel()
+        self.pipeline_ready_label = QLabel()
         self.tip_status_label = QLabel()
         self.tip_position_label = QLabel()
         self.registration_label = QLabel()
@@ -41,6 +43,8 @@ class TrackingTab(QWidget):
         summary_layout = QFormLayout(summary_box)
         summary_layout.addRow("Connection", self.connection_label)
         summary_layout.addRow("Latest frame", self.frame_label)
+        summary_layout.addRow("Tracker ready", self.tracker_ready_label)
+        summary_layout.addRow("Pose pipeline", self.pipeline_ready_label)
         summary_layout.addRow("Registration file", self.registration_label)
         summary_layout.addRow("Tip status", self.tip_status_label)
         summary_layout.addRow("Tip position (mm)", self.tip_position_label)
@@ -64,10 +68,19 @@ class TrackingTab(QWidget):
 
     def update(self, state: TrackingViewState) -> None:
         self.connection_label.setText(
-            f"{state.connection_state} | backend={state.backend_identity} "
+            f"{state.canonical_state} ({state.connection_state}) | "
+            f"backend={state.selected_backend_name or state.backend_identity} "
             f"| running={state.backend_running} | connected={state.backend_connected}"
         )
         self.frame_label.setText(str(state.latest_frame_number) if state.latest_frame_number is not None else "none")
+        self.tracker_ready_label.setText("yes" if state.tracker_ready else "no")
+        if state.full_pose_pipeline_ready:
+            pipeline_text = "ready"
+        elif state.tip_status == "missing_registration":
+            pipeline_text = "pending registration"
+        else:
+            pipeline_text = "not ready"
+        self.pipeline_ready_label.setText(pipeline_text)
         self.registration_label.setText(state.registration_path or "missing")
         self.tip_status_label.setText(state.tip_status)
         self.tip_position_label.setText(
@@ -97,13 +110,34 @@ class TrackingTab(QWidget):
         self.plot_widget.set_points(plot_points)
 
         lines = [state.last_status_message or "No tracker messages yet."]
+        lines.append(f"configured_backend={state.configured_backend_name}")
+        lines.append(f"selected_backend={state.selected_backend_name or state.backend_identity}")
+        lines.append(f"fallback_used={state.fallback_used}")
         if state.latest_timestamp:
             lines.append(f"latest_timestamp={state.latest_timestamp}")
+        lines.append(f"unique_frames={state.unique_frames_observed}")
+        lines.append(f"effective_fps={state.effective_frame_rate_hz}")
         if state.tracker_data_age_s is not None:
             lines.append(f"data_age_s={state.tracker_data_age_s:.3f}")
         lines.append(f"data_stale={state.tracker_data_stale}")
         if state.first_frame_latency_s is not None:
             lines.append(f"first_frame_latency_s={state.first_frame_latency_s:.3f}")
+        lines.append(f"raw_live_tool_ids={state.raw_live_tool_ids}")
+        lines.append(f"normalized_live_tool_ids={state.normalized_live_tool_ids}")
+        lines.append(f"role_mappings={state.runtime_role_mappings}")
+        if state.backend_details:
+            lines.append(f"backend_details={state.backend_details}")
+        lines.append(f"tracker_faults={state.tracker_faults}")
+        lines.append(f"pipeline_faults={state.pipeline_faults}")
+        if state.warning_messages:
+            lines.append(f"warning_messages={state.warning_messages}")
+        if state.error_messages:
+            lines.append(f"error_messages={state.error_messages}")
+        if state.backend_startup_messages:
+            lines.append(f"startup_messages={state.backend_startup_messages}")
+        if state.backend_capability_report:
+            lines.append(f"capability_report={state.backend_capability_report}")
+        lines.extend(state.diagnostic_lines)
         if state.last_error:
             lines.append(f"Error: {state.last_error}")
         self.status_text.setPlainText("\n".join(lines))
