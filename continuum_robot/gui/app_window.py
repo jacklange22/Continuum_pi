@@ -84,7 +84,7 @@ class AppWindow(QMainWindow):
         self.system_tab.update(self.system_controller.refresh())
         self.servos_tab.update(self.servos_controller.refresh())
         self.tracking_tab.update(self.tracking_controller.refresh())
-        self.registration_tab.update(self.registration_controller.state)
+        self.registration_tab.update(self.registration_controller.refresh())
         self.experiment_tab.update(self.experiment_controller.refresh_prerequisites())
         self.statusBar().showMessage(self.system_controller.state.status_message)
 

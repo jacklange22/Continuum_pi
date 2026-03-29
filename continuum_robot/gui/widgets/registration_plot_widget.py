@@ -14,15 +14,22 @@ class RegistrationPlotWidget(QWidget):
         super().__init__(parent)
         self._nominal: dict[str, tuple[float, float]] = {}
         self._captured: dict[str, list[tuple[float, float]]] = {}
+        self._centroids: dict[str, tuple[float, float]] = {}
+        self._current_point: tuple[float, float] | None = None
         self.setMinimumHeight(180)
 
     def set_data(
         self,
         nominal: dict[str, tuple[float, float]],
         captured: dict[str, list[tuple[float, float]]],
+        *,
+        centroids: dict[str, tuple[float, float]] | None = None,
+        current_point: tuple[float, float] | None = None,
     ) -> None:
         self._nominal = dict(nominal)
         self._captured = {key: list(value) for key, value in captured.items()}
+        self._centroids = dict(centroids or {})
+        self._current_point = tuple(current_point) if current_point is not None else None
         self.update()
 
     def paintEvent(self, event) -> None:
@@ -53,3 +60,16 @@ class RegistrationPlotWidget(QWidget):
                 px = center.x() + x * scale
                 py = center.y() - y * scale
                 painter.drawEllipse(QPointF(px, py), 4.0, 4.0)
+
+        painter.setBrush(QColor("#111827"))
+        for x, y in self._centroids.values():
+            px = center.x() + x * scale
+            py = center.y() - y * scale
+            painter.drawRect(px - 4.0, py - 4.0, 8.0, 8.0)
+
+        if self._current_point is not None:
+            painter.setPen(QPen(QColor("#0f766e"), 2))
+            painter.setBrush(Qt.NoBrush)
+            px = center.x() + self._current_point[0] * scale
+            py = center.y() - self._current_point[1] * scale
+            painter.drawEllipse(QPointF(px, py), 8.0, 8.0)

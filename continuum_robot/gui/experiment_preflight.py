@@ -17,6 +17,7 @@ from continuum_robot.experiments.critical_experiments import (
 PREFLIGHT_OK = "ok"
 PREFLIGHT_WARNING = "warning"
 PREFLIGHT_BLOCKED = "blocked"
+PREFLIGHT_INFO = "info"
 
 RUN_OK = "ok_to_run"
 RUN_WARNING = "ok_with_warning"
@@ -56,12 +57,16 @@ class PreflightReport:
         return [check.message for check in self.checks if check.status == PREFLIGHT_WARNING]
 
     @property
+    def info_messages(self) -> list[str]:
+        return [check.message for check in self.checks if check.status == PREFLIGHT_INFO]
+
+    @property
     def summary(self) -> str:
         if self.overall_status == RUN_BLOCKED:
-            return "; ".join(self.blocking_messages) or "Run blocked."
+            return "Run blocked. Resolve the red items before starting."
         if self.overall_status == RUN_WARNING:
-            return "; ".join(self.warning_messages) or "Run allowed with warnings."
-        return "Ready to run."
+            return "Ready with warnings. Review the amber items before starting."
+        return "Ready to run. All required checks passed."
 
 
 def evaluate_preflight(
@@ -88,7 +93,7 @@ def evaluate_preflight(
                 key="config",
                 label="Config",
                 status=PREFLIGHT_BLOCKED,
-                message=f"Config is invalid: {config_error}",
+                message=f"Config could not be parsed. Fix the YAML error and refresh preflight. Details: {config_error}",
             )
         )
         return _finalize_report(
@@ -109,15 +114,18 @@ def evaluate_preflight(
             status=(
                 PREFLIGHT_OK
                 if tracker_ready
-                else (PREFLIGHT_OK if settings.runtime.mock_mode else PREFLIGHT_BLOCKED)
+                else (PREFLIGHT_INFO if settings.runtime.mock_mode else PREFLIGHT_BLOCKED)
             ),
             message=(
-                f"Tracker state={tracking_snapshot.canonical_state}, backend={backend_name}."
+                f"Tracker is ready on backend {backend_name} with state {tracking_snapshot.canonical_state}."
                 if tracker_ready
                 else (
-                    f"App is in mock mode; tracker backend {backend_name} will self-start for dry-run execution."
+                    f"App is in mock mode. The {backend_name} backend will self-start for dry-run execution."
                     if settings.runtime.mock_mode
-                    else f"Tracker is not ready: state={tracking_snapshot.canonical_state}, backend={backend_name}."
+                    else (
+                        f"Tracker is not ready. Current state is {tracking_snapshot.canonical_state} on backend {backend_name}. "
+                        "Start tracking from the System or Tracking tab and confirm live frames before running."
+                    )
                 )
             ),
         )
@@ -151,7 +159,9 @@ def evaluate_preflight(
                 _blocked(
                     "dimensions",
                     "Dimensionality",
-                    f"Repeatability target dimensionality {sorted(target_lengths)} does not match robot tendon count {expected_dims}.",
+                    f"Repeatability targets do not match the configured robot. "
+                    f"Expected {expected_dims} tendon values per point, found {sorted(target_lengths)}. "
+                    "Fix schedule.target_points_cm before running.",
                 )
             )
         else:
@@ -173,16 +183,22 @@ def evaluate_preflight(
 
         if config.dry_run:
             checks.append(
-                _warning(
+                _info(
                     "mode",
                     "Run Mode",
-                    "Run is configured for dry-run; servo commands will be computed but not sent to hardware."
+                    "This run is in dry-run mode. Commands will be computed and logged, but not sent to hardware."
                     if servo_connected
-                    else "Run is configured for dry-run and does not require live servo hardware.",
+                    else "This run is in dry-run mode and does not require live servo hardware.",
                 )
             )
         elif not servo_connected:
-            checks.append(_blocked("mode", "Run Mode", "Live repeatability requires a connected servo service."))
+            checks.append(
+                _blocked(
+                    "mode",
+                    "Run Mode",
+                    "Live repeatability requires a connected servo service. Connect OpenRB and verify servo status first.",
+                )
+            )
         else:
             checks.append(_ok("mode", "Run Mode", "Live repeatability will use the connected servo service."))
 
@@ -192,7 +208,10 @@ def evaluate_preflight(
             message = (
                 f"Neutral setpoints are available for all {expected_dims} tendons."
                 if neutral_count == expected_dims
-                else "Neutral setpoints are missing or incomplete; commanded motor values may be unavailable in dry-run output."
+                else (
+                    "Neutral setpoints are missing or incomplete. Dry-run output can still be recorded, "
+                    "but commanded motor values may be missing."
+                )
             )
             checks.append(PreflightCheck("neutral_setpoints", "Neutral Setpoints", status, message))
         else:
@@ -200,7 +219,7 @@ def evaluate_preflight(
             message = (
                 f"Neutral setpoints are available for all {expected_dims} tendons."
                 if neutral_count == expected_dims
-                else "Live repeatability requires saved neutral setpoints for every tendon."
+                else "Live repeatability requires saved neutral setpoints for every tendon. Capture and save neutral first."
             )
             checks.append(PreflightCheck("neutral_setpoints", "Neutral Setpoints", status, message))
 
@@ -211,7 +230,7 @@ def evaluate_preflight(
                 _warning(
                     "registration",
                     "Registration",
-                    "Registration file is missing; repeatability will log tracker-frame data but robot-frame pose will be unavailable.",
+                    "Registration is missing. The run can continue, but only tracker-frame pose will be available until registration is saved.",
                 )
             )
 
@@ -223,7 +242,7 @@ def evaluate_preflight(
                 _blocked(
                     "grid_definition",
                     "Grid Definition",
-                    "Grid definition must have 2 or 3 positive dimensions and positive spacing.",
+                    "Grid definition is invalid. Use 2 or 3 positive dimensions and a positive spacing value.",
                 )
             )
         else:
@@ -239,10 +258,16 @@ def evaluate_preflight(
             if truth_path.exists():
                 checks.append(_ok("truth_grid", "Truth Grid", f"Truth grid file found: {truth_path}"))
             else:
-                checks.append(_blocked("truth_grid", "Truth Grid", f"Truth grid file is missing: {truth_path}"))
+                checks.append(
+                    _blocked(
+                        "truth_grid",
+                        "Truth Grid",
+                        f"Truth grid file is missing: {truth_path}. Select a valid file or remove truth_points_file to generate the grid from the config.",
+                    )
+                )
         else:
             checks.append(
-                _ok(
+                _info(
                     "truth_grid",
                     "Truth Grid",
                     "Truth grid will be generated from spacing and dimensions in the config.",
@@ -266,7 +291,7 @@ def evaluate_preflight(
                     _warning(
                         "tip_calibration",
                         "Tip Calibration",
-                        "Tip calibration is missing; the experiment can run using coil-origin fallback, but accuracy metrics are partial.",
+                        "Tip calibration is missing. The experiment can run with coil-origin fallback, but tip-based accuracy metrics will be partial.",
                     )
                 )
             else:
@@ -274,11 +299,11 @@ def evaluate_preflight(
                     _blocked(
                         "tip_calibration",
                         "Tip Calibration",
-                        "Tip calibration is required for this run and no tip vector or tip file is available.",
+                        "Tip calibration is required for this run. Provide tip_vector_mm, point to a valid tip_file, or enable allow_coil_origin_fallback.",
                     )
                 )
         else:
-            checks.append(_ok("tip_calibration", "Tip Calibration", "Tip calibration is not required for this run."))
+            checks.append(_info("tip_calibration", "Tip Calibration", "Tip calibration is not required for this run."))
 
         if config.truth_frame == "robot":
             if registration_path.exists():
@@ -288,18 +313,24 @@ def evaluate_preflight(
                     _blocked(
                         "registration",
                         "Registration",
-                        "Robot-frame grid accuracy requires a registration file.",
+                        "Robot-frame grid accuracy requires registration. Save a registration file first or change truth_frame to tracker.",
                     )
                 )
         else:
-            checks.append(_ok("registration", "Registration", "Tracker-frame truth does not require registration."))
+            checks.append(_info("registration", "Registration", "Tracker-frame truth does not require registration."))
 
         if config.dry_run:
-            checks.append(_ok("mode", "Run Mode", "Grid accuracy will run in dry-run/mock mode."))
+            checks.append(_info("mode", "Run Mode", "Grid accuracy will run in dry-run/mock mode."))
         elif tracker_ready:
             checks.append(_ok("mode", "Run Mode", "Grid accuracy will use live tracking input."))
         else:
-            checks.append(_blocked("mode", "Run Mode", "Live grid accuracy requires healthy tracker streaming."))
+            checks.append(
+                _blocked(
+                    "mode",
+                    "Run Mode",
+                    "Live grid accuracy requires healthy tracker streaming. Confirm frames and tool visibility before running.",
+                )
+            )
 
     elif experiment_name == "pivot_calibration":
         config = PivotCalibrationConfig.from_dict(payload)
@@ -308,13 +339,25 @@ def evaluate_preflight(
             if input_path.exists():
                 checks.append(_ok("input_file", "Pivot Input", f"Offline pivot input found: {input_path}"))
             else:
-                checks.append(_blocked("input_file", "Pivot Input", f"Pivot input file is missing: {input_path}"))
+                checks.append(
+                    _blocked(
+                        "input_file",
+                        "Pivot Input",
+                        f"Pivot input file is missing: {input_path}. Choose a valid recorded file or clear input_path for live collection.",
+                    )
+                )
         elif config.dry_run:
-            checks.append(_ok("input_file", "Pivot Input", "Pivot calibration will use synthetic dry-run samples."))
+            checks.append(_info("input_file", "Pivot Input", "Pivot calibration will use synthetic dry-run samples."))
         elif tracker_ready:
             checks.append(_ok("input_file", "Pivot Input", "Pivot calibration will collect live tracker samples."))
         else:
-            checks.append(_blocked("input_file", "Pivot Input", "Live pivot calibration requires healthy tracker streaming."))
+            checks.append(
+                _blocked(
+                    "input_file",
+                    "Pivot Input",
+                    "Live pivot calibration requires healthy tracker streaming. Start tracking and confirm tool visibility first.",
+                )
+            )
 
         if not config.input_path:
             checks.append(
@@ -334,7 +377,7 @@ def evaluate_preflight(
         message = (
             f"Tip file will be written to {output_tip_path}."
             if status == PREFLIGHT_OK
-            else f"Tip output directory is not writable: {output_tip_path.parent}"
+            else f"Tip output directory is not writable: {output_tip_path.parent}. Pick a writable path before running."
         )
         checks.append(PreflightCheck("tip_output", "Tip Output", status, message))
         if output_tip_path.exists():
@@ -348,9 +391,9 @@ def evaluate_preflight(
             )
 
         if config.input_path:
-            checks.append(_ok("registration", "Registration", "Pivot calibration does not require registration."))
+            checks.append(_info("registration", "Registration", "Pivot calibration does not require registration."))
         else:
-            checks.append(_ok("registration", "Registration", "Pivot calibration does not require registration."))
+            checks.append(_info("registration", "Registration", "Pivot calibration does not require registration."))
 
     else:
         checks.append(_blocked("experiment", "Experiment", f"Unsupported experiment selection: {experiment_name}"))
@@ -389,12 +432,16 @@ def _tool_check(*, tool_id: str, snapshot, mock_mode: bool) -> PreflightCheck:
     if tool is not None and tool.tracking_state == "tracked":
         return _ok("tool_ids", "Tool IDs", f"Required tool {tool_id} is currently tracked.")
     if mock_mode:
-        return _warning(
+        return _info(
             "tool_ids",
             "Tool IDs",
-            f"Required tool {tool_id} is not currently visible, but mock/dry-run mode can generate the expected stream.",
+            f"Tool {tool_id} is not currently visible. Mock or dry-run mode can still generate the expected stream for this run.",
         )
-    return _blocked("tool_ids", "Tool IDs", f"Required tool {tool_id} is not currently tracked.")
+    return _blocked(
+        "tool_ids",
+        "Tool IDs",
+        f"Required tool {tool_id} is not currently tracked. Confirm the tool is enabled in Aurora and visible in the Tracking tab.",
+    )
 
 
 def _ok(key: str, label: str, message: str) -> PreflightCheck:
@@ -407,6 +454,10 @@ def _warning(key: str, label: str, message: str) -> PreflightCheck:
 
 def _blocked(key: str, label: str, message: str) -> PreflightCheck:
     return PreflightCheck(key=key, label=label, status=PREFLIGHT_BLOCKED, message=message)
+
+
+def _info(key: str, label: str, message: str) -> PreflightCheck:
+    return PreflightCheck(key=key, label=label, status=PREFLIGHT_INFO, message=message)
 
 
 def _finalize_report(

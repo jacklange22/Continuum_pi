@@ -8,7 +8,6 @@ import json
 from pathlib import Path
 import threading
 from typing import Any
-from uuid import uuid4
 
 import yaml
 
@@ -287,12 +286,27 @@ class ExperimentController:
                     sample_callback=self._on_sample,
                 )
                 bundle = self.experiment_runner.load_dataset(result.paths.output_dir)
+                partial_saved = bool(
+                    not result.success
+                    and result.summary.sample_counts.get("total", 0) > 0
+                )
+                stopped = self._stop_event.is_set() and "stopped by operator" in result.message.lower()
                 with self._lock:
                     self._current_bundle = bundle
                     self.state.last_output_path = str(result.paths.output_dir)
                     self.state.loaded_run_path = str(result.paths.output_dir)
-                    self.state.status_message = result.message
-                    self.state.last_error = None if result.success else result.message
+                    if stopped and partial_saved:
+                        self.state.status_message = f"Run stopped. Partial results were saved to {result.paths.output_dir.name}."
+                        self.state.last_error = None
+                    elif partial_saved:
+                        self.state.status_message = (
+                            f"Run completed with partial results in {result.paths.output_dir.name}. "
+                            "Review the summary before using the dataset."
+                        )
+                        self.state.last_error = result.message
+                    else:
+                        self.state.status_message = result.message
+                        self.state.last_error = None if result.success else result.message
                     self._history_dirty = True
                     self._visualization_dirty = True
                     self._reset_planned_output_dir_locked()
@@ -360,9 +374,8 @@ class ExperimentController:
 
     def _reset_planned_output_dir_locked(self) -> None:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        run_id = uuid4().hex[:12]
         safe_name = self.state.selected_experiment.replace(" ", "_")
-        self._planned_output_dir_name = f"{timestamp}_{safe_name}_{run_id}"
+        self._planned_output_dir_name = f"{timestamp}_{safe_name}"
 
     def _on_progress(self, current: int, total: int, payload: dict[str, Any]) -> None:
         with self._lock:
@@ -394,7 +407,12 @@ class ExperimentController:
             experiment_name = str(metadata.get("experiment_name", "unknown"))
             timestamp = str(metadata.get("timestamp_utc", ""))
             status = str(summary.get("status", "unknown"))
-            label = f"{run_dir.name} | {experiment_name} | {status}"
+            label = self._format_history_label(
+                run_dir=run_dir,
+                experiment_name=experiment_name,
+                timestamp_utc=timestamp,
+                summary=summary,
+            )
             entries.append(
                 RunHistoryEntry(
                     path=str(run_dir),
@@ -407,6 +425,39 @@ class ExperimentController:
             if len(entries) >= 25:
                 break
         return entries
+
+    def _format_history_label(
+        self,
+        *,
+        run_dir: Path,
+        experiment_name: str,
+        timestamp_utc: str,
+        summary: dict[str, Any],
+    ) -> str:
+        stamp = timestamp_utc.replace("T", " ").replace("+00:00", "Z")
+        status = str(summary.get("status", "unknown"))
+        metrics = summary.get("experiment_metrics", {}) if isinstance(summary.get("experiment_metrics"), dict) else {}
+        metric_label = self._history_metric_label(experiment_name=experiment_name, metrics=metrics)
+        suffix = f" | {metric_label}" if metric_label else ""
+        return f"{stamp} | {experiment_name} | {status}{suffix} | {run_dir.name}"
+
+    @staticmethod
+    def _history_metric_label(*, experiment_name: str, metrics: dict[str, Any]) -> str:
+        if experiment_name == "repeatability_dataset":
+            value = metrics.get("overall_repeatability_rms_mm")
+            return f"repeatability={float(value):.3f} mm" if value is not None else ""
+        if experiment_name == "aurora_grid_accuracy":
+            value = metrics.get("overall_rms_error_mm")
+            return f"grid_rms={float(value):.3f} mm" if value is not None else ""
+        if experiment_name == "pivot_calibration":
+            value = metrics.get("rmse_mm")
+            rejected = metrics.get("sample_count_rejected")
+            if value is None:
+                return ""
+            if rejected is None:
+                return f"pivot_rmse={float(value):.3f} mm"
+            return f"pivot_rmse={float(value):.3f} mm | rejected={int(rejected)}"
+        return ""
 
     def _build_visualization_model(
         self,
@@ -448,10 +499,21 @@ class ExperimentController:
             tool_ids = str(config_payload.get("tool_id", "0A"))
             mode = "dry-run" if bool(config_payload.get("dry_run", True)) else "live"
             tip_file = "n/a"
+            key_config = (
+                f"{len(config_payload.get('schedule', {}).get('target_points_cm', []) or [])} targets, "
+                f"{int(config_payload.get('schedule', {}).get('revisit_count', 0) or 0)} revisits, "
+                f"{int(config_payload.get('schedule', {}).get('samples_per_point', 0) or 0)} samples/point"
+            )
         elif experiment_name == "aurora_grid_accuracy":
             tool_ids = str(config_payload.get("tool_id", "0B"))
             mode = "dry-run" if bool(config_payload.get("dry_run", True)) else "live"
             tip_file = str(config_payload.get("tip_file") or config_payload.get("tip_vector_mm") or "optional")
+            dims = config_payload.get("dimensions", [])
+            key_config = (
+                f"{dims} @ {config_payload.get('spacing_mm', 'n/a')} mm, "
+                f"{int(config_payload.get('repetitions_per_point', 0) or 0)} repetitions, "
+                f"{int(config_payload.get('samples_per_point', 0) or 0)} samples/point"
+            )
         else:
             tool_ids = str(config_payload.get("tool_id", "0B"))
             mode = (
@@ -460,12 +522,17 @@ class ExperimentController:
                 else ("dry-run" if bool(config_payload.get("dry_run", False)) else "live")
             )
             tip_file = str(config_payload.get("output_tip_file", "data/tip_cals/generated_penprobe_tip.csv"))
+            key_config = (
+                f"{int(config_payload.get('sample_count', config_payload.get('min_samples', 0)) or 0)} target samples, "
+                f"std-dev threshold {config_payload.get('std_dev_threshold', 'n/a')}"
+            )
         return [
-            ("Experiment", experiment_name),
-            ("Backend", backend),
-            ("Mode", mode),
+            ("Experiment", self._EXPERIMENTS[experiment_name].title),
+            ("Dry-Run / Live", mode),
+            ("Tracker Backend", backend),
             ("Tool IDs", tool_ids),
             ("Tip File", tip_file),
-            ("Registration", str(self.registration_path) if self.registration_path.exists() else "missing"),
-            ("Output", str(planned_output_dir)),
+            ("Registration File", str(self.registration_path) if self.registration_path.exists() else "missing"),
+            ("Output Path", str(planned_output_dir)),
+            ("Key Config", key_config),
         ]

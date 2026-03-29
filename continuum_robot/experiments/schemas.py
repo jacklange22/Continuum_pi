@@ -102,6 +102,7 @@ class ExperimentDatasetPaths:
     metadata_path: Path
     samples_path: Path
     summary_path: Path
+    config_snapshot_path: Path | None = None
 
 
 @dataclass

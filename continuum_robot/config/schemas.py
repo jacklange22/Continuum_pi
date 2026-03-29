@@ -71,10 +71,10 @@ class RegistrationWorkflowConfig:
     capture_tool_id: str = "0B"
     coil_tool_id: str = "0A"
     capture_tool_tip_transform: list[list[float]] | None = None
-    model_points_file: str | None = "tools/12_model_registration_points_in_sw"
-    tip_points_file: str | None = "tools/all_tip_registration_points_in_sw"
-    T_sw_2_model_file: str | None = "tools/T_sw_2_model"
-    T_sw_2_tip_file: str | None = "tools/T_sw_2_tip"
+    model_points_file: str | None = None
+    tip_points_file: str | None = None
+    T_sw_2_model_file: str | None = None
+    T_sw_2_tip_file: str | None = None
     penprobe_file: str | None = "tools/penprobe_08_09_24c"
     quaternion_average_method: str = "sign_aligned_mean"
     model_tre_reference_radius_mm: float = 5.0

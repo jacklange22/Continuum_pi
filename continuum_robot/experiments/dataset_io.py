@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import yaml
 
 from continuum_robot.experiments.schemas import (
     ExperimentDatasetBundle,
@@ -44,16 +45,22 @@ class ExperimentDatasetWriter:
         metadata_path = output_dir / "metadata.json"
         samples_path = output_dir / "samples.jsonl"
         summary_path = output_dir / "summary.json"
+        config_snapshot_path = output_dir / "config_snapshot.yaml"
         metadata_path.write_text(json.dumps(metadata.to_dict(), indent=2), encoding="utf-8")
         with samples_path.open("w", encoding="utf-8") as handle:
             for sample in samples:
                 handle.write(json.dumps(sample.to_dict(), separators=(",", ":")) + "\n")
         summary_path.write_text(json.dumps(summary.to_dict(), indent=2), encoding="utf-8")
+        config_snapshot_path.write_text(
+            yaml.safe_dump(metadata.config_used or {}, sort_keys=False) or "{}\n",
+            encoding="utf-8",
+        )
         return ExperimentDatasetPaths(
             output_dir=output_dir,
             metadata_path=metadata_path,
             samples_path=samples_path,
             summary_path=summary_path,
+            config_snapshot_path=config_snapshot_path,
         )
 
 
@@ -86,5 +93,6 @@ class ExperimentDatasetLoader:
                 metadata_path=metadata_path,
                 samples_path=samples_path,
                 summary_path=summary_path,
+                config_snapshot_path=(root / "config_snapshot.yaml"),
             ),
         )

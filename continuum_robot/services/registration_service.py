@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 import copy
 import json
 from pathlib import Path
+import re
 import threading
 
 import numpy as np
@@ -74,6 +75,9 @@ class RegistrationService:
         self._lock = threading.Lock()
         self._config = self._load_config(config_path)
         self._assets = self._load_assets_if_configured(config_path, self._config)
+        self._simple_measurement_point_transform, self._simple_measurement_point_source = (
+            self._load_simple_measurement_point_transform(config_path, self._config)
+        )
         self._pending_record: RegistrationRecord | None = None
 
         initial_labels = (
@@ -179,6 +183,27 @@ class RegistrationService:
             self._state.health.state = "capturing"
             self._recompute_health_locked()
         return sample
+
+    def peek_current_measurement_point(self) -> dict[str, object]:
+        """Return the current tracked measurement-point pose for GUI display."""
+        try:
+            tool = self._require_tool_snapshot(self._config.measurement_tool_id)
+            point_xyz = self._measurement_point_from_tool_snapshot(tool)
+            return {
+                "available": True,
+                "status": "tracked",
+                "tool_id": self._config.measurement_tool_id,
+                "point_xyz_mm": point_xyz,
+                "frame_number": tool.frame_number,
+            }
+        except Exception as exc:
+            return {
+                "available": False,
+                "status": str(exc),
+                "tool_id": self._config.measurement_tool_id,
+                "point_xyz_mm": None,
+                "frame_number": None,
+            }
 
     def complete_landmark(self) -> str | None:
         """Advance to the next landmark once the current one has enough captures."""
@@ -363,6 +388,8 @@ class RegistrationService:
                 "measurement_tool_id": self._config.measurement_tool_id,
                 "coil_tool_id": self._config.coil_tool_id,
                 "registration_mode": "simple",
+                "measurement_point_source": self._simple_measurement_point_source,
+                "penprobe_file": self._config.penprobe_file,
             },
         )
 
@@ -421,9 +448,10 @@ class RegistrationService:
         if T_aurora_tool is None or T_aurora_tool.shape != (4, 4):
             raise RuntimeError(f"Tool {tool.tool_id} is missing a valid T_aurora_tool transform")
         if self._assets is not None:
-            T_aurora_point = compose_T_A_C(T_aurora_tool, self._assets.T_measurement_point)
+            T_measurement_point = self._assets.T_measurement_point
         else:
-            T_aurora_point = compose_T_A_C(T_aurora_tool, self._coerce_transform(self._config.capture_tool_tip_transform))
+            T_measurement_point = self._simple_measurement_point_transform
+        T_aurora_point = compose_T_A_C(T_aurora_tool, T_measurement_point)
         return [float(v) for v in T_aurora_point[0:3, 3]]
 
     def _require_tool_snapshot(self, tool_id: str):
@@ -578,6 +606,38 @@ class RegistrationService:
             return np.eye(4), "default_identity"
 
         return np.eye(4), "default_identity"
+
+    @classmethod
+    def _load_simple_measurement_point_transform(
+        cls,
+        config_path: Path,
+        config: RegistrationConfig,
+    ) -> tuple[np.ndarray, str]:
+        if config.capture_tool_tip_transform is not None:
+            return cls._coerce_transform(config.capture_tool_tip_transform), "config.capture_tool_tip_transform"
+        if config.penprobe_file:
+            penprobe_path = cls._resolve_config_path(config_path, config.penprobe_file)
+            try:
+                vector = cls._load_vector3(penprobe_path)
+            except Exception:
+                return np.eye(4), "default_identity"
+            matrix = np.eye(4, dtype=float)
+            matrix[0:3, 3] = vector
+            return matrix, str(penprobe_path)
+        return np.eye(4), "default_identity"
+
+    @staticmethod
+    def _resolve_config_path(config_path: Path, raw_path: str) -> Path:
+        path = Path(raw_path)
+        return path if path.is_absolute() else config_path.resolve().parents[1] / path
+
+    @staticmethod
+    def _load_vector3(path: Path) -> np.ndarray:
+        raw = path.read_text(encoding="utf-8").strip()
+        values = [float(token) for token in re.split(r"[\s,]+", raw) if token]
+        if len(values) != 3:
+            raise ValueError(f"Expected exactly 3 values in {path}")
+        return np.asarray(values, dtype=float)
 
     @staticmethod
     def _coerce_transform(transform: list[list[float]] | None) -> np.ndarray:

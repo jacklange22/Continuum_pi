@@ -5,7 +5,15 @@ from __future__ import annotations
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QAbstractItemView, QLabel, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
-from continuum_robot.gui.experiment_preflight import PREFLIGHT_BLOCKED, PREFLIGHT_OK, PREFLIGHT_WARNING, RUN_BLOCKED, RUN_OK, RUN_WARNING
+from continuum_robot.gui.experiment_preflight import (
+    PREFLIGHT_BLOCKED,
+    PREFLIGHT_INFO,
+    PREFLIGHT_OK,
+    PREFLIGHT_WARNING,
+    RUN_BLOCKED,
+    RUN_OK,
+    RUN_WARNING,
+)
 
 
 class ExperimentPreflightWidget(QWidget):
@@ -15,11 +23,12 @@ class ExperimentPreflightWidget(QWidget):
         super().__init__(parent)
         self.summary_label = QLabel("Preflight not evaluated.")
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Check", "Status", "Detail"])
+        self.table.setHorizontalHeaderLabels(["Check", "Severity", "Action"])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.summary_label.setWordWrap(True)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.summary_label)
@@ -31,14 +40,14 @@ class ExperimentPreflightWidget(QWidget):
             RUN_WARNING: "#d97706",
             RUN_BLOCKED: "#b91c1c",
         }.get(report.overall_status, "#374151")
-        self.summary_label.setText(f"{report.overall_status}: {report.summary}")
+        self.summary_label.setText(report.summary)
         self.summary_label.setStyleSheet(
-            f"padding: 8px; border-radius: 6px; background: {status_color}; color: white; font-weight: 600;"
+            f"padding: 10px; border-radius: 8px; background: {status_color}; color: white; font-weight: 600;"
         )
         self.table.setRowCount(len(report.checks))
         for row, check in enumerate(report.checks):
             self.table.setItem(row, 0, QTableWidgetItem(check.label))
-            status_item = QTableWidgetItem(check.status)
+            status_item = QTableWidgetItem(_severity_label(check.status))
             detail_item = QTableWidgetItem(check.message)
             for item in (status_item, detail_item):
                 item.setForeground(QColor(_check_color(check.status)))
@@ -52,4 +61,14 @@ def _check_color(status: str) -> str:
         PREFLIGHT_OK: "#0f766e",
         PREFLIGHT_WARNING: "#d97706",
         PREFLIGHT_BLOCKED: "#b91c1c",
+        PREFLIGHT_INFO: "#1d4ed8",
     }.get(status, "#374151")
+
+
+def _severity_label(status: str) -> str:
+    return {
+        PREFLIGHT_OK: "Ready",
+        PREFLIGHT_WARNING: "Warning",
+        PREFLIGHT_BLOCKED: "Blocked",
+        PREFLIGHT_INFO: "Info",
+    }.get(status, status)

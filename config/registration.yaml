@@ -1,15 +1,16 @@
 landmark_labels: [L1, L2, L3, L4]
 captures_per_landmark: 5
-# Measurement tool used to touch registration landmarks.
-# The legacy reference script used 0A here; the current runtime defaults to 0B
-# so that 0A remains the robot coil used for runtime tip pose.
+# Canonical GUI registration is a 4-point robot-body alignment workflow.
+# Capture repeated 0B pen-probe samples for L1-L4, solve, review RMSE/FRE,
+# then save the accepted registration.
 capture_tool_id: "0B"
 coil_tool_id: "0A"
-# Protected reference inputs used by the rigorous registration path.
-model_points_file: "tools/12_model_registration_points_in_sw"
-tip_points_file: "tools/all_tip_registration_points_in_sw"
-T_sw_2_model_file: "tools/T_sw_2_model"
-T_sw_2_tip_file: "tools/T_sw_2_tip"
+# Leave the legacy asset paths unset so the runtime stays on the simple
+# 4-point body-alignment path instead of the old 12-point asset workflow.
+model_points_file: ""
+tip_points_file: ""
+T_sw_2_model_file: ""
+T_sw_2_tip_file: ""
 penprobe_file: "tools/penprobe_08_09_24c"
 quaternion_average_method: "sign_aligned_mean"
 model_tre_reference_radius_mm: 5.0

@@ -1,0 +1,89 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "repeatability_dataset",
+  "run_id": "1cd464207960",
+  "success": true,
+  "sample_counts": {
+    "total": 72,
+    "phase::approach_command": 12,
+    "phase::approach_settle": 12,
+    "phase::sample": 36,
+    "phase::target_command": 12
+  },
+  "dropped_frames": 0,
+  "invalid_transforms": 0,
+  "stage_pass_fail": {
+    "setup": "passed",
+    "precheck": "passed",
+    "execute": "passed",
+    "finalize": "passed"
+  },
+  "status": "partial_success",
+  "experiment_metrics": {
+    "status": "partial_success",
+    "position_frame": "tracker",
+    "valid_sample_count": 36,
+    "invalid_sample_count": 0,
+    "dropped_sample_count": 0,
+    "per_target_metrics": {
+      "0": {
+        "count": 9,
+        "centroid_mm": [
+          -0.5553893612236703,
+          -0.47812248205695085,
+          54.82824843712915
+        ],
+        "spread_rms_mm": 0.8370330026774315
+      },
+      "1": {
+        "count": 9,
+        "centroid_mm": [
+          3.5400651031948236,
+          0.1681441237857587,
+          55.619251758245966
+        ],
+        "spread_rms_mm": 0.7785032545073751
+      },
+      "2": {
+        "count": 9,
+        "centroid_mm": [
+          0.22810178082002114,
+          3.724822543468078,
+          55.70782515806135
+        ],
+        "spread_rms_mm": 0.8519411953841036
+      },
+      "3": {
+        "count": 9,
+        "centroid_mm": [
+          -3.704989005498111,
+          -0.3857982617355265,
+          55.93626610291363
+        ],
+        "spread_rms_mm": 0.8354697018598092
+      }
+    },
+    "overall_repeatability_rms_mm": 0.8262119867152719,
+    "approach_conditioned_spread_mm": {
+      "1->0": 0.3684342576442586,
+      "0->1": 0.4965828793871302,
+      "0->2": 0.3650495647164138,
+      "0->3": 0.37610542442191264,
+      "2->0": 0.5815078531500264,
+      "2->1": 0.35302547887610297,
+      "1->2": 0.513773499293755,
+      "1->3": 0.39139845615898994,
+      "3->0": 0.7230755101243963,
+      "3->1": 0.4420304532861631,
+      "3->2": 0.5048083040159838,
+      "2->3": 0.39086723788849803
+    },
+    "registration_available": false,
+    "tip_calibration_available": true,
+    "summary_requirements": {
+      "force_status": "partial_success"
+    }
+  },
+  "warning_messages": [],
+  "error_messages": []
+}

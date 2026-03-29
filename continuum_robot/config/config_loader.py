@@ -97,10 +97,10 @@ class ConfigLoader:
             capture_tool_tip_transform=self._maybe_matrix(
                 registration_data.get("capture_tool_tip_transform")
             ),
-            model_points_file=self._maybe_path(registration_data.get("model_points_file", "tools/12_model_registration_points_in_sw")),
-            tip_points_file=self._maybe_path(registration_data.get("tip_points_file", "tools/all_tip_registration_points_in_sw")),
-            T_sw_2_model_file=self._maybe_path(registration_data.get("T_sw_2_model_file", "tools/T_sw_2_model")),
-            T_sw_2_tip_file=self._maybe_path(registration_data.get("T_sw_2_tip_file", "tools/T_sw_2_tip")),
+            model_points_file=self._maybe_path(registration_data.get("model_points_file")),
+            tip_points_file=self._maybe_path(registration_data.get("tip_points_file")),
+            T_sw_2_model_file=self._maybe_path(registration_data.get("T_sw_2_model_file")),
+            T_sw_2_tip_file=self._maybe_path(registration_data.get("T_sw_2_tip_file")),
             penprobe_file=self._maybe_path(registration_data.get("penprobe_file", "tools/penprobe_08_09_24c")),
             quaternion_average_method=str(registration_data.get("quaternion_average_method", "sign_aligned_mean")),
             model_tre_reference_radius_mm=float(registration_data.get("model_tre_reference_radius_mm", 5.0)),

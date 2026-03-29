@@ -86,6 +86,7 @@ class RepeatabilityDatasetConfig:
     synthetic_noise_std_mm: float = 0.35
     synthetic_hysteresis_mm: float = 0.8
     schedule: RepeatabilityScheduleConfig = field(default_factory=RepeatabilityScheduleConfig)
+    acceptance: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "RepeatabilityDatasetConfig":
@@ -96,6 +97,7 @@ class RepeatabilityDatasetConfig:
             synthetic_noise_std_mm=float(payload.get("synthetic_noise_std_mm", 0.35)),
             synthetic_hysteresis_mm=float(payload.get("synthetic_hysteresis_mm", 0.8)),
             schedule=RepeatabilityScheduleConfig.from_dict(payload.get("schedule")),
+            acceptance=dict(payload.get("acceptance", {}) or {}),
         )
 
 
@@ -122,6 +124,7 @@ class GridDefinitionConfig:
     synthetic_noise_std_mm: float = 0.25
     synthetic_bias_mm: list[float] = field(default_factory=lambda: [0.2, -0.1, 0.05])
     outlier_threshold_mm: float = 1.0
+    acceptance: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "GridDefinitionConfig":
@@ -157,6 +160,7 @@ class GridDefinitionConfig:
             synthetic_noise_std_mm=float(payload.get("synthetic_noise_std_mm", 0.25)),
             synthetic_bias_mm=[float(value) for value in payload.get("synthetic_bias_mm", [0.2, -0.1, 0.05])],
             outlier_threshold_mm=float(payload.get("outlier_threshold_mm", 1.0)),
+            acceptance=dict(payload.get("acceptance", {}) or {}),
         )
 
 
@@ -177,6 +181,7 @@ class PivotCalibrationConfig:
     synthetic_pivot_point_mm: list[float] = field(default_factory=lambda: [25.0, -10.0, 40.0])
     synthetic_noise_std_mm: float = 0.25
     synthetic_outlier_count: int = 0
+    acceptance: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "PivotCalibrationConfig":
@@ -195,6 +200,7 @@ class PivotCalibrationConfig:
             synthetic_pivot_point_mm=[float(value) for value in payload.get("synthetic_pivot_point_mm", [25.0, -10.0, 40.0])],
             synthetic_noise_std_mm=float(payload.get("synthetic_noise_std_mm", 0.25)),
             synthetic_outlier_count=int(payload.get("synthetic_outlier_count", 0)),
+            acceptance=dict(payload.get("acceptance", {}) or {}),
         )
 
 
