@@ -90,6 +90,6 @@ def test_config_loader_reads_runtime_registration_and_experiment_settings(tmp_pa
     assert settings.registration.capture_tool_id == "0B"
     assert settings.registration.coil_tool_id == "0A"
     assert settings.registration.captures_per_landmark == 3
-    assert settings.registration.model_points_file == "tools/12_model_registration_points_in_sw"
+    assert settings.registration.model_points_file is None
     assert settings.experiment.output_dir == "data/custom_runs"
     assert settings.calibration.latest_registration_path == "data/registrations/latest_registration.json"

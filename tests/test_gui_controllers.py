@@ -58,12 +58,13 @@ def _settings() -> Settings:
             pretension_current_balance_tolerance_ma=120,
         ),
         registration=RegistrationWorkflowConfig(
-            landmark_labels=["L1", "L2", "L3"],
+            landmark_labels=["L1", "L2", "L3", "L4"],
             captures_per_landmark=1,
             nominal_landmarks_robot_xyz_mm={
                 "L1": [0.0, 0.0, 0.0],
                 "L2": [30.0, 0.0, 0.0],
                 "L3": [0.0, 30.0, 0.0],
+                "L4": [0.0, 0.0, 30.0],
             },
             capture_tool_id="0B",
             max_fre_mm=None,
@@ -102,7 +103,7 @@ def _registration_service(settings: Settings, tmp_path: Path, tracking_service: 
     config_path.write_text(
         "\n".join(
             [
-                "landmark_labels: [L1, L2, L3]",
+                "landmark_labels: [L1, L2, L3, L4]",
                 "captures_per_landmark: 1",
                 "capture_tool_id: \"0B\"",
                 "coil_tool_id: \"0A\"",
@@ -110,6 +111,7 @@ def _registration_service(settings: Settings, tmp_path: Path, tracking_service: 
                 "  L1: [5.0, 5.0, 0.0]",
                 "  L2: [23.0, 5.0, 0.0]",
                 "  L3: [5.0, 23.0, 0.0]",
+                "  L4: [5.0, 5.0, 18.0]",
             ]
         ),
         encoding="utf-8",
@@ -203,15 +205,48 @@ def test_registration_controller_guides_capture_and_save(tmp_path: Path) -> None
 
         controller.begin_session()
         controller.capture_current_label_sample()
+        controller.complete_current_label()
         controller.capture_current_label_sample()
+        controller.complete_current_label()
         controller.capture_current_label_sample()
-        result = controller.finish_session()
+        controller.complete_current_label()
+        controller.capture_current_label_sample()
+        controller.complete_current_label()
+        controller.solve_session()
+        result = controller.save_registration(confirm_overwrite=True)
     finally:
         tracking_service.stop()
 
     assert result.output_path.exists()
     assert controller.state.fre_mm is not None
     assert controller.state.current_label is None
+
+
+def test_registration_controller_requires_overwrite_confirmation(tmp_path: Path) -> None:
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(settings, tmp_path, tracking_service)
+    latest = registration_service.repository.root_dir / "latest_registration.json"
+    latest.write_text("{}", encoding="utf-8")
+    tracking_service.start()
+    try:
+        controller = RegistrationController(
+            registration_service=registration_service,
+            registration_config=settings.registration,
+        )
+        controller.begin_session()
+        for _index in range(4):
+            controller.capture_current_label_sample()
+            controller.complete_current_label()
+        controller.solve_session()
+        try:
+            controller.save_registration()
+        except RuntimeError as exc:
+            assert "overwrite confirmation" in str(exc)
+        else:
+            raise AssertionError("Expected overwrite confirmation error.")
+    finally:
+        tracking_service.stop()
 
 
 def test_experiment_workspace_selection_binds_example_config(tmp_path: Path) -> None:
@@ -336,5 +371,6 @@ def test_experiment_workspace_tab_updates_without_crashing_in_mock_mode(tmp_path
         tab.update(controller.refresh())
         controller.select_experiment("aurora_grid_accuracy")
         tab.update(controller.refresh())
+        assert tab.viewer_3d.backend_mode == "placeholder"
     finally:
         controller.shutdown()

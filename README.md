@@ -162,6 +162,8 @@ For live Aurora on the Pi, the important fields are:
 
 ```yaml
 mock_mode: false
+visualization_mode: "auto"
+visualization_safe_effects: true
 aurora_port: "/dev/ttyUSB0"
 tracker_backend: "ndi"
 tracker_fallback_backend: "bridge"
@@ -178,9 +180,18 @@ Notes:
 
 - backend selection is explicit: the router tries `tracker_backend` first and only tries `tracker_fallback_backend` if fallback is enabled and the primary backend is unavailable or fails during startup
 - fallback is always recorded in startup messages and diagnostics; it is never silent
+- `visualization_mode: "auto"` uses the safest renderer for the current platform. On macOS the GUI stays on the projection fallback by default because QtDataVisualization is unstable there.
+- `visualization_safe_effects: true` keeps the native 3D path on conservative settings and disables risky QtDataVisualization effects.
 - raw live ids `10` and `11` are the current observed Aurora tool ids on the Pi
 - the app runtime still uses `0A` and `0B`
 - `system.local.yaml` overrides `system.yaml`
+
+Environment overrides for visualization safety:
+
+```bash
+export CONTINUUM_VISUALIZATION_MODE=auto        # auto | 2d | placeholder | 3d
+export CONTINUUM_VISUALIZATION_SAFE_EFFECTS=1   # 1 keeps conservative native-3D settings
+```
 
 ## Recommended Order Of Operations
 
@@ -249,9 +260,10 @@ Primary operator workflow:
 
 1. launch the GUI
 2. open the `Registration` tab
-3. start a session
-4. capture repeated `0B` samples for each landmark
-5. finish and save
+3. start a 4-point session
+4. capture one or more `0B` samples for `L1`, then mark the point complete
+5. repeat for `L2`, `L3`, and `L4`
+6. solve the registration, review RMSE/FRE, then save the accepted result
 
 Expected output file:
 
@@ -308,7 +320,7 @@ In the full app, the expected progression is:
 
 1. `System` tab shows live backend/config identity
 2. `Tracking` tab shows `0A` and `0B` updating
-3. `Registration` tab can capture and solve
+3. `Registration` tab guides the 4-point body-alignment process
 4. after registration is loaded, `Tracking` can compute `T_robot_tip`
 5. servo/runtime work can build on the validated live tracking path
 
@@ -563,7 +575,7 @@ Recommended hardware workflow:
 
 1. Run `pivot_calibration` to generate or refresh the pen-probe tip file.
 2. Run `aurora_grid_accuracy` to verify the tracker is healthy before doing registration.
-3. Run registration.
+3. Run the 4-point `Registration` workflow in the GUI.
 4. Run `repeatability_dataset` to collect the main robot dataset.
 
 ### GUI Experiment Workspace
@@ -589,9 +601,10 @@ What the workspace shows:
   - `ok_with_warning`
   - `blocked`
 - a compact run checklist card showing experiment, backend, dry-run/live mode, tool ids, tip file, registration file, and planned output path
-- an interactive 3D view for live or reloaded samples
+- a visualization pane that prefers native 3D on stable platforms and falls back to a safe 2D projection or placeholder when advanced OpenGL/QtDataVisualization is unavailable
 - an embedded results viewer with summary text and experiment-specific plots
 - run history loading so prior runs can be reviewed without hardware attached
+- export actions for the current plot/view plus direct open-folder access for the current run
 
 What the 3D view shows:
 
@@ -611,6 +624,7 @@ How preflight validation works:
 
 - runs are blocked for invalid config, missing required files, missing live prerequisites in live mode, or dimensionality mismatches
 - warnings are used only for optional-but-important conditions such as missing registration for tracker-frame repeatability runs or coil-origin fallback in grid accuracy
+- informational notes are shown for dry-run/mock conditions and other non-blocking runtime facts
 - pivot runs require explicit overwrite confirmation when the configured tip output file already exists
 
 How to review prior runs:
@@ -619,6 +633,12 @@ How to review prior runs:
 2. Open the `Experiment` tab.
 3. Use `Open Run Folder` or double-click a run in `Run History`.
 4. The config snapshot, summary, plots, and 3D sample view are repopulated from the saved dataset bundle.
+
+Visualization stability note:
+
+- on macOS the workspace defaults to the projection fallback because `PySide6.QtDataVisualization` has shown native crashes in development
+- on the Pi/Linux desktop, `visualization_mode: "auto"` keeps the native 3D view when the platform looks safe
+- if you want the most conservative behavior everywhere, set `visualization_mode: "2d"` or export `CONTINUUM_VISUALIZATION_MODE=2d`
 
 ### Run Without Hardware
 

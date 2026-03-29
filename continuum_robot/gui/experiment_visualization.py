@@ -29,6 +29,7 @@ class ChartModel:
     title: str
     x_title: str
     y_title: str
+    caption: str = ""
     categories: list[str] = field(default_factory=list)
     values: list[float] = field(default_factory=list)
     points_xy: list[tuple[float, float]] = field(default_factory=list)
@@ -76,6 +77,7 @@ def build_visualization_model(
             tool_id=str(config_payload.get("tool_id", "0A")),
             color_mode=color_mode,
             show_centroids=show_centroids,
+            acceptance=config_payload.get("acceptance", {}),
         )
     if experiment_name == "aurora_grid_accuracy":
         return _build_grid_model(
@@ -84,6 +86,7 @@ def build_visualization_model(
             tool_id=str(config_payload.get("tool_id", "0B")),
             color_mode=color_mode,
             show_truth=show_truth,
+            acceptance=config_payload.get("acceptance", {}),
         )
     if experiment_name == "pivot_calibration":
         return _build_pivot_model(
@@ -91,11 +94,20 @@ def build_visualization_model(
             metrics=metrics,
             tool_id=str(config_payload.get("tool_id", "0B")),
             color_mode=color_mode,
+            acceptance=config_payload.get("acceptance", {}),
         )
     return VisualizationModel(summary_lines=["No visualization is available for the selected experiment."])
 
 
-def _build_repeatability_model(*, samples, metrics: dict[str, Any], tool_id: str, color_mode: str, show_centroids: bool) -> VisualizationModel:
+def _build_repeatability_model(
+    *,
+    samples,
+    metrics: dict[str, Any],
+    tool_id: str,
+    color_mode: str,
+    show_centroids: bool,
+    acceptance: dict[str, Any],
+) -> VisualizationModel:
     measurement_samples = [sample for sample in samples if sample.phase == "sample"]
     grouped: dict[str, list[tuple[float, float, float]]] = {}
     distances_mm: list[float] = []
@@ -138,6 +150,7 @@ def _build_repeatability_model(*, samples, metrics: dict[str, Any], tool_id: str
         title="Per-Target Spread",
         x_title="Target",
         y_title="Spread RMS (mm)",
+        caption="Each bar shows the RMS spread for one revisited target in the selected pose frame.",
         categories=[str(target) for target in sorted(per_target, key=int)],
         values=[float(per_target[target]["spread_rms_mm"]) for target in sorted(per_target, key=int)],
         color_hex="#2563eb",
@@ -147,15 +160,22 @@ def _build_repeatability_model(*, samples, metrics: dict[str, Any], tool_id: str
         values=distances_mm,
         x_title="Distance To Target Centroid (mm)",
         y_title="Count",
+        caption="Histogram of sample distances from each target centroid.",
         color_hex="#0f766e",
     )
+    acceptance_lines = _acceptance_lines(
+        experiment_name="repeatability_dataset",
+        metrics=metrics,
+        acceptance=acceptance,
+    )
     summary_lines = [
-        f"status={metrics.get('status', 'unknown')}",
-        f"position_frame={metrics.get('position_frame', 'unknown')}",
-        f"valid_samples={metrics.get('valid_sample_count', 0)}",
-        f"invalid_samples={metrics.get('invalid_sample_count', 0)}",
-        f"overall_repeatability_rms_mm={_fmt(metrics.get('overall_repeatability_rms_mm'))}",
+        f"Run status: {metrics.get('status', 'unknown')}",
+        f"Pose frame: {metrics.get('position_frame', 'unknown')}",
+        f"Valid samples: {metrics.get('valid_sample_count', 0)}",
+        f"Invalid samples: {metrics.get('invalid_sample_count', 0)}",
+        f"Overall repeatability RMS: {_fmt(metrics.get('overall_repeatability_rms_mm'))} mm",
     ]
+    summary_lines.extend(acceptance_lines)
     return VisualizationModel(
         series_3d=series,
         charts=[spread_chart, histogram],
@@ -163,7 +183,15 @@ def _build_repeatability_model(*, samples, metrics: dict[str, Any], tool_id: str
     )
 
 
-def _build_grid_model(*, samples, metrics: dict[str, Any], tool_id: str, color_mode: str, show_truth: bool) -> VisualizationModel:
+def _build_grid_model(
+    *,
+    samples,
+    metrics: dict[str, Any],
+    tool_id: str,
+    color_mode: str,
+    show_truth: bool,
+    acceptance: dict[str, Any],
+) -> VisualizationModel:
     measurement_samples = [sample for sample in samples if sample.phase == "sample"]
     grouped: dict[str, list[tuple[float, float, float]]] = {}
     truth_points: list[tuple[float, float, float]] = []
@@ -195,6 +223,7 @@ def _build_grid_model(*, samples, metrics: dict[str, Any], tool_id: str, color_m
         title="Per-Point RMS Error",
         x_title="Grid Point",
         y_title="RMS Error (mm)",
+        caption="Mean point error relative to truth for each physical grid location.",
         categories=[str(point) for point in sorted(point_rms, key=int)],
         values=[float(point_rms[point]) for point in sorted(point_rms, key=int)],
         color_hex="#dc2626",
@@ -205,18 +234,25 @@ def _build_grid_model(*, samples, metrics: dict[str, Any], tool_id: str, color_m
         title="Per-Axis Bias",
         x_title="Axis",
         y_title="Bias (mm)",
+        caption="Signed mean tracker bias by axis.",
         categories=["X", "Y", "Z"],
         values=bias,
         color_hex="#2563eb",
     )
+    acceptance_lines = _acceptance_lines(
+        experiment_name="aurora_grid_accuracy",
+        metrics=metrics,
+        acceptance=acceptance,
+    )
     summary_lines = [
-        f"status={metrics.get('status', 'unknown')}",
-        f"overall_rms_error_mm={_fmt(metrics.get('overall_rms_error_mm'))}",
-        f"outlier_count={metrics.get('outlier_count', 0)}",
-        f"registration_available={metrics.get('registration_available', False)}",
-        f"tip_calibration_available={metrics.get('tip_calibration_available', False)}",
-        f"points_summarized={len(per_point)}",
+        f"Run status: {metrics.get('status', 'unknown')}",
+        f"Overall RMS error: {_fmt(metrics.get('overall_rms_error_mm'))} mm",
+        f"Outliers: {metrics.get('outlier_count', 0)}",
+        f"Registration available: {metrics.get('registration_available', False)}",
+        f"Tip calibration available: {metrics.get('tip_calibration_available', False)}",
+        f"Points summarized: {len(per_point)}",
     ]
+    summary_lines.extend(acceptance_lines)
     return VisualizationModel(
         series_3d=series,
         charts=[point_chart, bias_chart],
@@ -224,7 +260,14 @@ def _build_grid_model(*, samples, metrics: dict[str, Any], tool_id: str, color_m
     )
 
 
-def _build_pivot_model(*, samples, metrics: dict[str, Any], tool_id: str, color_mode: str) -> VisualizationModel:
+def _build_pivot_model(
+    *,
+    samples,
+    metrics: dict[str, Any],
+    tool_id: str,
+    color_mode: str,
+    acceptance: dict[str, Any],
+) -> VisualizationModel:
     sample_points: list[tuple[float, float, float]] = []
     inlier_mask = [bool(value) for value in (metrics.get("pivot_inlier_mask") or [])]
     grouped: dict[str, list[tuple[float, float, float]]] = {}
@@ -250,6 +293,7 @@ def _build_pivot_model(*, samples, metrics: dict[str, Any], tool_id: str, color_
         values=residual_norms,
         x_title="Residual Norm (mm)",
         y_title="Count",
+        caption="Distribution of point-to-pivot residuals after outlier rejection.",
         color_hex="#7c3aed",
     )
     inlier_count = int(metrics.get("sample_count_used", 0))
@@ -259,18 +303,25 @@ def _build_pivot_model(*, samples, metrics: dict[str, Any], tool_id: str, color_
         title="Inlier / Outlier Summary",
         x_title="Class",
         y_title="Count",
+        caption="Samples used by the final least-squares solve versus rejected outliers.",
         categories=["Inliers", "Rejected"],
         values=[float(inlier_count), float(rejected_count)],
         color_hex="#0f766e",
     )
+    acceptance_lines = _acceptance_lines(
+        experiment_name="pivot_calibration",
+        metrics=metrics,
+        acceptance=acceptance,
+    )
     summary_lines = [
-        f"status={metrics.get('status', 'unknown')}",
-        f"rmse_mm={_fmt(metrics.get('rmse_mm'))}",
-        f"sample_count_total={metrics.get('sample_count_total', len(sample_points))}",
-        f"sample_count_used={inlier_count}",
-        f"sample_count_rejected={rejected_count}",
-        f"tip_vector_local_mm={metrics.get('tip_vector_local_mm')}",
+        f"Run status: {metrics.get('status', 'unknown')}",
+        f"Pivot RMSE: {_fmt(metrics.get('rmse_mm'))} mm",
+        f"Samples collected: {metrics.get('sample_count_total', len(sample_points))}",
+        f"Samples used: {inlier_count}",
+        f"Samples rejected: {rejected_count}",
+        f"Tip vector (local mm): {metrics.get('tip_vector_local_mm')}",
     ]
+    summary_lines.extend(acceptance_lines)
     return VisualizationModel(
         series_3d=series,
         charts=[residual_hist, inlier_chart],
@@ -305,10 +356,11 @@ def _grouped_series(grouped: dict[str, list[tuple[float, float, float]]], *, bas
         if not points:
             continue
         mesh = "cube" if "Centroid" in key or "Truth" in key else "sphere"
+        color = _semantic_color(key, fallback_index=index)
         series.append(
             ScatterSeries3D(
                 name=f"{base_label}: {key}",
-                color_hex=_PALETTE[index % len(_PALETTE)],
+                color_hex=color,
                 points_xyz=points,
                 point_size=0.12 if mesh == "sphere" else 0.18,
                 mesh=mesh,
@@ -317,9 +369,26 @@ def _grouped_series(grouped: dict[str, list[tuple[float, float, float]]], *, bas
     return series
 
 
-def _histogram_chart(*, title: str, values: list[float], x_title: str, y_title: str, color_hex: str) -> ChartModel:
+def _histogram_chart(
+    *,
+    title: str,
+    values: list[float],
+    x_title: str,
+    y_title: str,
+    color_hex: str,
+    caption: str = "",
+) -> ChartModel:
     if not values:
-        return ChartModel(kind="bar", title=title, x_title=x_title, y_title=y_title, categories=[], values=[], color_hex=color_hex)
+        return ChartModel(
+            kind="bar",
+            title=title,
+            x_title=x_title,
+            y_title=y_title,
+            caption=caption,
+            categories=[],
+            values=[],
+            color_hex=color_hex,
+        )
     hist, edges = np.histogram(np.asarray(values, dtype=float), bins=min(8, max(3, len(values))))
     categories = [f"{edges[index]:.2f}-{edges[index + 1]:.2f}" for index in range(len(hist))]
     return ChartModel(
@@ -327,6 +396,7 @@ def _histogram_chart(*, title: str, values: list[float], x_title: str, y_title: 
         title=title,
         x_title=x_title,
         y_title=y_title,
+        caption=caption,
         categories=categories,
         values=[float(value) for value in hist.tolist()],
         color_hex=color_hex,
@@ -337,3 +407,91 @@ def _fmt(value: Any) -> str:
     if value is None:
         return "n/a"
     return f"{float(value):.3f}"
+
+
+def _semantic_color(key: str, *, fallback_index: int) -> str:
+    normalized = str(key).strip().lower()
+    if "truth" in normalized:
+        return "#111827"
+    if "centroid" in normalized:
+        return "#1f2937"
+    if "inlier" in normalized:
+        return "#0f766e"
+    if "outlier" in normalized:
+        return "#dc2626"
+    if "stale" in normalized:
+        return "#d97706"
+    return _PALETTE[fallback_index % len(_PALETTE)]
+
+
+def _acceptance_lines(*, experiment_name: str, metrics: dict[str, Any], acceptance: dict[str, Any]) -> list[str]:
+    acceptance = dict(acceptance or {})
+    if not acceptance:
+        return ["Acceptance thresholds: not configured for this run."]
+
+    lines: list[str] = []
+    status = "pass"
+    reasons: list[str] = []
+
+    def _apply_threshold(metric_key: str, warn_key: str, fail_key: str, label: str) -> None:
+        nonlocal status
+        value = metrics.get(metric_key)
+        if value is None:
+            return
+        warn_value = acceptance.get(warn_key)
+        fail_value = acceptance.get(fail_key)
+        if fail_value is not None and float(value) > float(fail_value):
+            status = "fail"
+            reasons.append(f"{label} {float(value):.3f} > fail {float(fail_value):.3f}")
+            return
+        if warn_value is not None and float(value) > float(warn_value) and status != "fail":
+            status = "warn"
+            reasons.append(f"{label} {float(value):.3f} > warn {float(warn_value):.3f}")
+
+    if experiment_name == "repeatability_dataset":
+        _apply_threshold(
+            "overall_repeatability_rms_mm",
+            "repeatability_rms_warn_mm",
+            "repeatability_rms_fail_mm",
+            "repeatability RMS",
+        )
+        min_valid = acceptance.get("min_valid_sample_count")
+        valid_count = metrics.get("valid_sample_count")
+        if min_valid is not None and valid_count is not None and int(valid_count) < int(min_valid):
+            status = "fail" if status != "fail" else status
+            reasons.append(f"valid samples {int(valid_count)} < minimum {int(min_valid)}")
+    elif experiment_name == "aurora_grid_accuracy":
+        _apply_threshold("overall_rms_error_mm", "grid_rms_warn_mm", "grid_rms_fail_mm", "grid RMS")
+        total_points = max(1, int(metrics.get("valid_sample_count", 0) or 0))
+        outlier_count = int(metrics.get("outlier_count", 0) or 0)
+        outlier_rate = float(outlier_count) / float(total_points)
+        warn_rate = acceptance.get("outlier_rate_warn")
+        fail_rate = acceptance.get("outlier_rate_fail")
+        if fail_rate is not None and outlier_rate > float(fail_rate):
+            status = "fail"
+            reasons.append(f"outlier rate {outlier_rate:.3f} > fail {float(fail_rate):.3f}")
+        elif warn_rate is not None and outlier_rate > float(warn_rate) and status != "fail":
+            status = "warn"
+            reasons.append(f"outlier rate {outlier_rate:.3f} > warn {float(warn_rate):.3f}")
+    elif experiment_name == "pivot_calibration":
+        _apply_threshold("rmse_mm", "pivot_rmse_warn_mm", "pivot_rmse_fail_mm", "pivot RMSE")
+        total = max(1, int(metrics.get("sample_count_total", 0) or 0))
+        rejected = int(metrics.get("sample_count_rejected", 0) or 0)
+        outlier_rate = float(rejected) / float(total)
+        warn_rate = acceptance.get("outlier_rate_warn")
+        fail_rate = acceptance.get("outlier_rate_fail")
+        if fail_rate is not None and outlier_rate > float(fail_rate):
+            status = "fail"
+            reasons.append(f"rejected-sample rate {outlier_rate:.3f} > fail {float(fail_rate):.3f}")
+        elif warn_rate is not None and outlier_rate > float(warn_rate) and status != "fail":
+            status = "warn"
+            reasons.append(f"rejected-sample rate {outlier_rate:.3f} > warn {float(warn_rate):.3f}")
+
+    rendered_thresholds = ", ".join(f"{key}={value}" for key, value in sorted(acceptance.items()))
+    lines.append(f"Acceptance check: {status.upper()}")
+    lines.append(f"Configured thresholds: {rendered_thresholds}")
+    if reasons:
+        lines.append("Threshold reasons: " + "; ".join(reasons))
+    else:
+        lines.append("Threshold reasons: all configured thresholds passed.")
+    return lines

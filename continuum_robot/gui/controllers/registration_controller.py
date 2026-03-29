@@ -148,6 +148,11 @@ class RegistrationController:
             self.state.status_message = f"Registration solve failed: {exc}"
             raise
 
+    def finish_session(self) -> RegistrationActionResult:
+        """Compatibility helper for the older solve-and-save GUI tests."""
+        self.solve_session()
+        return self.save_registration(confirm_overwrite=True)
+
     def save_registration(self, *, confirm_overwrite: bool = False) -> RegistrationActionResult:
         overwrite_target = self._overwrite_target_path()
         if overwrite_target.exists() and not confirm_overwrite:

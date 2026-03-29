@@ -230,7 +230,7 @@ def evaluate_preflight(
                 _warning(
                     "registration",
                     "Registration",
-                    "Registration is missing. The run can continue, but only tracker-frame pose will be available until registration is saved.",
+                    "Registration file is missing. The run can continue, but only tracker-frame pose will be available until registration is saved.",
                 )
             )
 

@@ -17,6 +17,7 @@ class ExperimentResultsWidget(QWidget):
         super().__init__(parent)
         self.summary_text = QTextEdit()
         self.summary_text.setReadOnly(True)
+        self.summary_text.setStyleSheet("background: #f8fafc; border: 1px solid #dbe4ee; border-radius: 8px;")
         self.tabs = QTabWidget()
         self.tabs.addTab(self.summary_text, "Summary")
 
@@ -31,6 +32,12 @@ class ExperimentResultsWidget(QWidget):
         self.summary_text.setPlainText("\n".join(model.summary_lines or ["No results loaded."]))
         for chart in model.charts:
             self.tabs.addTab(self._chart_widget(chart), chart.title)
+
+    def save_current_view(self, path: str) -> bool:
+        widget = self.tabs.currentWidget()
+        if widget is None:
+            return False
+        return widget.grab().save(str(path))
 
     def _chart_widget(self, model: ChartModel) -> QWidget:
         if model.kind == "bar":
@@ -50,9 +57,9 @@ class ExperimentResultsWidget(QWidget):
             chart.addAxis(axis_y, Qt.AlignLeft)
             series.attachAxis(axis_x)
             series.attachAxis(axis_y)
-            chart.setTitle(model.title)
+            _style_chart(chart, model.title)
             chart.legend().setVisible(False)
-            return _chart_view(chart)
+            return _chart_panel(chart, model.caption)
         if model.kind == "line":
             chart = QChart()
             series = QLineSeries()
@@ -68,9 +75,9 @@ class ExperimentResultsWidget(QWidget):
             chart.addAxis(axis_y, Qt.AlignLeft)
             series.attachAxis(axis_x)
             series.attachAxis(axis_y)
-            chart.setTitle(model.title)
+            _style_chart(chart, model.title)
             chart.legend().setVisible(False)
-            return _chart_view(chart)
+            return _chart_panel(chart, model.caption)
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.addWidget(QLabel(f"Unsupported chart type: {model.kind}"))
@@ -80,4 +87,26 @@ class ExperimentResultsWidget(QWidget):
 def _chart_view(chart: QChart) -> QChartView:
     view = QChartView(chart)
     view.setRenderHint(QPainter.Antialiasing, True)
+    view.setStyleSheet("background: transparent;")
     return view
+
+
+def _chart_panel(chart: QChart, caption: str) -> QWidget:
+    widget = QWidget()
+    layout = QVBoxLayout(widget)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+    layout.addWidget(_chart_view(chart))
+    if caption:
+        caption_label = QLabel(caption)
+        caption_label.setWordWrap(True)
+        caption_label.setStyleSheet("color: #475569;")
+        layout.addWidget(caption_label)
+    return widget
+
+
+def _style_chart(chart: QChart, title: str) -> None:
+    chart.setTitle(title)
+    chart.setBackgroundVisible(False)
+    chart.setPlotAreaBackgroundVisible(False)
+    chart.setMargins(chart.margins())

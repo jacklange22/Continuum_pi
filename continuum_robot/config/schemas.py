@@ -10,6 +10,8 @@ class RuntimeConfig:
     mock_mode: bool = True
     poll_rate_hz: int = 5
     robot_config: str = "robot_4servo.yaml"
+    visualization_mode: str = "auto"
+    visualization_safe_effects: bool = True
 
 
 @dataclass

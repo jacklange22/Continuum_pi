@@ -7,6 +7,8 @@ tracker_fallback_enabled: true
 tracker_type: "aurora"
 baudrate: 115200
 mock_mode: true
+visualization_mode: "auto"
+visualization_safe_effects: true
 read_timeout_s: 0.05
 frame_timeout_s: 0.5
 reconnect_delay_s: 1.0

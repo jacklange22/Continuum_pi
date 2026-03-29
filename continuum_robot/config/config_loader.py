@@ -40,6 +40,8 @@ class ConfigLoader:
             mock_mode=bool(system_data.get("mock_mode", True)),
             poll_rate_hz=int(system_data.get("poll_rate_hz", 5)),
             robot_config=robot_path.name,
+            visualization_mode=str(system_data.get("visualization_mode", "auto")),
+            visualization_safe_effects=bool(system_data.get("visualization_safe_effects", True)),
         )
         robot = RobotConfig(
             mode=str(robot_data.get("mode", "4-servo")),
