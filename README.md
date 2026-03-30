@@ -64,6 +64,7 @@ The current project specification and phased validation docs live here:
 - [system_spec.md](/Users/jacklange/Continuum/pi_code/docs/system_spec.md)
 - [architecture.md](/Users/jacklange/Continuum/pi_code/docs/architecture.md)
 - [operator_workflows.md](/Users/jacklange/Continuum/pi_code/docs/operator_workflows.md)
+- [tracker_mvp_workflow.md](/Users/jacklange/Continuum/pi_code/docs/tracker_mvp_workflow.md)
 - [testing_protocol.md](/Users/jacklange/Continuum/pi_code/docs/testing_protocol.md)
 - [validation_plan.md](/Users/jacklange/Continuum/pi_code/docs/validation_plan.md)
 - [registration_trace.md](/Users/jacklange/Continuum/pi_code/docs/registration_trace.md)
@@ -172,6 +173,12 @@ python scripts/run_lab_workflow.py list
 ```
 
 Use that wrapper for the common GUI, tracker, registration, and experiment commands instead of memorizing each script path.
+
+Focused tracker-first launcher for tomorrow's Pi session:
+
+```bash
+python scripts/run_tracker_mvp.py
+```
 
 ## Live Aurora Config
 

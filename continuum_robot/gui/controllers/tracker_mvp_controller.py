@@ -131,27 +131,27 @@ class TrackerMvpController:
             if not self.settings.runtime.mock_mode and not self.state.tracker_port:
                 raise RuntimeError("Tracker port is empty. Select the Aurora device before connecting.")
             self.tracking_service.start(self.state.tracker_port or None)
-            self.state.status_message = "Tracker connection requested."
-            self.state.last_error = None
         except Exception as exc:
+            self.refresh()
             self.state.last_error = str(exc)
             self.state.status_message = f"Tracker connect failed: {exc}"
             raise
-        finally:
-            self.refresh()
+        self.refresh()
+        self.state.last_error = None
+        self.state.status_message = "Tracker connection requested."
 
     def disconnect_tracker(self) -> None:
         try:
             self.tracking_service.stop()
             self._validation_passed = False
-            self.state.status_message = "Tracker disconnected."
-            self.state.last_error = None
         except Exception as exc:
+            self.refresh()
             self.state.last_error = str(exc)
             self.state.status_message = f"Tracker disconnect failed: {exc}"
             raise
-        finally:
-            self.refresh()
+        self.refresh()
+        self.state.last_error = None
+        self.state.status_message = "Tracker disconnected."
 
     def validate_tracker(self) -> Path:
         try:
@@ -170,18 +170,18 @@ class TrackerMvpController:
             report_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
             self._validation_passed = bool(report.tracker_ready and self._tool_is_visible(self.settings.registration.capture_tool_id))
             self._last_validation_report_path = report_path
-            self.state.status_message = (
-                f"Tracker validation {'passed' if self._validation_passed else 'failed'}. Saved report to {report_path.name}."
-            )
-            self.state.last_error = None
-            return report_path
         except Exception as exc:
             self._validation_passed = False
+            self.refresh()
             self.state.last_error = str(exc)
             self.state.status_message = f"Tracker validation failed: {exc}"
             raise
-        finally:
-            self.refresh()
+        self.refresh()
+        self.state.last_error = None
+        self.state.status_message = (
+            f"Tracker validation {'passed' if self._validation_passed else 'failed'}. Saved report to {report_path.name}."
+        )
+        return report_path
 
     def run_pivot_calibration(self) -> Path:
         snapshot = self.tracking_service.get_snapshot()
@@ -207,21 +207,21 @@ class TrackerMvpController:
             operator_notes="tracker_mvp_gui",
         )
         if not result.success:
+            self.refresh()
             self.state.last_error = result.message
             self.state.status_message = f"Pivot calibration failed: {result.message}"
-            self.refresh()
             raise RuntimeError(result.message)
 
         metrics = result.summary.experiment_metrics if isinstance(result.summary.experiment_metrics, dict) else {}
         self._last_pivot_run_path = result.paths.output_dir
         self._last_pivot_metrics = dict(metrics)
         self.registration_service.refresh_measurement_point_geometry()
+        self.refresh()
+        self.state.last_error = None
         self.state.status_message = (
             f"Pivot calibration saved tip file to {tip_output}. "
             f"RMSE={float(metrics.get('rmse_mm', 0.0)):.3f} mm."
         )
-        self.state.last_error = None
-        self.refresh()
         return result.paths.output_dir
 
     def refresh(self) -> TrackerMvpViewState:

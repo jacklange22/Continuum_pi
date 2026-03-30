@@ -24,6 +24,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 COMMANDS: dict[str, WorkflowCommand] = {
     "gui": WorkflowCommand("gui", "scripts/run_gui.py", "Launch the operator GUI."),
+    "tracker-mvp": WorkflowCommand(
+        "tracker-mvp",
+        "scripts/run_tracker_mvp.py",
+        "Launch the focused tracker-first MVP GUI workflow.",
+    ),
     "tracker-doctor": WorkflowCommand(
         "tracker-doctor",
         "scripts/run_tracker_doctor.py",

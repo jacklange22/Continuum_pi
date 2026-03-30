@@ -412,6 +412,7 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
     try:
         window._refresh_timer.stop()
         counts = {
+            "tracker_mvp": 0,
             "system": 0,
             "servos": 0,
             "tracking": 0,
@@ -426,6 +427,11 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
 
             return _inner
 
+        monkeypatch.setattr(
+            window.tracker_mvp_controller,
+            "refresh",
+            _wrap("tracker_mvp", window.tracker_mvp_controller.state),
+        )
         monkeypatch.setattr(window.system_controller, "refresh", _wrap("system", window.system_controller.state))
         monkeypatch.setattr(window.servos_controller, "refresh", _wrap("servos", window.servos_controller.state))
         monkeypatch.setattr(window.tracking_controller, "refresh", _wrap("tracking", window.tracking_controller.state))
@@ -440,12 +446,25 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
             _wrap("experiment", window.experiment_controller.state),
         )
 
+        window.tab_widget.setCurrentIndex(0)
+        counts = {key: 0 for key in counts}
+        window.refresh()
+        assert counts == {
+            "tracker_mvp": 1,
+            "system": 1,
+            "servos": 0,
+            "tracking": 0,
+            "registration": 1,
+            "experiment": 0,
+        }
+
         window.tab_widget.setCurrentIndex(1)
         counts = {key: 0 for key in counts}
         window.refresh()
         assert counts == {
+            "tracker_mvp": 0,
             "system": 1,
-            "servos": 1,
+            "servos": 0,
             "tracking": 0,
             "registration": 0,
             "experiment": 0,
@@ -455,6 +474,7 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
         counts = {key: 0 for key in counts}
         window.refresh()
         assert counts == {
+            "tracker_mvp": 0,
             "system": 1,
             "servos": 0,
             "tracking": 0,

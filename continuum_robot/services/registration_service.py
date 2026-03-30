@@ -700,7 +700,7 @@ class RegistrationService:
             and config.penprobe_file
         ):
             return None
-        project_root = config_path.resolve().parents[1]
+        project_root = RegistrationService._config_project_root(config_path)
 
         def _resolve(raw: str) -> Path:
             path = Path(raw)
@@ -795,7 +795,15 @@ class RegistrationService:
     @staticmethod
     def _resolve_config_path(config_path: Path, raw_path: str) -> Path:
         path = Path(raw_path)
-        return path if path.is_absolute() else config_path.resolve().parents[1] / path
+        return path if path.is_absolute() else RegistrationService._config_project_root(config_path) / path
+
+    @staticmethod
+    def _config_project_root(config_path: Path) -> Path:
+        resolved = config_path.resolve()
+        for parent in resolved.parents:
+            if parent.name == "config":
+                return parent.parent
+        return resolved.parent
 
     @staticmethod
     def _load_vector3(path: Path) -> np.ndarray:

@@ -19,6 +19,7 @@ def test_lab_workflow_wrapper_lists_available_commands() -> None:
     )
 
     assert completed.returncode == 0
+    assert "tracker-mvp" in completed.stdout
     assert "tracker-smoke" in completed.stdout
     assert "registration-runtime-sanity" in completed.stdout
     assert "experiment" in completed.stdout
