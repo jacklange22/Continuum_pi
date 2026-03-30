@@ -17,11 +17,32 @@ class ExperimentResultsWidget(QWidget):
         super().__init__(parent)
         self.summary_text = QTextEdit()
         self.summary_text.setReadOnly(True)
-        self.summary_text.setStyleSheet("background: #f8fafc; border: 1px solid #dbe4ee; border-radius: 8px;")
+        self.summary_text.setStyleSheet(
+            "background: #f8fafc; border: 1px solid #dbe4ee; border-radius: 12px; padding: 8px;"
+        )
         self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.setStyleSheet(
+            """
+            QTabBar::tab {
+                padding: 8px 14px;
+                margin-right: 4px;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                background: #e2e8f0;
+                color: #334155;
+                font-weight: 600;
+            }
+            QTabBar::tab:selected {
+                background: #ffffff;
+                color: #0f172a;
+            }
+            """
+        )
         self.tabs.addTab(self.summary_text, "Summary")
 
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.tabs)
 
     def set_model(self, model: VisualizationModel) -> None:
@@ -110,3 +131,4 @@ def _style_chart(chart: QChart, title: str) -> None:
     chart.setBackgroundVisible(False)
     chart.setPlotAreaBackgroundVisible(False)
     chart.setMargins(chart.margins())
+    chart.setTitleBrush(QColor("#0f172a"))

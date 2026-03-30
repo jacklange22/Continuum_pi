@@ -37,6 +37,7 @@ class AppWindow(QMainWindow):
             openrb_client=openrb_client,
             servo_service=servo_service,
             settings=settings,
+            config_loader=context.config_loader,
         )
         self.servos_controller = ServosController(servo_service=servo_service, settings=settings)
         self.tracking_controller = TrackingController(
@@ -90,5 +91,6 @@ class AppWindow(QMainWindow):
 
     def shutdown(self) -> None:
         self._refresh_timer.stop()
+        self.servos_controller.shutdown()
         self.experiment_controller.shutdown()
         self.tracking_controller.shutdown()

@@ -8,6 +8,7 @@ import yaml
 from continuum_robot.config.schemas import (
     CalibrationConfig,
     ExperimentConfig,
+    RegistrationLandmarkConfig,
     RegistrationWorkflowConfig,
     RobotConfig,
     RuntimeConfig,
@@ -31,8 +32,14 @@ class ConfigLoader:
             self._read_yaml(self.base_dir / "system.local.yaml"),
         )
         robot_path = self.base_dir / str(system_data.get("robot_config", "robot_4servo.yaml"))
-        robot_data = self._read_yaml(robot_path)
-        safety_data = self._read_yaml(self.base_dir / "safety.yaml")
+        robot_data = self._merge_dicts(
+            self._read_yaml(robot_path),
+            dict(system_data.get("robot_overrides", {}) or {}),
+        )
+        safety_data = self._merge_dicts(
+            self._read_yaml(self.base_dir / "safety.yaml"),
+            dict(system_data.get("safety_overrides", {}) or {}),
+        )
         registration_data = self._read_yaml(self.base_dir / "registration.yaml")
         experiment_data = self._read_yaml(self.base_dir / "experiment.yaml")
 
@@ -49,6 +56,11 @@ class ConfigLoader:
             ticks_per_revolution=int(robot_data.get("ticks_per_revolution", 4096)),
             servo_ids=[int(v) for v in robot_data.get("servo_ids", [1, 2, 3, 4])],
             tendon_to_servo=[int(v) for v in robot_data.get("tendon_to_servo", [1, 2, 3, 4])],
+            tightening_rotation_by_servo={
+                int(key): str(value).strip().lower()
+                for key, value in dict(robot_data.get("tightening_rotation_by_servo", {}) or {}).items()
+                if str(value).strip()
+            },
         )
         serial = SerialConfig(
             aurora_port=str(system_data.get("aurora_port", "")),
@@ -78,22 +90,48 @@ class ConfigLoader:
             ),
             tracker_require_valid_transforms=bool(system_data.get("tracker_require_valid_transforms", True)),
             packet_capture_dir=str(system_data.get("packet_capture_dir", "data/tracker_captures")),
+            openrb_settings=dict(system_data.get("openrb_settings", {}) or {}),
+            dynamixel_settings=dict(system_data.get("dynamixel_settings", {}) or {}),
         )
         safety = SafetyConfig(
             position_min_offset_ticks=int(safety_data.get("position_min_offset_ticks", -600)),
             position_max_offset_ticks=int(safety_data.get("position_max_offset_ticks", 600)),
             max_current_ma=int(safety_data.get("max_current_ma", 850)),
+            default_pretension_current_threshold_ma=int(
+                safety_data.get("default_pretension_current_threshold_ma", 220)
+            ),
             pretension_current_balance_tolerance_ma=int(
                 safety_data.get("pretension_current_balance_tolerance_ma", 120)
             ),
+            fine_jog_step_ticks=int(safety_data.get("fine_jog_step_ticks", 5)),
+            coarse_jog_step_ticks=int(safety_data.get("coarse_jog_step_ticks", 25)),
+            software_position_margin_ticks=int(safety_data.get("software_position_margin_ticks", 64)),
+            telemetry_stale_after_s=float(safety_data.get("telemetry_stale_after_s", 0.25)),
+            pretension_step_ticks=int(safety_data.get("pretension_step_ticks", 2)),
+            pretension_timeout_s=float(safety_data.get("pretension_timeout_s", 10.0)),
+            pretension_settle_time_s=float(safety_data.get("pretension_settle_time_s", 0.05)),
+            max_temperature_c=int(safety_data.get("max_temperature_c", 70)),
         )
-        registration = RegistrationWorkflowConfig(
-            landmark_labels=[str(v) for v in registration_data.get("landmark_labels", ["L1", "L2", "L3", "L4"])],
-            captures_per_landmark=int(registration_data.get("captures_per_landmark", 5)),
-            nominal_landmarks_robot_xyz_mm={
+        candidate_landmarks = self._load_registration_landmarks(registration_data)
+        nominal_landmarks = {
+            landmark.id: list(landmark.xyz_mm)
+            for landmark in candidate_landmarks
+        }
+        nominal_landmarks.update(
+            {
                 str(k): [float(v) for v in values]
                 for k, values in registration_data.get("nominal_landmarks_robot_xyz_mm", {}).items()
-            },
+            }
+        )
+        configured_labels = registration_data.get("landmark_labels")
+        if configured_labels is None:
+            configured_labels = [landmark.id for landmark in candidate_landmarks if landmark.enabled][:4]
+        configured_labels = list(configured_labels or ["L1", "L2", "L3", "L4"])
+        registration = RegistrationWorkflowConfig(
+            landmark_labels=[str(v) for v in configured_labels],
+            captures_per_landmark=int(registration_data.get("captures_per_landmark", 5)),
+            nominal_landmarks_robot_xyz_mm=nominal_landmarks,
+            candidate_landmarks=candidate_landmarks,
             capture_tool_id=str(registration_data.get("capture_tool_id", "0B")),
             coil_tool_id=str(registration_data.get("coil_tool_id", "0A")),
             capture_tool_tip_transform=self._maybe_matrix(
@@ -134,6 +172,42 @@ class ConfigLoader:
             calibration=calibration,
         )
 
+    def list_robot_configs(self) -> list[str]:
+        """Return available robot config file names."""
+        return sorted(path.name for path in self.base_dir.glob("robot_*.yaml") if path.is_file())
+
+    def load_robot_config(self, robot_config_name: str) -> RobotConfig:
+        """Load one robot config file without the rest of the app settings."""
+        robot_path = self.base_dir / str(robot_config_name)
+        robot_data = self._read_yaml(robot_path)
+        if not robot_data:
+            raise FileNotFoundError(f"Robot config {robot_config_name} was not found in {self.base_dir}.")
+        return RobotConfig(
+            mode=str(robot_data.get("mode", "4-servo")),
+            spool_diameter_cm=float(robot_data.get("spool_diameter_cm", 1.2)),
+            ticks_per_revolution=int(robot_data.get("ticks_per_revolution", 4096)),
+            servo_ids=[int(v) for v in robot_data.get("servo_ids", [1, 2, 3, 4])],
+            tendon_to_servo=[int(v) for v in robot_data.get("tendon_to_servo", [1, 2, 3, 4])],
+            tightening_rotation_by_servo={
+                int(key): str(value).strip().lower()
+                for key, value in dict(robot_data.get("tightening_rotation_by_servo", {}) or {}).items()
+                if str(value).strip()
+            },
+        )
+
+    def load_system_local_overrides(self) -> dict:
+        """Return the current machine-local system override mapping."""
+        return self._read_yaml(self.base_dir / "system.local.yaml")
+
+    def save_system_local_overrides(self, overrides: dict) -> Path:
+        """Merge and save machine-local runtime overrides."""
+        path = self.base_dir / "system.local.yaml"
+        existing = self._read_yaml(path)
+        merged = self._deep_merge(existing, overrides)
+        with path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(merged, handle, sort_keys=False)
+        return path
+
     @staticmethod
     def _maybe_float(value) -> float | None:
         if value in (None, ""):
@@ -170,3 +244,40 @@ class ConfigLoader:
         merged = dict(base)
         merged.update(override)
         return merged
+
+    @classmethod
+    def _deep_merge(cls, base: dict, override: dict) -> dict:
+        merged = dict(base)
+        for key, value in dict(override or {}).items():
+            if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                merged[key] = cls._deep_merge(dict(merged[key]), value)
+            else:
+                merged[key] = value
+        return merged
+
+    @staticmethod
+    def _load_registration_landmarks(payload: dict) -> list[RegistrationLandmarkConfig]:
+        landmarks: list[RegistrationLandmarkConfig] = []
+        raw_landmarks = payload.get("candidate_landmarks", []) or []
+        for index, entry in enumerate(raw_landmarks):
+            if not isinstance(entry, dict):
+                raise ValueError(f"candidate_landmarks[{index}] must be a mapping")
+            landmark_id = str(entry.get("id") or entry.get("label") or entry.get("name") or "").strip()
+            xyz = entry.get("xyz_mm") or entry.get("coordinates_mm") or entry.get("xyz")
+            if not landmark_id:
+                raise ValueError(f"candidate_landmarks[{index}] is missing id")
+            if not isinstance(xyz, (list, tuple)) or len(xyz) != 3:
+                raise ValueError(f"candidate_landmarks[{index}] must define xyz_mm with exactly 3 values")
+            landmarks.append(
+                RegistrationLandmarkConfig(
+                    id=landmark_id,
+                    xyz_mm=[float(value) for value in xyz],
+                    display_label=(
+                        str(entry.get("display_label")).strip()
+                        if entry.get("display_label") not in (None, "")
+                        else None
+                    ),
+                    enabled=bool(entry.get("enabled", True)),
+                )
+            )
+        return landmarks

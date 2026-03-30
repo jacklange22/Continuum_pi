@@ -12,6 +12,15 @@ tracker_type: "aurora"
 mock_mode: false
 visualization_mode: "auto"
 visualization_safe_effects: true
+robot_overrides:
+  servo_ids: [1]
+  tendon_to_servo: [1]
+  tightening_rotation_by_servo:
+    1: "cw"
+safety_overrides:
+  fine_jog_step_ticks: 5
+  coarse_jog_step_ticks: 25
+  default_pretension_current_threshold_ma: 220
 read_timeout_s: 0.05
 frame_timeout_s: 0.5
 reconnect_delay_s: 1.0
@@ -31,3 +40,41 @@ tracker_require_valid_transforms: true
 packet_capture_dir: "data/tracker_captures"
 neutral_setpoints_path: "data/calibrations/neutral_setpoints.json"
 latest_registration_path: "data/registrations/latest_registration.json"
+openrb_settings:
+  connect_timeout_s: 0.5
+  port_settle_time_s: 0.15
+  require_usb_to_dynamixel_firmware: true
+  require_external_power_for_motion: true
+dynamixel_settings:
+  protocol_version: 2.0
+  positive_tick_rotation: "ccw"
+  expected_operating_mode: 3
+  allowed_operating_modes: [3]
+  require_current_for_motion: true
+  require_voltage_for_motion: true
+  require_temperature_for_motion: true
+  require_fresh_telemetry_for_motion: true
+  default_profile_velocity: null
+  default_profile_acceleration: null
+  auto_torque_enable_on_write: true
+  torque_disable_for_eeprom_write: true
+  voltage_scale_mv_per_unit: 100.0
+  current_scale_ma_per_unit: 1.0
+  control_table:
+    model_number: 0
+    firmware_version: 6
+    servo_id: 7
+    operating_mode: 11
+    current_limit: 38
+    max_position_limit: 48
+    min_position_limit: 52
+    torque_enable: 64
+    hardware_error_status: 70
+    bus_watchdog: 98
+    profile_acceleration: 108
+    profile_velocity: 112
+    goal_position: 116
+    present_current: 126
+    present_position: 132
+    present_input_voltage: 144
+    present_temperature: 146

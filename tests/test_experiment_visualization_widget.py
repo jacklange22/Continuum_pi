@@ -74,4 +74,5 @@ def test_experiment_3d_widget_headless_mode_stays_safe() -> None:
     widget.set_view_options(show_axes=True, show_labels=False)
 
     assert widget.backend_mode == BACKEND_PLACEHOLDER
-    assert "Headless" in widget.mode_label.text()
+    assert widget.mode_label.text() == "Visualization Placeholder"
+    assert "Headless" in widget.mode_label.toolTip()

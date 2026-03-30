@@ -3,3 +3,8 @@ spool_diameter_cm: 1.2
 ticks_per_revolution: 4096
 servo_ids: [1, 2, 3, 4]
 tendon_to_servo: [1, 2, 3, 4]
+tightening_rotation_by_servo:
+  1: "cw"
+  2: "cw"
+  3: "cw"
+  4: "cw"

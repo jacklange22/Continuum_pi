@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+import time
 
 from continuum_robot.app.service_registry import ServiceRegistry
 from continuum_robot.config.config_loader import ConfigLoader
@@ -20,7 +21,10 @@ from continuum_robot.services.registration_service import RegistrationService
 from continuum_robot.services.system_health_service import SystemHealthService
 from continuum_robot.services.tracking_service import TrackingService
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
-from continuum_robot.servos.neutral_calibration_service import NeutralCalibrationService
+from continuum_robot.servos.neutral_calibration_service import (
+    NeutralCalibrationService,
+    ServoCalibrationContext,
+)
 from continuum_robot.servos.pretension_validation_service import PretensionValidationService
 from continuum_robot.servos.safety_guard import SafetyGuard
 from continuum_robot.servos.servo_service import ServoService
@@ -99,8 +103,8 @@ def build_app_context() -> AppContext:
         dxl_bus = MockDxlBus(servo_ids=settings.robot.servo_ids)
         openrb_client = MockOpenRbClient()
     else:
-        dxl_bus = DxlBus()
-        openrb_client = OpenRbClient()
+        dxl_bus = DxlBus(config=settings.serial.dynamixel_settings)
+        openrb_client = OpenRbClient(config=settings.serial.openrb_settings)
 
     registration_repository = RegistrationRepository()
     rigid_solver = RigidRegistrationSolver()
@@ -135,6 +139,17 @@ def build_app_context() -> AppContext:
     )
     neutral_calibration = NeutralCalibrationService(
         path=neutral_setpoints_path,
+        context=ServoCalibrationContext(
+            robot_mode=settings.robot.mode,
+            servo_ids=list(settings.robot.servo_ids),
+            tendon_to_servo=list(settings.robot.tendon_to_servo),
+            ticks_per_revolution=settings.robot.ticks_per_revolution,
+            spool_diameter_cm=settings.robot.spool_diameter_cm,
+            position_min_offset_ticks=settings.safety.position_min_offset_ticks,
+            position_max_offset_ticks=settings.safety.position_max_offset_ticks,
+            default_pretension_current_threshold_ma=settings.safety.default_pretension_current_threshold_ma,
+            tightening_rotation_by_servo=dict(settings.robot.tightening_rotation_by_servo),
+        ),
     )
     pretension_validation = PretensionValidationService()
     mapper = TendonDisplacementMapper(
@@ -145,6 +160,16 @@ def build_app_context() -> AppContext:
         min_offset_ticks=settings.safety.position_min_offset_ticks,
         max_offset_ticks=settings.safety.position_max_offset_ticks,
         max_current_ma=settings.safety.max_current_ma,
+        default_pretension_current_threshold_ma=settings.safety.default_pretension_current_threshold_ma,
+        fine_jog_step_ticks=settings.safety.fine_jog_step_ticks,
+        coarse_jog_step_ticks=settings.safety.coarse_jog_step_ticks,
+        software_position_margin_ticks=settings.safety.software_position_margin_ticks,
+        telemetry_stale_after_s=settings.safety.telemetry_stale_after_s,
+        pretension_step_ticks=settings.safety.pretension_step_ticks,
+        pretension_timeout_s=settings.safety.pretension_timeout_s,
+        pretension_settle_time_s=settings.safety.pretension_settle_time_s,
+        max_temperature_c=settings.safety.max_temperature_c,
+        time_fn=time.monotonic,
     )
     servo_service = ServoService(
         dxl_bus=dxl_bus,

@@ -271,8 +271,42 @@ class RegistrationService:
             return None
         payload = json.loads(latest_path.read_text(encoding="utf-8"))
         with self._lock:
+            labels = [str(label) for label in payload.get("landmark_labels", self._state.labels)]
+            raw_points = {
+                str(label): [list(sample) for sample in samples]
+                for label, samples in dict(payload.get("raw_captured_landmarks_robot_xyz", {}) or {}).items()
+            }
+            averaged = {
+                str(label): list(point)
+                for label, point in dict(payload.get("averaged_landmarks_robot_xyz", {}) or {}).items()
+            }
+            residuals = {
+                str(label): list(point)
+                for label, point in dict(payload.get("residuals_robot_xyz_mm", {}) or {}).items()
+            }
             self._state.accepted_output_path = str(latest_path)
             self._state.health.last_successful_update_utc = payload.get("timestamp_utc")
+            self._state.active = False
+            self._state.pending_accept = False
+            self._state.current_landmark_index = 0
+            self._state.current_label = None
+            self._state.labels = labels
+            self._state.raw_points_by_label = raw_points
+            self._state.averaged_points_by_label = averaged
+            self._state.captured_counts = {
+                label: len(samples)
+                for label, samples in raw_points.items()
+            }
+            self._state.residuals_by_label = residuals
+            self._state.fre_mm = float(payload["fre_mm"]) if payload.get("fre_mm") is not None else None
+            self._state.truth_points_in_sw_by_label = dict(payload.get("truth_points_in_sw_by_label", {}) or {})
+            self._state.group_by_label = dict(payload.get("group_by_label", {}) or {})
+            self._state.raw_measurement_tool_samples_by_label = dict(
+                payload.get("raw_measurement_tool_samples_by_label", {}) or {}
+            )
+            self._state.raw_coil_samples_by_label = dict(payload.get("raw_coil_samples_by_label", {}) or {})
+            self._state.validation_metrics = dict(payload.get("validation_metrics", {}) or {})
+            self._state.pending_record = None
             self._recompute_health_locked()
         return payload
 
@@ -536,9 +570,14 @@ class RegistrationService:
     def _load_config(path: Path) -> RegistrationConfig:
         payload = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
         payload = payload or {}
-        labels = list(payload.get("landmark_labels", ["L1", "L2", "L3", "L4"]))
+        candidate_nominal, enabled_candidate_labels = RegistrationService._candidate_landmarks_from_payload(payload)
+        labels = payload.get("landmark_labels")
+        if labels is None:
+            labels = enabled_candidate_labels[:4] if enabled_candidate_labels else ["L1", "L2", "L3", "L4"]
+        labels = list(labels)
         captures = int(payload.get("captures_per_landmark", 5))
-        nominal = dict(payload.get("nominal_landmarks_robot_xyz_mm", {}))
+        nominal = dict(candidate_nominal)
+        nominal.update(dict(payload.get("nominal_landmarks_robot_xyz_mm", {})))
         validation = payload.get("validation", {})
         max_fre = validation.get("max_fre_mm")
         return RegistrationConfig(
@@ -558,6 +597,24 @@ class RegistrationService:
             tip_tre_reference_radius_mm=float(payload.get("tip_tre_reference_radius_mm", 3.0)),
             max_fre_mm=float(max_fre) if max_fre is not None else None,
         )
+
+    @staticmethod
+    def _candidate_landmarks_from_payload(payload: dict) -> tuple[dict[str, list[float]], list[str]]:
+        nominal: dict[str, list[float]] = {}
+        enabled_labels: list[str] = []
+        for index, entry in enumerate(payload.get("candidate_landmarks", []) or []):
+            if not isinstance(entry, dict):
+                raise ValueError(f"candidate_landmarks[{index}] must be a mapping")
+            label = str(entry.get("id") or entry.get("label") or entry.get("name") or "").strip()
+            xyz = entry.get("xyz_mm") or entry.get("coordinates_mm") or entry.get("xyz")
+            if not label:
+                raise ValueError(f"candidate_landmarks[{index}] is missing id")
+            if not isinstance(xyz, (list, tuple)) or len(xyz) != 3:
+                raise ValueError(f"candidate_landmarks[{index}] must define xyz_mm with exactly 3 values")
+            nominal[label] = [float(value) for value in xyz]
+            if bool(entry.get("enabled", True)):
+                enabled_labels.append(label)
+        return nominal, enabled_labels
 
     @staticmethod
     def _load_assets_if_configured(config_path: Path, config: RegistrationConfig):

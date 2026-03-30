@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from continuum_robot.hardware.dxl_bus import DxlBus, ServoTelemetry
 
 
@@ -14,13 +16,26 @@ class MockDxlBus(DxlBus):
         self._state: dict[int, ServoTelemetry] = {
             sid: ServoTelemetry(
                 servo_id=sid,
+                model_number=1240,
+                firmware_version=53,
+                operating_mode=3,
+                torque_enabled=False,
+                current_limit_ma=2352,
+                min_position_limit=0,
+                max_position_limit=4095,
+                bus_watchdog_value=0,
                 present_position=2048 + 25 * idx,
                 present_current_ma=140 + 10 * idx,
                 present_voltage_mv=12000,
+                present_temperature_c=33 + idx,
                 hardware_error=None,
             )
             for idx, sid in enumerate(ids)
         }
+
+    @property
+    def is_connected(self) -> bool:
+        return self._port is not None
 
     def connect(self, port: str, baudrate: int) -> None:
         if not port:
@@ -35,9 +50,12 @@ class MockDxlBus(DxlBus):
         for servo_id, goal in positions_by_id.items():
             telemetry = self._state.setdefault(servo_id, ServoTelemetry(servo_id=servo_id))
             current = 120 + min(600, abs(goal - (telemetry.present_position or goal)) // 4)
+            telemetry.torque_enabled = True
             telemetry.present_position = int(goal)
             telemetry.present_current_ma = current
             telemetry.present_voltage_mv = 12000 - min(500, current // 10)
+            telemetry.present_temperature_c = min(65, 30 + current // 20)
+            telemetry.last_read_monotonic_s = time.monotonic()
 
     def write_servo_id(self, current_id: int, new_id: int) -> None:
         if current_id not in self._state:
@@ -58,14 +76,27 @@ class MockDxlBus(DxlBus):
                     present_position=None,
                     present_current_ma=None,
                     present_voltage_mv=None,
+                    present_temperature_c=None,
                     hardware_error="missing",
+                    last_read_monotonic_s=time.monotonic(),
                 )
             else:
                 result[servo_id] = ServoTelemetry(
                     servo_id=servo_id,
+                    model_number=telemetry.model_number,
+                    firmware_version=telemetry.firmware_version,
+                    operating_mode=telemetry.operating_mode,
+                    torque_enabled=telemetry.torque_enabled,
+                    current_limit_ma=telemetry.current_limit_ma,
+                    min_position_limit=telemetry.min_position_limit,
+                    max_position_limit=telemetry.max_position_limit,
+                    bus_watchdog_value=telemetry.bus_watchdog_value,
                     present_position=telemetry.present_position,
                     present_current_ma=telemetry.present_current_ma,
                     present_voltage_mv=telemetry.present_voltage_mv,
+                    present_temperature_c=telemetry.present_temperature_c,
                     hardware_error=telemetry.hardware_error,
+                    hardware_error_code=telemetry.hardware_error_code,
+                    last_read_monotonic_s=time.monotonic(),
                 )
         return result

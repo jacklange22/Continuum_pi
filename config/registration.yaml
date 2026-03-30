@@ -1,8 +1,8 @@
-landmark_labels: [L1, L2, L3, L4]
+landmark_labels: [L1, L2, L3, L6]
 captures_per_landmark: 5
 # Canonical GUI registration is a 4-point robot-body alignment workflow.
-# Capture repeated 0B pen-probe samples for L1-L4, solve, review RMSE/FRE,
-# then save the accepted registration.
+# The operator chooses the best four landmarks from this configured candidate set,
+# captures repeated 0B pen-probe samples, solves, reviews FRE, then saves.
 capture_tool_id: "0B"
 coil_tool_id: "0A"
 # Leave the legacy asset paths unset so the runtime stays on the simple
@@ -15,17 +15,40 @@ penprobe_file: "tools/penprobe_08_09_24c"
 quaternion_average_method: "sign_aligned_mean"
 model_tre_reference_radius_mm: 5.0
 tip_tre_reference_radius_mm: 3.0
-# Optional 4x4 transform from the tracked registration-coil frame into the
-# physical pen-tip frame. Leave unset to use the protected penprobe file above.
-# capture_tool_tip_transform:
-#   - [1.0, 0.0, 0.0, 0.0]
-#   - [0.0, 1.0, 0.0, 0.0]
-#   - [0.0, 0.0, 1.0, 0.0]
-#   - [0.0, 0.0, 0.0, 1.0]
-nominal_landmarks_robot_xyz_mm:
-  L1: [0.0, 0.0, 0.0]
-  L2: [30.0, 0.0, 0.0]
-  L3: [0.0, 30.0, 0.0]
-  L4: [0.0, 0.0, 30.0]
+# Example candidate landmarks for body alignment. Replace these robot-frame
+# coordinates with the confirmed lab geometry once the final set is approved.
+candidate_landmarks:
+  - id: L1
+    display_label: "Front Left Base"
+    xyz_mm: [0.0, 0.0, 0.0]
+    enabled: true
+  - id: L2
+    display_label: "Front Right Base"
+    xyz_mm: [42.0, 0.0, 0.0]
+    enabled: true
+  - id: L3
+    display_label: "Rear Left Base"
+    xyz_mm: [0.0, 38.0, 0.0]
+    enabled: true
+  - id: L4
+    display_label: "Rear Right Base"
+    xyz_mm: [42.0, 38.0, 0.0]
+    enabled: true
+  - id: L5
+    display_label: "Front Left Shoulder"
+    xyz_mm: [8.0, 10.0, 22.0]
+    enabled: true
+  - id: L6
+    display_label: "Front Right Shoulder"
+    xyz_mm: [34.0, 10.0, 22.0]
+    enabled: true
+  - id: L7
+    display_label: "Rear Left Spine"
+    xyz_mm: [10.0, 30.0, 26.0]
+    enabled: true
+  - id: L8
+    display_label: "Rear Right Spine"
+    xyz_mm: [32.0, 28.0, 26.0]
+    enabled: true
 validation:
   max_fre_mm: 2.0

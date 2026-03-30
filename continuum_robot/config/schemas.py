@@ -23,6 +23,7 @@ class RobotConfig:
     ticks_per_revolution: int = 4096
     servo_ids: list[int] = field(default_factory=lambda: [1, 2, 3, 4])
     tendon_to_servo: list[int] = field(default_factory=lambda: [1, 2, 3, 4])
+    tightening_rotation_by_servo: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -51,6 +52,8 @@ class SerialConfig:
     tracker_max_consecutive_missing_frames: int = 20
     tracker_require_valid_transforms: bool = True
     packet_capture_dir: str = "data/tracker_captures"
+    openrb_settings: dict = field(default_factory=dict)
+    dynamixel_settings: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -60,7 +63,26 @@ class SafetyConfig:
     position_min_offset_ticks: int = -600
     position_max_offset_ticks: int = 600
     max_current_ma: int = 850
+    default_pretension_current_threshold_ma: int = 220
     pretension_current_balance_tolerance_ma: int = 120
+    fine_jog_step_ticks: int = 5
+    coarse_jog_step_ticks: int = 25
+    software_position_margin_ticks: int = 64
+    telemetry_stale_after_s: float = 0.25
+    pretension_step_ticks: int = 2
+    pretension_timeout_s: float = 10.0
+    pretension_settle_time_s: float = 0.05
+    max_temperature_c: int = 70
+
+
+@dataclass
+class RegistrationLandmarkConfig:
+    """One selectable registration landmark from the robot/SolidWorks model."""
+
+    id: str
+    xyz_mm: list[float]
+    display_label: str | None = None
+    enabled: bool = True
 
 
 @dataclass
@@ -70,6 +92,7 @@ class RegistrationWorkflowConfig:
     landmark_labels: list[str] = field(default_factory=lambda: ["L1", "L2", "L3", "L4"])
     captures_per_landmark: int = 5
     nominal_landmarks_robot_xyz_mm: dict[str, list[float]] = field(default_factory=dict)
+    candidate_landmarks: list[RegistrationLandmarkConfig] = field(default_factory=list)
     capture_tool_id: str = "0B"
     coil_tool_id: str = "0A"
     capture_tool_tip_transform: list[list[float]] | None = None

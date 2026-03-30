@@ -63,10 +63,10 @@ class PreflightReport:
     @property
     def summary(self) -> str:
         if self.overall_status == RUN_BLOCKED:
-            return "Run blocked. Resolve the red items before starting."
+            return "Blocked. Fix the required items before running."
         if self.overall_status == RUN_WARNING:
-            return "Ready with warnings. Review the amber items before starting."
-        return "Ready to run. All required checks passed."
+            return "Ready with warnings. Review the highlighted items."
+        return "Ready. Required checks passed."
 
 
 def evaluate_preflight(
@@ -93,7 +93,7 @@ def evaluate_preflight(
                 key="config",
                 label="Config",
                 status=PREFLIGHT_BLOCKED,
-                message=f"Config could not be parsed. Fix the YAML error and refresh preflight. Details: {config_error}",
+                message=f"Config YAML is invalid. Fix it, then refresh checks. Details: {config_error}",
             )
         )
         return _finalize_report(
@@ -124,7 +124,7 @@ def evaluate_preflight(
                     if settings.runtime.mock_mode
                     else (
                         f"Tracker is not ready. Current state is {tracking_snapshot.canonical_state} on backend {backend_name}. "
-                        "Start tracking from the System or Tracking tab and confirm live frames before running."
+                        "Start tracking and confirm live frames before running."
                     )
                 )
             ),
@@ -160,8 +160,7 @@ def evaluate_preflight(
                     "dimensions",
                     "Dimensionality",
                     f"Repeatability targets do not match the configured robot. "
-                    f"Expected {expected_dims} tendon values per point, found {sorted(target_lengths)}. "
-                    "Fix schedule.target_points_cm before running.",
+                    f"Expected {expected_dims} tendon values per point, found {sorted(target_lengths)}. Fix schedule.target_points_cm.",
                 )
             )
         else:
@@ -210,7 +209,7 @@ def evaluate_preflight(
                 if neutral_count == expected_dims
                 else (
                     "Neutral setpoints are missing or incomplete. Dry-run output can still be recorded, "
-                    "but commanded motor values may be missing."
+                    "but motor values may be incomplete."
                 )
             )
             checks.append(PreflightCheck("neutral_setpoints", "Neutral Setpoints", status, message))
@@ -219,7 +218,7 @@ def evaluate_preflight(
             message = (
                 f"Neutral setpoints are available for all {expected_dims} tendons."
                 if neutral_count == expected_dims
-                else "Live repeatability requires saved neutral setpoints for every tendon. Capture and save neutral first."
+                else "Live repeatability needs neutral setpoints for every tendon. Capture and save neutral first."
             )
             checks.append(PreflightCheck("neutral_setpoints", "Neutral Setpoints", status, message))
 
@@ -230,7 +229,7 @@ def evaluate_preflight(
                 _warning(
                     "registration",
                     "Registration",
-                    "Registration file is missing. The run can continue, but only tracker-frame pose will be available until registration is saved.",
+                    "Registration file is missing. The run can continue, but pose will stay in tracker frame only.",
                 )
             )
 

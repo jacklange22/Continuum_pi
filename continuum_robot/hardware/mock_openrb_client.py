@@ -13,10 +13,12 @@ class MockOpenRbClient(OpenRbClient):
             raise RuntimeError("Mock OpenRB port is empty. Pick a mock or real port first.")
         self._port = port
         self._baudrate = baudrate
+        self._prepared = False
         self._last_status = f"connected to {port} @ {baudrate}"
 
     def prepare_for_dynamixel_use(self) -> bool:
         if not self.is_connected:
             raise RuntimeError("OpenRB-150 is not connected")
+        self._prepared = True
         self._last_status = "prepared for DYNAMIXEL use"
         return True

@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMessageBox,
     QPushButton,
+    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -18,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from continuum_robot.gui.controllers.registration_controller import RegistrationViewState
+from continuum_robot.gui.widgets.registration_landmark_map_widget import RegistrationLandmarkMapWidget
 from continuum_robot.gui.widgets.registration_plot_widget import RegistrationPlotWidget
 
 
@@ -27,13 +32,17 @@ class RegistrationTab(QWidget):
     def __init__(self, controller, parent=None) -> None:
         super().__init__(parent)
         self.controller = controller
+        self._selected_slot_labels: list[QLabel] = []
         self.setObjectName("registrationWorkspace")
         self.setStyleSheet(
             """
+            QWidget#registrationWorkspace {
+                background: #eef3f8;
+            }
             QWidget#registrationWorkspace QGroupBox {
-                border: 1px solid #d0d7de;
-                border-radius: 10px;
-                margin-top: 14px;
+                border: 1px solid #d9e3ec;
+                border-radius: 16px;
+                margin-top: 16px;
                 padding-top: 10px;
                 background: #ffffff;
             }
@@ -42,33 +51,45 @@ class RegistrationTab(QWidget):
                 left: 12px;
                 padding: 0 6px;
                 color: #0f172a;
-                font-weight: 600;
+                font-weight: 700;
             }
             QWidget#registrationWorkspace QPushButton {
-                min-height: 34px;
-                padding: 0 12px;
+                min-height: 36px;
+                padding: 0 14px;
+                border: 1px solid #dbe4ee;
+                border-radius: 10px;
+                background: #f8fafc;
+                color: #0f172a;
+                font-weight: 600;
             }
             QWidget#registrationWorkspace QLabel[role="hint"] {
-                color: #475569;
+                color: #526173;
             }
             QWidget#registrationWorkspace QLabel[role="status"] {
                 padding: 8px 10px;
                 border-radius: 8px;
                 background: #e2e8f0;
                 color: #0f172a;
-                font-weight: 600;
+                font-weight: 700;
+            }
+            QWidget#registrationWorkspace QTextEdit, QWidget#registrationWorkspace QTableWidget {
+                border: 1px solid #dbe4ee;
+                border-radius: 10px;
+                background: #fbfdff;
+                color: #0f172a;
             }
             """
         )
 
+        self.title_label = QLabel("Registration Workspace")
+        self.title_label.setStyleSheet("font-size: 24px; font-weight: 700; color: #0f172a;")
         self.workflow_hint = QLabel(
-            "Use the pen probe on four robot-body landmarks. Capture one or more samples for each point, "
-            "mark the point complete, solve, review RMSE/FRE, then save the accepted registration."
+            "Choose four model points, capture one or more pen-probe samples for each, solve, review FRE, then save the accepted registration."
         )
         self.workflow_hint.setWordWrap(True)
         self.workflow_hint.setProperty("role", "hint")
 
-        self.begin_button = QPushButton("Begin 4-Point Session")
+        self.begin_button = QPushButton("Begin Session")
         self.capture_button = QPushButton("Capture Sample")
         self.complete_button = QPushButton("Mark Point Complete")
         self.solve_button = QPushButton("Solve Registration")
@@ -84,6 +105,53 @@ class RegistrationTab(QWidget):
         self.retry_button.clicked.connect(lambda: self._safe_call(self.controller.retry_session))
         self.load_button.clicked.connect(lambda: self._safe_call(self.controller.load_latest_result))
 
+        self.selection_hint = QLabel("Select exactly four unique model points in capture order.")
+        self.selection_hint.setProperty("role", "hint")
+        self.selection_hint.setWordWrap(True)
+        self.selection_help_label = QLabel("Click the top-view map or a row in the point list to add or remove a point.")
+        self.selection_help_label.setProperty("role", "hint")
+        self.selection_help_label.setWordWrap(True)
+        self.selection_summary_label = QLabel("No model points selected.")
+        self.selection_summary_label.setProperty("role", "status")
+
+        self.landmark_map = RegistrationLandmarkMapWidget()
+        self.landmark_map.pointToggled.connect(lambda label: self._safe_call(lambda: self.controller.toggle_selected_model_point(label)))
+
+        slot_row = QHBoxLayout()
+        slot_row.setContentsMargins(0, 0, 0, 0)
+        slot_row.setSpacing(8)
+        for index in range(self.controller.REQUIRED_SELECTION_COUNT):
+            label = QLabel(f"{index + 1}. Unselected")
+            label.setProperty("role", "status")
+            label.setMinimumWidth(118)
+            self._selected_slot_labels.append(label)
+            slot_row.addWidget(label, 1)
+
+        self.available_points_table = QTableWidget(0, 5)
+        self.available_points_table.setHorizontalHeaderLabels(
+            ["ID", "Label", "Model Coordinates (mm)", "Selected", "Status"]
+        )
+        self.available_points_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.available_points_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.available_points_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.available_points_table.verticalHeader().setVisible(False)
+        self.available_points_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.available_points_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.available_points_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.available_points_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.available_points_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.available_points_table.setMinimumHeight(180)
+        self.available_points_table.cellClicked.connect(self._on_available_point_clicked)
+
+        selection_box = QGroupBox("Model Point Selection")
+        selection_layout = QVBoxLayout(selection_box)
+        selection_layout.addWidget(self.selection_hint)
+        selection_layout.addWidget(self.selection_help_label)
+        selection_layout.addWidget(self.landmark_map)
+        selection_layout.addLayout(slot_row)
+        selection_layout.addWidget(self.selection_summary_label)
+        selection_layout.addWidget(self.available_points_table)
+
         self.session_status_label = QLabel("Idle")
         self.session_status_label.setProperty("role", "status")
         self.tool_label = QLabel()
@@ -93,110 +161,170 @@ class RegistrationTab(QWidget):
         self.live_point_label = QLabel()
         self.samples_used_label = QLabel()
         self.fre_label = QLabel()
-        self.accepted_label = QLabel()
+        self.result_status_label = QLabel()
         self.result_path_label = QLabel()
+        self.selected_points_label = QLabel()
 
         summary_box = QGroupBox("Registration Summary")
         summary_layout = QFormLayout(summary_box)
         summary_layout.addRow("Session", self.session_status_label)
+        summary_layout.addRow("Selected points", self.selected_points_label)
         summary_layout.addRow("Capture tool", self.tool_label)
         summary_layout.addRow("Runtime coil", self.coil_tool_label)
         summary_layout.addRow("Capture geometry", self.geometry_label)
-        summary_layout.addRow("Current point", self.current_label)
+        summary_layout.addRow("Active point", self.current_label)
         summary_layout.addRow("Live tracked point", self.live_point_label)
         summary_layout.addRow("Samples captured", self.samples_used_label)
         summary_layout.addRow("RMSE / FRE", self.fre_label)
-        summary_layout.addRow("Accepted result", self.accepted_label)
-        summary_layout.addRow("Latest file", self.result_path_label)
+        summary_layout.addRow("Result status", self.result_status_label)
+        summary_layout.addRow("Saved file", self.result_path_label)
 
-        buttons = QHBoxLayout()
-        buttons.addWidget(self.begin_button)
-        buttons.addWidget(self.capture_button)
-        buttons.addWidget(self.complete_button)
-        buttons.addWidget(self.solve_button)
-        buttons.addWidget(self.save_button)
-        buttons.addWidget(self.retry_button)
-        buttons.addWidget(self.load_button)
+        button_row_primary = QHBoxLayout()
+        button_row_primary.setSpacing(10)
+        button_row_primary.addWidget(self.begin_button)
+        button_row_primary.addWidget(self.capture_button)
+        button_row_primary.addWidget(self.complete_button)
+        button_row_primary.addWidget(self.solve_button)
+        button_row_primary.addWidget(self.save_button)
 
-        self.points_table = QTableWidget(0, 5)
+        button_row_secondary = QHBoxLayout()
+        button_row_secondary.setSpacing(10)
+        button_row_secondary.addWidget(self.retry_button)
+        button_row_secondary.addWidget(self.load_button)
+        button_row_secondary.addStretch(1)
+
+        self.points_table = QTableWidget(0, 6)
         self.points_table.setHorizontalHeaderLabels(
-            ["Point", "Model Point (mm)", "Samples", "Status", "Latest Measured Point (mm)"]
+            ["Order", "Point", "Model Point (mm)", "Samples", "Measured Centroid (mm)", "Status"]
         )
-        self.points_table.horizontalHeader().setStretchLastSection(True)
+        self.points_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.points_table.setSelectionMode(QAbstractItemView.NoSelection)
         self.points_table.verticalHeader().setVisible(False)
+        self.points_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.points_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.points_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.points_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.points_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.points_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        self.points_table.setMinimumHeight(220)
 
-        points_box = QGroupBox("4 Required Registration Points")
+        points_box = QGroupBox("Selected Point Mapping")
         points_layout = QVBoxLayout(points_box)
         points_layout.addWidget(self.points_table)
 
         self.samples_table = QTableWidget(0, 5)
         self.samples_table.setHorizontalHeaderLabels(["Point", "Sample", "X (mm)", "Y (mm)", "Z (mm)"])
-        self.samples_table.horizontalHeader().setStretchLastSection(True)
+        self.samples_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.samples_table.setSelectionMode(QAbstractItemView.NoSelection)
         self.samples_table.verticalHeader().setVisible(False)
+        self.samples_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.samples_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.samples_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.samples_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.samples_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self.samples_table.setMinimumHeight(220)
 
         samples_box = QGroupBox("Captured Samples")
         samples_layout = QVBoxLayout(samples_box)
         samples_layout.addWidget(self.samples_table)
 
         self.plot_widget = RegistrationPlotWidget()
+        self.plot_widget.setMinimumHeight(280)
         plot_box = QGroupBox("Registration Preview")
         plot_layout = QVBoxLayout(plot_box)
         plot_layout.addWidget(self.plot_widget)
 
         self.status_text = QTextEdit()
         self.status_text.setReadOnly(True)
-        status_box = QGroupBox("Operator Notes")
+        self.status_text.setMinimumHeight(68)
+        self.status_text.setMaximumHeight(96)
+        status_box = QGroupBox("Operator Status")
         status_layout = QVBoxLayout(status_box)
         status_layout.addWidget(self.status_text)
 
-        top_row = QHBoxLayout()
-        top_row.addWidget(summary_box, 2)
-        top_row.addWidget(plot_box, 3)
+        top_splitter = QSplitter(Qt.Horizontal)
+        top_splitter.setChildrenCollapsible(False)
+        top_splitter.setHandleWidth(8)
+        top_splitter.addWidget(selection_box)
+        top_splitter.addWidget(summary_box)
+        top_splitter.addWidget(plot_box)
+        top_splitter.setStretchFactor(0, 4)
+        top_splitter.setStretchFactor(1, 3)
+        top_splitter.setStretchFactor(2, 4)
+        top_splitter.setSizes([460, 340, 420])
 
-        lower_row = QHBoxLayout()
-        lower_row.addWidget(points_box, 3)
-        lower_row.addWidget(samples_box, 4)
+        lower_splitter = QSplitter(Qt.Horizontal)
+        lower_splitter.setChildrenCollapsible(False)
+        lower_splitter.setHandleWidth(8)
+        lower_splitter.addWidget(points_box)
+        lower_splitter.addWidget(samples_box)
+        lower_splitter.setStretchFactor(0, 3)
+        lower_splitter.setStretchFactor(1, 4)
+        lower_splitter.setSizes([420, 540])
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(12)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+        layout.addWidget(self.title_label)
         layout.addWidget(self.workflow_hint)
-        layout.addLayout(buttons)
-        layout.addLayout(top_row)
-        layout.addLayout(lower_row)
+        layout.addLayout(button_row_primary)
+        layout.addLayout(button_row_secondary)
+        layout.addWidget(top_splitter, 3)
+        layout.addWidget(lower_splitter, 2)
         layout.addWidget(status_box)
 
     def update(self, state: RegistrationViewState) -> None:
-        session_status = "Solved and waiting for save" if state.pending_accept else ("Capturing" if state.active else "Idle")
+        session_status = "Solved - ready to save" if state.pending_accept else ("Capturing" if state.active else "Idle")
         self.session_status_label.setText(session_status)
+        if state.selected_model_labels:
+            self.selection_summary_label.setText(
+                f"{len(state.selected_model_labels)} / 4 selected: {', '.join(state.selected_model_labels)}"
+            )
+        else:
+            self.selection_summary_label.setText("Choose four model points.")
+        self.selected_points_label.setText(", ".join(state.selected_model_labels) or "None")
         self.tool_label.setText(state.capture_tool_id)
         self.coil_tool_label.setText(state.coil_tool_id)
         self.geometry_label.setText(state.capture_geometry_status)
-        self.current_label.setText(state.current_label or "All four points complete")
-        self.live_point_label.setText(_format_xyz(state.current_tracked_xyz_mm, state.current_tracking_status, state.current_tracked_frame_id))
+        self.current_label.setText(state.current_label or "All selected points complete")
+        self.live_point_label.setText(
+            _format_xyz(state.current_tracked_xyz_mm, state.current_tracking_status, state.current_tracked_frame_id)
+        )
         self.samples_used_label.setText(str(self.controller.total_samples_captured()))
         self.fre_label.setText(f"{state.fre_mm:.3f} mm" if state.fre_mm is not None else "Not solved yet")
-        self.accepted_label.setText("Yes" if state.accepted_registration_valid else "No")
+        self.result_status_label.setText(state.result_status)
         self.result_path_label.setText(state.last_result_path or "None")
 
+        self.begin_button.setEnabled(self.controller.can_begin_session())
         self.capture_button.setEnabled(state.active and state.current_label is not None)
         self.complete_button.setEnabled(state.active and self.controller.is_ready_to_complete_current())
         self.solve_button.setEnabled(state.active and self.controller.is_ready_to_solve())
         self.save_button.setEnabled(state.pending_accept)
         self.retry_button.setEnabled(state.active or state.pending_accept)
 
+        self._update_selection_slots(state)
+        self._update_available_points_table(state)
+        self.landmark_map.set_landmarks(
+            points_by_label=state.available_model_points_by_label,
+            display_labels=state.model_point_display_labels,
+            enabled_by_label=state.model_point_enabled,
+            selected_labels=state.selected_model_labels,
+        )
+
         self.points_table.setRowCount(len(state.landmark_labels))
         captured_plot: dict[str, list[tuple[float, float]]] = {}
         for row, label in enumerate(state.landmark_labels):
             count = state.captured_counts.get(label, 0)
-            latest = state.latest_sample_by_label.get(label)
-            truth = state.truth_points_in_sw_by_label.get(label)
+            truth = state.truth_points_in_sw_by_label.get(label) or state.available_model_points_by_label.get(label)
+            centroid = state.averaged_points_by_label.get(label)
             status = _point_status(label, state)
-            self.points_table.setItem(row, 0, QTableWidgetItem(label))
-            self.points_table.setItem(row, 1, QTableWidgetItem(_render_point(truth)))
-            self.points_table.setItem(row, 2, QTableWidgetItem(f"{count} / {state.captures_per_landmark}+"))
-            self.points_table.setItem(row, 3, QTableWidgetItem(status))
-            self.points_table.setItem(row, 4, QTableWidgetItem(_render_point(latest)))
+            display_name = _display_name(label, state)
+            self.points_table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
+            self.points_table.setItem(row, 1, QTableWidgetItem(display_name))
+            self.points_table.setItem(row, 2, QTableWidgetItem(_render_point(truth)))
+            self.points_table.setItem(row, 3, QTableWidgetItem(f"{count} / {state.captures_per_landmark}+"))
+            self.points_table.setItem(row, 4, QTableWidgetItem(_render_point(centroid)))
+            self.points_table.setItem(row, 5, QTableWidgetItem(status))
             captured_plot[label] = [
                 (float(sample[0]), float(sample[1]))
                 for sample in state.raw_samples_by_label.get(label, [])
@@ -218,11 +346,11 @@ class RegistrationTab(QWidget):
 
         nominal = {
             label: (
-                float(state.truth_points_in_sw_by_label[label][0]),
-                float(state.truth_points_in_sw_by_label[label][1]),
+                float((state.truth_points_in_sw_by_label.get(label) or state.available_model_points_by_label.get(label))[0]),
+                float((state.truth_points_in_sw_by_label.get(label) or state.available_model_points_by_label.get(label))[1]),
             )
             for label in state.landmark_labels
-            if label in state.truth_points_in_sw_by_label
+            if (state.truth_points_in_sw_by_label.get(label) or state.available_model_points_by_label.get(label)) is not None
         }
         centroid_map = {
             label: tuple(_mean_xy(samples))
@@ -238,19 +366,71 @@ class RegistrationTab(QWidget):
         )
 
         lines = [state.status_message]
+        if not self.controller.selection_is_ready() and state.selection_editable:
+            lines.append("Select four enabled model points before starting registration.")
         if state.overwrite_required and state.overwrite_target_path:
-            lines.append(f"Save confirmation required because {state.overwrite_target_path} already exists.")
+            lines.append(f"Save confirmation required: {state.overwrite_target_path}")
         if state.last_error:
             lines.append(f"Error: {state.last_error}")
-        if state.residuals_by_label:
-            lines.append(f"Residuals (mm): {state.residuals_by_label}")
         self.status_text.setPlainText("\n".join(lines))
+
+    def _update_selection_slots(self, state: RegistrationViewState) -> None:
+        for index, label_widget in enumerate(self._selected_slot_labels):
+            if index < len(state.selected_model_labels):
+                label = state.selected_model_labels[index]
+                label_widget.setText(f"{index + 1}. {_display_name(label, state)}")
+                label_widget.setStyleSheet(
+                    "padding: 8px 10px; border-radius: 8px; background: #dbeafe; color: #1e3a8a; font-weight: 700;"
+                )
+            else:
+                label_widget.setText(f"{index + 1}. Unselected")
+                label_widget.setStyleSheet(
+                    "padding: 8px 10px; border-radius: 8px; background: #e2e8f0; color: #475569; font-weight: 700;"
+                )
+        hint = (
+            "Choose four unique enabled model points in capture order."
+            if state.selection_editable
+            else "This registration mode uses a fixed point set."
+        )
+        self.selection_hint.setText(hint)
+
+    def _update_available_points_table(self, state: RegistrationViewState) -> None:
+        self.available_points_table.setRowCount(len(state.available_model_labels))
+        selected = list(state.selected_model_labels)
+        selected_lookup = {label: index + 1 for index, label in enumerate(selected)}
+        for row, label in enumerate(state.available_model_labels):
+            point = state.available_model_points_by_label.get(label)
+            display_name = state.model_point_display_labels.get(label, label)
+            enabled = state.model_point_enabled.get(label, True)
+            selection_text = f"Point {selected_lookup[label]}" if label in selected_lookup else "—"
+            status = "Disabled" if not enabled else (_point_status(label, state) if label in state.landmark_labels else "Available")
+            self.available_points_table.setItem(row, 0, QTableWidgetItem(label))
+            self.available_points_table.setItem(row, 1, QTableWidgetItem(display_name))
+            self.available_points_table.setItem(row, 2, QTableWidgetItem(_render_point(point)))
+            self.available_points_table.setItem(row, 3, QTableWidgetItem(selection_text))
+            self.available_points_table.setItem(row, 4, QTableWidgetItem(status))
+            background = QColor("#eff6ff") if label in selected_lookup else (QColor("#f8fafc") if enabled else QColor("#f1f5f9"))
+            for column in range(self.available_points_table.columnCount()):
+                item = self.available_points_table.item(row, column)
+                if item is not None:
+                    item.setBackground(background)
+                    if not enabled:
+                        item.setForeground(QColor("#94a3b8"))
+        self.available_points_table.clearSelection()
+
+    def _on_available_point_clicked(self, row: int, _column: int) -> None:
+        item = self.available_points_table.item(row, 0)
+        if item is None:
+            return
+        self._safe_call(lambda: self.controller.toggle_selected_model_point(item.text().strip()))
 
     def _save_registration(self) -> None:
         try:
             self.controller.save_registration()
         except RuntimeError as exc:
             if "overwrite confirmation" not in str(exc):
+                self._apply_action_error(exc)
+                self.update(self.controller.refresh())
                 return
             target = self.controller.state.overwrite_target_path or "latest_registration.json"
             response = QMessageBox.question(
@@ -260,12 +440,21 @@ class RegistrationTab(QWidget):
             )
             if response == QMessageBox.Yes:
                 self._safe_call(lambda: self.controller.save_registration(confirm_overwrite=True))
+            else:
+                self.update(self.controller.refresh())
 
     def _safe_call(self, fn) -> None:
         try:
             fn()
-        except Exception:
-            return
+        except Exception as exc:
+            self._apply_action_error(exc)
+        self.update(self.controller.refresh())
+
+    def _apply_action_error(self, exc: Exception) -> None:
+        message = str(exc)
+        self.controller.state.last_error = message
+        if message not in (self.controller.state.status_message or ""):
+            self.controller.state.status_message = f"Action failed: {message}"
 
 
 def _format_xyz(point: list[float] | None, status: str, frame_id: int | None) -> str:
@@ -301,3 +490,8 @@ def _point_status(label: str, state: RegistrationViewState) -> str:
     if state.pending_accept and state.current_label is None:
         return "Captured"
     return "Pending"
+
+
+def _display_name(label: str, state: RegistrationViewState) -> str:
+    display = state.model_point_display_labels.get(label, label)
+    return display if display == label else f"{display} ({label})"

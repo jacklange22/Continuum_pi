@@ -11,7 +11,10 @@ from continuum_robot.services.tracking_service import TrackingService
 from tests.fixtures.aurora_samples import build_tool_0A_record, build_tool_0B_record, build_transform_frame_from_records
 
 
-def _make_services(tmp_path: Path) -> tuple[TrackingService, RegistrationService]:
+def _make_services(
+    tmp_path: Path,
+    config_lines: list[str] | None = None,
+) -> tuple[TrackingService, RegistrationService]:
     registration_path = tmp_path / "registrations" / "latest_registration.json"
     tracking_service = TrackingService(
         MockAuroraClient(),
@@ -20,20 +23,19 @@ def _make_services(tmp_path: Path) -> tuple[TrackingService, RegistrationService
         config_source="test-system",
     )
     config_path = tmp_path / "registration.yaml"
+    config_lines = config_lines or [
+        "landmark_labels: [L1, L2, L3]",
+        "captures_per_landmark: 2",
+        "capture_tool_id: \"0B\"",
+        "nominal_landmarks_robot_xyz_mm:",
+        "  L1: [0.0, 0.0, 0.0]",
+        "  L2: [10.0, 0.0, 0.0]",
+        "  L3: [0.0, 10.0, 0.0]",
+        "validation:",
+        "  max_fre_mm: 1.0",
+    ]
     config_path.write_text(
-        "\n".join(
-            [
-                "landmark_labels: [L1, L2, L3]",
-                "captures_per_landmark: 2",
-                "capture_tool_id: \"0B\"",
-                "nominal_landmarks_robot_xyz_mm:",
-                "  L1: [0.0, 0.0, 0.0]",
-                "  L2: [10.0, 0.0, 0.0]",
-                "  L3: [0.0, 10.0, 0.0]",
-                "validation:",
-                "  max_fre_mm: 1.0",
-            ]
-        ),
+        "\n".join(config_lines),
         encoding="utf-8",
     )
     repository = RegistrationRepository(root_dir=tmp_path / "registrations")
@@ -103,3 +105,31 @@ def test_registration_service_rejects_capture_when_0b_missing(tmp_path: Path) ->
         assert "Tool 0B" in str(exc)
     else:
         raise AssertionError("Expected capture_sample to reject missing 0B")
+
+
+def test_registration_service_loads_candidate_landmarks_from_config(tmp_path: Path) -> None:
+    _tracking_service, registration_service = _make_services(
+        tmp_path,
+        config_lines=[
+            "captures_per_landmark: 1",
+            "capture_tool_id: \"0B\"",
+            "candidate_landmarks:",
+            "  - id: L1",
+            "    xyz_mm: [0.0, 0.0, 0.0]",
+            "    enabled: true",
+            "  - id: L2",
+            "    xyz_mm: [10.0, 0.0, 0.0]",
+            "    enabled: true",
+            "  - id: L3",
+            "    xyz_mm: [0.0, 10.0, 0.0]",
+            "    enabled: true",
+            "  - id: L4",
+            "    xyz_mm: [10.0, 10.0, 5.0]",
+            "    enabled: true",
+        ],
+    )
+
+    snapshot = registration_service.begin_session()
+
+    assert snapshot.labels == ["L1", "L2", "L3", "L4"]
+    assert snapshot.nominal_landmarks_robot_xyz_mm["L4"] == [10.0, 10.0, 5.0]

@@ -34,6 +34,7 @@ class RunHistoryEntry:
     timestamp_utc: str
     status: str
     label: str
+    metric_summary: str = ""
 
 
 @dataclass
@@ -420,6 +421,10 @@ class ExperimentController:
                     timestamp_utc=timestamp,
                     status=status,
                     label=label,
+                    metric_summary=self._history_metric_label(
+                        experiment_name=experiment_name,
+                        metrics=summary.get("experiment_metrics", {}) if isinstance(summary.get("experiment_metrics"), dict) else {},
+                    ),
                 )
             )
             if len(entries) >= 25:

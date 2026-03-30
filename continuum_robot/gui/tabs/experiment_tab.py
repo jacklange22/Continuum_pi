@@ -5,10 +5,10 @@ from __future__ import annotations
 from PySide6.QtCore import QSignalBlocker, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QComboBox,
     QFileDialog,
     QFormLayout,
     QFrame,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -18,9 +18,8 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSplitter,
-    QTableWidget,
-    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -46,292 +45,340 @@ class ExperimentTab(QWidget):
     def __init__(self, controller, parent=None) -> None:
         super().__init__(parent)
         self.controller = controller
+        self._selector_widgets: dict[str, _ExperimentSelectorWidget] = {}
         self.setObjectName("experimentWorkspace")
         self.setStyleSheet(
             """
             QWidget#experimentWorkspace {
-                background: #f4f7fb;
-            }
-            QWidget#experimentWorkspace QGroupBox {
-                border: 1px solid #dbe4ee;
-                border-radius: 12px;
-                margin-top: 16px;
-                padding-top: 10px;
-                background: #ffffff;
-            }
-            QWidget#experimentWorkspace QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 6px;
+                background: #eef3f8;
                 color: #0f172a;
-                font-weight: 700;
             }
-            QWidget#experimentWorkspace QLabel[role="hint"] {
+            QWidget#experimentWorkspace QLabel[role="page-title"] {
+                font-size: 24px;
+                font-weight: 700;
+                color: #0f172a;
+            }
+            QWidget#experimentWorkspace QLabel[role="section-title"] {
+                font-size: 15px;
+                font-weight: 700;
+                color: #0f172a;
+            }
+            QWidget#experimentWorkspace QLabel[role="body"] {
                 color: #475569;
+            }
+            QWidget#experimentWorkspace QLabel[role="muted"] {
+                color: #556476;
             }
             QWidget#experimentWorkspace QLabel[role="chip"] {
                 padding: 5px 10px;
                 border-radius: 999px;
                 background: #e2e8f0;
                 color: #0f172a;
-                font-weight: 600;
-            }
-            QWidget#experimentWorkspace QLabel[role="headline"] {
-                color: #0f172a;
-                font-size: 18px;
                 font-weight: 700;
             }
+            QWidget#experimentWorkspace QLabel[role="soft-chip"] {
+                padding: 4px 10px;
+                border-radius: 999px;
+                background: #f1f5f9;
+                color: #334155;
+                font-weight: 600;
+            }
+            QWidget#experimentWorkspace QFrame[role="card"] {
+                background: #ffffff;
+                border: 1px solid #d9e3ec;
+                border-radius: 16px;
+            }
+            QWidget#experimentWorkspace QLineEdit,
+            QWidget#experimentWorkspace QPlainTextEdit,
+            QWidget#experimentWorkspace QTextEdit,
+            QWidget#experimentWorkspace QListWidget,
+            QWidget#experimentWorkspace QComboBox {
+                border: 1px solid #dbe4ee;
+                border-radius: 12px;
+                background: #fbfdff;
+                padding: 6px 8px;
+            }
+            QWidget#experimentWorkspace QListWidget {
+                padding: 6px;
+            }
             QWidget#experimentWorkspace QPushButton {
-                min-height: 34px;
-                padding: 0 12px;
+                min-height: 36px;
+                padding: 0 14px;
+                border: 1px solid #dbe4ee;
+                border-radius: 10px;
+                background: #f8fafc;
+                color: #0f172a;
+                font-weight: 600;
             }
             QWidget#experimentWorkspace QPushButton[variant="primary"] {
                 background: #0f172a;
                 color: #ffffff;
-                border-radius: 8px;
+                border-color: #0f172a;
             }
             QWidget#experimentWorkspace QPushButton[variant="danger"] {
-                background: #b91c1c;
-                color: #ffffff;
-                border-radius: 8px;
+                background: #ffffff;
+                color: #b91c1c;
+                border-color: #fecaca;
             }
-            QWidget#experimentWorkspace QPlainTextEdit,
-            QWidget#experimentWorkspace QTextEdit,
-            QWidget#experimentWorkspace QLineEdit,
-            QWidget#experimentWorkspace QListWidget,
-            QWidget#experimentWorkspace QTableWidget {
-                border: 1px solid #dbe4ee;
-                border-radius: 10px;
-                background: #fbfdff;
+            QWidget#experimentWorkspace QPushButton[variant="ghost"] {
+                background: transparent;
+                color: #334155;
             }
             QWidget#experimentWorkspace QProgressBar {
                 min-height: 22px;
                 border: 1px solid #dbe4ee;
-                border-radius: 8px;
+                border-radius: 10px;
                 background: #eef2f7;
                 text-align: center;
             }
             QWidget#experimentWorkspace QProgressBar::chunk {
                 background: #2563eb;
-                border-radius: 7px;
+                border-radius: 9px;
+            }
+            QWidget#experimentWorkspace QScrollArea {
+                border: none;
+                background: transparent;
             }
             """
         )
 
-        self.workspace_title = QLabel("Experiment Workspace")
-        self.workspace_title.setProperty("role", "headline")
-        self.workspace_hint = QLabel(
-            "Run pivot calibration, Aurora grid accuracy, and repeatability from one guarded workspace. "
-            "Preflight must pass before a run can start."
+        self.page_title = QLabel("Experiment Workspace")
+        self.page_title.setProperty("role", "page-title")
+        self.page_subtitle = QLabel(
+            "Run calibration, tracker validation, and repeatability from one guarded operator console."
         )
-        self.workspace_hint.setWordWrap(True)
-        self.workspace_hint.setProperty("role", "hint")
+        self.page_subtitle.setProperty("role", "body")
+        self.page_subtitle.setWordWrap(True)
 
-        self.experiment_combo = QLineEdit()
-        self.experiment_combo.setReadOnly(True)
+        self.selected_status_chip = QLabel("Ready")
+        self.selected_status_chip.setProperty("role", "chip")
+        self.selected_experiment_title = QLabel("Repeatability Dataset")
+        self.selected_experiment_title.setProperty("role", "section-title")
+        self.selected_experiment_description = QLabel()
+        self.selected_experiment_description.setWordWrap(True)
+        self.selected_experiment_description.setProperty("role", "body")
+        self.selected_badges_label = QLabel()
+        self.selected_badges_label.setWordWrap(True)
+        self.selected_badges_label.setProperty("role", "muted")
+
+        header_card = _SectionCard()
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(18)
+
+        header_left = QWidget()
+        header_left_layout = QVBoxLayout(header_left)
+        header_left_layout.setContentsMargins(0, 0, 0, 0)
+        header_left_layout.setSpacing(6)
+        header_left_layout.addWidget(self.page_title)
+        header_left_layout.addWidget(self.page_subtitle)
+
+        header_right = QWidget()
+        header_right_layout = QVBoxLayout(header_right)
+        header_right_layout.setContentsMargins(0, 0, 0, 0)
+        header_right_layout.setSpacing(8)
+        header_right_layout.addWidget(self.selected_status_chip, 0, Qt.AlignRight)
+        header_right_layout.addWidget(self.selected_experiment_title)
+        header_right_layout.addWidget(self.selected_experiment_description)
+        header_right_layout.addWidget(self.selected_badges_label)
+
+        header_row.addWidget(header_left, 3)
+        header_row.addWidget(header_right, 4)
+        header_card.body_layout.addLayout(header_row)
+
         self.experiment_list = QListWidget()
-        self.experiment_list.currentTextChanged.connect(self._on_experiment_selected)
-        self.badges_label = QLabel()
-        self.badges_label.setWordWrap(True)
-        self.badges_label.setProperty("role", "chip")
-        self.description_label = QLabel()
-        self.description_label.setWordWrap(True)
+        self.experiment_list.currentRowChanged.connect(self._on_experiment_row_selected)
+        self.experiment_list.setSpacing(10)
+        selector_hint = QLabel("Choose one workflow. Each experiment keeps the same canonical runner, outputs, and run-history flow.")
+        selector_hint.setProperty("role", "body")
+        selector_hint.setWordWrap(True)
+        selector_card = _SectionCard("Experiment", "Select the lab workflow you want to run.")
+        selector_card.body_layout.addWidget(selector_hint)
+        selector_card.body_layout.addWidget(self.experiment_list)
+
         self.output_root_edit = QLineEdit()
         self.output_root_edit.editingFinished.connect(self._on_output_root_changed)
         self.notes_edit = QPlainTextEdit()
-        self.notes_edit.setPlaceholderText("Optional operator notes stored in metadata.json")
+        self.notes_edit.setPlaceholderText("Short operator note for metadata.json")
+        self.notes_edit.setMinimumHeight(72)
+        self.notes_edit.setMaximumHeight(96)
         self.notes_edit.textChanged.connect(lambda: self.controller.set_operator_notes(self.notes_edit.toPlainText()))
 
-        header_box = QGroupBox("Experiment Selection")
-        header_layout = QFormLayout(header_box)
-        header_layout.addRow("Selected", self.experiment_combo)
-        header_layout.addRow("Available", self.experiment_list)
-        header_layout.addRow("Badges", self.badges_label)
-        header_layout.addRow("Description", self.description_label)
-        header_layout.addRow("Output Root", self.output_root_edit)
-        header_layout.addRow("Operator Notes", self.notes_edit)
-
-        self.config_hint = QLabel(
-            "Edit the run configuration here. The exact effective config will be written into each run folder as "
-            "`config_snapshot.yaml`."
-        )
-        self.config_hint.setWordWrap(True)
-        self.config_hint.setProperty("role", "hint")
         self.config_edit = QPlainTextEdit()
         self.config_edit.setPlaceholderText("YAML config")
-        self.config_edit.textChanged.connect(lambda: self.controller.set_config_text(self.config_edit.toPlainText()))
         self.config_edit.setTabStopDistance(28)
-        reset_button = QPushButton("Reset Example")
-        reset_button.clicked.connect(lambda: self.controller.select_experiment(self.controller.state.selected_experiment))
-        load_run_button = QPushButton("Load Run Folder")
-        load_run_button.clicked.connect(self._browse_run)
-
-        config_box = QGroupBox("Config")
-        config_layout = QVBoxLayout(config_box)
-        config_layout.addWidget(self.config_hint)
-        config_layout.addWidget(self.config_edit)
-        config_buttons = QHBoxLayout()
-        config_buttons.addWidget(reset_button)
-        config_buttons.addWidget(load_run_button)
-        config_layout.addLayout(config_buttons)
+        self.config_edit.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        self.config_edit.setMinimumHeight(236)
+        self.config_edit.textChanged.connect(lambda: self.controller.set_config_text(self.config_edit.toPlainText()))
+        self.reset_button = QPushButton("Reset Example")
+        self.reset_button.clicked.connect(lambda: self.controller.select_experiment(self.controller.state.selected_experiment))
+        self.load_run_button = QPushButton("Load Run Folder")
+        self.load_run_button.clicked.connect(self._browse_run)
+        config_card = _SectionCard("Config", "Adjust the run config. The exact effective config is snapshotted into each run folder.")
+        config_form = QFormLayout()
+        config_form.setContentsMargins(0, 0, 0, 0)
+        config_form.setSpacing(10)
+        config_form.addRow("Output Root", self.output_root_edit)
+        config_form.addRow("Operator Note", self.notes_edit)
+        config_card.body_layout.addLayout(config_form)
+        config_card.body_layout.addWidget(self.config_edit)
+        config_actions = QHBoxLayout()
+        config_actions.setContentsMargins(0, 0, 0, 0)
+        config_actions.setSpacing(10)
+        config_actions.addWidget(self.reset_button)
+        config_actions.addWidget(self.load_run_button)
+        config_card.body_layout.addLayout(config_actions)
 
         self.preflight_widget = ExperimentPreflightWidget()
-        preflight_box = QGroupBox("Preflight")
-        preflight_layout = QVBoxLayout(preflight_box)
-        preflight_layout.addWidget(self.preflight_widget)
+        preflight_card = _SectionCard("Preflight", "Only hard blockers stop the run. Warnings and info stay visible but quieter.")
+        preflight_card.body_layout.addWidget(self.preflight_widget)
 
-        self.checklist_table = QTableWidget(0, 2)
-        self.checklist_table.setHorizontalHeaderLabels(["Item", "Value"])
-        self.checklist_table.horizontalHeader().setStretchLastSection(True)
-        self.checklist_table.verticalHeader().setVisible(False)
-        checklist_hint = QLabel(
-            "This card is the final run summary. Confirm the backend, mode, tool IDs, paths, and key config values before starting."
-        )
-        checklist_hint.setWordWrap(True)
-        checklist_hint.setProperty("role", "hint")
-        checklist_box = QGroupBox("Ready-To-Run Checklist")
-        checklist_layout = QVBoxLayout(checklist_box)
-        checklist_layout.addWidget(checklist_hint)
-        checklist_layout.addWidget(self.checklist_table)
+        self.checklist_widget = _KeyValueSummaryWidget()
+        checklist_card = _SectionCard("Ready To Run", "Confirm the essentials before starting.")
+        checklist_card.body_layout.addWidget(self.checklist_widget)
+
+        self.run_button = QPushButton("Run Experiment")
+        self.run_button.setProperty("variant", "primary")
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setProperty("variant", "danger")
+        self.refresh_button = QPushButton("Refresh Checks")
+        self.refresh_button.setProperty("variant", "ghost")
+        self.refresh_button.clicked.connect(self.controller.refresh)
+        self.run_button.clicked.connect(self._run)
+        self.stop_button.clicked.connect(self.controller.stop)
+        self.progress_bar = QProgressBar()
+        self.status_text = QTextEdit()
+        self.status_text.setReadOnly(True)
+        self.status_text.setPlaceholderText("Run status and validation messages appear here.")
+        self.status_text.setMinimumHeight(68)
+        self.status_text.setMaximumHeight(92)
+        self.destination_widget = _KeyValueSummaryWidget()
+        self.open_output_button = QPushButton("Open Run Folder")
+        self.open_output_button.setProperty("variant", "ghost")
+        self.open_output_button.clicked.connect(self._open_current_run_folder)
+
+        run_controls_card = _SectionCard("Run Controls", "Run, stop, and monitor progress from here.")
+        run_buttons = QHBoxLayout()
+        run_buttons.setContentsMargins(0, 0, 0, 0)
+        run_buttons.setSpacing(10)
+        run_buttons.addWidget(self.run_button, 3)
+        run_buttons.addWidget(self.stop_button, 2)
+        run_buttons.addWidget(self.refresh_button, 2)
+        run_controls_card.body_layout.addLayout(run_buttons)
+        run_controls_card.body_layout.addWidget(self.progress_bar)
+        run_controls_card.body_layout.addWidget(self.destination_widget)
+        run_controls_card.body_layout.addWidget(self.status_text)
+        run_controls_card.body_layout.addWidget(self.open_output_button, 0, Qt.AlignLeft)
+
+        control_stack = QWidget()
+        control_stack_layout = QVBoxLayout(control_stack)
+        control_stack_layout.setContentsMargins(0, 0, 0, 0)
+        control_stack_layout.setSpacing(14)
+        control_stack_layout.addWidget(selector_card)
+        control_stack_layout.addWidget(config_card)
+        control_stack_layout.addWidget(preflight_card)
+        control_stack_layout.addWidget(checklist_card)
+        control_stack_layout.addWidget(run_controls_card)
+        control_stack_layout.addStretch(1)
+
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setWidget(control_stack)
+        left_scroll.setMinimumWidth(300)
 
         self.viewer_3d = Experiment3DWidget(
             requested_mode=self.controller.settings.runtime.visualization_mode,
             safe_effects=self.controller.settings.runtime.visualization_safe_effects,
         )
-        self.results_widget = ExperimentResultsWidget()
-        self.color_mode_list = QListWidget()
-        for label, _value in self._COLOR_MODES:
-            self.color_mode_list.addItem(label)
-        self.color_mode_list.currentRowChanged.connect(self._on_color_mode_changed)
-        self.color_mode_list.setMaximumHeight(120)
-
+        self.viewer_3d.setMinimumHeight(360)
+        self.color_mode_combo = QComboBox()
+        for label, value in self._COLOR_MODES:
+            self.color_mode_combo.addItem(label, value)
+        self.color_mode_combo.currentIndexChanged.connect(self._on_color_mode_changed)
         self.show_axes_button = QPushButton("Axes")
+        self.show_axes_button.setProperty("variant", "ghost")
         self.show_axes_button.clicked.connect(lambda: self.controller.set_show_axes(not self.controller.state.show_axes))
         self.show_labels_button = QPushButton("Labels")
+        self.show_labels_button.setProperty("variant", "ghost")
         self.show_labels_button.clicked.connect(lambda: self.controller.set_show_labels(not self.controller.state.show_labels))
         self.show_centroids_button = QPushButton("Centroids")
+        self.show_centroids_button.setProperty("variant", "ghost")
         self.show_centroids_button.clicked.connect(
             lambda: self.controller.set_show_centroids(not self.controller.state.show_centroids)
         )
         self.show_truth_button = QPushButton("Truth")
+        self.show_truth_button.setProperty("variant", "ghost")
         self.show_truth_button.clicked.connect(lambda: self.controller.set_show_truth(not self.controller.state.show_truth))
-        self.save_view_button = QPushButton("Save View Image")
+        self.save_view_button = QPushButton("Save View")
+        self.save_view_button.setProperty("variant", "ghost")
         self.save_view_button.clicked.connect(self._save_view_image)
 
-        view_controls = QHBoxLayout()
-        view_controls.addWidget(self.show_axes_button)
-        view_controls.addWidget(self.show_labels_button)
-        view_controls.addWidget(self.show_centroids_button)
-        view_controls.addWidget(self.show_truth_button)
-        view_controls.addStretch(1)
-        view_controls.addWidget(self.save_view_button)
+        visualization_card = _SectionCard("Visualization", "Live view for the current run or any loaded historical dataset.")
+        viz_toolbar = QHBoxLayout()
+        viz_toolbar.setContentsMargins(0, 0, 0, 0)
+        viz_toolbar.setSpacing(10)
+        viz_toolbar.addWidget(QLabel("Coloring"))
+        viz_toolbar.addWidget(self.color_mode_combo, 0)
+        viz_toolbar.addStretch(1)
+        viz_toolbar.addWidget(self.show_axes_button)
+        viz_toolbar.addWidget(self.show_labels_button)
+        viz_toolbar.addWidget(self.show_centroids_button)
+        viz_toolbar.addWidget(self.show_truth_button)
+        viz_toolbar.addWidget(self.save_view_button)
+        visualization_card.body_layout.addLayout(viz_toolbar)
+        visualization_card.body_layout.addWidget(self.viewer_3d)
 
-        visualization_hint = QLabel(
-            "Rotate, pan, and zoom when native 3D is available. On unstable platforms the workspace falls back to a safe projection view."
-        )
-        visualization_hint.setWordWrap(True)
-        visualization_hint.setProperty("role", "hint")
-
-        view_box = QGroupBox("Visualization")
-        view_layout = QVBoxLayout(view_box)
-        view_layout.addWidget(visualization_hint)
-        view_layout.addLayout(view_controls)
-        view_layout.addWidget(self.viewer_3d)
-        view_layout.addWidget(QLabel("Coloring"))
-        view_layout.addWidget(self.color_mode_list)
-
-        results_box = QGroupBox("Results")
-        results_layout = QVBoxLayout(results_box)
-        results_layout.addWidget(self.results_widget)
+        self.results_widget = ExperimentResultsWidget()
+        self.export_plot_button = QPushButton("Save Current Plot")
+        self.export_plot_button.setProperty("variant", "ghost")
+        self.export_plot_button.clicked.connect(self._save_plot_image)
+        results_card = _SectionCard("Results", "Summaries and plots update after each run or when a saved run is loaded.")
+        results_toolbar = QHBoxLayout()
+        results_toolbar.setContentsMargins(0, 0, 0, 0)
+        results_toolbar.addStretch(1)
+        results_toolbar.addWidget(self.export_plot_button)
+        results_card.body_layout.addLayout(results_toolbar)
+        results_card.body_layout.addWidget(self.results_widget)
 
         center_splitter = QSplitter(Qt.Vertical)
-        center_splitter.addWidget(view_box)
-        center_splitter.addWidget(results_box)
-        center_splitter.setStretchFactor(0, 3)
+        center_splitter.setChildrenCollapsible(False)
+        center_splitter.setHandleWidth(8)
+        center_splitter.addWidget(visualization_card)
+        center_splitter.addWidget(results_card)
+        center_splitter.setStretchFactor(0, 4)
         center_splitter.setStretchFactor(1, 2)
-
-        self.run_button = QPushButton("Run Experiment")
-        self.run_button.setProperty("variant", "primary")
-        self.stop_button = QPushButton("Stop Run")
-        self.stop_button.setProperty("variant", "danger")
-        self.refresh_button = QPushButton("Refresh Preflight")
-        self.refresh_button.clicked.connect(self.controller.refresh)
-        self.run_button.clicked.connect(self._run)
-        self.stop_button.clicked.connect(self.controller.stop)
-        self.open_output_button = QPushButton("Open Current Run Folder")
-        self.open_output_button.clicked.connect(self._open_current_run_folder)
-        self.export_plot_button = QPushButton("Save Current Plot")
-        self.export_plot_button.clicked.connect(self._save_plot_image)
-        self.progress_bar = QProgressBar()
-        self.planned_output_label = QLabel()
-        self.planned_output_label.setWordWrap(True)
-        self.last_output_label = QLabel()
-        self.last_output_label.setWordWrap(True)
-        self.status_text = QTextEdit()
-        self.status_text.setReadOnly(True)
-
-        controls_box = QGroupBox("Run Controls")
-        controls_layout = QVBoxLayout(controls_box)
-        controls_layout.addWidget(self.run_button)
-        controls_layout.addWidget(self.stop_button)
-        controls_layout.addWidget(self.refresh_button)
-        controls_layout.addWidget(self.open_output_button)
-        controls_layout.addWidget(self.export_plot_button)
-        controls_layout.addWidget(self.progress_bar)
-        controls_layout.addWidget(QLabel("Planned Output Folder"))
-        controls_layout.addWidget(self.planned_output_label)
-        controls_layout.addWidget(QLabel("Last Loaded / Saved Run"))
-        controls_layout.addWidget(self.last_output_label)
-        controls_layout.addWidget(self.status_text)
+        center_splitter.setSizes([620, 320])
 
         self.history_list = QListWidget()
         self.history_list.itemDoubleClicked.connect(self._load_selected_history_item)
-        self.history_list.setAlternatingRowColors(True)
-        history_hint = QLabel("Double-click a prior run to reload its summary, plots, and visualization without hardware attached.")
-        history_hint.setWordWrap(True)
-        history_hint.setProperty("role", "hint")
-        history_refresh_button = QPushButton("Refresh History")
-        history_refresh_button.clicked.connect(self.controller.refresh)
-
-        history_box = QGroupBox("Run History")
-        history_layout = QVBoxLayout(history_box)
-        history_layout.addWidget(history_hint)
-        history_layout.addWidget(history_refresh_button)
-        history_layout.addWidget(self.history_list)
-
-        left_column = QWidget()
-        left_layout = QVBoxLayout(left_column)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(12)
-        left_layout.addWidget(config_box)
-        left_layout.addWidget(preflight_box)
-        left_layout.addWidget(checklist_box)
-
-        right_column = QWidget()
-        right_layout = QVBoxLayout(right_column)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(12)
-        right_layout.addWidget(controls_box)
-        right_layout.addWidget(history_box)
+        self.history_list.setSpacing(10)
+        self.history_list.setMinimumWidth(260)
+        self.history_refresh_button = QPushButton("Refresh")
+        self.history_refresh_button.setProperty("variant", "ghost")
+        self.history_refresh_button.clicked.connect(self.controller.refresh)
+        history_card = _SectionCard("Run History", "Double-click any saved run to reload its visualization, summary, and plots.")
+        history_header = QHBoxLayout()
+        history_header.setContentsMargins(0, 0, 0, 0)
+        history_header.addWidget(QLabel("Recent runs"))
+        history_header.addStretch(1)
+        history_header.addWidget(self.history_refresh_button)
+        history_card.body_layout.addLayout(history_header)
+        history_card.body_layout.addWidget(self.history_list)
 
         main_splitter = QSplitter(Qt.Horizontal)
-        main_splitter.addWidget(left_column)
+        main_splitter.setChildrenCollapsible(False)
+        main_splitter.setHandleWidth(8)
+        main_splitter.addWidget(left_scroll)
         main_splitter.addWidget(center_splitter)
-        main_splitter.addWidget(right_column)
-        main_splitter.setStretchFactor(0, 3)
+        main_splitter.addWidget(history_card)
+        main_splitter.setStretchFactor(0, 2)
         main_splitter.setStretchFactor(1, 5)
-        main_splitter.setStretchFactor(2, 3)
-
-        header_card = QFrame()
-        header_layout = QVBoxLayout(header_card)
-        header_layout.setContentsMargins(0, 0, 0, 0)
-        header_layout.addWidget(self.workspace_title)
-        header_layout.addWidget(self.workspace_hint)
-        header_layout.addWidget(header_box)
+        main_splitter.setStretchFactor(2, 2)
+        main_splitter.setSizes([340, 980, 260])
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(14)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(16)
         layout.addWidget(header_card)
         layout.addWidget(main_splitter)
 
@@ -346,19 +393,25 @@ class ExperimentTab(QWidget):
             if self.output_root_edit.text() != state.output_root:
                 self.output_root_edit.setText(state.output_root)
 
-        self.experiment_combo.setText(state.experiment_title)
-        self.badges_label.setText("  |  ".join(state.experiment_badges))
-        self.description_label.setText(state.experiment_description)
+        self.selected_experiment_title.setText(state.experiment_title)
+        self.selected_experiment_description.setText(state.experiment_description)
+        self.selected_badges_label.setText("  •  ".join(state.experiment_badges))
+        self._update_status_chip(state)
+
         self.preflight_widget.set_report(state.preflight_report)
-        self._update_checklist(state)
+        self.checklist_widget.set_pairs(state.run_checklist)
         self.progress_bar.setMaximum(max(1, state.progress_total or 1))
         self.progress_bar.setValue(state.progress_current)
         self.run_button.setEnabled(not state.run_active and state.preflight_report.overall_status != "blocked")
         self.stop_button.setEnabled(state.run_active)
-        self.open_output_button.setEnabled(bool(state.last_output_path))
+        self.open_output_button.setEnabled(bool(state.last_output_path or state.loaded_run_path))
         self.export_plot_button.setEnabled(bool(state.visualization_model.charts))
-        self.planned_output_label.setText(state.planned_output_dir or "n/a")
-        self.last_output_label.setText(state.last_output_path or state.loaded_run_path or "none")
+        self.destination_widget.set_pairs(
+            [
+                ("Planned Output", state.planned_output_dir or "n/a"),
+                ("Current Run", state.last_output_path or state.loaded_run_path or "none"),
+            ]
+        )
         lines = [state.status_message]
         if state.last_error:
             lines.append(f"Error: {state.last_error}")
@@ -406,22 +459,23 @@ class ExperimentTab(QWidget):
             except Exception:
                 return
 
-    def _on_experiment_selected(self, title: str) -> None:
-        title = str(title or "").strip()
-        if not title:
+    def _on_experiment_row_selected(self, row: int) -> None:
+        if row < 0 or row >= self.experiment_list.count():
             return
-        for option in self.controller.state.experiment_options:
-            if option.title == title:
-                self.controller.select_experiment(option.name)
-                return
+        item = self.experiment_list.item(row)
+        raw_name = item.data(Qt.UserRole)
+        if raw_name:
+            self.controller.select_experiment(str(raw_name))
 
     def _on_output_root_changed(self) -> None:
         self.controller.set_output_root(self.output_root_edit.text())
 
     def _on_color_mode_changed(self, row: int) -> None:
-        if row < 0 or row >= len(self._COLOR_MODES):
+        if row < 0:
             return
-        self.controller.set_color_mode(self._COLOR_MODES[row][1])
+        value = self.color_mode_combo.itemData(row)
+        if value:
+            self.controller.set_color_mode(str(value))
 
     def _open_current_run_folder(self) -> None:
         path = self.controller.state.last_output_path or self.controller.state.loaded_run_path
@@ -439,40 +493,204 @@ class ExperimentTab(QWidget):
             self.viewer_3d.save_screenshot(path)
 
     def _update_experiment_list(self, state: ExperimentViewState) -> None:
-        labels = [option.title for option in state.experiment_options]
-        current_labels = [self.experiment_list.item(index).text() for index in range(self.experiment_list.count())]
+        labels = [option.name for option in state.experiment_options]
+        current_labels = [self.experiment_list.item(index).data(Qt.UserRole) for index in range(self.experiment_list.count())]
         if labels != current_labels:
-            with QSignalBlocker(self.experiment_list):
-                self.experiment_list.clear()
-                for label in labels:
-                    self.experiment_list.addItem(label)
-        target_title = state.experiment_title
+            self.experiment_list.clear()
+            self._selector_widgets.clear()
+            for option in state.experiment_options:
+                item = QListWidgetItem()
+                item.setData(Qt.UserRole, option.name)
+                self.experiment_list.addItem(item)
+                widget = _ExperimentSelectorWidget(option.title, option.description, option.badges)
+                item.setSizeHint(widget.sizeHint())
+                self.experiment_list.setItemWidget(item, widget)
+                self._selector_widgets[option.name] = widget
+
+        target_index = 0
         for index in range(self.experiment_list.count()):
-            if self.experiment_list.item(index).text() == target_title:
-                with QSignalBlocker(self.experiment_list):
-                    self.experiment_list.setCurrentRow(index)
-                break
+            item = self.experiment_list.item(index)
+            item_name = item.data(Qt.UserRole)
+            is_selected = item_name == state.selected_experiment
+            widget = self._selector_widgets.get(str(item_name))
+            if widget is not None:
+                widget.set_selected(bool(is_selected))
+            if is_selected:
+                target_index = index
+        with QSignalBlocker(self.experiment_list):
+            self.experiment_list.setCurrentRow(target_index)
 
     def _update_history_list(self, state: ExperimentViewState) -> None:
         self.history_list.clear()
         for entry in state.history:
-            item = QListWidgetItem(entry.label)
+            item = QListWidgetItem()
             item.setData(Qt.UserRole, entry.path)
             item.setToolTip(entry.path)
             self.history_list.addItem(item)
+            widget = _HistoryItemWidget(
+                experiment_name=entry.experiment_name,
+                timestamp_utc=entry.timestamp_utc,
+                status=entry.status,
+                metric_summary=entry.metric_summary,
+                run_path=entry.path,
+            )
+            item.setSizeHint(widget.sizeHint())
+            self.history_list.setItemWidget(item, widget)
 
     def _update_color_mode(self, state: ExperimentViewState) -> None:
         target_row = 0
-        for index, (_label, value) in enumerate(self._COLOR_MODES):
-            if value == state.color_mode:
+        for index in range(self.color_mode_combo.count()):
+            if self.color_mode_combo.itemData(index) == state.color_mode:
                 target_row = index
                 break
-        with QSignalBlocker(self.color_mode_list):
-            self.color_mode_list.setCurrentRow(target_row)
+        with QSignalBlocker(self.color_mode_combo):
+            self.color_mode_combo.setCurrentIndex(target_row)
 
-    def _update_checklist(self, state: ExperimentViewState) -> None:
-        self.checklist_table.setRowCount(len(state.run_checklist))
-        for row, (label, value) in enumerate(state.run_checklist):
-            self.checklist_table.setItem(row, 0, QTableWidgetItem(label))
-            self.checklist_table.setItem(row, 1, QTableWidgetItem(value))
-        self.checklist_table.resizeColumnsToContents()
+    def _update_status_chip(self, state: ExperimentViewState) -> None:
+        status = state.preflight_report.overall_status
+        if status == "blocked":
+            bg, fg, text = "#fee2e2", "#991b1b", "Blocked"
+        elif status == "ok_with_warning":
+            bg, fg, text = "#fef3c7", "#92400e", "Ready With Warning"
+        else:
+            bg, fg, text = "#dcfce7", "#166534", "Ready"
+        self.selected_status_chip.setText(text)
+        self.selected_status_chip.setStyleSheet(
+            f"padding: 5px 12px; border-radius: 999px; background: {bg}; color: {fg}; font-weight: 700;"
+        )
+
+
+class _SectionCard(QFrame):
+    def __init__(self, title: str | None = None, subtitle: str | None = None, parent=None) -> None:
+        super().__init__(parent)
+        self.setProperty("role", "card")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+        if title:
+            title_label = QLabel(title)
+            title_label.setProperty("role", "section-title")
+            layout.addWidget(title_label)
+        if subtitle:
+            subtitle_label = QLabel(subtitle)
+            subtitle_label.setProperty("role", "body")
+            subtitle_label.setWordWrap(True)
+            layout.addWidget(subtitle_label)
+        self.body_layout = layout
+
+
+class _KeyValueSummaryWidget(QWidget):
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._rows: list[tuple[QLabel, QLabel]] = []
+        self.layout_ = QVBoxLayout(self)
+        self.layout_.setContentsMargins(0, 0, 0, 0)
+        self.layout_.setSpacing(8)
+
+    def set_pairs(self, pairs: list[tuple[str, str]]) -> None:
+        while self.layout_.count():
+            item = self.layout_.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        for label, value in pairs:
+            row = QFrame()
+            row.setStyleSheet("background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px;")
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(10, 8, 10, 8)
+            row_layout.setSpacing(12)
+            key = QLabel(label)
+            key.setProperty("role", "muted")
+            val = QLabel(value)
+            val.setWordWrap(True)
+            val.setStyleSheet("color: #0f172a; font-weight: 600;")
+            row_layout.addWidget(key, 1)
+            row_layout.addWidget(val, 2)
+            self.layout_.addWidget(row)
+        self.layout_.addStretch(1)
+
+
+class _ExperimentSelectorWidget(QWidget):
+    def __init__(self, title: str, description: str, badges: list[str], parent=None) -> None:
+        super().__init__(parent)
+        self.title_label = QLabel(title)
+        self.title_label.setStyleSheet("font-weight: 700; color: #0f172a;")
+        self.description_label = QLabel(description)
+        self.description_label.setWordWrap(True)
+        self.description_label.setStyleSheet("color: #64748b;")
+        self.badges_label = QLabel("  •  ".join(badges))
+        self.badges_label.setWordWrap(True)
+        self.badges_label.setStyleSheet("color: #475569;")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(4)
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.description_label)
+        layout.addWidget(self.badges_label)
+        self.set_selected(False)
+
+    def set_selected(self, selected: bool) -> None:
+        if selected:
+            self.setStyleSheet("background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 12px;")
+        else:
+            self.setStyleSheet("background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px;")
+
+
+class _HistoryItemWidget(QWidget):
+    def __init__(self, *, experiment_name: str, timestamp_utc: str, status: str, metric_summary: str, run_path: str, parent=None) -> None:
+        super().__init__(parent)
+        title = QLabel(experiment_name.replace("_", " ").title())
+        title.setStyleSheet("font-weight: 700; color: #0f172a;")
+        chip = QLabel(_status_label(status))
+        chip.setStyleSheet(
+            f"padding: 4px 8px; border-radius: 999px; background: {_status_bg(status)}; color: {_status_fg(status)}; font-weight: 700;"
+        )
+        stamp = QLabel(timestamp_utc.replace("T", " ").replace("+00:00", "Z"))
+        stamp.setStyleSheet("color: #64748b;")
+        metric = QLabel(metric_summary or "No metric summary")
+        metric.setWordWrap(True)
+        metric.setStyleSheet("color: #334155;")
+        run_name = QLabel(run_path.split("/")[-1])
+        run_name.setStyleSheet("color: #94a3b8;")
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.addWidget(title, 1)
+        title_row.addWidget(chip)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(4)
+        layout.addLayout(title_row)
+        layout.addWidget(stamp)
+        layout.addWidget(metric)
+        layout.addWidget(run_name)
+        self.setStyleSheet("background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px;")
+
+
+def _status_label(status: str) -> str:
+    mapping = {
+        "success": "Pass",
+        "partial_success": "Partial",
+        "invalid_due_to_missing_registration": "Needs Registration",
+        "invalid_due_to_missing_tip_cal": "Needs Tip Cal",
+        "invalid_due_to_insufficient_samples": "Too Few Samples",
+        "invalid_due_to_invalid_transforms": "Invalid",
+    }
+    return mapping.get(status, status.replace("_", " ").title())
+
+
+def _status_bg(status: str) -> str:
+    if status == "success":
+        return "#dcfce7"
+    if status == "partial_success":
+        return "#fef3c7"
+    return "#fee2e2"
+
+
+def _status_fg(status: str) -> str:
+    if status == "success":
+        return "#166534"
+    if status == "partial_success":
+        return "#92400e"
+    return "#991b1b"

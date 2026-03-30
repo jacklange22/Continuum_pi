@@ -57,6 +57,18 @@ Legacy registration compatibility is preserved:
 
 Do not modify `references/` or `tools/` unless you intentionally want to change protected reference material.
 
+## Project Docs
+
+The current project specification and phased validation docs live here:
+
+- [system_spec.md](/Users/jacklange/Continuum/pi_code/docs/system_spec.md)
+- [architecture.md](/Users/jacklange/Continuum/pi_code/docs/architecture.md)
+- [operator_workflows.md](/Users/jacklange/Continuum/pi_code/docs/operator_workflows.md)
+- [validation_plan.md](/Users/jacklange/Continuum/pi_code/docs/validation_plan.md)
+- [registration_trace.md](/Users/jacklange/Continuum/pi_code/docs/registration_trace.md)
+- [servo_interface_contract.md](/Users/jacklange/Continuum/pi_code/docs/servo_interface_contract.md)
+- [servo_workflow_trace.md](/Users/jacklange/Continuum/pi_code/docs/servo_workflow_trace.md)
+
 ## Live Tracking Architecture
 
 Primary live tracking path:
@@ -127,12 +139,14 @@ Python/runtime dependencies:
 - `numpy`
 - `PyYAML`
 - `pyserial`
+- `dynamixel-sdk`
 - `PySide6`
 - `scikit-surgerynditracker`
 
 Important:
 
 - this repo installs the Python package dependency, but it does not bundle or auto-detect whatever low-level vendor/runtime dependencies your local `scikit-surgerynditracker` install needs
+- live servo access uses the Robotis Python `dynamixel_sdk` module provided by the `dynamixel-sdk` package
 - if `tracker_backend: "bridge"` is used instead, you also need the external NDI SDK and the legacy C++ bridge build
 
 ## Bootstrap
@@ -186,6 +200,65 @@ Notes:
 - the app runtime still uses `0A` and `0B`
 - `system.local.yaml` overrides `system.yaml`
 
+## Live OpenRB / DYNAMIXEL Config
+
+For real OpenRB and servo bring-up, the important local config fields are:
+
+```yaml
+mock_mode: false
+robot_config: "robot_1servo.yaml"
+openrb_port: "/dev/ttyUSB1"
+openrb_settings:
+  connect_timeout_s: 0.5
+  port_settle_time_s: 0.15
+  require_usb_to_dynamixel_firmware: true
+  require_external_power_for_motion: true
+dynamixel_settings:
+  protocol_version: 2.0
+  positive_tick_rotation: "ccw"
+  expected_operating_mode: 3
+  allowed_operating_modes: [3]
+  auto_torque_enable_on_write: true
+  torque_disable_for_eeprom_write: true
+  require_current_for_motion: true
+  require_voltage_for_motion: true
+  require_temperature_for_motion: true
+  voltage_scale_mv_per_unit: 100.0
+  current_scale_ma_per_unit: 1.0
+  control_table:
+    operating_mode: 11
+    current_limit: 38
+    max_position_limit: 48
+    min_position_limit: 52
+    servo_id: 7
+    torque_enable: 64
+    hardware_error_status: 70
+    goal_position: 116
+    present_current: 126
+    present_position: 132
+    present_input_voltage: 144
+    present_temperature: 146
+safety_overrides:
+  fine_jog_step_ticks: 5
+  coarse_jog_step_ticks: 25
+  default_pretension_current_threshold_ma: 220
+```
+
+Current hardware assumptions:
+
+- the OpenRB is reachable as a USB serial device from the Pi
+- the OpenRB is running the Robotis `usb_to_dynamixel` bridge firmware, or equivalent pass-through firmware
+- the OpenRB DYNAMIXEL side is externally powered for real movement tests
+- the XC330/XC333 servos use the X-series control table addresses shown above
+- the servos are already in a position-control-compatible operating mode for goal-position writes
+- tightening direction is configured explicitly per servo instead of assumed implicitly
+
+Permissions / serial notes:
+
+- the current user must be able to open the OpenRB serial port
+- if the OpenRB enumerates as a different path, update `openrb_port` in `config/system.local.yaml`
+- if another process already owns the serial device, both OpenRB validation and DYNAMIXEL SDK access will fail
+
 Environment overrides for visualization safety:
 
 ```bash
@@ -199,9 +272,11 @@ export CONTINUUM_VISUALIZATION_SAFE_EFFECTS=1   # 1 keeps conservative native-3D
 2. Run tracker doctor to verify backend selection and startup preflight
 3. Run tracker smoke to verify pre-registration tracking readiness
 4. Run the tracker benchmark for timing and freshness
-5. Perform registration and create `data/registrations/latest_registration.json`
-6. Run registration readiness validation to confirm `T_robot_tip`
-6. Launch the full GUI/app
+5. Do one-servo OpenRB bring-up with external power
+6. Save startup calibration and run cautious pretension on one servo
+7. Perform registration and create `data/registrations/latest_registration.json`
+8. Run registration readiness validation to confirm `T_robot_tip`
+9. Launch the full GUI/app
 
 ## Stage 1: Tracker Bring-Up Without Registration
 
@@ -322,7 +397,39 @@ In the full app, the expected progression is:
 2. `Tracking` tab shows `0A` and `0B` updating
 3. `Registration` tab guides the 4-point body-alignment process
 4. after registration is loaded, `Tracking` can compute `T_robot_tip`
-5. servo/runtime work can build on the validated live tracking path
+5. `System` + `Servos` can connect OpenRB, scan servo IDs, read telemetry, assign a test ID, and jog a servo carefully
+6. experiments can build on the validated live tracking and servo paths
+
+## Stage 5: OpenRB / DYNAMIXEL Bring-Up
+
+Use the GUI as the canonical bring-up path:
+
+1. launch `scripts/run_gui.sh`
+2. in `System`, save one-servo bring-up parameters first
+3. connect external power to the OpenRB / DYNAMIXEL side
+4. in `System`, set the OpenRB port and click `Connect OpenRB`
+5. confirm the prepared OpenRB status before touching the bus
+6. open `Servos`
+7. click `Scan Servos` to list responding servo IDs
+8. verify telemetry values populate for model, firmware, mode, position, current, voltage, temperature, and error
+9. if needed, assign a new ID on a test servo
+10. use `Fine -/+` first, then `Coarse -/+`, and confirm the readback updates
+11. save startup calibration for the active servo
+12. run cautious pretension and accept the result only after reviewing the final current / position
+
+Bring-up cautions:
+
+- start with a single test servo whenever possible
+- use external power for real movement tests
+- verify the saved servo calibration artifact before larger motions
+- the current GUI now shows whether calibration exists, whether it matches the current robot config, and whether per-servo bounds/thresholds are present
+- motion is blocked when telemetry is stale/missing, the operating mode is wrong, the hardware error state is unsafe, or bounds are unavailable for the requested action
+
+Servo calibration artifact:
+
+- the servo subsystem now uses one canonical calibration file through the same `neutral_setpoints_path` config seam for backward compatibility
+- the file stores per-servo neutral setpoint, safe min/max bounds, pretension/current threshold, tightening direction, pretension result, calibration timestamp, validity, and robot compatibility metadata
+- older flat neutral-setpoint JSON files are still readable and are treated as legacy input to the richer artifact path
 
 ## Troubleshooting
 
@@ -460,11 +567,12 @@ PYTHON_BIN=python3 scripts/bootstrap.sh
 cp config/system.local.example.yaml config/system.local.yaml
 ```
 
-5. Edit `config/system.local.yaml` for live Aurora:
+5. Edit `config/system.local.yaml` for live Aurora + OpenRB:
 
 ```yaml
 mock_mode: false
 aurora_port: "/dev/ttyUSB0"
+openrb_port: "/dev/ttyUSB1"
 tracker_backend: "ndi"
 tracker_tool_id_aliases:
   "10": "0A"
@@ -509,6 +617,14 @@ scripts/run_gui.sh
 ```bash
 scripts/run_gui.sh
 ```
+
+12. In the GUI, bring up OpenRB and the DYNAMIXEL bus:
+
+- `System` -> `Connect OpenRB`
+- `System` -> `Prepare OpenRB`
+- `Servos` -> `Scan`
+- verify telemetry for position / current / voltage
+- jog a single test servo carefully
 
 ## Mock Mode
 
@@ -576,7 +692,8 @@ Recommended hardware workflow:
 1. Run `pivot_calibration` to generate or refresh the pen-probe tip file.
 2. Run `aurora_grid_accuracy` to verify the tracker is healthy before doing registration.
 3. Run the 4-point `Registration` workflow in the GUI.
-4. Run `repeatability_dataset` to collect the main robot dataset.
+4. Save and verify the servo calibration artifact in `Servos`.
+5. Run `repeatability_dataset` to collect the main robot dataset.
 
 ### GUI Experiment Workspace
 
@@ -698,7 +815,7 @@ When Aurora and OpenRB are available again:
 - `repeatability_dataset` can switch from `dry_run: true` to `dry_run: false`
 - `aurora_grid_accuracy` can run against the real pen probe and a measured grid truth set
 - `pivot_calibration` can collect live pivot poses instead of replaying an existing file
-- servo-connected runs will send real commands through `ServoService`
+- servo-connected runs send real commands through `ServoService` and the SDK-backed `DxlBus`
 - tracker-backed runs will continue to consume the canonical `TrackingService`
 - registration will remain optional for tracker-frame datasets but required for robot-frame pose outputs
 - future timing, hysteresis, transient, and tensioning studies should be implemented as new registered experiments or schedule/config variants, not as standalone helper scripts

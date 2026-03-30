@@ -4,11 +4,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from pathlib import Path
 import json
+import time
 
 import numpy as np
+import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from continuum_robot.config.schemas import RegistrationWorkflowConfig
+from continuum_robot.config.schemas import RegistrationLandmarkConfig, RegistrationWorkflowConfig
+from continuum_robot.config.config_loader import ConfigLoader
 from continuum_robot.config.settings import Settings
 from continuum_robot.config.schemas import (
     CalibrationConfig,
@@ -23,6 +28,9 @@ from continuum_robot.gui.controllers.servos_controller import ServosController
 from continuum_robot.gui.controllers.system_controller import SystemController
 from continuum_robot.gui.controllers.experiment_controller import ExperimentController
 from continuum_robot.gui.tabs.experiment_tab import ExperimentTab
+from continuum_robot.gui.tabs.registration_tab import RegistrationTab
+from continuum_robot.gui.tabs.servos_tab import ServosTab
+from continuum_robot.gui.tabs.system_tab import SystemTab
 from continuum_robot.experiments.experiment_loader import ExperimentLoader
 from continuum_robot.experiments.experiment_runner import ExperimentRunner
 from continuum_robot.hardware.mock_dxl_bus import MockDxlBus
@@ -32,10 +40,14 @@ from continuum_robot.registration.rigid_solver import RigidRegistrationSolver
 from continuum_robot.services.registration_service import RegistrationService
 from continuum_robot.services.tracking_service import TrackingService
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
-from continuum_robot.servos.neutral_calibration_service import NeutralCalibrationService
+from continuum_robot.servos.neutral_calibration_service import (
+    NeutralCalibrationService,
+    ServoCalibrationContext,
+)
 from continuum_robot.servos.pretension_validation_service import PretensionValidationService
 from continuum_robot.servos.safety_guard import SafetyGuard
-from continuum_robot.servos.servo_service import ServoService
+from continuum_robot.servos.servo_service import ServoCommandResult, ServoService
+from continuum_robot.hardware.dxl_bus import ServoTelemetry
 from continuum_robot.tracking.mock_tracker_manager import MockTrackerManager
 
 
@@ -49,13 +61,28 @@ def _app() -> QApplication:
 def _settings() -> Settings:
     return Settings(
         runtime=RuntimeConfig(mock_mode=True, poll_rate_hz=10, robot_config="robot_4servo.yaml"),
-        robot=RobotConfig(mode="4-servo", spool_diameter_cm=1.2, ticks_per_revolution=4096, servo_ids=[1, 2, 3, 4]),
+        robot=RobotConfig(
+            mode="4-servo",
+            spool_diameter_cm=1.2,
+            ticks_per_revolution=4096,
+            servo_ids=[1, 2, 3, 4],
+            tightening_rotation_by_servo={1: "cw", 2: "cw", 3: "cw", 4: "cw"},
+        ),
         serial=SerialConfig(aurora_port="/dev/mock-aurora", openrb_port="/dev/mock-openrb", baudrate=115200),
         safety=SafetyConfig(
             position_min_offset_ticks=-600,
             position_max_offset_ticks=600,
             max_current_ma=850,
+            default_pretension_current_threshold_ma=220,
             pretension_current_balance_tolerance_ma=120,
+            fine_jog_step_ticks=5,
+            coarse_jog_step_ticks=25,
+            software_position_margin_ticks=64,
+            telemetry_stale_after_s=0.25,
+            pretension_step_ticks=2,
+            pretension_timeout_s=2.0,
+            pretension_settle_time_s=0.0,
+            max_temperature_c=70,
         ),
         registration=RegistrationWorkflowConfig(
             landmark_labels=["L1", "L2", "L3", "L4"],
@@ -66,6 +93,12 @@ def _settings() -> Settings:
                 "L3": [0.0, 30.0, 0.0],
                 "L4": [0.0, 0.0, 30.0],
             },
+            candidate_landmarks=[
+                RegistrationLandmarkConfig(id="L1", xyz_mm=[0.0, 0.0, 0.0], display_label="Front Left"),
+                RegistrationLandmarkConfig(id="L2", xyz_mm=[30.0, 0.0, 0.0], display_label="Front Right"),
+                RegistrationLandmarkConfig(id="L3", xyz_mm=[0.0, 30.0, 0.0], display_label="Rear Left"),
+                RegistrationLandmarkConfig(id="L4", xyz_mm=[0.0, 0.0, 30.0], display_label="Rear Upper"),
+            ],
             capture_tool_id="0B",
             max_fre_mm=None,
         ),
@@ -81,8 +114,33 @@ def _servo_service(tmp_path: Path) -> ServoService:
     return ServoService(
         dxl_bus=MockDxlBus([1, 2, 3, 4]),
         mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
-        safety_guard=SafetyGuard(min_offset_ticks=-600, max_offset_ticks=600, max_current_ma=850),
-        neutral_calibration=NeutralCalibrationService(path=tmp_path / "neutral.json"),
+        safety_guard=SafetyGuard(
+            min_offset_ticks=-600,
+            max_offset_ticks=600,
+            max_current_ma=850,
+            default_pretension_current_threshold_ma=220,
+            fine_jog_step_ticks=5,
+            coarse_jog_step_ticks=25,
+            software_position_margin_ticks=64,
+            telemetry_stale_after_s=0.25,
+            pretension_step_ticks=2,
+            pretension_timeout_s=2.0,
+            pretension_settle_time_s=0.0,
+            max_temperature_c=70,
+            time_fn=time.monotonic,
+        ),
+        neutral_calibration=NeutralCalibrationService(
+            path=tmp_path / "neutral.json",
+            context=ServoCalibrationContext(
+                robot_mode="4-servo",
+                servo_ids=[1, 2, 3, 4],
+                tendon_to_servo=[1, 2, 3, 4],
+                position_min_offset_ticks=-600,
+                position_max_offset_ticks=600,
+                default_pretension_current_threshold_ma=220,
+                tightening_rotation_by_servo={1: "cw", 2: "cw", 3: "cw", 4: "cw"},
+            ),
+        ),
         pretension_validation=PretensionValidationService(),
     )
 
@@ -98,22 +156,32 @@ def _tracking_service(settings: Settings, tmp_path: Path) -> TrackingService:
     )
 
 
-def _registration_service(settings: Settings, tmp_path: Path, tracking_service: TrackingService) -> RegistrationService:
+def _registration_service(
+    settings: Settings,
+    tmp_path: Path,
+    tracking_service: TrackingService,
+    *,
+    nominal_points: dict[str, list[float]] | None = None,
+    captures_per_landmark: int = 1,
+) -> RegistrationService:
+    nominal_points = nominal_points or {
+        "L1": [5.0, 5.0, 0.0],
+        "L2": [23.0, 5.0, 0.0],
+        "L3": [5.0, 23.0, 0.0],
+        "L4": [5.0, 5.0, 18.0],
+    }
     config_path = tmp_path / "registration.yaml"
+    lines = [
+        f"landmark_labels: [{', '.join(nominal_points.keys())}]",
+        f"captures_per_landmark: {captures_per_landmark}",
+        "capture_tool_id: \"0B\"",
+        "coil_tool_id: \"0A\"",
+        "nominal_landmarks_robot_xyz_mm:",
+    ]
+    for label, point in nominal_points.items():
+        lines.append(f"  {label}: [{point[0]}, {point[1]}, {point[2]}]")
     config_path.write_text(
-        "\n".join(
-            [
-                "landmark_labels: [L1, L2, L3, L4]",
-                "captures_per_landmark: 1",
-                "capture_tool_id: \"0B\"",
-                "coil_tool_id: \"0A\"",
-                "nominal_landmarks_robot_xyz_mm:",
-                "  L1: [5.0, 5.0, 0.0]",
-                "  L2: [23.0, 5.0, 0.0]",
-                "  L3: [5.0, 23.0, 0.0]",
-                "  L4: [5.0, 5.0, 18.0]",
-            ]
-        ),
+        "\n".join(lines),
         encoding="utf-8",
     )
     return RegistrationService(
@@ -172,10 +240,59 @@ def test_system_controller_connects_mock_tracker_and_openrb(tmp_path: Path) -> N
         assert state.tracker_connection_state == "tracking"
         assert state.tracker_backend_identity == "mock_tracker_manager"
         assert state.openrb_connected is True
+        assert state.openrb_prepared is True
         assert state.dynamixel_connected is True
     finally:
         controller.disconnect_tracker()
         controller.disconnect_openrb()
+
+
+def test_system_controller_saves_runtime_parameters(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "system.yaml").write_text('robot_config: "robot_1servo.yaml"\n', encoding="utf-8")
+    (config_dir / "robot_1servo.yaml").write_text(
+        "\n".join(
+            [
+                'mode: "1-servo"',
+                "servo_ids: [1]",
+                "tendon_to_servo: [1]",
+                "tightening_rotation_by_servo: {1: cw}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    loader = ConfigLoader(base_dir=config_dir)
+    settings = _settings()
+    settings.runtime.robot_config = "robot_1servo.yaml"
+    settings.robot.mode = "1-servo"
+    settings.robot.servo_ids = [1]
+    settings.robot.tendon_to_servo = [1]
+    settings.robot.tightening_rotation_by_servo = {1: "cw"}
+    controller = SystemController(
+        tracking_service=_tracking_service(settings, tmp_path),
+        openrb_client=MockOpenRbClient(),
+        servo_service=_servo_service(tmp_path),
+        settings=settings,
+        config_loader=loader,
+    )
+
+    controller.save_runtime_parameters(
+        mock_mode=False,
+        robot_config="robot_1servo.yaml",
+        openrb_port="/dev/ttyUSB_TEST",
+        baudrate=57600,
+        fine_jog_step_ticks=3,
+        coarse_jog_step_ticks=15,
+        pretension_threshold_ma=210,
+        tightening_direction="ccw",
+    )
+
+    saved = loader.load_system_local_overrides()
+    assert saved["openrb_port"] == "/dev/ttyUSB_TEST"
+    assert saved["baudrate"] == 57600
+    assert saved["safety_overrides"]["fine_jog_step_ticks"] == 3
+    assert saved["robot_overrides"]["tightening_rotation_by_servo"]["1"] == "ccw"
 
 
 def test_servos_controller_captures_neutral_and_applies_displacement(tmp_path: Path) -> None:
@@ -190,6 +307,122 @@ def test_servos_controller_captures_neutral_and_applies_displacement(tmp_path: P
     assert neutral
     assert "Commanded" in controller.state.status_message
     assert controller.state.telemetry[2]["position"] is not None
+    assert controller.state.calibration_exists is True
+    assert controller.state.calibration_compatible is True
+    assert controller.state.calibration_rows[0]["bounds"] != "missing"
+
+
+def test_servos_controller_supports_fine_and_coarse_jog_steps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _servo_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    controller = ServosController(service, _settings())
+    seen: list[tuple[int, int]] = []
+
+    def _fake_jog(servo_id: int, delta_ticks: int) -> ServoCommandResult:
+        seen.append((servo_id, delta_ticks))
+        return ServoCommandResult(
+            positions_by_id={servo_id: 2048 + delta_ticks},
+            telemetry_by_id={},
+            message="ok",
+        )
+
+    monkeypatch.setattr(service, "jog_servo", _fake_jog)
+
+    controller.fine_jog(1, 1)
+    controller.coarse_jog(1, -1)
+
+    assert seen == [(1, 5), (1, -25)]
+
+
+def test_servos_controller_saves_startup_calibration_and_accepts_pretension(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.robot_config = "robot_1servo.yaml"
+    settings.robot.mode = "1-servo"
+    settings.robot.servo_ids = [1]
+    settings.robot.tendon_to_servo = [1]
+    settings.robot.tightening_rotation_by_servo = {1: "cw"}
+    service = ServoService(
+        dxl_bus=MockDxlBus([1]),
+        mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
+        safety_guard=SafetyGuard(
+            min_offset_ticks=-600,
+            max_offset_ticks=600,
+            max_current_ma=850,
+            default_pretension_current_threshold_ma=220,
+            fine_jog_step_ticks=5,
+            coarse_jog_step_ticks=25,
+            software_position_margin_ticks=64,
+            telemetry_stale_after_s=0.25,
+            pretension_step_ticks=2,
+            pretension_timeout_s=2.0,
+            pretension_settle_time_s=0.0,
+            max_temperature_c=70,
+            time_fn=time.monotonic,
+        ),
+        neutral_calibration=NeutralCalibrationService(
+            path=tmp_path / "neutral_single.json",
+            context=ServoCalibrationContext(
+                robot_mode="1-servo",
+                servo_ids=[1],
+                tendon_to_servo=[1],
+                position_min_offset_ticks=-600,
+                position_max_offset_ticks=600,
+                default_pretension_current_threshold_ma=220,
+                tightening_rotation_by_servo={1: "cw"},
+            ),
+        ),
+        pretension_validation=PretensionValidationService(),
+    )
+    service.connect("/dev/mock-openrb", 115200)
+    controller = ServosController(service, settings)
+
+    controller.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-100,
+        max_offset_ticks=120,
+        threshold_ma=230,
+    )
+    controller.start_pretension(1, 120)
+    controller._pretension_thread.join(timeout=1.0)
+    controller.refresh()
+    controller.accept_pretension_result(1)
+
+    assert controller.state.calibration_rows[0]["threshold"] == "120"
+    assert controller.state.pretension_result_can_accept is False
+    assert "Accepted pretension result" in controller.state.status_message
+
+
+def test_servos_controller_blocks_displacement_when_calibration_is_incompatible(tmp_path: Path) -> None:
+    compatible_service = _servo_service(tmp_path)
+    compatible_service.connect("/dev/mock-openrb", 115200)
+    compatible_service.save_neutral_setpoints({1: 2048, 2: 2048, 3: 2048, 4: 2048})
+
+    mismatched_service = ServoService(
+        dxl_bus=MockDxlBus([1, 2, 3, 4]),
+        mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
+        safety_guard=SafetyGuard(min_offset_ticks=-600, max_offset_ticks=600, max_current_ma=850),
+        neutral_calibration=NeutralCalibrationService(
+            path=tmp_path / "neutral.json",
+            context=ServoCalibrationContext(
+                robot_mode="8-servo",
+                servo_ids=[1, 2, 3, 4],
+                tendon_to_servo=[1, 2, 3, 4],
+                position_min_offset_ticks=-600,
+                position_max_offset_ticks=600,
+                default_pretension_current_threshold_ma=850,
+            ),
+        ),
+        pretension_validation=PretensionValidationService(),
+    )
+    mismatched_service.connect("/dev/mock-openrb", 115200)
+    settings = _settings()
+    settings.robot.mode = "8-servo"
+    controller = ServosController(mismatched_service, settings)
+    controller.load_neutral_setpoints()
+    controller.set_tendon_displacements([0.0, 0.1, -0.1, 0.0])
+
+    with pytest.raises(RuntimeError, match="does not match the current robot configuration"):
+        controller.apply_displacement()
 
 
 def test_registration_controller_guides_capture_and_save(tmp_path: Path) -> None:
@@ -220,6 +453,125 @@ def test_registration_controller_guides_capture_and_save(tmp_path: Path) -> None
     assert result.output_path.exists()
     assert controller.state.fre_mm is not None
     assert controller.state.current_label is None
+    payload = json.loads(result.output_path.read_text(encoding="utf-8"))
+    assert payload["landmark_labels"] == ["L1", "L2", "L3", "L4"]
+    assert set(payload["raw_captured_landmarks_robot_xyz"]) == {"L1", "L2", "L3", "L4"}
+    assert payload["config_used"]["registration_mode"] == "simple"
+
+
+def test_registration_controller_supports_selectable_four_point_session(tmp_path: Path) -> None:
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(
+        settings,
+        tmp_path,
+        tracking_service,
+        nominal_points={
+            "L1": [0.0, 0.0, 0.0],
+            "L2": [10.0, 0.0, 0.0],
+            "L3": [0.0, 10.0, 0.0],
+            "L4": [0.0, 0.0, 10.0],
+            "L5": [10.0, 10.0, 0.0],
+            "L6": [10.0, 0.0, 10.0],
+        },
+    )
+    controller = RegistrationController(
+        registration_service=registration_service,
+        registration_config=settings.registration,
+    )
+
+    controller.set_selected_model_point(1, "L5")
+    controller.set_selected_model_point(2, "L6")
+    controller.set_selected_model_point(3, "L3")
+    controller.set_selected_model_point(0, "L2")
+    controller.begin_session()
+
+    assert controller.state.landmark_labels == ["L2", "L5", "L6", "L3"]
+    assert controller.state.selected_model_labels == ["L2", "L5", "L6", "L3"]
+    assert controller.state.current_label == "L2"
+
+
+def test_registration_controller_prevents_duplicate_point_selection(tmp_path: Path) -> None:
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(
+        settings,
+        tmp_path,
+        tracking_service,
+        nominal_points={
+            "L1": [0.0, 0.0, 0.0],
+            "L2": [10.0, 0.0, 0.0],
+            "L3": [0.0, 10.0, 0.0],
+            "L4": [0.0, 0.0, 10.0],
+            "L5": [10.0, 10.0, 0.0],
+        },
+    )
+    controller = RegistrationController(
+        registration_service=registration_service,
+        registration_config=settings.registration,
+    )
+
+    with pytest.raises(RuntimeError, match="unique model point"):
+        controller.set_selected_model_point(1, controller.state.selected_model_labels[0])
+
+
+def test_registration_controller_toggle_selection_limits_to_four_unique_points(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.registration.candidate_landmarks = [
+        RegistrationLandmarkConfig(id="L1", xyz_mm=[0.0, 0.0, 0.0]),
+        RegistrationLandmarkConfig(id="L2", xyz_mm=[10.0, 0.0, 0.0]),
+        RegistrationLandmarkConfig(id="L3", xyz_mm=[0.0, 10.0, 0.0]),
+        RegistrationLandmarkConfig(id="L4", xyz_mm=[10.0, 10.0, 0.0]),
+        RegistrationLandmarkConfig(id="L5", xyz_mm=[20.0, 10.0, 5.0]),
+    ]
+    settings.registration.landmark_labels = ["L1", "L2", "L3", "L4"]
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(
+        settings,
+        tmp_path,
+        tracking_service,
+        nominal_points={
+            "L1": [0.0, 0.0, 0.0],
+            "L2": [10.0, 0.0, 0.0],
+            "L3": [0.0, 10.0, 0.0],
+            "L4": [10.0, 10.0, 0.0],
+            "L5": [20.0, 10.0, 5.0],
+        },
+    )
+    controller = RegistrationController(
+        registration_service=registration_service,
+        registration_config=settings.registration,
+    )
+
+    controller.toggle_selected_model_point("L2")
+    assert controller.state.selected_model_labels == ["L1", "L3", "L4"]
+
+    controller.toggle_selected_model_point("L5")
+    assert controller.state.selected_model_labels == ["L1", "L3", "L4", "L5"]
+
+    with pytest.raises(RuntimeError, match="Only four model points"):
+        controller.toggle_selected_model_point("L2")
+
+
+def test_registration_controller_blocks_solve_until_selected_points_are_complete(tmp_path: Path) -> None:
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(settings, tmp_path, tracking_service)
+    tracking_service.start()
+    try:
+        controller = RegistrationController(
+            registration_service=registration_service,
+            registration_config=settings.registration,
+        )
+        controller.begin_session()
+        controller.capture_current_label_sample()
+        controller.complete_current_label()
+
+        assert controller.is_ready_to_solve() is False
+        with pytest.raises(RuntimeError, match="not ready to solve"):
+            controller.solve_session()
+    finally:
+        tracking_service.stop()
 
 
 def test_registration_controller_requires_overwrite_confirmation(tmp_path: Path) -> None:
@@ -249,6 +601,39 @@ def test_registration_controller_requires_overwrite_confirmation(tmp_path: Path)
         tracking_service.stop()
 
 
+def test_registration_controller_load_latest_populates_saved_result_state(tmp_path: Path) -> None:
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(settings, tmp_path, tracking_service)
+    tracking_service.start()
+    try:
+        controller = RegistrationController(
+            registration_service=registration_service,
+            registration_config=settings.registration,
+        )
+        controller.begin_session()
+        for _index in range(4):
+            controller.capture_current_label_sample()
+            controller.complete_current_label()
+        controller.solve_session()
+        saved = controller.save_registration(confirm_overwrite=True)
+        assert saved.output_path.exists()
+
+        reloaded = RegistrationController(
+            registration_service=registration_service,
+            registration_config=settings.registration,
+        )
+        reloaded.load_latest_result()
+    finally:
+        tracking_service.stop()
+
+    assert reloaded.state.fre_mm is not None
+    assert reloaded.state.result_status == "Accepted"
+    assert reloaded.state.last_result_path is not None
+    assert reloaded.state.captured_counts == {"L1": 1, "L2": 1, "L3": 1, "L4": 1}
+    assert reloaded.state.selected_model_labels == ["L1", "L2", "L3", "L4"]
+
+
 def test_experiment_workspace_selection_binds_example_config(tmp_path: Path) -> None:
     controller = _experiment_controller(tmp_path)
 
@@ -268,6 +653,19 @@ def test_experiment_workspace_preflight_warns_for_repeatability_without_registra
 
     assert state.preflight_report.overall_status == "ok_with_warning"
     assert any("Registration file is missing" in message for message in state.preflight_report.warning_messages)
+
+
+def test_experiment_workspace_preflight_reads_registration_and_neutral_from_canonical_paths(tmp_path: Path) -> None:
+    controller = _experiment_controller(tmp_path)
+    controller.servo_service.save_neutral_setpoints({1: 2048, 2: 2048, 3: 2048, 4: 2048})
+    controller.registration_path.write_text("{}", encoding="utf-8")
+    controller.select_experiment("repeatability_dataset")
+
+    state = controller.refresh()
+    checks = {check.key: check for check in state.preflight_report.checks}
+
+    assert checks["neutral_setpoints"].status == "ok"
+    assert checks["registration"].status == "ok"
 
 
 def test_experiment_workspace_blocks_grid_accuracy_without_tip_calibration(tmp_path: Path) -> None:
@@ -374,3 +772,234 @@ def test_experiment_workspace_tab_updates_without_crashing_in_mock_mode(tmp_path
         assert tab.viewer_3d.backend_mode == "placeholder"
     finally:
         controller.shutdown()
+
+
+def test_registration_and_experiment_tabs_expose_resizable_layout_defaults(tmp_path: Path) -> None:
+    _app()
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    servo_service = _servo_service(tmp_path)
+    registration_service = _registration_service(settings, tmp_path, tracking_service)
+    registration_controller = RegistrationController(
+        registration_service=registration_service,
+        registration_config=settings.registration,
+    )
+    system_controller = SystemController(
+        tracking_service=tracking_service,
+        openrb_client=MockOpenRbClient(),
+        servo_service=servo_service,
+        settings=settings,
+    )
+    servos_controller = ServosController(servo_service, settings)
+    registration_tab = RegistrationTab(registration_controller)
+    experiment_tab = ExperimentTab(_experiment_controller(tmp_path))
+    servos_tab = ServosTab(servos_controller)
+    system_tab = SystemTab(system_controller)
+
+    assert registration_tab.points_table.minimumHeight() >= 200
+    assert registration_tab.samples_table.minimumHeight() >= 200
+    assert registration_tab.landmark_map.minimumHeight() >= 200
+    assert experiment_tab.config_edit.minimumHeight() >= 230
+    assert experiment_tab.viewer_3d.minimumHeight() >= 300
+    assert servos_tab.telemetry_table.minimumHeight() >= 200
+    assert servos_tab.calibration_table.minimumHeight() >= 160
+    assert system_tab.config_summary.minimumHeight() >= 200
+
+
+def test_registration_tab_capture_button_records_sample_into_service_session(tmp_path: Path) -> None:
+    _app()
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(settings, tmp_path, tracking_service)
+    controller = RegistrationController(
+        registration_service=registration_service,
+        registration_config=settings.registration,
+    )
+    tab = RegistrationTab(controller)
+    tab.resize(1200, 900)
+    tab.show()
+    tracking_service.start()
+    try:
+        tab.update(controller.refresh())
+        QTest.mouseClick(tab.begin_button, Qt.LeftButton)
+        active_label = controller.state.current_label
+        assert active_label is not None
+
+        QTest.mouseClick(tab.capture_button, Qt.LeftButton)
+        snapshot = registration_service.get_snapshot()
+    finally:
+        tracking_service.stop()
+
+    assert len(snapshot.raw_points_by_label[active_label]) == 1
+    assert controller.state.captured_counts[active_label] == 1
+    assert tab.samples_table.rowCount() == 1
+
+
+def test_registration_tab_load_latest_without_file_reports_status(tmp_path: Path) -> None:
+    _app()
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(settings, tmp_path, tracking_service)
+    controller = RegistrationController(
+        registration_service=registration_service,
+        registration_config=settings.registration,
+    )
+    tab = RegistrationTab(controller)
+    tab.resize(1200, 900)
+    tab.show()
+
+    QTest.mouseClick(tab.load_button, Qt.LeftButton)
+
+    assert "No accepted registration file was found." in tab.status_text.toPlainText()
+
+
+def test_registration_tab_map_click_toggles_selection(tmp_path: Path) -> None:
+    _app()
+    settings = _settings()
+    settings.registration.candidate_landmarks = [
+        RegistrationLandmarkConfig(id="L1", xyz_mm=[0.0, 0.0, 0.0], display_label="Front Left"),
+        RegistrationLandmarkConfig(id="L2", xyz_mm=[20.0, 0.0, 0.0], display_label="Front Right"),
+        RegistrationLandmarkConfig(id="L3", xyz_mm=[0.0, 20.0, 0.0], display_label="Rear Left"),
+        RegistrationLandmarkConfig(id="L4", xyz_mm=[20.0, 20.0, 0.0], display_label="Rear Right"),
+        RegistrationLandmarkConfig(id="L5", xyz_mm=[10.0, 10.0, 8.0], display_label="Center"),
+    ]
+    settings.registration.landmark_labels = ["L1", "L2", "L3", "L4"]
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(
+        settings,
+        tmp_path,
+        tracking_service,
+        nominal_points={
+            "L1": [0.0, 0.0, 0.0],
+            "L2": [20.0, 0.0, 0.0],
+            "L3": [0.0, 20.0, 0.0],
+            "L4": [20.0, 20.0, 0.0],
+            "L5": [10.0, 10.0, 8.0],
+        },
+    )
+    controller = RegistrationController(
+        registration_service=registration_service,
+        registration_config=settings.registration,
+    )
+    tab = RegistrationTab(controller)
+    tab.resize(1200, 900)
+    tab.show()
+    tab.update(controller.refresh())
+
+    point_l2 = tab.landmark_map.point_center_for_label("L2")
+    point_l5 = tab.landmark_map.point_center_for_label("L5")
+    assert point_l2 is not None
+    assert point_l5 is not None
+
+    QTest.mouseClick(tab.landmark_map, Qt.LeftButton, Qt.NoModifier, point_l2)
+    tab.update(controller.refresh())
+    assert controller.state.selected_model_labels == ["L1", "L3", "L4"]
+
+    QTest.mouseClick(tab.landmark_map, Qt.LeftButton, Qt.NoModifier, point_l5)
+    tab.update(controller.refresh())
+    assert controller.state.selected_model_labels == ["L1", "L3", "L4", "L5"]
+
+
+def test_registration_tab_table_click_toggles_selection(tmp_path: Path) -> None:
+    _app()
+    settings = _settings()
+    settings.registration.candidate_landmarks = [
+        RegistrationLandmarkConfig(id="L1", xyz_mm=[0.0, 0.0, 0.0], display_label="Front Left"),
+        RegistrationLandmarkConfig(id="L2", xyz_mm=[20.0, 0.0, 0.0], display_label="Front Right"),
+        RegistrationLandmarkConfig(id="L3", xyz_mm=[0.0, 20.0, 0.0], display_label="Rear Left"),
+        RegistrationLandmarkConfig(id="L4", xyz_mm=[20.0, 20.0, 0.0], display_label="Rear Right"),
+        RegistrationLandmarkConfig(id="L5", xyz_mm=[10.0, 10.0, 8.0], display_label="Center"),
+    ]
+    settings.registration.landmark_labels = ["L1", "L2", "L3", "L4"]
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(
+        settings,
+        tmp_path,
+        tracking_service,
+        nominal_points={
+            "L1": [0.0, 0.0, 0.0],
+            "L2": [20.0, 0.0, 0.0],
+            "L3": [0.0, 20.0, 0.0],
+            "L4": [20.0, 20.0, 0.0],
+            "L5": [10.0, 10.0, 8.0],
+        },
+    )
+    controller = RegistrationController(
+        registration_service=registration_service,
+        registration_config=settings.registration,
+    )
+    tab = RegistrationTab(controller)
+    tab.resize(1200, 900)
+    tab.show()
+    tab.update(controller.refresh())
+
+    row = controller.state.available_model_labels.index("L2")
+    index = tab.available_points_table.model().index(row, 0)
+    rect = tab.available_points_table.visualRect(index)
+    QTest.mouseClick(tab.available_points_table.viewport(), Qt.LeftButton, Qt.NoModifier, rect.center())
+    tab.update(controller.refresh())
+    assert controller.state.selected_model_labels == ["L1", "L3", "L4"]
+
+
+def test_servos_controller_routes_jog_through_servo_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = _servo_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    controller = ServosController(service, _settings())
+    seen: dict[str, tuple[int, int]] = {}
+
+    def _fake_jog(servo_id: int, delta_ticks: int) -> ServoCommandResult:
+        seen["jog"] = (servo_id, delta_ticks)
+        return ServoCommandResult(
+            positions_by_id={servo_id: 2073},
+            telemetry_by_id={
+                servo_id: ServoTelemetry(
+                    servo_id=servo_id,
+                    present_position=2073,
+                    present_current_ma=160,
+                    present_voltage_mv=12000,
+                )
+            },
+            message="Routed through servo service.",
+        )
+
+    monkeypatch.setattr(service, "jog_servo", _fake_jog)
+
+    controller.jog_servo(2, 25)
+
+    assert seen["jog"] == (2, 25)
+    assert controller.state.status_message == "Routed through servo service."
+
+
+def test_servos_controller_routes_displacement_through_servo_service(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = _servo_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    controller = ServosController(service, _settings())
+    controller.state.neutral_setpoints = {1: 2048, 2: 2048, 3: 2048, 4: 2048}
+    controller.set_tendon_displacements([0.0, 0.1, -0.1, 0.0])
+    seen: dict[str, object] = {}
+
+    def _fake_command(*, tendon_displacements_cm: list[float], neutral_ticks: list[int], servo_ids: list[int]) -> ServoCommandResult:
+        seen["payload"] = {
+            "tendon_displacements_cm": list(tendon_displacements_cm),
+            "neutral_ticks": list(neutral_ticks),
+            "servo_ids": list(servo_ids),
+        }
+        return ServoCommandResult(
+            positions_by_id={1: 2048, 2: 2059, 3: 2037, 4: 2048},
+            telemetry_by_id={},
+            message="Displacement routed through servo service.",
+        )
+
+    monkeypatch.setattr(service, "command_displacement", _fake_command)
+
+    controller.apply_displacement()
+
+    assert seen["payload"] == {
+        "tendon_displacements_cm": [0.0, 0.1, -0.1, 0.0],
+        "neutral_ticks": [2048, 2048, 2048, 2048],
+        "servo_ids": [1, 2, 3, 4],
+    }
+    assert controller.state.status_message == "Displacement routed through servo service."
