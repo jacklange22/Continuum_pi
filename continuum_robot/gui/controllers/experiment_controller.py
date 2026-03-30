@@ -125,6 +125,9 @@ class ExperimentController:
         self._live_samples = []
         self._planned_output_dir_name = ""
         self._selected_payload: dict[str, Any] = {}
+        self._parsed_config_text = ""
+        self._parsed_config_payload: dict[str, Any] = {}
+        self._parsed_config_error: str | None = None
 
         self.select_experiment("repeatability_dataset")
 
@@ -142,17 +145,19 @@ class ExperimentController:
                 self.state.history = self._scan_run_history(output_root)
                 self._history_dirty = False
 
-        config_payload, config_error = self._parse_config_text(config_text)
+        config_payload, config_error = self._parse_cached_config_text(config_text)
         self._selected_payload = dict(config_payload or {})
         planned_output_dir = output_root / self._planned_output_dir_name
+        tracking_snapshot = self.tracking_service.get_snapshot()
+        neutral_setpoints = self.servo_service.load_neutral_setpoints()
         preflight = evaluate_preflight(
             experiment_name=selected_experiment,
             config_payload=config_payload,
             config_error=config_error,
             settings=self.settings,
-            tracking_snapshot=self.tracking_service.get_snapshot(),
+            tracking_snapshot=tracking_snapshot,
             servo_connected=bool(self.servo_service.is_connected),
-            neutral_setpoints=self.servo_service.load_neutral_setpoints(),
+            neutral_setpoints=neutral_setpoints,
             registration_path=self.registration_path,
             output_root=output_root,
             planned_output_dir=planned_output_dir,
@@ -171,7 +176,7 @@ class ExperimentController:
         checklist = self._build_run_checklist(
             experiment_name=selected_experiment,
             config_payload=config_payload,
-            tracking_snapshot=self.tracking_service.get_snapshot(),
+            tracking_snapshot=tracking_snapshot,
             planned_output_dir=planned_output_dir,
         )
 
@@ -372,6 +377,16 @@ class ExperimentController:
         if not isinstance(payload, dict):
             return {}, "Experiment config must be a mapping."
         return dict(payload), None
+
+    def _parse_cached_config_text(self, text: str) -> tuple[dict[str, Any], str | None]:
+        raw = str(text or "")
+        if raw == self._parsed_config_text:
+            return dict(self._parsed_config_payload), self._parsed_config_error
+        payload, error = self._parse_config_text(raw)
+        self._parsed_config_text = raw
+        self._parsed_config_payload = dict(payload)
+        self._parsed_config_error = error
+        return dict(payload), error
 
     def _reset_planned_output_dir_locked(self) -> None:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")

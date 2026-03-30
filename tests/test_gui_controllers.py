@@ -12,6 +12,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
+from continuum_robot.app.bootstrap import AppContext
+from continuum_robot.app.service_registry import ServiceRegistry
 from continuum_robot.config.schemas import RegistrationLandmarkConfig, RegistrationWorkflowConfig
 from continuum_robot.config.config_loader import ConfigLoader
 from continuum_robot.config.settings import Settings
@@ -23,9 +25,10 @@ from continuum_robot.config.schemas import (
     SafetyConfig,
     SerialConfig,
 )
+from continuum_robot.gui.app_window import AppWindow
 from continuum_robot.gui.controllers.registration_controller import RegistrationController
 from continuum_robot.gui.controllers.servos_controller import ServosController
-from continuum_robot.gui.controllers.system_controller import SystemController
+from continuum_robot.gui.controllers.system_controller import SystemController, SystemViewState
 from continuum_robot.gui.controllers.experiment_controller import ExperimentController
 from continuum_robot.gui.tabs.experiment_tab import ExperimentTab
 from continuum_robot.gui.tabs.registration_tab import RegistrationTab
@@ -35,6 +38,7 @@ from continuum_robot.experiments.experiment_loader import ExperimentLoader
 from continuum_robot.experiments.experiment_runner import ExperimentRunner
 from continuum_robot.hardware.mock_dxl_bus import MockDxlBus
 from continuum_robot.hardware.mock_openrb_client import MockOpenRbClient
+from continuum_robot.hardware.serial_ports import SerialPortInfo
 from continuum_robot.registration.repository import RegistrationRepository
 from continuum_robot.registration.rigid_solver import RigidRegistrationSolver
 from continuum_robot.services.registration_service import RegistrationService
@@ -221,6 +225,80 @@ def _experiment_controller(tmp_path: Path) -> ExperimentController:
     )
 
 
+def _app_context(tmp_path: Path) -> AppContext:
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    servo_service = _servo_service(tmp_path)
+    registration_service = _registration_service(settings, tmp_path, tracking_service)
+    registration_path = tmp_path / "latest_registration.json"
+    experiment_runner = _experiment_runner(
+        settings,
+        tmp_path,
+        tracking_service,
+        servo_service,
+        registration_path,
+    )
+    services = ServiceRegistry()
+    services.register("tracking_service", tracking_service)
+    services.register("registration_service", registration_service)
+    services.register("servo_service", servo_service)
+    services.register("openrb_client", MockOpenRbClient())
+    services.register("experiment_loader", ExperimentLoader())
+    services.register("experiment_runner", experiment_runner)
+    return AppContext(
+        project_root=tmp_path,
+        settings=settings,
+        config_loader=ConfigLoader(),
+        services=services,
+    )
+
+
+class _PortSelectionController:
+    def __init__(self) -> None:
+        self.state = SystemViewState(
+            mock_mode=True,
+            aurora_port="/dev/mock-aurora",
+            openrb_port="/dev/mock-openrb",
+            baudrate=115200,
+            available_ports=[
+                SerialPortInfo(device="/dev/mock-aurora", description="Mock Aurora"),
+                SerialPortInfo(device="/dev/mock-openrb", description="Mock OpenRB"),
+                SerialPortInfo(device="/dev/ttyUSB_TRACKER", description="Tracker"),
+                SerialPortInfo(device="/dev/ttyUSB_OPENRB", description="OpenRB"),
+            ],
+        )
+
+    def set_aurora_port(self, port: str) -> None:
+        self.state.aurora_port = port
+
+    def set_openrb_port(self, port: str) -> None:
+        self.state.openrb_port = port
+
+    def connect_tracker(self) -> None:
+        pass
+
+    def disconnect_tracker(self) -> None:
+        pass
+
+    def connect_openrb(self) -> None:
+        pass
+
+    def disconnect_openrb(self) -> None:
+        pass
+
+    def prepare_openrb(self) -> None:
+        pass
+
+    def rescan_ports(self) -> SystemViewState:
+        return self.state
+
+    def save_runtime_parameters(self, **_kwargs) -> None:
+        pass
+
+    def refresh(self) -> SystemViewState:
+        return self.state
+
+
 def test_system_controller_connects_mock_tracker_and_openrb(tmp_path: Path) -> None:
     settings = _settings()
     tracking_service = _tracking_service(settings, tmp_path)
@@ -293,6 +371,98 @@ def test_system_controller_saves_runtime_parameters(tmp_path: Path) -> None:
     assert saved["baudrate"] == 57600
     assert saved["safety_overrides"]["fine_jog_step_ticks"] == 3
     assert saved["robot_overrides"]["tightening_rotation_by_servo"]["1"] == "ccw"
+
+
+def test_system_tab_preserves_selected_ports_between_refreshes() -> None:
+    _app()
+    controller = _PortSelectionController()
+    tab = SystemTab(controller)
+
+    tab.update(controller.state)
+    tab.aurora_port_combo.setCurrentIndex(tab.aurora_port_combo.findData("/dev/ttyUSB_TRACKER"))
+    tab.openrb_port_combo.setCurrentIndex(tab.openrb_port_combo.findData("/dev/ttyUSB_OPENRB"))
+
+    assert controller.state.aurora_port == "/dev/ttyUSB_TRACKER"
+    assert controller.state.openrb_port == "/dev/ttyUSB_OPENRB"
+
+    tab.update(controller.state)
+
+    assert tab._selected_port(tab.aurora_port_combo) == "/dev/ttyUSB_TRACKER"
+    assert tab._selected_port(tab.openrb_port_combo) == "/dev/ttyUSB_OPENRB"
+
+
+def test_system_tab_prefers_custom_port_text_for_editable_combo() -> None:
+    _app()
+    controller = _PortSelectionController()
+    tab = SystemTab(controller)
+
+    tab.update(controller.state)
+    tab.aurora_port_combo.setEditText("/dev/custom-tracker")
+    tab.openrb_port_combo.setEditText("/dev/custom-openrb")
+
+    assert controller.state.aurora_port == "/dev/custom-tracker"
+    assert controller.state.openrb_port == "/dev/custom-openrb"
+    assert tab._selected_port(tab.aurora_port_combo) == "/dev/custom-tracker"
+    assert tab._selected_port(tab.openrb_port_combo) == "/dev/custom-openrb"
+
+
+def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _app()
+    window = AppWindow(_app_context(tmp_path))
+    try:
+        window._refresh_timer.stop()
+        counts = {
+            "system": 0,
+            "servos": 0,
+            "tracking": 0,
+            "registration": 0,
+            "experiment": 0,
+        }
+
+        def _wrap(name: str, result):
+            def _inner():
+                counts[name] += 1
+                return result
+
+            return _inner
+
+        monkeypatch.setattr(window.system_controller, "refresh", _wrap("system", window.system_controller.state))
+        monkeypatch.setattr(window.servos_controller, "refresh", _wrap("servos", window.servos_controller.state))
+        monkeypatch.setattr(window.tracking_controller, "refresh", _wrap("tracking", window.tracking_controller.state))
+        monkeypatch.setattr(
+            window.registration_controller,
+            "refresh",
+            _wrap("registration", window.registration_controller.state),
+        )
+        monkeypatch.setattr(
+            window.experiment_controller,
+            "refresh_prerequisites",
+            _wrap("experiment", window.experiment_controller.state),
+        )
+
+        window.tab_widget.setCurrentIndex(1)
+        counts = {key: 0 for key in counts}
+        window.refresh()
+        assert counts == {
+            "system": 1,
+            "servos": 1,
+            "tracking": 0,
+            "registration": 0,
+            "experiment": 0,
+        }
+
+        window.tab_widget.setCurrentIndex(4)
+        counts = {key: 0 for key in counts}
+        window.refresh()
+        assert counts == {
+            "system": 1,
+            "servos": 0,
+            "tracking": 0,
+            "registration": 0,
+            "experiment": 1,
+        }
+    finally:
+        window.shutdown()
 
 
 def test_servos_controller_captures_neutral_and_applies_displacement(tmp_path: Path) -> None:

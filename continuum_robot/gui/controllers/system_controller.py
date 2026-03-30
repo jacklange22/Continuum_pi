@@ -196,47 +196,53 @@ class SystemController:
         pretension_threshold_ma: int,
         tightening_direction: str,
     ) -> None:
-        if self.config_loader is None:
-            raise RuntimeError("Config loader is unavailable; runtime parameter editing is disabled.")
-        if fine_jog_step_ticks <= 0 or coarse_jog_step_ticks <= 0:
-            raise ValueError("Jog increments must be positive.")
-        if fine_jog_step_ticks > coarse_jog_step_ticks:
-            raise ValueError("Fine jog increment must be less than or equal to coarse jog increment.")
-        if pretension_threshold_ma <= 0:
-            raise ValueError("Pretension threshold must be positive.")
-        robot = self.config_loader.load_robot_config(robot_config)
-        overrides = {
-            "mock_mode": bool(mock_mode),
-            "robot_config": str(robot_config),
-            "openrb_port": str(openrb_port).strip(),
-            "baudrate": int(baudrate),
-            "safety_overrides": {
-                "fine_jog_step_ticks": int(fine_jog_step_ticks),
-                "coarse_jog_step_ticks": int(coarse_jog_step_ticks),
-                "default_pretension_current_threshold_ma": int(pretension_threshold_ma),
-            },
-            "robot_overrides": {
-                "tightening_rotation_by_servo": {
-                    str(servo_id): str(tightening_direction).strip().lower()
-                    for servo_id in robot.servo_ids
-                }
-            },
-        }
-        path = self.config_loader.save_system_local_overrides(overrides)
-        self.state.mock_mode = bool(mock_mode)
-        self.state.robot_config = str(robot_config)
-        self.state.robot_mode = robot.mode
-        self.state.openrb_port = str(openrb_port).strip()
-        self.state.baudrate = int(baudrate)
-        self.state.fine_jog_step_ticks = int(fine_jog_step_ticks)
-        self.state.coarse_jog_step_ticks = int(coarse_jog_step_ticks)
-        self.state.pretension_threshold_ma = int(pretension_threshold_ma)
-        self.state.tightening_direction_default = str(tightening_direction).strip().lower()
-        self.state.saved_overrides_path = str(path)
-        self.state.status_message = (
-            f"Saved runtime parameters to {path}. Restart the app or reconnect services before relying on the new values."
-        )
-        self.state.last_error = None
+        try:
+            if self.config_loader is None:
+                raise RuntimeError("Config loader is unavailable; runtime parameter editing is disabled.")
+            if fine_jog_step_ticks <= 0 or coarse_jog_step_ticks <= 0:
+                raise ValueError("Jog increments must be positive.")
+            if fine_jog_step_ticks > coarse_jog_step_ticks:
+                raise ValueError("Fine jog increment must be less than or equal to coarse jog increment.")
+            if pretension_threshold_ma <= 0:
+                raise ValueError("Pretension threshold must be positive.")
+            robot = self.config_loader.load_robot_config(robot_config)
+            overrides = {
+                "mock_mode": bool(mock_mode),
+                "robot_config": str(robot_config),
+                "openrb_port": str(openrb_port).strip(),
+                "baudrate": int(baudrate),
+                "safety_overrides": {
+                    "fine_jog_step_ticks": int(fine_jog_step_ticks),
+                    "coarse_jog_step_ticks": int(coarse_jog_step_ticks),
+                    "default_pretension_current_threshold_ma": int(pretension_threshold_ma),
+                },
+                "robot_overrides": {
+                    "tightening_rotation_by_servo": {
+                        str(servo_id): str(tightening_direction).strip().lower()
+                        for servo_id in robot.servo_ids
+                    }
+                },
+            }
+            path = self.config_loader.save_system_local_overrides(overrides)
+            self.state.mock_mode = bool(mock_mode)
+            self.state.robot_config = str(robot_config)
+            self.state.robot_mode = robot.mode
+            self.state.openrb_port = str(openrb_port).strip()
+            self.state.baudrate = int(baudrate)
+            self.state.fine_jog_step_ticks = int(fine_jog_step_ticks)
+            self.state.coarse_jog_step_ticks = int(coarse_jog_step_ticks)
+            self.state.pretension_threshold_ma = int(pretension_threshold_ma)
+            self.state.tightening_direction_default = str(tightening_direction).strip().lower()
+            self.state.saved_overrides_path = str(path)
+            self.state.status_message = (
+                f"Saved runtime parameters to {path}. Restart the app or reconnect services before relying on the new values."
+            )
+            self.state.last_error = None
+        except Exception as exc:
+            self.state.last_error = str(exc)
+            self.state.status_message = f"Save runtime parameters failed: {exc}"
+            self.refresh()
+            raise
         self.refresh()
 
     @staticmethod

@@ -64,6 +64,7 @@ The current project specification and phased validation docs live here:
 - [system_spec.md](/Users/jacklange/Continuum/pi_code/docs/system_spec.md)
 - [architecture.md](/Users/jacklange/Continuum/pi_code/docs/architecture.md)
 - [operator_workflows.md](/Users/jacklange/Continuum/pi_code/docs/operator_workflows.md)
+- [testing_protocol.md](/Users/jacklange/Continuum/pi_code/docs/testing_protocol.md)
 - [validation_plan.md](/Users/jacklange/Continuum/pi_code/docs/validation_plan.md)
 - [registration_trace.md](/Users/jacklange/Continuum/pi_code/docs/registration_trace.md)
 - [servo_interface_contract.md](/Users/jacklange/Continuum/pi_code/docs/servo_interface_contract.md)
@@ -163,6 +164,14 @@ What bootstrap does:
 - installs the package and dev dependencies
 - creates runtime directories under `data/`
 - optionally builds `tracker_bridge` when `BUILD_TRACKER_BRIDGE=1`
+
+Unified workflow wrapper:
+
+```bash
+python scripts/run_lab_workflow.py list
+```
+
+Use that wrapper for the common GUI, tracker, registration, and experiment commands instead of memorizing each script path.
 
 ## Live Aurora Config
 

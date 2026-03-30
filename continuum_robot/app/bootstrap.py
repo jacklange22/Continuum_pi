@@ -15,6 +15,7 @@ from continuum_robot.hardware.mock_dxl_bus import MockDxlBus
 from continuum_robot.hardware.mock_openrb_client import MockOpenRbClient
 from continuum_robot.hardware.openrb_client import OpenRbClient
 from continuum_robot.registration.legacy_compat import RegistrationAssetPaths
+from continuum_robot.registration.live_registration_service import LiveRegistrationService
 from continuum_robot.registration.repository import RegistrationRepository
 from continuum_robot.registration.rigid_solver import RigidRegistrationSolver
 from continuum_robot.services.registration_service import RegistrationService
@@ -132,6 +133,18 @@ def build_app_context() -> AppContext:
         config_path=registration_config_path,
         config_source=str(registration_config_path),
     )
+    live_registration_service = LiveRegistrationService(
+        tracker_manager=tracking_backend,
+        repository=registration_repository,
+        solver=rigid_solver,
+        capture_tool_tip_transform=settings.registration.capture_tool_tip_transform,
+        asset_paths=registration_asset_paths,
+        measurement_tool_id=settings.registration.capture_tool_id,
+        coil_tool_id=settings.registration.coil_tool_id,
+        quaternion_average_method=settings.registration.quaternion_average_method,
+        model_tre_reference_radius_mm=settings.registration.model_tre_reference_radius_mm,
+        tip_tre_reference_radius_mm=settings.registration.tip_tre_reference_radius_mm,
+    )
     system_health_service = SystemHealthService(
         tracking_service=tracking_service,
         registration_service=registration_service,
@@ -198,6 +211,7 @@ def build_app_context() -> AppContext:
     services.register("registration_repository", registration_repository)
     services.register("rigid_solver", rigid_solver)
     services.register("registration_service", registration_service)
+    services.register("live_registration", live_registration_service)
     services.register("system_health_service", system_health_service)
     services.register("dxl_bus", dxl_bus)
     services.register("servo_service", servo_service)

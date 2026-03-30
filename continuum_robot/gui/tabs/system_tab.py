@@ -103,8 +103,12 @@ class SystemTab(QWidget):
         self.openrb_status_label.setWordWrap(True)
         self.aurora_port_combo = QComboBox()
         self.aurora_port_combo.setEditable(True)
+        self.aurora_port_combo.currentIndexChanged.connect(self._sync_aurora_port)
+        self.aurora_port_combo.editTextChanged.connect(self._sync_aurora_port)
         self.openrb_port_combo = QComboBox()
         self.openrb_port_combo.setEditable(True)
+        self.openrb_port_combo.currentIndexChanged.connect(self._sync_openrb_port)
+        self.openrb_port_combo.editTextChanged.connect(self._sync_openrb_port)
 
         tracker_connect = QPushButton("Connect Tracker")
         tracker_disconnect = QPushButton("Disconnect Tracker")
@@ -272,23 +276,37 @@ class SystemTab(QWidget):
     def _set_combo_items(self, combo: QComboBox, ports, selected: str) -> None:
         if combo.hasFocus():
             return
-        current = combo.currentText()
+        current = str(combo.currentText()).strip()
+        desired = str(selected or current).strip()
+        desired_items = [(f"{port.device} ({port.description})", port.device) for port in ports]
+        current_items = [
+            (str(combo.itemText(index)), str(combo.itemData(index) or ""))
+            for index in range(combo.count())
+        ]
+        if current_items == desired_items and current == desired:
+            return
         combo.blockSignals(True)
         combo.clear()
         for port in ports:
             combo.addItem(f"{port.device} ({port.description})", port.device)
-        combo.setEditText(selected or current)
+        combo.setEditText(desired)
         combo.blockSignals(False)
 
     def _rescan_ports(self) -> None:
         self.controller.rescan_ports()
 
-    def _connect_tracker(self) -> None:
+    def _sync_aurora_port(self, _value=None) -> None:
         self.controller.set_aurora_port(self._selected_port(self.aurora_port_combo))
+
+    def _sync_openrb_port(self, _value=None) -> None:
+        self.controller.set_openrb_port(self._selected_port(self.openrb_port_combo))
+
+    def _connect_tracker(self) -> None:
+        self._sync_aurora_port()
         self.controller.connect_tracker()
 
     def _connect_openrb(self) -> None:
-        self.controller.set_openrb_port(self._selected_port(self.openrb_port_combo))
+        self._sync_openrb_port()
         self.controller.connect_openrb()
 
     def _save_runtime_parameters(self) -> None:
@@ -304,8 +322,20 @@ class SystemTab(QWidget):
                 tightening_direction=str(self.tightening_direction_combo.currentText()).strip().lower(),
             )
         except Exception:
-            pass
+            self.update(self.controller.refresh())
 
     @staticmethod
     def _selected_port(combo: QComboBox) -> str:
-        return str(combo.currentData() or combo.currentText()).strip()
+        current_text = str(combo.currentText()).strip()
+        if not current_text:
+            return ""
+        current_index = combo.currentIndex()
+        if current_index >= 0:
+            item_text = str(combo.itemText(current_index)).strip()
+            item_data = str(combo.itemData(current_index) or "").strip()
+            if item_data and current_text in {item_text, item_data}:
+                return item_data
+        matched_index = combo.findData(current_text)
+        if matched_index >= 0:
+            return str(combo.itemData(matched_index) or current_text).strip()
+        return current_text

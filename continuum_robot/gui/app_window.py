@@ -10,11 +10,12 @@ from continuum_robot.gui.controllers.experiment_controller import ExperimentCont
 from continuum_robot.gui.controllers.registration_controller import RegistrationController
 from continuum_robot.gui.controllers.servos_controller import ServosController
 from continuum_robot.gui.controllers.system_controller import SystemController
+from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpController
 from continuum_robot.gui.controllers.tracking_controller import TrackingController
 from continuum_robot.gui.tabs.experiment_tab import ExperimentTab
-from continuum_robot.gui.tabs.registration_tab import RegistrationTab
 from continuum_robot.gui.tabs.servos_tab import ServosTab
 from continuum_robot.gui.tabs.system_tab import SystemTab
+from continuum_robot.gui.tabs.tracker_mvp_tab import TrackerMvpTab
 from continuum_robot.gui.tabs.tracking_tab import TrackingTab
 
 
@@ -57,18 +58,27 @@ class AppWindow(QMainWindow):
             servo_service=servo_service,
             tracking_service=tracking_service,
         )
+        self.tracker_mvp_controller = TrackerMvpController(
+            tracking_service=tracking_service,
+            registration_service=registration_service,
+            registration_controller=self.registration_controller,
+            experiment_runner=experiment_runner,
+            settings=settings,
+            project_root=context.project_root,
+        )
 
         self.tab_widget = QTabWidget()
+        self.tracker_mvp_tab = TrackerMvpTab(self.tracker_mvp_controller, self.registration_controller)
         self.system_tab = SystemTab(self.system_controller)
         self.servos_tab = ServosTab(self.servos_controller)
         self.tracking_tab = TrackingTab(self.tracking_controller)
-        self.registration_tab = RegistrationTab(self.registration_controller)
         self.experiment_tab = ExperimentTab(self.experiment_controller)
+        self.tab_widget.addTab(self.tracker_mvp_tab, "Tracker MVP")
         self.tab_widget.addTab(self.system_tab, "System")
         self.tab_widget.addTab(self.servos_tab, "Servos")
         self.tab_widget.addTab(self.tracking_tab, "Tracking")
-        self.tab_widget.addTab(self.registration_tab, "Registration")
         self.tab_widget.addTab(self.experiment_tab, "Experiment")
+        self.tab_widget.currentChanged.connect(self._handle_tab_changed)
         self.setCentralWidget(self.tab_widget)
 
         self.setWindowTitle("Continuum Robot Operator Console")
@@ -82,15 +92,33 @@ class AppWindow(QMainWindow):
         self.refresh()
 
     def refresh(self) -> None:
-        self.system_tab.update(self.system_controller.refresh())
-        self.servos_tab.update(self.servos_controller.refresh())
-        self.tracking_tab.update(self.tracking_controller.refresh())
-        self.registration_tab.update(self.registration_controller.refresh())
-        self.experiment_tab.update(self.experiment_controller.refresh_prerequisites())
-        self.statusBar().showMessage(self.system_controller.state.status_message)
+        system_state = self.system_controller.refresh()
+        current_index = self.tab_widget.currentIndex()
+        if current_index == 0:
+            tracker_mvp_state = self.tracker_mvp_controller.refresh()
+            registration_state = self.registration_controller.refresh()
+            self.tracker_mvp_tab.update(tracker_mvp_state, registration_state)
+            self.statusBar().showMessage(tracker_mvp_state.status_message)
+            return
+        if current_index == 1:
+            self.system_tab.update(system_state)
+        elif current_index == 2:
+            self.servos_tab.update(self.servos_controller.refresh())
+        elif current_index == 3:
+            self.tracking_tab.update(self.tracking_controller.refresh())
+        elif current_index == 4:
+            self.experiment_tab.update(self.experiment_controller.refresh_prerequisites())
+        self.statusBar().showMessage(system_state.status_message)
+
+    def _handle_tab_changed(self, _index: int) -> None:
+        self.refresh()
 
     def shutdown(self) -> None:
         self._refresh_timer.stop()
         self.servos_controller.shutdown()
         self.experiment_controller.shutdown()
         self.tracking_controller.shutdown()
+        try:
+            self.system_controller.disconnect_openrb()
+        except Exception:
+            pass

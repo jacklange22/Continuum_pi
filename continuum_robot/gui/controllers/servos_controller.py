@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 import threading
 
 from continuum_robot.config.settings import Settings
-from continuum_robot.servos.servo_service import PretensionRoutineResult
+from continuum_robot.servos.servo_service import PretensionRoutineResult, ServoMotionAssessment
 
 
 @dataclass
@@ -87,6 +87,14 @@ class ServosController:
                 return self.state
             if self.state.selected_servo_id not in telemetry and telemetry:
                 self.state.selected_servo_id = sorted(telemetry)[0]
+            assessments = {
+                int(servo_id): self.servo_service.assess_motion(
+                    int(servo_id),
+                    require_calibrated_bounds=False,
+                    telemetry=item,
+                )
+                for servo_id, item in telemetry.items()
+            }
             self.state.telemetry = {
                 servo_id: {
                     "model_number": item.model_number,
@@ -101,8 +109,8 @@ class ServosController:
                     "max_position_limit": item.max_position_limit,
                     "hardware_error": item.hardware_error_code,
                     "error": item.hardware_error,
-                    "safe_bounds": self._assessment_bounds_text(servo_id, item),
-                    "ready": self._assessment_status_text(servo_id, item),
+                    "safe_bounds": self._assessment_bounds_text(assessments[int(servo_id)]),
+                    "ready": self._assessment_status_text(assessments[int(servo_id)]),
                     "tightening_direction": self.servo_service.get_tightening_direction(int(servo_id)) or "unset",
                 }
                 for servo_id, item in telemetry.items()
@@ -360,20 +368,10 @@ class ServosController:
                 }
             )
 
-    def _assessment_bounds_text(self, servo_id: int, telemetry) -> str:
-        assessment = self.servo_service.assess_motion(
-            int(servo_id),
-            require_calibrated_bounds=False,
-            telemetry=telemetry,
-        )
+    def _assessment_bounds_text(self, assessment: ServoMotionAssessment) -> str:
         if assessment.safe_min_tick is None or assessment.safe_max_tick is None:
             return "unavailable"
         return f"{assessment.safe_min_tick} .. {assessment.safe_max_tick}"
 
-    def _assessment_status_text(self, servo_id: int, telemetry) -> str:
-        assessment = self.servo_service.assess_motion(
-            int(servo_id),
-            require_calibrated_bounds=False,
-            telemetry=telemetry,
-        )
+    def _assessment_status_text(self, assessment: ServoMotionAssessment) -> str:
         return "ready" if assessment.ready else assessment.reason

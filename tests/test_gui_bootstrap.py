@@ -17,7 +17,9 @@ def _app() -> QApplication:
 
 def test_app_window_bootstraps_with_real_tabs() -> None:
     _app()
-    window = AppWindow(build_app_context())
+    context = build_app_context()
+    assert context.services.get("live_registration") is not None
+    window = AppWindow(context)
     try:
         assert window.windowTitle() == "Continuum Robot Operator Console"
         assert window.tab_widget.count() == 5

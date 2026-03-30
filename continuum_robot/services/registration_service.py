@@ -75,9 +75,12 @@ class RegistrationService:
         self._lock = threading.Lock()
         self._config = self._load_config(config_path)
         self._assets = self._load_assets_if_configured(config_path, self._config)
-        self._simple_measurement_point_transform, self._simple_measurement_point_source = (
-            self._load_simple_measurement_point_transform(config_path, self._config)
-        )
+        self._simple_measurement_point_transform = np.eye(4, dtype=float)
+        self._simple_measurement_point_source = "coil_origin"
+        self._simple_measurement_point_ready = True
+        self._simple_measurement_point_error: str | None = None
+        self._simple_measurement_point_path: str | None = None
+        self._simple_measurement_point_mtime_ns: int | None = None
         self._pending_record: RegistrationRecord | None = None
 
         initial_labels = (
@@ -101,6 +104,7 @@ class RegistrationService:
         if self._assets is not None:
             self._state.truth_points_in_sw_by_label = self._truth_points_in_sw_by_label()
             self._state.group_by_label = self._group_by_label()
+        self.refresh_measurement_point_geometry()
         self.load_latest_accepted()
         with self._lock:
             self._recompute_health_locked()
@@ -113,6 +117,9 @@ class RegistrationService:
         nominal_landmarks_robot_xyz_mm: dict[str, list[float]] | None = None,
     ) -> RegistrationSnapshot:
         """Start a new registration session."""
+        measurement_status = self.get_measurement_point_status(refresh=True)
+        if not measurement_status["ready"]:
+            raise RuntimeError(str(measurement_status["message"]))
         use_legacy_assets = self._assets is not None and nominal_landmarks_robot_xyz_mm is None
         if use_legacy_assets:
             labels = list(labels or [*self._assets.model_labels, *self._assets.tip_labels])
@@ -186,6 +193,15 @@ class RegistrationService:
 
     def peek_current_measurement_point(self) -> dict[str, object]:
         """Return the current tracked measurement-point pose for GUI display."""
+        measurement_status = self.get_measurement_point_status(refresh=True)
+        if not measurement_status["ready"]:
+            return {
+                "available": False,
+                "status": str(measurement_status["message"]),
+                "tool_id": self._config.measurement_tool_id,
+                "point_xyz_mm": None,
+                "frame_number": None,
+            }
         try:
             tool = self._require_tool_snapshot(self._config.measurement_tool_id)
             point_xyz = self._measurement_point_from_tool_snapshot(tool)
@@ -314,6 +330,61 @@ class RegistrationService:
         """Return a deep copy of the current registration state."""
         with self._lock:
             return copy.deepcopy(self._state)
+
+    def refresh_measurement_point_geometry(self) -> dict[str, object]:
+        """Reload the simple pen-tip geometry when the configured tip file changes."""
+        if self._assets is not None:
+            self._simple_measurement_point_ready = True
+            self._simple_measurement_point_error = None
+            self._simple_measurement_point_path = None
+            self._simple_measurement_point_mtime_ns = None
+            with self._lock:
+                self._recompute_health_locked()
+            return self.get_measurement_point_status(refresh=False)
+
+        transform, source, ready, error, path, mtime_ns = self._load_simple_measurement_point_transform(
+            self.config_path,
+            self._config,
+            previous_mtime_ns=self._simple_measurement_point_mtime_ns,
+            previous_transform=self._simple_measurement_point_transform,
+            previous_source=self._simple_measurement_point_source,
+        )
+        self._simple_measurement_point_transform = transform
+        self._simple_measurement_point_source = source
+        self._simple_measurement_point_ready = ready
+        self._simple_measurement_point_error = error
+        self._simple_measurement_point_path = str(path) if path is not None else None
+        self._simple_measurement_point_mtime_ns = mtime_ns
+        with self._lock:
+            self._recompute_health_locked()
+        return self.get_measurement_point_status(refresh=False)
+
+    def get_measurement_point_status(self, *, refresh: bool = True) -> dict[str, object]:
+        """Return the current pen-tip geometry source used for registration capture."""
+        if refresh:
+            self.refresh_measurement_point_geometry()
+        if self._assets is not None:
+            return {
+                "ready": True,
+                "source": "legacy_registration_assets",
+                "path": None,
+                "message": "Legacy asset geometry provides the pen-tip transform.",
+            }
+        if self._simple_measurement_point_ready:
+            if self._simple_measurement_point_path:
+                message = f"Pen-probe tip file loaded from {self._simple_measurement_point_path}."
+            elif self._simple_measurement_point_source == "config.capture_tool_tip_transform":
+                message = "Explicit 4x4 pen-tip transform loaded from config."
+            else:
+                message = "Registration is using coil origin because no explicit tip offset is configured."
+        else:
+            message = self._simple_measurement_point_error or "Pen-probe tip geometry is not ready."
+        return {
+            "ready": bool(self._simple_measurement_point_ready),
+            "source": self._simple_measurement_point_source,
+            "path": self._simple_measurement_point_path,
+            "message": message,
+        }
 
     def _solve_legacy_compatible_registration(self) -> dict:
         with self._lock:
@@ -476,6 +547,9 @@ class RegistrationService:
         )
 
     def _measurement_point_from_tool_snapshot(self, tool) -> list[float]:
+        measurement_status = self.get_measurement_point_status(refresh=True)
+        if not measurement_status["ready"]:
+            raise RuntimeError(str(measurement_status["message"]))
         if tool.quaternion_wxyz is None or tool.translation_mm is None:
             raise RuntimeError(f"Tool {tool.tool_id} is missing quaternion/translation data")
         T_aurora_tool = np.asarray(tool.T_aurora_tool, dtype=float) if tool.T_aurora_tool is not None else None
@@ -669,19 +743,54 @@ class RegistrationService:
         cls,
         config_path: Path,
         config: RegistrationConfig,
-    ) -> tuple[np.ndarray, str]:
+        *,
+        previous_mtime_ns: int | None = None,
+        previous_transform: np.ndarray | None = None,
+        previous_source: str | None = None,
+    ) -> tuple[np.ndarray, str, bool, str | None, Path | None, int | None]:
         if config.capture_tool_tip_transform is not None:
-            return cls._coerce_transform(config.capture_tool_tip_transform), "config.capture_tool_tip_transform"
+            return (
+                cls._coerce_transform(config.capture_tool_tip_transform),
+                "config.capture_tool_tip_transform",
+                True,
+                None,
+                None,
+                None,
+            )
         if config.penprobe_file:
             penprobe_path = cls._resolve_config_path(config_path, config.penprobe_file)
+            if not penprobe_path.exists():
+                return (
+                    np.eye(4, dtype=float),
+                    str(penprobe_path),
+                    False,
+                    f"Pen-probe tip file is missing: {penprobe_path}. Run pivot calibration and save the tip file first.",
+                    penprobe_path,
+                    None,
+                )
+            mtime_ns = penprobe_path.stat().st_mtime_ns
+            if (
+                previous_mtime_ns is not None
+                and previous_mtime_ns == mtime_ns
+                and previous_transform is not None
+                and previous_source is not None
+            ):
+                return previous_transform, previous_source, True, None, penprobe_path, mtime_ns
             try:
                 vector = cls._load_vector3(penprobe_path)
-            except Exception:
-                return np.eye(4), "default_identity"
+            except Exception as exc:
+                return (
+                    np.eye(4, dtype=float),
+                    str(penprobe_path),
+                    False,
+                    f"Pen-probe tip file is invalid: {penprobe_path}. Details: {exc}",
+                    penprobe_path,
+                    mtime_ns,
+                )
             matrix = np.eye(4, dtype=float)
             matrix[0:3, 3] = vector
-            return matrix, str(penprobe_path)
-        return np.eye(4), "default_identity"
+            return matrix, str(penprobe_path), True, None, penprobe_path, mtime_ns
+        return np.eye(4, dtype=float), "coil_origin", True, None, None, None
 
     @staticmethod
     def _resolve_config_path(config_path: Path, raw_path: str) -> Path:
@@ -707,6 +816,8 @@ class RegistrationService:
 
     def _recompute_health_locked(self) -> None:
         faults: list[str] = []
+        if not self._simple_measurement_point_ready:
+            faults.append("measurement_point_geometry_unavailable")
         if self._state.active:
             current_label = self._state.current_label
             if current_label is not None and self._state.captured_counts.get(current_label, 0) < self._state.captures_per_landmark:
@@ -736,6 +847,10 @@ class RegistrationService:
             "fre_mm": self._state.fre_mm,
             "latest_accepted_path": self._state.latest_accepted_path,
             "registration_mode": "legacy_compatible" if self._assets is not None else "simple",
+            "measurement_point_source": self._simple_measurement_point_source,
+            "measurement_point_ready": self._simple_measurement_point_ready,
+            "measurement_point_path": self._simple_measurement_point_path,
+            "measurement_point_error": self._simple_measurement_point_error,
         }
 
         if self._state.health.state == "accepted":
@@ -752,5 +867,7 @@ class RegistrationService:
                 f"Registration session capturing measurement tool {self._config.measurement_tool_id} "
                 f"and coil tool {self._config.coil_tool_id}"
             )
+        elif not self._simple_measurement_point_ready:
+            self._state.health.status = self._simple_measurement_point_error or "Registration tip geometry is not ready"
         else:
             self._state.health.status = "Registration service ready"
