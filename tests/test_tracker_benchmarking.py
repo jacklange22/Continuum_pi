@@ -1,3 +1,5 @@
+import math
+
 from continuum_robot.services.models import (
     ServiceHealthSnapshot,
     ToolTrackingSnapshot,
@@ -137,7 +139,7 @@ def test_tracker_benchmark_report_fails_on_missing_and_invalid_data() -> None:
     assert any("exceeds maximum" in item for item in report.failures)
     assert any("Required tool 0A never reached tracked state" in item for item in report.failures)
     assert any("Tool 0A missing streak" in item for item in report.failures)
-    assert any("Tool 0B reported 1 invalid transform" in item for item in report.failures)
+    assert any("Tool 0B reported 1 invalid transform frame(s) after startup" in item for item in report.failures)
 
 
 def test_tracker_benchmark_uses_backend_frame_counter_when_device_frame_number_missing() -> None:
@@ -181,3 +183,89 @@ def test_collect_tracking_snapshots_waits_for_first_frame_before_window() -> Non
 
     assert samples
     assert samples[0][1].backend_frame_counter >= 1
+
+
+def test_tracker_benchmark_ignores_non_finite_quality_values_in_stats() -> None:
+    samples = [
+        (0.00, _snapshot(frame_number=1, backend_frame_counter=1, timestamp="2026-01-01T00:00:00.000Z", tool_0a_state="tracked", tool_0b_state="tracked")),
+        (0.05, _snapshot(frame_number=2, backend_frame_counter=2, timestamp="2026-01-01T00:00:00.050Z", tool_0a_state="tracked", tool_0b_state="tracked")),
+    ]
+    samples[0][1].tools["0A"].quality = math.nan
+
+    report = compute_tracker_benchmark_report(
+        samples,
+        thresholds=TrackerBenchmarkThresholds(
+            min_effective_fps=5.0,
+            max_stale_interval_s=0.25,
+            max_consecutive_missing_frames=2,
+            require_valid_transforms=True,
+        ),
+    )
+
+    assert report.passed is True
+    quality_stats = report.tool_metrics["0A"].quality
+    assert quality_stats is not None
+    assert quality_stats.count == 1
+    assert quality_stats.discarded_non_finite == 1
+    assert quality_stats.mean == 0.15
+
+
+def test_tracker_benchmark_treats_startup_non_finite_invalid_frames_as_warmup() -> None:
+    warmup_1 = _snapshot(
+        frame_number=1,
+        backend_frame_counter=1,
+        timestamp="2026-01-01T00:00:00.000Z",
+        tool_0a_state="invalid",
+        tool_0b_state="invalid",
+    )
+    warmup_2 = _snapshot(
+        frame_number=2,
+        backend_frame_counter=2,
+        timestamp="2026-01-01T00:00:00.050Z",
+        tool_0a_state="invalid",
+        tool_0b_state="invalid",
+    )
+    tracked_1 = _snapshot(
+        frame_number=3,
+        backend_frame_counter=3,
+        timestamp="2026-01-01T00:00:00.100Z",
+        tool_0a_state="tracked",
+        tool_0b_state="tracked",
+    )
+    tracked_2 = _snapshot(
+        frame_number=4,
+        backend_frame_counter=4,
+        timestamp="2026-01-01T00:00:00.150Z",
+        tool_0a_state="tracked",
+        tool_0b_state="tracked",
+    )
+    for snapshot in (warmup_1, warmup_2):
+        snapshot.tools["0A"].status = "invalid_transform: Translation contains non-finite values"
+        snapshot.tools["0B"].status = "invalid_transform: Translation contains non-finite values"
+
+    report = compute_tracker_benchmark_report(
+        [
+            (0.00, warmup_1),
+            (0.05, warmup_2),
+            (0.10, tracked_1),
+            (0.15, tracked_2),
+        ],
+        thresholds=TrackerBenchmarkThresholds(
+            min_effective_fps=5.0,
+            max_stale_interval_s=0.25,
+            max_consecutive_missing_frames=2,
+            require_valid_transforms=True,
+        ),
+    )
+
+    assert report.passed is True
+    assert report.startup_state == "valid_tracked_frames"
+    assert report.first_valid_frame_latency_s == 0.10
+    assert report.warmup_invalid_frame_count == 4
+    assert report.warmup_nonfinite_invalid_frame_count == 4
+    assert report.warmup_invalid_frame_count_by_tool["0A"] == 2
+    assert report.warmup_invalid_frame_count_by_tool["0B"] == 2
+    assert report.tool_metrics["0A"].warmup_invalid_frames == 2
+    assert report.tool_metrics["0A"].post_warmup_invalid_frames == 0
+    assert report.tool_metrics["0A"].time_to_first_tracked_frame_s == 0.10
+    assert not any("invalid transform frame" in item for item in report.failures)

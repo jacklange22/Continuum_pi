@@ -149,3 +149,23 @@ def test_config_loader_can_save_local_overrides_and_load_robot_config(tmp_path: 
     assert overrides["mock_mode"] is False
     assert overrides["safety_overrides"]["fine_jog_step_ticks"] == 7
     assert overrides["robot_overrides"]["tightening_rotation_by_servo"]["1"] == "ccw"
+
+
+def test_config_loader_defaults_tracker_min_effective_fps_to_15_hz(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "system.yaml").write_text('robot_config: "robot_1servo.yaml"\n', encoding="utf-8")
+    (config_dir / "robot_1servo.yaml").write_text(
+        "\n".join(
+            [
+                'mode: "1-servo"',
+                "servo_ids: [1]",
+                "tendon_to_servo: [1]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = ConfigLoader(base_dir=config_dir).load_settings()
+
+    assert settings.serial.tracker_min_effective_fps == 15.0

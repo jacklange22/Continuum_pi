@@ -108,6 +108,7 @@ class TrackerMvpController:
         )
         self._validation_passed = False
         self._last_validation_report_path: Path | None = None
+        self._last_validation_report = None
         self._last_pivot_run_path: Path | None = None
         self._last_pivot_metrics: dict[str, object] = {}
         self.state = TrackerMvpViewState(tracker_port=str(settings.serial.aurora_port))
@@ -179,8 +180,10 @@ class TrackerMvpController:
                 and self._tool_is_visible(self.settings.registration.capture_tool_id)
             )
             self._last_validation_report_path = report_path
+            self._last_validation_report = report
         except Exception as exc:
             self._validation_passed = False
+            self._last_validation_report = None
             self.refresh()
             self.state.last_error = str(exc)
             self.state.status_message = f"Tracker validation failed: {exc}"
@@ -416,11 +419,19 @@ class TrackerMvpController:
     def _validation_summary(self, snapshot) -> str:
         if self._last_validation_report_path is None:
             return "No tracker validation report saved yet."
+        report = self._last_validation_report
         if self.state.validation_passed:
             return (
                 f"Validation passed. backend={snapshot.selected_backend_name or snapshot.backend_identity}, "
                 f"fps={snapshot.effective_frame_rate_hz}, transforms_valid={self.state.transforms_valid}, "
                 f"0A tracked={self.state.tool_0a_visible}, 0B tracked={self.state.tool_0b_visible}."
+            )
+        if report is not None:
+            return (
+                f"Validation failed. startup_state={getattr(report, 'startup_state', 'unknown')}, "
+                f"warmup_invalid={getattr(report, 'warmup_invalid_frame_count_by_tool', {})}, "
+                f"first_valid_frame_latency_s={getattr(report, 'first_valid_frame_latency_s', None)}, "
+                f"0A={self.state.tool_0a_status}, 0B={self.state.tool_0b_status}."
             )
         return (
             f"Validation failed. backend={snapshot.selected_backend_name or snapshot.backend_identity}, "
@@ -437,6 +448,18 @@ class TrackerMvpController:
             f"tool_ids raw={snapshot.raw_live_tool_ids} normalized={snapshot.normalized_live_tool_ids}",
             f"0A={self.state.tool_0a_status}, 0B={self.state.tool_0b_status}",
         ]
+        report = self._last_validation_report
+        if report is not None:
+            lines.extend(
+                [
+                    f"startup_state={getattr(report, 'startup_state', 'unknown')}",
+                    "first_frame_latency_s="
+                    f"{getattr(report, 'first_frame_latency_s', None)}, "
+                    f"first_valid_frame_latency_s={getattr(report, 'first_valid_frame_latency_s', None)}",
+                    f"warmup_invalid={getattr(report, 'warmup_invalid_frame_count_by_tool', {})}",
+                    f"warmup_nonfinite={getattr(report, 'warmup_nonfinite_invalid_frame_count_by_tool', {})}",
+                ]
+            )
         lines.extend(self._transform_debug_lines(snapshot))
         if self._last_validation_report_path is not None:
             lines.append(f"report={self._last_validation_report_path}")

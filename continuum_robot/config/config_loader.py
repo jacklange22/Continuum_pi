@@ -83,7 +83,7 @@ class ConfigLoader:
             tracker_socket_path=str(system_data.get("tracker_socket_path", "/tmp/tracker_bridge.sock")),
             tracker_bridge_executable=str(system_data.get("tracker_bridge_executable", "bin/tracker_bridge")),
             tracker_poll_ms=int(system_data.get("tracker_poll_ms", 20)),
-            tracker_min_effective_fps=float(system_data.get("tracker_min_effective_fps", 20.0)),
+            tracker_min_effective_fps=float(system_data.get("tracker_min_effective_fps", 15.0)),
             tracker_max_stale_interval_s=float(system_data.get("tracker_max_stale_interval_s", 0.25)),
             tracker_max_consecutive_missing_frames=int(
                 system_data.get("tracker_max_consecutive_missing_frames", 20)

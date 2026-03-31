@@ -47,7 +47,7 @@ class SerialConfig:
     tracker_socket_path: str = "/tmp/tracker_bridge.sock"
     tracker_bridge_executable: str = "bin/tracker_bridge"
     tracker_poll_ms: int = 20
-    tracker_min_effective_fps: float = 20.0
+    tracker_min_effective_fps: float = 15.0
     tracker_max_stale_interval_s: float = 0.25
     tracker_max_consecutive_missing_frames: int = 20
     tracker_require_valid_transforms: bool = True

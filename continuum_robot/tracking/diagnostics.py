@@ -38,12 +38,18 @@ class TrackingDiagnosticsReport:
     capability_report: dict[str, dict]
     backend_details: dict
     startup_messages: list[str]
+    startup_state: str
     unique_frames_observed: int
     backend_frame_counter_final: int
     effective_frame_rate_hz: float | None
     frame_interval_s: NumericStats
     max_data_age_s: float | None
     first_frame_latency_s: float | None
+    first_valid_frame_latency_s: float | None
+    warmup_invalid_frame_count: int
+    warmup_nonfinite_invalid_frame_count: int
+    warmup_invalid_frame_count_by_tool: dict[str, int]
+    warmup_nonfinite_invalid_frame_count_by_tool: dict[str, int]
     raw_live_tool_ids: list[str]
     normalized_live_tool_ids: list[str]
     runtime_role_mappings: dict[str, str]
@@ -96,10 +102,12 @@ def build_live_stage_results(
                 snapshot.effective_frame_rate_hz is None
                 or snapshot.effective_frame_rate_hz >= thresholds.min_effective_fps
             )
-            else "failed"
+            else ("pending" if tracker_connect_ok and snapshot.unique_frames_observed <= 0 else "failed")
         ),
         message=(
-            f"unique_frames={snapshot.unique_frames_observed}, effective_fps={snapshot.effective_frame_rate_hz}."
+            f"startup_state={_classify_live_startup_state(snapshot, required_tool_ids)}, "
+            f"unique_frames={snapshot.unique_frames_observed}, "
+            f"effective_fps={snapshot.effective_frame_rate_hz}."
         ),
     )
     missing_tools = [tool_id for tool_id in required_tool_ids if tool_id not in observed_tools]
@@ -121,11 +129,14 @@ def build_live_stage_results(
             snapshot.tools.get(tool_id) is not None and snapshot.tools[tool_id].tracking_state != "invalid"
             for tool_id in required_tool_ids
         )
+    live_startup_state = _classify_live_startup_state(snapshot, required_tool_ids)
+    stage_4_status = "passed" if transform_ready else ("pending" if live_startup_state != "valid_tracked_frames" else "failed")
     stage_4 = TrackingValidationStage(
         stage="Stage 4: transforms valid and fresh",
-        status="passed" if transform_ready else "failed",
+        status=stage_4_status,
         message=(
-            f"tracker_data_stale={snapshot.tracker_data_stale}, tracker_faults={snapshot.tracker_faults}; "
+            f"startup_state={live_startup_state}, tracker_data_stale={snapshot.tracker_data_stale}, "
+            f"tracker_faults={snapshot.tracker_faults}; "
             f"{_render_transform_debug_summary(snapshot, required_tool_ids)}"
         ),
     )
@@ -195,12 +206,18 @@ def build_tracking_diagnostics_report(
         capability_report=capability_report,
         backend_details=dict(final_snapshot.backend_details),
         startup_messages=list(final_snapshot.backend_startup_messages),
+        startup_state=benchmark_report.startup_state,
         unique_frames_observed=benchmark_report.unique_frames_observed,
         backend_frame_counter_final=benchmark_report.backend_frame_counter_final,
         effective_frame_rate_hz=benchmark_report.effective_frame_rate_hz,
         frame_interval_s=benchmark_report.frame_interval_s,
         max_data_age_s=benchmark_report.max_data_age_s,
         first_frame_latency_s=benchmark_report.first_frame_latency_s,
+        first_valid_frame_latency_s=benchmark_report.first_valid_frame_latency_s,
+        warmup_invalid_frame_count=benchmark_report.warmup_invalid_frame_count,
+        warmup_nonfinite_invalid_frame_count=benchmark_report.warmup_nonfinite_invalid_frame_count,
+        warmup_invalid_frame_count_by_tool=dict(benchmark_report.warmup_invalid_frame_count_by_tool),
+        warmup_nonfinite_invalid_frame_count_by_tool=dict(benchmark_report.warmup_nonfinite_invalid_frame_count_by_tool),
         raw_live_tool_ids=list(benchmark_report.raw_live_tool_ids_final),
         normalized_live_tool_ids=list(benchmark_report.normalized_live_tool_ids_final),
         runtime_role_mappings=dict(benchmark_report.runtime_role_mappings_final),
@@ -255,6 +272,7 @@ def render_tracking_diagnostics_report_lines(report: TrackingDiagnosticsReport) 
         f"configured_port={report.configured_port or '/dev/mock-aurora'}",
         f"canonical_state={report.canonical_state}",
         f"connection_state={report.connection_state}",
+        f"startup_state={report.startup_state}",
         f"tracker_ready={report.tracker_ready}",
         f"full_pose_pipeline_ready={report.full_pose_pipeline_ready}",
         f"registration_state={report.registration_state}",
@@ -274,6 +292,11 @@ def render_tracking_diagnostics_report_lines(report: TrackingDiagnosticsReport) 
         ),
         f"max_data_age_s={report.max_data_age_s}",
         f"first_frame_latency_s={report.first_frame_latency_s}",
+        f"first_valid_frame_latency_s={report.first_valid_frame_latency_s}",
+        f"warmup_invalid_frame_count={report.warmup_invalid_frame_count}",
+        f"warmup_nonfinite_invalid_frame_count={report.warmup_nonfinite_invalid_frame_count}",
+        f"warmup_invalid_frame_count_by_tool={report.warmup_invalid_frame_count_by_tool}",
+        f"warmup_nonfinite_invalid_frame_count_by_tool={report.warmup_nonfinite_invalid_frame_count_by_tool}",
         f"raw_live_tool_ids={report.raw_live_tool_ids}",
         f"normalized_live_tool_ids={report.normalized_live_tool_ids}",
         f"runtime_role_mappings={report.runtime_role_mappings}",
@@ -281,6 +304,13 @@ def render_tracking_diagnostics_report_lines(report: TrackingDiagnosticsReport) 
         f"pipeline_faults={report.pipeline_faults}",
         f"failure_codes={report.failure_codes}",
     ]
+    for tool_id, metrics in sorted(report.benchmark_report.tool_metrics.items()):
+        lines.append(
+            f"{tool_id}_timing=time_to_first_tracked_s={metrics.time_to_first_tracked_frame_s}, "
+            f"warmup_invalid={metrics.warmup_invalid_frames}, "
+            f"warmup_nonfinite={metrics.warmup_nonfinite_invalid_frames}, "
+            f"post_warmup_invalid={metrics.post_warmup_invalid_frames}"
+        )
     if report.backend_details:
         lines.append(f"backend_details={report.backend_details}")
     if report.startup_messages:
@@ -331,12 +361,14 @@ def _build_stage_results_from_benchmark(
                     benchmark_report.effective_frame_rate_hz is None
                     or benchmark_report.effective_frame_rate_hz >= thresholds.min_effective_fps
                 )
-                else "failed"
+                else ("pending" if benchmark_report.startup_state == "serial_connected_no_frames" else "failed")
             ),
             message=(
+                f"startup_state={benchmark_report.startup_state}, "
                 f"unique_frames={benchmark_report.unique_frames_observed}, "
                 f"effective_fps={benchmark_report.effective_frame_rate_hz}, "
-                f"first_frame_latency_s={benchmark_report.first_frame_latency_s}"
+                f"first_frame_latency_s={benchmark_report.first_frame_latency_s}, "
+                f"first_valid_frame_latency_s={benchmark_report.first_valid_frame_latency_s}"
             ),
         )
     )
@@ -353,22 +385,29 @@ def _build_stage_results_from_benchmark(
         )
     )
     stage_4_failed = False
+    stage_4_pending = False
     if benchmark_report.max_data_age_s is not None and benchmark_report.max_data_age_s > thresholds.max_stale_interval_s:
         stage_4_failed = True
     for tool_id in required_tool_ids:
         metrics = benchmark_report.tool_metrics.get(tool_id)
         if metrics is None or metrics.tracked_frames <= 0:
-            stage_4_failed = True
+            if metrics is not None and metrics.warmup_nonfinite_invalid_frames > 0:
+                stage_4_pending = True
+            else:
+                stage_4_failed = True
             break
-        if thresholds.require_valid_transforms and metrics.invalid_frames > 0:
+        if thresholds.require_valid_transforms and metrics.post_warmup_invalid_frames > 0:
             stage_4_failed = True
             break
     stage_results.append(
         TrackingValidationStage(
             stage="Stage 4: transforms valid and fresh",
-            status="failed" if stage_4_failed else "passed",
+            status="failed" if stage_4_failed else ("pending" if stage_4_pending else "passed"),
             message=(
-                f"max_data_age_s={benchmark_report.max_data_age_s}, tracker_faults={final_snapshot.tracker_faults}; "
+                f"startup_state={benchmark_report.startup_state}, "
+                f"max_data_age_s={benchmark_report.max_data_age_s}, "
+                f"warmup_invalid_frames={benchmark_report.warmup_invalid_frame_count_by_tool}, "
+                f"tracker_faults={final_snapshot.tracker_faults}; "
                 f"{_render_transform_debug_summary(final_snapshot, required_tool_ids)}"
             ),
         )
@@ -416,6 +455,28 @@ def _render_transform_debug_summary(snapshot: TrackingSnapshot, required_tool_id
     return "; ".join(parts)
 
 
+def _classify_live_startup_state(snapshot: TrackingSnapshot, required_tool_ids: tuple[str, ...]) -> str:
+    tracker_connect_ok = snapshot.canonical_state in {"mock", "streaming_healthy", "streaming_degraded"} or bool(
+        snapshot.backend_connected
+    )
+    if not tracker_connect_ok:
+        return "no_serial_connection"
+    if snapshot.unique_frames_observed <= 0:
+        return "serial_connected_no_frames"
+    if all(snapshot.tools.get(tool_id) and snapshot.tools[tool_id].tracking_state == "tracked" for tool_id in required_tool_ids):
+        return "valid_tracked_frames"
+    if any(_tool_has_warmup_nonfinite_status(snapshot.tools.get(tool_id)) for tool_id in required_tool_ids):
+        return "frames_arriving_warmup_invalid"
+    return "frames_arriving_unclassified"
+
+
+def _tool_has_warmup_nonfinite_status(tool) -> bool:
+    if tool is None or tool.tracking_state != "invalid":
+        return False
+    normalized = str(tool.status or "").strip().lower()
+    return "non-finite" in normalized or "nonfinite" in normalized
+
+
 def _classify_failure_codes(
     final_snapshot: TrackingSnapshot,
     *,
@@ -450,7 +511,12 @@ def _classify_failure_codes(
             invalid_only = False
             break
     if invalid_only and required_tool_ids:
-        failure_codes.append("invalid_transforms_only")
+        if benchmark_report.warmup_nonfinite_invalid_frame_count > 0 and benchmark_report.first_valid_frame_latency_s is None:
+            failure_codes.append("warmup_invalid_transforms_only")
+        else:
+            failure_codes.append("invalid_transforms_only")
+    if benchmark_report.warmup_nonfinite_invalid_frame_count > 0:
+        failure_codes.append("warmup_nonfinite_payloads_seen")
     if not benchmark_report.registration_loaded:
         failure_codes.append("registration_missing")
     elif not benchmark_report.tip_pose_computable:

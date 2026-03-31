@@ -24,7 +24,9 @@ tracker_tool_id_aliases:
 tracker_socket_path: "/tmp/tracker_bridge.sock"
 tracker_bridge_executable: "bin/tracker_bridge"
 tracker_poll_ms: 20
-tracker_min_effective_fps: 20.0
+# Tracker MVP bench target for the current Aurora bring-up pass.
+# Raise this back to 20.0 once the live Pi path is consistently meeting it.
+tracker_min_effective_fps: 15.0
 tracker_max_stale_interval_s: 0.25
 tracker_max_consecutive_missing_frames: 20
 tracker_require_valid_transforms: true

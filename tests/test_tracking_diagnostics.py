@@ -204,6 +204,8 @@ def test_tracking_diagnostics_classifies_backend_connected_but_no_frames() -> No
     )
 
     assert "tracker_connected_but_no_frames" in report.failure_codes
+    assert report.startup_state == "serial_connected_no_frames"
+    assert report.stage_results[1].status == "pending"
 
 
 def test_tracking_diagnostics_stage_4_reports_transform_failure_stage_details() -> None:
@@ -250,3 +252,38 @@ def test_tracking_diagnostics_stage_4_reports_transform_failure_stage_details() 
     assert stage_4.status == "failed"
     assert "0A=invalid(validation" in stage_4.message
     assert "0B=invalid(conversion" in stage_4.message
+
+
+def test_tracking_diagnostics_reports_warmup_invalid_frames_separately() -> None:
+    warmup = _snapshot(
+        frame_number=2,
+        timestamp="2026-01-01T00:00:00.050Z",
+        tool_0a_state="invalid",
+        tool_0b_state="invalid",
+    )
+    warmup.tools["0A"].status = "invalid_transform: Translation contains non-finite values"
+    warmup.tools["0B"].status = "invalid_transform: Translation contains non-finite values"
+    service = _FakeTrackingService([warmup, warmup])
+
+    report = build_tracking_diagnostics_report(
+        service,
+        duration_s=0.05,
+        sample_period_s=0.01,
+        wait_for_first_frame_s=0.0,
+        thresholds=TrackerBenchmarkThresholds(
+            min_effective_fps=5.0,
+            max_stale_interval_s=0.25,
+            max_consecutive_missing_frames=1,
+            require_valid_transforms=True,
+        ),
+        required_tool_ids=("0A", "0B"),
+    )
+
+    stage_4 = report.stage_results[3]
+    assert report.startup_state == "frames_arriving_warmup_invalid"
+    assert report.warmup_invalid_frame_count == 2
+    assert report.warmup_nonfinite_invalid_frame_count == 2
+    assert "warmup_invalid_transforms_only" in report.failure_codes
+    assert "warmup_nonfinite_payloads_seen" in report.failure_codes
+    assert stage_4.status == "pending"
+    assert "startup_state=frames_arriving_warmup_invalid" in stage_4.message
