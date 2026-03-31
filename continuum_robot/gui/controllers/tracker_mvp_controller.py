@@ -41,8 +41,10 @@ class TrackerMvpViewState:
     tracker_data_age_s: float | None = None
     raw_live_tool_ids: list[str] = field(default_factory=list)
     normalized_live_tool_ids: list[str] = field(default_factory=list)
+    tool_0a_detected: bool = False
     tool_0a_visible: bool = False
     tool_0a_status: str = "missing"
+    tool_0b_detected: bool = False
     tool_0b_visible: bool = False
     tool_0b_status: str = "missing"
     transforms_valid: bool = False
@@ -161,14 +163,21 @@ class TrackerMvpController:
                 sample_period_s=0.05,
                 wait_for_first_frame_s=2.0,
                 thresholds=self.thresholds,
-                required_tool_ids=(self.settings.registration.capture_tool_id,),
+                required_tool_ids=(
+                    self.settings.registration.coil_tool_id,
+                    self.settings.registration.capture_tool_id,
+                ),
             )
             report_dir = self.project_root / "data" / "tracker_validations"
             report_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             report_path = report_dir / f"{stamp}_tracker_validation.json"
             report_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
-            self._validation_passed = bool(report.tracker_ready and self._tool_is_visible(self.settings.registration.capture_tool_id))
+            self._validation_passed = bool(
+                report.tracker_ready
+                and self._tool_is_visible(self.settings.registration.coil_tool_id)
+                and self._tool_is_visible(self.settings.registration.capture_tool_id)
+            )
             self._last_validation_report_path = report_path
         except Exception as exc:
             self._validation_passed = False
@@ -232,6 +241,8 @@ class TrackerMvpController:
         coil_tool_id = self.settings.registration.coil_tool_id
         tool_0a = snapshot.tools.get(coil_tool_id)
         tool_0b = snapshot.tools.get(capture_tool_id)
+        tool_0a_detected = bool(coil_tool_id in snapshot.normalized_live_tool_ids or (tool_0a is not None and tool_0a.tracking_state != "unknown"))
+        tool_0b_detected = bool(capture_tool_id in snapshot.normalized_live_tool_ids or (tool_0b is not None and tool_0b.tracking_state != "unknown"))
 
         tracker_connected = bool(
             snapshot.backend_connected
@@ -248,10 +259,14 @@ class TrackerMvpController:
         tool_0a_visible = bool(tool_0a is not None and tool_0a.tracking_state == "tracked")
         tool_0b_visible = bool(tool_0b is not None and tool_0b.tracking_state == "tracked")
         transforms_valid = bool(
-            tool_0b_visible
+            tool_0a_detected
+            and tool_0b_detected
+            and tool_0b_visible
+            and tool_0a_visible
             and tool_0b is not None
+            and tool_0a is not None
             and tool_0b.tracking_state != "invalid"
-            and (tool_0a is None or tool_0a.tracking_state != "invalid")
+            and tool_0a.tracking_state != "invalid"
         )
         latest_registration_status = (
             f"Saved registration FRE={registration_snapshot.fre_mm:.3f} mm."
@@ -278,7 +293,7 @@ class TrackerMvpController:
         self.state.tracker_port = snapshot.port or self.state.tracker_port
         self.state.tracker_connected = tracker_connected
         self.state.tracker_healthy = tracker_healthy
-        self.state.validation_passed = bool(self._validation_passed and tracker_healthy)
+        self.state.validation_passed = bool(self._validation_passed and tracker_healthy and transforms_valid)
         self.state.backend_name = snapshot.selected_backend_name or snapshot.configured_backend_name
         self.state.backend_identity = snapshot.backend_identity
         self.state.canonical_state = snapshot.canonical_state
@@ -288,8 +303,10 @@ class TrackerMvpController:
         self.state.tracker_data_age_s = snapshot.tracker_data_age_s
         self.state.raw_live_tool_ids = list(snapshot.raw_live_tool_ids)
         self.state.normalized_live_tool_ids = list(snapshot.normalized_live_tool_ids)
+        self.state.tool_0a_detected = tool_0a_detected
         self.state.tool_0a_visible = tool_0a_visible
         self.state.tool_0a_status = tool_0a.status if tool_0a is not None else "missing"
+        self.state.tool_0b_detected = tool_0b_detected
         self.state.tool_0b_visible = tool_0b_visible
         self.state.tool_0b_status = tool_0b.status if tool_0b is not None else "missing"
         self.state.transforms_valid = transforms_valid
@@ -331,6 +348,7 @@ class TrackerMvpController:
 
     def _build_workflow_steps(self) -> list[WorkflowStepState]:
         steps: list[WorkflowStepState] = []
+
         def _step(index: int, label: str, complete: bool, message: str, *, blocked: bool = False) -> None:
             if complete:
                 status = "complete"
@@ -342,15 +360,28 @@ class TrackerMvpController:
 
         _step(1, "Connect tracker", self.state.tracker_connected, f"Port: {self.state.tracker_port or 'unset'}")
         _step(2, "Validate tracker health", self.state.validation_passed, self.state.validation_summary, blocked=not self.state.tracker_connected)
-        _step(3, "Confirm tool visibility / IDs", self.state.tool_0b_visible, f"0B status: {self.state.tool_0b_status}; normalized IDs: {self.state.normalized_live_tool_ids}", blocked=not self.state.tracker_connected)
+        _step(
+            3,
+            "Confirm tool visibility / IDs",
+            self.state.tool_0a_detected and self.state.tool_0b_detected,
+            f"0A={self.state.tool_0a_status}; 0B={self.state.tool_0b_status}; normalized IDs: {self.state.normalized_live_tool_ids}",
+            blocked=not self.state.tracker_connected,
+        )
+        _step(
+            4,
+            "Confirm transforms valid",
+            self.state.transforms_valid,
+            self._transform_stage_message(),
+            blocked=not (self.state.tool_0a_detected and self.state.tool_0b_detected),
+        )
         pivot_ready = bool(self.state.pivot_status == "success" or (self.state.measurement_point_ready and self.state.pivot_tip_exists))
-        _step(4, "Run pivot calibration on 0B", pivot_ready, self.state.pivot_summary, blocked=not self.state.validation_passed or not self.state.tool_0b_visible)
-        _step(5, "Save tip file", self.state.pivot_tip_exists and self.state.measurement_point_ready, f"Tip file: {self.state.pivot_tip_path or 'missing'}", blocked=not self.state.tool_0b_visible)
-        _step(6, "Select 4 registration landmarks", self.state.registration_selection_ready, f"Selected: {self.state.selected_landmarks}", blocked=not self.state.measurement_point_ready)
-        _step(7, "Capture registration samples", self.state.registration_capture_complete, self.registration_controller.state.status_message, blocked=not self.state.registration_selection_ready or not self.state.measurement_point_ready)
-        _step(8, "Solve registration", self.state.registration_solved, self.state.latest_registration_status if self.state.registration_saved else "Solve once all four selected points are complete.", blocked=not self.state.registration_capture_complete)
-        _step(9, "Save accepted registration", self.state.registration_saved, self.state.latest_registration_path or "Save the solved registration to persist the artifact.", blocked=not self.state.registration_solved)
-        _step(10, "Confirm live robot-frame pose availability", self.state.live_pose_ready, f"Tip pose status: {self.state.live_tip_status}", blocked=not self.state.registration_saved)
+        _step(5, "Run pivot calibration on 0B", pivot_ready, self.state.pivot_summary, blocked=not self.state.validation_passed or not self.state.transforms_valid or not self.state.tool_0b_visible)
+        _step(6, "Save tip file", self.state.pivot_tip_exists and self.state.measurement_point_ready, f"Tip file: {self.state.pivot_tip_path or 'missing'}", blocked=not self.state.tool_0b_visible)
+        _step(7, "Select 4 registration landmarks", self.state.registration_selection_ready, f"Selected: {self.state.selected_landmarks}", blocked=not self.state.measurement_point_ready)
+        _step(8, "Capture registration samples", self.state.registration_capture_complete, self.registration_controller.state.status_message, blocked=not self.state.registration_selection_ready or not self.state.measurement_point_ready)
+        _step(9, "Solve registration", self.state.registration_solved, self.state.latest_registration_status if self.state.registration_saved else "Solve once all four selected points are complete.", blocked=not self.state.registration_capture_complete)
+        _step(10, "Save accepted registration", self.state.registration_saved, self.state.latest_registration_path or "Save the solved registration to persist the artifact.", blocked=not self.state.registration_solved)
+        _step(11, "Confirm live robot-frame pose availability", self.state.live_pose_ready, f"Tip pose status: {self.state.live_tip_status}", blocked=not self.state.registration_saved)
         return steps
 
     def _default_status_message(self) -> str:
@@ -388,11 +419,13 @@ class TrackerMvpController:
         if self.state.validation_passed:
             return (
                 f"Validation passed. backend={snapshot.selected_backend_name or snapshot.backend_identity}, "
-                f"fps={snapshot.effective_frame_rate_hz}, 0B visible={self.state.tool_0b_visible}."
+                f"fps={snapshot.effective_frame_rate_hz}, transforms_valid={self.state.transforms_valid}, "
+                f"0A tracked={self.state.tool_0a_visible}, 0B tracked={self.state.tool_0b_visible}."
             )
         return (
             f"Validation failed. backend={snapshot.selected_backend_name or snapshot.backend_identity}, "
-            f"state={snapshot.canonical_state}, 0B visible={self.state.tool_0b_visible}."
+            f"state={snapshot.canonical_state}, transforms_valid={self.state.transforms_valid}, "
+            f"0A={self.state.tool_0a_status}, 0B={self.state.tool_0b_status}."
         )
 
     def _validation_lines(self, snapshot) -> list[str]:
@@ -404,6 +437,7 @@ class TrackerMvpController:
             f"tool_ids raw={snapshot.raw_live_tool_ids} normalized={snapshot.normalized_live_tool_ids}",
             f"0A={self.state.tool_0a_status}, 0B={self.state.tool_0b_status}",
         ]
+        lines.extend(self._transform_debug_lines(snapshot))
         if self._last_validation_report_path is not None:
             lines.append(f"report={self._last_validation_report_path}")
         if snapshot.last_error:
@@ -429,3 +463,38 @@ class TrackerMvpController:
             "Live robot-frame pose -> requires saved registration plus live 0A tracking: T_robot_tip = T_robot_aurora @ T_aurora_coil @ T_coil_tip.",
             f"Current tip geometry source: {measurement_status.get('source')}",
         ]
+
+    def _transform_debug_lines(self, snapshot) -> list[str]:
+        debug_root = dict(snapshot.backend_details or {}).get("ndi_transform_debug", {})
+        debug_tools = dict(debug_root.get("tool_transform_debug", {}) or {})
+        lines: list[str] = []
+        for tool_id in (self.settings.registration.coil_tool_id, self.settings.registration.capture_tool_id):
+            tool = snapshot.tools.get(tool_id)
+            debug_entry = dict(debug_tools.get(tool_id, {}) or {})
+            if tool is None or not debug_entry:
+                continue
+            failure_stage = debug_entry.get("failure_stage") or "ok"
+            det = debug_entry.get("rotation_determinant")
+            det_text = f", det={det:.6f}" if isinstance(det, (int, float)) else ""
+            reason = str(debug_entry.get("invalid_reason") or tool.status)
+            payload = str(debug_entry.get("parse_mode") or debug_entry.get("raw_payload_summary") or "unknown_payload")
+            lines.append(f"{tool_id}_transform={tool.tracking_state} stage={failure_stage} payload={payload}{det_text}")
+            lines.append(f"{tool_id}_reason={reason}")
+        return lines
+
+    def _transform_stage_message(self) -> str:
+        if self.state.transforms_valid:
+            return "0A and 0B transforms are valid, rigid, and ready for pivot calibration."
+        details: list[str] = []
+        for tool_id, status in (
+            (self.settings.registration.coil_tool_id, self.state.tool_0a_status),
+            (self.settings.registration.capture_tool_id, self.state.tool_0b_status),
+        ):
+            if "invalid_transform" in str(status):
+                details.append(f"{tool_id}: {status}")
+        if details:
+            return "; ".join(details)
+        return (
+            f"0A={self.state.tool_0a_status}, 0B={self.state.tool_0b_status}. "
+            "Transforms must be tracked and rigid-valid before pivot calibration."
+        )

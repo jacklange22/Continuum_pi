@@ -94,8 +94,8 @@ class TrackerMvpTab(QWidget):
         self.title_label.setProperty("role", "title")
         self.workflow_hint = QLabel(
             "Use this order tomorrow on the Pi: connect tracker, validate tracker health, confirm tool IDs, "
-            "run 0B pivot calibration, save the tip file, capture 4-point registration, save the accepted registration, "
-            "then confirm live robot-frame pose from 0A."
+            "confirm 0A/0B transforms are valid, run 0B pivot calibration, save the tip file, capture 4-point "
+            "registration, save the accepted registration, then confirm live robot-frame pose from 0A."
         )
         self.workflow_hint.setProperty("role", "hint")
         self.workflow_hint.setWordWrap(True)

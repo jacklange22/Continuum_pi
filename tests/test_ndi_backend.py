@@ -115,6 +115,53 @@ def test_ndi_backend_maps_observed_live_handles_to_runtime_roles_by_default() ->
     assert debug["unmapped_tool_ids"] == []
 
 
+def test_ndi_backend_requests_quaternion_payloads_by_default() -> None:
+    backend = TrackerBackendNDI("/dev/ttyUSB0", tracker_factory=lambda _settings: object())
+
+    settings = backend._build_tracker_settings()
+
+    assert settings["use quaternions"] is True
+
+
+def test_ndi_backend_allows_explicit_matrix_override() -> None:
+    backend = TrackerBackendNDI(
+        "/dev/ttyUSB0",
+        tracker_factory=lambda _settings: object(),
+        settings_overrides={"use quaternions": False},
+    )
+
+    settings = backend._build_tracker_settings()
+
+    assert settings["use quaternions"] is False
+
+
+def test_ndi_backend_parses_n_by_7_pose_vectors() -> None:
+    backend = TrackerBackendNDI("/dev/ttyUSB0", tracker_factory=lambda _settings: object())
+    frame_payload = (
+        ["10", "11"],
+        [1710000000.0, 1710000000.1],
+        [29, 29],
+        np.asarray(
+            [
+                [1.0, 0.0, 0.0, 0.0, 10.0, 20.0, 30.0],
+                [1.0, 0.0, 0.0, 0.0, 40.0, 50.0, 60.0],
+            ],
+            dtype=float,
+        ),
+        [0.15, 0.18],
+    )
+
+    tools, latest_frame, debug = backend._parse_frame_payload(frame_payload, observed_at_utc="2026-01-01T00:00:00.000Z")
+
+    assert latest_frame == 29
+    assert tools["0A"].status == "tracked"
+    assert tools["0A"].quaternion == (1.0, 0.0, 0.0, 0.0)
+    assert tools["0A"].translation_mm == (10.0, 20.0, 30.0)
+    assert tools["0B"].status == "tracked"
+    assert tools["0B"].translation_mm == (40.0, 50.0, 60.0)
+    assert debug["tool_payload_summaries"]["10"].endswith("pose_vector_wxyz_xyz")
+
+
 def test_ndi_backend_parses_n_by_8_pose_vectors() -> None:
     backend = TrackerBackendNDI("/dev/ttyUSB0", tracker_factory=lambda _settings: object())
     frame_payload = (
@@ -173,7 +220,7 @@ def test_ndi_backend_marks_invalid_transform_explicitly() -> None:
         [0.11],
     )
 
-    tools, latest_frame, _debug = backend._parse_frame_payload(
+    tools, latest_frame, debug = backend._parse_frame_payload(
         frame_payload,
         observed_at_utc="2026-01-01T00:00:00.000Z",
     )
@@ -182,3 +229,7 @@ def test_ndi_backend_marks_invalid_transform_explicitly() -> None:
     assert tools["0A"].valid is False
     assert tools["0A"].validity_known is True
     assert tools["0A"].status.startswith("invalid_transform:")
+    debug_entry = debug["tool_transform_debug"]["0A"]
+    assert debug_entry["classified_state"] == "invalid"
+    assert debug_entry["failure_stage"] == "validation"
+    assert debug_entry["rotation_determinant"] == 2.0

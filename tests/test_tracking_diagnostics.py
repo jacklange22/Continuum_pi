@@ -204,3 +204,49 @@ def test_tracking_diagnostics_classifies_backend_connected_but_no_frames() -> No
     )
 
     assert "tracker_connected_but_no_frames" in report.failure_codes
+
+
+def test_tracking_diagnostics_stage_4_reports_transform_failure_stage_details() -> None:
+    snapshot = _snapshot(
+        frame_number=3,
+        timestamp="2026-01-01T00:00:00.100Z",
+        tool_0a_state="invalid",
+        tool_0b_state="invalid",
+    )
+    snapshot.backend_details = {
+        "ndi_transform_debug": {
+            "tool_transform_debug": {
+                "0A": {
+                    "failure_stage": "validation",
+                    "parse_mode": "ndarray(4, 4):matrix",
+                    "rotation_determinant": 0.87,
+                    "invalid_reason": "T_aurora_0A[0:3,0:3] is not orthonormal",
+                },
+                "0B": {
+                    "failure_stage": "conversion",
+                    "parse_mode": "ndarray(7,):pose_vector_wxyz_xyz",
+                    "invalid_reason": "Quaternion norm is zero",
+                },
+            }
+        }
+    }
+    service = _FakeTrackingService([snapshot, snapshot])
+
+    report = build_tracking_diagnostics_report(
+        service,
+        duration_s=0.05,
+        sample_period_s=0.01,
+        wait_for_first_frame_s=0.0,
+        thresholds=TrackerBenchmarkThresholds(
+            min_effective_fps=5.0,
+            max_stale_interval_s=0.25,
+            max_consecutive_missing_frames=1,
+            require_valid_transforms=True,
+        ),
+        required_tool_ids=("0A", "0B"),
+    )
+
+    stage_4 = report.stage_results[3]
+    assert stage_4.status == "failed"
+    assert "0A=invalid(validation" in stage_4.message
+    assert "0B=invalid(conversion" in stage_4.message

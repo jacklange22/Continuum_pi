@@ -1,0 +1,245 @@
+{
+  "generated_at_utc": "2026-03-30T21:07:13.154Z",
+  "configured_backend_name": "ndi",
+  "selected_backend_name": "mock",
+  "backend_identity": "mock_tracker_manager",
+  "configured_port": "/dev/mock-aurora",
+  "canonical_state": "mock",
+  "connection_state": "tracking",
+  "capability_report": {
+    "mock": {
+      "backend": "mock",
+      "available": true,
+      "code": "ok",
+      "reason": "Mock tracking backend is always available.",
+      "details": {
+        "preferred_backend": "ndi",
+        "selected_backend_name": "mock",
+        "fallback_backend": "bridge",
+        "fallback_enabled": true,
+        "aurora_port": "/dev/mock-aurora",
+        "poll_interval_ms": 20,
+        "expected_tool_ids": [
+          "0A",
+          "0B"
+        ],
+        "mock_mode": true
+      }
+    },
+    "ndi": {
+      "backend": "ndi",
+      "available": false,
+      "code": "serial_port_missing",
+      "reason": "Serial port missing: /dev/mock-aurora",
+      "details": {
+        "preferred_backend": "ndi",
+        "selected_backend_name": null,
+        "fallback_backend": "bridge",
+        "fallback_enabled": true,
+        "aurora_port": "/dev/mock-aurora",
+        "poll_interval_ms": 20,
+        "expected_tool_ids": [
+          "0A",
+          "0B"
+        ]
+      }
+    },
+    "bridge": {
+      "backend": "bridge",
+      "available": false,
+      "code": "serial_port_missing",
+      "reason": "Serial port missing: /dev/mock-aurora",
+      "details": {
+        "preferred_backend": "ndi",
+        "selected_backend_name": null,
+        "fallback_backend": "bridge",
+        "fallback_enabled": true,
+        "aurora_port": "/dev/mock-aurora",
+        "poll_interval_ms": 20,
+        "expected_tool_ids": [
+          "0A",
+          "0B"
+        ]
+      }
+    }
+  },
+  "backend_details": {
+    "preferred_backend": "ndi",
+    "selected_backend_name": "mock",
+    "fallback_backend": "bridge",
+    "fallback_enabled": true,
+    "aurora_port": "/dev/mock-aurora",
+    "poll_interval_ms": 20,
+    "expected_tool_ids": [
+      "0A",
+      "0B"
+    ],
+    "mock_mode": true,
+    "poll_hz": 50
+  },
+  "startup_messages": [
+    "Configured preferred tracking backend: ndi",
+    "Configured fallback backend: bridge",
+    "Fallback enabled: True",
+    "Mock mode is enabled; selecting mock tracking backend."
+  ],
+  "unique_frames_observed": 30,
+  "backend_frame_counter_final": 2310,
+  "effective_frame_rate_hz": 19.302759910782395,
+  "frame_interval_s": {
+    "count": 29,
+    "minimum": 0.05116658296901733,
+    "maximum": 0.053560915985144675,
+    "mean": 0.051806063206609465,
+    "stdev": 0.0005837836196052849
+  },
+  "max_data_age_s": 0.0,
+  "first_frame_latency_s": 0.0007203749846667051,
+  "raw_live_tool_ids": [
+    "0A",
+    "0B"
+  ],
+  "normalized_live_tool_ids": [
+    "0A",
+    "0B"
+  ],
+  "runtime_role_mappings": {
+    "0A": "0A",
+    "0B": "0B"
+  },
+  "tracker_faults": [],
+  "pipeline_faults": [
+    "missing_registration"
+  ],
+  "warning_messages": [],
+  "error_messages": [],
+  "registration_state": "missing_registration",
+  "registration_loaded": false,
+  "tip_pose_status": "missing_registration",
+  "tip_pose_computable": false,
+  "stage_results": [
+    {
+      "stage": "Stage 1: backend connect",
+      "status": "passed",
+      "message": "canonical_state=mock, connection_state=tracking"
+    },
+    {
+      "stage": "Stage 2: frames arriving",
+      "status": "failed",
+      "message": "unique_frames=30, effective_fps=19.302759910782395, first_frame_latency_s=0.0007203749846667051"
+    },
+    {
+      "stage": "Stage 3: expected tool ids visible",
+      "status": "passed",
+      "message": "Observed normalized tools: ['0A', '0B']."
+    },
+    {
+      "stage": "Stage 4: transforms valid and fresh",
+      "status": "passed",
+      "message": "max_data_age_s=0.0, tracker_faults=[]."
+    },
+    {
+      "stage": "Stage 5: T_robot_tip computable",
+      "status": "pending",
+      "message": "Registration not loaded yet. Stage 5 is pending by design."
+    }
+  ],
+  "failure_codes": [
+    "registration_missing"
+  ],
+  "tracker_ready": false,
+  "full_pose_pipeline_ready": false,
+  "benchmark_report": {
+    "generated_at_utc": "2026-03-30T21:07:13.154Z",
+    "configured_backend_name": "ndi",
+    "selected_backend_name": "mock",
+    "backend_identity": "mock_tracker_manager",
+    "port": "/dev/mock-aurora",
+    "duration_s": 1.5023758329916745,
+    "samples_observed": 30,
+    "unique_frames_observed": 30,
+    "backend_frame_counter_final": 2310,
+    "frame_interval_s": {
+      "count": 29,
+      "minimum": 0.05116658296901733,
+      "maximum": 0.053560915985144675,
+      "mean": 0.051806063206609465,
+      "stdev": 0.0005837836196052849
+    },
+    "effective_frame_rate_hz": 19.302759910782395,
+    "stale_sample_count": 0,
+    "stale_sample_ratio": 0.0,
+    "max_data_age_s": 0.0,
+    "first_frame_latency_s": 0.0007203749846667051,
+    "registration_loaded": false,
+    "tip_pose_computable": false,
+    "canonical_state_final": "mock",
+    "final_connection_state": "tracking",
+    "final_last_error": null,
+    "warning_messages_final": [],
+    "error_messages_final": [],
+    "registration_state_final": "missing_registration",
+    "tip_pose_status_final": "missing_registration",
+    "raw_live_tool_ids_final": [
+      "0A",
+      "0B"
+    ],
+    "normalized_live_tool_ids_final": [
+      "0A",
+      "0B"
+    ],
+    "runtime_role_mappings_final": {
+      "0A": "0A",
+      "0B": "0B"
+    },
+    "unmapped_live_tool_ids_final": [],
+    "tool_metrics": {
+      "0A": {
+        "tool_id": "0A",
+        "present_frames": 30,
+        "tracked_frames": 30,
+        "missing_frames": 0,
+        "invalid_frames": 0,
+        "unknown_frames": 0,
+        "max_consecutive_missing_frames": 0,
+        "time_to_first_tracked_frame_s": 3.33995558321476e-07,
+        "quality": {
+          "count": 30,
+          "minimum": 0.15,
+          "maximum": 0.15,
+          "mean": 0.15,
+          "stdev": 0.0
+        },
+        "latest_tracking_state": "tracked"
+      },
+      "0B": {
+        "tool_id": "0B",
+        "present_frames": 30,
+        "tracked_frames": 30,
+        "missing_frames": 0,
+        "invalid_frames": 0,
+        "unknown_frames": 0,
+        "max_consecutive_missing_frames": 0,
+        "time_to_first_tracked_frame_s": 3.33995558321476e-07,
+        "quality": {
+          "count": 30,
+          "minimum": 0.1,
+          "maximum": 0.1,
+          "mean": 0.1,
+          "stdev": 0.0
+        },
+        "latest_tracking_state": "tracked"
+      }
+    },
+    "thresholds": {
+      "min_effective_fps": 20.0,
+      "max_stale_interval_s": 0.25,
+      "max_consecutive_missing_frames": 20,
+      "require_valid_transforms": true
+    },
+    "passed": false,
+    "failures": [
+      "Effective frame rate 19.30 Hz is below minimum 20.00 Hz"
+    ]
+  }
+}

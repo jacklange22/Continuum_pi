@@ -125,7 +125,8 @@ def build_live_stage_results(
         stage="Stage 4: transforms valid and fresh",
         status="passed" if transform_ready else "failed",
         message=(
-            f"tracker_data_stale={snapshot.tracker_data_stale}, tracker_faults={snapshot.tracker_faults}."
+            f"tracker_data_stale={snapshot.tracker_data_stale}, tracker_faults={snapshot.tracker_faults}; "
+            f"{_render_transform_debug_summary(snapshot, required_tool_ids)}"
         ),
     )
     if snapshot.registration_state != "loaded":
@@ -367,7 +368,8 @@ def _build_stage_results_from_benchmark(
             stage="Stage 4: transforms valid and fresh",
             status="failed" if stage_4_failed else "passed",
             message=(
-                f"max_data_age_s={benchmark_report.max_data_age_s}, tracker_faults={final_snapshot.tracker_faults}."
+                f"max_data_age_s={benchmark_report.max_data_age_s}, tracker_faults={final_snapshot.tracker_faults}; "
+                f"{_render_transform_debug_summary(final_snapshot, required_tool_ids)}"
             ),
         )
     )
@@ -388,6 +390,30 @@ def _build_stage_results_from_benchmark(
         )
     )
     return stage_results
+
+
+def _render_transform_debug_summary(snapshot: TrackingSnapshot, required_tool_ids: tuple[str, ...]) -> str:
+    debug_root = dict(snapshot.backend_details or {}).get("ndi_transform_debug", {})
+    debug_tools = dict(debug_root.get("tool_transform_debug", {}) or {})
+    parts: list[str] = []
+    for tool_id in required_tool_ids:
+        tool = snapshot.tools.get(tool_id)
+        if tool is None:
+            parts.append(f"{tool_id}=missing(no tool snapshot)")
+            continue
+        if tool.tracking_state == "tracked":
+            parts.append(f"{tool_id}=tracked")
+            continue
+        debug_entry = dict(debug_tools.get(tool_id, {}) or {})
+        failure_stage = debug_entry.get("failure_stage") or "unknown"
+        payload_kind = debug_entry.get("parse_mode") or debug_entry.get("raw_payload_summary") or "unknown_payload"
+        det = debug_entry.get("rotation_determinant")
+        det_text = f", det={det:.6f}" if isinstance(det, (int, float)) else ""
+        reason = str(debug_entry.get("invalid_reason") or tool.status or "unknown_reason")
+        parts.append(
+            f"{tool_id}={tool.tracking_state}({failure_stage}, payload={payload_kind}{det_text}): {reason}"
+        )
+    return "; ".join(parts)
 
 
 def _classify_failure_codes(

@@ -260,6 +260,125 @@ def _payload_summary(raw_transform: Any) -> str:
     return type(raw_transform).__name__
 
 
+def _reshape_transform_matrix(raw_transform: Any, *, tool_id: str) -> np.ndarray:
+    matrix = np.asarray(raw_transform, dtype=float)
+    if matrix.shape == (16,):
+        matrix = matrix.reshape(4, 4)
+    elif matrix.shape == (1, 16):
+        matrix = matrix.reshape(4, 4)
+    elif matrix.shape == (4, 4):
+        matrix = matrix.copy()
+    else:
+        raise ValueError(f"T_aurora_{tool_id} must be 4x4 or length-16, got shape {matrix.shape}")
+    return matrix
+
+
+def _serialize_debug_value(value: Any) -> Any:
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, np.ndarray):
+        return np.asarray(value).tolist()
+    if isinstance(value, (list, tuple)):
+        return [_serialize_debug_value(item) for item in list(value)]
+    if isinstance(value, dict):
+        return {str(key): _serialize_debug_value(item) for key, item in value.items()}
+
+    fields = {}
+    for name in (
+        "transform",
+        "matrix",
+        "T",
+        "tracking",
+        "pose",
+        "quaternion",
+        "quaternion_wxyz",
+        "translation",
+        "translation_mm",
+        "position",
+        "position_mm",
+        "quality",
+        "error",
+        "tracking_error",
+        "q0",
+        "qw",
+        "qx",
+        "qy",
+        "qz",
+        "tx",
+        "ty",
+        "tz",
+        "x",
+        "y",
+        "z",
+    ):
+        if hasattr(value, name):
+            fields[name] = _serialize_debug_value(getattr(value, name))
+    if fields:
+        return fields
+    return repr(value)
+
+
+def _matrix_debug_payload(matrix: np.ndarray | None) -> dict[str, Any]:
+    if matrix is None:
+        return {
+            "matrix_before_validation": None,
+            "rotation_block": None,
+            "rotation_gram": None,
+            "rotation_determinant": None,
+        }
+    R = np.asarray(matrix[0:3, 0:3], dtype=float)
+    return {
+        "matrix_before_validation": np.asarray(matrix, dtype=float).tolist(),
+        "rotation_block": R.tolist(),
+        "rotation_gram": (R.T @ R).tolist(),
+        "rotation_determinant": float(np.linalg.det(R)),
+    }
+
+
+def _debug_matrix_from_raw_payload(raw_transform: Any, *, tool_id: str) -> np.ndarray | None:
+    try:
+        if raw_transform is None:
+            return None
+        if isinstance(raw_transform, np.ndarray):
+            array = np.asarray(raw_transform, dtype=float)
+            if array.shape in {(4, 4), (16,), (1, 16)}:
+                return _reshape_transform_matrix(array, tool_id=tool_id)
+            flat = array.reshape(-1)
+            if flat.size in {7, 8}:
+                quat = tuple(float(v) for v in flat[0:4])
+                translation = tuple(float(v) for v in flat[4:7])
+                return make_transform_A_B(quat, translation)
+            return None
+        if _is_scalar_sequence(raw_transform):
+            flat = np.asarray(raw_transform, dtype=float).reshape(-1)
+            if flat.size in {7, 8}:
+                quat = tuple(float(v) for v in flat[0:4])
+                translation = tuple(float(v) for v in flat[4:7])
+                return make_transform_A_B(quat, translation)
+            if flat.size == 16:
+                return _reshape_transform_matrix(flat, tool_id=tool_id)
+            return None
+        named = _extract_pose_from_named_fields(raw_transform, tool_id=tool_id)
+        if named is not None:
+            return named[0]
+    except Exception:
+        return None
+    return None
+
+
+def _failure_stage_from_exception(exc: Exception) -> str:
+    message = str(exc).lower()
+    if "missing quaternion/translation" in message or "unsupported tracking payload" in message:
+        return "backend_payload"
+    if "must be 4x4" in message or "unsupported pose-vector length" in message or "must have shape" in message:
+        return "conversion"
+    if "not orthonormal" in message or "determinant must" in message or "last row is not" in message:
+        return "validation"
+    if "quaternion" in message or "translation" in message:
+        return "conversion"
+    return "conversion"
+
+
 def _matrix_from_quat_translation(
     quat_wxyz: tuple[float, float, float, float],
     translation_mm: tuple[float, float, float],
@@ -401,15 +520,7 @@ def _extract_transform_payload(
 
 def coerce_transform_matrix(raw_transform: Any, *, tool_id: str) -> np.ndarray:
     """Convert one tracker-library transform payload into a strict 4x4 matrix."""
-    matrix = np.asarray(raw_transform, dtype=float)
-    if matrix.shape == (16,):
-        matrix = matrix.reshape(4, 4)
-    elif matrix.shape == (1, 16):
-        matrix = matrix.reshape(4, 4)
-    elif matrix.shape == (4, 4):
-        matrix = matrix.copy()
-    else:
-        raise ValueError(f"T_aurora_{tool_id} must be 4x4 or length-16, got shape {matrix.shape}")
+    matrix = _reshape_transform_matrix(raw_transform, tool_id=tool_id)
     assert_rigid_transform_matrix(matrix, f"T_aurora_{tool_id}")
     return matrix
 
@@ -452,6 +563,8 @@ class TrackerBackendNDI:
         self._frames_received_total = 0
         self._remaining_debug_frames = self.debug_frames_to_log
         self._last_debug_signature: tuple[Any, ...] | None = None
+        self._tracker_settings_snapshot: dict[str, Any] = {}
+        self._last_frame_debug: dict[str, Any] = {}
         self._state = TrackerRuntimeState(
             connection_state="disconnected",
             canonical_state="disconnected",
@@ -470,6 +583,7 @@ class TrackerBackendNDI:
             tool_id_mapping={},
             runtime_role_mappings={},
             unmapped_tool_ids=[],
+            backend_details={},
             tools={},
         )
 
@@ -540,6 +654,7 @@ class TrackerBackendNDI:
                 tool_id_mapping=dict(self._state.tool_id_mapping),
                 runtime_role_mappings=dict(self._state.runtime_role_mappings),
                 unmapped_tool_ids=list(self._state.unmapped_tool_ids),
+                backend_details=self._build_backend_details(),
                 tools=tools,
             )
 
@@ -597,6 +712,7 @@ class TrackerBackendNDI:
             raise RuntimeError("Aurora port is empty. Configure aurora_port before starting the NDI tracker backend.")
         tracker_class = self._tracker_factory or load_ndi_tracker_class()
         settings = self._build_tracker_settings()
+        self._tracker_settings_snapshot = dict(settings)
         try:
             return tracker_class(settings)
         except Exception as exc:
@@ -612,6 +728,8 @@ class TrackerBackendNDI:
         }
         if self.ports_to_probe:
             settings["ports to probe"] = list(self.ports_to_probe)
+        if "use quaternions" not in self.settings_overrides:
+            settings["use quaternions"] = True
         settings.update(self.settings_overrides)
         return settings
 
@@ -661,6 +779,7 @@ class TrackerBackendNDI:
         self._frames_received_total += 1
         self._maybe_log_debug_frame(debug, latest_frame=latest_frame)
         with self._lock:
+            self._last_frame_debug = dict(debug)
             self._state.tools = tools
             self._state.backend_frame_counter = self._frames_received_total
             self._state.latest_timestamp = observed_at_utc
@@ -670,6 +789,7 @@ class TrackerBackendNDI:
             self._state.tool_id_mapping = dict(debug["tool_id_mapping"])
             self._state.runtime_role_mappings = dict(debug["runtime_role_mappings"])
             self._state.unmapped_tool_ids = list(debug["unmapped_tool_ids"])
+            self._state.backend_details = self._build_backend_details()
             if latest_frame is not None:
                 self._state.latest_frame_number = latest_frame
 
@@ -709,6 +829,7 @@ class TrackerBackendNDI:
         runtime_role_mappings: dict[str, str] = {}
         unmapped_tool_ids: list[str] = []
         tool_payload_summaries: dict[str, str] = {}
+        tool_transform_debug: dict[str, dict[str, Any]] = {}
 
         for index in range(sample_count):
             raw_handle = raw_handles[index]
@@ -733,9 +854,27 @@ class TrackerBackendNDI:
             quality = self._coerce_quality(raw_quality[index])
             timestamp = _timestamp_to_iso(raw_timestamps[index], observed_at_utc)
             raw_transform = raw_tracking[index]
+            debug_entry = {
+                "raw_handle": raw_text,
+                "normalized_tool_id": tool_id,
+                "frame_number": frame_number,
+                "timestamp": timestamp,
+                "raw_payload_summary": _payload_summary(raw_transform),
+                "raw_transform": _serialize_debug_value(raw_transform),
+                "quality": quality,
+            }
 
             if raw_transform is None:
                 tool_payload_summaries[raw_text or tool_id] = "none:missing"
+                debug_entry.update(
+                    {
+                        "parse_mode": "missing",
+                        "classified_state": "missing",
+                        "failure_stage": "backend_payload",
+                        "invalid_reason": "raw transform missing from backend payload",
+                        **_matrix_debug_payload(None),
+                    }
+                )
                 candidate = TrackerToolState(
                     tool_id=tool_id,
                     frame_number=frame_number,
@@ -755,6 +894,15 @@ class TrackerBackendNDI:
                         fallback_quality=quality,
                     )
                     tool_payload_summaries[raw_text or tool_id] = payload_summary
+                    debug_entry.update(
+                        {
+                            "parse_mode": payload_summary,
+                            "classified_state": "tracked",
+                            "failure_stage": None,
+                            "invalid_reason": None,
+                            **_matrix_debug_payload(_T_aurora_tool),
+                        }
+                    )
                     candidate = TrackerToolState(
                         tool_id=tool_id,
                         frame_number=frame_number,
@@ -768,6 +916,15 @@ class TrackerBackendNDI:
                     )
                 except Exception as exc:
                     tool_payload_summaries[raw_text or tool_id] = f"{_payload_summary(raw_transform)}:error={exc}"
+                    debug_entry.update(
+                        {
+                            "parse_mode": f"{_payload_summary(raw_transform)}:error",
+                            "classified_state": "invalid",
+                            "failure_stage": _failure_stage_from_exception(exc),
+                            "invalid_reason": str(exc),
+                            **_matrix_debug_payload(_debug_matrix_from_raw_payload(raw_transform, tool_id=tool_id)),
+                        }
+                    )
                     candidate = TrackerToolState(
                         tool_id=tool_id,
                         frame_number=frame_number,
@@ -783,6 +940,7 @@ class TrackerBackendNDI:
             existing = tools.get(tool_id)
             if existing is None or _tracking_state_rank(candidate.status) >= _tracking_state_rank(existing.status):
                 tools[tool_id] = candidate
+                tool_transform_debug[tool_id] = debug_entry
 
         latest_frame = max(observed_frames) if observed_frames else self._coerce_frame_number(frame_payload[2])
         if latest_frame is None and tools:
@@ -799,6 +957,7 @@ class TrackerBackendNDI:
             "runtime_role_mappings": dict(runtime_role_mappings),
             "unmapped_tool_ids": list(dict.fromkeys(unmapped_tool_ids)),
             "tool_payload_summaries": dict(tool_payload_summaries),
+            "tool_transform_debug": dict(tool_transform_debug),
         }
         return tools, latest_frame, debug
 
@@ -856,6 +1015,17 @@ class TrackerBackendNDI:
                 updates["canonical_state"] = self._canonical_state_for_connection(str(updates["connection_state"]))
             for key, value in updates.items():
                 setattr(self._state, key, value)
+
+    def _build_backend_details(self) -> dict[str, Any]:
+        return {
+            "tracker_type": self.tracker_type,
+            "aurora_port": self.aurora_port,
+            "poll_interval_ms": self.poll_interval_ms,
+            "tool_aliases": dict(self.tool_id_aliases),
+            "expected_tool_ids": list(self.expected_tool_ids),
+            "tracker_settings": dict(self._tracker_settings_snapshot),
+            "ndi_transform_debug": dict(self._last_frame_debug),
+        }
 
     @staticmethod
     def _canonical_state_for_connection(connection_state: str) -> str:

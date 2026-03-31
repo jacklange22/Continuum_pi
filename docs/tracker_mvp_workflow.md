@@ -7,13 +7,14 @@ This is the operator path for tomorrow's Pi session. Ignore servos and full expe
 1. Connect tracker
 2. Validate tracker health
 3. Confirm tool visibility and IDs
-4. Run pivot calibration on tool `0B`
-5. Save and inspect the tip file
-6. Select 4 registration landmarks
-7. Capture registration samples
-8. Solve registration
-9. Save the accepted registration
-10. Confirm live robot-frame pose availability from `0A`
+4. Confirm tool `0A` and `0B` transforms are valid
+5. Run pivot calibration on tool `0B`
+6. Save and inspect the tip file
+7. Select 4 registration landmarks
+8. Capture registration samples
+9. Solve registration
+10. Save the accepted registration
+11. Confirm live robot-frame pose availability from `0A`
 
 The focused GUI launcher is:
 
@@ -62,6 +63,7 @@ Tracker validation passes when:
 - frames are arriving
 - tracker data is fresh
 - tool `0B` is visible and tracked
+- tool `0A` and `0B` transforms are rigid-valid
 - no blocking tracker error is active
 
 Pivot calibration passes when:

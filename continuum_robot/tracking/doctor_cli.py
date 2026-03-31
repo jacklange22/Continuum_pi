@@ -68,6 +68,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional path for the JSON doctor report",
     )
+    parser.add_argument(
+        "--debug-transforms",
+        action="store_true",
+        help="Print per-tool backend/conversion/validation details for the latest frame",
+    )
     return parser
 
 
@@ -132,6 +137,10 @@ def main(argv: list[str] | None = None) -> int:
 
     for line in render_tracking_diagnostics_report_lines(report):
         print(line)
+    if args.debug_transforms:
+        transform_debug = dict(report.backend_details or {}).get("ndi_transform_debug", {})
+        print("transform_debug=")
+        print(json.dumps(transform_debug, indent=2, sort_keys=True))
 
     if args.save_report is not None:
         args.save_report.parent.mkdir(parents=True, exist_ok=True)
