@@ -40,6 +40,66 @@ class ServoMotionAssessment:
     safe_min_tick: int | None = None
     safe_max_tick: int | None = None
     tightening_direction: str | None = None
+    blocking_reasons: tuple[str, ...] = ()
+    external_power_required: bool = False
+    external_power_ready: bool | None = None
+
+
+@dataclass
+class ServoDiscoverySnapshot:
+    """Structured one-servo discovery/readiness snapshot."""
+
+    status: str
+    connected: bool
+    bus_reachable: bool
+    expected_servo_id: int | None
+    selected_servo_id: int | None
+    discovered_ids: list[int]
+    scan_range: tuple[int, int] | None
+    telemetry: ServoTelemetry | None
+    motion_assessment: ServoMotionAssessment | None
+    message: str
+
+
+@dataclass
+class ServoIdAssignmentResult:
+    """Outcome of a maintenance-only servo ID assignment."""
+
+    current_id: int
+    new_id: int
+    success: bool
+    blocked: bool
+    status: str
+    selected_ids: list[int]
+    message: str
+
+
+@dataclass
+class ServoJogResult:
+    """Outcome of a conservative one-servo jog command."""
+
+    servo_id: int
+    command_direction: str
+    step_ticks: int
+    delta_ticks: int
+    success: bool
+    blocked: bool
+    status: str
+    message: str
+    goal_tick: int | None
+    telemetry: ServoTelemetry | None
+    assessment: ServoMotionAssessment | None
+
+
+@dataclass
+class NeutralCaptureResult:
+    """Outcome of capturing and persisting neutral setpoints."""
+
+    servo_ids: list[int]
+    setpoints_by_id: dict[int, int]
+    safe_bounds_by_id: dict[int, tuple[int, int]]
+    artifact_path: str
+    message: str
 
 
 @dataclass
@@ -95,6 +155,53 @@ class ServoService:
     def assign_servo_id(self, current_id: int, new_id: int) -> None:
         self.dxl_bus.write_servo_id(current_id, new_id)
 
+    def assign_servo_id_safely(self, current_id: int, new_id: int) -> ServoIdAssignmentResult:
+        discovery = self.discover_one_servo(expected_servo_id=int(current_id), allow_scan=True)
+        if not discovery.connected:
+            return ServoIdAssignmentResult(
+                current_id=int(current_id),
+                new_id=int(new_id),
+                success=False,
+                blocked=True,
+                status="disconnected",
+                selected_ids=[],
+                message="DYNAMIXEL bus is disconnected. Connect OpenRB before maintenance actions.",
+            )
+        if discovery.selected_servo_id != int(current_id):
+            return ServoIdAssignmentResult(
+                current_id=int(current_id),
+                new_id=int(new_id),
+                success=False,
+                blocked=True,
+                status=discovery.status,
+                selected_ids=list(discovery.discovered_ids),
+                message=(
+                    "Maintenance ID assignment requires exactly one known target servo. "
+                    f"Discovery result: {discovery.message}"
+                ),
+            )
+        try:
+            self.dxl_bus.write_servo_id(int(current_id), int(new_id))
+        except Exception as exc:
+            return ServoIdAssignmentResult(
+                current_id=int(current_id),
+                new_id=int(new_id),
+                success=False,
+                blocked=True,
+                status="blocked",
+                selected_ids=[int(current_id)],
+                message=str(exc),
+            )
+        return ServoIdAssignmentResult(
+            current_id=int(current_id),
+            new_id=int(new_id),
+            success=True,
+            blocked=False,
+            status="assigned",
+            selected_ids=[int(new_id)],
+            message=f"Servo ID changed from {current_id} to {new_id} and verified by readback.",
+        )
+
     def read_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
         return self.dxl_bus.read_telemetry(servo_ids)
 
@@ -111,14 +218,157 @@ class ServoService:
         return self.neutral_calibration.get_calibration_summary()
 
     def capture_neutral_setpoints(self, servo_ids: list[int]) -> dict[int, int]:
+        result = self.capture_and_save_neutral_setpoints(servo_ids)
+        return dict(result.setpoints_by_id)
+
+    def capture_and_save_neutral_setpoints(
+        self,
+        servo_ids: list[int],
+        *,
+        capture_source: str = "live_present_position",
+    ) -> NeutralCaptureResult:
+        if not servo_ids:
+            raise ValueError("At least one servo ID is required to capture neutral setpoints.")
         telemetry = self.read_telemetry(servo_ids)
         setpoints: dict[int, int] = {}
         for servo_id in servo_ids:
+            self._validate_capture_telemetry(telemetry[int(servo_id)], servo_id=int(servo_id))
             position = telemetry[servo_id].present_position
             if position is None:
                 raise RuntimeError(f"Servo {servo_id} position is unavailable")
             setpoints[servo_id] = int(position)
-        return setpoints
+        self.neutral_calibration.save_neutral_setpoints(setpoints, capture_source=capture_source)
+        bounds = self.neutral_calibration.bounds_by_servo_id([int(servo_id) for servo_id in servo_ids])
+        return NeutralCaptureResult(
+            servo_ids=[int(servo_id) for servo_id in servo_ids],
+            setpoints_by_id=setpoints,
+            safe_bounds_by_id=bounds,
+            artifact_path=str(self.neutral_calibration.path),
+            message=(
+                f"Captured and saved neutral setpoints for servo IDs {sorted(setpoints)} "
+                f"to {self.neutral_calibration.path}."
+            ),
+        )
+
+    def discover_one_servo(
+        self,
+        *,
+        expected_servo_id: int | None = None,
+        allow_scan: bool = True,
+    ) -> ServoDiscoverySnapshot:
+        if not self.is_connected:
+            return ServoDiscoverySnapshot(
+                status="disconnected",
+                connected=False,
+                bus_reachable=False,
+                expected_servo_id=int(expected_servo_id) if expected_servo_id is not None else None,
+                selected_servo_id=None,
+                discovered_ids=[],
+                scan_range=None,
+                telemetry=None,
+                motion_assessment=None,
+                message="DYNAMIXEL bus is disconnected.",
+            )
+
+        if expected_servo_id is not None and self.dxl_bus.ping_servo(int(expected_servo_id)):
+            telemetry = self.read_telemetry([int(expected_servo_id)])[int(expected_servo_id)]
+            assessment = self.assess_motion(
+                int(expected_servo_id),
+                require_calibrated_bounds=False,
+                telemetry=telemetry,
+            )
+            return ServoDiscoverySnapshot(
+                status="expected_id_found",
+                connected=True,
+                bus_reachable=True,
+                expected_servo_id=int(expected_servo_id),
+                selected_servo_id=int(expected_servo_id),
+                discovered_ids=[int(expected_servo_id)],
+                scan_range=None,
+                telemetry=telemetry,
+                motion_assessment=assessment,
+                message=(
+                    f"Expected servo ID {expected_servo_id} responded. "
+                    f"Readiness status: {assessment.reason}"
+                ),
+            )
+
+        if not allow_scan:
+            return ServoDiscoverySnapshot(
+                status="expected_id_missing",
+                connected=True,
+                bus_reachable=False,
+                expected_servo_id=int(expected_servo_id) if expected_servo_id is not None else None,
+                selected_servo_id=None,
+                discovered_ids=[],
+                scan_range=None,
+                telemetry=None,
+                motion_assessment=None,
+                message=(
+                    f"Expected servo ID {expected_servo_id} did not respond."
+                    if expected_servo_id is not None
+                    else "No expected servo ID is configured."
+                ),
+            )
+
+        scan_range = (
+            int(self.dxl_bus.config.discovery_min_id),
+            int(self.dxl_bus.config.discovery_max_id),
+        )
+        discovered_ids = self.scan_ids(min_id=scan_range[0], max_id=scan_range[1])
+        if not discovered_ids:
+            return ServoDiscoverySnapshot(
+                status="not_found",
+                connected=True,
+                bus_reachable=False,
+                expected_servo_id=int(expected_servo_id) if expected_servo_id is not None else None,
+                selected_servo_id=None,
+                discovered_ids=[],
+                scan_range=scan_range,
+                telemetry=None,
+                motion_assessment=None,
+                message=(
+                    f"No servos responded in conservative scan range {scan_range[0]}..{scan_range[1]}."
+                ),
+            )
+        if len(discovered_ids) != 1:
+            return ServoDiscoverySnapshot(
+                status="multiple_found",
+                connected=True,
+                bus_reachable=True,
+                expected_servo_id=int(expected_servo_id) if expected_servo_id is not None else None,
+                selected_servo_id=None,
+                discovered_ids=list(discovered_ids),
+                scan_range=scan_range,
+                telemetry=None,
+                motion_assessment=None,
+                message=(
+                    "Conservative discovery found multiple servos "
+                    f"{discovered_ids}. One-servo maintenance and motion are blocked."
+                ),
+            )
+        selected_servo_id = int(discovered_ids[0])
+        telemetry = self.read_telemetry([selected_servo_id])[selected_servo_id]
+        assessment = self.assess_motion(
+            selected_servo_id,
+            require_calibrated_bounds=False,
+            telemetry=telemetry,
+        )
+        return ServoDiscoverySnapshot(
+            status="scan_found",
+            connected=True,
+            bus_reachable=True,
+            expected_servo_id=int(expected_servo_id) if expected_servo_id is not None else None,
+            selected_servo_id=selected_servo_id,
+            discovered_ids=list(discovered_ids),
+            scan_range=scan_range,
+            telemetry=telemetry,
+            motion_assessment=assessment,
+            message=(
+                f"Found servo {selected_servo_id} in conservative scan range {scan_range[0]}..{scan_range[1]}. "
+                f"Readiness status: {assessment.reason}"
+            ),
+        )
 
     def get_tightening_direction(self, servo_id: int) -> str | None:
         entry = self.neutral_calibration.entry_by_servo_id(int(servo_id))
@@ -137,6 +387,7 @@ class ServoService:
         errors: list[str] = []
         safe_min: int | None = None
         safe_max: int | None = None
+        external_power_ready: bool | None = None
 
         if current.present_position is None:
             errors.append("Present Position is unavailable.")
@@ -155,8 +406,12 @@ class ServoService:
             except ValueError as exc:
                 errors.append(str(exc))
         if self.dxl_bus.config.require_voltage_for_motion:
-            if current.present_voltage_mv is None or current.present_voltage_mv <= 0:
-                errors.append("Input voltage telemetry is unavailable.")
+            try:
+                self.safety_guard.validate_voltage(current.present_voltage_mv, require_present=True)
+                external_power_ready = True
+            except ValueError as exc:
+                external_power_ready = False
+                errors.append(str(exc))
         if self.dxl_bus.config.require_temperature_for_motion:
             try:
                 self.safety_guard.validate_temperature(current.present_temperature_c, require_present=True)
@@ -187,13 +442,16 @@ class ServoService:
             safe_min_tick=safe_min,
             safe_max_tick=safe_max,
             tightening_direction=self.get_tightening_direction(int(servo_id)),
+            blocking_reasons=tuple(errors),
+            external_power_required=bool(self.dxl_bus.config.require_voltage_for_motion),
+            external_power_ready=external_power_ready,
         )
 
     def jog_servo(self, servo_id: int, delta_ticks: int) -> ServoCommandResult:
         # All live single-servo motion must pass through ServoService so
         # calibration bounds, telemetry refresh, and current checks stay consistent.
         self.safety_guard.validate_jog_delta(delta_ticks)
-        assessment = self.assess_motion(int(servo_id), require_calibrated_bounds=False)
+        assessment = self.assess_motion(int(servo_id), require_calibrated_bounds=True)
         if not assessment.ready:
             raise RuntimeError(f"Servo {servo_id} is not safe to jog: {assessment.reason}")
         if assessment.telemetry.present_position is None:
@@ -210,6 +468,62 @@ class ServoService:
                 f"Jogged servo {servo_id} to {goal} ticks "
                 f"within [{assessment.safe_min_tick}, {assessment.safe_max_tick}]."
             ),
+        )
+
+    def jog_servo_directional(
+        self,
+        *,
+        servo_id: int,
+        command_direction: str,
+        step_ticks: int,
+    ) -> ServoJogResult:
+        direction = str(command_direction).strip().lower()
+        if direction not in {"tighten", "loosen"}:
+            raise ValueError("command_direction must be 'tighten' or 'loosen'.")
+        if int(step_ticks) <= 0:
+            raise ValueError("step_ticks must be positive.")
+        try:
+            signed_step = self._tightening_step_sign(int(servo_id))
+            delta_ticks = int(step_ticks) * signed_step * (1 if direction == "tighten" else -1)
+            command = self.jog_servo(int(servo_id), int(delta_ticks))
+        except Exception as exc:
+            assessment: ServoMotionAssessment | None = None
+            try:
+                assessment = self.assess_motion(int(servo_id), require_calibrated_bounds=True)
+            except Exception:
+                assessment = None
+            return ServoJogResult(
+                servo_id=int(servo_id),
+                command_direction=direction,
+                step_ticks=int(step_ticks),
+                delta_ticks=int(locals().get("delta_ticks", 0)),
+                success=False,
+                blocked=True,
+                status="blocked",
+                message=str(exc),
+                goal_tick=None,
+                telemetry=assessment.telemetry if assessment is not None else None,
+                assessment=assessment,
+            )
+        updated = command.telemetry_by_id.get(int(servo_id))
+        return ServoJogResult(
+            servo_id=int(servo_id),
+            command_direction=direction,
+            step_ticks=int(step_ticks),
+            delta_ticks=int(delta_ticks),
+            success=True,
+            blocked=False,
+            status="moved",
+            message=command.message,
+            goal_tick=command.positions_by_id.get(int(servo_id)),
+            telemetry=updated,
+            assessment=self.assess_motion(
+                int(servo_id),
+                require_calibrated_bounds=True,
+                telemetry=updated,
+            )
+            if updated is not None
+            else None,
         )
 
     def command_displacement(
@@ -516,7 +830,7 @@ class ServoService:
         if tightening_rotation not in {"cw", "ccw"}:
             raise RuntimeError(
                 f"Servo {servo_id} tightening direction is not configured. "
-                "Set tightening_rotation_by_servo in the robot config or save startup calibration first."
+                "Set tightening_rotation_by_servo in the robot config or persist servo calibration first."
             )
         positive_tick_rotation = str(self.dxl_bus.config.positive_tick_rotation).strip().lower()
         if positive_tick_rotation not in {"cw", "ccw"}:
@@ -552,7 +866,7 @@ class ServoService:
         elif require_calibrated_bounds:
             raise ValueError(
                 f"Servo {servo_id} does not have saved safe bounds. "
-                "Capture startup calibration before commanding this action."
+                "Capture neutral or persist calibrated bounds before commanding this action."
             )
         if safe_min > safe_max:
             raise ValueError(
@@ -576,15 +890,37 @@ class ServoService:
                 f"Servo {telemetry.servo_id} reported a hardware/status error after motion: "
                 f"{telemetry.hardware_error or f'0x{telemetry.hardware_error_code:02X}'}"
             )
-        if self.dxl_bus.config.require_voltage_for_motion and (
-            telemetry.present_voltage_mv is None or telemetry.present_voltage_mv <= 0
-        ):
-            raise RuntimeError(f"Servo {telemetry.servo_id} input voltage telemetry is unavailable after motion.")
-        self.safety_guard.validate_currents(
-            [telemetry.present_current_ma],
-            require_present=self.dxl_bus.config.require_current_for_motion,
-        )
-        self.safety_guard.validate_temperature(
-            telemetry.present_temperature_c,
-            require_present=self.dxl_bus.config.require_temperature_for_motion,
-        )
+        try:
+            self.safety_guard.validate_voltage(
+                telemetry.present_voltage_mv,
+                require_present=self.dxl_bus.config.require_voltage_for_motion,
+            )
+            self.safety_guard.validate_currents(
+                [telemetry.present_current_ma],
+                require_present=self.dxl_bus.config.require_current_for_motion,
+            )
+            self.safety_guard.validate_temperature(
+                telemetry.present_temperature_c,
+                require_present=self.dxl_bus.config.require_temperature_for_motion,
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Servo {telemetry.servo_id} reported unsafe telemetry after motion: {exc}"
+            ) from exc
+
+    def _validate_capture_telemetry(self, telemetry: ServoTelemetry, *, servo_id: int) -> None:
+        if telemetry.present_position is None:
+            raise RuntimeError(f"Servo {servo_id} position is unavailable.")
+        if telemetry.hardware_error_code not in (None, 0):
+            raise RuntimeError(
+                f"Servo {servo_id} hardware error status is 0x{int(telemetry.hardware_error_code):02X}."
+            )
+        if telemetry.hardware_error:
+            raise RuntimeError(f"Servo {servo_id} reported an error during neutral capture: {telemetry.hardware_error}")
+        try:
+            if self.dxl_bus.config.require_fresh_telemetry_for_motion:
+                self.safety_guard.validate_telemetry_freshness(telemetry.last_read_monotonic_s)
+            self.safety_guard.validate_voltage(telemetry.present_voltage_mv, require_present=True)
+            self.safety_guard.validate_temperature(telemetry.present_temperature_c, require_present=True)
+        except ValueError as exc:
+            raise RuntimeError(f"Servo {servo_id} is not safe to capture neutral: {exc}") from exc

@@ -39,8 +39,12 @@ Relevant functions:
 ## Scan Servo IDs
 
 - `ServosTab.scan_button` -> `ServosController.scan()`
-- `ServosController.scan()` -> `ServoService.scan_ids()`
-- `ServoService.scan_ids()` -> `DxlBus.scan_ids(...)`
+- `ServosController.scan()` -> `ServoService.discover_one_servo(...)`
+- `ServoService.discover_one_servo(...)`
+  - tries the configured expected servo ID first
+  - falls back to a conservative bounded scan only when needed
+  - returns structured discovery + motion-readiness status
+- `ServoService.scan_ids()` -> `DxlBus.scan_ids(...)` when the bounded scan path is used
 
 The controller owns the displayed ID list. The widget just refreshes it.
 
@@ -59,7 +63,7 @@ Returned fields are normalized into `ServoTelemetry` and then into
 
 - `ServosTab._assign_id()`
 - `ServosController.assign_servo_id(current_id, new_id)`
-- `ServoService.assign_servo_id(...)`
+- `ServoService.assign_servo_id_safely(...)`
 - `DxlBus.write_servo_id(...)`
 
 After success the controller re-scans through the canonical scan path.
@@ -68,13 +72,16 @@ After success the controller re-scans through the canonical scan path.
 
 - `ServosTab._jog(...)`
 - `ServosController.jog_servo(...)`
+- `ServosController.fine_jog(...)` / `ServosController.coarse_jog(...)`
+- `ServoService.jog_servo_directional(...)`
+  - resolves tighten vs loosen through the configured tightening direction
 - `ServoService.jog_servo(...)`
   - reads present telemetry
   - computes the goal relative to present position
-  - validates calibrated bounds through `_validate_goal_bounds(...)`
+  - validates saved calibrated bounds around neutral
   - writes goal positions through `DxlBus.write_goal_positions(...)`
   - re-reads telemetry
-  - runs current validation through `SafetyGuard.validate_currents(...)`
+  - validates current / voltage / temperature / fault status
 
 There is no widget-side bus write path.
 
@@ -105,8 +112,9 @@ The canonical persistence path is `NeutralCalibrationService`.
 
 - capture neutral:
   - `ServosController.capture_neutral_setpoints()`
-  - `ServoService.capture_neutral_setpoints(...)`
+  - `ServoService.capture_and_save_neutral_setpoints(...)`
   - reads present positions from telemetry
+  - persists the artifact immediately with capture metadata and neutral-centered software bounds
 - save artifact:
   - `ServosController.save_neutral_setpoints()`
   - `ServoService.save_neutral_setpoints(...)`

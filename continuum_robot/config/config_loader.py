@@ -111,6 +111,7 @@ class ConfigLoader:
             pretension_timeout_s=float(safety_data.get("pretension_timeout_s", 10.0)),
             pretension_settle_time_s=float(safety_data.get("pretension_settle_time_s", 0.05)),
             max_temperature_c=int(safety_data.get("max_temperature_c", 70)),
+            min_input_voltage_mv=int(safety_data.get("min_input_voltage_mv", 4000)),
         )
         candidate_landmarks = self._load_registration_landmarks(registration_data)
         nominal_landmarks = {

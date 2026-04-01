@@ -1,5 +1,7 @@
 """Typed config schemas used across the codebase."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 
 
@@ -73,6 +75,7 @@ class SafetyConfig:
     pretension_timeout_s: float = 10.0
     pretension_settle_time_s: float = 0.05
     max_temperature_c: int = 70
+    min_input_voltage_mv: int = 4000
 
 
 @dataclass

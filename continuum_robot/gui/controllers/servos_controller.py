@@ -16,6 +16,7 @@ class ServosViewState:
     connected: bool = False
     robot_mode: str = ""
     single_servo_mode: bool = False
+    expected_servo_ids: list[int] = field(default_factory=list)
     servo_ids: list[int] = field(default_factory=list)
     neutral_setpoints: dict[int, int] = field(default_factory=dict)
     calibration_exists: bool = False
@@ -31,6 +32,10 @@ class ServosViewState:
     coarse_jog_step_ticks: int = 25
     default_pretension_threshold_ma: int = 220
     selected_servo_id: int | None = None
+    discovery_status: str = "idle"
+    discovery_message: str = "One-servo discovery not run yet."
+    blocking_reasons: list[str] = field(default_factory=list)
+    selected_servo_external_power_ready: bool | None = None
     pretension_running: bool = False
     pretension_result_can_accept: bool = False
     pretension_message: str = "Pretension not checked."
@@ -51,6 +56,7 @@ class ServosController:
             connected=servo_service.is_connected,
             robot_mode=settings.robot.mode,
             single_servo_mode=(settings.robot.mode == "1-servo" or len(settings.robot.servo_ids) == 1),
+            expected_servo_ids=list(settings.robot.servo_ids),
             servo_ids=list(settings.robot.servo_ids),
             tendon_displacements_cm=[0.0] * len(settings.robot.tendon_to_servo),
             fine_jog_step_ticks=settings.safety.fine_jog_step_ticks,
@@ -72,10 +78,19 @@ class ServosController:
     def refresh(self) -> ServosViewState:
         self.state.connected = self.servo_service.is_connected
         self.state.robot_mode = self.settings.robot.mode
+        self.state.expected_servo_ids = list(self.settings.robot.servo_ids)
         self.state.single_servo_mode = self.settings.robot.mode == "1-servo" or len(self.state.servo_ids) == 1
         self._refresh_calibration_summary()
         if not self.state.connected:
             self.state.telemetry = {}
+            self.state.selected_servo_external_power_ready = None
+            if self.state.discovery_status == "idle":
+                self.state.discovery_message = "Connect OpenRB and the DYNAMIXEL bus before discovery."
+            return self.state
+        if not self.state.servo_ids:
+            self.state.telemetry = {}
+            self.state.blocking_reasons = []
+            self.state.selected_servo_external_power_ready = None
             return self.state
         if self.state.servo_ids:
             try:
@@ -90,13 +105,14 @@ class ServosController:
             assessments = {
                 int(servo_id): self.servo_service.assess_motion(
                     int(servo_id),
-                    require_calibrated_bounds=False,
+                    require_calibrated_bounds=True,
                     telemetry=item,
                 )
                 for servo_id, item in telemetry.items()
             }
             self.state.telemetry = {
                 servo_id: {
+                    "reported_servo_id": item.reported_servo_id,
                     "model_number": item.model_number,
                     "firmware_version": item.firmware_version,
                     "operating_mode": item.operating_mode,
@@ -112,24 +128,24 @@ class ServosController:
                     "safe_bounds": self._assessment_bounds_text(assessments[int(servo_id)]),
                     "ready": self._assessment_status_text(assessments[int(servo_id)]),
                     "tightening_direction": self.servo_service.get_tightening_direction(int(servo_id)) or "unset",
+                    "external_power_ready": assessments[int(servo_id)].external_power_ready,
+                    "blocking_reasons": list(assessments[int(servo_id)].blocking_reasons),
                 }
                 for servo_id, item in telemetry.items()
             }
+            selected = assessments.get(int(self.state.selected_servo_id)) if self.state.selected_servo_id is not None else None
+            if selected is not None:
+                self.state.blocking_reasons = list(selected.blocking_reasons)
+                self.state.selected_servo_external_power_ready = selected.external_power_ready
         return self.state
 
     def scan(self) -> list[int]:
         try:
-            ids = self.servo_service.scan_ids()
-            if ids:
-                self.state.servo_ids = ids
-                self.state.selected_servo_id = ids[0]
-            mode_message = (
-                "Single-servo bring-up mode active."
-                if self.state.single_servo_mode
-                else "Robot mode active; still validate one servo carefully before multi-servo tests."
+            discovery = self.servo_service.discover_one_servo(
+                expected_servo_id=self._expected_servo_id(),
+                allow_scan=True,
             )
-            self.state.status_message = f"Found servo IDs: {self.state.servo_ids}"
-            self.state.status_message += f" {mode_message}"
+            self._apply_discovery_snapshot(discovery)
             self.state.last_error = None
             return self.state.servo_ids
         except Exception as exc:
@@ -139,18 +155,26 @@ class ServosController:
         finally:
             self.refresh()
 
+    def refresh_readiness(self) -> ServosViewState:
+        discovery = self.servo_service.discover_one_servo(
+            expected_servo_id=self._expected_servo_id(),
+            allow_scan=False,
+        )
+        self._apply_discovery_snapshot(discovery)
+        return self.refresh()
+
     def assign_servo_id(self, current_id: int, new_id: int) -> None:
-        try:
-            self.servo_service.assign_servo_id(current_id, new_id)
-            self.state.status_message = (
-                f"Renamed servo {current_id} to {new_id}. Re-scan complete; reconnect only if the bus becomes unstable."
-            )
+        result = self.servo_service.assign_servo_id_safely(current_id, new_id)
+        self.state.status_message = result.message
+        self.state.discovery_status = result.status
+        if result.success:
+            self.state.servo_ids = list(result.selected_ids)
+            self.state.selected_servo_id = int(new_id)
             self.state.last_error = None
             self.scan()
-        except Exception as exc:
-            self.state.last_error = str(exc)
-            self.state.status_message = f"Servo ID assignment failed: {exc}"
-            raise
+            return
+        self.state.last_error = result.message
+        raise RuntimeError(result.message)
 
     def jog_servo(self, servo_id: int, delta_ticks: int) -> None:
         try:
@@ -165,10 +189,10 @@ class ServosController:
             self.refresh()
 
     def fine_jog(self, servo_id: int, direction: int) -> None:
-        self.jog_servo(int(servo_id), int(direction) * int(self.state.fine_jog_step_ticks))
+        self._directional_jog(int(servo_id), int(direction), int(self.state.fine_jog_step_ticks))
 
     def coarse_jog(self, servo_id: int, direction: int) -> None:
-        self.jog_servo(int(servo_id), int(direction) * int(self.state.coarse_jog_step_ticks))
+        self._directional_jog(int(servo_id), int(direction), int(self.state.coarse_jog_step_ticks))
 
     def set_tendon_displacements(self, values: list[float]) -> None:
         self.state.tendon_displacements_cm = list(values)
@@ -192,15 +216,19 @@ class ServosController:
 
     def capture_neutral_setpoints(self) -> dict[int, int]:
         try:
-            setpoints = self.servo_service.capture_neutral_setpoints(self.state.servo_ids)
+            servo_ids = self._capture_servo_ids()
+            result = self.servo_service.capture_and_save_neutral_setpoints(servo_ids)
+            setpoints = result.setpoints_by_id
             self.state.neutral_setpoints = setpoints
-            self.state.status_message = "Captured neutral servo positions from present telemetry."
+            self.state.status_message = result.message
             self.state.last_error = None
             return setpoints
         except Exception as exc:
             self.state.last_error = str(exc)
             self.state.status_message = f"Neutral capture failed: {exc}"
             raise
+        finally:
+            self.refresh()
 
     def save_neutral_setpoints(self) -> None:
         self.servo_service.save_neutral_setpoints(self.state.neutral_setpoints)
@@ -320,6 +348,34 @@ class ServosController:
         if self._pretension_thread is not None:
             self._pretension_thread.join(timeout=0.2)
 
+    def _expected_servo_id(self) -> int | None:
+        if self.state.selected_servo_id is not None:
+            return int(self.state.selected_servo_id)
+        if self.settings.robot.servo_ids:
+            return int(self.settings.robot.servo_ids[0])
+        return None
+
+    def _capture_servo_ids(self) -> list[int]:
+        if self.state.single_servo_mode:
+            servo_id = self.state.selected_servo_id or self._expected_servo_id()
+            if servo_id is None:
+                raise RuntimeError("No servo is selected for one-servo neutral capture.")
+            return [int(servo_id)]
+        return list(self.state.servo_ids)
+
+    def _directional_jog(self, servo_id: int, direction: int, step_ticks: int) -> None:
+        command_direction = "tighten" if int(direction) > 0 else "loosen"
+        result = self.servo_service.jog_servo_directional(
+            servo_id=int(servo_id),
+            command_direction=command_direction,
+            step_ticks=int(step_ticks),
+        )
+        self.state.status_message = result.message
+        self.state.last_error = None if result.success else result.message
+        if result.blocked:
+            raise RuntimeError(result.message)
+        self.refresh()
+
     def _neutral_ticks_for_current_ids(self) -> list[int]:
         if not self.state.neutral_setpoints:
             raise RuntimeError("Neutral setpoints are missing. Capture or load them first.")
@@ -332,6 +388,22 @@ class ServosController:
         if missing:
             raise RuntimeError(f"Neutral setpoints missing for servo IDs: {missing}")
         return [self.state.neutral_setpoints[sid] for sid in self.state.servo_ids]
+
+    def _apply_discovery_snapshot(self, discovery) -> None:
+        self.state.discovery_status = discovery.status
+        self.state.discovery_message = discovery.message
+        self.state.servo_ids = list(discovery.discovered_ids)
+        if discovery.selected_servo_id is not None:
+            self.state.selected_servo_id = int(discovery.selected_servo_id)
+        elif discovery.expected_servo_id is not None and self.state.selected_servo_id is None:
+            self.state.selected_servo_id = int(discovery.expected_servo_id)
+        if discovery.motion_assessment is not None:
+            self.state.blocking_reasons = list(discovery.motion_assessment.blocking_reasons)
+            self.state.selected_servo_external_power_ready = discovery.motion_assessment.external_power_ready
+        else:
+            self.state.blocking_reasons = []
+            self.state.selected_servo_external_power_ready = None
+        self.state.status_message = discovery.message
 
     def _refresh_calibration_summary(self) -> None:
         summary = self.servo_service.get_calibration_summary()

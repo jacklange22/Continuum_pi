@@ -395,6 +395,10 @@ def test_system_controller_saves_runtime_parameters(tmp_path: Path) -> None:
         baudrate=57600,
         fine_jog_step_ticks=3,
         coarse_jog_step_ticks=15,
+        position_min_offset_ticks=-120,
+        position_max_offset_ticks=140,
+        software_position_margin_ticks=32,
+        telemetry_freshness_timeout_s=0.3,
         pretension_threshold_ma=210,
         tightening_direction="ccw",
     )
@@ -403,6 +407,7 @@ def test_system_controller_saves_runtime_parameters(tmp_path: Path) -> None:
     assert saved["openrb_port"] == "/dev/ttyUSB_TEST"
     assert saved["baudrate"] == 57600
     assert saved["safety_overrides"]["fine_jog_step_ticks"] == 3
+    assert saved["safety_overrides"]["position_min_offset_ticks"] == -120
     assert saved["robot_overrides"]["tightening_rotation_by_servo"]["1"] == "ccw"
 
 
@@ -539,22 +544,25 @@ def test_servos_controller_supports_fine_and_coarse_jog_steps(tmp_path: Path, mo
     service = _servo_service(tmp_path)
     service.connect("/dev/mock-openrb", 115200)
     controller = ServosController(service, _settings())
-    seen: list[tuple[int, int]] = []
+    seen: list[tuple[int, str, int]] = []
 
-    def _fake_jog(servo_id: int, delta_ticks: int) -> ServoCommandResult:
-        seen.append((servo_id, delta_ticks))
-        return ServoCommandResult(
-            positions_by_id={servo_id: 2048 + delta_ticks},
-            telemetry_by_id={},
-            message="ok",
-        )
+    class _FakeDirectionalResult:
+        def __init__(self, servo_id: int, command_direction: str, step_ticks: int) -> None:
+            self.message = "ok"
+            self.success = True
+            self.blocked = False
+            self.delta_ticks = step_ticks if command_direction == "loosen" else -step_ticks
 
-    monkeypatch.setattr(service, "jog_servo", _fake_jog)
+    def _fake_directional(*, servo_id: int, command_direction: str, step_ticks: int):
+        seen.append((servo_id, command_direction, step_ticks))
+        return _FakeDirectionalResult(servo_id, command_direction, step_ticks)
+
+    monkeypatch.setattr(service, "jog_servo_directional", _fake_directional)
 
     controller.fine_jog(1, 1)
     controller.coarse_jog(1, -1)
 
-    assert seen == [(1, 5), (1, -25)]
+    assert seen == [(1, "tighten", 5), (1, "loosen", 25)]
 
 
 def test_servos_controller_saves_startup_calibration_and_accepts_pretension(tmp_path: Path) -> None:

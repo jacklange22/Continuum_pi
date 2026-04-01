@@ -161,16 +161,20 @@ Public methods currently relied on by the GUI and experiments:
 - `connect(...)`
 - `disconnect()`
 - `scan_ids(...)`
+- `discover_one_servo(...)`
 - `assign_servo_id(...)`
+- `assign_servo_id_safely(...)`
 - `read_telemetry(...)`
 - `assess_motion(...)`
 - `capture_neutral_setpoints(...)`
+- `capture_and_save_neutral_setpoints(...)`
 - `save_neutral_setpoints(...)`
 - `load_neutral_setpoints(...)`
 - `load_calibration_artifact()`
 - `get_calibration_summary()`
 - `save_startup_calibration(...)`
 - `jog_servo(...)`
+- `jog_servo_directional(...)`
 - `command_displacement(...)`
 - `run_pretension_routine(...)`
 - `accept_pretension_result(...)`
@@ -219,6 +223,7 @@ These assumptions are still not proven in dry mode:
 - exact OpenRB firmware behavior on the real board
 - actual XC330-M288-T operating mode on startup
 - current and voltage scale agreement with the real servo registers
+- whether the configured minimum motion voltage is appropriate for the real wiring path
 - control-table address agreement for the exact servo model/firmware in use
 - DYNAMIXEL bus behavior under real wiring/power conditions
 - real safe current limits for tendon protection

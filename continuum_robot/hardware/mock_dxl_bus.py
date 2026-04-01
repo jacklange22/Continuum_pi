@@ -16,6 +16,7 @@ class MockDxlBus(DxlBus):
         self._state: dict[int, ServoTelemetry] = {
             sid: ServoTelemetry(
                 servo_id=sid,
+                reported_servo_id=sid,
                 model_number=1240,
                 firmware_version=53,
                 operating_mode=3,
@@ -46,6 +47,9 @@ class MockDxlBus(DxlBus):
     def scan_ids(self, min_id: int = 1, max_id: int = 20) -> list[int]:
         return [sid for sid in sorted(self._state) if min_id <= sid <= max_id]
 
+    def ping_servo(self, servo_id: int) -> bool:
+        return int(servo_id) in self._state
+
     def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
         for servo_id, goal in positions_by_id.items():
             telemetry = self._state.setdefault(servo_id, ServoTelemetry(servo_id=servo_id))
@@ -62,8 +66,13 @@ class MockDxlBus(DxlBus):
             raise ValueError(f"Servo {current_id} not found")
         if new_id in self._state:
             raise ValueError(f"Servo {new_id} already exists")
+        if self._state[current_id].torque_enabled:
+            self._state[current_id].torque_enabled = False
+        if self._state[current_id].torque_enabled not in (False, None):
+            raise RuntimeError(f"Servo {current_id} torque must be disabled before ID assignment")
         telemetry = self._state.pop(current_id)
         telemetry.servo_id = new_id
+        telemetry.reported_servo_id = new_id
         self._state[new_id] = telemetry
 
     def read_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
@@ -73,6 +82,7 @@ class MockDxlBus(DxlBus):
             if telemetry is None:
                 result[servo_id] = ServoTelemetry(
                     servo_id=servo_id,
+                    reported_servo_id=None,
                     present_position=None,
                     present_current_ma=None,
                     present_voltage_mv=None,
@@ -83,6 +93,7 @@ class MockDxlBus(DxlBus):
             else:
                 result[servo_id] = ServoTelemetry(
                     servo_id=servo_id,
+                    reported_servo_id=telemetry.reported_servo_id if telemetry.reported_servo_id is not None else servo_id,
                     model_number=telemetry.model_number,
                     firmware_version=telemetry.firmware_version,
                     operating_mode=telemetry.operating_mode,

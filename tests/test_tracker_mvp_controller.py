@@ -378,3 +378,54 @@ def test_tracker_mvp_guided_pivot_collection_requires_accept_before_registration
     assert accepted_state.registration_ready is True
 
     registration_controller.begin_session()
+
+
+def test_tracker_mvp_pivot_parse_failure_preserves_parse_report_for_operator_review(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller, _registration_controller, tracking_service = _build_runtime(
+        tmp_path,
+        penprobe_file="data/tip_cals/generated_penprobe_tip.csv",
+    )
+    tracking_service.start()
+    monkeypatch.setattr(
+        "continuum_robot.gui.controllers.tracker_mvp_controller.build_tracking_diagnostics_report",
+        lambda *args, **kwargs: _FakeValidationReport(tracker_ready=True),
+    )
+    controller.validate_tracker()
+    controller.PIVOT_MIN_SAMPLES = 2
+    controller.PIVOT_SAMPLE_PERIOD_S = 0.001
+    controller.start_pivot_collection()
+    time.sleep(0.08)
+    controller.stop_pivot_collection()
+
+    failed_run_path = tmp_path / "runs" / "pivot_failed"
+
+    def _fake_failed_run(*args, **kwargs):
+        failed_run_path.mkdir(parents=True, exist_ok=True)
+        return SimpleNamespace(
+            success=False,
+            message="Experiment pivot_calibration failed: CSV header detected but required columns missing: qz",
+            paths=SimpleNamespace(output_dir=failed_run_path),
+            summary=SimpleNamespace(
+                experiment_metrics={
+                    "pivot_input_format": "canonical_headered_csv",
+                    "pivot_input_usable_rows": 0,
+                    "pivot_input_rejected_row_count": 1,
+                    "pivot_input_rejected_rows": [{"row": 2, "reason": "missing values for qz"}],
+                }
+            ),
+        )
+
+    monkeypatch.setattr(controller.experiment_runner, "run_experiment", _fake_failed_run)
+
+    with pytest.raises(RuntimeError, match="required columns missing: qz"):
+        controller.solve_pivot_collection()
+
+    state = controller.refresh()
+    assert state.pivot_status == "solve_failed"
+    assert state.pivot_input_format == "canonical_headered_csv"
+    assert state.pivot_input_usable_rows == 0
+    assert state.pivot_input_rejected_row_count == 1
+    assert "row 2: missing values for qz" in state.pivot_input_rejected_rows[0]

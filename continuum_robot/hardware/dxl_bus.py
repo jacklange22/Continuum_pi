@@ -28,6 +28,7 @@ class ServoTelemetry:
     """Readback values for one servo."""
 
     servo_id: int
+    reported_servo_id: int | None = None
     model_number: int | None = None
     firmware_version: int | None = None
     operating_mode: int | None = None
@@ -61,6 +62,8 @@ class DxlBusConfig:
     default_profile_acceleration: int | None = None
     auto_torque_enable_on_write: bool = True
     torque_disable_for_eeprom_write: bool = True
+    discovery_min_id: int = 1
+    discovery_max_id: int = 20
     voltage_scale_mv_per_unit: float = 100.0
     current_scale_ma_per_unit: float = 1.0
     control_table: dict[str, int] = field(
@@ -116,6 +119,8 @@ class DxlBusConfig:
             ),
             auto_torque_enable_on_write=bool(payload.get("auto_torque_enable_on_write", True)),
             torque_disable_for_eeprom_write=bool(payload.get("torque_disable_for_eeprom_write", True)),
+            discovery_min_id=int(payload.get("discovery_min_id", 1)),
+            discovery_max_id=int(payload.get("discovery_max_id", 20)),
             voltage_scale_mv_per_unit=float(payload.get("voltage_scale_mv_per_unit", 100.0)),
             current_scale_ma_per_unit=float(payload.get("current_scale_ma_per_unit", 1.0)),
             control_table=control_table,
@@ -193,10 +198,14 @@ class DxlBus:
         self._require_connected()
         found: list[int] = []
         for servo_id in range(int(min_id), int(max_id) + 1):
-            _model_number, comm_result, _packet_error = self._packet_handler.ping(self._port_handler, servo_id)
-            if comm_result == self._sdk.COMM_SUCCESS:
+            if self.ping_servo(int(servo_id)):
                 found.append(servo_id)
         return found
+
+    def ping_servo(self, servo_id: int) -> bool:
+        """Return whether one servo ID responds on the live bus."""
+        self._require_connected()
+        return self._ping(int(servo_id))
 
     def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
         """Send goal positions in ticks."""
@@ -224,15 +233,44 @@ class DxlBus:
     def write_servo_id(self, current_id: int, new_id: int) -> None:
         """Assign a new servo ID."""
         self._require_connected()
+        if int(current_id) == int(new_id):
+            raise ValueError("Current servo ID and new servo ID must be different.")
         if int(new_id) <= 0 or int(new_id) > 252:
             raise ValueError("Servo ID must be between 1 and 252.")
         if not self._ping(int(current_id)):
             raise RuntimeError(f"Servo {current_id} did not respond on the bus.")
         if self._ping(int(new_id)):
             raise RuntimeError(f"Servo ID {new_id} is already in use.")
-        if self.config.torque_disable_for_eeprom_write:
-            self._write1(int(current_id), self.config.control_table["torque_enable"], 0, "torque disable")
+        torque_address = self.config.control_table["torque_enable"]
+        torque_enabled_raw, torque_error = self._read1(int(current_id), torque_address)
+        if torque_error is not None:
+            raise RuntimeError(
+                f"Failed to read Torque Enable for servo {current_id} before EEPROM write: {torque_error}"
+            )
+        if self.config.torque_disable_for_eeprom_write and torque_enabled_raw != 0:
+            self._write1(int(current_id), torque_address, 0, "torque disable")
+        torque_verify_raw, torque_verify_error = self._read1(int(current_id), torque_address)
+        if torque_verify_error is not None:
+            raise RuntimeError(
+                f"Failed to verify Torque Enable for servo {current_id} before EEPROM write: {torque_verify_error}"
+            )
+        if torque_verify_raw != 0:
+            raise RuntimeError(
+                f"Torque Enable must be 0 before writing servo ID for servo {current_id}; "
+                f"read back {torque_verify_raw}."
+            )
         self._write1(int(current_id), self.config.control_table["servo_id"], int(new_id), "servo ID")
+        if not self._ping(int(new_id)):
+            raise RuntimeError(f"Servo {new_id} did not respond after ID assignment.")
+        readback_id, readback_error = self._read1(int(new_id), self.config.control_table["servo_id"])
+        if readback_error is not None:
+            raise RuntimeError(
+                f"Failed to verify servo ID readback for servo {new_id}: {readback_error}"
+            )
+        if readback_id != int(new_id):
+            raise RuntimeError(
+                f"Servo ID readback mismatch after assignment: expected {new_id}, got {readback_id}."
+            )
 
     def read_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
         """Return telemetry map for requested IDs."""
@@ -245,6 +283,7 @@ class DxlBus:
         result: dict[int, ServoTelemetry] = {}
         read_time = time.monotonic()
         for servo_id in servo_ids:
+            reported_id_raw, reported_id_error = self._read1(servo_id, self.config.control_table["servo_id"])
             model_raw, model_error = self._read2(servo_id, self.config.control_table["model_number"])
             firmware_raw, firmware_error = self._read1(servo_id, self.config.control_table["firmware_version"])
             operating_mode_raw, operating_mode_error = self._read1(servo_id, self.config.control_table["operating_mode"])
@@ -268,6 +307,7 @@ class DxlBus:
                     current_error,
                     voltage_error,
                     temperature_error,
+                    reported_id_error,
                     model_error,
                     firmware_error,
                     operating_mode_error,
@@ -285,6 +325,7 @@ class DxlBus:
 
             result[int(servo_id)] = ServoTelemetry(
                 servo_id=int(servo_id),
+                reported_servo_id=int(reported_id_raw) if reported_id_raw is not None else None,
                 model_number=int(model_raw) if model_raw is not None else None,
                 firmware_version=int(firmware_raw) if firmware_raw is not None else None,
                 operating_mode=int(operating_mode_raw) if operating_mode_raw is not None else None,

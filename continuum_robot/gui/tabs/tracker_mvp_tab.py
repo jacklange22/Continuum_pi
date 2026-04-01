@@ -153,6 +153,7 @@ class TrackerMvpTab(QWidget):
         self.pivot_motion_label = QLabel("not measured")
         self.tip_geometry_label = QLabel("not ready")
         self.pivot_metrics_label = QLabel("No pivot run yet.")
+        self.pivot_parse_label = QLabel("format not detected")
         self.pivot_capture_dataset_label = QLabel("none")
         self.pivot_run_path_label = QLabel("none")
         self.tip_preview_text = QTextEdit()
@@ -180,6 +181,7 @@ class TrackerMvpTab(QWidget):
         pivot_form.addRow("Motion diversity", self.pivot_motion_label)
         pivot_form.addRow("Tip geometry", self.tip_geometry_label)
         pivot_form.addRow("Pivot metrics", self.pivot_metrics_label)
+        pivot_form.addRow("Input parse", self.pivot_parse_label)
         pivot_form.addRow("Raw capture dataset", self.pivot_capture_dataset_label)
         pivot_form.addRow("Pivot review run", self.pivot_run_path_label)
         pivot_layout.addLayout(pivot_form)
@@ -304,6 +306,14 @@ class TrackerMvpTab(QWidget):
             )
         else:
             self.pivot_metrics_label.setText(workflow_state.pivot_summary)
+        rejected_preview = "; ".join(workflow_state.pivot_input_rejected_rows[:3])
+        parse_text = (
+            f"{workflow_state.pivot_input_format or 'not_detected'} | usable_0B_rows={workflow_state.pivot_input_usable_rows} "
+            f"| rejected_rows={workflow_state.pivot_input_rejected_row_count}"
+        )
+        if rejected_preview:
+            parse_text += f" | {rejected_preview}"
+        self.pivot_parse_label.setText(parse_text)
         self.pivot_capture_dataset_label.setText(workflow_state.pivot_capture_dataset_path or "none")
         self.pivot_run_path_label.setText(workflow_state.pivot_run_path or "none")
         self.tip_preview_text.setPlainText(workflow_state.pivot_tip_preview)

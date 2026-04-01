@@ -22,7 +22,8 @@ from continuum_robot.experiments.metrics import (
 )
 from continuum_robot.experiments.pivot_utils import (
     PivotCalibrationResult,
-    load_pivot_transforms,
+    PivotInputParseError,
+    load_pivot_transforms_with_report,
     solve_pivot_calibration,
     write_tip_vector_file,
 )
@@ -498,7 +499,12 @@ class PivotCalibrationExperiment(BaseExperiment):
             self._tracking_started_here = True
 
     def execute(self, session: ExperimentSession) -> None:
-        transforms = self._collect_transforms(session)
+        try:
+            transforms, input_metrics = self._collect_transforms(session)
+        except PivotInputParseError as exc:
+            session.metrics.update(exc.report.to_metrics())
+            raise RuntimeError(str(exc)) from exc
+        session.metrics.update(input_metrics)
         for index, transform in enumerate(transforms):
             quaternion = list(rotmat_to_quat_wxyz(transform[0:3, 0:3]))
             translation = [float(value) for value in transform[0:3, 3]]
@@ -580,14 +586,24 @@ class PivotCalibrationExperiment(BaseExperiment):
             session.context.tracking_service.stop()
             self._tracking_started_here = False
 
-    def _collect_transforms(self, session: ExperimentSession) -> list[np.ndarray]:
+    def _collect_transforms(self, session: ExperimentSession) -> tuple[list[np.ndarray], dict[str, object]]:
         if self.config.input_path:
-            return load_pivot_transforms(
+            load_result = load_pivot_transforms_with_report(
                 _resolve_repo_path(session.context.project_root, self.config.input_path),
                 tool_id=self.config.tool_id,
             )
+            return load_result.transforms, load_result.report.to_metrics()
         if self.config.dry_run:
-            return _synthetic_pivot_transforms(self.config)
+            transforms = _synthetic_pivot_transforms(self.config)
+            return transforms, {
+                "pivot_input_format": "synthetic_dry_run",
+                "pivot_input_tool_id": self.config.tool_id,
+                "pivot_input_total_rows": len(transforms),
+                "pivot_input_usable_rows": len(transforms),
+                "pivot_input_filtered_other_tool_rows": 0,
+                "pivot_input_rejected_row_count": 0,
+                "pivot_input_rejected_rows": [],
+            }
         transforms: list[np.ndarray] = []
         for _ in range(max(1, self.config.sample_count)):
             session.raise_if_stop_requested()
@@ -600,7 +616,15 @@ class PivotCalibrationExperiment(BaseExperiment):
             transforms.append(T)
             if self.config.sample_period_s > 0:
                 session.context.sleep_fn(self.config.sample_period_s)
-        return transforms
+        return transforms, {
+            "pivot_input_format": "live_tracking_stream",
+            "pivot_input_tool_id": self.config.tool_id,
+            "pivot_input_total_rows": len(transforms),
+            "pivot_input_usable_rows": len(transforms),
+            "pivot_input_filtered_other_tool_rows": 0,
+            "pivot_input_rejected_row_count": 0,
+            "pivot_input_rejected_rows": [],
+        }
 
 
 def register_critical_experiments(registry) -> None:

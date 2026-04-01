@@ -23,6 +23,8 @@ class SafetyGuard:
         pretension_timeout_s: float = 10.0,
         pretension_settle_time_s: float = 0.05,
         max_temperature_c: int = 70,
+        min_input_voltage_mv: int = 4000,
+        max_input_voltage_mv: int | None = None,
         time_fn=time.monotonic,
     ) -> None:
         self.min_offset_ticks = min_offset_ticks
@@ -37,6 +39,8 @@ class SafetyGuard:
         self.pretension_timeout_s = pretension_timeout_s
         self.pretension_settle_time_s = pretension_settle_time_s
         self.max_temperature_c = max_temperature_c
+        self.min_input_voltage_mv = min_input_voltage_mv
+        self.max_input_voltage_mv = max_input_voltage_mv
         self._time_fn = time_fn
 
     def validate_positions(self, goals: list[int], neutral: list[int]) -> None:
@@ -64,6 +68,23 @@ class SafetyGuard:
             return
         if temperature_c >= self.max_temperature_c:
             raise ValueError(f"Temperature threshold exceeded: {temperature_c} C")
+
+    def validate_voltage(self, voltage_mv: int | None, *, require_present: bool = False) -> None:
+        """Raise ValueError when voltage telemetry is missing or outside configured safe bounds."""
+        if voltage_mv is None:
+            if require_present:
+                raise ValueError("Input voltage telemetry is unavailable.")
+            return
+        if int(voltage_mv) < int(self.min_input_voltage_mv):
+            raise ValueError(
+                "Input voltage is below the configured motion minimum: "
+                f"{voltage_mv} mV < {self.min_input_voltage_mv} mV."
+            )
+        if self.max_input_voltage_mv is not None and int(voltage_mv) > int(self.max_input_voltage_mv):
+            raise ValueError(
+                "Input voltage is above the configured motion maximum: "
+                f"{voltage_mv} mV > {self.max_input_voltage_mv} mV."
+            )
 
     def validate_telemetry_freshness(self, read_monotonic_s: float | None) -> None:
         """Raise ValueError when telemetry age is unknown or stale."""

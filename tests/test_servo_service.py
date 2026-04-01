@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 import pytest
@@ -26,12 +28,40 @@ class _PretensionBus(MockDxlBus):
         self._state[1].last_read_monotonic_s = self._state[1].last_read_monotonic_s
 
 
+class _RecordingIdBus(MockDxlBus):
+    def __init__(self) -> None:
+        super().__init__([1])
+        self.write_id_calls: list[tuple[int, int, bool | None]] = []
+
+    def write_servo_id(self, current_id: int, new_id: int) -> None:
+        self.write_id_calls.append((int(current_id), int(new_id), self._state[current_id].torque_enabled))
+        super().write_servo_id(current_id, new_id)
+
+
+class _StaleTelemetryBus(MockDxlBus):
+    def read_telemetry(self, servo_ids: list[int]) -> dict[int, object]:
+        result = super().read_telemetry(servo_ids)
+        for servo_id in servo_ids:
+            result[int(servo_id)].last_read_monotonic_s = self._state[int(servo_id)].last_read_monotonic_s
+        return result
+
+
+class _StalePretensionBus(_PretensionBus):
+    def read_telemetry(self, servo_ids: list[int]) -> dict[int, object]:
+        result = super().read_telemetry(servo_ids)
+        for servo_id in servo_ids:
+            result[int(servo_id)].last_read_monotonic_s = self._state[int(servo_id)].last_read_monotonic_s
+        return result
+
+
 def _build_service(
     tmp_path: Path,
     *,
     dxl_bus=None,
     time_fn=None,
     context_servo_ids: list[int] | None = None,
+    telemetry_stale_after_s: float = 0.25,
+    min_input_voltage_mv: int = 4000,
 ) -> ServoService:
     bus = dxl_bus or MockDxlBus([1, 2, 3, 4])
     if context_servo_ids is None:
@@ -49,15 +79,18 @@ def _build_service(
             fine_jog_step_ticks=5,
             coarse_jog_step_ticks=25,
             software_position_margin_ticks=64,
+            telemetry_stale_after_s=telemetry_stale_after_s,
             pretension_step_ticks=2,
             pretension_timeout_s=2.0,
             pretension_settle_time_s=0.0,
+            min_input_voltage_mv=min_input_voltage_mv,
             time_fn=time_fn or (lambda: 0.0),
         ),
         neutral_calibration=NeutralCalibrationService(
             path=tmp_path / "neutral.json",
             context=ServoCalibrationContext(
                 robot_mode=robot_mode,
+                robot_config_name=f"robot_{robot_mode}.yaml",
                 servo_ids=list(context_servo_ids),
                 tendon_to_servo=list(context_servo_ids),
                 position_min_offset_ticks=-600,
@@ -76,7 +109,6 @@ def test_servo_service_capture_save_load_and_command(tmp_path: Path) -> None:
     service = _build_service(tmp_path)
     service.connect("/dev/mock-openrb", 115200)
     neutral = service.capture_neutral_setpoints([1, 2, 3, 4])
-    service.save_neutral_setpoints(neutral)
 
     loaded = service.load_neutral_setpoints()
     result = service.command_displacement(
@@ -93,6 +125,7 @@ def test_servo_service_capture_save_load_and_command(tmp_path: Path) -> None:
     assert summary.servo_entries[1].safe_min_tick == neutral[1] - 600
     assert summary.servo_entries[1].safe_max_tick == neutral[1] + 600
     assert summary.servo_entries[1].pretension_current_threshold_ma == 220
+    assert summary.servo_entries[1].capture_source == "live_present_position"
 
 
 def test_servo_service_startup_calibration_persists_bounds_and_threshold(tmp_path: Path) -> None:
@@ -116,9 +149,15 @@ def test_servo_service_startup_calibration_persists_bounds_and_threshold(tmp_pat
 
 def test_servo_service_blocks_jog_when_operating_mode_is_wrong(tmp_path: Path) -> None:
     bus = MockDxlBus([1])
-    bus._state[1].operating_mode = 5
-    service = _build_service(tmp_path, dxl_bus=bus)
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
     service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-20,
+        max_offset_ticks=20,
+        pretension_current_threshold_ma=220,
+    )
+    bus._state[1].operating_mode = 5
 
     with pytest.raises(RuntimeError, match="Operating Mode 5 is not allowed"):
         service.jog_servo(1, 5)
@@ -126,20 +165,151 @@ def test_servo_service_blocks_jog_when_operating_mode_is_wrong(tmp_path: Path) -
 
 def test_servo_service_blocks_jog_when_telemetry_is_missing(tmp_path: Path) -> None:
     bus = MockDxlBus([1])
-    bus._state[1].present_current_ma = None
-    service = _build_service(tmp_path, dxl_bus=bus)
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
     service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-20,
+        max_offset_ticks=20,
+        pretension_current_threshold_ma=220,
+    )
+    bus._state[1].present_current_ma = None
 
     with pytest.raises(RuntimeError, match="Current telemetry is unavailable"):
         service.jog_servo(1, 5)
 
 
 def test_servo_service_enforces_coarse_jog_limit(tmp_path: Path) -> None:
-    service = _build_service(tmp_path)
+    service = _build_service(tmp_path, dxl_bus=MockDxlBus([1]), context_servo_ids=[1])
     service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-20,
+        max_offset_ticks=20,
+        pretension_current_threshold_ma=220,
+    )
 
     with pytest.raises(ValueError, match="coarse jog limit"):
         service.jog_servo(1, 40)
+
+
+def test_servo_service_blocks_jog_when_telemetry_is_stale(tmp_path: Path) -> None:
+    bus = _StaleTelemetryBus([1])
+    bus._state[1].last_read_monotonic_s = 0.0
+    service = _build_service(
+        tmp_path,
+        dxl_bus=bus,
+        context_servo_ids=[1],
+        time_fn=lambda: 0.0,
+        telemetry_stale_after_s=0.25,
+    )
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-20,
+        max_offset_ticks=20,
+        pretension_current_threshold_ma=220,
+    )
+    bus._state[1].last_read_monotonic_s = 0.0
+    service.safety_guard._time_fn = lambda: 1.0
+
+    with pytest.raises(RuntimeError, match="Telemetry is stale"):
+        service.jog_servo(1, 5)
+
+
+def test_servo_service_blocks_jog_when_hardware_error_is_present(tmp_path: Path) -> None:
+    bus = MockDxlBus([1])
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-20,
+        max_offset_ticks=20,
+        pretension_current_threshold_ma=220,
+    )
+    bus._state[1].hardware_error_code = 4
+
+    with pytest.raises(RuntimeError, match="Hardware Error Status is 0x04"):
+        service.jog_servo(1, 5)
+
+
+def test_servo_service_blocks_jog_on_unsafe_temperature_and_voltage(tmp_path: Path) -> None:
+    bus = MockDxlBus([1])
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1], min_input_voltage_mv=6000)
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-20,
+        max_offset_ticks=20,
+        pretension_current_threshold_ma=220,
+    )
+    bus._state[1].present_temperature_c = 71
+    with pytest.raises(RuntimeError, match="Temperature threshold exceeded"):
+        service.jog_servo(1, 5)
+
+    bus._state[1].present_temperature_c = 33
+    bus._state[1].present_voltage_mv = 5000
+    with pytest.raises(RuntimeError, match="Input voltage is below the configured motion minimum"):
+        service.jog_servo(1, 5)
+
+
+def test_servo_service_enforces_saved_software_bounds(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, dxl_bus=MockDxlBus([1]), context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-5,
+        max_offset_ticks=5,
+        pretension_current_threshold_ma=220,
+    )
+
+    with pytest.raises(ValueError, match="outside safe bounds"):
+        service.jog_servo(1, 6)
+
+
+def test_servo_service_directional_jog_uses_configured_tightening_direction(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-10,
+        max_offset_ticks=10,
+        pretension_current_threshold_ma=220,
+    )
+
+    tighten = service.jog_servo_directional(servo_id=1, command_direction="tighten", step_ticks=5)
+    loosen = service.jog_servo_directional(servo_id=1, command_direction="loosen", step_ticks=5)
+
+    assert tighten.success is True
+    assert tighten.delta_ticks == -5
+    assert loosen.success is True
+    assert loosen.delta_ticks == 5
+
+
+def test_servo_service_safe_id_assignment_requires_one_discovered_servo(tmp_path: Path) -> None:
+    bus = _RecordingIdBus()
+    bus._state[1].torque_enabled = True
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+
+    result = service.assign_servo_id_safely(1, 3)
+
+    assert result.success is True
+    assert result.selected_ids == [3]
+    assert bus.write_id_calls == [(1, 3, True)]
+    assert 3 in bus._state
+
+
+def test_servo_service_discovery_prefers_expected_servo_id(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, dxl_bus=MockDxlBus([7]), context_servo_ids=[7])
+    service.connect("/dev/mock-openrb", 115200)
+
+    discovery = service.discover_one_servo(expected_servo_id=7, allow_scan=False)
+
+    assert discovery.status == "expected_id_found"
+    assert discovery.selected_servo_id == 7
+    assert discovery.bus_reachable is True
+    assert discovery.telemetry is not None
 
 
 def test_servo_service_pretension_validation_returns_message(tmp_path: Path) -> None:
@@ -166,6 +336,7 @@ def test_servo_service_pretension_stops_on_threshold_and_can_be_accepted(tmp_pat
 
     assert result.success is True
     assert result.status == "threshold_reached"
+    assert result.steps_taken >= 1
     accepted = service.accept_pretension_result(1)
     assert accepted.pretension_result_status == "accepted"
 
@@ -205,11 +376,12 @@ def test_servo_service_pretension_fails_on_travel_limit(tmp_path: Path) -> None:
 
 
 def test_servo_service_pretension_fails_on_timeout(tmp_path: Path) -> None:
-    timeline = iter([0.0, 0.0, 0.0, 0.0, 3.0, 3.0, 3.0])
+    timeline = iter([0.0, 0.0, 0.0, 3.0, 3.0, 3.0])
     service = _build_service(
         tmp_path,
         dxl_bus=_PretensionBus(current_sequence=[180, 190]),
         time_fn=lambda: next(timeline),
+        telemetry_stale_after_s=10.0,
     )
     service.connect("/dev/mock-openrb", 115200)
     service.save_startup_calibration(
@@ -240,3 +412,53 @@ def test_servo_service_pretension_fails_when_current_disappears(tmp_path: Path) 
 
     assert result.success is False
     assert result.status == "invalid_telemetry"
+
+
+def test_servo_service_pretension_fails_on_stale_telemetry(tmp_path: Path) -> None:
+    bus = _StalePretensionBus(current_sequence=[180, 180])
+    bus._state[1].last_read_monotonic_s = 0.0
+    service = _build_service(
+        tmp_path,
+        dxl_bus=bus,
+        context_servo_ids=[1],
+        time_fn=lambda: 0.0,
+        telemetry_stale_after_s=0.25,
+    )
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+    bus._state[1].last_read_monotonic_s = 0.0
+    service.safety_guard._time_fn = lambda: 1.0
+
+    with pytest.raises(RuntimeError, match="Telemetry is stale"):
+        service.run_pretension_routine(servo_id=1)
+
+
+def test_servo_service_pretension_fails_on_unsafe_voltage_temperature_and_fault(tmp_path: Path) -> None:
+    bus = _PretensionBus(current_sequence=[180])
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1], min_input_voltage_mv=6000)
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+
+    bus._state[1].present_voltage_mv = 5000
+    with pytest.raises(RuntimeError, match="Input voltage is below the configured motion minimum"):
+        service.run_pretension_routine(servo_id=1)
+
+    bus._state[1].present_voltage_mv = 12000
+    bus._state[1].present_temperature_c = 71
+    with pytest.raises(RuntimeError, match="Temperature threshold exceeded"):
+        service.run_pretension_routine(servo_id=1)
+
+    bus._state[1].present_temperature_c = 33
+    bus._state[1].hardware_error_code = 8
+    with pytest.raises(RuntimeError, match="Hardware Error Status is 0x08"):
+        service.run_pretension_routine(servo_id=1)

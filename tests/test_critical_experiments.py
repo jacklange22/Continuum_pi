@@ -176,6 +176,28 @@ def _write_pivot_csv(path: Path) -> Path:
     return path
 
 
+def _write_headered_pivot_csv(path: Path) -> Path:
+    rotations, translations = _pivot_rotations_and_translations()
+    quaternions = [
+        (1.0, 0.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0, 0.0),
+        (0.0, 0.0, 1.0, 0.0),
+        (0.0, 0.0, 0.0, 1.0),
+        (0.70710678, 0.70710678, 0.0, 0.0),
+        (0.70710678, -0.70710678, 0.0, 0.0),
+        (0.70710678, 0.0, 0.70710678, 0.0),
+        (0.70710678, 0.0, -0.70710678, 0.0),
+        (0.70710678, 0.0, 0.0, 0.70710678),
+        (0.70710678, 0.0, 0.0, -0.70710678),
+    ]
+    lines = ["tool_id,qw,qx,qy,qz,x,y,z"]
+    for quaternion, translation in zip(quaternions, translations):
+        fields = ["0B", *(f"{float(value):0.8f}" for value in quaternion), *(f"{float(value):0.8f}" for value in translation)]
+        lines.append(",".join(fields))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 def test_repeatability_schedule_generation_is_deterministic_and_cycles_approaches() -> None:
     config = RepeatabilityScheduleConfig(
         target_points_cm=[
@@ -299,6 +321,28 @@ def test_pivot_calibration_offline_from_recorded_file(tmp_path: Path) -> None:
     assert result.summary.status == "success"
     assert Path(result.summary.experiment_metrics["tip_output_file"]).exists()
     assert np.allclose(result.summary.experiment_metrics["tip_vector_local_mm"], [10.0, 20.0, 100.0], atol=5e-3)
+
+
+def test_pivot_calibration_offline_from_headered_recorded_file_reports_parse_metrics(tmp_path: Path) -> None:
+    csv_path = _write_headered_pivot_csv(tmp_path / "pivot_headered_samples.csv")
+    runner = _runner(tmp_path)
+    staged_tip = tmp_path / "staged_tip.csv"
+    result = runner.run_experiment(
+        "pivot_calibration",
+        config={
+            "tool_id": "0B",
+            "input_path": str(csv_path),
+            "output_tip_file": str(staged_tip),
+            "std_dev_threshold": 3.0,
+            "min_samples": 8,
+        },
+    )
+
+    assert result.success is True
+    assert result.summary.experiment_metrics["pivot_input_format"] == "canonical_headered_csv"
+    assert result.summary.experiment_metrics["pivot_input_usable_rows"] == 10
+    assert result.summary.experiment_metrics["pivot_input_rejected_row_count"] == 0
+    assert Path(result.summary.experiment_metrics["tip_output_file"]).exists()
 
 
 def test_repeatability_dataset_reports_partial_success_without_registration(tmp_path: Path) -> None:

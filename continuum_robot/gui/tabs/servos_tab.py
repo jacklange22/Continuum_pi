@@ -102,8 +102,8 @@ class ServosTab(QWidget):
         self.title_label = QLabel("Servo Workspace")
         self.title_label.setProperty("role", "title")
         self.workflow_hint = QLabel(
-            "Use one-servo bring-up first. Verify bridge readiness, scan the servo, confirm telemetry, "
-            "save startup calibration, then run cautious threshold-based pretension."
+            "Use one-servo bring-up first. Refresh readiness, discover and read one servo, "
+            "capture neutral, validate tiny bounded jogs, then run cautious threshold-based pretension."
         )
         self.workflow_hint.setProperty("role", "hint")
         self.workflow_hint.setWordWrap(True)
@@ -116,10 +116,14 @@ class ServosTab(QWidget):
         self.ids_label.setWordWrap(True)
         self.selected_label = QLabel()
         self.selected_label.setWordWrap(True)
+        self.discovery_label = QLabel()
+        self.discovery_label.setWordWrap(True)
         self.neutral_label = QLabel()
         self.neutral_label.setWordWrap(True)
         self.pretension_label = QLabel()
         self.pretension_label.setWordWrap(True)
+        self.blocking_label = QLabel()
+        self.blocking_label.setWordWrap(True)
 
         self.calibration_status_label = QLabel()
         self.calibration_status_label.setProperty("role", "status")
@@ -135,10 +139,12 @@ class ServosTab(QWidget):
         self.selected_servo_direction_label = QLabel("—")
         self.selected_servo_ready_label = QLabel("—")
 
-        self.scan_button = QPushButton("Scan Servos")
+        self.scan_button = QPushButton("Discover / Read Servo")
         self.scan_button.setProperty("role", "primary")
         self.scan_button.clicked.connect(lambda: self._safe_call(self.controller.scan))
-        self.capture_neutral_button = QPushButton("Capture Neutral Snapshot")
+        self.refresh_readiness_button = QPushButton("Refresh Readiness")
+        self.refresh_readiness_button.clicked.connect(lambda: self._safe_call(self.controller.refresh_readiness))
+        self.capture_neutral_button = QPushButton("Capture Neutral")
         self.capture_neutral_button.clicked.connect(lambda: self._safe_call(self.controller.capture_neutral_setpoints))
         self.load_neutral_button = QPushButton("Load Calibration")
         self.load_neutral_button.clicked.connect(lambda: self._safe_call(self.controller.load_neutral_setpoints))
@@ -158,10 +164,10 @@ class ServosTab(QWidget):
         self.jog_servo_spin = QSpinBox()
         self.jog_servo_spin.setRange(1, 252)
         self.jog_servo_spin.valueChanged.connect(self._sync_servo_selection)
-        self.fine_minus_button = QPushButton("Fine -")
-        self.fine_plus_button = QPushButton("Fine +")
-        self.coarse_minus_button = QPushButton("Coarse -")
-        self.coarse_plus_button = QPushButton("Coarse +")
+        self.fine_minus_button = QPushButton("Loosen Fine")
+        self.fine_plus_button = QPushButton("Tighten Fine")
+        self.coarse_minus_button = QPushButton("Loosen Coarse")
+        self.coarse_plus_button = QPushButton("Tighten Coarse")
         self.fine_minus_button.clicked.connect(lambda: self._jog("fine", -1))
         self.fine_plus_button.clicked.connect(lambda: self._jog("fine", 1))
         self.coarse_minus_button.clicked.connect(lambda: self._jog("coarse", -1))
@@ -199,6 +205,11 @@ class ServosTab(QWidget):
         self.cancel_pretension_button.clicked.connect(lambda: self._safe_call(self.controller.cancel_pretension))
         self.accept_pretension_button.clicked.connect(self._accept_pretension)
         self.retry_pretension_button.clicked.connect(self._start_pretension)
+        self.pretension_hint = QLabel(
+            "Pretension uses present current as a practical threshold signal, not true tendon tension."
+        )
+        self.pretension_hint.setProperty("role", "hint")
+        self.pretension_hint.setWordWrap(True)
 
         self.apply_displacement_button = QPushButton("Apply Displacement")
         self.apply_displacement_button.clicked.connect(self._apply_displacement)
@@ -210,7 +221,9 @@ class ServosTab(QWidget):
         summary_layout.addRow("Mode", self.mode_label)
         summary_layout.addRow("Servo IDs", self.ids_label)
         summary_layout.addRow("Selected servo", self.selected_label)
+        summary_layout.addRow("Discovery", self.discovery_label)
         summary_layout.addRow("Neutral values", self.neutral_label)
+        summary_layout.addRow("Motion blocking", self.blocking_label)
         summary_layout.addRow("Pretension", self.pretension_label)
 
         calibration_box = QGroupBox("Calibration State")
@@ -253,6 +266,7 @@ class ServosTab(QWidget):
         maintenance_actions = QHBoxLayout()
         maintenance_actions.setSpacing(10)
         maintenance_actions.addWidget(self.scan_button)
+        maintenance_actions.addWidget(self.refresh_readiness_button)
         maintenance_actions.addWidget(self.capture_neutral_button)
         maintenance_actions.addWidget(self.load_neutral_button)
         maintenance_actions.addStretch(1)
@@ -281,8 +295,8 @@ class ServosTab(QWidget):
         jog_layout.addWidget(self.coarse_minus_button, 3, 2)
         jog_layout.addWidget(self.coarse_plus_button, 3, 3)
 
-        startup_box = QGroupBox("Startup Calibration")
-        startup_layout = QFormLayout(startup_box)
+        self.startup_box = QGroupBox("Startup Calibration")
+        startup_layout = QFormLayout(self.startup_box)
         startup_layout.addRow("Servo", self.calibration_servo_spin)
         startup_layout.addRow("Min offset", self.min_offset_spin)
         startup_layout.addRow("Max offset", self.max_offset_spin)
@@ -302,6 +316,7 @@ class ServosTab(QWidget):
         pretension_buttons_widget = QWidget()
         pretension_buttons_widget.setLayout(pretension_buttons)
         pretension_layout.addRow(pretension_buttons_widget)
+        pretension_layout.addRow(self.pretension_hint)
 
         left_column = QWidget()
         left_layout = QVBoxLayout(left_column)
@@ -309,11 +324,11 @@ class ServosTab(QWidget):
         left_layout.setSpacing(12)
         left_layout.addWidget(maintenance_box)
         left_layout.addWidget(jog_box)
-        left_layout.addWidget(startup_box)
+        left_layout.addWidget(self.startup_box)
         left_layout.addWidget(pretension_box)
 
-        displacement_box = QGroupBox("Tendon Displacement Command (cm)")
-        self.displacement_layout = QGridLayout(displacement_box)
+        self.displacement_box = QGroupBox("Tendon Displacement Command (cm)")
+        self.displacement_layout = QGridLayout(self.displacement_box)
         self.displacement_layout.setHorizontalSpacing(8)
         self.displacement_layout.setVerticalSpacing(8)
         self._rebuild_displacement_inputs(len(self.controller.state.tendon_displacements_cm))
@@ -322,7 +337,7 @@ class ServosTab(QWidget):
         telemetry_layout = QVBoxLayout(telemetry_box)
         self.telemetry_table = QTableWidget(0, 11)
         self.telemetry_table.setHorizontalHeaderLabels(
-            ["Servo", "Model", "FW", "Mode", "Torque", "Position", "Current", "Voltage", "Temp", "Safe bounds", "Status"]
+            ["Servo", "Model / ID", "FW", "Mode", "Torque", "Position", "Current", "Voltage", "Temp", "Safe bounds", "Status"]
         )
         self.telemetry_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.telemetry_table.setSelectionMode(QAbstractItemView.NoSelection)
@@ -338,7 +353,7 @@ class ServosTab(QWidget):
         right_layout = QVBoxLayout(right_column)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(12)
-        right_layout.addWidget(displacement_box)
+        right_layout.addWidget(self.displacement_box)
         right_layout.addWidget(telemetry_box, 1)
 
         workspace_splitter = QSplitter(Qt.Horizontal)
@@ -379,9 +394,11 @@ class ServosTab(QWidget):
         )
         self.ids_label.setText(", ".join(str(sid) for sid in state.servo_ids) or "none")
         self.selected_label.setText(str(selected_servo_id) if selected_servo_id is not None else "none")
+        self.discovery_label.setText(state.discovery_message)
         self.neutral_label.setText(
             ", ".join(f"{sid}:{tick}" for sid, tick in sorted(state.neutral_setpoints.items())) or "not saved"
         )
+        self.blocking_label.setText(" | ".join(state.blocking_reasons) if state.blocking_reasons else "none")
         self.pretension_label.setText(state.pretension_message)
         self.calibration_status_label.setText(
             "Ready"
@@ -399,20 +416,25 @@ class ServosTab(QWidget):
 
         has_neutral = bool(state.neutral_setpoints)
         any_servo = bool(state.servo_ids)
+        show_extended_motion = not state.single_servo_mode
+        motion_allowed = state.connected and any_servo and not state.blocking_reasons
+        self.startup_box.setVisible(show_extended_motion)
+        self.displacement_box.setVisible(show_extended_motion)
         self.assign_button.setEnabled(state.connected and any_servo)
         self.scan_button.setEnabled(state.connected)
+        self.refresh_readiness_button.setEnabled(state.connected)
         self.capture_neutral_button.setEnabled(state.connected and any_servo)
         self.load_neutral_button.setEnabled(True)
-        self.fine_minus_button.setEnabled(state.connected and any_servo)
-        self.fine_plus_button.setEnabled(state.connected and any_servo)
-        self.coarse_minus_button.setEnabled(state.connected and any_servo)
-        self.coarse_plus_button.setEnabled(state.connected and any_servo)
-        self.save_startup_button.setEnabled(state.connected and any_servo)
-        self.start_pretension_button.setEnabled(state.connected and any_servo and not state.pretension_running)
+        self.fine_minus_button.setEnabled(motion_allowed)
+        self.fine_plus_button.setEnabled(motion_allowed)
+        self.coarse_minus_button.setEnabled(motion_allowed)
+        self.coarse_plus_button.setEnabled(motion_allowed)
+        self.save_startup_button.setEnabled(show_extended_motion and state.connected and any_servo)
+        self.start_pretension_button.setEnabled(motion_allowed and not state.pretension_running)
         self.cancel_pretension_button.setEnabled(state.pretension_running)
-        self.retry_pretension_button.setEnabled(state.connected and any_servo and not state.pretension_running)
+        self.retry_pretension_button.setEnabled(motion_allowed and not state.pretension_running)
         self.accept_pretension_button.setEnabled(state.pretension_result_can_accept)
-        self.apply_displacement_button.setEnabled(state.connected and has_neutral)
+        self.apply_displacement_button.setEnabled(show_extended_motion and state.connected and has_neutral)
 
         self._set_servo_spin_value(self.jog_servo_spin, selected_servo_id)
         self._set_servo_spin_value(self.calibration_servo_spin, selected_servo_id)
@@ -447,7 +469,15 @@ class ServosTab(QWidget):
         for row, servo_id in enumerate(sorted(state.telemetry)):
             item = state.telemetry[servo_id]
             self.telemetry_table.setItem(row, 0, QTableWidgetItem(str(servo_id)))
-            self.telemetry_table.setItem(row, 1, QTableWidgetItem(str(item["model_number"])))
+            self.telemetry_table.setItem(
+                row,
+                1,
+                QTableWidgetItem(
+                    f"{item['model_number']} (id {item['reported_servo_id']})"
+                    if item.get("reported_servo_id") is not None and item.get("model_number") is not None
+                    else str(item["model_number"])
+                ),
+            )
             self.telemetry_table.setItem(row, 2, QTableWidgetItem(str(item["firmware_version"])))
             self.telemetry_table.setItem(row, 3, QTableWidgetItem(str(item["operating_mode"])))
             self.telemetry_table.setItem(row, 4, QTableWidgetItem("on" if item["torque_enabled"] else "off"))

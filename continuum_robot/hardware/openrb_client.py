@@ -41,6 +41,23 @@ class OpenRbClientConfig:
         )
 
 
+@dataclass
+class OpenRbStatusSnapshot:
+    """Structured OpenRB readiness state for diagnostics and GUI display."""
+
+    connected: bool
+    prepared: bool
+    bridge_ready: bool
+    motion_ready: bool
+    external_power_required_for_motion: bool
+    external_power_verification_available: bool
+    external_power_ready: bool | None
+    port: str | None
+    baudrate: int | None
+    status: str
+    message: str
+
+
 class OpenRbClient:
     """Validate that the OpenRB-150 serial device is reachable.
 
@@ -76,6 +93,39 @@ class OpenRbClient:
     @property
     def last_status(self) -> str:
         return self._last_status
+
+    def get_status_snapshot(self) -> OpenRbStatusSnapshot:
+        """Return a structured OpenRB bridge/readiness snapshot."""
+        if not self.is_connected:
+            return OpenRbStatusSnapshot(
+                connected=False,
+                prepared=False,
+                bridge_ready=False,
+                motion_ready=False,
+                external_power_required_for_motion=bool(
+                    self.config.require_external_power_for_motion
+                ),
+                external_power_verification_available=False,
+                external_power_ready=None,
+                port=None,
+                baudrate=None,
+                status="disconnected",
+                message="OpenRB disconnected.",
+            )
+        bridge_ready = bool(self.is_connected and self.is_prepared)
+        return OpenRbStatusSnapshot(
+            connected=True,
+            prepared=bool(self.is_prepared),
+            bridge_ready=bridge_ready,
+            motion_ready=bridge_ready,
+            external_power_required_for_motion=bool(self.config.require_external_power_for_motion),
+            external_power_verification_available=False,
+            external_power_ready=None,
+            port=self._port,
+            baudrate=self._baudrate,
+            status="ready" if bridge_ready else "connected",
+            message=self._last_status,
+        )
 
     def connect(self, port: str, baudrate: int = 115200) -> None:
         """Validate that the OpenRB serial device can be opened."""

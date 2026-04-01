@@ -89,6 +89,10 @@ class TrackerMvpViewState:
     pivot_sample_count_total: int = 0
     pivot_sample_count_used: int = 0
     pivot_sample_count_rejected: int = 0
+    pivot_input_format: str = ""
+    pivot_input_usable_rows: int = 0
+    pivot_input_rejected_row_count: int = 0
+    pivot_input_rejected_rows: list[str] = field(default_factory=list)
     measurement_point_ready: bool = False
     measurement_point_source: str = ""
     measurement_point_message: str = ""
@@ -347,6 +351,14 @@ class TrackerMvpController:
             output_dir_name=f"{stamp}_pivot_calibration_review",
         )
         if not result.success:
+            self._record_pivot_result(
+                result=result,
+                accepted_tip_path=self._registration_tip_output_path(),
+                capture_dataset_path=capture_dataset_path,
+                pending_tip_path=pending_tip_path,
+                pending_accept=False,
+                status_override="solve_failed",
+            )
             self.refresh()
             self.state.last_error = result.message
             self.state.status_message = f"Pivot calibration solve failed: {result.message}"
@@ -358,6 +370,7 @@ class TrackerMvpController:
             capture_dataset_path=capture_dataset_path,
             pending_tip_path=pending_tip_path,
             pending_accept=True,
+            status_override="review_ready",
         )
         self.refresh()
         self.state.last_error = None
@@ -538,6 +551,15 @@ class TrackerMvpController:
         self.state.pivot_sample_count_total = int(self._last_pivot_metrics.get("sample_count_total", 0) or 0)
         self.state.pivot_sample_count_used = int(self._last_pivot_metrics.get("sample_count_used", 0) or 0)
         self.state.pivot_sample_count_rejected = int(self._last_pivot_metrics.get("sample_count_rejected", 0) or 0)
+        self.state.pivot_input_format = str(self._last_pivot_metrics.get("pivot_input_format", "") or "")
+        self.state.pivot_input_usable_rows = int(self._last_pivot_metrics.get("pivot_input_usable_rows", 0) or 0)
+        rejected_rows = self._last_pivot_metrics.get("pivot_input_rejected_rows", []) or []
+        self.state.pivot_input_rejected_row_count = int(self._last_pivot_metrics.get("pivot_input_rejected_row_count", 0) or 0)
+        self.state.pivot_input_rejected_rows = [
+            f"row {item.get('row')}: {item.get('reason')}"
+            for item in rejected_rows
+            if isinstance(item, dict)
+        ]
         self.state.pivot_can_start = bool(self._pivot_start_blockers(snapshot) == [])
         self.state.pivot_can_stop = pivot_collection_active
         self.state.pivot_can_solve = bool(
@@ -769,6 +791,12 @@ class TrackerMvpController:
             if motion_span_deg is not None
             else "motion_span=collect more poses"
         )
+        format_text = ""
+        if self.state.pivot_input_format:
+            format_text = (
+                f" format={self.state.pivot_input_format}, usable_0B_rows={self.state.pivot_input_usable_rows}, "
+                f"rejected_rows={self.state.pivot_input_rejected_row_count}."
+            )
         if pivot_collection_active:
             return (
                 f"Collecting 0B pivot samples: samples={sample_count}, {motion_text}, "
@@ -778,14 +806,21 @@ class TrackerMvpController:
             return (
                 f"Pivot solved. RMSE={self._last_pivot_metrics.get('rmse_mm')} mm, "
                 f"used={self._last_pivot_metrics.get('sample_count_used', 0)}, "
-                f"rejected={self._last_pivot_metrics.get('sample_count_rejected', 0)}. "
+                f"rejected={self._last_pivot_metrics.get('sample_count_rejected', 0)}.{format_text} "
                 "Accept the staged tip file to unblock registration."
+            )
+        if self.state.pivot_status == "solve_failed" and self._last_pivot_metrics:
+            rejected_preview = "; ".join(self.state.pivot_input_rejected_rows[:3])
+            suffix = f" Rejected: {rejected_preview}" if rejected_preview else ""
+            return (
+                f"Pivot solve failed.{format_text} "
+                f"Check dataset {self.state.pivot_capture_dataset_path or 'path unavailable'} and retry.{suffix}"
             )
         if self._last_pivot_metrics:
             return (
                 f"Accepted pivot result. RMSE={self._last_pivot_metrics.get('rmse_mm')} mm, "
                 f"used={self._last_pivot_metrics.get('sample_count_used', 0)}, "
-                f"rejected={self._last_pivot_metrics.get('sample_count_rejected', 0)}, "
+                f"rejected={self._last_pivot_metrics.get('sample_count_rejected', 0)}.{format_text} "
                 f"tip_file={measurement_status.get('path') or self.state.pivot_tip_path}"
             )
         if sample_count > 0:
@@ -973,6 +1008,7 @@ class TrackerMvpController:
         capture_dataset_path: Path | None,
         pending_tip_path: Path | None,
         pending_accept: bool,
+        status_override: str | None = None,
     ) -> None:
         metrics = result.summary.experiment_metrics if isinstance(result.summary.experiment_metrics, dict) else {}
         with self._pivot_lock:
@@ -981,7 +1017,11 @@ class TrackerMvpController:
             self._pivot_capture_dataset_path = capture_dataset_path
             self._pivot_pending_tip_path = pending_tip_path
             self._pivot_pending_accept = pending_accept
-            self._pivot_collection_status = "review_ready" if pending_accept else "accepted"
+            self._pivot_collection_status = (
+                str(status_override)
+                if status_override is not None
+                else ("review_ready" if pending_accept else "accepted")
+            )
             self._last_pivot_metrics["accepted_tip_file"] = str(accepted_tip_path)
 
     @staticmethod

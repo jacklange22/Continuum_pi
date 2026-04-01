@@ -154,6 +154,7 @@ def build_app_context() -> AppContext:
         path=neutral_setpoints_path,
         context=ServoCalibrationContext(
             robot_mode=settings.robot.mode,
+            robot_config_name=settings.runtime.robot_config,
             servo_ids=list(settings.robot.servo_ids),
             tendon_to_servo=list(settings.robot.tendon_to_servo),
             ticks_per_revolution=settings.robot.ticks_per_revolution,
@@ -182,6 +183,7 @@ def build_app_context() -> AppContext:
         pretension_timeout_s=settings.safety.pretension_timeout_s,
         pretension_settle_time_s=settings.safety.pretension_settle_time_s,
         max_temperature_c=settings.safety.max_temperature_c,
+        min_input_voltage_mv=settings.safety.min_input_voltage_mv,
         time_fn=time.monotonic,
     )
     servo_service = ServoService(

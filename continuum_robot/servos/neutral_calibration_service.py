@@ -21,6 +21,7 @@ class ServoCalibrationContext:
     """Robot/config context used to validate one saved calibration artifact."""
 
     robot_mode: str | None = None
+    robot_config_name: str | None = None
     servo_ids: list[int] = field(default_factory=list)
     tendon_to_servo: list[int] = field(default_factory=list)
     ticks_per_revolution: int | None = None
@@ -37,6 +38,7 @@ class ServoCalibrationEntry:
 
     servo_id: int
     tendon_index: int | None = None
+    capture_source: str | None = None
     neutral_setpoint: int | None = None
     safe_min_tick: int | None = None
     safe_max_tick: int | None = None
@@ -118,7 +120,12 @@ class NeutralCalibrationService:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.context = context or ServoCalibrationContext()
 
-    def save_neutral_setpoints(self, setpoints_by_id: dict[int, int]) -> None:
+    def save_neutral_setpoints(
+        self,
+        setpoints_by_id: dict[int, int],
+        *,
+        capture_source: str = "live_present_position",
+    ) -> None:
         artifact = self.load_calibration_artifact()
         tendon_index_by_servo = {
             int(servo_id): index
@@ -143,6 +150,7 @@ class NeutralCalibrationService:
             artifact.servos[int(servo_id)] = ServoCalibrationEntry(
                 servo_id=int(servo_id),
                 tendon_index=tendon_index_by_servo.get(int(servo_id), existing.tendon_index),
+                capture_source=str(capture_source).strip() if capture_source else existing.capture_source,
                 neutral_setpoint=int(neutral_tick),
                 safe_min_tick=int(safe_min) if safe_min is not None else None,
                 safe_max_tick=int(safe_max) if safe_max is not None else None,
@@ -195,6 +203,7 @@ class NeutralCalibrationService:
         entry = ServoCalibrationEntry(
             servo_id=int(servo_id),
             tendon_index=tendon_index_by_servo.get(int(servo_id), existing.tendon_index),
+            capture_source=existing.capture_source,
             neutral_setpoint=int(neutral_setpoint),
             safe_min_tick=int(safe_min_tick),
             safe_max_tick=int(safe_max_tick),
@@ -252,6 +261,7 @@ class NeutralCalibrationService:
         entry = ServoCalibrationEntry(
             servo_id=int(servo_id),
             tendon_index=existing.tendon_index,
+            capture_source=existing.capture_source,
             neutral_setpoint=existing.neutral_setpoint,
             safe_min_tick=existing.safe_min_tick,
             safe_max_tick=existing.safe_max_tick,
@@ -390,6 +400,7 @@ class NeutralCalibrationService:
         entry = ServoCalibrationEntry(
             servo_id=existing.servo_id,
             tendon_index=existing.tendon_index,
+            capture_source=existing.capture_source,
             neutral_setpoint=existing.neutral_setpoint,
             safe_min_tick=existing.safe_min_tick,
             safe_max_tick=existing.safe_max_tick,
@@ -428,6 +439,11 @@ class NeutralCalibrationService:
             servos[servo_id] = ServoCalibrationEntry(
                 servo_id=int(data.get("servo_id", servo_id)),
                 tendon_index=int(data["tendon_index"]) if data.get("tendon_index") is not None else None,
+                capture_source=(
+                    str(data.get("capture_source"))
+                    if data.get("capture_source") not in (None, "")
+                    else None
+                ),
                 neutral_setpoint=(
                     int(data["neutral_setpoint"]) if data.get("neutral_setpoint") is not None else None
                 ),
@@ -498,6 +514,7 @@ class NeutralCalibrationService:
             artifact.servos[servo_id] = ServoCalibrationEntry(
                 servo_id=servo_id,
                 tendon_index=tendon_index_by_servo.get(servo_id),
+                capture_source="legacy_neutral_map",
                 neutral_setpoint=neutral,
                 safe_min_tick=(
                     neutral + int(self.context.position_min_offset_ticks)
@@ -532,6 +549,7 @@ class NeutralCalibrationService:
     def _robot_metadata(self) -> dict[str, Any]:
         return {
             "robot_mode": self.context.robot_mode,
+            "robot_config_name": self.context.robot_config_name,
             "servo_ids": list(self.context.servo_ids),
             "tendon_to_servo": list(self.context.tendon_to_servo),
             "ticks_per_revolution": self.context.ticks_per_revolution,

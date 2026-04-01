@@ -52,6 +52,8 @@ dynamixel_settings:
   default_profile_acceleration: null
   auto_torque_enable_on_write: true
   torque_disable_for_eeprom_write: true
+  discovery_min_id: 1
+  discovery_max_id: 20
   voltage_scale_mv_per_unit: 100.0
   current_scale_ma_per_unit: 1.0
   control_table:

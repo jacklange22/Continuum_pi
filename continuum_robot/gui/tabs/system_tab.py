@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -101,6 +102,14 @@ class SystemTab(QWidget):
         self.tracker_status_label.setWordWrap(True)
         self.openrb_status_label = QLabel()
         self.openrb_status_label.setWordWrap(True)
+        self.expected_servo_ids_label = QLabel()
+        self.expected_servo_ids_label.setWordWrap(True)
+        self.readiness_status_label = QLabel()
+        self.readiness_status_label.setWordWrap(True)
+        self.bus_status_label = QLabel()
+        self.bus_status_label.setWordWrap(True)
+        self.external_power_label = QLabel()
+        self.external_power_label.setWordWrap(True)
         self.aurora_port_combo = QComboBox()
         self.aurora_port_combo.setEditable(True)
         self.aurora_port_combo.currentIndexChanged.connect(self._sync_aurora_port)
@@ -116,6 +125,7 @@ class SystemTab(QWidget):
         openrb_connect.setProperty("role", "primary")
         openrb_disconnect = QPushButton("Disconnect OpenRB")
         prepare_button = QPushButton("Re-Validate OpenRB")
+        readiness_button = QPushButton("Refresh Readiness")
         refresh_button = QPushButton("Rescan Ports")
         refresh_button.clicked.connect(self._rescan_ports)
         tracker_connect.clicked.connect(self._connect_tracker)
@@ -123,6 +133,7 @@ class SystemTab(QWidget):
         openrb_connect.clicked.connect(self._connect_openrb)
         openrb_disconnect.clicked.connect(self.controller.disconnect_openrb)
         prepare_button.clicked.connect(self.controller.prepare_openrb)
+        readiness_button.clicked.connect(self._refresh_readiness)
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignLeft)
@@ -131,6 +142,10 @@ class SystemTab(QWidget):
         form.addRow("OpenRB port", self.openrb_port_combo)
         form.addRow("Tracker state", self.tracker_status_label)
         form.addRow("OpenRB state", self.openrb_status_label)
+        form.addRow("Expected servo IDs", self.expected_servo_ids_label)
+        form.addRow("Readiness", self.readiness_status_label)
+        form.addRow("Bus response", self.bus_status_label)
+        form.addRow("External power", self.external_power_label)
 
         ports_box = QGroupBox("Connections")
         ports_layout = QVBoxLayout(ports_box)
@@ -147,6 +162,7 @@ class SystemTab(QWidget):
         button_row_secondary = QHBoxLayout()
         button_row_secondary.setSpacing(10)
         button_row_secondary.addWidget(prepare_button)
+        button_row_secondary.addWidget(readiness_button)
         button_row_secondary.addWidget(refresh_button)
         button_row_secondary.addStretch(1)
         ports_layout.addLayout(button_row_secondary)
@@ -161,6 +177,16 @@ class SystemTab(QWidget):
         self.fine_jog_spin.setRange(1, 512)
         self.coarse_jog_spin = QSpinBox()
         self.coarse_jog_spin.setRange(1, 1024)
+        self.min_offset_spin = QSpinBox()
+        self.min_offset_spin.setRange(-4096, 0)
+        self.max_offset_spin = QSpinBox()
+        self.max_offset_spin.setRange(0, 4096)
+        self.software_margin_spin = QSpinBox()
+        self.software_margin_spin.setRange(0, 1024)
+        self.telemetry_freshness_spin = QDoubleSpinBox()
+        self.telemetry_freshness_spin.setRange(0.01, 10.0)
+        self.telemetry_freshness_spin.setDecimals(2)
+        self.telemetry_freshness_spin.setSingleStep(0.05)
         self.threshold_spin = QSpinBox()
         self.threshold_spin.setRange(1, 5000)
         self.tightening_direction_combo = QComboBox()
@@ -185,6 +211,10 @@ class SystemTab(QWidget):
         parameters_form.addRow("Baudrate", self.baudrate_spin)
         parameters_form.addRow("Fine jog (ticks)", self.fine_jog_spin)
         parameters_form.addRow("Coarse jog (ticks)", self.coarse_jog_spin)
+        parameters_form.addRow("Min offset (ticks)", self.min_offset_spin)
+        parameters_form.addRow("Max offset (ticks)", self.max_offset_spin)
+        parameters_form.addRow("Software margin (ticks)", self.software_margin_spin)
+        parameters_form.addRow("Telemetry fresh (s)", self.telemetry_freshness_spin)
         parameters_form.addRow("Pretension threshold (mA)", self.threshold_spin)
         parameters_form.addRow("Tightening direction", self.tightening_direction_combo)
         parameters_form.addRow("Saved overrides", self.saved_path_label)
@@ -235,6 +265,16 @@ class SystemTab(QWidget):
         self.openrb_status_label.setText(
             f"{state.openrb_status} | prepared={state.openrb_prepared} | bus connected={state.dynamixel_connected}"
         )
+        self.expected_servo_ids_label.setText(", ".join(str(servo_id) for servo_id in state.expected_servo_ids) or "none")
+        self.readiness_status_label.setText(
+            f"{state.readiness_message} | motion ready={state.motion_ready}"
+        )
+        self.bus_status_label.setText("responsive" if state.bus_reachable else "no confirmed servo response yet")
+        if state.external_power_ready is None:
+            external_power = "not confirmed"
+        else:
+            external_power = "ready" if state.external_power_ready else "blocked"
+        self.external_power_label.setText(external_power)
         self.config_summary.setPlainText(state.config_summary)
         status_lines = [state.status_message]
         if state.last_error:
@@ -264,6 +304,14 @@ class SystemTab(QWidget):
             self.fine_jog_spin.setValue(int(state.fine_jog_step_ticks))
         if not self.coarse_jog_spin.hasFocus():
             self.coarse_jog_spin.setValue(int(state.coarse_jog_step_ticks))
+        if not self.min_offset_spin.hasFocus():
+            self.min_offset_spin.setValue(int(state.position_min_offset_ticks))
+        if not self.max_offset_spin.hasFocus():
+            self.max_offset_spin.setValue(int(state.position_max_offset_ticks))
+        if not self.software_margin_spin.hasFocus():
+            self.software_margin_spin.setValue(int(state.software_position_margin_ticks))
+        if not self.telemetry_freshness_spin.hasFocus():
+            self.telemetry_freshness_spin.setValue(float(state.telemetry_freshness_timeout_s))
         if not self.threshold_spin.hasFocus():
             self.threshold_spin.setValue(int(state.pretension_threshold_ma))
         if not self.tightening_direction_combo.hasFocus():
@@ -309,6 +357,13 @@ class SystemTab(QWidget):
         self._sync_openrb_port()
         self.controller.connect_openrb()
 
+    def _refresh_readiness(self) -> None:
+        refresh_fn = getattr(self.controller, "refresh_readiness", None)
+        if callable(refresh_fn):
+            refresh_fn()
+            return
+        self.update(self.controller.refresh())
+
     def _save_runtime_parameters(self) -> None:
         try:
             self.controller.save_runtime_parameters(
@@ -318,6 +373,10 @@ class SystemTab(QWidget):
                 baudrate=int(self.baudrate_spin.value()),
                 fine_jog_step_ticks=int(self.fine_jog_spin.value()),
                 coarse_jog_step_ticks=int(self.coarse_jog_spin.value()),
+                position_min_offset_ticks=int(self.min_offset_spin.value()),
+                position_max_offset_ticks=int(self.max_offset_spin.value()),
+                software_position_margin_ticks=int(self.software_margin_spin.value()),
+                telemetry_freshness_timeout_s=float(self.telemetry_freshness_spin.value()),
                 pretension_threshold_ma=int(self.threshold_spin.value()),
                 tightening_direction=str(self.tightening_direction_combo.currentText()).strip().lower(),
             )

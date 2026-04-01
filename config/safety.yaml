@@ -11,3 +11,4 @@ pretension_step_ticks: 2
 pretension_timeout_s: 10.0
 pretension_settle_time_s: 0.05
 max_temperature_c: 70
+min_input_voltage_mv: 4000

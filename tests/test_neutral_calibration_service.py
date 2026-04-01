@@ -12,6 +12,7 @@ def test_neutral_calibration_service_archives_previous_latest(tmp_path: Path) ->
         path=tmp_path / "neutral_setpoints.json",
         context=ServoCalibrationContext(
             robot_mode="4-servo",
+            robot_config_name="robot_4servo.yaml",
             servo_ids=[1],
             tendon_to_servo=[1],
             position_min_offset_ticks=-600,
@@ -21,8 +22,8 @@ def test_neutral_calibration_service_archives_previous_latest(tmp_path: Path) ->
         ),
     )
 
-    service.save_neutral_setpoints({1: 100})
-    service.save_neutral_setpoints({1: 200})
+    service.save_neutral_setpoints({1: 100}, capture_source="bench_neutral_capture")
+    service.save_neutral_setpoints({1: 200}, capture_source="bench_neutral_capture")
 
     latest = json.loads((tmp_path / "neutral_setpoints.json").read_text(encoding="utf-8"))
     archives = sorted(tmp_path.glob("neutral_setpoints_*.json"))
@@ -33,6 +34,8 @@ def test_neutral_calibration_service_archives_previous_latest(tmp_path: Path) ->
     assert latest["servos"]["1"]["safe_max_tick"] == 800
     assert latest["servos"]["1"]["pretension_current_threshold_ma"] == 850
     assert latest["servos"]["1"]["tightening_rotation"] == "cw"
+    assert latest["servos"]["1"]["capture_source"] == "bench_neutral_capture"
+    assert latest["robot"]["robot_config_name"] == "robot_4servo.yaml"
     assert len(archives) == 1
     archived_payload = json.loads(archives[0].read_text(encoding="utf-8"))
     assert archived_payload["servos"]["1"]["neutral_setpoint"] == 100
