@@ -64,7 +64,7 @@ def _settings() -> Settings:
         serial=SerialConfig(
             aurora_port="/dev/mock-aurora",
             openrb_port="/dev/mock-openrb",
-            baudrate=115200,
+            baudrate=57600,
         ),
         safety=SafetyConfig(
             position_min_offset_ticks=-600,
@@ -91,9 +91,18 @@ def _settings() -> Settings:
     )
 
 
-def _servo_service(tmp_path: Path) -> ServoService:
+class _ExplodingReadBus(MockDxlBus):
+    def read_telemetry(self, servo_ids: list[int]):
+        raise RuntimeError("mock telemetry read failure")
+
+
+def _servo_service(tmp_path: Path, *, dxl_bus=None, context_servo_ids: list[int] | None = None, robot_mode: str = "1-servo", calibration_path: Path | None = None) -> ServoService:
+    if context_servo_ids is None:
+        context_servo_ids = [1]
+    if dxl_bus is None:
+        dxl_bus = MockDxlBus(list(context_servo_ids))
     return ServoService(
-        dxl_bus=MockDxlBus([1]),
+        dxl_bus=dxl_bus,
         mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
         safety_guard=SafetyGuard(
             min_offset_ticks=-600,
@@ -112,16 +121,16 @@ def _servo_service(tmp_path: Path) -> ServoService:
             time_fn=lambda: 0.0,
         ),
         neutral_calibration=NeutralCalibrationService(
-            path=tmp_path / "neutral.json",
+            path=calibration_path or (tmp_path / "neutral.json"),
             context=ServoCalibrationContext(
-                robot_mode="1-servo",
-                robot_config_name="robot_1servo.yaml",
-                servo_ids=[1],
-                tendon_to_servo=[1],
+                robot_mode=robot_mode,
+                robot_config_name=f"robot_{robot_mode}.yaml",
+                servo_ids=list(context_servo_ids),
+                tendon_to_servo=list(context_servo_ids),
                 position_min_offset_ticks=-600,
                 position_max_offset_ticks=600,
                 default_pretension_current_threshold_ma=220,
-                tightening_rotation_by_servo={1: "cw"},
+                tightening_rotation_by_servo={servo_id: "cw" for servo_id in context_servo_ids},
             ),
         ),
         pretension_validation=PretensionValidationService(),
@@ -151,13 +160,13 @@ def test_system_controller_separates_bus_readiness_from_motion_readiness(tmp_pat
 
     assert controller.state.bus_reachable is True
     assert controller.state.motion_ready is True
-    assert "Calibrated motion: Ready for cautious motion." in controller.state.readiness_message
+    assert "Motion status: ready" in controller.state.readiness_message
 
 
 def test_servos_controller_reports_motion_blocking_until_neutral_capture(tmp_path: Path) -> None:
     settings = _settings()
     servo_service = _servo_service(tmp_path)
-    servo_service.connect("/dev/mock-openrb", 115200)
+    servo_service.connect("/dev/mock-openrb", 57600)
     controller = ServosController(servo_service, settings)
 
     assert any("saved safe bounds" in reason for reason in controller.state.blocking_reasons)
@@ -168,3 +177,77 @@ def test_servos_controller_reports_motion_blocking_until_neutral_capture(tmp_pat
 
     assert controller.state.blocking_reasons == []
     assert controller.state.telemetry[1]["ready"] == "ready"
+
+
+def test_servo_service_bench_snapshot_marks_ping_only_when_readback_fails(tmp_path: Path) -> None:
+    service = _servo_service(tmp_path, dxl_bus=_ExplodingReadBus([1]))
+    service.connect("/dev/mock-openrb", 57600)
+
+    snapshot = service.build_bench_debug_snapshot(1)
+
+    assert snapshot.ping_ok is True
+    assert snapshot.identity_read_ok is False
+    assert snapshot.telemetry_read_ok is False
+    assert snapshot.status == "ping_only"
+    assert "mock telemetry read failure" in snapshot.message
+
+
+def test_servos_controller_keeps_failure_row_when_readback_fails(tmp_path: Path) -> None:
+    settings = _settings()
+    service = _servo_service(tmp_path, dxl_bus=_ExplodingReadBus([1]))
+    service.connect("/dev/mock-openrb", 57600)
+    controller = ServosController(service, settings)
+
+    assert list(controller.state.telemetry) == [1]
+    assert controller.state.telemetry[1]["error"] is not None
+    assert "mock telemetry read failure" in controller.state.telemetry[1]["error"]
+    assert "telemetry_read_ok=False" in controller.state.bench_debug_text
+
+
+def test_servos_controller_ignores_incompatible_multi_servo_calibration_in_one_servo_mode(tmp_path: Path) -> None:
+    calibration_path = tmp_path / "neutral.json"
+    four_servo_service = _servo_service(
+        tmp_path,
+        dxl_bus=MockDxlBus([1, 2, 3, 4]),
+        context_servo_ids=[1, 2, 3, 4],
+        robot_mode="4-servo",
+        calibration_path=calibration_path,
+    )
+    four_servo_service.connect("/dev/mock-openrb", 57600)
+    four_servo_service.capture_and_save_neutral_setpoints([1, 2, 3, 4])
+
+    one_servo_service = _servo_service(
+        tmp_path,
+        dxl_bus=MockDxlBus([1]),
+        context_servo_ids=[1],
+        robot_mode="1-servo",
+        calibration_path=calibration_path,
+    )
+    one_servo_service.connect("/dev/mock-openrb", 57600)
+    controller = ServosController(one_servo_service, _settings())
+
+    assert controller.state.neutral_setpoints == {}
+    assert "multi-servo calibration artifact" in controller.state.calibration_message
+    assert "calibration_entries_loaded=[1, 2, 3, 4]" in controller.state.bench_debug_text
+
+
+def test_servos_controller_exposes_current_target_and_clamp_state_after_jog(tmp_path: Path) -> None:
+    settings = _settings()
+    service = _servo_service(tmp_path)
+    service.connect("/dev/mock-openrb", 57600)
+    service.dxl_bus._state[1].present_position = 2050
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-10,
+        max_offset_ticks=5,
+        pretension_current_threshold_ma=220,
+    )
+    controller = ServosController(service, settings)
+
+    controller.coarse_jog(1, -1)
+
+    assert controller.state.selected_servo_current_position_tick == 2055
+    assert controller.state.selected_servo_last_target_tick == 2055
+    assert controller.state.selected_servo_last_unclamped_target_tick == 2075
+    assert controller.state.selected_servo_last_motion_clamped is True
+    assert "sent loosen" in controller.state.selected_servo_last_motion_summary

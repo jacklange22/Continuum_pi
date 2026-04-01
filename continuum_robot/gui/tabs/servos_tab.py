@@ -135,8 +135,10 @@ class ServosTab(QWidget):
         self.calibration_message_label.setProperty("role", "hint")
 
         self.selected_servo_position_label = QLabel("—")
+        self.selected_servo_target_label = QLabel("—")
         self.selected_servo_bounds_label = QLabel("—")
         self.selected_servo_direction_label = QLabel("—")
+        self.selected_servo_last_motion_label = QLabel("—")
         self.selected_servo_ready_label = QLabel("—")
 
         self.scan_button = QPushButton("Discover / Read Servo")
@@ -282,18 +284,22 @@ class ServosTab(QWidget):
         jog_layout = QGridLayout(jog_box)
         jog_layout.addWidget(QLabel("Servo"), 0, 0)
         jog_layout.addWidget(self.jog_servo_spin, 0, 1)
-        jog_layout.addWidget(QLabel("Position"), 0, 2)
+        jog_layout.addWidget(QLabel("Current"), 0, 2)
         jog_layout.addWidget(self.selected_servo_position_label, 0, 3)
-        jog_layout.addWidget(QLabel("Safe bounds"), 1, 0)
-        jog_layout.addWidget(self.selected_servo_bounds_label, 1, 1, 1, 3)
-        jog_layout.addWidget(QLabel("Tighten dir"), 2, 0)
-        jog_layout.addWidget(self.selected_servo_direction_label, 2, 1)
-        jog_layout.addWidget(QLabel("Motion ready"), 2, 2)
-        jog_layout.addWidget(self.selected_servo_ready_label, 2, 3)
-        jog_layout.addWidget(self.fine_minus_button, 3, 0)
-        jog_layout.addWidget(self.fine_plus_button, 3, 1)
-        jog_layout.addWidget(self.coarse_minus_button, 3, 2)
-        jog_layout.addWidget(self.coarse_plus_button, 3, 3)
+        jog_layout.addWidget(QLabel("Target"), 1, 0)
+        jog_layout.addWidget(self.selected_servo_target_label, 1, 1)
+        jog_layout.addWidget(QLabel("Safe bounds"), 1, 2)
+        jog_layout.addWidget(self.selected_servo_bounds_label, 1, 3)
+        jog_layout.addWidget(QLabel("Convention"), 2, 0)
+        jog_layout.addWidget(self.selected_servo_direction_label, 2, 1, 1, 3)
+        jog_layout.addWidget(QLabel("Last motion"), 3, 0)
+        jog_layout.addWidget(self.selected_servo_last_motion_label, 3, 1, 1, 3)
+        jog_layout.addWidget(QLabel("Motion ready"), 4, 0)
+        jog_layout.addWidget(self.selected_servo_ready_label, 4, 1, 1, 3)
+        jog_layout.addWidget(self.fine_minus_button, 5, 0)
+        jog_layout.addWidget(self.fine_plus_button, 5, 1)
+        jog_layout.addWidget(self.coarse_minus_button, 5, 2)
+        jog_layout.addWidget(self.coarse_plus_button, 5, 3)
 
         self.startup_box = QGroupBox("Startup Calibration")
         startup_layout = QFormLayout(self.startup_box)
@@ -409,9 +415,24 @@ class ServosTab(QWidget):
         self.calibration_updated_label.setText(state.calibration_updated_at_utc or "Never")
         self.calibration_message_label.setText(state.calibration_message)
 
-        self.selected_servo_position_label.setText(str(selected_servo.get("position", "—")))
-        self.selected_servo_bounds_label.setText(str(selected_servo.get("safe_bounds", "—")))
-        self.selected_servo_direction_label.setText(str(selected_servo.get("tightening_direction", "—")))
+        current_position = state.selected_servo_current_position_tick
+        target_position = state.selected_servo_last_target_tick
+        requested_target = state.selected_servo_last_unclamped_target_tick
+        if target_position is None:
+            target_text = "—"
+        elif state.selected_servo_last_motion_clamped and requested_target is not None and requested_target != target_position:
+            target_text = f"{target_position} (req {requested_target}, clamped)"
+        else:
+            target_text = str(target_position)
+        if state.selected_servo_safe_min_tick is not None and state.selected_servo_safe_max_tick is not None:
+            bounds_text = f"[{state.selected_servo_safe_min_tick}, {state.selected_servo_safe_max_tick}]"
+        else:
+            bounds_text = str(selected_servo.get("safe_bounds", "—"))
+        self.selected_servo_position_label.setText(str(current_position if current_position is not None else "—"))
+        self.selected_servo_target_label.setText(target_text)
+        self.selected_servo_bounds_label.setText(bounds_text)
+        self.selected_servo_direction_label.setText(state.position_convention_summary or "—")
+        self.selected_servo_last_motion_label.setText(state.selected_servo_last_motion_summary)
         self.selected_servo_ready_label.setText(str(selected_servo.get("ready", "—")))
 
         has_neutral = bool(state.neutral_setpoints)
@@ -494,6 +515,8 @@ class ServosTab(QWidget):
         lines = [state.status_message]
         if state.last_error:
             lines.append(f"Error: {state.last_error}")
+        if state.bench_debug_text:
+            lines.extend(["", state.bench_debug_text])
         self.status_text.setPlainText("\n".join(lines))
 
     def _rebuild_displacement_inputs(self, count: int) -> None:
@@ -576,3 +599,6 @@ class ServosTab(QWidget):
             fn(*args, **kwargs)
         except Exception:
             pass
+        refresh_fn = getattr(self.controller, "refresh", None)
+        if callable(refresh_fn):
+            self.update(refresh_fn())

@@ -43,7 +43,19 @@ class ServoTelemetry:
     present_temperature_c: int | None = None
     hardware_error_code: int | None = None
     hardware_error: str | None = None
+    identity_error: str | None = None
+    telemetry_error: str | None = None
     last_read_monotonic_s: float | None = None
+
+
+@dataclass
+class ServoPingResult:
+    """One ping attempt against a servo ID."""
+
+    servo_id: int
+    responded: bool
+    model_number: int | None = None
+    error: str | None = None
 
 
 @dataclass
@@ -148,6 +160,14 @@ class DxlBus:
     def is_connected(self) -> bool:
         return self._port_handler is not None and self._port is not None
 
+    @property
+    def port(self) -> str | None:
+        return self._port
+
+    @property
+    def baudrate(self) -> int | None:
+        return self._baudrate
+
     def connect(self, port: str, baudrate: int) -> None:
         """Open the configured serial port through the Robotis SDK."""
         if not port:
@@ -205,7 +225,35 @@ class DxlBus:
     def ping_servo(self, servo_id: int) -> bool:
         """Return whether one servo ID responds on the live bus."""
         self._require_connected()
-        return self._ping(int(servo_id))
+        return self.ping_servo_snapshot(int(servo_id)).responded
+
+    def ping_servo_snapshot(self, servo_id: int) -> ServoPingResult:
+        """Return raw ping status for one servo ID."""
+        self._require_connected()
+        try:
+            model_number, comm_result, packet_error = self._packet_handler.ping(
+                self._port_handler,
+                int(servo_id),
+            )
+        except Exception as exc:
+            return ServoPingResult(
+                servo_id=int(servo_id),
+                responded=False,
+                error=f"ping failed: {exc}",
+            )
+        error = self._packet_error_message(comm_result, packet_error)
+        if error is not None:
+            return ServoPingResult(
+                servo_id=int(servo_id),
+                responded=False,
+                error=error,
+            )
+        return ServoPingResult(
+            servo_id=int(servo_id),
+            responded=True,
+            model_number=int(model_number),
+            error=None,
+        )
 
     def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
         """Send goal positions in ticks."""
@@ -300,16 +348,22 @@ class DxlBus:
                 servo_id, self.config.control_table["hardware_error_status"]
             )
 
-            hardware_messages = [
+            identity_messages = [
+                message
+                for message in (
+                    reported_id_error,
+                    model_error,
+                    firmware_error,
+                )
+                if message
+            ]
+            telemetry_messages = [
                 message
                 for message in (
                     position_error,
                     current_error,
                     voltage_error,
                     temperature_error,
-                    reported_id_error,
-                    model_error,
-                    firmware_error,
                     operating_mode_error,
                     current_limit_error,
                     max_limit_error,
@@ -321,7 +375,8 @@ class DxlBus:
                 if message
             ]
             if hardware_raw not in (None, 0):
-                hardware_messages.append(f"hardware_status=0x{int(hardware_raw):02X}")
+                telemetry_messages.append(f"hardware_status=0x{int(hardware_raw):02X}")
+            hardware_messages = [*identity_messages, *telemetry_messages]
 
             result[int(servo_id)] = ServoTelemetry(
                 servo_id=int(servo_id),
@@ -352,6 +407,8 @@ class DxlBus:
                 present_temperature_c=int(temperature_raw) if temperature_raw is not None else None,
                 hardware_error_code=int(hardware_raw) if hardware_raw is not None else None,
                 hardware_error=" | ".join(hardware_messages) or None,
+                identity_error=" | ".join(identity_messages) or None,
+                telemetry_error=" | ".join(telemetry_messages) or None,
                 last_read_monotonic_s=read_time,
             )
         return result
@@ -359,10 +416,6 @@ class DxlBus:
     def _require_connected(self) -> None:
         if not self.is_connected:
             raise RuntimeError("DYNAMIXEL bus is not connected")
-
-    def _ping(self, servo_id: int) -> bool:
-        _model_number, comm_result, _packet_error = self._packet_handler.ping(self._port_handler, int(servo_id))
-        return comm_result == self._sdk.COMM_SUCCESS
 
     def _read1(self, servo_id: int, address: int) -> tuple[int | None, str | None]:
         return self._read("read1ByteTxRx", servo_id, address)

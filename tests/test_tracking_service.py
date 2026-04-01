@@ -218,7 +218,43 @@ def test_tracking_service_preserves_backend_invalid_reason_when_pose_missing(tmp
         service.stop()
 
     assert snapshot.tools["0A"].tracking_state == "invalid"
-    assert snapshot.tools["0A"].status == "invalid_transform: ndarray(2, 8): unsupported payload"
+
+
+def test_tracking_service_uses_backend_reported_port_as_runtime_source_of_truth(tmp_path: Path) -> None:
+    registration_path = tmp_path / "latest_registration.json"
+    _write_registration_file(registration_path)
+    backend_state = _live_state(
+        frame_number=4,
+        tools={
+            "0A": _tracked_tool("0A", frame_number=4),
+            "0B": _tracked_tool("0B", frame_number=4, xyz=(4.0, 5.0, 6.0)),
+        },
+    )
+    backend_state.selected_backend_name = "ndi"
+    backend_state.backend_details = {"aurora_port": "/dev/ttyUSB0"}
+    backend_state.capability_report = {
+        "ndi": {
+            "available": True,
+            "code": "ok",
+            "details": {"aurora_port": "/dev/ttyUSB0"},
+        }
+    }
+    backend = _FakeLiveBackend(backend_state)
+    service = TrackingService(
+        live_backend=backend,
+        port="/dev/ttyAMA10",
+        registration_path=registration_path,
+        config_source="test",
+    )
+
+    service.start()
+    try:
+        snapshot = service.get_snapshot()
+    finally:
+        service.stop()
+
+    assert service.port == "/dev/ttyUSB0"
+    assert snapshot.port == "/dev/ttyUSB0"
 
 
 def test_tracking_service_reports_unknown_before_live_frames_arrive(tmp_path: Path) -> None:

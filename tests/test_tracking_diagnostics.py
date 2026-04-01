@@ -287,3 +287,55 @@ def test_tracking_diagnostics_reports_warmup_invalid_frames_separately() -> None
     assert "warmup_nonfinite_payloads_seen" in report.failure_codes
     assert stage_4.status == "pending"
     assert "startup_state=frames_arriving_warmup_invalid" in stage_4.message
+
+
+def test_tracking_diagnostics_distinguish_operational_with_warning_when_fps_is_below_target() -> None:
+    service = _FakeTrackingService(
+        [
+            _snapshot(
+                frame_number=1,
+                timestamp="2026-01-01T00:00:00.000Z",
+                tool_0a_state="tracked",
+                tool_0b_state="tracked",
+                registration_state="loaded",
+                tip_pose_status="ok",
+            ),
+            _snapshot(
+                frame_number=1,
+                timestamp="2026-01-01T00:00:00.060Z",
+                tool_0a_state="tracked",
+                tool_0b_state="tracked",
+                registration_state="loaded",
+                tip_pose_status="ok",
+            ),
+            _snapshot(
+                frame_number=2,
+                timestamp="2026-01-01T00:00:00.120Z",
+                tool_0a_state="tracked",
+                tool_0b_state="tracked",
+                registration_state="loaded",
+                tip_pose_status="ok",
+            ),
+        ]
+    )
+
+    report = build_tracking_diagnostics_report(
+        service,
+        duration_s=0.12,
+        sample_period_s=0.06,
+        wait_for_first_frame_s=0.0,
+        thresholds=TrackerBenchmarkThresholds(
+            min_effective_fps=15.0,
+            max_stale_interval_s=0.25,
+            max_consecutive_missing_frames=1,
+            require_valid_transforms=True,
+        ),
+        required_tool_ids=("0A", "0B"),
+    )
+
+    assert report.tracker_ready is False
+    assert report.tracker_operational is True
+    assert report.tracker_verdict == "operational_with_warning"
+    assert report.full_pose_pipeline_ready is True
+    assert report.stage_results[1].status == "warning"
+    assert "below target 15.00" in report.tracker_verdict_message

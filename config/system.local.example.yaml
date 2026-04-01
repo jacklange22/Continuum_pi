@@ -2,19 +2,24 @@
 # system.local.yaml is intentionally ignored by git so each computer can keep
 # its own serial ports and local bridge path without creating git noise.
 
-robot_config: "robot_4servo.yaml"
+# Wizard-confirmed one-servo OpenRB / XC330 bench defaults for this MVP.
+robot_config: "robot_1servo.yaml"
 aurora_port: "/dev/ttyUSB0"
-openrb_port: "/dev/ttyUSB1"
+# On macOS this is typically a `cu.usbmodem*` or `tty.usbmodem*` device.
+openrb_port: "/dev/cu.usbmodem1101"
 tracker_backend: "ndi"
 tracker_fallback_backend: "bridge"
 tracker_fallback_enabled: true
 tracker_type: "aurora"
+baudrate: 57600
 mock_mode: false
 visualization_mode: "auto"
 visualization_safe_effects: true
 robot_overrides:
   servo_ids: [1]
   tendon_to_servo: [1]
+  # Stored as wrap metadata for later expansion. The one-servo MVP jog path
+  # uses raw XC330 counts directly: tighten lowers counts, loosen raises counts.
   tightening_rotation_by_servo:
     1: "cw"
 safety_overrides:
@@ -53,6 +58,8 @@ openrb_settings:
   require_external_power_for_motion: true
 dynamixel_settings:
   protocol_version: 2.0
+  # Retained as low-level metadata for the bus seam. The one-servo MVP uses the
+  # raw-position convention directly: tighten lowers counts, loosen raises counts.
   positive_tick_rotation: "ccw"
   expected_operating_mode: 3
   allowed_operating_modes: [3]

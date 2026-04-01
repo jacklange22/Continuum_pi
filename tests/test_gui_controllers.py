@@ -544,25 +544,33 @@ def test_servos_controller_supports_fine_and_coarse_jog_steps(tmp_path: Path, mo
     service = _servo_service(tmp_path)
     service.connect("/dev/mock-openrb", 115200)
     controller = ServosController(service, _settings())
-    seen: list[tuple[int, str, int]] = []
+    seen: list[tuple[int, str]] = []
 
     class _FakeDirectionalResult:
-        def __init__(self, servo_id: int, command_direction: str, step_ticks: int) -> None:
+        def __init__(self, servo_id: int, action: str) -> None:
+            self.servo_id = servo_id
+            self.command_direction = "tighten" if action.startswith("tighten") else "loosen"
             self.message = "ok"
             self.success = True
             self.blocked = False
-            self.delta_ticks = step_ticks if command_direction == "loosen" else -step_ticks
+            self.delta_ticks = 25 if action == "loosen_coarse" else -5
+            self.goal_tick = 2048
+            self.current_position_tick = 2053
+            self.unclamped_goal_tick = 2048
+            self.safe_min_tick = 1948
+            self.safe_max_tick = 2148
+            self.clamped = False
 
-    def _fake_directional(*, servo_id: int, command_direction: str, step_ticks: int):
-        seen.append((servo_id, command_direction, step_ticks))
-        return _FakeDirectionalResult(servo_id, command_direction, step_ticks)
+    def _fake_directional(*, servo_id: int, action: str):
+        seen.append((servo_id, action))
+        return _FakeDirectionalResult(servo_id, action)
 
-    monkeypatch.setattr(service, "jog_servo_directional", _fake_directional)
+    monkeypatch.setattr(service, "jog_servo_action", _fake_directional)
 
     controller.fine_jog(1, 1)
     controller.coarse_jog(1, -1)
 
-    assert seen == [(1, "tighten", 5), (1, "loosen", 25)]
+    assert seen == [(1, "tighten_fine"), (1, "loosen_coarse")]
 
 
 def test_servos_controller_saves_startup_calibration_and_accepts_pretension(tmp_path: Path) -> None:

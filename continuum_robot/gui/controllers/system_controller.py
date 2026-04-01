@@ -44,6 +44,7 @@ class SystemViewState:
     telemetry_freshness_timeout_s: float = 0.25
     pretension_threshold_ma: int = 220
     tightening_direction_default: str = "cw"
+    bench_debug_text: str = ""
     saved_overrides_path: str = ""
     config_summary: str = ""
 
@@ -178,35 +179,33 @@ class SystemController:
     def refresh_readiness(self) -> SystemViewState:
         if not self.servo_service.is_connected:
             self.state.readiness_message = "DYNAMIXEL bus disconnected."
+            self.state.bench_debug_text = self._build_disconnected_bench_debug_text()
             return self.refresh()
         try:
-            discovery = self.servo_service.discover_one_servo(
-                expected_servo_id=self._expected_servo_id(),
-                allow_scan=False,
+            debug_snapshot = self.servo_service.build_bench_debug_snapshot(self._expected_servo_id())
+            self.state.bus_reachable = bool(debug_snapshot.bus_reachable)
+            self.state.motion_ready = bool(debug_snapshot.motion_ready)
+            self.state.external_power_ready = (
+                debug_snapshot.motion_assessment.external_power_ready
+                if debug_snapshot.motion_assessment is not None
+                else None
             )
-            self.state.bus_reachable = bool(discovery.bus_reachable)
-            self.state.motion_ready = False
-            self.state.external_power_ready = None
-            self.state.readiness_message = discovery.message
-            if discovery.selected_servo_id is not None and discovery.telemetry is not None:
-                motion_assessment = self.servo_service.assess_motion(
-                    int(discovery.selected_servo_id),
-                    require_calibrated_bounds=True,
-                    telemetry=discovery.telemetry,
-                )
-                self.state.motion_ready = bool(motion_assessment.ready)
-                self.state.external_power_ready = motion_assessment.external_power_ready
-                self.state.readiness_message = (
-                    f"{discovery.message} "
-                    f"Calibrated motion: {motion_assessment.reason}"
-                )
-            self.state.last_error = None
+            self.state.readiness_message = debug_snapshot.message
+            self.state.bench_debug_text = self._build_bench_debug_text(debug_snapshot)
+            self.state.last_error = (
+                debug_snapshot.message
+                if debug_snapshot.ping_ok is False
+                or debug_snapshot.identity_read_ok is False
+                or debug_snapshot.telemetry_read_ok is False
+                else None
+            )
         except Exception as exc:
             self.state.bus_reachable = False
             self.state.motion_ready = False
             self.state.external_power_ready = None
             self.state.last_error = str(exc)
             self.state.readiness_message = f"Readiness refresh failed: {exc}"
+            self.state.bench_debug_text = self._build_disconnected_bench_debug_text(extra_error=str(exc))
         return self.refresh()
 
     def refresh(self) -> SystemViewState:
@@ -234,6 +233,7 @@ class SystemController:
             self.state.motion_ready = False
             self.state.external_power_ready = None
             self.state.readiness_message = "Connect OpenRB and refresh readiness."
+            self.state.bench_debug_text = self._build_disconnected_bench_debug_text()
         if tracker_state.last_error:
             self.state.last_error = tracker_state.last_error
         self.state.config_summary = self._build_live_config_summary()
@@ -348,6 +348,7 @@ class SystemController:
             f"Minimum motion voltage: {settings.safety.min_input_voltage_mv} mV\n"
             f"Default pretension threshold: {settings.safety.default_pretension_current_threshold_ma} mA\n"
             f"DYNAMIXEL protocol version: {settings.serial.dynamixel_settings.get('protocol_version', 2.0)}\n"
+            "One-servo raw position convention: 0 = more tensioned, 4095 = untensioned, tighten -> smaller counts\n"
             f"{hardware_note}"
         )
 
@@ -373,7 +374,8 @@ class SystemController:
             f"Software margin: {self.state.software_position_margin_ticks} ticks\n"
             f"Telemetry freshness timeout: {self.state.telemetry_freshness_timeout_s}s\n"
             f"Default pretension threshold: {self.state.pretension_threshold_ma} mA\n"
-            f"Tightening direction default: {self.state.tightening_direction_default}\n"
+            f"Wrap direction metadata: {self.state.tightening_direction_default}\n"
+            "One-servo raw position convention: tighten -> smaller counts, loosen -> larger counts\n"
             f"OpenRB prepared: {self.state.openrb_prepared}\n"
             f"Bus reachable: {self.state.bus_reachable}\n"
             f"Motion ready: {self.state.motion_ready}\n"
@@ -391,3 +393,59 @@ class SystemController:
         if self.settings.robot.servo_ids:
             return int(self.settings.robot.servo_ids[0])
         return None
+
+    def _build_bench_debug_text(self, snapshot) -> str:
+        openrb_connected = self.openrb_client.get_status_snapshot().connected
+        telemetry = snapshot.telemetry
+        last_hw_error = None
+        if telemetry is not None:
+            last_hw_error = telemetry.hardware_error or (
+                f"0x{telemetry.hardware_error_code:02X}"
+                if telemetry.hardware_error_code not in (None, 0)
+                else "0"
+            )
+        return "\n".join(
+            [
+                "Bench debug:",
+                f"openrb_connected={openrb_connected}",
+                f"selected_port={snapshot.selected_port or self.state.openrb_port or 'unset'}",
+                f"selected_baud={snapshot.selected_baud or self.state.baudrate}",
+                f"expected_servo_id={snapshot.expected_servo_id}",
+                f"ping_ok={snapshot.ping_ok}",
+                f"identity_read_ok={snapshot.identity_read_ok}",
+                f"telemetry_read_ok={snapshot.telemetry_read_ok}",
+                f"last_position={telemetry.present_position if telemetry is not None else None}",
+                f"last_current={telemetry.present_current_ma if telemetry is not None else None}",
+                f"last_voltage={telemetry.present_voltage_mv if telemetry is not None else None}",
+                f"last_temperature={telemetry.present_temperature_c if telemetry is not None else None}",
+                f"last_hw_error={last_hw_error}",
+                f"calibration_entries_loaded={snapshot.calibration_entries_loaded}",
+                f"one_servo_mode_ok={snapshot.one_servo_mode_ok}",
+                "position_convention=tighten->smaller_counts; loosen->larger_counts",
+                f"motion_block_reason={snapshot.motion_block_reason or 'none'}",
+            ]
+        )
+
+    def _build_disconnected_bench_debug_text(self, *, extra_error: str | None = None) -> str:
+        summary = self.servo_service.get_calibration_summary()
+        openrb_connected = self.openrb_client.get_status_snapshot().connected
+        lines = [
+            "Bench debug:",
+            f"openrb_connected={openrb_connected}",
+            f"selected_port={self.state.openrb_port or 'unset'}",
+            f"selected_baud={self.state.baudrate}",
+            f"expected_servo_id={self._expected_servo_id()}",
+            "ping_ok=None",
+            "identity_read_ok=None",
+            "telemetry_read_ok=None",
+            "last_position=None",
+            "last_current=None",
+            "last_voltage=None",
+            "last_temperature=None",
+            "last_hw_error=None",
+            f"calibration_entries_loaded={sorted(summary.servo_entries)}",
+            f"one_servo_mode_ok={self.settings.robot.mode == '1-servo' and len(self.settings.robot.servo_ids) == 1}",
+            "position_convention=tighten->smaller_counts; loosen->larger_counts",
+            f"motion_block_reason={extra_error or 'OpenRB/DYNAMIXEL not ready'}",
+        ]
+        return "\n".join(lines)

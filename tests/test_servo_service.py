@@ -267,8 +267,10 @@ def test_servo_service_enforces_saved_software_bounds(tmp_path: Path) -> None:
         service.jog_servo(1, 6)
 
 
-def test_servo_service_directional_jog_uses_configured_tightening_direction(tmp_path: Path) -> None:
-    service = _build_service(tmp_path, context_servo_ids=[1])
+def test_servo_service_directional_jog_uses_canonical_raw_position_convention(tmp_path: Path) -> None:
+    bus = MockDxlBus([1])
+    bus.config.positive_tick_rotation = "cw"
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
     service.connect("/dev/mock-openrb", 115200)
     service.save_startup_calibration(
         servo_id=1,
@@ -284,6 +286,81 @@ def test_servo_service_directional_jog_uses_configured_tightening_direction(tmp_
     assert tighten.delta_ticks == -5
     assert loosen.success is True
     assert loosen.delta_ticks == 5
+
+
+def test_servo_service_jog_action_clamps_to_safe_bounds(tmp_path: Path) -> None:
+    bus = MockDxlBus([1])
+    bus._state[1].present_position = 2050
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-10,
+        max_offset_ticks=5,
+        pretension_current_threshold_ma=220,
+    )
+
+    result = service.jog_servo_action(servo_id=1, action="loosen_coarse")
+
+    assert result.success is True
+    assert result.clamped is True
+    assert result.goal_tick == 2055
+    assert result.unclamped_goal_tick == 2075
+    assert result.safe_min_tick == 2040
+    assert result.safe_max_tick == 2055
+
+
+def test_servo_service_jog_action_blocks_when_already_at_safe_limit(tmp_path: Path) -> None:
+    bus = MockDxlBus([1])
+    bus._state[1].present_position = 2028
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-10,
+        max_offset_ticks=10,
+        pretension_current_threshold_ma=220,
+    )
+    bus._state[1].present_position = 2018
+
+    result = service.jog_servo_action(servo_id=1, action="tighten_fine")
+
+    assert result.success is False
+    assert result.blocked is True
+    assert "safe minimum raw position" in result.message
+
+
+def test_servo_service_capture_neutral_persists_hardware_clamped_raw_bounds(tmp_path: Path) -> None:
+    bus = MockDxlBus([1])
+    bus._state[1].present_position = 4020
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+
+    result = service.capture_and_save_neutral_setpoints([1])
+
+    assert result.safe_bounds_by_id[1] == (3420, 4031)
+    summary = service.get_calibration_summary()
+    assert summary.servo_entries[1].safe_min_tick == 3420
+    assert summary.servo_entries[1].safe_max_tick == 4031
+
+
+def test_servo_service_blocks_motion_when_current_position_is_outside_safe_bounds(tmp_path: Path) -> None:
+    bus = MockDxlBus([1])
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-10,
+        max_offset_ticks=5,
+        pretension_current_threshold_ma=220,
+    )
+    bus._state[1].present_position = 2054
+
+    result = service.jog_servo_action(servo_id=1, action="loosen_fine")
+
+    assert result.success is False
+    assert result.blocked is True
+    assert "outside safe bounds" in result.message
 
 
 def test_servo_service_safe_id_assignment_requires_one_discovered_servo(tmp_path: Path) -> None:
@@ -306,7 +383,7 @@ def test_servo_service_discovery_prefers_expected_servo_id(tmp_path: Path) -> No
 
     discovery = service.discover_one_servo(expected_servo_id=7, allow_scan=False)
 
-    assert discovery.status == "expected_id_found"
+    assert discovery.status == "expected_id_read_ok"
     assert discovery.selected_servo_id == 7
     assert discovery.bus_reachable is True
     assert discovery.telemetry is not None
@@ -339,6 +416,24 @@ def test_servo_service_pretension_stops_on_threshold_and_can_be_accepted(tmp_pat
     assert result.steps_taken >= 1
     accepted = service.accept_pretension_result(1)
     assert accepted.pretension_result_status == "accepted"
+
+
+def test_servo_service_pretension_uses_decreasing_raw_position_for_tightening(tmp_path: Path) -> None:
+    bus = _PretensionBus(current_sequence=[180, 230])
+    bus.config.positive_tick_rotation = "cw"
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+
+    result = service.run_pretension_routine(servo_id=1)
+
+    assert result.success is True
+    assert bus._state[1].present_position < 2048
 
 
 def test_servo_service_pretension_fails_on_overcurrent(tmp_path: Path) -> None:

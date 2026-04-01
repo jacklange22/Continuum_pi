@@ -5,7 +5,9 @@ tracker_backend: "ndi"
 tracker_fallback_backend: "bridge"
 tracker_fallback_enabled: true
 tracker_type: "aurora"
-baudrate: 115200
+# The current one-servo OpenRB / XC330 bench path has been confirmed at 57600.
+# Keep machine-specific overrides in system.local.yaml when the local bench setup differs.
+baudrate: 57600
 mock_mode: true
 visualization_mode: "auto"
 visualization_safe_effects: true
@@ -41,6 +43,8 @@ openrb_settings:
   require_external_power_for_motion: true
 dynamixel_settings:
   protocol_version: 2.0
+  # Retained as low-level metadata for the bus seam. The one-servo MVP uses the
+  # raw-position convention directly: tighten lowers counts, loosen raises counts.
   positive_tick_rotation: "ccw"
   expected_operating_mode: 3
   allowed_operating_modes: [3]

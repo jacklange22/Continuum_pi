@@ -124,6 +124,8 @@ For the current simple 4-point GUI flow:
 
 - `RegistrationController.solve_session()` -> `RegistrationService.solve_registration()`
 - `RegistrationService._solve_simple_registration()`:
+  - reloads the accepted `0B` tip geometry used for capture
+  - confirms the capture-time tip offset provenance
   - averages repeated samples per selected label
   - builds measured and nominal point sets in label order
   - solves `T_robot_aurora` through `RigidRegistrationSolver.solve_T_robot_aurora(...)`
@@ -185,6 +187,13 @@ Canonical persistence path:
 
 Current record contents are defined by `RegistrationRecord` in
 `continuum_robot/registration/repository.py`.
+
+For the simple tracker MVP, the artifact now records two different transform concerns explicitly:
+
+- `capture_tip_provenance`: the accepted `0B` tip file and vector used during registration capture
+- `live_pose_tip_transform`: the saved `T_coil_tip` source used later for live robot-frame pose from `0A`
+
+This is intentional because the tracker MVP uses the pivot-calibrated `0B` tip file during capture, while `T_coil_tip` remains identity by design unless a separate `0A -> tip` calibration workflow exists.
 
 ## Dry-Validation Coverage
 

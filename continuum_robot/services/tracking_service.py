@@ -307,7 +307,16 @@ class TrackingService:
             payload = json.loads(self.registration_path.read_text(encoding="utf-8"))
             tip_service = TipPoseService.from_registration_file(self.registration_path)
             config_used = payload.get("config_used", {}) if isinstance(payload.get("config_used"), dict) else {}
-            tip_calibration_source = config_used.get("tip_calibration_source") or "unknown"
+            live_pose_tip_transform = (
+                payload.get("live_pose_tip_transform", {})
+                if isinstance(payload.get("live_pose_tip_transform"), dict)
+                else {}
+            )
+            tip_calibration_source = (
+                live_pose_tip_transform.get("source")
+                or config_used.get("tip_calibration_source")
+                or "unknown"
+            )
             measurement_tool_id = (
                 config_used.get("measurement_tool_id")
                 or config_used.get("capture_tool_id")
@@ -575,6 +584,10 @@ class TrackingService:
         self._state.backend_startup_messages = list(getattr(snapshot, "startup_messages", []))
         self._state.backend_capability_report = dict(getattr(snapshot, "capability_report", {}))
         self._state.backend_details = dict(getattr(snapshot, "backend_details", {}))
+        effective_port = self._resolve_live_backend_port(snapshot)
+        if effective_port:
+            self.port = effective_port
+            self._state.port = effective_port
         self._state.warning_messages = list(getattr(snapshot, "warning_messages", []))
         self._state.error_messages = list(getattr(snapshot, "error_messages", []))
         self._state.health.state = snapshot.connection_state
@@ -1091,6 +1104,30 @@ class TrackingService:
         if not issues:
             return None
         return "; ".join(issues)
+
+    @staticmethod
+    def _resolve_live_backend_port(snapshot) -> str | None:
+        backend_details = dict(getattr(snapshot, "backend_details", {}) or {})
+        tracker_settings = dict(backend_details.get("tracker_settings", {}) or {})
+        capability_report = dict(getattr(snapshot, "capability_report", {}) or {})
+        selected_backend = str(
+            getattr(snapshot, "selected_backend_name", "")
+            or getattr(snapshot, "configured_backend_name", "")
+            or ""
+        ).strip()
+        capability_details = {}
+        if selected_backend:
+            capability = capability_report.get(selected_backend, {})
+            if isinstance(capability, dict):
+                capability_details = dict(capability.get("details", {}) or {})
+        for candidate in (
+            backend_details.get("aurora_port"),
+            tracker_settings.get("serial port"),
+            capability_details.get("aurora_port"),
+        ):
+            if candidate not in (None, ""):
+                return str(candidate)
+        return None
 
     @classmethod
     def _default_backend_identity(cls, live_backend, aurora_client: AuroraClient | None) -> str:

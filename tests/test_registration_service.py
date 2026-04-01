@@ -159,3 +159,49 @@ def test_registration_service_loads_tip_file_relative_to_local_config_path(tmp_p
 
     assert status["ready"] is True
     assert status["path"] == str(tip_path)
+
+
+def test_registration_service_simple_registration_records_tip_provenance_and_applies_tip_offset(tmp_path: Path) -> None:
+    tip_path = tmp_path / "data" / "tip_cals" / "generated_penprobe_tip.csv"
+    tip_path.parent.mkdir(parents=True, exist_ok=True)
+    tip_path.write_text("1.0,2.0,3.0", encoding="utf-8")
+
+    tracking_service, registration_service = _make_services(
+        tmp_path,
+        config_lines=[
+            "landmark_labels: [L1, L2, L3, L4]",
+            "captures_per_landmark: 1",
+            'capture_tool_id: "0B"',
+            'coil_tool_id: "0A"',
+            'penprobe_file: "data/tip_cals/generated_penprobe_tip.csv"',
+            "nominal_landmarks_robot_xyz_mm:",
+            "  L1: [1.0, 2.0, 3.0]",
+            "  L2: [11.0, 2.0, 3.0]",
+            "  L3: [1.0, 12.0, 3.0]",
+            "  L4: [1.0, 2.0, 13.0]",
+        ],
+    )
+
+    registration_service.begin_session()
+    for frame_number, label, xyz in [
+        (1, "L1", (0.0, 0.0, 0.0)),
+        (2, "L2", (10.0, 0.0, 0.0)),
+        (3, "L3", (0.0, 10.0, 0.0)),
+        (4, "L4", (0.0, 0.0, 10.0)),
+    ]:
+        _ingest_tool_0b_sample(tracking_service, frame_number, xyz)
+        registration_service.capture_sample(label)
+        registration_service.complete_landmark()
+
+    payload = registration_service.solve_registration()
+    output_path = registration_service.accept_registration()
+    saved = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert payload["raw_captured_landmarks_robot_xyz"]["L1"][0] == [1.0, 2.0, 3.0]
+    assert saved["raw_captured_landmarks_robot_xyz"]["L4"][0] == [1.0, 2.0, 13.0]
+    assert saved["capture_tip_provenance"]["path"] == str(tip_path)
+    assert saved["capture_tip_provenance"]["tip_vector_mm"] == [1.0, 2.0, 3.0]
+    assert saved["capture_tip_provenance"]["offset_applied_before_solving"] is True
+    assert saved["live_pose_tip_transform"]["source"] == "identity_assumption_simple_registration"
+    assert np.allclose(np.asarray(saved["T_coil_tip"], dtype=float), np.eye(4))
+    assert saved["config_used"]["capture_tip_offset_applied_before_solving"] is True

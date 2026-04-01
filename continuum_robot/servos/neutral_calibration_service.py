@@ -124,6 +124,7 @@ class NeutralCalibrationService:
         self,
         setpoints_by_id: dict[int, int],
         *,
+        safe_bounds_by_id: dict[int, tuple[int, int]] | None = None,
         capture_source: str = "live_present_position",
     ) -> None:
         artifact = self.load_calibration_artifact()
@@ -132,18 +133,26 @@ class NeutralCalibrationService:
             for index, servo_id in enumerate(self.context.tendon_to_servo)
         }
         timestamp = _utc_now()
+        explicit_bounds = {
+            int(servo_id): (int(bounds[0]), int(bounds[1]))
+            for servo_id, bounds in dict(safe_bounds_by_id or {}).items()
+        }
         for servo_id, neutral_tick in sorted(setpoints_by_id.items()):
             existing = artifact.servos.get(int(servo_id), ServoCalibrationEntry(servo_id=int(servo_id)))
-            safe_min = (
-                int(neutral_tick) + int(self.context.position_min_offset_ticks)
-                if self.context.position_min_offset_ticks is not None
-                else existing.safe_min_tick
-            )
-            safe_max = (
-                int(neutral_tick) + int(self.context.position_max_offset_ticks)
-                if self.context.position_max_offset_ticks is not None
-                else existing.safe_max_tick
-            )
+            safe_bounds = explicit_bounds.get(int(servo_id))
+            if safe_bounds is not None:
+                safe_min, safe_max = safe_bounds
+            else:
+                safe_min = (
+                    int(neutral_tick) + int(self.context.position_min_offset_ticks)
+                    if self.context.position_min_offset_ticks is not None
+                    else existing.safe_min_tick
+                )
+                safe_max = (
+                    int(neutral_tick) + int(self.context.position_max_offset_ticks)
+                    if self.context.position_max_offset_ticks is not None
+                    else existing.safe_max_tick
+                )
             threshold = existing.pretension_current_threshold_ma
             if threshold is None:
                 threshold = self.context.default_pretension_current_threshold_ma

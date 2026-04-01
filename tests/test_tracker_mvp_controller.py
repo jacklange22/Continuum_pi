@@ -203,9 +203,17 @@ def _build_runtime(tmp_path: Path, *, penprobe_file: str) -> tuple[TrackerMvpCon
 @dataclass
 class _FakeValidationReport:
     tracker_ready: bool = True
+    tracker_operational: bool = True
+    tracker_verdict: str = "passed"
+    tracker_verdict_message: str = "All strict tracker validation thresholds passed."
 
     def to_dict(self) -> dict:
-        return {"tracker_ready": self.tracker_ready}
+        return {
+            "tracker_ready": self.tracker_ready,
+            "tracker_operational": self.tracker_operational,
+            "tracker_verdict": self.tracker_verdict,
+            "tracker_verdict_message": self.tracker_verdict_message,
+        }
 
 
 def test_registration_begin_requires_ready_tip_file(tmp_path: Path) -> None:
@@ -266,6 +274,41 @@ def test_tracker_mvp_blocks_pivot_without_tool_0b_visibility(
 
     with pytest.raises(RuntimeError, match="Tool 0B"):
         controller.run_pivot_calibration()
+
+
+def test_tracker_mvp_reports_operational_with_warning_without_marking_tracker_broken(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller, _registration_controller, tracking_service = _build_runtime(
+        tmp_path,
+        penprobe_file="data/tip_cals/generated_penprobe_tip.csv",
+    )
+    tip_path = tmp_path / "data" / "tip_cals" / "generated_penprobe_tip.csv"
+    tip_path.parent.mkdir(parents=True, exist_ok=True)
+    tip_path.write_text("1.0,2.0,3.0", encoding="utf-8")
+    tracking_service.start()
+    monkeypatch.setattr(
+        "continuum_robot.gui.controllers.tracker_mvp_controller.build_tracking_diagnostics_report",
+        lambda *args, **kwargs: _FakeValidationReport(
+            tracker_ready=False,
+            tracker_operational=True,
+            tracker_verdict="operational_with_warning",
+            tracker_verdict_message=(
+                "Operational with warning: effective FPS 12.00 is below target 15.00, "
+                "but frames, tool visibility, and rigid transforms are usable."
+            ),
+        ),
+    )
+
+    controller.validate_tracker()
+    state = controller.refresh()
+
+    assert state.validation_passed is False
+    assert state.tracker_operational is True
+    assert state.tracker_verdict == "operational_with_warning"
+    assert "Operational with warning" in state.validation_summary
+    assert state.workflow_steps[1].status == "complete"
 
 
 def test_tracker_mvp_pivot_run_updates_tip_geometry_and_status(

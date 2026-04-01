@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import copy
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -363,12 +364,29 @@ class RegistrationService:
         """Return the current pen-tip geometry source used for registration capture."""
         if refresh:
             self.refresh_measurement_point_geometry()
+        transform = self._measurement_point_transform_matrix()
+        tip_vector_mm = [float(value) for value in transform[0:3, 3]]
+        transform_matrix = transform.tolist()
+        file_path: str | None = None
+        file_mtime_ns: int | None = None
+        file_sha256: str | None = None
         if self._assets is not None:
+            if self._config.penprobe_file:
+                asset_path = self._resolve_config_path(self.config_path, self._config.penprobe_file)
+                file_path = str(asset_path)
+                if asset_path.exists():
+                    file_mtime_ns = int(asset_path.stat().st_mtime_ns)
+                    file_sha256 = self._sha256_file(asset_path)
             return {
                 "ready": True,
                 "source": "legacy_registration_assets",
-                "path": None,
+                "path": file_path,
                 "message": "Legacy asset geometry provides the pen-tip transform.",
+                "tip_vector_mm": tip_vector_mm,
+                "transform_matrix": transform_matrix,
+                "file_mtime_ns": file_mtime_ns,
+                "file_sha256": file_sha256,
+                "offset_applied_before_solving": True,
             }
         if self._simple_measurement_point_ready:
             if self._simple_measurement_point_path:
@@ -379,11 +397,22 @@ class RegistrationService:
                 message = "Registration is using coil origin because no explicit tip offset is configured."
         else:
             message = self._simple_measurement_point_error or "Pen-probe tip geometry is not ready."
+        if self._simple_measurement_point_path:
+            path = Path(self._simple_measurement_point_path)
+            file_path = str(path)
+            if path.exists():
+                file_mtime_ns = int(path.stat().st_mtime_ns)
+                file_sha256 = self._sha256_file(path)
         return {
             "ready": bool(self._simple_measurement_point_ready),
             "source": self._simple_measurement_point_source,
-            "path": self._simple_measurement_point_path,
+            "path": file_path,
             "message": message,
+            "tip_vector_mm": tip_vector_mm,
+            "transform_matrix": transform_matrix,
+            "file_mtime_ns": file_mtime_ns,
+            "file_sha256": file_sha256,
+            "offset_applied_before_solving": True,
         }
 
     def _solve_legacy_compatible_registration(self) -> dict:
@@ -455,6 +484,9 @@ class RegistrationService:
             if label not in nominal:
                 raise RuntimeError(f"Missing nominal landmark for label {label}")
 
+        measurement_status = self.get_measurement_point_status(refresh=True)
+        capture_tip_provenance = self._build_capture_tip_provenance(measurement_status)
+
         averaged = {
             label: np.asarray(points, dtype=float).mean(axis=0).tolist()
             for label, points in captures.items()
@@ -484,7 +516,7 @@ class RegistrationService:
         max_residual_mm = max(residual_norms_by_label.values(), default=0.0)
         if self._config.max_fre_mm is not None and fre_mm > self._config.max_fre_mm:
             raise RuntimeError(f"Registration FRE {fre_mm:.3f} mm exceeds limit {self._config.max_fre_mm:.3f} mm")
-        T_coil_tip = self._load_tip_calibration()[0]
+        T_coil_tip, live_pose_tip_transform = self._build_simple_live_pose_tip_transform()
 
         record = RegistrationRecord(
             timestamp_utc=utc_now_iso(),
@@ -506,6 +538,8 @@ class RegistrationService:
                 "residual_norms_mm_by_label": residual_norms_by_label,
                 "registration_mode": "simple",
             },
+            capture_tip_provenance=capture_tip_provenance,
+            live_pose_tip_transform=live_pose_tip_transform,
             config_used={
                 "registration_config_path": str(self.config_path),
                 "capture_tool_id": self._config.measurement_tool_id,
@@ -514,6 +548,11 @@ class RegistrationService:
                 "registration_mode": "simple",
                 "measurement_point_source": self._simple_measurement_point_source,
                 "penprobe_file": self._config.penprobe_file,
+                "capture_tip_offset_applied_before_solving": True,
+                "capture_tip_file_path": capture_tip_provenance.get("path"),
+                "capture_tip_file_sha256": capture_tip_provenance.get("file_sha256"),
+                "capture_tip_vector_mm": capture_tip_provenance.get("tip_vector_mm"),
+                "tip_calibration_source": live_pose_tip_transform.get("source"),
             },
         )
 
@@ -538,6 +577,16 @@ class RegistrationService:
             return copy.deepcopy(self._state.pending_record)
 
     def _record_from_legacy_result(self, result) -> RegistrationRecord:
+        legacy_capture_tip_provenance = self._build_capture_tip_provenance(self.get_measurement_point_status(refresh=True))
+        live_pose_tip_transform = {
+            "coil_tool_id": result.coil_tool_id,
+            "source": "legacy_registration_result",
+            "assumption": (
+                "Legacy-compatible registration solved the live 0A-to-tip transform directly. "
+                "The saved T_coil_tip comes from the registration result."
+            ),
+            "T_coil_tip": result.T_coil_tip.tolist(),
+        }
         return RegistrationRecord(
             timestamp_utc=utc_now_iso(),
             landmark_labels=result.ordered_labels,
@@ -555,6 +604,8 @@ class RegistrationService:
             truth_points_in_sw_by_label=result.truth_points_in_sw_by_label,
             group_by_label=result.group_by_label,
             validation_metrics=result.validation_metrics,
+            capture_tip_provenance=legacy_capture_tip_provenance,
+            live_pose_tip_transform=live_pose_tip_transform,
             config_used={
                 "registration_config_path": str(self.config_path),
                 "capture_tool_id": result.measurement_tool_id,
@@ -568,6 +619,11 @@ class RegistrationService:
                 "T_sw_2_model_file": self._config.T_sw_2_model_file,
                 "T_sw_2_tip_file": self._config.T_sw_2_tip_file,
                 "penprobe_file": self._config.penprobe_file,
+                "capture_tip_offset_applied_before_solving": True,
+                "capture_tip_file_path": legacy_capture_tip_provenance.get("path"),
+                "capture_tip_file_sha256": legacy_capture_tip_provenance.get("file_sha256"),
+                "capture_tip_vector_mm": legacy_capture_tip_provenance.get("tip_vector_mm"),
+                "tip_calibration_source": live_pose_tip_transform.get("source"),
             },
         )
 
@@ -742,27 +798,6 @@ class RegistrationService:
             measurement_point_transform=config.capture_tool_tip_transform,
         )
 
-    def _load_tip_calibration(self) -> tuple[np.ndarray, str]:
-        latest_path = self.repository.root_dir / "latest_registration.json"
-        if not latest_path.exists():
-            return np.eye(4), "default_identity"
-
-        try:
-            payload = json.loads(latest_path.read_text(encoding="utf-8"))
-            config_used = payload.get("config_used", {}) if isinstance(payload.get("config_used"), dict) else {}
-            if "T_coil_tip" in payload:
-                return np.asarray(payload["T_coil_tip"], dtype=float), str(
-                    config_used.get("tip_calibration_source", "previous_registration")
-                )
-            if "T_tip_2_coil" in payload:
-                return np.linalg.inv(np.asarray(payload["T_tip_2_coil"], dtype=float)), str(
-                    config_used.get("tip_calibration_source", "legacy_registration")
-                )
-        except Exception:
-            return np.eye(4), "default_identity"
-
-        return np.eye(4), "default_identity"
-
     @classmethod
     def _load_simple_measurement_point_transform(
         cls,
@@ -846,6 +881,64 @@ class RegistrationService:
         if matrix.shape != (4, 4):
             raise ValueError("capture_tool_tip_transform must be 4x4")
         return matrix
+
+    def get_latest_registration_artifact_summary(self) -> dict[str, object]:
+        """Return provenance details from the latest accepted registration artifact."""
+        latest_path = self.repository.root_dir / "latest_registration.json"
+        if not latest_path.exists():
+            return {}
+        try:
+            payload = json.loads(latest_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return {"path": str(latest_path), "error": str(exc)}
+        return {
+            "path": str(latest_path),
+            "capture_tip_provenance": dict(payload.get("capture_tip_provenance", {}) or {}),
+            "live_pose_tip_transform": dict(payload.get("live_pose_tip_transform", {}) or {}),
+            "config_used": dict(payload.get("config_used", {}) or {}),
+            "T_coil_tip": copy.deepcopy(payload.get("T_coil_tip")),
+        }
+
+    def _measurement_point_transform_matrix(self) -> np.ndarray:
+        if self._assets is not None:
+            return np.asarray(self._assets.T_measurement_point, dtype=float)
+        return np.asarray(self._simple_measurement_point_transform, dtype=float)
+
+    def _build_capture_tip_provenance(self, measurement_status: dict[str, object]) -> dict[str, object]:
+        matrix = np.asarray(measurement_status.get("transform_matrix") or self._measurement_point_transform_matrix().tolist(), dtype=float)
+        return {
+            "measurement_tool_id": self._config.measurement_tool_id,
+            "source": measurement_status.get("source"),
+            "path": measurement_status.get("path"),
+            "file_mtime_ns": measurement_status.get("file_mtime_ns"),
+            "file_sha256": measurement_status.get("file_sha256"),
+            "tip_vector_mm": list(measurement_status.get("tip_vector_mm") or matrix[0:3, 3].astype(float).tolist()),
+            "T_measurement_tool_tip": matrix.tolist(),
+            "offset_applied_before_solving": bool(measurement_status.get("offset_applied_before_solving", True)),
+            "applied_stage": "capture_before_point_averaging_and_registration_solve",
+        }
+
+    def _build_simple_live_pose_tip_transform(self) -> tuple[np.ndarray, dict[str, object]]:
+        matrix = np.eye(4, dtype=float)
+        payload = {
+            "coil_tool_id": self._config.coil_tool_id,
+            "source": "identity_assumption_simple_registration",
+            "assumption": (
+                "Simple 4-point registration calibrates T_robot_aurora from 0B pen-probe captures. "
+                "It does not solve a separate 0A-to-tip offset, so T_coil_tip remains identity by design "
+                "until a dedicated live-pose tip calibration is introduced."
+            ),
+            "T_coil_tip": matrix.tolist(),
+        }
+        return matrix, payload
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        hasher = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                hasher.update(chunk)
+        return hasher.hexdigest()
 
     def _recompute_health_locked(self) -> None:
         faults: list[str] = []

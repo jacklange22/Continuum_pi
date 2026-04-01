@@ -107,6 +107,8 @@ Success criteria:
 
 - accepted registration file saved
 - GUI shows selected landmarks, measured centroids, FRE, residuals, and output path
+- saved registration artifact shows the accepted `0B` tip provenance used during capture
+- saved registration artifact shows the live-pose `T_coil_tip` source explicitly
 - tracking pipeline can use the saved registration on the next refresh
 
 ## Workflow 6: Repeatability Dataset
@@ -135,3 +137,20 @@ Target acceptance:
 6. one-servo OpenRB bring-up
 7. startup calibration and pretension
 8. repeatability dataset
+
+## Tracker Verdicts
+
+Strict validation pass:
+
+- all configured tracker thresholds pass
+
+Operational with warning:
+
+- tracker frames, tool visibility, and rigid transforms are good enough to use
+- one strict target, usually FPS, is below the configured threshold
+- this is a warning state, not the same as a hard tracker failure
+
+Hard failure:
+
+- tracker is not connected, no frames arrive, required tools are missing, transforms are invalid, or data is stale
+- do not proceed until the tracker returns to an operational state

@@ -19,6 +19,13 @@ from continuum_robot.servos.pretension_validation_service import (
 )
 from continuum_robot.servos.safety_guard import SafetyGuard
 
+RAW_POSITION_MIN_TICK = 0
+RAW_POSITION_MAX_TICK = 4095
+CANONICAL_POSITION_CONVENTION = (
+    "Raw XC330 position uses 0..4095 ticks: 0 is more tensioned, 4095 is untensioned, "
+    "tighten lowers counts, loosen raises counts."
+)
+
 
 @dataclass
 class ServoCommandResult:
@@ -89,6 +96,30 @@ class ServoJogResult:
     goal_tick: int | None
     telemetry: ServoTelemetry | None
     assessment: ServoMotionAssessment | None
+    current_position_tick: int | None = None
+    unclamped_goal_tick: int | None = None
+    safe_min_tick: int | None = None
+    safe_max_tick: int | None = None
+    clamped: bool = False
+
+
+@dataclass
+class ServoMotionPlan:
+    """Canonical one-servo operator motion plan in raw position counts."""
+
+    servo_id: int
+    action: str
+    current_position_tick: int | None
+    step_ticks: int
+    delta_ticks: int
+    unclamped_target_tick: int | None
+    clamped_target_tick: int | None
+    safe_min_tick: int | None
+    safe_max_tick: int | None
+    clamped: bool
+    allowed: bool
+    block_reason: str
+    assessment: ServoMotionAssessment | None
 
 
 @dataclass
@@ -100,6 +131,33 @@ class NeutralCaptureResult:
     safe_bounds_by_id: dict[int, tuple[int, int]]
     artifact_path: str
     message: str
+
+
+@dataclass
+class ServoBenchDebugSnapshot:
+    """Compact one-servo bench-debug snapshot."""
+
+    expected_servo_id: int | None
+    selected_servo_id: int | None
+    selected_port: str | None
+    selected_baud: int | None
+    bus_connected: bool
+    bus_reachable: bool
+    ping_ok: bool | None
+    ping_message: str
+    identity_read_ok: bool | None
+    telemetry_read_ok: bool | None
+    telemetry: ServoTelemetry | None
+    calibration_exists: bool
+    calibration_compatible: bool
+    calibration_entries_loaded: list[int]
+    one_servo_mode_ok: bool
+    safe_bounds_loaded: bool
+    motion_ready: bool
+    motion_block_reason: str
+    status: str
+    message: str
+    motion_assessment: ServoMotionAssessment | None = None
 
 
 @dataclass
@@ -148,6 +206,10 @@ class ServoService:
 
     def disconnect(self) -> None:
         self.dxl_bus.disconnect()
+
+    @staticmethod
+    def position_convention_summary() -> str:
+        return CANONICAL_POSITION_CONVENTION
 
     def scan_ids(self, min_id: int = 1, max_id: int = 20) -> list[int]:
         return self.dxl_bus.scan_ids(min_id=min_id, max_id=max_id)
@@ -231,23 +293,219 @@ class ServoService:
             raise ValueError("At least one servo ID is required to capture neutral setpoints.")
         telemetry = self.read_telemetry(servo_ids)
         setpoints: dict[int, int] = {}
+        safe_bounds_by_id: dict[int, tuple[int, int]] = {}
         for servo_id in servo_ids:
             self._validate_capture_telemetry(telemetry[int(servo_id)], servo_id=int(servo_id))
             position = telemetry[servo_id].present_position
             if position is None:
                 raise RuntimeError(f"Servo {servo_id} position is unavailable")
-            setpoints[servo_id] = int(position)
-        self.neutral_calibration.save_neutral_setpoints(setpoints, capture_source=capture_source)
-        bounds = self.neutral_calibration.bounds_by_servo_id([int(servo_id) for servo_id in servo_ids])
+            neutral_tick = int(position)
+            setpoints[servo_id] = neutral_tick
+            safe_bounds_by_id[int(servo_id)] = self._safe_bounds_from_neutral(
+                servo_id=int(servo_id),
+                neutral_tick=neutral_tick,
+                telemetry=telemetry[int(servo_id)],
+                min_offset_ticks=int(self.safety_guard.min_offset_ticks),
+                max_offset_ticks=int(self.safety_guard.max_offset_ticks),
+            )
+        self.neutral_calibration.save_neutral_setpoints(
+            setpoints,
+            safe_bounds_by_id=safe_bounds_by_id,
+            capture_source=capture_source,
+        )
         return NeutralCaptureResult(
             servo_ids=[int(servo_id) for servo_id in servo_ids],
             setpoints_by_id=setpoints,
-            safe_bounds_by_id=bounds,
+            safe_bounds_by_id=dict(safe_bounds_by_id),
             artifact_path=str(self.neutral_calibration.path),
             message=(
                 f"Captured and saved neutral setpoints for servo IDs {sorted(setpoints)} "
                 f"to {self.neutral_calibration.path}."
             ),
+        )
+
+    def build_bench_debug_snapshot(self, expected_servo_id: int | None) -> ServoBenchDebugSnapshot:
+        summary = self.neutral_calibration.get_calibration_summary()
+        calibration_entries_loaded = sorted(summary.servo_entries)
+        one_servo_mode_ok = (
+            str(self.neutral_calibration.context.robot_mode).strip().lower() == "1-servo"
+            and len(self.neutral_calibration.context.servo_ids) == 1
+        )
+        selected_port = self.dxl_bus.port
+        selected_baud = self.dxl_bus.baudrate
+        if not self.is_connected:
+            return ServoBenchDebugSnapshot(
+                expected_servo_id=int(expected_servo_id) if expected_servo_id is not None else None,
+                selected_servo_id=None,
+                selected_port=selected_port,
+                selected_baud=selected_baud,
+                bus_connected=False,
+                bus_reachable=False,
+                ping_ok=None,
+                ping_message="DYNAMIXEL bus is disconnected.",
+                identity_read_ok=None,
+                telemetry_read_ok=None,
+                telemetry=None,
+                calibration_exists=summary.exists,
+                calibration_compatible=summary.compatible,
+                calibration_entries_loaded=calibration_entries_loaded,
+                one_servo_mode_ok=one_servo_mode_ok,
+                safe_bounds_loaded=False,
+                motion_ready=False,
+                motion_block_reason="DYNAMIXEL bus is disconnected.",
+                status="disconnected",
+                message="DYNAMIXEL bus is disconnected.",
+            )
+        if expected_servo_id is None:
+            return ServoBenchDebugSnapshot(
+                expected_servo_id=None,
+                selected_servo_id=None,
+                selected_port=selected_port,
+                selected_baud=selected_baud,
+                bus_connected=True,
+                bus_reachable=False,
+                ping_ok=None,
+                ping_message="No expected servo ID is configured.",
+                identity_read_ok=None,
+                telemetry_read_ok=None,
+                telemetry=None,
+                calibration_exists=summary.exists,
+                calibration_compatible=summary.compatible,
+                calibration_entries_loaded=calibration_entries_loaded,
+                one_servo_mode_ok=one_servo_mode_ok,
+                safe_bounds_loaded=False,
+                motion_ready=False,
+                motion_block_reason="No expected servo ID is configured.",
+                status="no_expected_id",
+                message="No expected servo ID is configured.",
+            )
+
+        ping = self.dxl_bus.ping_servo_snapshot(int(expected_servo_id))
+        if not ping.responded:
+            ping_message = ping.error or f"Servo {expected_servo_id} did not respond to ping."
+            return ServoBenchDebugSnapshot(
+                expected_servo_id=int(expected_servo_id),
+                selected_servo_id=None,
+                selected_port=selected_port,
+                selected_baud=selected_baud,
+                bus_connected=True,
+                bus_reachable=False,
+                ping_ok=False,
+                ping_message=ping_message,
+                identity_read_ok=False,
+                telemetry_read_ok=False,
+                telemetry=None,
+                calibration_exists=summary.exists,
+                calibration_compatible=summary.compatible,
+                calibration_entries_loaded=calibration_entries_loaded,
+                one_servo_mode_ok=one_servo_mode_ok,
+                safe_bounds_loaded=False,
+                motion_ready=False,
+                motion_block_reason=ping_message,
+                status="ping_failed",
+                message=(
+                    f"Expected servo ID {expected_servo_id} did not respond to ping. {ping_message}"
+                ),
+            )
+
+        try:
+            telemetry = self.read_telemetry([int(expected_servo_id)])[int(expected_servo_id)]
+        except Exception as exc:
+            message = (
+                f"Servo {expected_servo_id} responded to ping, but identity/telemetry read failed: {exc}"
+            )
+            return ServoBenchDebugSnapshot(
+                expected_servo_id=int(expected_servo_id),
+                selected_servo_id=int(expected_servo_id),
+                selected_port=selected_port,
+                selected_baud=selected_baud,
+                bus_connected=True,
+                bus_reachable=True,
+                ping_ok=True,
+                ping_message=f"Ping succeeded for servo {expected_servo_id}.",
+                identity_read_ok=False,
+                telemetry_read_ok=False,
+                telemetry=None,
+                calibration_exists=summary.exists,
+                calibration_compatible=summary.compatible,
+                calibration_entries_loaded=calibration_entries_loaded,
+                one_servo_mode_ok=one_servo_mode_ok,
+                safe_bounds_loaded=False,
+                motion_ready=False,
+                motion_block_reason=message,
+                status="ping_only",
+                message=message,
+            )
+
+        identity_read_ok = self._identity_read_ok(telemetry)
+        telemetry_read_ok = self._telemetry_read_ok(telemetry)
+        try:
+            motion_assessment = self.assess_motion(
+                int(expected_servo_id),
+                require_calibrated_bounds=True,
+                telemetry=telemetry,
+            )
+        except Exception as exc:
+            motion_assessment = None
+            motion_block_reason = str(exc)
+            motion_ready = False
+        else:
+            motion_block_reason = "" if motion_assessment.ready else motion_assessment.reason
+            motion_ready = bool(motion_assessment.ready)
+        safe_bounds_loaded = bool(
+            summary.exists
+            and summary.compatible
+            and (
+                entry := summary.servo_entries.get(int(expected_servo_id))
+            ) is not None
+            and entry.safe_min_tick is not None
+            and entry.safe_max_tick is not None
+        )
+        read_failures = []
+        if not identity_read_ok:
+            read_failures.append(
+                f"identity read incomplete: {telemetry.identity_error or self._missing_identity_fields(telemetry)}"
+            )
+        if not telemetry_read_ok:
+            read_failures.append(
+                f"telemetry read incomplete: {telemetry.telemetry_error or self._missing_telemetry_fields(telemetry)}"
+            )
+        if read_failures:
+            status = "ping_only" if not identity_read_ok else "identity_only"
+            message = (
+                f"Servo {expected_servo_id} responded to ping, but follow-up reads are incomplete: "
+                + " | ".join(read_failures)
+            )
+            motion_ready = False
+            motion_block_reason = message
+        else:
+            status = "telemetry_ready" if motion_ready else "telemetry_read_ok"
+            message = (
+                f"Servo {expected_servo_id} ping, identity, and telemetry reads succeeded. "
+                f"Motion status: {motion_block_reason or 'ready'}"
+            )
+        return ServoBenchDebugSnapshot(
+            expected_servo_id=int(expected_servo_id),
+            selected_servo_id=int(expected_servo_id),
+            selected_port=selected_port,
+            selected_baud=selected_baud,
+            bus_connected=True,
+            bus_reachable=True,
+            ping_ok=True,
+            ping_message=f"Ping succeeded for servo {expected_servo_id}.",
+            identity_read_ok=identity_read_ok,
+            telemetry_read_ok=telemetry_read_ok,
+            telemetry=telemetry,
+            calibration_exists=summary.exists,
+            calibration_compatible=summary.compatible,
+            calibration_entries_loaded=calibration_entries_loaded,
+            one_servo_mode_ok=one_servo_mode_ok,
+            safe_bounds_loaded=safe_bounds_loaded,
+            motion_ready=motion_ready,
+            motion_block_reason=motion_block_reason,
+            status=status,
+            message=message,
+            motion_assessment=motion_assessment,
         )
 
     def discover_one_servo(
@@ -271,26 +529,23 @@ class ServoService:
             )
 
         if expected_servo_id is not None and self.dxl_bus.ping_servo(int(expected_servo_id)):
-            telemetry = self.read_telemetry([int(expected_servo_id)])[int(expected_servo_id)]
-            assessment = self.assess_motion(
-                int(expected_servo_id),
-                require_calibrated_bounds=False,
-                telemetry=telemetry,
+            debug_snapshot = self.build_bench_debug_snapshot(int(expected_servo_id))
+            discovery_status = (
+                "expected_id_read_ok"
+                if debug_snapshot.identity_read_ok and debug_snapshot.telemetry_read_ok
+                else "expected_id_ping_only"
             )
             return ServoDiscoverySnapshot(
-                status="expected_id_found",
+                status=discovery_status,
                 connected=True,
-                bus_reachable=True,
+                bus_reachable=bool(debug_snapshot.bus_reachable),
                 expected_servo_id=int(expected_servo_id),
-                selected_servo_id=int(expected_servo_id),
+                selected_servo_id=debug_snapshot.selected_servo_id,
                 discovered_ids=[int(expected_servo_id)],
                 scan_range=None,
-                telemetry=telemetry,
-                motion_assessment=assessment,
-                message=(
-                    f"Expected servo ID {expected_servo_id} responded. "
-                    f"Readiness status: {assessment.reason}"
-                ),
+                telemetry=debug_snapshot.telemetry,
+                motion_assessment=debug_snapshot.motion_assessment,
+                message=debug_snapshot.message,
             )
 
         if not allow_scan:
@@ -348,26 +603,23 @@ class ServoService:
                 ),
             )
         selected_servo_id = int(discovered_ids[0])
-        telemetry = self.read_telemetry([selected_servo_id])[selected_servo_id]
-        assessment = self.assess_motion(
-            selected_servo_id,
-            require_calibrated_bounds=False,
-            telemetry=telemetry,
+        debug_snapshot = self.build_bench_debug_snapshot(selected_servo_id)
+        discovery_status = (
+            "scan_read_ok"
+            if debug_snapshot.identity_read_ok and debug_snapshot.telemetry_read_ok
+            else "scan_ping_only"
         )
         return ServoDiscoverySnapshot(
-            status="scan_found",
+            status=discovery_status,
             connected=True,
-            bus_reachable=True,
+            bus_reachable=bool(debug_snapshot.bus_reachable),
             expected_servo_id=int(expected_servo_id) if expected_servo_id is not None else None,
-            selected_servo_id=selected_servo_id,
+            selected_servo_id=debug_snapshot.selected_servo_id,
             discovered_ids=list(discovered_ids),
             scan_range=scan_range,
-            telemetry=telemetry,
-            motion_assessment=assessment,
-            message=(
-                f"Found servo {selected_servo_id} in conservative scan range {scan_range[0]}..{scan_range[1]}. "
-                f"Readiness status: {assessment.reason}"
-            ),
+            telemetry=debug_snapshot.telemetry,
+            motion_assessment=debug_snapshot.motion_assessment,
+            message=debug_snapshot.message,
         )
 
     def get_tightening_direction(self, servo_id: int) -> str | None:
@@ -434,6 +686,16 @@ class ServoService:
             )
         except ValueError as exc:
             errors.append(str(exc))
+        if (
+            current.present_position is not None
+            and safe_min is not None
+            and safe_max is not None
+            and not (int(safe_min) <= int(current.present_position) <= int(safe_max))
+        ):
+            errors.append(
+                f"Present Position {current.present_position} is outside safe bounds "
+                f"[{safe_min}, {safe_max}]. Recover to a safe position before commanding motion."
+            )
         return ServoMotionAssessment(
             servo_id=int(servo_id),
             ready=not errors,
@@ -441,10 +703,34 @@ class ServoService:
             telemetry=current,
             safe_min_tick=safe_min,
             safe_max_tick=safe_max,
-            tightening_direction=self.get_tightening_direction(int(servo_id)),
+            tightening_direction="smaller raw position counts",
             blocking_reasons=tuple(errors),
             external_power_required=bool(self.dxl_bus.config.require_voltage_for_motion),
             external_power_ready=external_power_ready,
+        )
+
+    def plan_jog_action(self, *, servo_id: int, action: str) -> ServoMotionPlan:
+        action_name = str(action).strip().lower()
+        if action_name not in {
+            "tighten_fine",
+            "tighten_coarse",
+            "loosen_fine",
+            "loosen_coarse",
+        }:
+            raise ValueError(
+                "action must be one of tighten_fine, tighten_coarse, loosen_fine, or loosen_coarse."
+            )
+        direction = "tighten" if action_name.startswith("tighten") else "loosen"
+        step_ticks = (
+            int(self.safety_guard.fine_jog_step_ticks)
+            if action_name.endswith("fine")
+            else int(self.safety_guard.coarse_jog_step_ticks)
+        )
+        return self._build_relative_motion_plan(
+            servo_id=int(servo_id),
+            action=action_name,
+            delta_ticks=self._canonical_delta_for_direction(direction, step_ticks),
+            step_ticks=step_ticks,
         )
 
     def jog_servo(self, servo_id: int, delta_ticks: int) -> ServoCommandResult:
@@ -482,49 +768,19 @@ class ServoService:
             raise ValueError("command_direction must be 'tighten' or 'loosen'.")
         if int(step_ticks) <= 0:
             raise ValueError("step_ticks must be positive.")
-        try:
-            signed_step = self._tightening_step_sign(int(servo_id))
-            delta_ticks = int(step_ticks) * signed_step * (1 if direction == "tighten" else -1)
-            command = self.jog_servo(int(servo_id), int(delta_ticks))
-        except Exception as exc:
-            assessment: ServoMotionAssessment | None = None
-            try:
-                assessment = self.assess_motion(int(servo_id), require_calibrated_bounds=True)
-            except Exception:
-                assessment = None
-            return ServoJogResult(
-                servo_id=int(servo_id),
-                command_direction=direction,
-                step_ticks=int(step_ticks),
-                delta_ticks=int(locals().get("delta_ticks", 0)),
-                success=False,
-                blocked=True,
-                status="blocked",
-                message=str(exc),
-                goal_tick=None,
-                telemetry=assessment.telemetry if assessment is not None else None,
-                assessment=assessment,
-            )
-        updated = command.telemetry_by_id.get(int(servo_id))
-        return ServoJogResult(
+        action = f"{direction}_{'fine' if int(step_ticks) == int(self.safety_guard.fine_jog_step_ticks) else 'coarse'}"
+        plan = self._build_relative_motion_plan(
             servo_id=int(servo_id),
-            command_direction=direction,
+            action=action,
+            delta_ticks=self._canonical_delta_for_direction(direction, int(step_ticks)),
             step_ticks=int(step_ticks),
-            delta_ticks=int(delta_ticks),
-            success=True,
-            blocked=False,
-            status="moved",
-            message=command.message,
-            goal_tick=command.positions_by_id.get(int(servo_id)),
-            telemetry=updated,
-            assessment=self.assess_motion(
-                int(servo_id),
-                require_calibrated_bounds=True,
-                telemetry=updated,
-            )
-            if updated is not None
-            else None,
         )
+        return self._execute_motion_plan(plan, command_direction=direction)
+
+    def jog_servo_action(self, *, servo_id: int, action: str) -> ServoJogResult:
+        plan = self.plan_jog_action(servo_id=int(servo_id), action=action)
+        direction = "tighten" if str(action).strip().lower().startswith("tighten") else "loosen"
+        return self._execute_motion_plan(plan, command_direction=direction)
 
     def command_displacement(
         self,
@@ -641,8 +897,8 @@ class ServoService:
                 f"Pretension threshold {threshold} mA must be below the absolute safety limit "
                 f"{self.safety_guard.max_current_ma} mA."
             )
-        tightening_direction = self.get_tightening_direction(int(servo_id))
-        step_sign = self._tightening_step_sign(int(servo_id))
+        tightening_direction = "decreasing_raw_position"
+        step_delta = -abs(int(self.safety_guard.pretension_step_ticks))
         safe_min = int(assessment.safe_min_tick) if assessment.safe_min_tick is not None else None
         safe_max = int(assessment.safe_max_tick) if assessment.safe_max_tick is not None else None
         deadline = self._time_fn() + float(self.safety_guard.pretension_timeout_s)
@@ -777,7 +1033,7 @@ class ServoService:
                 )
                 return _emit(result)
 
-            next_goal = int(position + step_sign * int(self.safety_guard.pretension_step_ticks))
+            next_goal = int(position + step_delta)
             if safe_min is None or safe_max is None or next_goal < safe_min or next_goal > safe_max:
                 result = PretensionRoutineResult(
                     servo_id=int(servo_id),
@@ -825,19 +1081,16 @@ class ServoService:
             return int(thresholds[int(servo_id)])
         return int(self.safety_guard.default_pretension_current_threshold_ma)
 
-    def _tightening_step_sign(self, servo_id: int) -> int:
-        tightening_rotation = self.get_tightening_direction(int(servo_id))
-        if tightening_rotation not in {"cw", "ccw"}:
-            raise RuntimeError(
-                f"Servo {servo_id} tightening direction is not configured. "
-                "Set tightening_rotation_by_servo in the robot config or persist servo calibration first."
-            )
-        positive_tick_rotation = str(self.dxl_bus.config.positive_tick_rotation).strip().lower()
-        if positive_tick_rotation not in {"cw", "ccw"}:
-            raise RuntimeError(
-                f"Unsupported positive_tick_rotation setting {self.dxl_bus.config.positive_tick_rotation!r}."
-            )
-        return 1 if tightening_rotation == positive_tick_rotation else -1
+    @staticmethod
+    def _canonical_delta_for_direction(command_direction: str, step_ticks: int) -> int:
+        if int(step_ticks) <= 0:
+            raise ValueError("step_ticks must be positive.")
+        direction = str(command_direction).strip().lower()
+        if direction == "tighten":
+            return -abs(int(step_ticks))
+        if direction == "loosen":
+            return abs(int(step_ticks))
+        raise ValueError("command_direction must be 'tighten' or 'loosen'.")
 
     def _safe_bounds_for_servo(
         self,
@@ -850,6 +1103,8 @@ class ServoService:
             raise ValueError("Servo position limits are unavailable.")
         safe_min = int(telemetry.min_position_limit) + int(self.safety_guard.software_position_margin_ticks)
         safe_max = int(telemetry.max_position_limit) - int(self.safety_guard.software_position_margin_ticks)
+        safe_min = max(int(RAW_POSITION_MIN_TICK), int(safe_min))
+        safe_max = min(int(RAW_POSITION_MAX_TICK), int(safe_max))
         if safe_min > safe_max:
             raise ValueError("Software safety margin exceeds the servo hardware position range.")
 
@@ -857,7 +1112,7 @@ class ServoService:
         if summary.exists and not summary.compatible and require_calibrated_bounds:
             raise ValueError(
                 "Saved servo calibration does not match the current robot configuration. "
-                "Recapture startup calibration before commanding calibrated motion."
+                "Recapture one-servo neutral or compatible calibrated bounds before commanding motion."
             )
         entry = summary.servo_entries.get(int(servo_id)) if summary.exists and summary.compatible else None
         if entry and entry.safe_min_tick is not None and entry.safe_max_tick is not None:
@@ -873,6 +1128,274 @@ class ServoService:
                 f"Servo {servo_id} safe bounds are invalid after applying hardware and software limits."
             )
         return int(safe_min), int(safe_max)
+
+    def _safe_bounds_from_neutral(
+        self,
+        *,
+        servo_id: int,
+        neutral_tick: int,
+        telemetry: ServoTelemetry,
+        min_offset_ticks: int,
+        max_offset_ticks: int,
+    ) -> tuple[int, int]:
+        hardware_safe_min, hardware_safe_max = self._safe_bounds_for_servo(
+            servo_id=int(servo_id),
+            telemetry=telemetry,
+            require_calibrated_bounds=False,
+        )
+        safe_min = max(int(hardware_safe_min), int(neutral_tick) + int(min_offset_ticks))
+        safe_max = min(int(hardware_safe_max), int(neutral_tick) + int(max_offset_ticks))
+        if safe_min > safe_max:
+            raise RuntimeError(
+                f"Servo {servo_id} neutral-centered safe bounds are invalid after hardware clamping."
+            )
+        if int(neutral_tick) < safe_min or int(neutral_tick) > safe_max:
+            raise RuntimeError(
+                f"Servo {servo_id} neutral position {neutral_tick} is outside the computed safe bounds "
+                f"[{safe_min}, {safe_max}]."
+            )
+        return int(safe_min), int(safe_max)
+
+    def _build_relative_motion_plan(
+        self,
+        *,
+        servo_id: int,
+        action: str,
+        delta_ticks: int,
+        step_ticks: int,
+    ) -> ServoMotionPlan:
+        assessment: ServoMotionAssessment | None
+        try:
+            self.safety_guard.validate_jog_delta(int(delta_ticks))
+        except ValueError as exc:
+            return ServoMotionPlan(
+                servo_id=int(servo_id),
+                action=str(action),
+                current_position_tick=None,
+                step_ticks=int(step_ticks),
+                delta_ticks=int(delta_ticks),
+                unclamped_target_tick=None,
+                clamped_target_tick=None,
+                safe_min_tick=None,
+                safe_max_tick=None,
+                clamped=False,
+                allowed=False,
+                block_reason=str(exc),
+                assessment=None,
+            )
+        try:
+            assessment = self.assess_motion(int(servo_id), require_calibrated_bounds=True)
+        except Exception as exc:
+            return ServoMotionPlan(
+                servo_id=int(servo_id),
+                action=str(action),
+                current_position_tick=None,
+                step_ticks=int(step_ticks),
+                delta_ticks=int(delta_ticks),
+                unclamped_target_tick=None,
+                clamped_target_tick=None,
+                safe_min_tick=None,
+                safe_max_tick=None,
+                clamped=False,
+                allowed=False,
+                block_reason=str(exc),
+                assessment=None,
+            )
+
+        current_position = assessment.telemetry.present_position
+        safe_min = assessment.safe_min_tick
+        safe_max = assessment.safe_max_tick
+        if not assessment.ready:
+            return ServoMotionPlan(
+                servo_id=int(servo_id),
+                action=str(action),
+                current_position_tick=current_position,
+                step_ticks=int(step_ticks),
+                delta_ticks=int(delta_ticks),
+                unclamped_target_tick=None,
+                clamped_target_tick=None,
+                safe_min_tick=safe_min,
+                safe_max_tick=safe_max,
+                clamped=False,
+                allowed=False,
+                block_reason=assessment.reason,
+                assessment=assessment,
+            )
+        if current_position is None:
+            return ServoMotionPlan(
+                servo_id=int(servo_id),
+                action=str(action),
+                current_position_tick=None,
+                step_ticks=int(step_ticks),
+                delta_ticks=int(delta_ticks),
+                unclamped_target_tick=None,
+                clamped_target_tick=None,
+                safe_min_tick=safe_min,
+                safe_max_tick=safe_max,
+                clamped=False,
+                allowed=False,
+                block_reason=f"Servo {servo_id} position is unavailable.",
+                assessment=assessment,
+            )
+        if safe_min is None or safe_max is None:
+            return ServoMotionPlan(
+                servo_id=int(servo_id),
+                action=str(action),
+                current_position_tick=int(current_position),
+                step_ticks=int(step_ticks),
+                delta_ticks=int(delta_ticks),
+                unclamped_target_tick=None,
+                clamped_target_tick=None,
+                safe_min_tick=safe_min,
+                safe_max_tick=safe_max,
+                clamped=False,
+                allowed=False,
+                block_reason=f"Servo {servo_id} safe bounds are unavailable.",
+                assessment=assessment,
+            )
+        unclamped_target = int(current_position) + int(delta_ticks)
+        bounded_min = max(int(RAW_POSITION_MIN_TICK), int(safe_min))
+        bounded_max = min(int(RAW_POSITION_MAX_TICK), int(safe_max))
+        if bounded_min > bounded_max:
+            return ServoMotionPlan(
+                servo_id=int(servo_id),
+                action=str(action),
+                current_position_tick=int(current_position),
+                step_ticks=int(step_ticks),
+                delta_ticks=int(delta_ticks),
+                unclamped_target_tick=unclamped_target,
+                clamped_target_tick=None,
+                safe_min_tick=bounded_min,
+                safe_max_tick=bounded_max,
+                clamped=False,
+                allowed=False,
+                block_reason=(
+                    f"Servo {servo_id} safe bounds are invalid after applying the canonical raw position range."
+                ),
+                assessment=assessment,
+            )
+        clamped_target = min(max(int(unclamped_target), bounded_min), bounded_max)
+        clamped = int(clamped_target) != int(unclamped_target)
+        if int(clamped_target) == int(current_position):
+            boundary = "minimum" if int(delta_ticks) < 0 else "maximum"
+            return ServoMotionPlan(
+                servo_id=int(servo_id),
+                action=str(action),
+                current_position_tick=int(current_position),
+                step_ticks=int(step_ticks),
+                delta_ticks=int(delta_ticks),
+                unclamped_target_tick=unclamped_target,
+                clamped_target_tick=int(clamped_target),
+                safe_min_tick=bounded_min,
+                safe_max_tick=bounded_max,
+                clamped=clamped,
+                allowed=False,
+                block_reason=(
+                    f"Servo {servo_id} is already at the safe {boundary} raw position {clamped_target}; "
+                    f"{action} would not move the servo."
+                ),
+                assessment=assessment,
+            )
+        return ServoMotionPlan(
+            servo_id=int(servo_id),
+            action=str(action),
+            current_position_tick=int(current_position),
+            step_ticks=int(step_ticks),
+            delta_ticks=int(delta_ticks),
+            unclamped_target_tick=int(unclamped_target),
+            clamped_target_tick=int(clamped_target),
+            safe_min_tick=bounded_min,
+            safe_max_tick=bounded_max,
+            clamped=clamped,
+            allowed=True,
+            block_reason="",
+            assessment=assessment,
+        )
+
+    def _execute_motion_plan(
+        self,
+        plan: ServoMotionPlan,
+        *,
+        command_direction: str,
+    ) -> ServoJogResult:
+        if not plan.allowed or plan.clamped_target_tick is None:
+            return ServoJogResult(
+                servo_id=int(plan.servo_id),
+                command_direction=str(command_direction),
+                step_ticks=int(plan.step_ticks),
+                delta_ticks=int(plan.delta_ticks),
+                success=False,
+                blocked=True,
+                status="blocked",
+                message=f"Blocked {plan.action} for servo {plan.servo_id}: {plan.block_reason}",
+                goal_tick=plan.clamped_target_tick,
+                telemetry=plan.assessment.telemetry if plan.assessment is not None else None,
+                assessment=plan.assessment,
+                current_position_tick=plan.current_position_tick,
+                unclamped_goal_tick=plan.unclamped_target_tick,
+                safe_min_tick=plan.safe_min_tick,
+                safe_max_tick=plan.safe_max_tick,
+                clamped=plan.clamped,
+            )
+        updated: ServoTelemetry | None = None
+        updated_assessment: ServoMotionAssessment | None = None
+        try:
+            self.dxl_bus.write_goal_positions({int(plan.servo_id): int(plan.clamped_target_tick)})
+            updated = self.read_telemetry([int(plan.servo_id)])[int(plan.servo_id)]
+            self._validate_post_motion(updated)
+            updated_assessment = self.assess_motion(
+                int(plan.servo_id),
+                require_calibrated_bounds=True,
+                telemetry=updated,
+            )
+        except Exception as exc:
+            return ServoJogResult(
+                servo_id=int(plan.servo_id),
+                command_direction=str(command_direction),
+                step_ticks=int(plan.step_ticks),
+                delta_ticks=int(plan.delta_ticks),
+                success=False,
+                blocked=True,
+                status="blocked",
+                message=f"Blocked {plan.action} for servo {plan.servo_id}: {exc}",
+                goal_tick=plan.clamped_target_tick,
+                telemetry=updated or (plan.assessment.telemetry if plan.assessment is not None else None),
+                assessment=updated_assessment or plan.assessment,
+                current_position_tick=plan.current_position_tick,
+                unclamped_goal_tick=plan.unclamped_target_tick,
+                safe_min_tick=plan.safe_min_tick,
+                safe_max_tick=plan.safe_max_tick,
+                clamped=plan.clamped,
+            )
+        if plan.clamped:
+            detail = (
+                f"requested {plan.unclamped_target_tick}, clamped to {plan.clamped_target_tick} "
+                f"within [{plan.safe_min_tick}, {plan.safe_max_tick}]"
+            )
+        else:
+            detail = (
+                f"target {plan.clamped_target_tick} within [{plan.safe_min_tick}, {plan.safe_max_tick}]"
+            )
+        return ServoJogResult(
+            servo_id=int(plan.servo_id),
+            command_direction=str(command_direction),
+            step_ticks=int(plan.step_ticks),
+            delta_ticks=int(plan.delta_ticks),
+            success=True,
+            blocked=False,
+            status="moved",
+            message=(
+                f"Sent {plan.action} for servo {plan.servo_id}: current {plan.current_position_tick}, {detail}."
+            ),
+            goal_tick=plan.clamped_target_tick,
+            telemetry=updated,
+            assessment=updated_assessment,
+            current_position_tick=plan.current_position_tick,
+            unclamped_goal_tick=plan.unclamped_target_tick,
+            safe_min_tick=plan.safe_min_tick,
+            safe_max_tick=plan.safe_max_tick,
+            clamped=plan.clamped,
+        )
 
     @staticmethod
     def _validate_goal_against_assessment(assessment: ServoMotionAssessment, goal_tick: int) -> None:
@@ -924,3 +1447,58 @@ class ServoService:
             self.safety_guard.validate_temperature(telemetry.present_temperature_c, require_present=True)
         except ValueError as exc:
             raise RuntimeError(f"Servo {servo_id} is not safe to capture neutral: {exc}") from exc
+
+    @staticmethod
+    def _identity_read_ok(telemetry: ServoTelemetry) -> bool:
+        return (
+            telemetry.identity_error is None
+            and telemetry.reported_servo_id is not None
+            and telemetry.model_number is not None
+            and telemetry.firmware_version is not None
+        )
+
+    @staticmethod
+    def _missing_identity_fields(telemetry: ServoTelemetry) -> str:
+        missing = []
+        if telemetry.reported_servo_id is None:
+            missing.append("servo_id")
+        if telemetry.model_number is None:
+            missing.append("model_number")
+        if telemetry.firmware_version is None:
+            missing.append("firmware_version")
+        return ", ".join(missing) if missing else "unknown identity read error"
+
+    @staticmethod
+    def _telemetry_read_ok(telemetry: ServoTelemetry) -> bool:
+        return (
+            telemetry.telemetry_error is None
+            and telemetry.operating_mode is not None
+            and telemetry.min_position_limit is not None
+            and telemetry.max_position_limit is not None
+            and telemetry.present_position is not None
+            and telemetry.present_current_ma is not None
+            and telemetry.present_voltage_mv is not None
+            and telemetry.present_temperature_c is not None
+            and telemetry.hardware_error_code is not None
+        )
+
+    @staticmethod
+    def _missing_telemetry_fields(telemetry: ServoTelemetry) -> str:
+        missing = []
+        if telemetry.operating_mode is None:
+            missing.append("operating_mode")
+        if telemetry.min_position_limit is None:
+            missing.append("min_position_limit")
+        if telemetry.max_position_limit is None:
+            missing.append("max_position_limit")
+        if telemetry.present_position is None:
+            missing.append("present_position")
+        if telemetry.present_current_ma is None:
+            missing.append("present_current")
+        if telemetry.present_voltage_mv is None:
+            missing.append("present_voltage")
+        if telemetry.present_temperature_c is None:
+            missing.append("present_temperature")
+        if telemetry.hardware_error_code is None:
+            missing.append("hardware_error_status")
+        return ", ".join(missing) if missing else "unknown telemetry read error"

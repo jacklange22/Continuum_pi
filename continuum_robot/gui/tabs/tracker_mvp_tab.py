@@ -275,9 +275,13 @@ class TrackerMvpTab(QWidget):
             f"backend={workflow_state.backend_name or workflow_state.backend_identity}"
         )
         self.health_label.setText(
-            "validated"
+            "passing"
             if workflow_state.validation_passed
-            else ("healthy" if workflow_state.tracker_healthy else "needs attention")
+            else (
+                "operational with warning"
+                if workflow_state.tracker_operational
+                else ("connected" if workflow_state.tracker_healthy else "needs attention")
+            )
         )
         self.tools_label.setText(
             f"0A={'tracked' if workflow_state.tool_0a_visible else workflow_state.tool_0a_status}, "

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from continuum_robot.hardware.dxl_bus import DxlBus, ServoTelemetry
+from continuum_robot.hardware.dxl_bus import DxlBus, ServoPingResult, ServoTelemetry
 
 
 class MockDxlBus(DxlBus):
@@ -29,6 +29,7 @@ class MockDxlBus(DxlBus):
                 present_current_ma=140 + 10 * idx,
                 present_voltage_mv=12000,
                 present_temperature_c=33 + idx,
+                hardware_error_code=0,
                 hardware_error=None,
             )
             for idx, sid in enumerate(ids)
@@ -49,6 +50,21 @@ class MockDxlBus(DxlBus):
 
     def ping_servo(self, servo_id: int) -> bool:
         return int(servo_id) in self._state
+
+    def ping_servo_snapshot(self, servo_id: int) -> ServoPingResult:
+        telemetry = self._state.get(int(servo_id))
+        if telemetry is None:
+            return ServoPingResult(
+                servo_id=int(servo_id),
+                responded=False,
+                error=f"Servo {servo_id} did not respond on the mock bus.",
+            )
+        return ServoPingResult(
+            servo_id=int(servo_id),
+            responded=True,
+            model_number=telemetry.model_number,
+            error=None,
+        )
 
     def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
         for servo_id, goal in positions_by_id.items():
@@ -88,6 +104,8 @@ class MockDxlBus(DxlBus):
                     present_voltage_mv=None,
                     present_temperature_c=None,
                     hardware_error="missing",
+                    identity_error="missing servo",
+                    telemetry_error="missing servo",
                     last_read_monotonic_s=time.monotonic(),
                 )
             else:
@@ -108,6 +126,8 @@ class MockDxlBus(DxlBus):
                     present_temperature_c=telemetry.present_temperature_c,
                     hardware_error=telemetry.hardware_error,
                     hardware_error_code=telemetry.hardware_error_code,
+                    identity_error=telemetry.identity_error,
+                    telemetry_error=telemetry.telemetry_error,
                     last_read_monotonic_s=time.monotonic(),
                 )
         return result

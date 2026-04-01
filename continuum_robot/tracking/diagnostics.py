@@ -33,6 +33,7 @@ class TrackingDiagnosticsReport:
     selected_backend_name: str
     backend_identity: str
     configured_port: str
+    tracker_port_source: str
     canonical_state: str
     connection_state: str
     capability_report: dict[str, dict]
@@ -64,6 +65,9 @@ class TrackingDiagnosticsReport:
     stage_results: list[TrackingValidationStage]
     failure_codes: list[str]
     tracker_ready: bool
+    tracker_operational: bool
+    tracker_verdict: str
+    tracker_verdict_message: str
     full_pose_pipeline_ready: bool
     benchmark_report: TrackerBenchmarkReport
 
@@ -102,7 +106,11 @@ def build_live_stage_results(
                 snapshot.effective_frame_rate_hz is None
                 or snapshot.effective_frame_rate_hz >= thresholds.min_effective_fps
             )
-            else ("pending" if tracker_connect_ok and snapshot.unique_frames_observed <= 0 else "failed")
+            else (
+                "warning"
+                if snapshot.unique_frames_observed > 0
+                else ("pending" if tracker_connect_ok and snapshot.unique_frames_observed <= 0 else "failed")
+            )
         ),
         message=(
             f"startup_state={_classify_live_startup_state(snapshot, required_tool_ids)}, "
@@ -193,14 +201,24 @@ def build_tracking_diagnostics_report(
         required_tool_ids=required_tool_ids,
         thresholds=thresholds,
     )
+    tracker_port, tracker_port_source = _resolve_tracker_port(final_snapshot, capability_report)
     tracker_ready = all(stage.status == "passed" for stage in stage_results[:4])
-    full_pose_pipeline_ready = tracker_ready and stage_results[4].status == "passed"
+    tracker_operational = _is_tracker_operational(stage_results)
+    tracker_verdict, tracker_verdict_message = _derive_tracker_verdict(
+        stage_results,
+        benchmark_report=benchmark_report,
+        thresholds=thresholds,
+        tracker_ready=tracker_ready,
+        tracker_operational=tracker_operational,
+    )
+    full_pose_pipeline_ready = tracker_operational and stage_results[4].status == "passed"
     return TrackingDiagnosticsReport(
         generated_at_utc=utc_now_iso(),
         configured_backend_name=final_snapshot.configured_backend_name,
         selected_backend_name=final_snapshot.selected_backend_name,
         backend_identity=final_snapshot.backend_identity,
-        configured_port=final_snapshot.port,
+        configured_port=tracker_port,
+        tracker_port_source=tracker_port_source,
         canonical_state=final_snapshot.canonical_state,
         connection_state=final_snapshot.connection_state,
         capability_report=capability_report,
@@ -232,6 +250,9 @@ def build_tracking_diagnostics_report(
         stage_results=stage_results,
         failure_codes=failure_codes,
         tracker_ready=tracker_ready,
+        tracker_operational=tracker_operational,
+        tracker_verdict=tracker_verdict,
+        tracker_verdict_message=tracker_verdict_message,
         full_pose_pipeline_ready=full_pose_pipeline_ready,
         benchmark_report=benchmark_report,
     )
@@ -270,10 +291,14 @@ def render_tracking_diagnostics_report_lines(report: TrackingDiagnosticsReport) 
         f"selected_backend={report.selected_backend_name}",
         f"backend_identity={report.backend_identity}",
         f"configured_port={report.configured_port or '/dev/mock-aurora'}",
+        f"tracker_port_source={report.tracker_port_source}",
         f"canonical_state={report.canonical_state}",
         f"connection_state={report.connection_state}",
         f"startup_state={report.startup_state}",
         f"tracker_ready={report.tracker_ready}",
+        f"tracker_operational={report.tracker_operational}",
+        f"tracker_verdict={report.tracker_verdict}",
+        f"tracker_verdict_message={report.tracker_verdict_message}",
         f"full_pose_pipeline_ready={report.full_pose_pipeline_ready}",
         f"registration_state={report.registration_state}",
         f"registration_loaded={report.registration_loaded}",
@@ -361,7 +386,11 @@ def _build_stage_results_from_benchmark(
                     benchmark_report.effective_frame_rate_hz is None
                     or benchmark_report.effective_frame_rate_hz >= thresholds.min_effective_fps
                 )
-                else ("pending" if benchmark_report.startup_state == "serial_connected_no_frames" else "failed")
+                else (
+                    "warning"
+                    if benchmark_report.unique_frames_observed > 0
+                    else ("pending" if benchmark_report.startup_state == "serial_connected_no_frames" else "failed")
+                )
             ),
             message=(
                 f"startup_state={benchmark_report.startup_state}, "
@@ -499,6 +528,12 @@ def _classify_failure_codes(
         failure_codes.append("frames_arriving_but_requested_tools_not_present")
     if benchmark_report.max_data_age_s is not None and benchmark_report.max_data_age_s > thresholds.max_stale_interval_s:
         failure_codes.append("stale_frames")
+    if (
+        benchmark_report.unique_frames_observed > 0
+        and benchmark_report.effective_frame_rate_hz is not None
+        and benchmark_report.effective_frame_rate_hz < thresholds.min_effective_fps
+    ):
+        failure_codes.append("fps_below_target")
     invalid_only = True
     for tool_id in required_tool_ids:
         metrics = benchmark_report.tool_metrics.get(tool_id)
@@ -522,3 +557,73 @@ def _classify_failure_codes(
     elif not benchmark_report.tip_pose_computable:
         failure_codes.append("transform_chain_incomplete")
     return failure_codes
+
+
+def _is_tracker_operational(stage_results: list[TrackingValidationStage]) -> bool:
+    stage_by_name = {stage.stage: stage for stage in stage_results}
+    stage_1 = stage_by_name.get("Stage 1: backend connect")
+    stage_2 = stage_by_name.get("Stage 2: frames arriving")
+    stage_3 = stage_by_name.get("Stage 3: expected tool ids visible")
+    stage_4 = stage_by_name.get("Stage 4: transforms valid and fresh")
+    return bool(
+        stage_1 is not None
+        and stage_1.status == "passed"
+        and stage_2 is not None
+        and stage_2.status in {"passed", "warning"}
+        and stage_3 is not None
+        and stage_3.status == "passed"
+        and stage_4 is not None
+        and stage_4.status == "passed"
+    )
+
+
+def _derive_tracker_verdict(
+    stage_results: list[TrackingValidationStage],
+    *,
+    benchmark_report: TrackerBenchmarkReport,
+    thresholds: TrackerBenchmarkThresholds,
+    tracker_ready: bool,
+    tracker_operational: bool,
+) -> tuple[str, str]:
+    if tracker_ready:
+        return "passed", "All strict tracker validation thresholds passed."
+    if tracker_operational:
+        fps = benchmark_report.effective_frame_rate_hz
+        if fps is not None and fps < thresholds.min_effective_fps:
+            return (
+                "operational_with_warning",
+                f"Operational with warning: effective FPS {fps:.2f} is below target {thresholds.min_effective_fps:.2f}, "
+                "but frames, tool visibility, and rigid transforms are usable.",
+            )
+        return (
+            "operational_with_warning",
+            "Operational with warning: tracker data is usable, but one or more strict validation targets were missed.",
+        )
+    first_failure = next((stage for stage in stage_results if stage.status == "failed"), None)
+    if first_failure is not None:
+        return "failed", f"Tracker not operational: {first_failure.stage} failed. {first_failure.message}"
+    first_pending = next((stage for stage in stage_results if stage.status == "pending"), None)
+    if first_pending is not None:
+        return "failed", f"Tracker not operational: {first_pending.stage} is still pending. {first_pending.message}"
+    return "failed", "Tracker not operational."
+
+
+def _resolve_tracker_port(snapshot: TrackingSnapshot, capability_report: dict[str, dict]) -> tuple[str, str]:
+    backend_details = dict(snapshot.backend_details or {})
+    tracker_settings = dict(backend_details.get("tracker_settings", {}) or {})
+    selected_backend = str(snapshot.selected_backend_name or snapshot.configured_backend_name or "").strip()
+    capability_details = {}
+    if selected_backend:
+        capability = capability_report.get(selected_backend, {})
+        if isinstance(capability, dict):
+            capability_details = dict(capability.get("details", {}) or {})
+    candidates = [
+        ("backend_details.aurora_port", backend_details.get("aurora_port")),
+        ("backend_details.tracker_settings.serial port", tracker_settings.get("serial port")),
+        ("capability_report.details.aurora_port", capability_details.get("aurora_port")),
+        ("tracking_snapshot.port", snapshot.port),
+    ]
+    for source, candidate in candidates:
+        if candidate not in (None, ""):
+            return str(candidate), source
+    return "", "unknown"

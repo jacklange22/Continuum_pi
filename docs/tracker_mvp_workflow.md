@@ -60,6 +60,24 @@ The accepted registration artifact already includes:
 - FRE / RMSE
 - per-landmark residual norms
 - transforms and tool IDs
+- `capture_tip_provenance`, which records the accepted `0B` tip file path, hash, loaded vector, and the fact that the offset was applied before solving
+- `live_pose_tip_transform`, which records the saved `T_coil_tip` source and whether identity is being used by design
+
+## Pivot -> Registration Linkage
+
+The accepted pivot calibration feeds registration through the `0B` pen-probe capture path, not by post-editing the rigid-registration solve.
+
+For the current simple tracker MVP:
+
+- `data/tip_cals/generated_penprobe_tip.csv` defines `T_tool0B_tip`
+- registration capture applies that offset during each live `0B` sample capture
+- the captured tip points are then averaged and used to solve `T_robot_aurora`
+- the saved registration artifact stores `capture_tip_provenance` so you can prove which accepted tip file was used
+
+`T_coil_tip` in the saved registration artifact is a separate concept. It is used later for live robot-frame pose from tool `0A`.
+
+- In the current simple tracker MVP, `T_coil_tip` is identity by design unless another workflow provides a separate `0A -> tip` calibration.
+- This means the pivot-calibrated `0B` tip file is still used correctly for registration, even if the saved `T_coil_tip` is identity.
 
 ## Pass / Fail Interpretation
 
@@ -96,6 +114,18 @@ Live robot-frame pose is available when:
 - accepted registration is loaded
 - tool `0A` is visible and tracked
 - `tip_pose_status` becomes `ok`
+
+Tracker operational-with-warning means:
+
+- frames are arriving
+- `0A` and `0B` are visible with rigid-valid transforms
+- the tracker can still support the MVP workflow
+- but one strict validation target, usually FPS, is below the configured threshold
+
+Hard tracker failure means:
+
+- no backend connection, no frames, missing required tools, invalid rigid transforms, or stale data
+- do not proceed until the hard failure is resolved
 
 ## If A Step Fails
 

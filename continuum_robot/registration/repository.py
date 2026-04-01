@@ -34,6 +34,8 @@ class RegistrationRecord:
     truth_points_in_sw_by_label: dict[str, list[float]] = field(default_factory=dict)
     group_by_label: dict[str, str] = field(default_factory=dict)
     validation_metrics: dict[str, Any] = field(default_factory=dict)
+    capture_tip_provenance: dict[str, Any] = field(default_factory=dict)
+    live_pose_tip_transform: dict[str, Any] = field(default_factory=dict)
 
 
 class RegistrationRepository:

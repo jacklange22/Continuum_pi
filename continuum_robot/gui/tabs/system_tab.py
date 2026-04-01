@@ -195,7 +195,7 @@ class SystemTab(QWidget):
         self.save_parameters_button.setProperty("role", "primary")
         self.save_parameters_button.clicked.connect(self._save_runtime_parameters)
         self.parameters_hint = QLabel(
-            "These values update `config/system.local.yaml`. Restart the app or reconnect hardware before relying on them."
+            "These values update `config/system.local.yaml`. One-servo jog uses raw counts: tighten decreases position and loosen increases it."
         )
         self.parameters_hint.setProperty("role", "hint")
         self.parameters_hint.setWordWrap(True)
@@ -216,7 +216,7 @@ class SystemTab(QWidget):
         parameters_form.addRow("Software margin (ticks)", self.software_margin_spin)
         parameters_form.addRow("Telemetry fresh (s)", self.telemetry_freshness_spin)
         parameters_form.addRow("Pretension threshold (mA)", self.threshold_spin)
-        parameters_form.addRow("Tightening direction", self.tightening_direction_combo)
+        parameters_form.addRow("Wrap direction metadata", self.tightening_direction_combo)
         parameters_form.addRow("Saved overrides", self.saved_path_label)
         parameters_layout.addLayout(parameters_form)
         parameters_layout.addWidget(self.save_parameters_button)
@@ -279,6 +279,8 @@ class SystemTab(QWidget):
         status_lines = [state.status_message]
         if state.last_error:
             status_lines.append(f"Error: {state.last_error}")
+        if state.bench_debug_text:
+            status_lines.extend(["", state.bench_debug_text])
         self.status_text.setPlainText("\n".join(status_lines))
         self._set_combo_items(self.aurora_port_combo, state.available_ports, state.aurora_port)
         self._set_combo_items(self.openrb_port_combo, state.available_ports, state.openrb_port)

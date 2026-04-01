@@ -47,6 +47,8 @@ class TrackerMvpViewState:
     available_ports: list[SerialPortInfo] = field(default_factory=list)
     tracker_connected: bool = False
     tracker_healthy: bool = False
+    tracker_operational: bool = False
+    tracker_verdict: str = "not_validated"
     validation_passed: bool = False
     backend_name: str = ""
     backend_identity: str = ""
@@ -147,6 +149,7 @@ class TrackerMvpController:
             require_valid_transforms=bool(settings.serial.tracker_require_valid_transforms),
         )
         self._validation_passed = False
+        self._validation_operational = False
         self._last_validation_report_path: Path | None = None
         self._last_validation_report = None
         self._last_pivot_run_path: Path | None = None
@@ -181,6 +184,7 @@ class TrackerMvpController:
         self.state.tracker_port = resolved
         self.tracking_service.set_port(resolved)
         self._validation_passed = False
+        self._validation_operational = False
 
     def connect_tracker(self) -> None:
         try:
@@ -201,6 +205,7 @@ class TrackerMvpController:
         try:
             self.tracking_service.stop()
             self._validation_passed = False
+            self._validation_operational = False
         except Exception as exc:
             self.refresh()
             self.state.last_error = str(exc)
@@ -233,10 +238,16 @@ class TrackerMvpController:
                 and self._tool_is_visible(self.settings.registration.coil_tool_id)
                 and self._tool_is_visible(self.settings.registration.capture_tool_id)
             )
+            self._validation_operational = bool(
+                getattr(report, "tracker_operational", report.tracker_ready)
+                and self._tool_is_visible(self.settings.registration.coil_tool_id)
+                and self._tool_is_visible(self.settings.registration.capture_tool_id)
+            )
             self._last_validation_report_path = report_path
             self._last_validation_report = report
         except Exception as exc:
             self._validation_passed = False
+            self._validation_operational = False
             self._last_validation_report = None
             self.refresh()
             self.state.last_error = str(exc)
@@ -245,7 +256,7 @@ class TrackerMvpController:
         self.refresh()
         self.state.last_error = None
         self.state.status_message = (
-            f"Tracker validation {'passed' if self._validation_passed else 'failed'}. Saved report to {report_path.name}."
+            f"Tracker validation {self.state.tracker_verdict.replace('_', ' ')}. Saved report to {report_path.name}."
         )
         return report_path
 
@@ -443,10 +454,6 @@ class TrackerMvpController:
             tracker_connected
             and snapshot.unique_frames_observed > 0
             and not snapshot.tracker_data_stale
-            and (
-                snapshot.effective_frame_rate_hz is None
-                or snapshot.effective_frame_rate_hz >= self.thresholds.min_effective_fps
-            )
             and not snapshot.last_error
         )
         tool_0a_visible = bool(tool_0a is not None and tool_0a.tracking_state == "tracked")
@@ -510,6 +517,17 @@ class TrackerMvpController:
         self.state.tracker_port = snapshot.port or self.state.tracker_port
         self.state.tracker_connected = tracker_connected
         self.state.tracker_healthy = tracker_healthy
+        report = self._last_validation_report
+        self.state.tracker_operational = bool(
+            self._validation_operational
+            if report is not None
+            else (tracker_healthy and transforms_valid)
+        )
+        self.state.tracker_verdict = (
+            str(getattr(report, "tracker_verdict", "passed" if self.state.validation_passed else "not_validated"))
+            if report is not None
+            else ("passed" if self.state.validation_passed else "not_validated")
+        )
         self.state.validation_passed = bool(self._validation_passed and tracker_healthy and transforms_valid)
         self.state.backend_name = snapshot.selected_backend_name or snapshot.configured_backend_name
         self.state.backend_identity = snapshot.backend_identity
@@ -595,7 +613,11 @@ class TrackerMvpController:
         self.state.live_pose_ready = live_pose_ready
         self.state.live_tip_status = snapshot.tip_pose_status
         self.state.live_tip_position_mm = live_tip_position
-        self.state.transform_summary_lines = self._transform_summary(measurement_status)
+        latest_registration_summary = self.registration_service.get_latest_registration_artifact_summary()
+        self.state.transform_summary_lines = self._transform_summary(
+            measurement_status,
+            latest_registration_summary=latest_registration_summary,
+        )
         self.state.registration_blockers = self._registration_blockers(measurement_status)
         self.state.registration_ready = not self.state.registration_blockers and self.registration_controller.can_begin_session()
         self.state.workflow_steps = self._build_workflow_steps()
@@ -619,7 +641,7 @@ class TrackerMvpController:
         _step(
             2,
             "Validate tracker health",
-            self.state.validation_passed,
+            self.state.validation_passed or self.state.tracker_operational,
             self.state.validation_summary,
             blocked=not self.state.tracker_connected,
         )
@@ -736,6 +758,8 @@ class TrackerMvpController:
                 f"fps={snapshot.effective_frame_rate_hz}, transforms_valid={self.state.transforms_valid}, "
                 f"0A tracked={self.state.tool_0a_visible}, 0B tracked={self.state.tool_0b_visible}."
             )
+        if report is not None and getattr(report, "tracker_verdict", "") == "operational_with_warning":
+            return str(getattr(report, "tracker_verdict_message", "Tracker is operational with warning."))
         if report is not None:
             return (
                 f"Validation failed. startup_state={getattr(report, 'startup_state', 'unknown')}, "
@@ -752,6 +776,7 @@ class TrackerMvpController:
     def _validation_lines(self, snapshot) -> list[str]:
         lines = [
             f"backend={snapshot.selected_backend_name or snapshot.backend_identity}",
+            f"tracker_port={snapshot.port}",
             f"state={snapshot.canonical_state} ({snapshot.connection_state})",
             f"frames={snapshot.unique_frames_observed}, fps={snapshot.effective_frame_rate_hz}",
             f"freshness_s={snapshot.tracker_data_age_s}",
@@ -762,6 +787,7 @@ class TrackerMvpController:
         if report is not None:
             lines.extend(
                 [
+                    f"tracker_verdict={getattr(report, 'tracker_verdict', 'unknown')}",
                     f"startup_state={getattr(report, 'startup_state', 'unknown')}",
                     "first_frame_latency_s="
                     f"{getattr(report, 'first_frame_latency_s', None)}, "
@@ -829,13 +855,42 @@ class TrackerMvpController:
             return f"Using existing tip file: {measurement_status.get('path') or self.state.pivot_tip_path}"
         return "No successful pivot calibration has been recorded in this session."
 
-    def _transform_summary(self, measurement_status: dict[str, object]) -> list[str]:
-        return [
-            "Tip file -> defines T_tool0B_tip, the pen-tip offset used while capturing registration landmarks.",
-            "Saved registration -> defines T_robot_aurora, which maps Aurora tracker coordinates into the robot/body frame.",
-            "Live robot-frame pose -> requires saved registration plus live 0A tracking: T_robot_tip = T_robot_aurora @ T_aurora_coil @ T_coil_tip.",
-            f"Current tip geometry source: {measurement_status.get('source')}",
+    def _transform_summary(
+        self,
+        measurement_status: dict[str, object],
+        *,
+        latest_registration_summary: dict[str, object],
+    ) -> list[str]:
+        capture_tip_vector = measurement_status.get("tip_vector_mm")
+        capture_tip_text = (
+            ", ".join(f"{float(value):.3f}" for value in capture_tip_vector)
+            if isinstance(capture_tip_vector, list) and len(capture_tip_vector) == 3
+            else "unknown"
+        )
+        lines = [
+            "Registration capture uses T_tool0B_tip during sample capture, before point averaging and before solving T_robot_aurora.",
+            f"Current 0B capture tip source: {measurement_status.get('source')} | path={measurement_status.get('path') or 'none'} | vector_mm=[{capture_tip_text}]",
+            "Saved registration defines T_robot_aurora, which maps Aurora tracker coordinates into the robot/body frame.",
+            "Live robot-frame pose uses T_robot_tip = T_robot_aurora @ T_aurora_coil @ T_coil_tip for tool 0A.",
         ]
+        capture_tip_provenance = dict(latest_registration_summary.get("capture_tip_provenance", {}) or {})
+        if capture_tip_provenance:
+            lines.append(
+                "Saved registration capture tip provenance: "
+                f"path={capture_tip_provenance.get('path') or 'none'}, "
+                f"sha256={capture_tip_provenance.get('file_sha256') or 'none'}, "
+                f"applied_before_solving={capture_tip_provenance.get('offset_applied_before_solving')}"
+            )
+        live_pose_tip_transform = dict(latest_registration_summary.get("live_pose_tip_transform", {}) or {})
+        if live_pose_tip_transform:
+            lines.append(
+                "Saved registration live-pose tip transform: "
+                f"source={live_pose_tip_transform.get('source')}, "
+                f"assumption={live_pose_tip_transform.get('assumption') or 'none'}"
+            )
+        elif self.state.latest_registration_path:
+            lines.append("Saved registration is missing explicit tip provenance metadata.")
+        return lines
 
     def _transform_debug_lines(self, snapshot) -> list[str]:
         debug_root = dict(snapshot.backend_details or {}).get("ndi_transform_debug", {})
@@ -874,8 +929,8 @@ class TrackerMvpController:
 
     def _registration_blockers(self, measurement_status: dict[str, object]) -> list[str]:
         blockers: list[str] = []
-        if not self.state.validation_passed:
-            blockers.append("Tracker validation must pass before registration.")
+        if not self.state.tracker_operational:
+            blockers.append("Tracker validation must at least be operational before registration.")
         if not self.state.transforms_valid:
             blockers.append("0A and 0B must both stay tracked with valid rigid transforms.")
         if self.state.pivot_collection_active:
@@ -892,8 +947,8 @@ class TrackerMvpController:
 
     def _pivot_start_blockers(self, snapshot) -> list[str]:
         blockers: list[str] = []
-        if not self._validation_passed:
-            blockers.append("Run tracker validation successfully before pivot calibration.")
+        if not self._validation_operational:
+            blockers.append("Run tracker validation until it is at least operational before pivot calibration.")
         if snapshot.connection_state in {"disconnected", "stopped", "error"} and snapshot.canonical_state not in {"mock"}:
             blockers.append("Tracker is not connected.")
         if not self._tool_is_visible(self.settings.registration.capture_tool_id):
