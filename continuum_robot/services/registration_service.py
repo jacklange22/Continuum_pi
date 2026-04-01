@@ -461,14 +461,27 @@ class RegistrationService:
         }
         measured = np.asarray([averaged[label] for label in labels], dtype=float)
         truth = np.asarray([nominal[label] for label in labels], dtype=float)
-        T_robot_aurora = self.solver.solve_T_robot_aurora(measured, truth)
+        truth_rank = int(np.linalg.matrix_rank(truth - truth.mean(axis=0)))
+        if truth_rank < 2:
+            raise RuntimeError(
+                "Selected landmarks are geometrically degenerate. Choose four points that span the platform more widely."
+            )
+        try:
+            T_robot_aurora = self.solver.solve_T_robot_aurora(measured, truth)
+        except Exception as exc:
+            raise RuntimeError(f"Rigid registration solve failed: {exc}") from exc
         transformed = self.solver.apply_transform(T_robot_aurora, measured)
         residuals = truth - transformed
         residuals_by_label = {
             label: residuals[idx, :].tolist()
             for idx, label in enumerate(labels)
         }
+        residual_norms_by_label = {
+            label: float(np.linalg.norm(residuals[idx, :]))
+            for idx, label in enumerate(labels)
+        }
         fre_mm = float(compute_fre_mm(list(residuals_by_label.values())))
+        max_residual_mm = max(residual_norms_by_label.values(), default=0.0)
         if self._config.max_fre_mm is not None and fre_mm > self._config.max_fre_mm:
             raise RuntimeError(f"Registration FRE {fre_mm:.3f} mm exceeds limit {self._config.max_fre_mm:.3f} mm")
         T_coil_tip = self._load_tip_calibration()[0]
@@ -486,7 +499,13 @@ class RegistrationService:
             coil_tool_id=self._config.coil_tool_id,
             raw_measurement_tool_samples_by_label=copy.deepcopy(self._state.raw_measurement_tool_samples_by_label),
             raw_coil_samples_by_label=copy.deepcopy(self._state.raw_coil_samples_by_label),
-            validation_metrics={"overall_fre_mm": fre_mm, "registration_mode": "simple"},
+            validation_metrics={
+                "overall_fre_mm": fre_mm,
+                "overall_rmse_mm": fre_mm,
+                "max_residual_mm": max_residual_mm,
+                "residual_norms_mm_by_label": residual_norms_by_label,
+                "registration_mode": "simple",
+            },
             config_used={
                 "registration_config_path": str(self.config_path),
                 "capture_tool_id": self._config.measurement_tool_id,
@@ -503,7 +522,13 @@ class RegistrationService:
             self._state.averaged_points_by_label = averaged
             self._state.residuals_by_label = residuals_by_label
             self._state.fre_mm = fre_mm
-            self._state.validation_metrics = {"overall_fre_mm": fre_mm, "registration_mode": "simple"}
+            self._state.validation_metrics = {
+                "overall_fre_mm": fre_mm,
+                "overall_rmse_mm": fre_mm,
+                "max_residual_mm": max_residual_mm,
+                "residual_norms_mm_by_label": residual_norms_by_label,
+                "registration_mode": "simple",
+            }
             self._state.pending_accept = True
             self._state.pending_record = asdict(record)
             self._state.health.last_error = None

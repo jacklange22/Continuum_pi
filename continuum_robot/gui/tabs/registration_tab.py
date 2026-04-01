@@ -291,7 +291,14 @@ class RegistrationTab(QWidget):
             _format_xyz(state.current_tracked_xyz_mm, state.current_tracking_status, state.current_tracked_frame_id)
         )
         self.samples_used_label.setText(str(self.controller.total_samples_captured()))
-        self.fre_label.setText(f"{state.fre_mm:.3f} mm" if state.fre_mm is not None else "Not solved yet")
+        if state.fre_mm is not None:
+            fre_text = f"FRE={state.fre_mm:.3f} mm"
+            max_residual = state.validation_metrics.get("max_residual_mm")
+            if max_residual is not None:
+                fre_text += f" | max residual={float(max_residual):.3f} mm"
+            self.fre_label.setText(fre_text)
+        else:
+            self.fre_label.setText("Not solved yet")
         self.result_status_label.setText(state.result_status)
         self.result_path_label.setText(state.last_result_path or "None")
 
@@ -366,10 +373,21 @@ class RegistrationTab(QWidget):
         )
 
         lines = [state.status_message]
-        if not self.controller.selection_is_ready() and state.selection_editable:
-            lines.append("Select four enabled model points before starting registration.")
+        if not self.controller.can_begin_session() and not state.active and not state.pending_accept:
+            lines.append(self.controller.begin_session_readiness_message())
+        if state.active and not self.controller.is_ready_to_solve():
+            lines.append(self.controller.solve_readiness_message())
+        if state.pending_accept:
+            lines.append("Review FRE / residuals, then save the accepted registration or restart.")
         if state.overwrite_required and state.overwrite_target_path:
             lines.append(f"Save confirmation required: {state.overwrite_target_path}")
+        residual_norms = state.validation_metrics.get("residual_norms_mm_by_label", {})
+        if isinstance(residual_norms, dict) and residual_norms:
+            rendered = ", ".join(
+                f"{label}={float(value):.3f} mm"
+                for label, value in residual_norms.items()
+            )
+            lines.append(f"Residual norms: {rendered}")
         if state.last_error:
             lines.append(f"Error: {state.last_error}")
         self.status_text.setPlainText("\n".join(lines))

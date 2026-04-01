@@ -180,6 +180,16 @@ Focused tracker-first launcher for tomorrow's Pi session:
 python scripts/run_tracker_mvp.py
 ```
 
+Current tracker-first MVP operator sequence:
+
+1. connect Aurora
+2. validate tracker health and transforms for `0A` / `0B`
+3. collect, solve, review, and accept `0B` pivot calibration
+4. capture, solve, review, and save 4-point registration
+5. confirm live robot-frame pose
+
+The simple 4-point registration config in [registration.yaml](/Users/jacklange/Continuum/pi_code/config/registration.yaml) now uses candidate landmarks derived from the protected lab model points in `tools/12_model_registration_points_in_sw` transformed by `tools/T_sw_2_model`.
+
 ## Live Aurora Config
 
 Copy the local config template:

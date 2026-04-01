@@ -29,6 +29,7 @@ class RegistrationViewState:
     overwrite_required: bool = False
     fre_mm: float | None = None
     residuals_by_label: dict[str, list[float]] = field(default_factory=dict)
+    validation_metrics: dict[str, object] = field(default_factory=dict)
     capture_geometry_status: str = "coil origin"
     current_tracked_xyz_mm: list[float] | None = None
     current_tracked_frame_id: int | None = None
@@ -143,13 +144,14 @@ class RegistrationController:
 
     def begin_session(self, capture_tool_id: str | None = None) -> None:
         try:
+            blockers = self.begin_session_blockers()
+            if blockers:
+                raise RuntimeError(blockers[0])
             if capture_tool_id is not None and capture_tool_id != self.config.capture_tool_id:
                 raise RuntimeError(
                     f"Registration controller is configured for capture tool {self.config.capture_tool_id}; "
                     f"override {capture_tool_id} is not supported from the GUI controller"
                 )
-            if self.state.selection_editable and not self.selection_is_ready():
-                raise RuntimeError("Choose four unique model points before starting registration.")
             if self.state.selection_editable:
                 labels = list(self.state.selected_model_labels)
                 nominal = {
@@ -217,10 +219,9 @@ class RegistrationController:
             raise
 
     def solve_session(self) -> dict:
-        if not self.is_ready_to_solve():
-            raise RuntimeError(
-                "Registration is not ready to solve. Select four unique model points and capture the required samples for each."
-            )
+        blockers = self.solve_blockers()
+        if blockers:
+            raise RuntimeError(f"Registration is not ready to solve. {self.solve_readiness_message()}")
         try:
             payload = self.registration_service.solve_registration()
             self._apply_snapshot(self.registration_service.get_snapshot())
@@ -291,9 +292,7 @@ class RegistrationController:
         return self.state.captured_counts.get(self.state.current_label, 0) >= self.state.captures_per_landmark
 
     def can_begin_session(self) -> bool:
-        return (not self.state.active) and (not self.state.pending_accept) and (
-            not self.state.selection_editable or self.selection_is_ready()
-        )
+        return not self.begin_session_blockers()
 
     def selection_is_ready(self) -> bool:
         if not self.state.selection_editable:
@@ -306,10 +305,42 @@ class RegistrationController:
         )
 
     def is_ready_to_solve(self) -> bool:
-        return self.selection_is_ready() and all(
-            self.state.captured_counts.get(label, 0) >= self.state.captures_per_landmark
+        return not self.solve_blockers()
+
+    def begin_session_blockers(self) -> list[str]:
+        blockers: list[str] = []
+        if self.state.active:
+            blockers.append("Registration session is already active.")
+        if self.state.pending_accept:
+            blockers.append("Save or restart the solved registration before beginning a new one.")
+        if self.state.selection_editable and not self.selection_is_ready():
+            blockers.append("Choose four unique model points before starting registration.")
+        return blockers
+
+    def begin_session_readiness_message(self) -> str:
+        blockers = self.begin_session_blockers()
+        return blockers[0] if len(blockers) == 1 else "; ".join(blockers) if blockers else "Ready to begin registration."
+
+    def solve_blockers(self) -> list[str]:
+        blockers: list[str] = []
+        if not self.state.active:
+            blockers.append("Begin the registration session first.")
+        if not self.selection_is_ready():
+            blockers.append("Choose four unique model points before solving registration.")
+        incomplete = [
+            f"{label} ({self.state.captured_counts.get(label, 0)}/{self.state.captures_per_landmark})"
             for label in self.state.landmark_labels
-        )
+            if self.state.captured_counts.get(label, 0) < self.state.captures_per_landmark
+        ]
+        if incomplete:
+            blockers.append("Incomplete captures: " + ", ".join(incomplete))
+        return blockers
+
+    def solve_readiness_message(self) -> str:
+        blockers = self.solve_blockers()
+        if not blockers:
+            return "Registration is ready to solve."
+        return "; ".join(blockers)
 
     def total_samples_captured(self) -> int:
         return sum(len(samples) for samples in self.state.raw_samples_by_label.values())
@@ -343,6 +374,7 @@ class RegistrationController:
         )
         self.state.fre_mm = snapshot.fre_mm
         self.state.residuals_by_label = dict(snapshot.residuals_by_label)
+        self.state.validation_metrics = dict(snapshot.validation_metrics)
         self.state.pending_accept = bool(snapshot.pending_accept)
         self.state.last_result_path = snapshot.accepted_output_path or snapshot.latest_accepted_path
         self.state.last_error = snapshot.health.last_error

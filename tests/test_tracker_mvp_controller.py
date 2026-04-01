@@ -316,3 +316,65 @@ def test_tracker_mvp_pivot_run_updates_tip_geometry_and_status(
     assert state.pivot_tip_preview == "+1.0000,+2.0000,+3.0000"
     assert state.pivot_rmse_mm == pytest.approx(0.42)
     registration_controller.begin_session()
+
+
+def test_tracker_mvp_guided_pivot_collection_requires_accept_before_registration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller, registration_controller, tracking_service = _build_runtime(
+        tmp_path,
+        penprobe_file="data/tip_cals/generated_penprobe_tip.csv",
+    )
+    tracking_service.start()
+    monkeypatch.setattr(
+        "continuum_robot.gui.controllers.tracker_mvp_controller.build_tracking_diagnostics_report",
+        lambda *args, **kwargs: _FakeValidationReport(tracker_ready=True),
+    )
+    controller.validate_tracker()
+    controller.PIVOT_MIN_SAMPLES = 2
+    controller.PIVOT_SAMPLE_PERIOD_S = 0.001
+    controller.start_pivot_collection()
+    time.sleep(0.08)
+    collecting_state = controller.refresh()
+    assert collecting_state.pivot_collection_active is True
+    assert collecting_state.pivot_live_sample_count >= 2
+
+    controller.stop_pivot_collection()
+    run_path = tmp_path / "runs" / "pivot_review"
+
+    def _fake_run_experiment(*args, **kwargs):
+        pending_tip_path = Path(kwargs["config"]["output_tip_file"])
+        pending_tip_path.parent.mkdir(parents=True, exist_ok=True)
+        pending_tip_path.write_text("+4.0000,+5.0000,+6.0000", encoding="utf-8")
+        run_path.mkdir(parents=True, exist_ok=True)
+        return SimpleNamespace(
+            success=True,
+            message="ok",
+            paths=SimpleNamespace(output_dir=run_path),
+            summary=SimpleNamespace(
+                experiment_metrics={
+                    "status": "success",
+                    "rmse_mm": 0.33,
+                    "sample_count_total": 12,
+                    "sample_count_used": 11,
+                    "sample_count_rejected": 1,
+                }
+            ),
+        )
+
+    monkeypatch.setattr(controller.experiment_runner, "run_experiment", _fake_run_experiment)
+    controller.solve_pivot_collection()
+    pending_state = controller.refresh()
+
+    assert pending_state.pivot_pending_accept is True
+    assert pending_state.registration_ready is False
+    assert any("Accept or reset the staged pivot tip file" in blocker for blocker in pending_state.registration_blockers)
+
+    controller.accept_pivot_tip_file()
+    accepted_state = controller.refresh()
+    assert accepted_state.pivot_pending_accept is False
+    assert accepted_state.measurement_point_ready is True
+    assert accepted_state.registration_ready is True
+
+    registration_controller.begin_session()

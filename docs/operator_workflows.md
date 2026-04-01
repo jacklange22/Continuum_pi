@@ -52,19 +52,23 @@ Success criteria:
 
 ## Workflow 3: Pivot Calibration
 
-Applies now in offline/mock mode and later with hardware.
+Applies now in the tracker MVP workspace.
 
-1. Open the Experiment workspace.
-2. Select `pivot_calibration`.
-3. Run from a recorded file or live tracker samples.
-4. Review RMSE, sample count, and rejected samples.
-5. Save the generated pen-probe tip file.
+1. Open `Tracker MVP`.
+2. Validate tracker health and confirm `0B` is tracked.
+3. Start `0B` pivot collection.
+4. Move the probe through a wide range of orientations while the sample counter rises.
+5. Stop collection.
+6. Solve pivot calibration.
+7. Review RMSE, used/rejected sample counts, and the staged tip file.
+8. Accept the tip file.
 
 Success criteria:
 
-- tip vector file generated
-- residual summary visible in GUI/CLI outputs
-- result is reloadable from run history
+- raw capture CSV saved
+- review run bundle saved
+- staged tip file reviewed before acceptance
+- accepted tip vector file generated
 
 ## Workflow 4: Tracker Validation
 
@@ -83,22 +87,26 @@ Success criteria:
 
 Applies now.
 
-1. Open the Registration tab.
-2. Choose 4 landmarks from the configured candidate set using the top-view map or the landmark list.
-3. Capture repeated `0B` samples for each selected landmark.
-4. Mark each selected point complete.
-5. Solve, review FRE / RMSE, and save the accepted registration.
+1. Stay in `Tracker MVP`.
+2. Confirm the accepted `0B` tip file is loaded.
+3. Choose 4 landmarks from the configured candidate set using the top-view map or the landmark list.
+4. Capture repeated `0B` samples for each selected landmark.
+5. Mark each selected point complete.
+6. Solve.
+7. Review FRE / RMSE and the per-landmark residuals.
+8. Save the accepted registration.
 
 Rules:
 
 - exactly 4 unique landmarks
 - only enabled landmarks may be selected
+- the configured candidate landmarks come from the protected lab model points, not placeholder coordinates
 - solve remains blocked until all selected points have enough samples
 
 Success criteria:
 
 - accepted registration file saved
-- GUI shows selected landmarks, measured centroids, FRE, and output path
+- GUI shows selected landmarks, measured centroids, FRE, residuals, and output path
 - tracking pipeline can use the saved registration on the next refresh
 
 ## Workflow 6: Repeatability Dataset
@@ -120,9 +128,10 @@ Target acceptance:
 ## Recommended Lab Order
 
 1. tracker doctor / smoke
-2. one-servo OpenRB bring-up
-3. startup calibration and pretension
-4. pivot calibration
-5. aurora grid accuracy
-6. 4-point registration
-7. repeatability dataset
+2. Tracker MVP connect + validation
+3. guided `0B` pivot calibration
+4. 4-point registration
+5. confirm live robot-frame pose
+6. one-servo OpenRB bring-up
+7. startup calibration and pretension
+8. repeatability dataset

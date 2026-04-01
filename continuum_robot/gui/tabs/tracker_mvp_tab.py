@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -94,8 +95,8 @@ class TrackerMvpTab(QWidget):
         self.title_label.setProperty("role", "title")
         self.workflow_hint = QLabel(
             "Use this order tomorrow on the Pi: connect tracker, validate tracker health, confirm tool IDs, "
-            "confirm 0A/0B transforms are valid, run 0B pivot calibration, save the tip file, capture 4-point "
-            "registration, save the accepted registration, then confirm live robot-frame pose from 0A."
+            "confirm 0A/0B transforms are valid, collect and solve 0B pivot calibration, accept the tip file, "
+            "capture 4-point registration, save the accepted registration, then confirm live robot-frame pose from 0A."
         )
         self.workflow_hint.setProperty("role", "hint")
         self.workflow_hint.setWordWrap(True)
@@ -128,9 +129,6 @@ class TrackerMvpTab(QWidget):
         validate_button.clicked.connect(self._validate_tracker)
         rescan_button.clicked.connect(self._rescan_ports)
         self._validate_button = validate_button
-        self._pivot_button = QPushButton("Run 0B Pivot Calibration")
-        self._pivot_button.setProperty("role", "primary")
-        self._pivot_button.clicked.connect(self._run_pivot)
 
         tracker_box = QGroupBox("Tracker Readiness")
         tracker_layout = QVBoxLayout(tracker_box)
@@ -150,21 +148,48 @@ class TrackerMvpTab(QWidget):
         tracker_layout.addWidget(self.tracker_details)
 
         self.tip_file_label = QLabel("none")
+        self.pending_tip_file_label = QLabel("none")
+        self.pivot_collection_label = QLabel("not collecting")
+        self.pivot_motion_label = QLabel("not measured")
         self.tip_geometry_label = QLabel("not ready")
         self.pivot_metrics_label = QLabel("No pivot run yet.")
+        self.pivot_capture_dataset_label = QLabel("none")
         self.pivot_run_path_label = QLabel("none")
         self.tip_preview_text = QTextEdit()
         self.tip_preview_text.setReadOnly(True)
         self.tip_preview_text.setMinimumHeight(88)
+
+        self._pivot_start_button = QPushButton("Start 0B Collection")
+        self._pivot_start_button.setProperty("role", "primary")
+        self._pivot_stop_button = QPushButton("Stop Collection")
+        self._pivot_solve_button = QPushButton("Solve Pivot Calibration")
+        self._pivot_accept_button = QPushButton("Accept Tip File")
+        self._pivot_reset_button = QPushButton("Reset Pivot Review")
+        self._pivot_start_button.clicked.connect(self._start_pivot)
+        self._pivot_stop_button.clicked.connect(self._stop_pivot)
+        self._pivot_solve_button.clicked.connect(self._solve_pivot)
+        self._pivot_accept_button.clicked.connect(self._accept_pivot)
+        self._pivot_reset_button.clicked.connect(self._reset_pivot)
+
         pivot_box = QGroupBox("Pivot Calibration")
         pivot_layout = QVBoxLayout(pivot_box)
         pivot_form = QFormLayout()
-        pivot_form.addRow("Tip file", self.tip_file_label)
+        pivot_form.addRow("Accepted tip file", self.tip_file_label)
+        pivot_form.addRow("Pending tip file", self.pending_tip_file_label)
+        pivot_form.addRow("Collection", self.pivot_collection_label)
+        pivot_form.addRow("Motion diversity", self.pivot_motion_label)
         pivot_form.addRow("Tip geometry", self.tip_geometry_label)
         pivot_form.addRow("Pivot metrics", self.pivot_metrics_label)
-        pivot_form.addRow("Pivot dataset", self.pivot_run_path_label)
+        pivot_form.addRow("Raw capture dataset", self.pivot_capture_dataset_label)
+        pivot_form.addRow("Pivot review run", self.pivot_run_path_label)
         pivot_layout.addLayout(pivot_form)
-        pivot_layout.addWidget(self._pivot_button)
+        pivot_buttons = QHBoxLayout()
+        pivot_buttons.addWidget(self._pivot_start_button)
+        pivot_buttons.addWidget(self._pivot_stop_button)
+        pivot_buttons.addWidget(self._pivot_solve_button)
+        pivot_buttons.addWidget(self._pivot_accept_button)
+        pivot_buttons.addWidget(self._pivot_reset_button)
+        pivot_layout.addLayout(pivot_buttons)
         pivot_layout.addWidget(self.tip_preview_text)
 
         self.transform_summary = QTextEdit()
@@ -181,7 +206,7 @@ class TrackerMvpTab(QWidget):
         transform_layout.addWidget(self.transform_summary)
 
         self.registration_gate_label = QLabel(
-            "Registration will unlock here after tracker validation passes and a tip file is ready."
+            "Registration will unlock here after tracker validation passes and an accepted tip file is ready."
         )
         self.registration_gate_label.setProperty("role", "hint")
         self.registration_gate_label.setWordWrap(True)
@@ -222,13 +247,16 @@ class TrackerMvpTab(QWidget):
         registration_layout.addWidget(self.registration_gate_label)
         registration_layout.addWidget(self.registration_tab)
 
-        content_splitter = QSplitter(Qt.Vertical)
-        content_splitter.setChildrenCollapsible(False)
-        content_splitter.addWidget(top_splitter)
-        content_splitter.addWidget(registration_container)
-        content_splitter.setStretchFactor(0, 2)
-        content_splitter.setStretchFactor(1, 5)
-        content_splitter.setSizes([280, 720])
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(14)
+        content_layout.addWidget(top_splitter)
+        content_layout.addWidget(registration_container)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setWidget(content_widget)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -236,7 +264,7 @@ class TrackerMvpTab(QWidget):
         layout.addWidget(self.title_label)
         layout.addWidget(self.workflow_hint)
         layout.addWidget(self.status_label)
-        layout.addWidget(content_splitter, 1)
+        layout.addWidget(self.scroll_area, 1)
 
     def update(self, workflow_state: TrackerMvpViewState, registration_state: RegistrationViewState) -> None:
         self.status_label.setText(workflow_state.status_message)
@@ -257,6 +285,17 @@ class TrackerMvpTab(QWidget):
         self.tracker_details.setPlainText("\n".join(workflow_state.validation_lines))
 
         self.tip_file_label.setText(workflow_state.pivot_tip_path or "none")
+        self.pending_tip_file_label.setText(workflow_state.pivot_pending_tip_path or "none")
+        self.pivot_collection_label.setText(
+            f"{workflow_state.pivot_status} | samples={workflow_state.pivot_live_sample_count} | "
+            f"0B={workflow_state.pivot_live_tool_status}"
+        )
+        if workflow_state.pivot_motion_span_deg is not None:
+            motion_text = f"{workflow_state.pivot_motion_span_deg:.1f} deg"
+            motion_text += " | wide enough" if workflow_state.pivot_motion_ready else " | collect wider motion"
+        else:
+            motion_text = "Collect more poses to estimate motion span."
+        self.pivot_motion_label.setText(motion_text)
         self.tip_geometry_label.setText(workflow_state.measurement_point_message)
         if workflow_state.pivot_rmse_mm is not None:
             self.pivot_metrics_label.setText(
@@ -265,6 +304,7 @@ class TrackerMvpTab(QWidget):
             )
         else:
             self.pivot_metrics_label.setText(workflow_state.pivot_summary)
+        self.pivot_capture_dataset_label.setText(workflow_state.pivot_capture_dataset_path or "none")
         self.pivot_run_path_label.setText(workflow_state.pivot_run_path or "none")
         self.tip_preview_text.setPlainText(workflow_state.pivot_tip_preview)
 
@@ -289,23 +329,35 @@ class TrackerMvpTab(QWidget):
 
         self._set_combo_items(self.tracker_port_combo, workflow_state.available_ports, workflow_state.tracker_port)
         self._validate_button.setEnabled(bool(workflow_state.tracker_connected))
-        self._pivot_button.setEnabled(bool(workflow_state.validation_passed and workflow_state.tool_0b_visible))
+        self._pivot_start_button.setEnabled(workflow_state.pivot_can_start)
+        self._pivot_stop_button.setEnabled(workflow_state.pivot_can_stop)
+        self._pivot_solve_button.setEnabled(workflow_state.pivot_can_solve)
+        self._pivot_accept_button.setEnabled(workflow_state.pivot_can_accept)
+        self._pivot_reset_button.setEnabled(
+            workflow_state.pivot_collection_active
+            or workflow_state.pivot_pending_accept
+            or workflow_state.pivot_live_sample_count > 0
+            or bool(workflow_state.pivot_run_path)
+        )
 
         self.registration_tab.update(registration_state)
-        can_start_registration = bool(
-            workflow_state.validation_passed
-            and workflow_state.measurement_point_ready
-            and self.registration_controller.can_begin_session()
-        )
-        self.registration_tab.begin_button.setEnabled(can_start_registration)
-        if can_start_registration:
+        self.registration_tab.begin_button.setEnabled(bool(workflow_state.registration_ready))
+        if workflow_state.registration_blockers:
             self.registration_gate_label.setText(
-                "Registration prerequisites passed. Select four landmarks, begin the session, capture all four points, solve, and save."
+                "Registration blocked: " + " ".join(workflow_state.registration_blockers)
+            )
+        elif workflow_state.registration_ready:
+            self.registration_gate_label.setText(
+                "Registration prerequisites passed. Select four landmarks, begin the session, capture each point, solve, review FRE/residuals, then save."
+            )
+        elif registration_state.pending_accept:
+            self.registration_gate_label.setText(
+                "Registration is solved and pending acceptance. Save it to generate the accepted artifact."
             )
         else:
             self.registration_gate_label.setText(
-                "Registration is gated until tracker validation passes and the 0B tip file is ready. "
-                f"Current tip status: {workflow_state.measurement_point_message}"
+                "Registration is gated until tracker validation passes, the accepted 0B tip file is loaded, "
+                "and four landmarks are selected."
             )
 
     def _set_combo_items(self, combo: QComboBox, ports, selected: str) -> None:
@@ -342,8 +394,20 @@ class TrackerMvpTab(QWidget):
     def _validate_tracker(self) -> None:
         self._safe_call(self.controller.validate_tracker)
 
-    def _run_pivot(self) -> None:
-        self._safe_call(self.controller.run_pivot_calibration)
+    def _start_pivot(self) -> None:
+        self._safe_call(self.controller.start_pivot_collection)
+
+    def _stop_pivot(self) -> None:
+        self._safe_call(self.controller.stop_pivot_collection)
+
+    def _solve_pivot(self) -> None:
+        self._safe_call(self.controller.solve_pivot_collection)
+
+    def _accept_pivot(self) -> None:
+        self._safe_call(self.controller.accept_pivot_tip_file)
+
+    def _reset_pivot(self) -> None:
+        self._safe_call(self.controller.reset_pivot_workflow)
 
     def _safe_call(self, fn) -> None:
         try:

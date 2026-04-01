@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QScrollArea
 
 from continuum_robot.app.bootstrap import AppContext
 from continuum_robot.app.service_registry import ServiceRegistry
@@ -30,10 +30,12 @@ from continuum_robot.gui.controllers.registration_controller import Registration
 from continuum_robot.gui.controllers.servos_controller import ServosController
 from continuum_robot.gui.controllers.system_controller import SystemController, SystemViewState
 from continuum_robot.gui.controllers.experiment_controller import ExperimentController
+from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpController
 from continuum_robot.gui.tabs.experiment_tab import ExperimentTab
 from continuum_robot.gui.tabs.registration_tab import RegistrationTab
 from continuum_robot.gui.tabs.servos_tab import ServosTab
 from continuum_robot.gui.tabs.system_tab import SystemTab
+from continuum_robot.gui.tabs.tracker_mvp_tab import TrackerMvpTab
 from continuum_robot.experiments.experiment_loader import ExperimentLoader
 from continuum_robot.experiments.experiment_runner import ExperimentRunner
 from continuum_robot.hardware.mock_dxl_bus import MockDxlBus
@@ -223,6 +225,37 @@ def _experiment_controller(tmp_path: Path) -> ExperimentController:
         servo_service=servo_service,
         tracking_service=tracking_service,
     )
+
+
+def test_tracker_mvp_tab_wraps_full_workflow_in_scroll_area(tmp_path: Path) -> None:
+    _app()
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(settings, tmp_path, tracking_service)
+    registration_controller = RegistrationController(
+        registration_service=registration_service,
+        registration_config=settings.registration,
+    )
+    experiment_runner = _experiment_runner(
+        settings,
+        tmp_path,
+        tracking_service,
+        _servo_service(tmp_path),
+        tmp_path / "latest_registration.json",
+    )
+    tracker_mvp_controller = TrackerMvpController(
+        tracking_service=tracking_service,
+        registration_service=registration_service,
+        registration_controller=registration_controller,
+        experiment_runner=experiment_runner,
+        settings=settings,
+        project_root=tmp_path,
+    )
+    tab = TrackerMvpTab(tracker_mvp_controller, registration_controller)
+
+    assert isinstance(tab.scroll_area, QScrollArea)
+    assert tab.scroll_area.widget() is not None
+    assert tab.scroll_area.widget().findChild(RegistrationTab) is tab.registration_tab
 
 
 def _app_context(tmp_path: Path) -> AppContext:
