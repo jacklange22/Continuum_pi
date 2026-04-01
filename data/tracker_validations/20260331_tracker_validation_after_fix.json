@@ -1,0 +1,236 @@
+{
+  "generated_at_utc": "2026-03-31T20:32:32.055Z",
+  "configured_backend_name": "ndi",
+  "selected_backend_name": "ndi",
+  "backend_identity": "ndi_tracker_python",
+  "configured_port": "/dev/ttyUSB0",
+  "canonical_state": "connecting",
+  "connection_state": "connecting",
+  "capability_report": {
+    "ndi": {
+      "backend": "ndi",
+      "available": true,
+      "code": "ok",
+      "reason": "Python NDI backend import and serial preflight passed.",
+      "details": {
+        "preferred_backend": "ndi",
+        "selected_backend_name": "ndi",
+        "fallback_backend": "bridge",
+        "fallback_enabled": true,
+        "aurora_port": "/dev/ttyUSB0",
+        "poll_interval_ms": 20,
+        "expected_tool_ids": [
+          "0A",
+          "0B"
+        ],
+        "tracker_type": "aurora",
+        "tool_aliases": {
+          "10": "0A",
+          "11": "0B"
+        },
+        "tool_configuration_check": "aliases_configured"
+      }
+    },
+    "bridge": {
+      "backend": "bridge",
+      "available": false,
+      "code": "bridge_executable_missing",
+      "reason": "Bridge executable missing: /home/continuum-pi/Continuum_pi/bin/tracker_bridge",
+      "details": {
+        "preferred_backend": "ndi",
+        "selected_backend_name": "bridge",
+        "fallback_backend": "bridge",
+        "fallback_enabled": true,
+        "aurora_port": "/dev/ttyUSB0",
+        "poll_interval_ms": 20,
+        "expected_tool_ids": [
+          "0A",
+          "0B"
+        ],
+        "bridge_executable": "/home/continuum-pi/Continuum_pi/bin/tracker_bridge",
+        "socket_path": "/tmp/tracker_bridge.sock"
+      }
+    }
+  },
+  "backend_details": {
+    "preferred_backend": "ndi",
+    "selected_backend_name": "ndi",
+    "fallback_backend": "bridge",
+    "fallback_enabled": true,
+    "aurora_port": "/dev/ttyUSB0",
+    "poll_interval_ms": 20,
+    "expected_tool_ids": [
+      "0A",
+      "0B"
+    ],
+    "tracker_type": "aurora",
+    "tool_aliases": {
+      "10": "0A",
+      "11": "0B"
+    },
+    "tool_configuration_check": "aliases_configured",
+    "tracker_settings": {
+      "tracker type": "aurora",
+      "serial port": "/dev/ttyUSB0",
+      "use quaternions": true
+    },
+    "ndi_transform_debug": {}
+  },
+  "startup_messages": [
+    "Configured preferred tracking backend: ndi",
+    "Configured fallback backend: bridge",
+    "Fallback enabled: True",
+    "Selected backend ndi."
+  ],
+  "unique_frames_observed": 0,
+  "backend_frame_counter_final": 0,
+  "effective_frame_rate_hz": null,
+  "frame_interval_s": {
+    "count": 0,
+    "minimum": null,
+    "maximum": null,
+    "mean": null,
+    "stdev": null
+  },
+  "max_data_age_s": null,
+  "first_frame_latency_s": null,
+  "raw_live_tool_ids": [],
+  "normalized_live_tool_ids": [],
+  "runtime_role_mappings": {},
+  "tracker_faults": [
+    "no_serial_connection"
+  ],
+  "pipeline_faults": [
+    "missing_registration"
+  ],
+  "warning_messages": [
+    "missing_expected_tools:0A,0B"
+  ],
+  "error_messages": [],
+  "registration_state": "missing_registration",
+  "registration_loaded": false,
+  "tip_pose_status": "missing_registration",
+  "tip_pose_computable": false,
+  "stage_results": [
+    {
+      "stage": "Stage 1: backend connect",
+      "status": "failed",
+      "message": "canonical_state=connecting, connection_state=connecting"
+    },
+    {
+      "stage": "Stage 2: frames arriving",
+      "status": "failed",
+      "message": "unique_frames=0, effective_fps=None, first_frame_latency_s=None"
+    },
+    {
+      "stage": "Stage 3: expected tool ids visible",
+      "status": "failed",
+      "message": "Missing expected tools: ['0A', '0B']; observed normalized tools: []."
+    },
+    {
+      "stage": "Stage 4: transforms valid and fresh",
+      "status": "failed",
+      "message": "max_data_age_s=None, tracker_faults=['no_serial_connection']; 0A=unknown(unknown, payload=unknown_payload): no_sample; 0B=unknown(unknown, payload=unknown_payload): no_sample"
+    },
+    {
+      "stage": "Stage 5: T_robot_tip computable",
+      "status": "pending",
+      "message": "Registration not loaded yet. Stage 5 is pending by design."
+    }
+  ],
+  "failure_codes": [
+    "bridge_executable_missing",
+    "registration_missing"
+  ],
+  "tracker_ready": false,
+  "full_pose_pipeline_ready": false,
+  "benchmark_report": {
+    "generated_at_utc": "2026-03-31T20:32:32.055Z",
+    "configured_backend_name": "ndi",
+    "selected_backend_name": "ndi",
+    "backend_identity": "ndi_tracker_python",
+    "port": "/dev/ttyUSB0",
+    "duration_s": 3.544369574985467,
+    "samples_observed": 4,
+    "unique_frames_observed": 0,
+    "backend_frame_counter_final": 0,
+    "frame_interval_s": {
+      "count": 0,
+      "minimum": null,
+      "maximum": null,
+      "mean": null,
+      "stdev": null
+    },
+    "effective_frame_rate_hz": null,
+    "stale_sample_count": 0,
+    "stale_sample_ratio": 0.0,
+    "max_data_age_s": null,
+    "first_frame_latency_s": null,
+    "registration_loaded": false,
+    "tip_pose_computable": false,
+    "canonical_state_final": "connecting",
+    "final_connection_state": "connecting",
+    "final_last_error": null,
+    "warning_messages_final": [
+      "missing_expected_tools:0A,0B"
+    ],
+    "error_messages_final": [],
+    "registration_state_final": "missing_registration",
+    "tip_pose_status_final": "missing_registration",
+    "raw_live_tool_ids_final": [],
+    "normalized_live_tool_ids_final": [],
+    "runtime_role_mappings_final": {},
+    "unmapped_live_tool_ids_final": [],
+    "tool_metrics": {
+      "0A": {
+        "tool_id": "0A",
+        "present_frames": 0,
+        "tracked_frames": 0,
+        "missing_frames": 0,
+        "invalid_frames": 0,
+        "unknown_frames": 0,
+        "max_consecutive_missing_frames": 0,
+        "time_to_first_tracked_frame_s": null,
+        "quality": {
+          "count": 0,
+          "minimum": null,
+          "maximum": null,
+          "mean": null,
+          "stdev": null
+        },
+        "latest_tracking_state": "unknown"
+      },
+      "0B": {
+        "tool_id": "0B",
+        "present_frames": 0,
+        "tracked_frames": 0,
+        "missing_frames": 0,
+        "invalid_frames": 0,
+        "unknown_frames": 0,
+        "max_consecutive_missing_frames": 0,
+        "time_to_first_tracked_frame_s": null,
+        "quality": {
+          "count": 0,
+          "minimum": null,
+          "maximum": null,
+          "mean": null,
+          "stdev": null
+        },
+        "latest_tracking_state": "unknown"
+      }
+    },
+    "thresholds": {
+      "min_effective_fps": 20.0,
+      "max_stale_interval_s": 0.25,
+      "max_consecutive_missing_frames": 20,
+      "require_valid_transforms": true
+    },
+    "passed": false,
+    "failures": [
+      "No tracker frames were observed during the benchmark window",
+      "Final connection state remained connecting",
+      "Required tool 0A never reached tracked state",
+      "Required tool 0B never reached tracked state"
+    ]
+  }
+}
