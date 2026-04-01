@@ -1,0 +1,470 @@
+{
+  "generated_at_utc": "2026-03-31T21:00:02.751Z",
+  "configured_backend_name": "ndi",
+  "selected_backend_name": "ndi",
+  "backend_identity": "ndi_tracker_python",
+  "configured_port": "/dev/ttyUSB0",
+  "canonical_state": "streaming_healthy",
+  "connection_state": "tracking",
+  "capability_report": {
+    "ndi": {
+      "backend": "ndi",
+      "available": true,
+      "code": "ok",
+      "reason": "Python NDI backend import and serial preflight passed.",
+      "details": {
+        "preferred_backend": "ndi",
+        "selected_backend_name": "ndi",
+        "fallback_backend": "bridge",
+        "fallback_enabled": true,
+        "aurora_port": "/dev/ttyUSB0",
+        "poll_interval_ms": 20,
+        "expected_tool_ids": [
+          "0A",
+          "0B"
+        ],
+        "tracker_type": "aurora",
+        "tool_aliases": {
+          "10": "0A",
+          "11": "0B"
+        },
+        "tool_configuration_check": "aliases_configured"
+      }
+    },
+    "bridge": {
+      "backend": "bridge",
+      "available": false,
+      "code": "bridge_executable_missing",
+      "reason": "Bridge executable missing: /home/continuum-pi/Continuum_pi/bin/tracker_bridge",
+      "details": {
+        "preferred_backend": "ndi",
+        "selected_backend_name": "bridge",
+        "fallback_backend": "bridge",
+        "fallback_enabled": true,
+        "aurora_port": "/dev/ttyUSB0",
+        "poll_interval_ms": 20,
+        "expected_tool_ids": [
+          "0A",
+          "0B"
+        ],
+        "bridge_executable": "/home/continuum-pi/Continuum_pi/bin/tracker_bridge",
+        "socket_path": "/tmp/tracker_bridge.sock"
+      }
+    }
+  },
+  "backend_details": {
+    "preferred_backend": "ndi",
+    "selected_backend_name": "ndi",
+    "fallback_backend": "bridge",
+    "fallback_enabled": true,
+    "aurora_port": "/dev/ttyUSB0",
+    "poll_interval_ms": 20,
+    "expected_tool_ids": [
+      "0A",
+      "0B"
+    ],
+    "tracker_type": "aurora",
+    "tool_aliases": {
+      "10": "0A",
+      "11": "0B"
+    },
+    "tool_configuration_check": "aliases_configured",
+    "tracker_settings": {
+      "tracker type": "aurora",
+      "serial port": "/dev/ttyUSB0",
+      "use quaternions": true
+    },
+    "ndi_transform_debug": {
+      "raw_tool_ids": [
+        "10",
+        "11"
+      ],
+      "normalized_tool_ids": [
+        "0A",
+        "0B"
+      ],
+      "tool_id_mapping": {
+        "10": "0A",
+        "11": "0B"
+      },
+      "runtime_role_mappings": {
+        "0A": "10",
+        "0B": "11"
+      },
+      "unmapped_tool_ids": [],
+      "tool_payload_summaries": {
+        "10": "ndarray(1, 7):pose_vector_wxyz_xyz",
+        "11": "ndarray(1, 7):pose_vector_wxyz_xyz"
+      },
+      "tool_transform_debug": {
+        "0A": {
+          "raw_handle": "10",
+          "normalized_tool_id": "0A",
+          "frame_number": 2016,
+          "timestamp": "2026-03-31T21:00:02.710Z",
+          "raw_payload_summary": "ndarray(1, 7)",
+          "raw_transform": [
+            [
+              0.0429,
+              -0.7132000000000001,
+              -0.011000000000000001,
+              0.6994,
+              -93.09,
+              -46.31,
+              -252.84
+            ]
+          ],
+          "quality": 0.22080000000000002,
+          "parse_mode": "ndarray(1, 7):pose_vector_wxyz_xyz",
+          "classified_state": "tracked",
+          "failure_stage": null,
+          "invalid_reason": null,
+          "matrix_before_validation": [
+            [
+              0.02121804262936866,
+              -0.0443280490397044,
+              -0.9987916793482572,
+              -93.09
+            ],
+            [
+              0.07571587959987157,
+              -0.9960763011306901,
+              0.045816022330841887,
+              -46.31
+            ],
+            [
+              -0.9969036564500082,
+              -0.07659651685381008,
+              -0.017778452195507333,
+              -252.84
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "rotation_block": [
+            [
+              0.02121804262936866,
+              -0.0443280490397044,
+              -0.9987916793482572
+            ],
+            [
+              0.07571587959987157,
+              -0.9960763011306901,
+              0.045816022330841887
+            ],
+            [
+              -0.9969036564500082,
+              -0.07659651685381008,
+              -0.017778452195507333
+            ]
+          ],
+          "rotation_gram": [
+            [
+              1.0,
+              6.459227968199352e-18,
+              -4.720189340662878e-17
+            ],
+            [
+              6.459227968199352e-18,
+              0.9999999999999998,
+              7.860178130643029e-18
+            ],
+            [
+              -4.720189340662878e-17,
+              7.860178130643029e-18,
+              1.0
+            ]
+          ],
+          "rotation_determinant": 0.9999999999999999
+        },
+        "0B": {
+          "raw_handle": "11",
+          "normalized_tool_id": "0B",
+          "frame_number": 2016,
+          "timestamp": "2026-03-31T21:00:02.710Z",
+          "raw_payload_summary": "ndarray(1, 7)",
+          "raw_transform": [
+            [
+              0.7142000000000001,
+              -0.49000000000000005,
+              -0.14800000000000002,
+              -0.4771,
+              93.63,
+              6.75,
+              -128.04
+            ]
+          ],
+          "quality": 0.0558,
+          "parse_mode": "ndarray(1, 7):pose_vector_wxyz_xyz",
+          "classified_state": "tracked",
+          "failure_stage": null,
+          "invalid_reason": null,
+          "matrix_before_validation": [
+            [
+              0.5007984365066652,
+              0.8267693617764469,
+              0.25622909362569674,
+              93.63
+            ],
+            [
+              -0.5366052286860574,
+              0.06427986794771157,
+              0.8413815585829111,
+              6.75
+            ],
+            [
+              0.6791581218974441,
+              -0.5588564404249011,
+              0.475840019813745,
+              -128.04
+            ],
+            [
+              0.0,
+              0.0,
+              0.0,
+              1.0
+            ]
+          ],
+          "rotation_block": [
+            [
+              0.5007984365066652,
+              0.8267693617764469,
+              0.25622909362569674
+            ],
+            [
+              -0.5366052286860574,
+              0.06427986794771157,
+              0.8413815585829111
+            ],
+            [
+              0.6791581218974441,
+              -0.5588564404249011,
+              0.475840019813745
+            ]
+          ],
+          "rotation_gram": [
+            [
+              0.9999999999999999,
+              5.52492291651577e-17,
+              1.0056340888180426e-16
+            ],
+            [
+              5.52492291651577e-17,
+              0.9999999999999996,
+              6.538858941571122e-17
+            ],
+            [
+              1.0056340888180426e-16,
+              6.538858941571122e-17,
+              1.0
+            ]
+          ],
+          "rotation_determinant": 0.9999999999999998
+        }
+      }
+    }
+  },
+  "startup_messages": [
+    "Configured preferred tracking backend: ndi",
+    "Configured fallback backend: bridge",
+    "Fallback enabled: True",
+    "Selected backend ndi."
+  ],
+  "startup_state": "valid_tracked_frames",
+  "unique_frames_observed": 106,
+  "backend_frame_counter_final": 157,
+  "effective_frame_rate_hz": 16.819153784077013,
+  "frame_interval_s": {
+    "count": 105,
+    "minimum": 0.050364607013762,
+    "maximum": 0.12520698306616396,
+    "mean": 0.05945602334326222,
+    "stdev": 0.018241561647951716,
+    "discarded_non_finite": 0
+  },
+  "max_data_age_s": 0.042419324978254735,
+  "first_frame_latency_s": 10.553847522009164,
+  "first_valid_frame_latency_s": 2.0214509499492124,
+  "warmup_invalid_frame_count": 8,
+  "warmup_nonfinite_invalid_frame_count": 8,
+  "warmup_invalid_frame_count_by_tool": {
+    "0A": 4,
+    "0B": 4
+  },
+  "warmup_nonfinite_invalid_frame_count_by_tool": {
+    "0A": 4,
+    "0B": 4
+  },
+  "raw_live_tool_ids": [
+    "10",
+    "11"
+  ],
+  "normalized_live_tool_ids": [
+    "0A",
+    "0B"
+  ],
+  "runtime_role_mappings": {
+    "0A": "10",
+    "0B": "11"
+  },
+  "tracker_faults": [],
+  "pipeline_faults": [
+    "missing_registration"
+  ],
+  "warning_messages": [],
+  "error_messages": [],
+  "registration_state": "missing_registration",
+  "registration_loaded": false,
+  "tip_pose_status": "missing_registration",
+  "tip_pose_computable": false,
+  "stage_results": [
+    {
+      "stage": "Stage 1: backend connect",
+      "status": "passed",
+      "message": "canonical_state=streaming_healthy, connection_state=tracking"
+    },
+    {
+      "stage": "Stage 2: frames arriving",
+      "status": "passed",
+      "message": "startup_state=valid_tracked_frames, unique_frames=106, effective_fps=16.819153784077013, first_frame_latency_s=10.553847522009164, first_valid_frame_latency_s=2.0214509499492124"
+    },
+    {
+      "stage": "Stage 3: expected tool ids visible",
+      "status": "passed",
+      "message": "Observed normalized tools: ['0A', '0B']."
+    },
+    {
+      "stage": "Stage 4: transforms valid and fresh",
+      "status": "passed",
+      "message": "startup_state=valid_tracked_frames, max_data_age_s=0.042419324978254735, warmup_invalid_frames={'0A': 4, '0B': 4}, tracker_faults=[]; 0A=tracked; 0B=tracked"
+    },
+    {
+      "stage": "Stage 5: T_robot_tip computable",
+      "status": "pending",
+      "message": "Registration not loaded yet. Stage 5 is pending by design."
+    }
+  ],
+  "failure_codes": [
+    "bridge_executable_missing",
+    "warmup_nonfinite_payloads_seen",
+    "registration_missing"
+  ],
+  "tracker_ready": true,
+  "full_pose_pipeline_ready": false,
+  "benchmark_report": {
+    "generated_at_utc": "2026-03-31T21:00:02.750Z",
+    "configured_backend_name": "ndi",
+    "selected_backend_name": "ndi",
+    "backend_identity": "ndi_tracker_python",
+    "port": "/dev/ttyUSB0",
+    "duration_s": 8.045901098987088,
+    "samples_observed": 120,
+    "unique_frames_observed": 106,
+    "backend_frame_counter_final": 157,
+    "frame_interval_s": {
+      "count": 105,
+      "minimum": 0.050364607013762,
+      "maximum": 0.12520698306616396,
+      "mean": 0.05945602334326222,
+      "stdev": 0.018241561647951716,
+      "discarded_non_finite": 0
+    },
+    "effective_frame_rate_hz": 16.819153784077013,
+    "stale_sample_count": 0,
+    "stale_sample_ratio": 0.0,
+    "max_data_age_s": 0.042419324978254735,
+    "first_frame_latency_s": 10.553847522009164,
+    "first_valid_frame_latency_s": 2.0214509499492124,
+    "startup_state": "valid_tracked_frames",
+    "warmup_invalid_frame_count": 8,
+    "warmup_nonfinite_invalid_frame_count": 8,
+    "warmup_invalid_frame_count_by_tool": {
+      "0A": 4,
+      "0B": 4
+    },
+    "warmup_nonfinite_invalid_frame_count_by_tool": {
+      "0A": 4,
+      "0B": 4
+    },
+    "registration_loaded": false,
+    "tip_pose_computable": false,
+    "canonical_state_final": "streaming_healthy",
+    "final_connection_state": "tracking",
+    "final_last_error": null,
+    "warning_messages_final": [],
+    "error_messages_final": [],
+    "registration_state_final": "missing_registration",
+    "tip_pose_status_final": "missing_registration",
+    "raw_live_tool_ids_final": [
+      "10",
+      "11"
+    ],
+    "normalized_live_tool_ids_final": [
+      "0A",
+      "0B"
+    ],
+    "runtime_role_mappings_final": {
+      "0A": "10",
+      "0B": "11"
+    },
+    "unmapped_live_tool_ids_final": [],
+    "tool_metrics": {
+      "0A": {
+        "tool_id": "0A",
+        "present_frames": 106,
+        "tracked_frames": 102,
+        "missing_frames": 0,
+        "invalid_frames": 4,
+        "warmup_invalid_frames": 4,
+        "warmup_nonfinite_invalid_frames": 4,
+        "post_warmup_invalid_frames": 0,
+        "unknown_frames": 0,
+        "max_consecutive_missing_frames": 0,
+        "time_to_first_tracked_frame_s": 2.0214509499492124,
+        "quality": {
+          "count": 102,
+          "minimum": 0.2087,
+          "maximum": 0.2277,
+          "mean": 0.2190578431372549,
+          "stdev": 0.004280380143336865,
+          "discarded_non_finite": 4
+        },
+        "latest_tracking_state": "tracked"
+      },
+      "0B": {
+        "tool_id": "0B",
+        "present_frames": 106,
+        "tracked_frames": 102,
+        "missing_frames": 0,
+        "invalid_frames": 4,
+        "warmup_invalid_frames": 4,
+        "warmup_nonfinite_invalid_frames": 4,
+        "post_warmup_invalid_frames": 0,
+        "unknown_frames": 0,
+        "max_consecutive_missing_frames": 0,
+        "time_to_first_tracked_frame_s": 2.0214509499492124,
+        "quality": {
+          "count": 102,
+          "minimum": 0.0557,
+          "maximum": 0.0572,
+          "mean": 0.056390196078431376,
+          "stdev": 0.00032554925048973075,
+          "discarded_non_finite": 4
+        },
+        "latest_tracking_state": "tracked"
+      }
+    },
+    "thresholds": {
+      "min_effective_fps": 15.0,
+      "max_stale_interval_s": 0.25,
+      "max_consecutive_missing_frames": 20,
+      "require_valid_transforms": true
+    },
+    "passed": true,
+    "failures": []
+  }
+}
