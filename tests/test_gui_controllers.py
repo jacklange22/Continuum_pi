@@ -26,17 +26,20 @@ from continuum_robot.config.schemas import (
     SerialConfig,
 )
 from continuum_robot.gui.app_window import AppWindow
+from continuum_robot.gui.controllers.pretension_controller import PretensionController
 from continuum_robot.gui.controllers.registration_controller import RegistrationController
 from continuum_robot.gui.controllers.servos_controller import ServosController
 from continuum_robot.gui.controllers.system_controller import SystemController, SystemViewState
 from continuum_robot.gui.controllers.experiment_controller import ExperimentController
 from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpController, TrackerMvpViewState
 from continuum_robot.gui.tabs.experiment_tab import ExperimentTab
+from continuum_robot.gui.tabs.pretension_tab import PretensionTab
 from continuum_robot.gui.tabs.registration_tab import RegistrationTab
 from continuum_robot.gui.tabs.servos_tab import ServosTab
 from continuum_robot.gui.tabs.system_tab import SystemTab
 from continuum_robot.gui.tabs.tracker_mvp_tab import TrackerMvpTab
 from continuum_robot.gui.tabs.tracking_tab import TrackingTab
+from continuum_robot.gui.widgets.tool_plot_widget import ToolPlotWidget
 from continuum_robot.experiments.experiment_loader import ExperimentLoader
 from continuum_robot.experiments.experiment_runner import ExperimentRunner
 from continuum_robot.hardware.mock_dxl_bus import MockDxlBus
@@ -53,7 +56,7 @@ from continuum_robot.servos.neutral_calibration_service import (
 )
 from continuum_robot.servos.pretension_validation_service import PretensionValidationService
 from continuum_robot.servos.safety_guard import SafetyGuard
-from continuum_robot.servos.servo_service import ServoCommandResult, ServoService
+from continuum_robot.servos.servo_service import PretensionParameters, ServoCommandResult, ServoService
 from continuum_robot.hardware.dxl_bus import ServoTelemetry
 from continuum_robot.tracking.mock_tracker_manager import MockTrackerManager
 
@@ -109,7 +112,7 @@ def _settings() -> Settings:
             capture_tool_id="0B",
             max_fre_mm=None,
         ),
-        experiment=ExperimentConfig(default_settle_time_s=0.0, sample_count_per_point=1, output_dir="data/runs"),
+        experiment=ExperimentConfig(default_settle_time_s=0.0, sample_count_per_point=1, output_dir="data/experiments"),
         calibration=CalibrationConfig(
             neutral_setpoints_path="data/calibrations/neutral_setpoints.json",
             latest_registration_path="data/registrations/latest_registration.json",
@@ -150,6 +153,63 @@ def _servo_service(tmp_path: Path) -> ServoService:
         ),
         pretension_validation=PretensionValidationService(),
     )
+
+
+def _pretension_service(tmp_path: Path, *, dxl_bus=None) -> ServoService:
+    return ServoService(
+        dxl_bus=dxl_bus or _MultiServoPretensionBus(current_sequences={2: [180, 230]}),
+        mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
+        safety_guard=SafetyGuard(
+            min_offset_ticks=-600,
+            max_offset_ticks=600,
+            max_current_ma=850,
+            default_pretension_current_threshold_ma=220,
+            fine_jog_step_ticks=5,
+            coarse_jog_step_ticks=25,
+            software_position_margin_ticks=64,
+            telemetry_stale_after_s=0.25,
+            pretension_step_ticks=2,
+            pretension_timeout_s=2.0,
+            pretension_settle_time_s=0.0,
+            pretension_baseline_sample_count=3,
+            pretension_current_filter_window=1,
+            pretension_current_delta_threshold_ma=60,
+            pretension_absolute_trigger_current_ma=500,
+            pretension_max_travel_ticks=320,
+            max_temperature_c=70,
+            time_fn=time.monotonic,
+        ),
+        neutral_calibration=NeutralCalibrationService(
+            path=tmp_path / "pretension_neutral.json",
+            context=ServoCalibrationContext(
+                robot_mode="4-servo",
+                servo_ids=[1, 2, 3, 4],
+                tendon_to_servo=[1, 2, 3, 4],
+                position_min_offset_ticks=-600,
+                position_max_offset_ticks=600,
+                default_pretension_current_threshold_ma=220,
+                tightening_rotation_by_servo={1: "cw", 2: "cw", 3: "cw", 4: "cw"},
+            ),
+        ),
+        pretension_validation=PretensionValidationService(),
+        sleep_fn=lambda _seconds: None,
+        time_fn=time.monotonic,
+    )
+
+
+class _MultiServoPretensionBus(MockDxlBus):
+    def __init__(self, *, current_sequences: dict[int, list[int | None]]) -> None:
+        super().__init__([1, 2, 3, 4])
+        self._current_sequences = {int(key): list(values) for key, values in current_sequences.items()}
+        for telemetry in self._state.values():
+            telemetry.torque_enabled = True
+
+    def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
+        super().write_goal_positions(positions_by_id)
+        for servo_id, _goal in positions_by_id.items():
+            sequence = self._current_sequences.get(int(servo_id))
+            if sequence:
+                self._state[int(servo_id)].present_current_ma = sequence.pop(0)
 
 
 def _tracking_service(settings: Settings, tmp_path: Path) -> TrackingService:
@@ -206,7 +266,7 @@ def _experiment_runner(settings: Settings, tmp_path: Path, tracking_service: Tra
         settings=settings,
         tracking_service=tracking_service,
         servo_service=servo_service,
-        output_dir=tmp_path / "runs",
+        output_dir=tmp_path / "data" / "experiments",
         default_settle_time_s=0.0,
         registration_path=registration_path,
         sleep_fn=lambda _seconds: None,
@@ -342,12 +402,22 @@ def test_registration_tab_wraps_workspace_in_scroll_area(tmp_path: Path) -> None
     assert tab.scroll_area.widget() is not None
 
 
+def test_tool_plot_widget_accepts_xyz_points() -> None:
+    _app()
+    widget = ToolPlotWidget()
+
+    widget.set_points({"0A": (10.0, 20.0, 30.0), "tip": (5.0, 6.0)})
+
+    assert widget._points["0A"] == (10.0, 20.0, 30.0)
+    assert widget._points["tip"] == (5.0, 6.0, 0.0)
+
+
 def test_app_window_promotes_tracking_and_registration_before_legacy(tmp_path: Path) -> None:
     _app()
     window = AppWindow(_app_context(tmp_path))
     try:
         labels = [window.tab_widget.tabText(index) for index in range(window.tab_widget.count())]
-        assert labels == ["System", "Tracking", "Registration", "Servos", "Experiment"]
+        assert labels == ["System", "Tracking", "Registration", "Servos", "Pretension", "Experiment"]
     finally:
         window.shutdown()
 
@@ -381,12 +451,88 @@ def test_servos_tab_selected_servo_panel_reflects_controller_state(tmp_path: Pat
     assert tab.selected_servo_current_draw_label.text() == str(service.dxl_bus._state[2].present_current_ma)
 
 
+def test_servos_tab_hides_inactive_issue_rows_and_marks_selected_button(tmp_path: Path) -> None:
+    _app()
+    service = _servo_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    controller = ServosController(service, _settings())
+    controller.set_selected_servo(3)
+    tab = ServosTab(controller)
+
+    tab.update(controller.state)
+
+    assert tab.missing_ids_label.isHidden() is True
+    assert tab.unexpected_ids_label.isHidden() is True
+    assert tab._selector_buttons[3].isChecked() is True
+    assert tab._selector_buttons[1].isChecked() is False
+
+
 def test_servos_tab_hides_id_assignment_controls_from_operator_surface(tmp_path: Path) -> None:
     _app()
     tab = ServosTab(ServosController(_servo_service(tmp_path), _settings()))
 
     assert hasattr(tab, "scan_button")
     assert not hasattr(tab, "assign_button")
+
+
+def test_pretension_tab_wraps_workspace_in_scroll_area(tmp_path: Path) -> None:
+    _app()
+    service = _pretension_service(tmp_path)
+    controller = PretensionController(servo_service=service, settings=_settings())
+    tab = PretensionTab(controller)
+
+    assert isinstance(tab.scroll_area, QScrollArea)
+    assert tab.scroll_area.widget() is not None
+
+
+def test_pretension_controller_runs_only_on_selected_servo_and_persists_result(tmp_path: Path) -> None:
+    settings = _settings()
+    bus = _MultiServoPretensionBus(current_sequences={2: [180, 230]})
+    service = _pretension_service(tmp_path, dxl_bus=bus)
+    service.connect("/dev/mock-openrb", 115200)
+    before = {servo_id: telemetry.present_position for servo_id, telemetry in bus._state.items()}
+    controller = PretensionController(servo_service=service, settings=settings)
+
+    controller.set_selected_servo(2)
+    controller.measure_baseline(sample_count=3, filter_window=1)
+    controller.start_pretension(
+        parameters=PretensionParameters(
+            untensioned_reference_tick=4095,
+            step_ticks=2,
+            settle_time_s=0.0,
+            baseline_sample_count=3,
+            current_filter_window=1,
+            current_delta_threshold_ma=60,
+            absolute_trigger_current_ma=500,
+            hard_current_stop_ma=850,
+            max_travel_ticks=320,
+            timeout_s=2.0,
+        )
+    )
+    controller._pretension_thread.join(timeout=1.0)
+    controller.save_pretension_result()
+
+    assert bus._state[2].present_position < before[2]
+    assert bus._state[1].present_position == before[1]
+    assert bus._state[3].present_position == before[3]
+    assert bus._state[4].present_position == before[4]
+    summary = service.get_calibration_summary()
+    assert summary.servo_entries[2].pretension_result_status == "accepted"
+    assert summary.servo_entries[2].latest_pretension_run is not None
+    assert summary.servo_entries[2].latest_pretension_run["status"] == "threshold_reached"
+
+
+def test_pretension_controller_blocks_selected_servo_when_torque_is_off(tmp_path: Path) -> None:
+    settings = _settings()
+    service = _pretension_service(tmp_path, dxl_bus=MockDxlBus([1, 2, 3, 4]))
+    service.connect("/dev/mock-openrb", 115200)
+    controller = PretensionController(servo_service=service, settings=settings)
+
+    controller.set_selected_servo(3)
+    controller.start_pretension(parameters=service.default_pretension_parameters(3))
+
+    assert controller.state.run_state == "blocked"
+    assert "Torque must be enabled" in controller.state.run_state_message
 
 
 def _app_context(tmp_path: Path) -> AppContext:
@@ -609,6 +755,42 @@ def test_system_tab_save_apply_prefers_callback_when_available() -> None:
     assert controller.save_calls == []
 
 
+def test_system_tab_preserves_unsaved_parameter_edits_across_refresh() -> None:
+    _app()
+    controller = _PortSelectionController()
+    tab = SystemTab(controller)
+
+    tab.update(controller.state)
+    tab.poll_rate_spin.setValue(24)
+    tab.fine_jog_spin.setValue(9)
+    tab.update(controller.state)
+
+    assert tab.poll_rate_spin.value() == 24
+    assert tab.fine_jog_spin.value() == 9
+
+
+def test_system_tab_preserves_scrolled_diagnostics_position_on_update() -> None:
+    _app()
+    controller = _PortSelectionController()
+    controller.state.status_message = "\n".join(f"line {index}" for index in range(80))
+    controller.state.bench_debug_text = "\n".join(f"debug {index}" for index in range(80))
+    tab = SystemTab(controller)
+    tab.resize(900, 700)
+    tab.show()
+
+    tab.update(controller.state)
+    QTest.qWait(20)
+    scroll_bar = tab.status_text.verticalScrollBar()
+    scroll_bar.setValue(max(1, scroll_bar.maximum() // 2))
+    previous_value = scroll_bar.value()
+
+    controller.state.status_message += "\nline 81"
+    tab.update(controller.state)
+    QTest.qWait(20)
+
+    assert tab.status_text.verticalScrollBar().value() >= previous_value - 2
+
+
 def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _app()
     window = AppWindow(_app_context(tmp_path))
@@ -619,6 +801,7 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
             "system": 0,
             "servos": 0,
             "servos_selected": 0,
+            "pretension": 0,
             "tracking": 0,
             "registration": 0,
             "experiment": 0,
@@ -654,6 +837,11 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
             "refresh_prerequisites",
             _wrap("experiment", window.experiment_controller.state),
         )
+        monkeypatch.setattr(
+            window.pretension_controller,
+            "refresh",
+            _wrap("pretension", window.pretension_controller.state),
+        )
 
         window.tab_widget.setCurrentWidget(window.tracking_tab)
         counts = {key: 0 for key in counts}
@@ -663,6 +851,7 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
             "system": 1,
             "servos": 0,
             "servos_selected": 0,
+            "pretension": 0,
             "tracking": 1,
             "registration": 0,
             "experiment": 0,
@@ -676,6 +865,7 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
             "system": 1,
             "servos": 0,
             "servos_selected": 0,
+            "pretension": 0,
             "tracking": 0,
             "registration": 1,
             "experiment": 0,
@@ -687,8 +877,23 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
         assert counts == {
             "tracker_mvp": 0,
             "system": 1,
-            "servos": 1,
+            "servos": 0,
+            "servos_selected": 1,
+            "pretension": 0,
+            "tracking": 0,
+            "registration": 0,
+            "experiment": 0,
+        }
+
+        window.tab_widget.setCurrentWidget(window.pretension_tab)
+        counts = {key: 0 for key in counts}
+        window.refresh()
+        assert counts == {
+            "tracker_mvp": 0,
+            "system": 1,
+            "servos": 0,
             "servos_selected": 0,
+            "pretension": 1,
             "tracking": 0,
             "registration": 0,
             "experiment": 0,
@@ -702,6 +907,7 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
             "system": 1,
             "servos": 0,
             "servos_selected": 0,
+            "pretension": 0,
             "tracking": 0,
             "registration": 0,
             "experiment": 1,
@@ -800,6 +1006,7 @@ def test_servos_controller_saves_startup_calibration_and_accepts_pretension(tmp_
         pretension_validation=PretensionValidationService(),
     )
     service.connect("/dev/mock-openrb", 115200)
+    service.dxl_bus._state[1].torque_enabled = True
     controller = ServosController(service, settings)
 
     controller.save_startup_calibration(
@@ -1172,7 +1379,7 @@ def test_experiment_workspace_loads_prior_run_and_history(tmp_path: Path) -> Non
             "output_tip_file": str(tmp_path / "generated_tip.csv"),
             "min_samples": 8,
         },
-        output_dir=tmp_path / "runs",
+        output_dir=tmp_path / "data" / "experiments" / "pivot" / "runs",
         output_dir_name="saved_pivot_run",
     )
     assert result.success is True

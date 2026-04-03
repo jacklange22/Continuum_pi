@@ -143,6 +143,7 @@ Method:
 Acceptance:
 
 - tip file written
+- review dataset bundle written under `data/experiments/pivot/runs/`
 - RMSE and inlier/outlier counts saved
 
 ### `EXP-V002` Repeatability Dataset

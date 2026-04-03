@@ -39,10 +39,14 @@ fi
 mkdir -p \
   "$ROOT_DIR/bin" \
   "$ROOT_DIR/data/calibrations" \
+  "$ROOT_DIR/data/experiments" \
+  "$ROOT_DIR/data/experiments/pivot/captures" \
+  "$ROOT_DIR/data/experiments/pivot/runs" \
   "$ROOT_DIR/data/logs" \
   "$ROOT_DIR/data/registrations" \
+  "$ROOT_DIR/data/tip_cals/staged" \
   "$ROOT_DIR/data/tracker_captures" \
-  "$ROOT_DIR/data/runs"
+  "$ROOT_DIR/data/tracker_validations"
 
 if [[ "$BUILD_TRACKER_BRIDGE" == "1" ]]; then
   : "${NDI_SDK_INCLUDE_DIR:?Set NDI_SDK_INCLUDE_DIR to the NDI SDK include directory}"

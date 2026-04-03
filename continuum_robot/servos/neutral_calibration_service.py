@@ -13,7 +13,7 @@ import json
 from typing import Any
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 @dataclass
@@ -51,6 +51,7 @@ class ServoCalibrationEntry:
     pretension_final_position_tick: int | None = None
     pretension_result_status: str | None = None
     pretension_completed_at_utc: str | None = None
+    latest_pretension_run: dict[str, Any] | None = None
     calibrated_at_utc: str | None = None
     status: str = "missing"
     valid: bool = False
@@ -175,6 +176,7 @@ class NeutralCalibrationService:
                 pretension_final_position_tick=existing.pretension_final_position_tick,
                 pretension_result_status=existing.pretension_result_status,
                 pretension_completed_at_utc=existing.pretension_completed_at_utc,
+                latest_pretension_run=dict(existing.latest_pretension_run or {}) or None,
                 calibrated_at_utc=timestamp,
                 status="neutral_captured",
                 valid=True,
@@ -245,6 +247,7 @@ class NeutralCalibrationService:
             pretension_final_position_tick=existing.pretension_final_position_tick,
             pretension_result_status=existing.pretension_result_status,
             pretension_completed_at_utc=existing.pretension_completed_at_utc,
+            latest_pretension_run=dict(existing.latest_pretension_run or {}) or None,
             calibrated_at_utc=timestamp,
             status=str(status),
             valid=bool(valid),
@@ -263,10 +266,12 @@ class NeutralCalibrationService:
         final_current_ma: int | None,
         threshold_ma: int | None,
         result_status: str,
+        run_record: dict[str, Any] | None = None,
     ) -> ServoCalibrationEntry:
         artifact = self.load_calibration_artifact()
         existing = artifact.servos.get(int(servo_id), ServoCalibrationEntry(servo_id=int(servo_id)))
         timestamp = _utc_now()
+        latest_pretension_run = self._sanitize_run_record(run_record) or dict(existing.latest_pretension_run or {}) or None
         entry = ServoCalibrationEntry(
             servo_id=int(servo_id),
             tendon_index=existing.tendon_index,
@@ -289,6 +294,7 @@ class NeutralCalibrationService:
             ),
             pretension_result_status=str(result_status),
             pretension_completed_at_utc=timestamp,
+            latest_pretension_run=latest_pretension_run,
             calibrated_at_utc=existing.calibrated_at_utc,
             status=existing.status if existing.status != "missing" else str(result_status),
             valid=existing.valid,
@@ -422,6 +428,7 @@ class NeutralCalibrationService:
             pretension_final_position_tick=existing.pretension_final_position_tick,
             pretension_result_status="accepted",
             pretension_completed_at_utc=timestamp,
+            latest_pretension_run=self._mark_run_record_accepted(existing.latest_pretension_run),
             calibrated_at_utc=existing.calibrated_at_utc,
             status="pretension_accepted",
             valid=existing.valid,
@@ -495,6 +502,7 @@ class NeutralCalibrationService:
                     if data.get("pretension_completed_at_utc")
                     else None
                 ),
+                latest_pretension_run=self._sanitize_run_record(data.get("latest_pretension_run")),
                 calibrated_at_utc=str(data.get("calibrated_at_utc")) if data.get("calibrated_at_utc") else None,
                 status=str(data.get("status", "missing")),
                 valid=bool(data.get("valid", False)),
@@ -541,6 +549,7 @@ class NeutralCalibrationService:
                     else None
                 ),
                 tightening_rotation=self.context.tightening_rotation_by_servo.get(servo_id),
+                latest_pretension_run=None,
                 calibrated_at_utc=timestamp,
                 status="migrated_legacy_neutral",
                 valid=True,
@@ -554,6 +563,36 @@ class NeutralCalibrationService:
             robot=self._robot_metadata(),
             servos={},
         )
+
+    @staticmethod
+    def _sanitize_run_record(run_record: Any) -> dict[str, Any] | None:
+        if not isinstance(run_record, dict):
+            return None
+        clean: dict[str, Any] = {}
+        for key, value in run_record.items():
+            if value is None or isinstance(value, (str, int, float, bool)):
+                clean[str(key)] = value
+                continue
+            if isinstance(value, dict):
+                clean[str(key)] = {
+                    str(child_key): child_value
+                    for child_key, child_value in value.items()
+                    if child_value is None or isinstance(child_value, (str, int, float, bool))
+                }
+                continue
+            if isinstance(value, (list, tuple)):
+                clean[str(key)] = [
+                    item for item in value if item is None or isinstance(item, (str, int, float, bool))
+                ]
+        return clean or None
+
+    def _mark_run_record_accepted(self, run_record: dict[str, Any] | None) -> dict[str, Any] | None:
+        clean = self._sanitize_run_record(run_record)
+        if clean is None:
+            return None
+        clean["accepted"] = True
+        clean["accepted_at_utc"] = _utc_now()
+        return clean
 
     def _robot_metadata(self) -> dict[str, Any]:
         return {

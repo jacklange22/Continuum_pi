@@ -107,9 +107,25 @@ class ConfigLoader:
             coarse_jog_step_ticks=int(safety_data.get("coarse_jog_step_ticks", 25)),
             software_position_margin_ticks=int(safety_data.get("software_position_margin_ticks", 64)),
             telemetry_stale_after_s=float(safety_data.get("telemetry_stale_after_s", 0.25)),
+            pretension_untensioned_reference_tick=int(
+                safety_data.get("pretension_untensioned_reference_tick", 4095)
+            ),
             pretension_step_ticks=int(safety_data.get("pretension_step_ticks", 2)),
             pretension_timeout_s=float(safety_data.get("pretension_timeout_s", 10.0)),
             pretension_settle_time_s=float(safety_data.get("pretension_settle_time_s", 0.05)),
+            pretension_baseline_sample_count=int(
+                safety_data.get("pretension_baseline_sample_count", 5)
+            ),
+            pretension_current_filter_window=int(
+                safety_data.get("pretension_current_filter_window", 3)
+            ),
+            pretension_current_delta_threshold_ma=int(
+                safety_data.get("pretension_current_delta_threshold_ma", 60)
+            ),
+            pretension_absolute_trigger_current_ma=self._maybe_int(
+                safety_data.get("pretension_absolute_trigger_current_ma", 220)
+            ),
+            pretension_max_travel_ticks=int(safety_data.get("pretension_max_travel_ticks", 320)),
             max_temperature_c=int(safety_data.get("max_temperature_c", 70)),
             min_input_voltage_mv=int(safety_data.get("min_input_voltage_mv", 4000)),
         )
@@ -214,6 +230,12 @@ class ConfigLoader:
         if value in (None, ""):
             return None
         return float(value)
+
+    @staticmethod
+    def _maybe_int(value) -> int | None:
+        if value in (None, ""):
+            return None
+        return int(value)
 
     @staticmethod
     def _maybe_matrix(value) -> list[list[float]] | None:

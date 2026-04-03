@@ -48,8 +48,8 @@ Tracker validation:
 
 Pivot calibration:
 
-- raw live capture CSV under `data/pivot_captures/*_pivot_0B_samples.csv`
-- review dataset bundle under `runs/*_pivot_calibration_review/`
+- raw live capture CSV under `data/experiments/pivot/captures/*_pivot_0B_samples.csv`
+- review dataset bundle under `data/experiments/pivot/runs/*_pivot_calibration_review/`
 - `metadata.json`
 - `samples.jsonl`
 - `summary.json`

@@ -410,10 +410,18 @@ class ExperimentController:
         entries: list[RunHistoryEntry] = []
         if not output_root.exists():
             return entries
-        for run_dir in sorted(output_root.iterdir(), key=lambda item: item.stat().st_mtime, reverse=True):
-            metadata_path = run_dir / "metadata.json"
+        run_dirs = sorted(
+            {
+                metadata_path.parent
+                for metadata_path in output_root.rglob("metadata.json")
+            },
+            key=lambda item: item.stat().st_mtime,
+            reverse=True,
+        )
+        for run_dir in run_dirs:
             summary_path = run_dir / "summary.json"
-            if not (run_dir.is_dir() and metadata_path.exists() and summary_path.exists()):
+            metadata_path = run_dir / "metadata.json"
+            if not summary_path.exists():
                 continue
             try:
                 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))

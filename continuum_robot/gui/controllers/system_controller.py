@@ -37,6 +37,9 @@ class SystemViewState:
     robot_config: str = "robot_4servo.yaml"
     robot_mode: str = ""
     expected_servo_ids: list[int] = field(default_factory=list)
+    detected_servo_ids: list[int] = field(default_factory=list)
+    telemetry_ready_count: int = 0
+    motion_ready_count: int = 0
     poll_rate_hz: int = 10
     fine_jog_step_ticks: int = 5
     coarse_jog_step_ticks: int = 25
@@ -188,6 +191,13 @@ class SystemController:
         try:
             if self.settings.robot.mode == "1-servo" or len(self.settings.robot.servo_ids) == 1:
                 debug_snapshot = self.servo_service.build_bench_debug_snapshot(self._expected_servo_id())
+                self.state.detected_servo_ids = (
+                    [int(debug_snapshot.selected_servo_id)]
+                    if debug_snapshot.ping_ok and debug_snapshot.selected_servo_id is not None
+                    else []
+                )
+                self.state.telemetry_ready_count = 1 if debug_snapshot.telemetry_read_ok else 0
+                self.state.motion_ready_count = 1 if debug_snapshot.motion_ready else 0
                 self.state.bus_reachable = bool(debug_snapshot.bus_reachable)
                 self.state.motion_ready = bool(debug_snapshot.motion_ready)
                 self.state.external_power_ready = (
@@ -209,6 +219,15 @@ class SystemController:
                     list(self.settings.robot.servo_ids),
                     allow_scan=True,
                 )
+                self.state.detected_servo_ids = list(snapshot.discovered_ids)
+                self.state.telemetry_ready_count = sum(
+                    1 for entry in snapshot.servo_entries.values() if entry.telemetry_read_ok
+                )
+                self.state.motion_ready_count = sum(
+                    1
+                    for entry in snapshot.servo_entries.values()
+                    if entry.motion_assessment is not None and entry.motion_assessment.ready
+                )
                 self.state.bus_reachable = bool(snapshot.bus_reachable)
                 self.state.motion_ready = bool(snapshot.all_motion_ready)
                 external_power_flags = [
@@ -228,6 +247,9 @@ class SystemController:
             self.state.bus_reachable = False
             self.state.motion_ready = False
             self.state.external_power_ready = None
+            self.state.detected_servo_ids = []
+            self.state.telemetry_ready_count = 0
+            self.state.motion_ready_count = 0
             self.state.last_error = str(exc)
             self.state.readiness_message = f"Readiness refresh failed: {exc}"
             self.state.bench_debug_text = self._build_disconnected_bench_debug_text(extra_error=str(exc))
@@ -257,11 +279,70 @@ class SystemController:
             self.state.bus_reachable = False
             self.state.motion_ready = False
             self.state.external_power_ready = None
+            self.state.detected_servo_ids = []
+            self.state.telemetry_ready_count = 0
+            self.state.motion_ready_count = 0
             self.state.readiness_message = "Connect OpenRB and refresh readiness."
             self.state.bench_debug_text = self._build_disconnected_bench_debug_text()
         if tracker_state.last_error:
             self.state.last_error = tracker_state.last_error
         self.state.config_summary = self._build_live_config_summary()
+        return self.state
+
+    def sync_servo_bringup_state(self, servo_state) -> SystemViewState:
+        """Keep System-tab servo readiness summary aligned with the canonical servo controller state."""
+        expected_ids = [int(servo_id) for servo_id in getattr(servo_state, "expected_servo_ids", [])]
+        detected_ids = [int(servo_id) for servo_id in getattr(servo_state, "detected_servo_ids", [])]
+        telemetry = dict(getattr(servo_state, "telemetry", {}))
+        total = len(expected_ids)
+        telemetry_ready_count = sum(
+            1
+            for servo_id in expected_ids
+            if str(telemetry.get(int(servo_id), {}).get("telemetry_status", "")).strip().lower()
+            not in {"", "unknown", "unreadable"}
+        )
+        motion_ready_count = sum(
+            1
+            for servo_id in expected_ids
+            if bool(telemetry.get(int(servo_id), {}).get("motion_ready"))
+        )
+        external_power_flags = [
+            row.get("external_power_ready")
+            for row in telemetry.values()
+            if row.get("external_power_ready") is not None
+        ]
+        if external_power_flags:
+            self.state.external_power_ready = all(bool(flag) for flag in external_power_flags)
+        else:
+            self.state.external_power_ready = None
+        if getattr(servo_state, "bench_debug_text", ""):
+            self.state.bench_debug_text = str(servo_state.bench_debug_text)
+        if getattr(servo_state, "last_error", None):
+            self.state.last_error = str(servo_state.last_error)
+        self.state.expected_servo_ids = expected_ids
+        self.state.detected_servo_ids = detected_ids
+        self.state.bus_reachable = bool(detected_ids)
+        self.state.telemetry_ready_count = int(telemetry_ready_count)
+        self.state.motion_ready_count = int(motion_ready_count)
+        self.state.motion_ready = bool(total > 0 and motion_ready_count == total)
+        issues: list[str] = []
+        missing_ids = [int(servo_id) for servo_id in getattr(servo_state, "missing_servo_ids", [])]
+        unexpected_ids = [int(servo_id) for servo_id in getattr(servo_state, "unexpected_servo_ids", [])]
+        if missing_ids:
+            issues.append(f"missing={missing_ids}")
+        if unexpected_ids:
+            issues.append(f"unexpected={unexpected_ids}")
+        if total:
+            summary = (
+                f"Detected {len(detected_ids)}/{total} | "
+                f"Telemetry {telemetry_ready_count}/{total} | "
+                f"Motion ready {motion_ready_count}/{total}"
+            )
+        else:
+            summary = "No expected servo IDs are configured."
+        if issues:
+            summary += " | " + " | ".join(issues)
+        self.state.readiness_message = summary
         return self.state
 
     def save_runtime_parameters(

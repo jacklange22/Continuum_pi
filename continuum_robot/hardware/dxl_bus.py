@@ -285,9 +285,9 @@ class DxlBus:
             raise ValueError("Current servo ID and new servo ID must be different.")
         if int(new_id) <= 0 or int(new_id) > 252:
             raise ValueError("Servo ID must be between 1 and 252.")
-        if not self._ping(int(current_id)):
+        if not self.ping_servo(int(current_id)):
             raise RuntimeError(f"Servo {current_id} did not respond on the bus.")
-        if self._ping(int(new_id)):
+        if self.ping_servo(int(new_id)):
             raise RuntimeError(f"Servo ID {new_id} is already in use.")
         torque_address = self.config.control_table["torque_enable"]
         torque_enabled_raw, torque_error = self._read1(int(current_id), torque_address)
@@ -295,7 +295,9 @@ class DxlBus:
             raise RuntimeError(
                 f"Failed to read Torque Enable for servo {current_id} before EEPROM write: {torque_error}"
             )
-        if self.config.torque_disable_for_eeprom_write and torque_enabled_raw != 0:
+        if self.config.torque_disable_for_eeprom_write:
+            # Always write Torque Enable = 0 before EEPROM maintenance writes so the
+            # bus behavior matches the documented XC330/OpenRB maintenance contract.
             self._write1(int(current_id), torque_address, 0, "torque disable")
         torque_verify_raw, torque_verify_error = self._read1(int(current_id), torque_address)
         if torque_verify_error is not None:
@@ -308,7 +310,7 @@ class DxlBus:
                 f"read back {torque_verify_raw}."
             )
         self._write1(int(current_id), self.config.control_table["servo_id"], int(new_id), "servo ID")
-        if not self._ping(int(new_id)):
+        if not self.ping_servo(int(new_id)):
             raise RuntimeError(f"Servo {new_id} did not respond after ID assignment.")
         readback_id, readback_error = self._read1(int(new_id), self.config.control_table["servo_id"])
         if readback_error is not None:

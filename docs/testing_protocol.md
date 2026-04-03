@@ -89,7 +89,8 @@ Pass criteria:
 
 Pass criteria:
 
-- Every run writes `metadata.json`, `summary.json`, and samples to `data/experiments/`
+- Every run writes `metadata.json`, `summary.json`, and samples under `data/experiments/`
+- Tracker-driven pivot review datasets land under `data/experiments/pivot/runs/`
 - Preflight shows no blockers
 - Result metrics are readable and reloadable
 

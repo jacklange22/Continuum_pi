@@ -28,13 +28,14 @@ def test_neutral_calibration_service_archives_previous_latest(tmp_path: Path) ->
     latest = json.loads((tmp_path / "neutral_setpoints.json").read_text(encoding="utf-8"))
     archives = sorted(tmp_path.glob("neutral_setpoints_*.json"))
 
-    assert latest["schema_version"] == 2
+    assert latest["schema_version"] == 3
     assert latest["servos"]["1"]["neutral_setpoint"] == 200
     assert latest["servos"]["1"]["safe_min_tick"] == -400
     assert latest["servos"]["1"]["safe_max_tick"] == 800
     assert latest["servos"]["1"]["pretension_current_threshold_ma"] == 850
     assert latest["servos"]["1"]["tightening_rotation"] == "cw"
     assert latest["servos"]["1"]["capture_source"] == "bench_neutral_capture"
+    assert latest["servos"]["1"]["latest_pretension_run"] is None
     assert latest["robot"]["robot_config_name"] == "robot_4servo.yaml"
     assert len(archives) == 1
     archived_payload = json.loads(archives[0].read_text(encoding="utf-8"))

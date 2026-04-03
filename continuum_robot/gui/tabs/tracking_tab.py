@@ -160,7 +160,7 @@ class TrackingTab(QWidget):
         self.tools_table.verticalHeader().setVisible(False)
         self.tools_table.setMinimumHeight(200)
         self.plot_widget = ToolPlotWidget()
-        self.plot_widget.setMinimumHeight(260)
+        self.plot_widget.setMinimumHeight(320)
 
         live_box = QGroupBox("Live Tools")
         live_layout = QVBoxLayout(live_box)
@@ -293,7 +293,7 @@ class TrackingTab(QWidget):
         )
 
         self.tools_table.setRowCount(len(live_state.tools))
-        plot_points: dict[str, tuple[float, float]] = {}
+        plot_points: dict[str, tuple[float, float, float]] = {}
         for row, tool_id in enumerate(sorted(live_state.tools)):
             tool = live_state.tools[tool_id]
             translation = (
@@ -309,9 +309,17 @@ class TrackingTab(QWidget):
             self.tools_table.setItem(row, 3, QTableWidgetItem(translation))
             self.tools_table.setItem(row, 4, QTableWidgetItem(str(tool["quality"])))
             if tool["translation_mm"] is not None:
-                plot_points[tool_id] = (float(tool["translation_mm"][0]), float(tool["translation_mm"][1]))
+                plot_points[tool_id] = (
+                    float(tool["translation_mm"][0]),
+                    float(tool["translation_mm"][1]),
+                    float(tool["translation_mm"][2]),
+                )
         if live_state.tip_position_mm:
-            plot_points["tip"] = (float(live_state.tip_position_mm[0]), float(live_state.tip_position_mm[1]))
+            plot_points["tip"] = (
+                float(live_state.tip_position_mm[0]),
+                float(live_state.tip_position_mm[1]),
+                float(live_state.tip_position_mm[2]),
+            )
         self.plot_widget.set_points(plot_points)
 
         self.tip_file_label.setText(workflow_state.pivot_tip_path or "none")
@@ -355,7 +363,7 @@ class TrackingTab(QWidget):
             details_lines.append(f"warnings={live_state.warning_messages}")
         if live_state.last_error:
             details_lines.append(f"last_error={live_state.last_error}")
-        self.details_text.setPlainText("\n".join(details_lines))
+        self._set_text_preserving_view(self.details_text, "\n".join(details_lines))
 
         self._set_combo_items(
             self.tracker_port_combo,
@@ -373,6 +381,23 @@ class TrackingTab(QWidget):
             or workflow_state.pivot_live_sample_count > 0
             or bool(workflow_state.pivot_run_path)
         )
+
+    @staticmethod
+    def _set_text_preserving_view(widget: QTextEdit, text: str) -> None:
+        new_text = str(text)
+        if widget.toPlainText() == new_text:
+            return
+        v_scroll = widget.verticalScrollBar()
+        h_scroll = widget.horizontalScrollBar()
+        old_v = v_scroll.value()
+        old_h = h_scroll.value()
+        was_at_bottom = old_v >= max(0, v_scroll.maximum() - 2)
+        widget.setPlainText(new_text)
+        if was_at_bottom:
+            v_scroll.setValue(v_scroll.maximum())
+        else:
+            v_scroll.setValue(min(old_v, v_scroll.maximum()))
+        h_scroll.setValue(min(old_h, h_scroll.maximum()))
 
     def _set_combo_items(self, combo: QComboBox, ports, selected: str) -> None:
         if combo.hasFocus():

@@ -247,6 +247,43 @@ def test_servos_controller_allows_raw_range_bench_motion_without_neutral_capture
     assert controller.state.selected_servo_safe_max_tick == 4095
 
 
+def test_servos_controller_capture_neutral_status_explains_metadata_scope(tmp_path: Path) -> None:
+    settings = _settings_4servo()
+    servo_service = _servo_service(tmp_path, context_servo_ids=[1, 2, 3, 4], robot_mode="4-servo")
+    servo_service.connect("/dev/mock-openrb", 57600)
+    controller = ServosController(servo_service, settings)
+
+    controller.capture_neutral_setpoints()
+
+    assert "Captured neutral metadata" in controller.state.status_message
+    assert "raw 0..4095 range" in controller.state.status_message
+    assert controller.state.neutral_setpoints
+
+
+def test_system_controller_syncs_servo_summary_from_servos_state(tmp_path: Path) -> None:
+    settings = _settings_4servo()
+    servo_service = _servo_service(tmp_path, context_servo_ids=[1, 2, 3, 4], robot_mode="4-servo")
+    servo_service.connect("/dev/ttyACM0", 57600)
+    servos_controller = ServosController(servo_service, settings)
+    system_controller = SystemController(
+        tracking_service=_TrackingStub(),
+        openrb_client=MockOpenRbClient(),
+        servo_service=servo_service,
+        settings=settings,
+    )
+
+    system_controller.sync_servo_bringup_state(servos_controller.state)
+
+    expected_motion_ready_count = sum(
+        1 for row in servos_controller.state.telemetry.values() if row.get("motion_ready")
+    )
+    assert system_controller.state.detected_servo_ids == [1, 2, 3, 4]
+    assert system_controller.state.telemetry_ready_count == 4
+    assert system_controller.state.motion_ready_count == expected_motion_ready_count
+    assert "Detected 4/4" in system_controller.state.readiness_message
+    assert f"Motion ready {expected_motion_ready_count}/4" in system_controller.state.readiness_message
+
+
 def test_servo_service_bench_snapshot_marks_ping_only_when_readback_fails(tmp_path: Path) -> None:
     service = _servo_service(tmp_path, dxl_bus=_ExplodingReadBus([1]))
     service.connect("/dev/mock-openrb", 57600)

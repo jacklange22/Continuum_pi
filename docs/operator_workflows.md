@@ -65,8 +65,8 @@ Applies now in `Tracking`.
 
 Success criteria:
 
-- raw capture CSV saved
-- review run bundle saved
+- raw capture CSV saved under `data/experiments/pivot/captures/`
+- review run bundle saved under `data/experiments/pivot/runs/`
 - staged tip file reviewed before acceptance
 - accepted tip vector file generated
 

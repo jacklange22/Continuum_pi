@@ -276,6 +276,7 @@ class TrackerMvpController:
                 "output_tip_file": str(tip_output),
             },
             operator_notes="tracker_mvp_gui_legacy_one_shot",
+            output_dir=self._pivot_run_output_root(),
         )
         if not result.success:
             self.refresh()
@@ -346,7 +347,6 @@ class TrackerMvpController:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         capture_dataset_path = self._write_pivot_capture_dataset(samples=samples, stamp=stamp)
         pending_tip_path = self.project_root / "data" / "tip_cals" / "staged" / f"{stamp}_generated_penprobe_tip.csv"
-        output_root = self.project_root / "runs"
         result = self.experiment_runner.run_experiment(
             "pivot_calibration",
             config={
@@ -358,7 +358,7 @@ class TrackerMvpController:
                 "output_tip_file": str(pending_tip_path),
             },
             operator_notes="tracker_mvp_gui_review",
-            output_dir=output_root,
+            output_dir=self._pivot_run_output_root(),
             output_dir_name=f"{stamp}_pivot_calibration_review",
         )
         if not result.success:
@@ -735,6 +735,18 @@ class TrackerMvpController:
         path = Path(raw)
         return path if path.is_absolute() else self.project_root / path
 
+    def _pivot_runtime_root(self) -> Path:
+        raw = str(self.settings.experiment.output_dir or "data/experiments")
+        path = Path(raw)
+        root = path if path.is_absolute() else self.project_root / path
+        return root / "pivot"
+
+    def _pivot_run_output_root(self) -> Path:
+        return self._pivot_runtime_root() / "runs"
+
+    def _pivot_capture_output_root(self) -> Path:
+        return self._pivot_runtime_root() / "captures"
+
     def _tool_is_visible(self, tool_id: str) -> bool:
         snapshot = self.tracking_service.get_snapshot()
         tool = snapshot.tools.get(tool_id)
@@ -1054,7 +1066,7 @@ class TrackerMvpController:
             return list(self._pivot_samples)
 
     def _write_pivot_capture_dataset(self, *, samples: list[PivotCollectionSample], stamp: str) -> Path:
-        output_dir = self.project_root / "data" / "pivot_captures"
+        output_dir = self._pivot_capture_output_root()
         output_dir.mkdir(parents=True, exist_ok=True)
         path = output_dir / f"{stamp}_pivot_0B_samples.csv"
         lines = ["tool_id,qw,qx,qy,qz,x,y,z"]

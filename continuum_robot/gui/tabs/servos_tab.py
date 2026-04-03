@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QAbstractItemView,
     QDoubleSpinBox,
     QFormLayout,
@@ -13,12 +14,12 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QPlainTextEdit,
     QScrollArea,
     QSpinBox,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -88,9 +89,14 @@ class ServosTab(QWidget):
                 background: #fee2e2;
                 border-color: #fecaca;
             }
+            QWidget#servoWorkspace QPushButton:checked {
+                background: #dcfce7;
+                border-color: #4ade80;
+                color: #166534;
+            }
             QWidget#servoWorkspace QSpinBox,
             QWidget#servoWorkspace QDoubleSpinBox,
-            QWidget#servoWorkspace QTextEdit,
+            QWidget#servoWorkspace QPlainTextEdit,
             QWidget#servoWorkspace QTableWidget {
                 border: 1px solid #dbe4ee;
                 border-radius: 10px;
@@ -104,7 +110,8 @@ class ServosTab(QWidget):
         self.title_label.setProperty("role", "title")
         self.workflow_hint = QLabel(
             "Use this workspace for servo bring-up only. Refresh readiness, verify the expected servos, "
-            "select one servo at a time, and jog it across the raw 0..4095 range."
+            "select one servo at a time, and jog it across the raw 0..4095 range. "
+            "Use the dedicated Pretension tab for startup calibration and feedback-based pretensioning."
         )
         self.workflow_hint.setProperty("role", "hint")
         self.workflow_hint.setWordWrap(True)
@@ -169,7 +176,7 @@ class ServosTab(QWidget):
         self.scan_button.clicked.connect(lambda: self._safe_call(self.controller.scan))
         self.refresh_readiness_button = QPushButton("Refresh Readiness")
         self.refresh_readiness_button.clicked.connect(lambda: self._safe_call(self.controller.refresh_readiness))
-        self.capture_neutral_button = QPushButton("Capture Neutral")
+        self.capture_neutral_button = QPushButton("Capture Neutral Metadata")
         self.capture_neutral_button.clicked.connect(lambda: self._safe_call(self.controller.capture_neutral_setpoints))
         self.load_neutral_button = QPushButton("Load Calibration")
         self.load_neutral_button.clicked.connect(lambda: self._safe_call(self.controller.load_neutral_setpoints))
@@ -233,19 +240,18 @@ class ServosTab(QWidget):
         self.apply_displacement_button.clicked.connect(self._apply_displacement)
 
         summary_box = QGroupBox("Bench Bring-Up Summary")
-        summary_layout = QFormLayout(summary_box)
-        summary_layout.setLabelAlignment(Qt.AlignLeft)
-        summary_layout.addRow("Connected", self.connection_label)
-        summary_layout.addRow("Mode", self.mode_label)
-        summary_layout.addRow("Expected servo IDs", self.expected_ids_label)
-        summary_layout.addRow("Detected servo IDs", self.detected_ids_label)
-        summary_layout.addRow("Missing expected", self.missing_ids_label)
-        summary_layout.addRow("Unexpected found", self.unexpected_ids_label)
-        summary_layout.addRow("Selected servo", self.selected_label)
-        summary_layout.addRow("Discovery", self.discovery_label)
-        summary_layout.addRow("Neutral metadata", self.neutral_label)
-        summary_layout.addRow("Current safety block", self.blocking_label)
-        summary_layout.addRow("Pretension", self.pretension_label)
+        self.summary_layout = QFormLayout(summary_box)
+        self.summary_layout.setLabelAlignment(Qt.AlignLeft)
+        self.summary_layout.addRow("Connected", self.connection_label)
+        self.summary_layout.addRow("Mode", self.mode_label)
+        self.summary_layout.addRow("Expected servo IDs", self.expected_ids_label)
+        self.summary_layout.addRow("Detected servo IDs", self.detected_ids_label)
+        self.summary_layout.addRow("Missing expected", self.missing_ids_label)
+        self.summary_layout.addRow("Unexpected found", self.unexpected_ids_label)
+        self.summary_layout.addRow("Discovery", self.discovery_label)
+        self.summary_layout.addRow("Neutral metadata", self.neutral_label)
+        self.summary_layout.addRow("Block reason", self.blocking_label)
+        self.summary_layout.addRow("Pretension", self.pretension_label)
 
         calibration_box = QGroupBox("Calibration State")
         calibration_layout = QVBoxLayout(calibration_box)
@@ -284,14 +290,14 @@ class ServosTab(QWidget):
         bringup_actions.addStretch(1)
         bringup_actions_layout.addLayout(bringup_actions)
 
-        jog_box = QGroupBox("Selected Servo Jog")
+        jog_box = QGroupBox("Servo Jog")
         jog_layout = QVBoxLayout(jog_box)
         selector_row = QHBoxLayout()
-        selector_row.addWidget(QLabel("Selected servo"))
+        selector_row.addWidget(QLabel("Servo"))
         selector_row.addWidget(self.selector_buttons_widget, 1)
         jog_layout.addLayout(selector_row)
         jog_form = QFormLayout()
-        jog_form.addRow("Selected", self.selected_servo_id_value_label)
+        jog_form.addRow("Servo ID", self.selected_servo_id_value_label)
         jog_form.addRow("Torque", self.selected_servo_torque_label)
         jog_form.addRow("Position (tick)", self.selected_servo_position_label)
         jog_form.addRow("Current draw (mA)", self.selected_servo_current_draw_label)
@@ -366,7 +372,7 @@ class ServosTab(QWidget):
                 "State",
                 "Torque",
                 "Position (tick)",
-                "Current (mA)",
+                "Current draw (mA)",
                 "Voltage (mV)",
                 "Temp (C)",
                 "HW Err",
@@ -403,12 +409,19 @@ class ServosTab(QWidget):
         workspace_splitter.setStretchFactor(1, 4)
         workspace_splitter.setSizes([460, 700])
 
-        self.status_text = QTextEdit()
+        self.status_text = QPlainTextEdit()
         self.status_text.setReadOnly(True)
+        self.status_text.setLineWrapMode(QPlainTextEdit.WidgetWidth)
         self.status_text.setMinimumHeight(82)
         self.status_text.setMaximumHeight(180)
-        status_box = QGroupBox("Operator Status")
+        self.copy_status_button = QPushButton("Copy Summary")
+        self.copy_status_button.clicked.connect(lambda: self._copy_text(self.status_text.toPlainText()))
+        status_box = QGroupBox("Operator Summary")
         status_layout = QVBoxLayout(status_box)
+        status_button_row = QHBoxLayout()
+        status_button_row.addStretch(1)
+        status_button_row.addWidget(self.copy_status_button)
+        status_layout.addLayout(status_button_row)
         status_layout.addWidget(self.status_text)
 
         content_widget = QWidget()
@@ -431,7 +444,11 @@ class ServosTab(QWidget):
         layout.addWidget(self.scroll_area, 1)
 
     def update(self, state: ServosViewState) -> None:
-        selected_servo_id = state.selected_servo_id or (state.servo_ids[0] if state.servo_ids else 1)
+        selected_servo_id = (
+            state.selected_servo_id
+            if state.selected_servo_id is not None
+            else (state.servo_ids[0] if state.servo_ids else None)
+        )
         selected_servo = state.telemetry.get(selected_servo_id, {})
 
         self.connection_label.setText("Connected" if state.connected else "Disconnected")
@@ -447,14 +464,13 @@ class ServosTab(QWidget):
         )
         self.expected_ids_label.setText(", ".join(str(sid) for sid in state.expected_servo_ids) or "none")
         self.detected_ids_label.setText(", ".join(str(sid) for sid in state.detected_servo_ids) or "none")
-        self.missing_ids_label.setText(", ".join(str(sid) for sid in state.missing_servo_ids) or "none")
-        self.unexpected_ids_label.setText(", ".join(str(sid) for sid in state.unexpected_servo_ids) or "none")
-        self.selected_label.setText(str(selected_servo_id) if selected_servo_id is not None else "none")
+        self.missing_ids_label.setText(", ".join(str(sid) for sid in state.missing_servo_ids))
+        self.unexpected_ids_label.setText(", ".join(str(sid) for sid in state.unexpected_servo_ids))
         self.discovery_label.setText(state.discovery_message)
         self.neutral_label.setText(
             ", ".join(f"{sid}:{tick}" for sid, tick in sorted(state.neutral_setpoints.items())) or "not saved"
         )
-        self.blocking_label.setText(" | ".join(state.blocking_reasons) if state.blocking_reasons else "none")
+        self.blocking_label.setText(state.blocking_reasons[0] if state.blocking_reasons else "")
         self.pretension_label.setText(state.pretension_message)
         self.calibration_status_label.setText(
             "Ready"
@@ -510,12 +526,19 @@ class ServosTab(QWidget):
         self.selected_servo_ready_label.setText("Yes" if state.selected_servo_motion_ready else "No")
         self._rebuild_servo_selector(state.servo_ids or state.expected_servo_ids, selected_servo_id)
 
-        has_neutral = bool(state.neutral_setpoints)
         any_servo = bool(state.servo_ids)
         show_single_servo_advanced = state.single_servo_mode
         motion_allowed = state.connected and any_servo and state.selected_servo_motion_ready
-        self.startup_box.setVisible(show_single_servo_advanced)
-        self.pretension_box.setVisible(show_single_servo_advanced)
+        self._set_form_row_visible(self.summary_layout, self.missing_ids_label, bool(state.missing_servo_ids))
+        self._set_form_row_visible(self.summary_layout, self.unexpected_ids_label, bool(state.unexpected_servo_ids))
+        self._set_form_row_visible(self.summary_layout, self.blocking_label, bool(state.blocking_reasons))
+        self._set_form_row_visible(
+            self.summary_layout,
+            self.pretension_label,
+            False,
+        )
+        self.startup_box.setVisible(False)
+        self.pretension_box.setVisible(False)
         self.displacement_box.setVisible(False)
         self.scan_button.setEnabled(state.connected)
         self.refresh_readiness_button.setEnabled(state.connected)
@@ -532,9 +555,10 @@ class ServosTab(QWidget):
         self.accept_pretension_button.setEnabled(show_single_servo_advanced and state.pretension_result_can_accept)
         self.apply_displacement_button.setEnabled(False)
 
-        self._set_servo_spin_value(self.jog_servo_spin, selected_servo_id)
-        self._set_servo_spin_value(self.calibration_servo_spin, selected_servo_id)
-        self._set_servo_spin_value(self.pretension_servo_spin, selected_servo_id)
+        selected_spin_value = selected_servo_id if selected_servo_id is not None else 1
+        self._set_servo_spin_value(self.jog_servo_spin, selected_spin_value)
+        self._set_servo_spin_value(self.calibration_servo_spin, selected_spin_value)
+        self._set_servo_spin_value(self.pretension_servo_spin, selected_spin_value)
         max_servo_id = max([252, *state.servo_ids]) if state.servo_ids else 252
         for spin in (self.jog_servo_spin, self.calibration_servo_spin, self.pretension_servo_spin):
             spin.setMaximum(max_servo_id)
@@ -581,12 +605,20 @@ class ServosTab(QWidget):
         else:
             self.telemetry_table.clearSelection()
 
-        lines = [state.status_message]
+        operator_lines = [
+            f"Servo: {selected_servo_id if selected_servo_id is not None else 'none'}",
+            f"Motion ready: {'Yes' if state.selected_servo_motion_ready else 'No'}",
+            f"Torque: {self.selected_servo_torque_label.text()}",
+            f"Telemetry: {self.selected_servo_telemetry_label.text()} | age {self.selected_servo_age_label.text()} | fresh {self.selected_servo_fresh_label.text()}",
+            f"Position: {self.selected_servo_position_label.text()} | Target: {self.selected_servo_target_label.text()}",
+            f"Range: {self.selected_servo_bounds_label.text()}",
+            f"Last action: {self.selected_servo_action_label.text()} | Result: {self.selected_servo_result_label.text()}",
+        ]
+        if state.selected_servo_reason_label and state.selected_servo_reason_label != "none":
+            operator_lines.append(f"Reason: {state.selected_servo_reason_label}")
         if state.last_error:
-            lines.append(f"Error: {state.last_error}")
-        if state.bench_debug_text:
-            lines.extend(["", state.bench_debug_text])
-        self.status_text.setPlainText("\n".join(lines))
+            operator_lines.append(f"Error: {state.last_error}")
+        self._set_plain_text_preserving_view(self.status_text, "\n".join(operator_lines))
 
     def _rebuild_displacement_inputs(self, count: int) -> None:
         while self.displacement_layout.count():
@@ -705,6 +737,34 @@ class ServosTab(QWidget):
             if not getattr(self.controller.state, "status_message", ""):
                 self.controller.state.status_message = str(exc)
         self.update(self.controller.state)
+
+    @staticmethod
+    def _copy_text(text: str) -> None:
+        QApplication.clipboard().setText(str(text))
+
+    @staticmethod
+    def _set_plain_text_preserving_view(widget: QPlainTextEdit, text: str) -> None:
+        new_text = str(text)
+        if widget.toPlainText() == new_text:
+            return
+        v_scroll = widget.verticalScrollBar()
+        h_scroll = widget.horizontalScrollBar()
+        old_v = v_scroll.value()
+        old_h = h_scroll.value()
+        was_at_bottom = old_v >= max(0, v_scroll.maximum() - 2)
+        widget.setPlainText(new_text)
+        if was_at_bottom:
+            v_scroll.setValue(v_scroll.maximum())
+        else:
+            v_scroll.setValue(min(old_v, v_scroll.maximum()))
+        h_scroll.setValue(min(old_h, h_scroll.maximum()))
+
+    @staticmethod
+    def _set_form_row_visible(form: QFormLayout, field: QWidget, visible: bool) -> None:
+        label = form.labelForField(field)
+        if label is not None:
+            label.setVisible(bool(visible))
+        field.setVisible(bool(visible))
 
     @staticmethod
     def _display_value(value) -> str:

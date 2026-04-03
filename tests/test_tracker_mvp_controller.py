@@ -88,7 +88,7 @@ def _settings(project_root: Path, *, penprobe_file: str) -> Settings:
         experiment=ExperimentConfig(
             default_settle_time_s=0.0,
             sample_count_per_point=1,
-            output_dir=str(project_root / "runs"),
+            output_dir=str(project_root / "data" / "experiments"),
         ),
         calibration=CalibrationConfig(
             neutral_setpoints_path=str(project_root / "neutral.json"),
@@ -184,7 +184,7 @@ def _build_runtime(tmp_path: Path, *, penprobe_file: str) -> tuple[TrackerMvpCon
         settings=settings,
         tracking_service=tracking_service,
         servo_service=_servo_service(tmp_path),
-        output_dir=tmp_path / "runs",
+        output_dir=tmp_path / "data" / "experiments",
         registration_path=tmp_path / "latest_registration.json",
         default_settle_time_s=0.0,
         sleep_fn=lambda _seconds: None,
@@ -327,10 +327,11 @@ def test_tracker_mvp_pivot_run_updates_tip_geometry_and_status(
     controller.validate_tracker()
 
     tip_path = tmp_path / "data" / "tip_cals" / "generated_penprobe_tip.csv"
-    run_path = tmp_path / "runs" / "pivot_run"
+    run_path = tmp_path / "data" / "experiments" / "pivot" / "runs" / "pivot_run"
     run_path.mkdir(parents=True, exist_ok=True)
 
     def _fake_run_experiment(*args, **kwargs):
+        assert kwargs["output_dir"] == tmp_path / "data" / "experiments" / "pivot" / "runs"
         tip_path.parent.mkdir(parents=True, exist_ok=True)
         tip_path.write_text("+1.0000,+2.0000,+3.0000", encoding="utf-8")
         return SimpleNamespace(
@@ -384,9 +385,13 @@ def test_tracker_mvp_guided_pivot_collection_requires_accept_before_registration
     assert collecting_state.pivot_live_sample_count >= 2
 
     controller.stop_pivot_collection()
-    run_path = tmp_path / "runs" / "pivot_review"
+    run_path = tmp_path / "data" / "experiments" / "pivot" / "runs" / "pivot_review"
 
     def _fake_run_experiment(*args, **kwargs):
+        assert kwargs["output_dir"] == tmp_path / "data" / "experiments" / "pivot" / "runs"
+        assert str(kwargs["config"]["input_path"]).startswith(
+            str(tmp_path / "data" / "experiments" / "pivot" / "captures")
+        )
         pending_tip_path = Path(kwargs["config"]["output_tip_file"])
         pending_tip_path.parent.mkdir(parents=True, exist_ok=True)
         pending_tip_path.write_text("+4.0000,+5.0000,+6.0000", encoding="utf-8")
@@ -443,9 +448,13 @@ def test_tracker_mvp_pivot_parse_failure_preserves_parse_report_for_operator_rev
     time.sleep(0.08)
     controller.stop_pivot_collection()
 
-    failed_run_path = tmp_path / "runs" / "pivot_failed"
+    failed_run_path = tmp_path / "data" / "experiments" / "pivot" / "runs" / "pivot_failed"
 
     def _fake_failed_run(*args, **kwargs):
+        assert kwargs["output_dir"] == tmp_path / "data" / "experiments" / "pivot" / "runs"
+        assert str(kwargs["config"]["input_path"]).startswith(
+            str(tmp_path / "data" / "experiments" / "pivot" / "captures")
+        )
         failed_run_path.mkdir(parents=True, exist_ok=True)
         return SimpleNamespace(
             success=False,

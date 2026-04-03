@@ -101,9 +101,12 @@ Runtime config:
 
 Persistent runtime artifacts:
 
-- `data/calibrations/`
-- `data/registrations/`
-- `data/experiments/`
+- `data/calibrations/` for durable servo calibration state
+- `data/tip_cals/` for durable accepted and staged tip-calibration artifacts
+- `data/registrations/` for durable accepted/latest registration artifacts
+- `data/tracker_captures/` for raw tracker packet captures
+- `data/tracker_validations/` for saved tracker validation reports
+- `data/experiments/` for canonical experiment datasets, including pivot runtime bundles under `data/experiments/pivot/`
 - `data/logs/`
 
 Current architectural rule:

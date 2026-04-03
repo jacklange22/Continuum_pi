@@ -7,12 +7,14 @@ from PySide6.QtWidgets import QMainWindow, QTabWidget
 
 from continuum_robot.app.bootstrap import AppContext, build_app_context
 from continuum_robot.gui.controllers.experiment_controller import ExperimentController
+from continuum_robot.gui.controllers.pretension_controller import PretensionController
 from continuum_robot.gui.controllers.registration_controller import RegistrationController
 from continuum_robot.gui.controllers.servos_controller import ServosController
 from continuum_robot.gui.controllers.system_controller import SystemController
 from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpController
 from continuum_robot.gui.controllers.tracking_controller import TrackingController
 from continuum_robot.gui.tabs.experiment_tab import ExperimentTab
+from continuum_robot.gui.tabs.pretension_tab import PretensionTab
 from continuum_robot.gui.tabs.registration_tab import RegistrationTab
 from continuum_robot.gui.tabs.servos_tab import ServosTab
 from continuum_robot.gui.tabs.system_tab import SystemTab
@@ -23,7 +25,7 @@ class AppWindow(QMainWindow):
     """Main operator window with all platform tabs."""
 
     MIN_REFRESH_INTERVAL_MS = 50
-    SERVO_FULL_REFRESH_DIVISOR = 2
+    SERVO_FULL_REFRESH_DIVISOR = 4
 
     def __init__(self, context: AppContext) -> None:
         super().__init__()
@@ -56,26 +58,35 @@ class AppWindow(QMainWindow):
             return
         if current_widget is self.system_tab:
             if self.system_controller.state.dynamixel_connected:
-                self.servos_controller.refresh_selected_servo()
+                servo_state = self._refresh_servo_state()
+                system_state = self.system_controller.sync_servo_bringup_state(servo_state)
             self.system_tab.update(system_state)
         elif current_widget is self.servos_tab:
-            if self._servo_full_refresh_due or self.servos_controller.state.single_servo_mode:
-                servo_state = self.servos_controller.refresh()
-                self._servo_full_refresh_due = False
-                self._servo_refresh_cycle = 0
-            else:
-                self._servo_refresh_cycle = (self._servo_refresh_cycle + 1) % self.SERVO_FULL_REFRESH_DIVISOR
-                if self._servo_refresh_cycle == 0:
-                    servo_state = self.servos_controller.refresh()
-                else:
-                    servo_state = self.servos_controller.refresh_selected_servo()
+            servo_state = self._refresh_servo_state()
+            self.system_controller.sync_servo_bringup_state(servo_state)
             self.servos_tab.update(servo_state)
+        elif current_widget is self.pretension_tab:
+            pretension_state = self.pretension_controller.refresh()
+            self.pretension_tab.update(pretension_state)
+            self.statusBar().showMessage(pretension_state.status_message)
+            return
         elif current_widget is self.experiment_tab:
             self.experiment_tab.update(self.experiment_controller.refresh_prerequisites())
         self.statusBar().showMessage(system_state.status_message)
 
+    def _refresh_servo_state(self):
+        if self._servo_full_refresh_due or self.servos_controller.state.single_servo_mode:
+            servo_state = self.servos_controller.refresh()
+            self._servo_full_refresh_due = False
+            self._servo_refresh_cycle = 0
+            return servo_state
+        self._servo_refresh_cycle = (self._servo_refresh_cycle + 1) % self.SERVO_FULL_REFRESH_DIVISOR
+        if self._servo_refresh_cycle == 0:
+            return self.servos_controller.refresh()
+        return self.servos_controller.refresh_selected_servo()
+
     def _handle_tab_changed(self, _index: int) -> None:
-        if self.tab_widget.currentWidget() in {self.system_tab, self.servos_tab}:
+        if self.tab_widget.currentWidget() in {self.system_tab, self.servos_tab, self.pretension_tab}:
             self._servo_full_refresh_due = True
         self.refresh()
 
@@ -101,6 +112,7 @@ class AppWindow(QMainWindow):
             config_loader=context.config_loader,
         )
         self.servos_controller = ServosController(servo_service=servo_service, settings=settings)
+        self.pretension_controller = PretensionController(servo_service=servo_service, settings=settings)
         self.tracking_controller = TrackingController(
             tracking_service=tracking_service,
             settings=settings,
@@ -138,12 +150,14 @@ class AppWindow(QMainWindow):
             workflow_controller=self.tracker_mvp_controller,
         )
         self.servos_tab = ServosTab(self.servos_controller)
+        self.pretension_tab = PretensionTab(self.pretension_controller)
         self.experiment_tab = ExperimentTab(self.experiment_controller)
         for widget, label in (
             (self.system_tab, "System"),
             (self.tracking_tab, "Tracking"),
             (self.registration_tab, "Registration"),
             (self.servos_tab, "Servos"),
+            (self.pretension_tab, "Pretension"),
             (self.experiment_tab, "Experiment"),
         ):
             new_tab_widget.addTab(widget, label)
@@ -189,7 +203,7 @@ class AppWindow(QMainWindow):
         self.refresh()
 
     def _shutdown_workspace(self) -> None:
-        for attribute in ("servos_controller", "experiment_controller", "tracking_controller"):
+        for attribute in ("servos_controller", "pretension_controller", "experiment_controller", "tracking_controller"):
             controller = getattr(self, attribute, None)
             if controller is None:
                 continue

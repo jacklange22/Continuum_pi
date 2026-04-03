@@ -362,8 +362,8 @@ def test_system_and_servo_controllers_use_hardware_seams(tmp_path: Path) -> None
     assert servos_controller.state.servo_ids == [1, 5]
 
     servos_controller.coarse_jog(1, 1)
-    assert servos_controller.state.telemetry[1]["position"] == 2073
-    assert "Jogged servo 1" in servos_controller.state.status_message
+    assert servos_controller.state.telemetry[1]["position"] == 2023
+    assert "Sent tighten_coarse for servo 1" in servos_controller.state.status_message
 
 
 def test_build_app_context_uses_absolute_registration_path() -> None:

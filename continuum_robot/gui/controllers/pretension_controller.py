@@ -1,0 +1,559 @@
+"""Dedicated single-servo pretension controller."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import threading
+import time
+
+from continuum_robot.servos.servo_service import (
+    PretensionBaselineMeasurement,
+    PretensionParameters,
+    PretensionRoutineResult,
+    ServoJogResult,
+    ServoMotionAssessment,
+)
+
+
+@dataclass
+class PretensionViewState:
+    """UI-facing state for the dedicated pretension workspace."""
+
+    connected: bool = False
+    robot_mode: str = ""
+    expected_servo_ids: list[int] = field(default_factory=list)
+    selected_servo_id: int | None = None
+    servo_rows: list[dict] = field(default_factory=list)
+    telemetry_freshness_threshold_s: float = 0.25
+    selected_servo_torque_enabled: bool | None = None
+    selected_servo_motion_ready: bool = False
+    selected_servo_pretension_ready: bool = False
+    selected_servo_position_tick: int | None = None
+    selected_servo_current_ma: int | None = None
+    selected_servo_filtered_current_ma: float | None = None
+    selected_servo_voltage_mv: int | None = None
+    selected_servo_temperature_c: int | None = None
+    selected_servo_hardware_error_text: str = "—"
+    selected_servo_telemetry_age_s: float | None = None
+    selected_servo_telemetry_fresh: bool | None = None
+    selected_servo_safe_min_tick: int | None = None
+    selected_servo_safe_max_tick: int | None = None
+    selected_servo_tightening_rotation: str | None = None
+    selected_servo_direction_summary: str = "tighten lowers counts"
+    selected_servo_block_reason: str = "Select a servo to begin."
+    selected_servo_saved_summary: str = "No pretension result saved yet."
+    calibration_path: str = ""
+    default_untensioned_reference_tick: int = 4095
+    default_step_ticks: int = 2
+    default_settle_time_s: float = 0.05
+    default_baseline_sample_count: int = 5
+    default_filter_window: int = 3
+    default_current_delta_threshold_ma: int = 60
+    default_absolute_trigger_current_ma: int | None = 220
+    default_hard_current_stop_ma: int = 850
+    default_max_travel_ticks: int = 320
+    default_timeout_s: float = 10.0
+    default_min_offset_ticks: int = -600
+    default_max_offset_ticks: int = 600
+    baseline_current_ma: float | None = None
+    baseline_filtered_current_ma: float | None = None
+    baseline_samples_label: str = "Not measured."
+    run_state: str = "idle"
+    run_state_label: str = "Idle"
+    run_state_message: str = "Pretension not started."
+    pretension_running: bool = False
+    can_measure_baseline: bool = False
+    can_move_to_reference: bool = False
+    can_start: bool = False
+    can_stop: bool = False
+    can_save: bool = False
+    start_position_tick: int | None = None
+    last_commanded_target_tick: int | None = None
+    steps_taken: int = 0
+    elapsed_s: float = 0.0
+    final_position_tick: int | None = None
+    stop_reason: str = ""
+    last_result_status: str = "none"
+    last_error: str | None = None
+    status_message: str = "Ready."
+    log_text: str = "Pretension workspace idle."
+
+
+class PretensionController:
+    """Owns the dedicated selected-servo pretension operator workflow."""
+
+    def __init__(self, *, servo_service, settings) -> None:
+        self.servo_service = servo_service
+        self.settings = settings
+        default_servo_id = settings.robot.servo_ids[0] if settings.robot.servo_ids else None
+        self.state = PretensionViewState(
+            connected=servo_service.is_connected,
+            robot_mode=settings.robot.mode,
+            expected_servo_ids=list(settings.robot.servo_ids),
+            selected_servo_id=int(default_servo_id) if default_servo_id is not None else None,
+            telemetry_freshness_threshold_s=servo_service.telemetry_freshness_threshold_s(),
+            calibration_path=str(servo_service.neutral_calibration.path),
+            default_untensioned_reference_tick=int(settings.safety.pretension_untensioned_reference_tick),
+            default_step_ticks=int(settings.safety.pretension_step_ticks),
+            default_settle_time_s=float(settings.safety.pretension_settle_time_s),
+            default_baseline_sample_count=int(settings.safety.pretension_baseline_sample_count),
+            default_filter_window=int(settings.safety.pretension_current_filter_window),
+            default_current_delta_threshold_ma=int(settings.safety.pretension_current_delta_threshold_ma),
+            default_absolute_trigger_current_ma=settings.safety.pretension_absolute_trigger_current_ma,
+            default_hard_current_stop_ma=int(settings.safety.max_current_ma),
+            default_max_travel_ticks=int(settings.safety.pretension_max_travel_ticks),
+            default_timeout_s=float(settings.safety.pretension_timeout_s),
+            default_min_offset_ticks=int(settings.safety.position_min_offset_ticks),
+            default_max_offset_ticks=int(settings.safety.position_max_offset_ticks),
+            status_message="Select one servo and verify live readiness before pretensioning.",
+            log_text="Pretension workspace ready.\nUse this tab to pretension one selected servo while the full bus stays connected.",
+        )
+        self._pretension_thread: threading.Thread | None = None
+        self._pretension_stop = threading.Event()
+        self._last_result: PretensionRoutineResult | None = None
+        self._selection_changed = True
+        self.refresh()
+
+    def refresh(self) -> PretensionViewState:
+        self.state.connected = self.servo_service.is_connected
+        self.state.robot_mode = self.settings.robot.mode
+        self.state.expected_servo_ids = list(self.settings.robot.servo_ids)
+        self.state.telemetry_freshness_threshold_s = self.servo_service.telemetry_freshness_threshold_s()
+        if self.state.selected_servo_id not in self.state.expected_servo_ids and self.state.expected_servo_ids:
+            self.state.selected_servo_id = int(self.state.expected_servo_ids[0])
+            self._selection_changed = True
+        if not self.state.connected:
+            self.state.servo_rows = [
+                {
+                    "servo_id": int(servo_id),
+                    "selected": int(servo_id) == int(self.state.selected_servo_id or -1),
+                    "position": None,
+                    "current_ma": None,
+                    "pretension_ready": False,
+                    "status": "Disconnected",
+                }
+                for servo_id in self.state.expected_servo_ids
+            ]
+            self._sync_selected_from_disconnected_state()
+            return self.state
+
+        try:
+            telemetry_by_id = self.servo_service.read_telemetry(list(self.state.expected_servo_ids))
+        except Exception as exc:
+            self.state.last_error = str(exc)
+            self.state.status_message = f"Pretension telemetry refresh failed: {exc}"
+            self.state.servo_rows = [
+                {
+                    "servo_id": int(servo_id),
+                    "selected": int(servo_id) == int(self.state.selected_servo_id or -1),
+                    "position": None,
+                    "current_ma": None,
+                    "pretension_ready": False,
+                    "status": "Telemetry failed",
+                }
+                for servo_id in self.state.expected_servo_ids
+            ]
+            self._sync_selected_from_disconnected_state()
+            return self.state
+        self.state.servo_rows = []
+        selected_motion: ServoMotionAssessment | None = None
+        selected_pretension: ServoMotionAssessment | None = None
+        selected_telemetry = None
+        for servo_id in self.state.expected_servo_ids:
+            telemetry = telemetry_by_id.get(int(servo_id))
+            if telemetry is None:
+                continue
+            motion = self.servo_service.assess_motion(
+                int(servo_id),
+                require_calibrated_bounds=False,
+                telemetry=telemetry,
+            )
+            pretension = self.servo_service.assess_pretension_readiness(
+                int(servo_id),
+                telemetry=telemetry,
+            )
+            if int(servo_id) == int(self.state.selected_servo_id or -1):
+                selected_motion = motion
+                selected_pretension = pretension
+                selected_telemetry = telemetry
+            self.state.servo_rows.append(
+                {
+                    "servo_id": int(servo_id),
+                    "selected": int(servo_id) == int(self.state.selected_servo_id or -1),
+                    "position": telemetry.present_position,
+                    "current_ma": telemetry.present_current_ma,
+                    "pretension_ready": bool(pretension.ready),
+                    "status": "Ready" if pretension.ready else self._first_reason(pretension.blocking_reasons),
+                }
+            )
+
+        self._sync_selected_servo_details(selected_telemetry, selected_motion, selected_pretension)
+        return self.state
+
+    def set_selected_servo(self, servo_id: int) -> PretensionViewState:
+        if self.state.selected_servo_id != int(servo_id):
+            self._last_result = None
+            self.state.can_save = False
+            self.state.run_state = "idle"
+            self.state.run_state_label = "Idle"
+            self.state.run_state_message = "Pretension not started."
+            self.state.start_position_tick = None
+            self.state.last_commanded_target_tick = None
+            self.state.steps_taken = 0
+            self.state.elapsed_s = 0.0
+            self.state.final_position_tick = None
+            self.state.stop_reason = ""
+        self.state.selected_servo_id = int(servo_id)
+        self._selection_changed = True
+        return self.refresh()
+
+    def refresh_selected_servo(self) -> PretensionViewState:
+        return self.refresh()
+
+    def measure_baseline(
+        self,
+        *,
+        sample_count: int,
+        filter_window: int,
+    ) -> PretensionBaselineMeasurement:
+        servo_id = self._require_selected_servo_id()
+        baseline = self.servo_service.measure_pretension_baseline(
+            servo_id=int(servo_id),
+            sample_count=int(sample_count),
+            filter_window=int(filter_window),
+        )
+        self.state.baseline_current_ma = float(baseline.baseline_current_ma)
+        self.state.baseline_filtered_current_ma = float(baseline.filtered_current_ma)
+        self.state.baseline_samples_label = (
+            f"{baseline.sample_count} sample(s): mean {baseline.baseline_current_ma:.1f} mA, "
+            f"filtered {baseline.filtered_current_ma:.1f} mA."
+        )
+        self.state.status_message = baseline.message
+        self.state.run_state = "ready"
+        self.state.run_state_label = "Ready"
+        self.state.run_state_message = baseline.message
+        self.state.last_error = None
+        self._append_log(
+            f"Baseline refreshed for servo {servo_id}: {baseline.sample_count} samples, "
+            f"mean {baseline.baseline_current_ma:.1f} mA, filtered {baseline.filtered_current_ma:.1f} mA."
+        )
+        self.refresh()
+        return baseline
+
+    def move_to_untensioned_reference(self, *, reference_tick: int) -> ServoJogResult:
+        servo_id = self._require_selected_servo_id()
+        result = self.servo_service.move_servo_to_raw_target(
+            servo_id=int(servo_id),
+            target_tick=int(reference_tick),
+            reason="pretension untensioned reference",
+        )
+        self.state.status_message = result.message
+        self.state.last_error = None if result.success else result.message
+        self._append_log(result.message)
+        self.refresh()
+        if result.blocked:
+            raise RuntimeError(result.message)
+        return result
+
+    def save_startup_calibration(
+        self,
+        *,
+        min_offset_ticks: int,
+        max_offset_ticks: int,
+        threshold_ma: int,
+    ):
+        servo_id = self._require_selected_servo_id()
+        entry = self.servo_service.save_startup_calibration(
+            servo_id=int(servo_id),
+            min_offset_ticks=int(min_offset_ticks),
+            max_offset_ticks=int(max_offset_ticks),
+            pretension_current_threshold_ma=int(threshold_ma),
+        )
+        self.state.status_message = (
+            f"Saved startup calibration for servo {servo_id}: neutral {entry.neutral_setpoint}, "
+            f"bounds {entry.safe_min_tick}..{entry.safe_max_tick}, threshold {entry.pretension_current_threshold_ma} mA."
+        )
+        self.state.last_error = None
+        self._append_log(self.state.status_message)
+        self.refresh()
+        return entry
+
+    def start_pretension(self, *, parameters: PretensionParameters) -> None:
+        servo_id = self._require_selected_servo_id()
+        if self._pretension_thread is not None and self._pretension_thread.is_alive():
+            raise RuntimeError("Pretension is already running.")
+        self.refresh()
+        if not self.state.selected_servo_pretension_ready:
+            self.state.run_state = "blocked"
+            self.state.run_state_label = "Blocked"
+            self.state.run_state_message = self.state.selected_servo_block_reason
+            self.state.status_message = self.state.run_state_message
+            self.state.last_error = self.state.run_state_message
+            self._append_log(f"Pretension blocked for servo {servo_id}: {self.state.run_state_message}")
+            return
+        self._pretension_stop.clear()
+        self._last_result = None
+        self.state.pretension_running = True
+        self.state.can_save = False
+        self.state.run_state = "running"
+        self.state.run_state_label = "Running"
+        self.state.run_state_message = f"Pretension running for servo {servo_id}."
+        self.state.status_message = self.state.run_state_message
+        self.state.last_error = None
+        self.state.start_position_tick = self.state.selected_servo_position_tick
+        self.state.steps_taken = 0
+        self.state.elapsed_s = 0.0
+        self.state.final_position_tick = None
+        self.state.stop_reason = ""
+        self._append_log(f"Starting pretension for servo {servo_id}.")
+
+        def _progress(result: PretensionRoutineResult) -> None:
+            self.state.start_position_tick = result.start_position_tick
+            self.state.last_commanded_target_tick = result.last_commanded_target_tick
+            self.state.steps_taken = result.steps_taken
+            self.state.elapsed_s = result.elapsed_s
+            self.state.baseline_current_ma = result.baseline_current_ma
+            self.state.baseline_filtered_current_ma = result.filtered_current_ma
+            self.state.selected_servo_filtered_current_ma = result.filtered_current_ma
+            self.state.run_state = str(result.status)
+            self.state.run_state_label = self._format_run_state(result.status)
+            self.state.run_state_message = result.message
+            self.state.status_message = result.message
+            self.state.final_position_tick = result.final_position_tick
+            self.state.stop_reason = str(result.stop_reason or "")
+            if result.status in {"running", "baseline_ready"}:
+                return
+            self._append_log(
+                f"Pretension {result.status} for servo {result.servo_id}: "
+                f"final position {result.final_position_tick}, filtered current "
+                f"{result.filtered_current_ma if result.filtered_current_ma is not None else '—'} mA, "
+                f"reason {result.stop_reason or result.status}."
+            )
+
+        def _worker() -> None:
+            try:
+                result = self.servo_service.run_pretension_routine(
+                    servo_id=int(servo_id),
+                    parameters=parameters,
+                    stop_requested=self._pretension_stop.is_set,
+                    progress_callback=_progress,
+                )
+                self._last_result = result
+                self.state.run_state = str(result.status)
+                self.state.run_state_label = self._format_run_state(result.status)
+                self.state.run_state_message = result.message
+                self.state.status_message = result.message
+                self.state.last_error = None if result.success else result.message
+                self.state.final_position_tick = result.final_position_tick
+                self.state.last_result_status = result.status
+                self.state.stop_reason = str(result.stop_reason or result.status)
+                self.state.can_save = bool(result.success)
+            except Exception as exc:
+                self.state.run_state = "fault"
+                self.state.run_state_label = "Fault"
+                self.state.run_state_message = f"Pretension failed: {exc}"
+                self.state.status_message = self.state.run_state_message
+                self.state.last_error = str(exc)
+                self.state.can_save = False
+                self._append_log(self.state.run_state_message)
+            finally:
+                self.state.pretension_running = False
+                self.refresh()
+
+        self._pretension_thread = threading.Thread(
+            target=_worker,
+            name="selected-servo-pretension",
+            daemon=True,
+        )
+        self._pretension_thread.start()
+
+    def stop_pretension(self) -> None:
+        if self._pretension_thread is None or not self._pretension_thread.is_alive():
+            self.state.status_message = "Pretension is not running."
+            return
+        self._pretension_stop.set()
+        self.state.status_message = "Pretension stop requested."
+        self.state.run_state_message = self.state.status_message
+        self._append_log("Pretension stop requested.")
+
+    def save_pretension_result(self) -> None:
+        servo_id = self._require_selected_servo_id()
+        if not self.state.can_save:
+            raise RuntimeError("No successful pretension result is ready to save.")
+        self.servo_service.accept_pretension_result(int(servo_id))
+        self.state.can_save = False
+        self.state.status_message = f"Saved accepted pretension result for servo {servo_id}."
+        self.state.run_state = "saved"
+        self.state.run_state_label = "Saved"
+        self.state.run_state_message = self.state.status_message
+        self.state.last_error = None
+        self._append_log(self.state.status_message)
+        self.refresh()
+
+    def shutdown(self) -> None:
+        self.stop_pretension()
+        if self._pretension_thread is not None:
+            self._pretension_thread.join(timeout=0.2)
+
+    def _sync_selected_from_disconnected_state(self) -> None:
+        self.state.selected_servo_torque_enabled = None
+        self.state.selected_servo_motion_ready = False
+        self.state.selected_servo_pretension_ready = False
+        self.state.selected_servo_position_tick = None
+        self.state.selected_servo_current_ma = None
+        self.state.selected_servo_filtered_current_ma = None
+        self.state.selected_servo_voltage_mv = None
+        self.state.selected_servo_temperature_c = None
+        self.state.selected_servo_hardware_error_text = "Disconnected"
+        self.state.selected_servo_telemetry_age_s = None
+        self.state.selected_servo_telemetry_fresh = None
+        self.state.selected_servo_safe_min_tick = None
+        self.state.selected_servo_safe_max_tick = None
+        self.state.selected_servo_block_reason = "OpenRB / DYNAMIXEL bus is disconnected."
+        self.state.selected_servo_saved_summary = self._saved_summary_for_selected_servo()
+        self.state.can_measure_baseline = False
+        self.state.can_move_to_reference = False
+        self.state.can_start = False
+        self.state.can_stop = bool(self.state.pretension_running)
+        self.state.can_save = False
+        if not self.state.pretension_running:
+            self.state.status_message = "Connect OpenRB and refresh servo telemetry before pretensioning."
+
+    def _sync_selected_servo_details(
+        self,
+        telemetry,
+        motion_assessment: ServoMotionAssessment | None,
+        pretension_assessment: ServoMotionAssessment | None,
+    ) -> None:
+        self.state.selected_servo_saved_summary = self._saved_summary_for_selected_servo()
+        if telemetry is None or self.state.selected_servo_id is None:
+            self._sync_selected_from_disconnected_state()
+            return
+        self.state.selected_servo_torque_enabled = telemetry.torque_enabled
+        self.state.selected_servo_motion_ready = bool(motion_assessment.ready if motion_assessment else False)
+        self.state.selected_servo_pretension_ready = bool(
+            pretension_assessment.ready if pretension_assessment else False
+        )
+        self.state.selected_servo_position_tick = telemetry.present_position
+        self.state.selected_servo_current_ma = telemetry.present_current_ma
+        if not self.state.pretension_running:
+            if self._last_result is not None and self._last_result.filtered_current_ma is not None:
+                self.state.selected_servo_filtered_current_ma = float(self._last_result.filtered_current_ma)
+            else:
+                self.state.selected_servo_filtered_current_ma = (
+                    self.state.baseline_filtered_current_ma
+                    if self.state.baseline_filtered_current_ma is not None
+                    else (float(telemetry.present_current_ma) if telemetry.present_current_ma is not None else None)
+                )
+        self.state.selected_servo_voltage_mv = telemetry.present_voltage_mv
+        self.state.selected_servo_temperature_c = telemetry.present_temperature_c
+        self.state.selected_servo_hardware_error_text = self._hardware_error_text(
+            telemetry.hardware_error_code,
+            telemetry.hardware_error,
+        )
+        self.state.selected_servo_telemetry_age_s = self.servo_service.telemetry_age_s(telemetry)
+        self.state.selected_servo_telemetry_fresh = self.servo_service.telemetry_is_fresh(telemetry)
+        self.state.selected_servo_safe_min_tick = (
+            pretension_assessment.safe_min_tick if pretension_assessment is not None else None
+        )
+        self.state.selected_servo_safe_max_tick = (
+            pretension_assessment.safe_max_tick if pretension_assessment is not None else None
+        )
+        tightening_rotation = self.servo_service.get_tightening_direction(int(self.state.selected_servo_id))
+        self.state.selected_servo_tightening_rotation = tightening_rotation
+        direction_text = tightening_rotation.upper() if tightening_rotation else "unset"
+        self.state.selected_servo_direction_summary = (
+            f"Tightening rotation: {direction_text}. Raw XC330 counts tighten by lowering the position value."
+        )
+        self.state.selected_servo_block_reason = (
+            self._first_reason(pretension_assessment.blocking_reasons if pretension_assessment else ())
+            if not self.state.selected_servo_pretension_ready
+            else "Ready for selected-servo pretension."
+        )
+        if self._selection_changed and not self.state.pretension_running:
+            defaults = self.servo_service.default_pretension_parameters(int(self.state.selected_servo_id))
+            self.state.default_untensioned_reference_tick = int(defaults.untensioned_reference_tick)
+            self.state.default_step_ticks = int(defaults.step_ticks)
+            self.state.default_settle_time_s = float(defaults.settle_time_s)
+            self.state.default_baseline_sample_count = int(defaults.baseline_sample_count)
+            self.state.default_filter_window = int(defaults.current_filter_window)
+            self.state.default_current_delta_threshold_ma = int(defaults.current_delta_threshold_ma)
+            self.state.default_absolute_trigger_current_ma = defaults.absolute_trigger_current_ma
+            self.state.default_hard_current_stop_ma = int(defaults.hard_current_stop_ma)
+            self.state.default_max_travel_ticks = int(defaults.max_travel_ticks)
+            self.state.default_timeout_s = float(defaults.timeout_s)
+            self.state.baseline_current_ma = None
+            self.state.baseline_filtered_current_ma = None
+            self.state.baseline_samples_label = "Not measured."
+            self._selection_changed = False
+        self.state.can_measure_baseline = bool(self.state.selected_servo_motion_ready and not self.state.pretension_running)
+        self.state.can_move_to_reference = bool(self.state.selected_servo_motion_ready and not self.state.pretension_running)
+        self.state.can_start = bool(self.state.selected_servo_pretension_ready and not self.state.pretension_running)
+        self.state.can_stop = bool(self.state.pretension_running)
+
+    def _saved_summary_for_selected_servo(self) -> str:
+        servo_id = self.state.selected_servo_id
+        if servo_id is None:
+            return "No servo selected."
+        entry = self.servo_service.neutral_calibration.entry_by_servo_id(int(servo_id))
+        if entry is None:
+            return "No saved calibration artifact for this servo."
+        if entry.latest_pretension_run:
+            record = entry.latest_pretension_run
+            status = record.get("status") or entry.pretension_result_status or "saved"
+            position = record.get("final_position_tick", entry.pretension_final_position_tick)
+            return f"Latest run: {status} @ {position if position is not None else '—'}."
+        if entry.pretension_final_position_tick is not None:
+            return (
+                f"Saved result: {entry.pretension_result_status or 'saved'} @ "
+                f"{entry.pretension_final_position_tick}."
+            )
+        return "No pretension result saved yet."
+
+    def _append_log(self, message: str) -> None:
+        stamp = time.strftime("%H:%M:%S", time.localtime())
+        line = f"[{stamp}] {message.strip()}"
+        existing = self.state.log_text.strip()
+        self.state.log_text = f"{existing}\n{line}".strip() if existing else line
+
+    def _require_selected_servo_id(self) -> int:
+        if self.state.selected_servo_id is None:
+            raise RuntimeError("Select a servo before using the pretension workspace.")
+        return int(self.state.selected_servo_id)
+
+    @staticmethod
+    def _format_run_state(status: str) -> str:
+        mapping = {
+            "idle": "Idle",
+            "ready": "Ready",
+            "baseline_ready": "Baseline Ready",
+            "running": "Running",
+            "threshold_reached": "Completed",
+            "saved": "Saved",
+            "timeout": "Stopped",
+            "travel_limit": "Stopped",
+            "overcurrent": "Fault",
+            "invalid_telemetry": "Blocked",
+            "canceled": "Stopped",
+            "blocked": "Blocked",
+            "fault": "Fault",
+        }
+        return mapping.get(str(status), str(status).replace("_", " ").title())
+
+    @staticmethod
+    def _first_reason(reasons) -> str:
+        for reason in reasons or ():
+            text = str(reason).strip()
+            if text:
+                return text
+        return "ready"
+
+    @staticmethod
+    def _hardware_error_text(code: int | None, error: str | None) -> str:
+        if code in (None, 0) and not error:
+            return "0"
+        if code not in (None, 0) and error:
+            return f"0x{int(code):02X} | {error}"
+        if code not in (None, 0):
+            return f"0x{int(code):02X}"
+        return str(error or "—")

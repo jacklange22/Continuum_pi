@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import time
 from typing import Callable
 
@@ -208,6 +208,47 @@ class PretensionRoutineResult:
     final_current_ma: int | None
     steps_taken: int
     tightening_direction: str | None
+    start_position_tick: int | None = None
+    untensioned_reference_tick: int | None = None
+    current_position_tick: int | None = None
+    last_commanded_target_tick: int | None = None
+    baseline_current_ma: float | None = None
+    filtered_current_ma: float | None = None
+    current_delta_ma: float | None = None
+    absolute_trigger_current_ma: int | None = None
+    hard_current_stop_ma: int | None = None
+    elapsed_s: float = 0.0
+    stop_reason: str | None = None
+    parameters: dict[str, int | float | None] | None = None
+
+
+@dataclass
+class PretensionBaselineMeasurement:
+    """Filtered baseline-current estimate for one selected servo."""
+
+    servo_id: int
+    sample_count: int
+    samples_ma: list[int]
+    baseline_current_ma: float
+    filtered_current_ma: float
+    position_tick: int | None
+    message: str
+
+
+@dataclass
+class PretensionParameters:
+    """Operator-facing parameters for selected-servo MVP pretensioning."""
+
+    untensioned_reference_tick: int
+    step_ticks: int
+    settle_time_s: float
+    baseline_sample_count: int
+    current_filter_window: int
+    current_delta_threshold_ma: int
+    absolute_trigger_current_ma: int | None
+    hard_current_stop_ma: int
+    max_travel_ticks: int
+    timeout_s: float
 
 
 class ServoService:
@@ -885,6 +926,198 @@ class ServoService:
             return entry.tightening_rotation
         return self.neutral_calibration.context.tightening_rotation_by_servo.get(int(servo_id))
 
+    def default_pretension_parameters(self, servo_id: int) -> PretensionParameters:
+        absolute_trigger = self._pretension_threshold_for_servo(int(servo_id))
+        configured_absolute = self.safety_guard.pretension_absolute_trigger_current_ma
+        if configured_absolute is not None:
+            absolute_trigger = int(configured_absolute)
+        return PretensionParameters(
+            untensioned_reference_tick=int(self.safety_guard.pretension_untensioned_reference_tick),
+            step_ticks=int(self.safety_guard.pretension_step_ticks),
+            settle_time_s=float(self.safety_guard.pretension_settle_time_s),
+            baseline_sample_count=int(self.safety_guard.pretension_baseline_sample_count),
+            current_filter_window=int(self.safety_guard.pretension_current_filter_window),
+            current_delta_threshold_ma=int(self.safety_guard.pretension_current_delta_threshold_ma),
+            absolute_trigger_current_ma=int(absolute_trigger) if absolute_trigger is not None else None,
+            hard_current_stop_ma=int(self.safety_guard.max_current_ma),
+            max_travel_ticks=int(self.safety_guard.pretension_max_travel_ticks),
+            timeout_s=float(self.safety_guard.pretension_timeout_s),
+        )
+
+    def assess_pretension_readiness(
+        self,
+        servo_id: int,
+        *,
+        telemetry: ServoTelemetry | None = None,
+    ) -> ServoMotionAssessment:
+        current = telemetry or self.read_telemetry([int(servo_id)])[int(servo_id)]
+        assessment = self.assess_motion(
+            int(servo_id),
+            require_calibrated_bounds=False,
+            telemetry=current,
+        )
+        errors = list(assessment.blocking_reasons)
+        if current.torque_enabled is not True:
+            errors.append("Torque must be enabled before pretensioning.")
+        try:
+            safe_min, safe_max = self._application_safe_bounds_for_servo(
+                servo_id=int(servo_id),
+                telemetry=current,
+                require_calibrated_bounds=False,
+            )
+        except ValueError as exc:
+            errors.append(str(exc))
+            safe_min = safe_max = None
+        if (
+            current.present_position is not None
+            and safe_min is not None
+            and safe_max is not None
+            and not (int(safe_min) <= int(current.present_position) <= int(safe_max))
+        ):
+            errors.append(
+                f"Present Position {current.present_position} is outside the pretension-safe range "
+                f"[{safe_min}, {safe_max}]."
+            )
+        return ServoMotionAssessment(
+            servo_id=int(servo_id),
+            ready=not errors,
+            reason=" | ".join(errors) if errors else "Ready for selected-servo pretension.",
+            telemetry=current,
+            safe_min_tick=safe_min,
+            safe_max_tick=safe_max,
+            tightening_direction="smaller raw position counts",
+            blocking_reasons=tuple(errors),
+            external_power_required=assessment.external_power_required,
+            external_power_ready=assessment.external_power_ready,
+        )
+
+    def measure_pretension_baseline(
+        self,
+        *,
+        servo_id: int,
+        sample_count: int | None = None,
+        filter_window: int | None = None,
+    ) -> PretensionBaselineMeasurement:
+        count = max(1, int(sample_count or self.safety_guard.pretension_baseline_sample_count))
+        window = max(1, int(filter_window or self.safety_guard.pretension_current_filter_window))
+        samples: list[int] = []
+        position_tick: int | None = None
+        for _ in range(count):
+            telemetry = self.read_telemetry([int(servo_id)])[int(servo_id)]
+            assessment = self.assess_pretension_readiness(int(servo_id), telemetry=telemetry)
+            if not assessment.ready:
+                raise RuntimeError(f"Servo {servo_id} is not safe to measure a pretension baseline: {assessment.reason}")
+            if telemetry.present_current_ma is None:
+                raise RuntimeError(f"Servo {servo_id} current telemetry is unavailable.")
+            samples.append(int(telemetry.present_current_ma))
+            position_tick = telemetry.present_position
+        baseline_current_ma = float(sum(samples) / len(samples))
+        filtered_samples = samples[-window:]
+        filtered_current_ma = float(sum(filtered_samples) / len(filtered_samples))
+        return PretensionBaselineMeasurement(
+            servo_id=int(servo_id),
+            sample_count=count,
+            samples_ma=list(samples),
+            baseline_current_ma=baseline_current_ma,
+            filtered_current_ma=filtered_current_ma,
+            position_tick=position_tick,
+            message=(
+                f"Measured baseline from {count} sample(s): mean {baseline_current_ma:.1f} mA, "
+                f"filtered {filtered_current_ma:.1f} mA."
+            ),
+        )
+
+    def move_servo_to_raw_target(
+        self,
+        *,
+        servo_id: int,
+        target_tick: int,
+        reason: str = "selected_servo_move",
+    ) -> ServoJogResult:
+        assessment = self.assess_motion(
+            int(servo_id),
+            require_calibrated_bounds=False,
+        )
+        if not assessment.ready:
+            return ServoJogResult(
+                servo_id=int(servo_id),
+                command_direction="loosen" if int(target_tick) >= int(assessment.telemetry.present_position or 0) else "tighten",
+                step_ticks=abs(int(target_tick) - int(assessment.telemetry.present_position or 0)),
+                delta_ticks=int(target_tick) - int(assessment.telemetry.present_position or 0),
+                success=False,
+                blocked=True,
+                status="blocked",
+                message=f"Blocked {reason} for servo {servo_id}: {assessment.reason}",
+                goal_tick=None,
+                telemetry=assessment.telemetry,
+                assessment=assessment,
+                current_position_tick=assessment.telemetry.present_position,
+                safe_min_tick=assessment.safe_min_tick,
+                safe_max_tick=assessment.safe_max_tick,
+                clamped=False,
+            )
+        if assessment.telemetry.present_position is None:
+            raise RuntimeError(f"Servo {servo_id} position is unavailable.")
+        current_position = int(assessment.telemetry.present_position)
+        safe_min, safe_max = self._application_safe_bounds_for_servo(
+            servo_id=int(servo_id),
+            telemetry=assessment.telemetry,
+            require_calibrated_bounds=False,
+        )
+        unclamped_goal = int(target_tick)
+        goal_tick = min(max(int(target_tick), int(safe_min)), int(safe_max))
+        clamped = goal_tick != unclamped_goal
+        if goal_tick == current_position:
+            return ServoJogResult(
+                servo_id=int(servo_id),
+                command_direction="loosen" if goal_tick >= current_position else "tighten",
+                step_ticks=abs(goal_tick - current_position),
+                delta_ticks=goal_tick - current_position,
+                success=False,
+                blocked=True,
+                status="blocked",
+                message=(
+                    f"Blocked {reason} for servo {servo_id}: target {goal_tick} would not move the servo."
+                ),
+                goal_tick=goal_tick,
+                telemetry=assessment.telemetry,
+                assessment=assessment,
+                current_position_tick=current_position,
+                unclamped_goal_tick=unclamped_goal,
+                safe_min_tick=safe_min,
+                safe_max_tick=safe_max,
+                clamped=clamped,
+            )
+        self.dxl_bus.write_goal_positions({int(servo_id): int(goal_tick)})
+        updated = self.read_live_telemetry([int(servo_id)])[int(servo_id)]
+        self._validate_post_motion(updated)
+        updated_assessment = self.assess_motion(
+            int(servo_id),
+            require_calibrated_bounds=False,
+            telemetry=updated,
+        )
+        return ServoJogResult(
+            servo_id=int(servo_id),
+            command_direction="loosen" if goal_tick >= current_position else "tighten",
+            step_ticks=abs(goal_tick - current_position),
+            delta_ticks=goal_tick - current_position,
+            success=True,
+            blocked=False,
+            status="moved",
+            message=(
+                f"Moved servo {servo_id} to {goal_tick} ticks for {reason} "
+                f"within pretension-safe range [{safe_min}, {safe_max}]."
+            ),
+            goal_tick=goal_tick,
+            telemetry=updated,
+            assessment=updated_assessment,
+            current_position_tick=current_position,
+            unclamped_goal_tick=unclamped_goal,
+            safe_min_tick=safe_min,
+            safe_max_tick=safe_max,
+            clamped=clamped,
+        )
+
     def assess_motion(
         self,
         servo_id: int,
@@ -1152,188 +1385,372 @@ class ServoService:
         self,
         *,
         servo_id: int,
+        parameters: PretensionParameters | None = None,
         threshold_ma: int | None = None,
         stop_requested: Callable[[], bool] | None = None,
         progress_callback: Callable[[PretensionRoutineResult], None] | None = None,
     ) -> PretensionRoutineResult:
-        assessment = self.assess_motion(
-            int(servo_id),
-            require_calibrated_bounds=self.require_calibrated_bounds_for_individual_motion(),
-        )
+        config = parameters or self.default_pretension_parameters(int(servo_id))
+        if threshold_ma is not None:
+            config = PretensionParameters(
+                untensioned_reference_tick=int(config.untensioned_reference_tick),
+                step_ticks=int(config.step_ticks),
+                settle_time_s=float(config.settle_time_s),
+                baseline_sample_count=int(config.baseline_sample_count),
+                current_filter_window=int(config.current_filter_window),
+                current_delta_threshold_ma=int(config.current_delta_threshold_ma),
+                absolute_trigger_current_ma=int(threshold_ma),
+                hard_current_stop_ma=int(config.hard_current_stop_ma),
+                max_travel_ticks=int(config.max_travel_ticks),
+                timeout_s=float(config.timeout_s),
+            )
+        if int(config.step_ticks) <= 0:
+            raise ValueError("Pretension step_ticks must be positive.")
+        if int(config.baseline_sample_count) <= 0:
+            raise ValueError("Pretension baseline_sample_count must be positive.")
+        if int(config.current_filter_window) <= 0:
+            raise ValueError("Pretension current_filter_window must be positive.")
+        if int(config.current_delta_threshold_ma) <= 0:
+            raise ValueError("Pretension current_delta_threshold_ma must be positive.")
+        if int(config.max_travel_ticks) <= 0:
+            raise ValueError("Pretension max_travel_ticks must be positive.")
+        if float(config.timeout_s) <= 0.0:
+            raise ValueError("Pretension timeout_s must be positive.")
+        if float(config.settle_time_s) < 0.0:
+            raise ValueError("Pretension settle_time_s cannot be negative.")
+        if int(config.hard_current_stop_ma) <= 0:
+            raise ValueError("Pretension hard_current_stop_ma must be positive.")
+        if (
+            config.absolute_trigger_current_ma is not None
+            and int(config.absolute_trigger_current_ma) >= int(config.hard_current_stop_ma)
+        ):
+            raise ValueError(
+                "Pretension absolute trigger current must stay below the hard current stop."
+            )
+
+        assessment = self.assess_pretension_readiness(int(servo_id))
         if not assessment.ready:
             raise RuntimeError(f"Servo {servo_id} is not safe to pretension: {assessment.reason}")
-        threshold = int(threshold_ma) if threshold_ma is not None else self._pretension_threshold_for_servo(int(servo_id))
-        if threshold <= 0:
-            raise ValueError("Pretension threshold must be positive.")
-        if threshold >= int(self.safety_guard.max_current_ma):
-            raise ValueError(
-                f"Pretension threshold {threshold} mA must be below the absolute safety limit "
-                f"{self.safety_guard.max_current_ma} mA."
-            )
-        tightening_direction = "decreasing_raw_position"
-        step_delta = -abs(int(self.safety_guard.pretension_step_ticks))
-        safe_min = int(assessment.safe_min_tick) if assessment.safe_min_tick is not None else None
-        safe_max = int(assessment.safe_max_tick) if assessment.safe_max_tick is not None else None
-        deadline = self._time_fn() + float(self.safety_guard.pretension_timeout_s)
-        steps_taken = 0
+        if assessment.telemetry.present_position is None:
+            raise RuntimeError(f"Servo {servo_id} pretension requires position telemetry.")
+        if assessment.safe_min_tick is None or assessment.safe_max_tick is None:
+            raise RuntimeError(f"Servo {servo_id} pretension-safe bounds are unavailable.")
 
-        def _emit(result: PretensionRoutineResult) -> PretensionRoutineResult:
+        baseline = self.measure_pretension_baseline(
+            servo_id=int(servo_id),
+            sample_count=int(config.baseline_sample_count),
+            filter_window=int(config.current_filter_window),
+        )
+        baseline_current_ma = float(baseline.filtered_current_ma)
+        baseline_delta_trigger = float(baseline_current_ma + int(config.current_delta_threshold_ma))
+        absolute_trigger = (
+            int(config.absolute_trigger_current_ma)
+            if config.absolute_trigger_current_ma is not None
+            else None
+        )
+        threshold = (
+            int(min(baseline_delta_trigger, float(absolute_trigger)))
+            if absolute_trigger is not None
+            else int(round(baseline_delta_trigger))
+        )
+        tightening_direction = "decreasing_raw_position"
+        step_delta = -abs(int(config.step_ticks))
+        safe_min = int(assessment.safe_min_tick)
+        safe_max = int(assessment.safe_max_tick)
+        untensioned_reference = min(
+            max(int(config.untensioned_reference_tick), safe_min),
+            safe_max,
+        )
+        start_position_tick = int(assessment.telemetry.present_position)
+        travel_min_tick = max(int(safe_min), int(start_position_tick) - int(config.max_travel_ticks))
+        started_at = float(self._time_fn())
+        deadline = started_at + float(config.timeout_s)
+        steps_taken = 0
+        current_position = start_position_tick
+        last_commanded_target_tick: int | None = None
+        filter_samples = list(baseline.samples_ma[-max(1, int(config.current_filter_window)) :])
+
+        def _build_result(
+            *,
+            status: str,
+            success: bool,
+            message: str,
+            final_position_tick: int | None,
+            final_current_ma: int | None,
+            filtered_current_ma: float | None,
+            current_delta_ma: float | None,
+            stop_reason: str,
+        ) -> PretensionRoutineResult:
+            return PretensionRoutineResult(
+                servo_id=int(servo_id),
+                status=str(status),
+                success=bool(success),
+                message=str(message),
+                threshold_ma=int(threshold),
+                final_position_tick=final_position_tick,
+                final_current_ma=final_current_ma,
+                steps_taken=int(steps_taken),
+                tightening_direction=tightening_direction,
+                start_position_tick=int(start_position_tick),
+                untensioned_reference_tick=int(untensioned_reference),
+                current_position_tick=final_position_tick,
+                last_commanded_target_tick=last_commanded_target_tick,
+                baseline_current_ma=float(baseline_current_ma),
+                filtered_current_ma=filtered_current_ma,
+                current_delta_ma=current_delta_ma,
+                absolute_trigger_current_ma=absolute_trigger,
+                hard_current_stop_ma=int(config.hard_current_stop_ma),
+                elapsed_s=max(0.0, float(self._time_fn()) - float(started_at)),
+                stop_reason=str(stop_reason),
+                parameters=asdict(config),
+            )
+
+        def _persist_and_emit(result: PretensionRoutineResult) -> PretensionRoutineResult:
+            run_record = {
+                "recorded_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "start_position_tick": result.start_position_tick,
+                "untensioned_reference_tick": result.untensioned_reference_tick,
+                "baseline_current_ma": result.baseline_current_ma,
+                "filtered_current_ma": result.filtered_current_ma,
+                "trigger_current_ma": result.threshold_ma,
+                "absolute_trigger_current_ma": result.absolute_trigger_current_ma,
+                "final_position_tick": result.final_position_tick,
+                "final_current_ma": result.final_current_ma,
+                "steps_taken": result.steps_taken,
+                "stop_reason": result.stop_reason,
+                "status": result.status,
+                "elapsed_s": result.elapsed_s,
+                "last_commanded_target_tick": result.last_commanded_target_tick,
+                "parameters": dict(result.parameters or {}),
+            }
+            self.neutral_calibration.save_pretension_result(
+                servo_id=int(servo_id),
+                final_position_tick=result.final_position_tick,
+                final_current_ma=result.final_current_ma,
+                threshold_ma=result.threshold_ma,
+                result_status=result.status,
+                run_record=run_record,
+            )
             if progress_callback is not None:
                 progress_callback(result)
             return result
 
+        def _emit_progress(
+            *,
+            status: str,
+            message: str,
+            telemetry: ServoTelemetry,
+            filtered_current_ma: float | None,
+            current_delta_ma: float | None,
+        ) -> None:
+            if progress_callback is None:
+                return
+            progress_callback(
+                PretensionRoutineResult(
+                    servo_id=int(servo_id),
+                    status=str(status),
+                    success=False,
+                    message=str(message),
+                    threshold_ma=int(threshold),
+                    final_position_tick=None,
+                    final_current_ma=telemetry.present_current_ma,
+                    steps_taken=int(steps_taken),
+                    tightening_direction=tightening_direction,
+                    start_position_tick=int(start_position_tick),
+                    untensioned_reference_tick=int(untensioned_reference),
+                    current_position_tick=telemetry.present_position,
+                    last_commanded_target_tick=last_commanded_target_tick,
+                    baseline_current_ma=float(baseline_current_ma),
+                    filtered_current_ma=filtered_current_ma,
+                    current_delta_ma=current_delta_ma,
+                    absolute_trigger_current_ma=absolute_trigger,
+                    hard_current_stop_ma=int(config.hard_current_stop_ma),
+                    elapsed_s=max(0.0, float(self._time_fn()) - float(started_at)),
+                    stop_reason=None,
+                    parameters=asdict(config),
+                )
+            )
+
+        _emit_progress(
+            status="baseline_ready",
+            message=baseline.message,
+            telemetry=assessment.telemetry,
+            filtered_current_ma=baseline_current_ma,
+            current_delta_ma=0.0,
+        )
+
         while True:
             if stop_requested is not None and stop_requested():
                 final = self.read_telemetry([int(servo_id)])[int(servo_id)]
-                result = PretensionRoutineResult(
-                    servo_id=int(servo_id),
-                    status="canceled",
-                    success=False,
-                    message=f"Pretension canceled for servo {servo_id}.",
-                    threshold_ma=threshold,
-                    final_position_tick=final.present_position,
-                    final_current_ma=final.present_current_ma,
-                    steps_taken=steps_taken,
-                    tightening_direction=tightening_direction,
+                filtered_current = float(final.present_current_ma) if final.present_current_ma is not None else None
+                current_delta = (
+                    float(filtered_current - baseline_current_ma)
+                    if filtered_current is not None
+                    else None
                 )
-                self.neutral_calibration.save_pretension_result(
-                    servo_id=int(servo_id),
-                    final_position_tick=result.final_position_tick,
-                    final_current_ma=result.final_current_ma,
-                    threshold_ma=threshold,
-                    result_status=result.status,
+                return _persist_and_emit(
+                    _build_result(
+                        status="canceled",
+                        success=False,
+                        message=f"Pretension canceled for servo {servo_id}.",
+                        final_position_tick=final.present_position,
+                        final_current_ma=final.present_current_ma,
+                        filtered_current_ma=filtered_current,
+                        current_delta_ma=current_delta,
+                        stop_reason="operator_canceled",
+                    )
                 )
-                return _emit(result)
             if self._time_fn() > deadline:
                 final = self.read_telemetry([int(servo_id)])[int(servo_id)]
-                result = PretensionRoutineResult(
-                    servo_id=int(servo_id),
-                    status="timeout",
-                    success=False,
-                    message=f"Pretension timed out for servo {servo_id}.",
-                    threshold_ma=threshold,
-                    final_position_tick=final.present_position,
-                    final_current_ma=final.present_current_ma,
-                    steps_taken=steps_taken,
-                    tightening_direction=tightening_direction,
+                filtered_current = float(final.present_current_ma) if final.present_current_ma is not None else None
+                current_delta = (
+                    float(filtered_current - baseline_current_ma)
+                    if filtered_current is not None
+                    else None
                 )
-                self.neutral_calibration.save_pretension_result(
-                    servo_id=int(servo_id),
-                    final_position_tick=result.final_position_tick,
-                    final_current_ma=result.final_current_ma,
-                    threshold_ma=threshold,
-                    result_status=result.status,
+                return _persist_and_emit(
+                    _build_result(
+                        status="timeout",
+                        success=False,
+                        message=f"Pretension timed out for servo {servo_id}.",
+                        final_position_tick=final.present_position,
+                        final_current_ma=final.present_current_ma,
+                        filtered_current_ma=filtered_current,
+                        current_delta_ma=current_delta,
+                        stop_reason="timeout",
+                    )
                 )
-                return _emit(result)
 
             raw_telemetry = self.read_telemetry([int(servo_id)])[int(servo_id)]
-            if raw_telemetry.present_current_ma is not None and raw_telemetry.present_current_ma >= int(
-                self.safety_guard.max_current_ma
+            if (
+                raw_telemetry.present_current_ma is not None
+                and int(raw_telemetry.present_current_ma) >= int(config.hard_current_stop_ma)
             ):
-                result = PretensionRoutineResult(
-                    servo_id=int(servo_id),
-                    status="overcurrent",
-                    success=False,
-                    message=(
-                        f"Pretension stopped for servo {servo_id}: measured current "
-                        f"{raw_telemetry.present_current_ma} mA reached the absolute safety limit."
-                    ),
-                    threshold_ma=threshold,
-                    final_position_tick=raw_telemetry.present_position,
-                    final_current_ma=raw_telemetry.present_current_ma,
-                    steps_taken=steps_taken,
-                    tightening_direction=tightening_direction,
+                return _persist_and_emit(
+                    _build_result(
+                        status="overcurrent",
+                        success=False,
+                        message=(
+                            f"Pretension stopped for servo {servo_id}: measured current "
+                            f"{raw_telemetry.present_current_ma} mA reached the hard stop of "
+                            f"{config.hard_current_stop_ma} mA."
+                        ),
+                        final_position_tick=raw_telemetry.present_position,
+                        final_current_ma=int(raw_telemetry.present_current_ma),
+                        filtered_current_ma=float(raw_telemetry.present_current_ma),
+                        current_delta_ma=float(raw_telemetry.present_current_ma - baseline_current_ma),
+                        stop_reason="hard_current_stop",
+                    )
                 )
-                self.neutral_calibration.save_pretension_result(
-                    servo_id=int(servo_id),
-                    final_position_tick=result.final_position_tick,
-                    final_current_ma=result.final_current_ma,
-                    threshold_ma=threshold,
-                    result_status=result.status,
-                )
-                return _emit(result)
-
-            current_assessment = self.assess_motion(
+            current_assessment = self.assess_pretension_readiness(
                 int(servo_id),
-                require_calibrated_bounds=self.require_calibrated_bounds_for_individual_motion(),
                 telemetry=raw_telemetry,
             )
             if not current_assessment.ready:
-                result = PretensionRoutineResult(
-                    servo_id=int(servo_id),
-                    status="invalid_telemetry",
-                    success=False,
-                    message=f"Pretension stopped for servo {servo_id}: {current_assessment.reason}",
-                    threshold_ma=threshold,
-                    final_position_tick=current_assessment.telemetry.present_position,
-                    final_current_ma=current_assessment.telemetry.present_current_ma,
-                    steps_taken=steps_taken,
-                    tightening_direction=tightening_direction,
+                return _persist_and_emit(
+                    _build_result(
+                        status="invalid_telemetry",
+                        success=False,
+                        message=f"Pretension stopped for servo {servo_id}: {current_assessment.reason}",
+                        final_position_tick=current_assessment.telemetry.present_position,
+                        final_current_ma=current_assessment.telemetry.present_current_ma,
+                        filtered_current_ma=None,
+                        current_delta_ma=None,
+                        stop_reason="unsafe_telemetry",
+                    )
                 )
-                self.neutral_calibration.save_pretension_result(
-                    servo_id=int(servo_id),
-                    final_position_tick=result.final_position_tick,
-                    final_current_ma=result.final_current_ma,
-                    threshold_ma=threshold,
-                    result_status=result.status,
-                )
-                return _emit(result)
             current_ma = current_assessment.telemetry.present_current_ma
             position = current_assessment.telemetry.present_position
             if current_ma is None or position is None:
-                raise RuntimeError(f"Servo {servo_id} pretension requires current and position telemetry.")
-            if current_ma >= threshold:
-                result = PretensionRoutineResult(
-                    servo_id=int(servo_id),
-                    status="threshold_reached",
-                    success=True,
-                    message=(
-                        f"Servo {servo_id} reached the pretension threshold at "
-                        f"{position} ticks / {current_ma} mA."
-                    ),
-                    threshold_ma=threshold,
-                    final_position_tick=position,
-                    final_current_ma=current_ma,
-                    steps_taken=steps_taken,
-                    tightening_direction=tightening_direction,
+                return _persist_and_emit(
+                    _build_result(
+                        status="invalid_telemetry",
+                        success=False,
+                        message=f"Pretension stopped for servo {servo_id}: current or position telemetry is unavailable.",
+                        final_position_tick=position,
+                        final_current_ma=current_ma,
+                        filtered_current_ma=None,
+                        current_delta_ma=None,
+                        stop_reason="missing_current_or_position",
+                    )
                 )
-                self.neutral_calibration.save_pretension_result(
-                    servo_id=int(servo_id),
-                    final_position_tick=result.final_position_tick,
-                    final_current_ma=result.final_current_ma,
-                    threshold_ma=threshold,
-                    result_status=result.status,
-                )
-                return _emit(result)
+            filter_samples.append(int(current_ma))
+            filter_samples = filter_samples[-max(1, int(config.current_filter_window)) :]
+            filtered_current = float(sum(filter_samples) / len(filter_samples))
+            current_delta = float(filtered_current - baseline_current_ma)
+            current_position = int(position)
 
-            next_goal = int(position + step_delta)
-            if safe_min is None or safe_max is None or next_goal < safe_min or next_goal > safe_max:
-                result = PretensionRoutineResult(
-                    servo_id=int(servo_id),
-                    status="travel_limit",
-                    success=False,
-                    message=(
-                        f"Pretension stopped for servo {servo_id}: next tightening step would exceed "
-                        f"safe bounds [{safe_min}, {safe_max}]."
-                    ),
-                    threshold_ma=threshold,
-                    final_position_tick=position,
-                    final_current_ma=current_ma,
-                    steps_taken=steps_taken,
-                    tightening_direction=tightening_direction,
+            if filtered_current >= float(config.hard_current_stop_ma):
+                return _persist_and_emit(
+                    _build_result(
+                        status="overcurrent",
+                        success=False,
+                        message=(
+                            f"Pretension stopped for servo {servo_id}: filtered current "
+                            f"{filtered_current:.1f} mA reached the hard stop of {config.hard_current_stop_ma} mA."
+                        ),
+                        final_position_tick=current_position,
+                        final_current_ma=int(current_ma),
+                        filtered_current_ma=filtered_current,
+                        current_delta_ma=current_delta,
+                        stop_reason="hard_current_stop",
+                    )
                 )
-                self.neutral_calibration.save_pretension_result(
-                    servo_id=int(servo_id),
-                    final_position_tick=result.final_position_tick,
-                    final_current_ma=result.final_current_ma,
-                    threshold_ma=threshold,
-                    result_status=result.status,
-                )
-                return _emit(result)
 
+            threshold_reason = None
+            if filtered_current >= baseline_delta_trigger:
+                threshold_reason = "baseline_delta_trigger"
+            if absolute_trigger is not None and filtered_current >= float(absolute_trigger):
+                threshold_reason = "absolute_trigger" if threshold_reason is None else "combined_trigger"
+            if threshold_reason is not None:
+                return _persist_and_emit(
+                    _build_result(
+                        status="threshold_reached",
+                        success=True,
+                        message=(
+                            f"Servo {servo_id} reached the pretension trigger at "
+                            f"{current_position} ticks / filtered {filtered_current:.1f} mA."
+                        ),
+                        final_position_tick=current_position,
+                        final_current_ma=int(current_ma),
+                        filtered_current_ma=filtered_current,
+                        current_delta_ma=current_delta,
+                        stop_reason=threshold_reason,
+                    )
+                )
+
+            next_goal = int(current_position + step_delta)
+            if next_goal < int(travel_min_tick) or next_goal > int(safe_max):
+                return _persist_and_emit(
+                    _build_result(
+                        status="travel_limit",
+                        success=False,
+                        message=(
+                            f"Pretension stopped for servo {servo_id}: next tightening step would exceed "
+                            f"the allowed pretension travel [{travel_min_tick}, {safe_max}]."
+                        ),
+                        final_position_tick=current_position,
+                        final_current_ma=int(current_ma),
+                        filtered_current_ma=filtered_current,
+                        current_delta_ma=current_delta,
+                        stop_reason="travel_limit",
+                    )
+                )
+
+            last_commanded_target_tick = int(next_goal)
+            _emit_progress(
+                status="running",
+                message=(
+                    f"Pretension running on servo {servo_id}: step {steps_taken + 1}, "
+                    f"target {last_commanded_target_tick}, filtered current {filtered_current:.1f} mA."
+                ),
+                telemetry=current_assessment.telemetry,
+                filtered_current_ma=filtered_current,
+                current_delta_ma=current_delta,
+            )
             self.dxl_bus.write_goal_positions({int(servo_id): int(next_goal)})
             steps_taken += 1
-            self._sleep_fn(float(self.safety_guard.pretension_settle_time_s))
+            self._sleep_fn(float(config.settle_time_s))
 
     def validate_pretension(
         self,

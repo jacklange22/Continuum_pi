@@ -199,10 +199,22 @@ class ServosController:
         self.state.status_message = result.message
         self.state.discovery_status = result.status
         if result.success:
-            self.state.servo_ids = list(result.selected_ids)
+            discovered_ids = self.servo_service.scan_ids(
+                min_id=int(self.servo_service.dxl_bus.config.discovery_min_id),
+                max_id=int(self.servo_service.dxl_bus.config.discovery_max_id),
+            )
+            self.state.servo_ids = list(discovered_ids)
+            self.state.detected_servo_ids = list(discovered_ids)
+            self.state.missing_servo_ids = []
+            self.state.unexpected_servo_ids = []
             self.state.selected_servo_id = int(new_id)
             self.state.last_error = None
-            self.scan()
+            self.state.discovery_message = (
+                f"{result.message} Re-scan configured servos before returning to normal robot bring-up."
+            )
+            self.state.status_message = self.state.discovery_message
+            self.state.telemetry = {}
+            self._sync_selected_servo_motion_state()
             return
         self.state.last_error = result.message
         raise RuntimeError(result.message)
@@ -253,7 +265,11 @@ class ServosController:
             result = self.servo_service.capture_and_save_neutral_setpoints(servo_ids)
             setpoints = result.setpoints_by_id
             self.state.neutral_setpoints = setpoints
-            self.state.status_message = result.message
+            captured_ids = sorted(int(servo_id) for servo_id in result.servo_ids)
+            self.state.status_message = (
+                f"Captured neutral metadata for servo IDs {captured_ids} and saved it to {result.artifact_path}. "
+                "Bench jogging still uses the raw 0..4095 range as the active motion range."
+            )
             self.state.last_error = None
             return setpoints
         except Exception as exc:
@@ -401,7 +417,9 @@ class ServosController:
             if servo_id is None:
                 raise RuntimeError("No servo is selected for one-servo neutral capture.")
             return [int(servo_id)]
-        return list(self.state.servo_ids)
+        if self.state.detected_servo_ids:
+            return [int(servo_id) for servo_id in self.state.detected_servo_ids]
+        return [int(servo_id) for servo_id in self.state.servo_ids]
 
     def set_selected_servo(self, servo_id: int) -> ServosViewState:
         self.state.selected_servo_id = int(servo_id)
@@ -451,13 +469,13 @@ class ServosController:
             raise RuntimeError(result.message)
 
     def _neutral_ticks_for_current_ids(self) -> list[int]:
-        if not self.state.neutral_setpoints:
-            raise RuntimeError("Neutral setpoints are missing. Capture or load them first.")
         if self.state.calibration_exists and not self.state.calibration_compatible:
             raise RuntimeError(
                 "Saved servo calibration does not match the current robot configuration. "
                 "Review the calibration summary and recapture neutral before commanding motion."
             )
+        if not self.state.neutral_setpoints:
+            raise RuntimeError("Neutral setpoints are missing. Capture or load them first.")
         missing = [sid for sid in self.state.servo_ids if sid not in self.state.neutral_setpoints]
         if missing:
             raise RuntimeError(f"Neutral setpoints missing for servo IDs: {missing}")
@@ -905,9 +923,10 @@ class ServosController:
     def _apply_jog_result(self, result, *, action: str) -> None:
         servo_id = int(result.servo_id)
         self.state.selected_servo_id = servo_id
+        telemetry = getattr(result, "telemetry", None)
         current_position_tick = (
-            result.telemetry.present_position
-            if result.telemetry is not None and result.telemetry.present_position is not None
+            telemetry.present_position
+            if telemetry is not None and getattr(telemetry, "present_position", None) is not None
             else result.current_position_tick
         )
         motion_state = {
@@ -1058,8 +1077,8 @@ class ServosController:
 
     def _update_selected_row_from_jog_result(self, result) -> None:
         servo_id = int(result.servo_id)
-        telemetry = result.telemetry
-        assessment = result.assessment
+        telemetry = getattr(result, "telemetry", None)
+        assessment = getattr(result, "assessment", None)
         if telemetry is None or assessment is None:
             return
         existing_row = self.state.telemetry.get(servo_id)

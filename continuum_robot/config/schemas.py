@@ -71,9 +71,15 @@ class SafetyConfig:
     coarse_jog_step_ticks: int = 25
     software_position_margin_ticks: int = 64
     telemetry_stale_after_s: float = 0.25
+    pretension_untensioned_reference_tick: int = 4095
     pretension_step_ticks: int = 2
     pretension_timeout_s: float = 10.0
     pretension_settle_time_s: float = 0.05
+    pretension_baseline_sample_count: int = 5
+    pretension_current_filter_window: int = 3
+    pretension_current_delta_threshold_ma: int = 60
+    pretension_absolute_trigger_current_ma: int | None = 220
+    pretension_max_travel_ticks: int = 320
     max_temperature_c: int = 70
     min_input_voltage_mv: int = 4000
 

@@ -12,7 +12,7 @@ from continuum_robot.servos.neutral_calibration_service import (
 )
 from continuum_robot.servos.pretension_validation_service import PretensionValidationService
 from continuum_robot.servos.safety_guard import SafetyGuard
-from continuum_robot.servos.servo_service import ServoService
+from continuum_robot.servos.servo_service import PretensionParameters, ServoService
 
 
 class _PretensionBus(MockDxlBus):
@@ -51,6 +51,21 @@ class _StalePretensionBus(_PretensionBus):
         result = super().read_telemetry(servo_ids, **kwargs)
         for servo_id in servo_ids:
             result[int(servo_id)].last_read_monotonic_s = self._state[int(servo_id)].last_read_monotonic_s
+        return result
+
+
+class _BaselineSequenceBus(MockDxlBus):
+    def __init__(self, *, baseline_sequence: list[int]) -> None:
+        super().__init__([1])
+        self._baseline_sequence = list(baseline_sequence)
+        self._state[1].torque_enabled = True
+
+    def read_telemetry(self, servo_ids: list[int], **kwargs) -> dict[int, object]:
+        result = super().read_telemetry(servo_ids, **kwargs)
+        if self._baseline_sequence:
+            current = self._baseline_sequence.pop(0)
+            result[1].present_current_ma = current
+            self._state[1].present_current_ma = current
         return result
 
 
@@ -426,6 +441,7 @@ def test_servo_service_pretension_validation_returns_message(tmp_path: Path) -> 
 
 def test_servo_service_pretension_stops_on_threshold_and_can_be_accepted(tmp_path: Path) -> None:
     bus = _PretensionBus(current_sequence=[180, 230])
+    bus._state[1].torque_enabled = True
     service = _build_service(tmp_path, dxl_bus=bus)
     service.connect("/dev/mock-openrb", 115200)
     service.save_startup_calibration(
@@ -435,7 +451,21 @@ def test_servo_service_pretension_stops_on_threshold_and_can_be_accepted(tmp_pat
         pretension_current_threshold_ma=220,
     )
 
-    result = service.run_pretension_routine(servo_id=1)
+    result = service.run_pretension_routine(
+        servo_id=1,
+        parameters=PretensionParameters(
+            untensioned_reference_tick=4095,
+            step_ticks=2,
+            settle_time_s=0.0,
+            baseline_sample_count=3,
+            current_filter_window=1,
+            current_delta_threshold_ma=60,
+            absolute_trigger_current_ma=220,
+            hard_current_stop_ma=850,
+            max_travel_ticks=320,
+            timeout_s=2.0,
+        ),
+    )
 
     assert result.success is True
     assert result.status == "threshold_reached"
@@ -447,6 +477,7 @@ def test_servo_service_pretension_stops_on_threshold_and_can_be_accepted(tmp_pat
 def test_servo_service_pretension_uses_decreasing_raw_position_for_tightening(tmp_path: Path) -> None:
     bus = _PretensionBus(current_sequence=[180, 230])
     bus.config.positive_tick_rotation = "cw"
+    bus._state[1].torque_enabled = True
     service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
     service.connect("/dev/mock-openrb", 115200)
     service.save_startup_calibration(
@@ -456,7 +487,21 @@ def test_servo_service_pretension_uses_decreasing_raw_position_for_tightening(tm
         pretension_current_threshold_ma=220,
     )
 
-    result = service.run_pretension_routine(servo_id=1)
+    result = service.run_pretension_routine(
+        servo_id=1,
+        parameters=PretensionParameters(
+            untensioned_reference_tick=4095,
+            step_ticks=2,
+            settle_time_s=0.0,
+            baseline_sample_count=3,
+            current_filter_window=1,
+            current_delta_threshold_ma=60,
+            absolute_trigger_current_ma=220,
+            hard_current_stop_ma=850,
+            max_travel_ticks=320,
+            timeout_s=2.0,
+        ),
+    )
 
     assert result.success is True
     assert bus._state[1].present_position < 2048
@@ -464,6 +509,7 @@ def test_servo_service_pretension_uses_decreasing_raw_position_for_tightening(tm
 
 def test_servo_service_pretension_fails_on_overcurrent(tmp_path: Path) -> None:
     bus = _PretensionBus(current_sequence=[900])
+    bus._state[1].torque_enabled = True
     service = _build_service(tmp_path, dxl_bus=bus)
     service.connect("/dev/mock-openrb", 115200)
     service.save_startup_calibration(
@@ -481,7 +527,8 @@ def test_servo_service_pretension_fails_on_overcurrent(tmp_path: Path) -> None:
 
 def test_servo_service_pretension_fails_on_travel_limit(tmp_path: Path) -> None:
     bus = _PretensionBus(current_sequence=[], max_limit=4095)
-    bus._state[1].present_position = 1
+    bus._state[1].present_position = 64
+    bus._state[1].torque_enabled = True
     service = _build_service(tmp_path, dxl_bus=bus)
     service.connect("/dev/mock-openrb", 115200)
 
@@ -492,10 +539,12 @@ def test_servo_service_pretension_fails_on_travel_limit(tmp_path: Path) -> None:
 
 
 def test_servo_service_pretension_fails_on_timeout(tmp_path: Path) -> None:
-    timeline = iter([0.0, 0.0, 0.0, 3.0, 3.0, 3.0])
+    timeline = iter([0.0] * 20 + [3.0] * 20)
+    bus = _PretensionBus(current_sequence=[180, 190])
+    bus._state[1].torque_enabled = True
     service = _build_service(
         tmp_path,
-        dxl_bus=_PretensionBus(current_sequence=[180, 190]),
+        dxl_bus=bus,
         time_fn=lambda: next(timeline),
         telemetry_stale_after_s=10.0,
     )
@@ -515,6 +564,7 @@ def test_servo_service_pretension_fails_on_timeout(tmp_path: Path) -> None:
 
 def test_servo_service_pretension_fails_when_current_disappears(tmp_path: Path) -> None:
     bus = _PretensionBus(current_sequence=[None])
+    bus._state[1].torque_enabled = True
     service = _build_service(tmp_path, dxl_bus=bus)
     service.connect("/dev/mock-openrb", 115200)
     service.save_startup_calibration(
@@ -528,6 +578,48 @@ def test_servo_service_pretension_fails_when_current_disappears(tmp_path: Path) 
 
     assert result.success is False
     assert result.status == "invalid_telemetry"
+
+
+def test_servo_service_measures_filtered_pretension_baseline(tmp_path: Path) -> None:
+    bus = _BaselineSequenceBus(baseline_sequence=[110, 130, 150, 170])
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+
+    baseline = service.measure_pretension_baseline(servo_id=1, sample_count=4, filter_window=2)
+
+    assert baseline.samples_ma == [110, 130, 150, 170]
+    assert baseline.baseline_current_ma == pytest.approx(140.0)
+    assert baseline.filtered_current_ma == pytest.approx(160.0)
+
+
+def test_servo_service_pretension_uses_baseline_delta_trigger_for_mvp(tmp_path: Path) -> None:
+    bus = _PretensionBus(current_sequence=[180, 205])
+    bus._state[1].torque_enabled = True
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+
+    result = service.run_pretension_routine(
+        servo_id=1,
+        parameters=PretensionParameters(
+            untensioned_reference_tick=4095,
+            step_ticks=2,
+            settle_time_s=0.0,
+            baseline_sample_count=3,
+            current_filter_window=1,
+            current_delta_threshold_ma=60,
+            absolute_trigger_current_ma=500,
+            hard_current_stop_ma=850,
+            max_travel_ticks=320,
+            timeout_s=2.0,
+        ),
+    )
+
+    assert result.success is True
+    assert result.status == "threshold_reached"
+    assert result.stop_reason == "baseline_delta_trigger"
+    summary = service.get_calibration_summary()
+    assert summary.servo_entries[1].latest_pretension_run is not None
+    assert summary.servo_entries[1].latest_pretension_run["stop_reason"] == "baseline_delta_trigger"
 
 
 def test_servo_service_pretension_fails_on_stale_telemetry(tmp_path: Path) -> None:

@@ -37,6 +37,9 @@ class SystemTab(QWidget):
         super().__init__(parent)
         self.controller = controller
         self._apply_runtime_parameters = apply_runtime_parameters
+        self._updating_parameter_widgets = False
+        self._parameter_dirty = False
+        self._applied_parameter_values: dict[str, object] = {}
         self.setObjectName("systemWorkspace")
         self.setStyleSheet(
             """
@@ -188,21 +191,28 @@ class SystemTab(QWidget):
         summary_layout.addLayout(summary_secondary_buttons)
 
         self.robot_config_combo = QComboBox()
+        self.robot_config_combo.currentIndexChanged.connect(self._mark_parameter_dirty)
         self.mock_mode_combo = QComboBox()
         self.mock_mode_combo.addItem("Enabled", True)
         self.mock_mode_combo.addItem("Disabled", False)
+        self.mock_mode_combo.currentIndexChanged.connect(self._mark_parameter_dirty)
         self.baudrate_spin = QSpinBox()
         self.baudrate_spin.setRange(9600, 4000000)
+        self.baudrate_spin.valueChanged.connect(self._mark_parameter_dirty)
         self.poll_rate_spin = QSpinBox()
         self.poll_rate_spin.setRange(1, 60)
+        self.poll_rate_spin.valueChanged.connect(self._mark_parameter_dirty)
         self.fine_jog_spin = QSpinBox()
         self.fine_jog_spin.setRange(1, 512)
+        self.fine_jog_spin.valueChanged.connect(self._mark_parameter_dirty)
         self.coarse_jog_spin = QSpinBox()
         self.coarse_jog_spin.setRange(1, 1024)
+        self.coarse_jog_spin.valueChanged.connect(self._mark_parameter_dirty)
         self.telemetry_freshness_spin = QDoubleSpinBox()
         self.telemetry_freshness_spin.setRange(0.01, 10.0)
         self.telemetry_freshness_spin.setDecimals(3)
         self.telemetry_freshness_spin.setSingleStep(0.05)
+        self.telemetry_freshness_spin.valueChanged.connect(self._mark_parameter_dirty)
         self.saved_path_label = QLabel("none")
         self.saved_path_label.setWordWrap(True)
 
@@ -296,50 +306,37 @@ class SystemTab(QWidget):
             f"{state.openrb_status} | prepared={state.openrb_prepared} | bus connected={state.dynamixel_connected}"
         )
         self.readiness_status_label.setText(
-            f"{state.readiness_message} | motion ready={state.motion_ready}"
+            state.readiness_message
         )
-        self.bus_status_label.setText("responsive" if state.bus_reachable else "no confirmed servo response yet")
+        if state.expected_servo_ids:
+            self.bus_status_label.setText(
+                f"responsive={state.bus_reachable} | detected={len(state.detected_servo_ids)}/{len(state.expected_servo_ids)} "
+                f"| telemetry={state.telemetry_ready_count}/{len(state.expected_servo_ids)}"
+            )
+        else:
+            self.bus_status_label.setText("no expected servo IDs configured")
         if state.external_power_ready is None:
             external_power = "not confirmed"
         else:
             external_power = "ready" if state.external_power_ready else "blocked"
         self.external_power_label.setText(external_power)
-        self.config_summary.setPlainText(state.config_summary)
+        self._set_plain_text_preserving_view(self.config_summary, state.config_summary)
 
         status_lines = [state.status_message]
         if state.last_error:
             status_lines.append(f"Error: {state.last_error}")
         if state.bench_debug_text:
             status_lines.extend(["", state.bench_debug_text])
-        self.status_text.setPlainText("\n".join(status_lines))
+        self._set_plain_text_preserving_view(self.status_text, "\n".join(status_lines))
         self._set_combo_items(self.aurora_port_combo, state.available_ports, state.aurora_port)
         self._set_combo_items(self.openrb_port_combo, state.available_ports, state.openrb_port)
-
-        if not self.robot_config_combo.hasFocus():
-            self.robot_config_combo.blockSignals(True)
-            self.robot_config_combo.clear()
-            for robot_config in state.available_robot_configs:
-                self.robot_config_combo.addItem(robot_config, robot_config)
-            index = self.robot_config_combo.findData(state.robot_config)
-            if index >= 0:
-                self.robot_config_combo.setCurrentIndex(index)
-            self.robot_config_combo.blockSignals(False)
-
-        if not self.mock_mode_combo.hasFocus():
-            self.mock_mode_combo.blockSignals(True)
-            self.mock_mode_combo.setCurrentIndex(0 if state.mock_mode else 1)
-            self.mock_mode_combo.blockSignals(False)
-
-        if not self.baudrate_spin.hasFocus():
-            self.baudrate_spin.setValue(int(state.baudrate))
-        if not self.poll_rate_spin.hasFocus():
-            self.poll_rate_spin.setValue(int(state.poll_rate_hz))
-        if not self.fine_jog_spin.hasFocus():
-            self.fine_jog_spin.setValue(int(state.fine_jog_step_ticks))
-        if not self.coarse_jog_spin.hasFocus():
-            self.coarse_jog_spin.setValue(int(state.coarse_jog_step_ticks))
-        if not self.telemetry_freshness_spin.hasFocus():
-            self.telemetry_freshness_spin.setValue(float(state.telemetry_freshness_timeout_s))
+        applied_values = self._parameter_values_from_state(state)
+        if not self._parameter_dirty:
+            self._apply_parameter_values(state, applied_values)
+        elif self._current_parameter_values() == applied_values:
+            self._parameter_dirty = False
+            self._apply_parameter_values(state, applied_values)
+        self._applied_parameter_values = applied_values
         self.saved_path_label.setText(state.saved_overrides_path or "none")
 
     def _set_combo_items(self, combo: QComboBox, ports, selected: str) -> None:
@@ -399,8 +396,79 @@ class SystemTab(QWidget):
         handler = self._apply_runtime_parameters or self.controller.save_runtime_parameters
         try:
             handler(**parameters)
+            self._parameter_dirty = False
+            self._applied_parameter_values = dict(parameters)
         except Exception:
             self.update(self.controller.refresh())
+
+    def _mark_parameter_dirty(self, *_args) -> None:
+        if self._updating_parameter_widgets:
+            return
+        current_values = self._current_parameter_values()
+        self._parameter_dirty = current_values != self._applied_parameter_values
+
+    def _apply_parameter_values(self, state: SystemViewState, values: dict[str, object]) -> None:
+        self._updating_parameter_widgets = True
+        try:
+            self.robot_config_combo.blockSignals(True)
+            self.robot_config_combo.clear()
+            for robot_config in state.available_robot_configs:
+                self.robot_config_combo.addItem(robot_config, robot_config)
+            index = self.robot_config_combo.findData(values["robot_config"])
+            if index >= 0:
+                self.robot_config_combo.setCurrentIndex(index)
+            self.robot_config_combo.blockSignals(False)
+
+            self.mock_mode_combo.blockSignals(True)
+            self.mock_mode_combo.setCurrentIndex(0 if values["mock_mode"] else 1)
+            self.mock_mode_combo.blockSignals(False)
+
+            self.baudrate_spin.setValue(int(values["baudrate"]))
+            self.poll_rate_spin.setValue(int(values["poll_rate_hz"]))
+            self.fine_jog_spin.setValue(int(values["fine_jog_step_ticks"]))
+            self.coarse_jog_spin.setValue(int(values["coarse_jog_step_ticks"]))
+            self.telemetry_freshness_spin.setValue(float(values["telemetry_freshness_timeout_s"]))
+        finally:
+            self._updating_parameter_widgets = False
+
+    def _parameter_values_from_state(self, state: SystemViewState) -> dict[str, object]:
+        return {
+            "mock_mode": bool(state.mock_mode),
+            "robot_config": str(state.robot_config),
+            "baudrate": int(state.baudrate),
+            "poll_rate_hz": int(state.poll_rate_hz),
+            "fine_jog_step_ticks": int(state.fine_jog_step_ticks),
+            "coarse_jog_step_ticks": int(state.coarse_jog_step_ticks),
+            "telemetry_freshness_timeout_s": float(state.telemetry_freshness_timeout_s),
+        }
+
+    def _current_parameter_values(self) -> dict[str, object]:
+        return {
+            "mock_mode": bool(self.mock_mode_combo.currentData()),
+            "robot_config": str(self.robot_config_combo.currentData() or self.robot_config_combo.currentText()).strip(),
+            "baudrate": int(self.baudrate_spin.value()),
+            "poll_rate_hz": int(self.poll_rate_spin.value()),
+            "fine_jog_step_ticks": int(self.fine_jog_spin.value()),
+            "coarse_jog_step_ticks": int(self.coarse_jog_spin.value()),
+            "telemetry_freshness_timeout_s": float(self.telemetry_freshness_spin.value()),
+        }
+
+    @staticmethod
+    def _set_plain_text_preserving_view(widget: QPlainTextEdit, text: str) -> None:
+        new_text = str(text)
+        if widget.toPlainText() == new_text:
+            return
+        v_scroll = widget.verticalScrollBar()
+        h_scroll = widget.horizontalScrollBar()
+        old_v = v_scroll.value()
+        old_h = h_scroll.value()
+        was_at_bottom = old_v >= max(0, v_scroll.maximum() - 2)
+        widget.setPlainText(new_text)
+        if was_at_bottom:
+            v_scroll.setValue(v_scroll.maximum())
+        else:
+            v_scroll.setValue(min(old_v, v_scroll.maximum()))
+        h_scroll.setValue(min(old_h, h_scroll.maximum()))
 
     @staticmethod
     def _copy_text(text: str) -> None:
