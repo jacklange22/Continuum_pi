@@ -322,12 +322,18 @@ class DxlBus:
 
     def read_live_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
         """Return the lighter-weight runtime telemetry subset used by the GUI bring-up loop."""
-        return self.read_telemetry(servo_ids, include_identity=False, include_limits=False)
+        return self.read_telemetry(
+            servo_ids,
+            include_reported_id=False,
+            include_identity=False,
+            include_limits=False,
+        )
 
     def read_telemetry(
         self,
         servo_ids: list[int],
         *,
+        include_reported_id: bool = True,
         include_identity: bool = True,
         include_limits: bool = True,
     ) -> dict[int, ServoTelemetry]:
@@ -341,7 +347,10 @@ class DxlBus:
         result: dict[int, ServoTelemetry] = {}
         read_time = time.monotonic()
         for servo_id in servo_ids:
-            reported_id_raw, reported_id_error = self._read1(servo_id, self.config.control_table["servo_id"])
+            reported_id_raw: int | None = None
+            reported_id_error: str | None = None
+            if include_reported_id:
+                reported_id_raw, reported_id_error = self._read1(servo_id, self.config.control_table["servo_id"])
             model_raw: int | None = None
             model_error: str | None = None
             firmware_raw: int | None = None

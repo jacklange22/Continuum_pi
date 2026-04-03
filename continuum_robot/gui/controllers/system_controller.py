@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from continuum_robot.config.config_loader import ConfigLoader
 from continuum_robot.config.settings import Settings
@@ -36,6 +37,7 @@ class SystemViewState:
     robot_config: str = "robot_4servo.yaml"
     robot_mode: str = ""
     expected_servo_ids: list[int] = field(default_factory=list)
+    poll_rate_hz: int = 10
     fine_jog_step_ticks: int = 5
     coarse_jog_step_ticks: int = 25
     position_min_offset_ticks: int = -600
@@ -77,6 +79,7 @@ class SystemController:
             robot_config=settings.runtime.robot_config,
             robot_mode=settings.robot.mode,
             expected_servo_ids=list(settings.robot.servo_ids),
+            poll_rate_hz=settings.runtime.poll_rate_hz,
             fine_jog_step_ticks=settings.safety.fine_jog_step_ticks,
             coarse_jog_step_ticks=settings.safety.coarse_jog_step_ticks,
             position_min_offset_ticks=settings.safety.position_min_offset_ticks,
@@ -87,6 +90,7 @@ class SystemController:
             tightening_direction_default=self._default_tightening_direction(settings),
             config_summary=self._build_config_summary(settings),
             status_message=self._initial_status_message(settings),
+            saved_overrides_path=self._existing_overrides_path(config_loader),
         )
         self.rescan_ports()
 
@@ -267,31 +271,59 @@ class SystemController:
         robot_config: str,
         openrb_port: str,
         baudrate: int,
+        poll_rate_hz: int,
         fine_jog_step_ticks: int,
         coarse_jog_step_ticks: int,
-        position_min_offset_ticks: int,
-        position_max_offset_ticks: int,
-        software_position_margin_ticks: int,
+        position_min_offset_ticks: int | None = None,
+        position_max_offset_ticks: int | None = None,
+        software_position_margin_ticks: int | None = None,
         telemetry_freshness_timeout_s: float,
-        pretension_threshold_ma: int,
-        tightening_direction: str,
-    ) -> None:
+        pretension_threshold_ma: int | None = None,
+        tightening_direction: str | None = None,
+    ) -> str:
         try:
             if self.config_loader is None:
                 raise RuntimeError("Config loader is unavailable; runtime parameter editing is disabled.")
+            if poll_rate_hz <= 0:
+                raise ValueError("GUI refresh rate must be positive.")
             if fine_jog_step_ticks <= 0 or coarse_jog_step_ticks <= 0:
                 raise ValueError("Jog increments must be positive.")
             if fine_jog_step_ticks > coarse_jog_step_ticks:
                 raise ValueError("Fine jog increment must be less than or equal to coarse jog increment.")
-            if position_min_offset_ticks > 0 or position_max_offset_ticks < 0:
+            resolved_min_offset = (
+                self.state.position_min_offset_ticks
+                if position_min_offset_ticks is None
+                else int(position_min_offset_ticks)
+            )
+            resolved_max_offset = (
+                self.state.position_max_offset_ticks
+                if position_max_offset_ticks is None
+                else int(position_max_offset_ticks)
+            )
+            resolved_margin = (
+                self.state.software_position_margin_ticks
+                if software_position_margin_ticks is None
+                else int(software_position_margin_ticks)
+            )
+            resolved_threshold = (
+                self.state.pretension_threshold_ma
+                if pretension_threshold_ma is None
+                else int(pretension_threshold_ma)
+            )
+            resolved_direction = (
+                self.state.tightening_direction_default
+                if tightening_direction is None
+                else str(tightening_direction).strip().lower()
+            )
+            if resolved_min_offset > 0 or resolved_max_offset < 0:
                 raise ValueError("Neutral-centered bounds must straddle zero offset.")
-            if position_min_offset_ticks >= position_max_offset_ticks:
+            if resolved_min_offset >= resolved_max_offset:
                 raise ValueError("Minimum offset must be less than maximum offset.")
-            if software_position_margin_ticks < 0:
+            if resolved_margin < 0:
                 raise ValueError("Software position margin must be non-negative.")
             if telemetry_freshness_timeout_s <= 0:
                 raise ValueError("Telemetry freshness timeout must be positive.")
-            if pretension_threshold_ma <= 0:
+            if resolved_threshold <= 0:
                 raise ValueError("Pretension threshold must be positive.")
             robot = self.config_loader.load_robot_config(robot_config)
             overrides = {
@@ -299,18 +331,19 @@ class SystemController:
                 "robot_config": str(robot_config),
                 "openrb_port": str(openrb_port).strip(),
                 "baudrate": int(baudrate),
+                "poll_rate_hz": int(poll_rate_hz),
                 "safety_overrides": {
                     "fine_jog_step_ticks": int(fine_jog_step_ticks),
                     "coarse_jog_step_ticks": int(coarse_jog_step_ticks),
-                    "position_min_offset_ticks": int(position_min_offset_ticks),
-                    "position_max_offset_ticks": int(position_max_offset_ticks),
-                    "software_position_margin_ticks": int(software_position_margin_ticks),
+                    "position_min_offset_ticks": int(resolved_min_offset),
+                    "position_max_offset_ticks": int(resolved_max_offset),
+                    "software_position_margin_ticks": int(resolved_margin),
                     "telemetry_stale_after_s": float(telemetry_freshness_timeout_s),
-                    "default_pretension_current_threshold_ma": int(pretension_threshold_ma),
+                    "default_pretension_current_threshold_ma": int(resolved_threshold),
                 },
                 "robot_overrides": {
                     "tightening_rotation_by_servo": {
-                        str(servo_id): str(tightening_direction).strip().lower()
+                        str(servo_id): str(resolved_direction).strip().lower()
                         for servo_id in robot.servo_ids
                     }
                 },
@@ -322,18 +355,17 @@ class SystemController:
             self.state.openrb_port = str(openrb_port).strip()
             self.state.baudrate = int(baudrate)
             self.state.expected_servo_ids = list(robot.servo_ids)
+            self.state.poll_rate_hz = int(poll_rate_hz)
             self.state.fine_jog_step_ticks = int(fine_jog_step_ticks)
             self.state.coarse_jog_step_ticks = int(coarse_jog_step_ticks)
-            self.state.position_min_offset_ticks = int(position_min_offset_ticks)
-            self.state.position_max_offset_ticks = int(position_max_offset_ticks)
-            self.state.software_position_margin_ticks = int(software_position_margin_ticks)
+            self.state.position_min_offset_ticks = int(resolved_min_offset)
+            self.state.position_max_offset_ticks = int(resolved_max_offset)
+            self.state.software_position_margin_ticks = int(resolved_margin)
             self.state.telemetry_freshness_timeout_s = float(telemetry_freshness_timeout_s)
-            self.state.pretension_threshold_ma = int(pretension_threshold_ma)
-            self.state.tightening_direction_default = str(tightening_direction).strip().lower()
+            self.state.pretension_threshold_ma = int(resolved_threshold)
+            self.state.tightening_direction_default = str(resolved_direction).strip().lower()
             self.state.saved_overrides_path = str(path)
-            self.state.status_message = (
-                f"Saved runtime parameters to {path}. Restart the app or reconnect services before relying on the new values."
-            )
+            self.state.status_message = f"Saved runtime parameters to {path}."
             self.state.last_error = None
         except Exception as exc:
             self.state.last_error = str(exc)
@@ -341,6 +373,7 @@ class SystemController:
             self.refresh()
             raise
         self.refresh()
+        return str(path)
 
     @staticmethod
     def _build_config_summary(settings: Settings) -> str:
@@ -358,6 +391,7 @@ class SystemController:
             f"Tracker fallback enabled: {settings.serial.tracker_fallback_enabled}\n"
             f"Tracker type: {settings.serial.tracker_type}\n"
             f"Tracker freshness timeout: {settings.serial.tracker_freshness_timeout_s}s\n"
+            f"GUI refresh rate: {settings.runtime.poll_rate_hz} Hz\n"
             f"Runtime coil tool: {settings.registration.coil_tool_id}\n"
             f"Registration tool: {settings.registration.capture_tool_id}\n"
             f"Robot config: {settings.runtime.robot_config}\n"
@@ -390,6 +424,7 @@ class SystemController:
             f"Mock mode: {self.state.mock_mode}\n"
             f"OpenRB port: {self.state.openrb_port}\n"
             f"Baudrate: {self.state.baudrate}\n"
+            f"GUI refresh rate: {self.state.poll_rate_hz} Hz\n"
             f"Fine/coarse jog: {self.state.fine_jog_step_ticks}/{self.state.coarse_jog_step_ticks} ticks\n"
             f"Application bounds metadata: {self.state.position_min_offset_ticks}/{self.state.position_max_offset_ticks} ticks\n"
             f"Software margin: {self.state.software_position_margin_ticks} ticks\n"
@@ -414,6 +449,13 @@ class SystemController:
         if self.settings.robot.servo_ids:
             return int(self.settings.robot.servo_ids[0])
         return None
+
+    @staticmethod
+    def _existing_overrides_path(config_loader: ConfigLoader | None) -> str:
+        if config_loader is None:
+            return ""
+        path = Path(config_loader.base_dir) / "system.local.yaml"
+        return str(path) if path.exists() else ""
 
     def _build_bench_debug_text(self, snapshot) -> str:
         openrb_connected = self.openrb_client.get_status_snapshot().connected

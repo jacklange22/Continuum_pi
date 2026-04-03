@@ -168,7 +168,7 @@ class TrackingController:
     def _refresh_tip_pose(self, snapshot) -> None:
         self.state.tip_position_mm = None
         self.state.tip_direction_xyz = None
-        self.state.tip_status = snapshot.tip_pose_status
+        self.state.tip_status = self._render_tip_status(snapshot)
 
         if snapshot.T_robot_tip is None:
             return
@@ -177,3 +177,11 @@ class TrackingController:
         self.state.tip_direction_xyz = tuple(
             float(v) for v in (snapshot.T_robot_tip[0][2], snapshot.T_robot_tip[1][2], snapshot.T_robot_tip[2][2])
         )
+
+    @staticmethod
+    def _render_tip_status(snapshot) -> str:
+        if snapshot.tip_pose_status == "ok" and snapshot.tracker_data_stale:
+            if snapshot.tracker_data_age_s is not None:
+                return f"stale_tracker_data ({snapshot.tracker_data_age_s:.3f} s)"
+            return "stale_tracker_data"
+        return snapshot.tip_pose_status

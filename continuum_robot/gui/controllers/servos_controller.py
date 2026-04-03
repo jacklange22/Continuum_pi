@@ -41,6 +41,9 @@ class ServosViewState:
     position_convention_summary: str = ""
     selected_servo_torque_enabled: bool | None = None
     selected_servo_current_position_tick: int | None = None
+    selected_servo_current_ma: int | None = None
+    selected_servo_voltage_mv: int | None = None
+    selected_servo_temperature_c: int | None = None
     selected_servo_last_target_tick: int | None = None
     selected_servo_last_unclamped_target_tick: int | None = None
     selected_servo_safe_min_tick: int | None = None
@@ -402,6 +405,32 @@ class ServosController:
 
     def set_selected_servo(self, servo_id: int) -> ServosViewState:
         self.state.selected_servo_id = int(servo_id)
+        self._refresh_selected_servo_live()
+        return self.state
+
+    def refresh_selected_servo(self) -> ServosViewState:
+        self.state.connected = self.servo_service.is_connected
+        self.state.robot_mode = self.settings.robot.mode
+        self.state.expected_servo_ids = list(self.settings.robot.servo_ids)
+        self.state.single_servo_mode = (
+            self.settings.robot.mode == "1-servo" or len(self.state.expected_servo_ids) == 1
+        )
+        self._refresh_calibration_summary()
+        self._sync_active_neutral_setpoints()
+        if not self.state.connected:
+            self.state.telemetry = {}
+            self.state.detected_servo_ids = []
+            self.state.missing_servo_ids = list(self.state.expected_servo_ids)
+            self.state.unexpected_servo_ids = []
+            self.state.selected_servo_external_power_ready = None
+            self.state.bench_debug_text = self._build_disconnected_bench_debug_text()
+            self._sync_selected_servo_motion_state()
+            return self.state
+        if self.state.single_servo_mode:
+            return self.refresh()
+        self.state.servo_ids = list(self.state.expected_servo_ids)
+        if self.state.selected_servo_id not in self.state.servo_ids and self.state.servo_ids:
+            self.state.selected_servo_id = int(self.state.servo_ids[0])
         self._refresh_selected_servo_live()
         return self.state
 
@@ -913,6 +942,9 @@ class ServosController:
         if selected_servo_id is None:
             self.state.selected_servo_torque_enabled = None
             self.state.selected_servo_current_position_tick = None
+            self.state.selected_servo_current_ma = None
+            self.state.selected_servo_voltage_mv = None
+            self.state.selected_servo_temperature_c = None
             self.state.selected_servo_safe_min_tick = None
             self.state.selected_servo_safe_max_tick = None
             self.state.selected_servo_last_target_tick = None
@@ -932,6 +964,9 @@ class ServosController:
         motion_state = dict(self._motion_state_by_servo.get(int(selected_servo_id), {}))
         self.state.selected_servo_torque_enabled = selected.get("torque_enabled")
         self.state.selected_servo_current_position_tick = selected.get("position")
+        self.state.selected_servo_current_ma = selected.get("current_ma")
+        self.state.selected_servo_voltage_mv = selected.get("voltage_mv")
+        self.state.selected_servo_temperature_c = selected.get("temperature_c")
         raw_min, raw_max = self.servo_service.raw_position_range()
         self.state.selected_servo_safe_min_tick = int(raw_min)
         self.state.selected_servo_safe_max_tick = int(raw_max)

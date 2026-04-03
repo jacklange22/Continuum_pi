@@ -30,7 +30,7 @@ from continuum_robot.services.models import (
     ServiceHealthSnapshot,
 )
 from continuum_robot.services.tracking_service import TrackingService
-from continuum_robot.tracking.transforms import compose_T_A_C
+from continuum_robot.tracking.transforms import assert_rigid_transform_matrix, compose_T_A_C
 from continuum_robot.utils.time_utils import utc_now_iso
 
 
@@ -644,6 +644,14 @@ class RegistrationService:
         return [float(v) for v in T_aurora_point[0:3, 3]]
 
     def _require_tool_snapshot(self, tool_id: str):
+        snapshot = self.tracking_service.get_snapshot()
+        if snapshot.packets_received_count <= 0:
+            raise RuntimeError("Tracker has not produced any frames yet.")
+        if snapshot.tracker_data_stale:
+            age = snapshot.tracker_data_age_s
+            if age is None:
+                raise RuntimeError("Tracker data is stale. Refresh tracking before capture.")
+            raise RuntimeError(f"Tracker data is stale ({age:.3f} s). Refresh tracking before capture.")
         tool = self.tracking_service.get_latest_tool(tool_id)
         if tool is None:
             raise RuntimeError(f"Tool {tool_id} has no runtime snapshot")
@@ -880,6 +888,7 @@ class RegistrationService:
         matrix = np.asarray(transform, dtype=float)
         if matrix.shape != (4, 4):
             raise ValueError("capture_tool_tip_transform must be 4x4")
+        assert_rigid_transform_matrix(matrix, "capture_tool_tip_transform")
         return matrix
 
     def get_latest_registration_artifact_summary(self) -> dict[str, object]:

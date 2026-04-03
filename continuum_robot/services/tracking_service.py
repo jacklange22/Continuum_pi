@@ -1053,9 +1053,9 @@ class TrackingService:
             "error_messages": list(self._state.error_messages),
         }
 
-        if any(fault in self._FAILED_FAULTS for fault in tracker_faults):
+        if any(fault in self._FAILED_FAULTS for fault in faults):
             health = HEALTH_FAILED
-        elif tracker_faults:
+        elif faults:
             health = HEALTH_DEGRADED
         else:
             health = HEALTH_HEALTHY
@@ -1079,8 +1079,16 @@ class TrackingService:
             return
 
         if tracker_faults:
+            status = f"Tracking {health} via {self._state.backend_identity}: " + ", ".join(tracker_faults)
+            if pipeline_faults:
+                status += f"; pose pipeline {', '.join(pipeline_faults)}"
+            self._state.health.status = status
+            return
+
+        if pipeline_faults:
             self._state.health.status = (
-                f"Tracking {health} via {self._state.backend_identity}: " + ", ".join(tracker_faults)
+                f"Tracking {health} via {self._state.backend_identity}: "
+                f"pose pipeline {', '.join(pipeline_faults)}"
             )
             return
 

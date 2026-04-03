@@ -66,6 +66,7 @@ Capture is the critical canonical action. The GUI must not append samples on its
   `RegistrationService.capture_sample(label)`
 - `RegistrationService.capture_sample(...)`:
   - checks that a session is active
+  - requires fresh tracker data before accepting a capture
   - resolves the measurement tool through `TrackingService.get_latest_tool(...)`
   - converts the live tool transform into the measurement point
   - appends the point into `RegistrationSnapshot.raw_points_by_label[label]`
@@ -194,6 +195,11 @@ For the simple tracker MVP, the artifact now records two different transform con
 - `live_pose_tip_transform`: the saved `T_coil_tip` source used later for live robot-frame pose from `0A`
 
 This is intentional because the tracker MVP uses the pivot-calibrated `0B` tip file during capture, while `T_coil_tip` remains identity by design unless a separate `0A -> tip` calibration workflow exists.
+
+The older field names `raw_captured_landmarks_robot_xyz` and `averaged_landmarks_robot_xyz`
+are historical. In the current simple workflow they contain the captured measurement-point
+coordinates in Aurora frame before solving, and the repository also writes the precise alias
+fields `raw_captured_landmarks_aurora_xyz` and `averaged_landmarks_aurora_xyz`.
 
 ## Dry-Validation Coverage
 

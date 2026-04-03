@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from continuum_robot.config.config_loader import ConfigLoader
 from continuum_robot.config.schemas import (
     CalibrationConfig,
     ExperimentConfig,
@@ -459,6 +460,7 @@ def test_servos_controller_uses_live_read_path_for_4servo_refresh(tmp_path: Path
     controller = ServosController(service, settings)
 
     assert bus.live_read_calls[-1] == [1, 2, 3, 4]
+    assert all(call[1].get("include_reported_id") is False for call in bus.read_calls)
     assert all(call[1].get("include_identity") is False for call in bus.read_calls)
     assert all(call[1].get("include_limits") is False for call in bus.read_calls)
 
@@ -506,5 +508,76 @@ def test_servos_controller_jog_does_not_trigger_full_table_refresh_reads(tmp_pat
     assert bus.live_read_calls == [[3], [3]]
     assert len(bus.read_calls) == 2
     assert all(call[0] == [3] for call in bus.read_calls)
+    assert all(call[1].get("include_reported_id") is False for call in bus.read_calls)
     assert all(call[1].get("include_identity") is False for call in bus.read_calls)
     assert all(call[1].get("include_limits") is False for call in bus.read_calls)
+
+
+def test_servos_controller_refresh_selected_servo_uses_selected_only_live_read(tmp_path: Path) -> None:
+    settings = _settings_4servo()
+    bus = _TrackingReadBus([1, 2, 3, 4])
+    service = _servo_service(
+        tmp_path,
+        dxl_bus=bus,
+        context_servo_ids=[1, 2, 3, 4],
+        robot_mode="4-servo",
+    )
+    service.connect("/dev/ttyACM0", 57600)
+    controller = ServosController(service, settings)
+    controller.set_selected_servo(4)
+    bus.live_read_calls.clear()
+    bus.read_calls.clear()
+
+    controller.refresh_selected_servo()
+
+    assert bus.live_read_calls == [[4]]
+    assert len(bus.read_calls) == 1
+    assert bus.read_calls[0][0] == [4]
+    assert bus.read_calls[0][1].get("include_reported_id") is False
+    assert bus.read_calls[0][1].get("include_identity") is False
+    assert bus.read_calls[0][1].get("include_limits") is False
+
+
+def test_system_controller_save_runtime_parameters_persists_poll_rate(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "system.yaml").write_text('robot_config: "robot_4servo.yaml"\npoll_rate_hz: 10\n', encoding="utf-8")
+    (config_dir / "robot_4servo.yaml").write_text(
+        "\n".join(
+            [
+                'mode: "4-servo"',
+                "servo_ids: [1, 2, 3, 4]",
+                "tendon_to_servo: [1, 2, 3, 4]",
+                "tightening_rotation_by_servo: {1: cw, 2: cw, 3: cw, 4: cw}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    loader = ConfigLoader(base_dir=config_dir)
+    settings = _settings_4servo()
+    controller = SystemController(
+        tracking_service=_TrackingStub(),
+        openrb_client=MockOpenRbClient(),
+        servo_service=_servo_service(tmp_path, context_servo_ids=[1, 2, 3, 4], robot_mode="4-servo"),
+        settings=settings,
+        config_loader=loader,
+    )
+
+    saved_path = controller.save_runtime_parameters(
+        mock_mode=False,
+        robot_config="robot_4servo.yaml",
+        openrb_port="/dev/ttyACM0",
+        baudrate=57600,
+        poll_rate_hz=20,
+        fine_jog_step_ticks=4,
+        coarse_jog_step_ticks=20,
+        telemetry_freshness_timeout_s=0.2,
+    )
+
+    saved = loader.load_system_local_overrides()
+
+    assert saved_path.endswith("system.local.yaml")
+    assert saved["poll_rate_hz"] == 20
+    assert saved["openrb_port"] == "/dev/ttyACM0"
+    assert saved["safety_overrides"]["fine_jog_step_ticks"] == 4
+    assert saved["safety_overrides"]["telemetry_stale_after_s"] == 0.2

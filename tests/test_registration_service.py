@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from continuum_robot.hardware.mock_aurora_client import MockAuroraClient
 from continuum_robot.registration.repository import RegistrationRepository
@@ -205,3 +206,56 @@ def test_registration_service_simple_registration_records_tip_provenance_and_app
     assert saved["live_pose_tip_transform"]["source"] == "identity_assumption_simple_registration"
     assert np.allclose(np.asarray(saved["T_coil_tip"], dtype=float), np.eye(4))
     assert saved["config_used"]["capture_tip_offset_applied_before_solving"] is True
+
+
+def test_registration_service_rejects_stale_tracker_data_during_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tracking_service, registration_service = _make_services(tmp_path)
+    registration_service.begin_session()
+    _ingest_tool_0b_sample(tracking_service, 1, (0.0, 0.0, 0.0))
+
+    stale_snapshot = tracking_service.get_snapshot()
+    stale_snapshot.tracker_data_stale = True
+    stale_snapshot.tracker_data_age_s = 0.61
+    monkeypatch.setattr(tracking_service, "get_snapshot", lambda: stale_snapshot)
+
+    with pytest.raises(RuntimeError, match=r"Tracker data is stale \(0.610 s\)"):
+        registration_service.capture_sample("L1")
+
+
+def test_registration_service_peek_current_measurement_point_reports_stale_tracker_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracking_service, registration_service = _make_services(tmp_path)
+    _ingest_tool_0b_sample(tracking_service, 1, (0.0, 0.0, 0.0))
+
+    stale_snapshot = tracking_service.get_snapshot()
+    stale_snapshot.tracker_data_stale = True
+    stale_snapshot.tracker_data_age_s = 0.33
+    monkeypatch.setattr(tracking_service, "get_snapshot", lambda: stale_snapshot)
+
+    point = registration_service.peek_current_measurement_point()
+
+    assert point["available"] is False
+    assert "Tracker data is stale (0.330 s)." in str(point["status"])
+
+
+def test_registration_service_rejects_non_rigid_capture_tool_tip_transform(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="capture_tool_tip_transform\\[0:3,0:3\\] is not orthonormal"):
+        _make_services(
+            tmp_path,
+            config_lines=[
+                "landmark_labels: [L1, L2, L3]",
+                "captures_per_landmark: 1",
+                'capture_tool_id: "0B"',
+                "capture_tool_tip_transform:",
+                "  - [2.0, 0.0, 0.0, 1.0]",
+                "  - [0.0, 1.0, 0.0, 2.0]",
+                "  - [0.0, 0.0, 1.0, 3.0]",
+                "  - [0.0, 0.0, 0.0, 1.0]",
+                "nominal_landmarks_robot_xyz_mm:",
+                "  L1: [0.0, 0.0, 0.0]",
+                "  L2: [10.0, 0.0, 0.0]",
+                "  L3: [0.0, 10.0, 0.0]",
+            ],
+        )

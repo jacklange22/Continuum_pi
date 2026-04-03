@@ -92,12 +92,18 @@ class MockDxlBus(DxlBus):
         self._state[new_id] = telemetry
 
     def read_live_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
-        return self.read_telemetry(servo_ids, include_identity=False, include_limits=False)
+        return self.read_telemetry(
+            servo_ids,
+            include_reported_id=False,
+            include_identity=False,
+            include_limits=False,
+        )
 
     def read_telemetry(
         self,
         servo_ids: list[int],
         *,
+        include_reported_id: bool = True,
         include_identity: bool = True,
         include_limits: bool = True,
     ) -> dict[int, ServoTelemetry]:
@@ -120,7 +126,11 @@ class MockDxlBus(DxlBus):
             else:
                 result[servo_id] = ServoTelemetry(
                     servo_id=servo_id,
-                    reported_servo_id=telemetry.reported_servo_id if telemetry.reported_servo_id is not None else servo_id,
+                    reported_servo_id=(
+                        telemetry.reported_servo_id
+                        if include_reported_id and telemetry.reported_servo_id is not None
+                        else None
+                    ),
                     model_number=telemetry.model_number if include_identity else None,
                     firmware_version=telemetry.firmware_version if include_identity else None,
                     operating_mode=telemetry.operating_mode,

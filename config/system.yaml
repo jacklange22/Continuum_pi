@@ -33,7 +33,9 @@ tracker_min_effective_fps: 15.0
 tracker_max_stale_interval_s: 0.25
 tracker_max_consecutive_missing_frames: 20
 tracker_require_valid_transforms: true
-poll_rate_hz: 10
+# Keep the GUI refresh loop high enough that servo freshness is governed mainly
+# by real serial latency, not by an artificially slow UI timer.
+poll_rate_hz: 20
 # The GUI refresh timer is not a substitute for honest servo freshness checks;
 # stale telemetry is still blocked using `telemetry_stale_after_s`.
 packet_capture_dir: "data/tracker_captures"

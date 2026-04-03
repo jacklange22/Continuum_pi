@@ -472,3 +472,34 @@ def test_tracker_mvp_pivot_parse_failure_preserves_parse_report_for_operator_rev
     assert state.pivot_input_usable_rows == 0
     assert state.pivot_input_rejected_row_count == 1
     assert "row 2: missing values for qz" in state.pivot_input_rejected_rows[0]
+
+
+def test_tracker_mvp_live_pose_requires_fresh_tracker_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tip_path = tmp_path / "data" / "tip_cals" / "generated_penprobe_tip.csv"
+    tip_path.parent.mkdir(parents=True, exist_ok=True)
+    tip_path.write_text("1.0,2.0,3.0", encoding="utf-8")
+    controller, _registration_controller, tracking_service = _build_runtime(
+        tmp_path,
+        penprobe_file="data/tip_cals/generated_penprobe_tip.csv",
+    )
+    tracking_service.start()
+
+    snapshot = tracking_service.get_snapshot()
+    snapshot.tip_pose_status = "ok"
+    snapshot.T_robot_tip = [
+        [1.0, 0.0, 0.0, 1.0],
+        [0.0, 1.0, 0.0, 2.0],
+        [0.0, 0.0, 1.0, 3.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    snapshot.tracker_data_stale = True
+    snapshot.tracker_data_age_s = 0.42
+    monkeypatch.setattr(tracking_service, "get_snapshot", lambda: snapshot)
+
+    state = controller.refresh()
+
+    assert state.live_pose_ready is False
+    assert state.live_tip_status == "stale_tracker_data (0.420 s)"

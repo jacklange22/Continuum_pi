@@ -481,7 +481,12 @@ class TrackerMvpController:
                 )
             )
         )
-        live_pose_ready = bool(snapshot.tip_pose_status == "ok" and snapshot.T_robot_tip is not None)
+        live_tip_status = self._render_live_pose_status(snapshot)
+        live_pose_ready = bool(
+            snapshot.tip_pose_status == "ok"
+            and snapshot.T_robot_tip is not None
+            and not snapshot.tracker_data_stale
+        )
         live_tip_position = None
         if live_pose_ready and snapshot.T_robot_tip is not None:
             live_tip_position = (
@@ -611,7 +616,7 @@ class TrackerMvpController:
         self.state.latest_registration_path = str(registration_snapshot.latest_accepted_path or "")
         self.state.latest_registration_status = latest_registration_status
         self.state.live_pose_ready = live_pose_ready
-        self.state.live_tip_status = snapshot.tip_pose_status
+        self.state.live_tip_status = live_tip_status
         self.state.live_tip_position_mm = live_tip_position
         latest_registration_summary = self.registration_service.get_latest_registration_artifact_summary()
         self.state.transform_summary_lines = self._transform_summary(
@@ -738,6 +743,14 @@ class TrackerMvpController:
     @staticmethod
     def _as_float(value) -> float | None:
         return None if value in (None, "") else float(value)
+
+    @staticmethod
+    def _render_live_pose_status(snapshot) -> str:
+        if snapshot.tip_pose_status == "ok" and snapshot.tracker_data_stale:
+            if snapshot.tracker_data_age_s is not None:
+                return f"stale_tracker_data ({snapshot.tracker_data_age_s:.3f} s)"
+            return "stale_tracker_data"
+        return snapshot.tip_pose_status
 
     def _tip_file_preview(self, path: Path) -> str:
         if not path.exists():

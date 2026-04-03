@@ -347,8 +347,7 @@ def test_app_window_promotes_tracking_and_registration_before_legacy(tmp_path: P
     window = AppWindow(_app_context(tmp_path))
     try:
         labels = [window.tab_widget.tabText(index) for index in range(window.tab_widget.count())]
-        assert labels[:2] == ["Tracking", "Registration"]
-        assert labels[-1] == "Tracker Legacy"
+        assert labels == ["System", "Tracking", "Registration", "Servos", "Experiment"]
     finally:
         window.shutdown()
 
@@ -379,6 +378,15 @@ def test_servos_tab_selected_servo_panel_reflects_controller_state(tmp_path: Pat
     assert tab.selected_servo_bounds_label.text() == "[0, 4095]"
     assert tab.selected_servo_freshness_limit_label.text() == "0.250 s"
     assert tab.selected_servo_position_label.text() == str(service.dxl_bus._state[2].present_position)
+    assert tab.selected_servo_current_draw_label.text() == str(service.dxl_bus._state[2].present_current_ma)
+
+
+def test_servos_tab_hides_id_assignment_controls_from_operator_surface(tmp_path: Path) -> None:
+    _app()
+    tab = ServosTab(ServosController(_servo_service(tmp_path), _settings()))
+
+    assert hasattr(tab, "scan_button")
+    assert not hasattr(tab, "assign_button")
 
 
 def _app_context(tmp_path: Path) -> AppContext:
@@ -411,11 +419,18 @@ def _app_context(tmp_path: Path) -> AppContext:
 
 class _PortSelectionController:
     def __init__(self) -> None:
+        self.save_calls: list[dict] = []
         self.state = SystemViewState(
             mock_mode=True,
             aurora_port="/dev/mock-aurora",
             openrb_port="/dev/mock-openrb",
             baudrate=115200,
+            poll_rate_hz=20,
+            robot_config="robot_4servo.yaml",
+            robot_mode="4-servo",
+            expected_servo_ids=[1, 2, 3, 4],
+            telemetry_freshness_timeout_s=0.25,
+            available_robot_configs=["robot_1servo.yaml", "robot_4servo.yaml"],
             available_ports=[
                 SerialPortInfo(device="/dev/mock-aurora", description="Mock Aurora"),
                 SerialPortInfo(device="/dev/mock-openrb", description="Mock OpenRB"),
@@ -449,7 +464,7 @@ class _PortSelectionController:
         return self.state
 
     def save_runtime_parameters(self, **_kwargs) -> None:
-        pass
+        self.save_calls.append(dict(_kwargs))
 
     def refresh(self) -> SystemViewState:
         return self.state
@@ -516,6 +531,7 @@ def test_system_controller_saves_runtime_parameters(tmp_path: Path) -> None:
         robot_config="robot_1servo.yaml",
         openrb_port="/dev/ttyUSB_TEST",
         baudrate=57600,
+        poll_rate_hz=20,
         fine_jog_step_ticks=3,
         coarse_jog_step_ticks=15,
         position_min_offset_ticks=-120,
@@ -567,6 +583,32 @@ def test_system_tab_prefers_custom_port_text_for_editable_combo() -> None:
     assert tab._selected_port(tab.openrb_port_combo) == "/dev/custom-openrb"
 
 
+def test_system_tab_wraps_workspace_in_scroll_area() -> None:
+    _app()
+    controller = _PortSelectionController()
+    tab = SystemTab(controller)
+
+    assert isinstance(tab.scroll_area, QScrollArea)
+    assert tab.scroll_area.widget() is not None
+
+
+def test_system_tab_save_apply_prefers_callback_when_available() -> None:
+    _app()
+    controller = _PortSelectionController()
+    received: list[dict] = []
+    tab = SystemTab(controller, apply_runtime_parameters=lambda **kwargs: received.append(dict(kwargs)))
+
+    tab.update(controller.state)
+    tab.poll_rate_spin.setValue(24)
+    tab.telemetry_freshness_spin.setValue(0.3)
+    tab.save_parameters_button.click()
+
+    assert len(received) == 1
+    assert received[0]["poll_rate_hz"] == 24
+    assert received[0]["telemetry_freshness_timeout_s"] == 0.3
+    assert controller.save_calls == []
+
+
 def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _app()
     window = AppWindow(_app_context(tmp_path))
@@ -576,6 +618,7 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
             "tracker_mvp": 0,
             "system": 0,
             "servos": 0,
+            "servos_selected": 0,
             "tracking": 0,
             "registration": 0,
             "experiment": 0,
@@ -602,6 +645,11 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
             _wrap("registration", window.registration_controller.state),
         )
         monkeypatch.setattr(
+            window.servos_controller,
+            "refresh_selected_servo",
+            _wrap("servos_selected", window.servos_controller.state),
+        )
+        monkeypatch.setattr(
             window.experiment_controller,
             "refresh_prerequisites",
             _wrap("experiment", window.experiment_controller.state),
@@ -614,6 +662,7 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
             "tracker_mvp": 1,
             "system": 1,
             "servos": 0,
+            "servos_selected": 0,
             "tracking": 1,
             "registration": 0,
             "experiment": 0,
@@ -626,8 +675,22 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
             "tracker_mvp": 1,
             "system": 1,
             "servos": 0,
+            "servos_selected": 0,
             "tracking": 0,
             "registration": 1,
+            "experiment": 0,
+        }
+
+        window.tab_widget.setCurrentWidget(window.servos_tab)
+        counts = {key: 0 for key in counts}
+        window.refresh()
+        assert counts == {
+            "tracker_mvp": 0,
+            "system": 1,
+            "servos": 1,
+            "servos_selected": 0,
+            "tracking": 0,
+            "registration": 0,
             "experiment": 0,
         }
 
@@ -638,21 +701,10 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
             "tracker_mvp": 0,
             "system": 1,
             "servos": 0,
+            "servos_selected": 0,
             "tracking": 0,
             "registration": 0,
             "experiment": 1,
-        }
-
-        window.tab_widget.setCurrentWidget(window.tracker_mvp_tab)
-        counts = {key: 0 for key in counts}
-        window.refresh()
-        assert counts == {
-            "tracker_mvp": 1,
-            "system": 1,
-            "servos": 0,
-            "tracking": 0,
-            "registration": 1,
-            "experiment": 0,
         }
     finally:
         window.shutdown()

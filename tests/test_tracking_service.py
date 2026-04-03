@@ -155,8 +155,36 @@ def test_tracking_service_live_backend_detects_role_mismatch(tmp_path: Path) -> 
 
     assert snapshot.tip_pose_status == "role_mismatch"
     assert "registration_role_mismatch" in snapshot.faults
+    assert snapshot.health.health == "failed"
+    assert "pose pipeline registration_role_mismatch" in snapshot.health.status
     assert snapshot.stored_registration_coil_tool_id == "0B"
     assert snapshot.stored_registration_measurement_tool_id == "0A"
+
+
+def test_tracking_service_invalid_registration_escalates_health_to_failed(tmp_path: Path) -> None:
+    registration_path = tmp_path / "latest_registration.json"
+    registration_path.write_text(
+        json.dumps(
+            {
+                "T_robot_aurora": np.eye(4).tolist(),
+                "T_coil_tip": [[1.0, 0.0], [0.0, 1.0]],
+            }
+        ),
+        encoding="utf-8",
+    )
+    service = TrackingService(
+        live_backend=_FakeLiveBackend(_live_state(frame_number=None, tools={}, connection_state="connecting")),
+        port="/dev/ttyUSB0",
+        registration_path=registration_path,
+        config_source="test",
+    )
+
+    snapshot = service.get_snapshot()
+
+    assert snapshot.registration_state == "invalid_registration"
+    assert snapshot.tip_pose_status == "invalid_registration"
+    assert "invalid_registration" in snapshot.pipeline_faults
+    assert snapshot.health.health == "failed"
 
 
 def test_tracking_service_live_backend_marks_invalid_transform(tmp_path: Path) -> None:

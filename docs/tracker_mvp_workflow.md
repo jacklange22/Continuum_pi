@@ -114,6 +114,7 @@ Registration passes when:
 
 - a tip file is loaded and registration geometry is ready
 - 4 unique landmarks are selected
+- tracker data is fresh when each `0B` capture is taken
 - all captures are complete
 - solve succeeds with reported FRE / RMSE and residuals
 - accepted registration is saved
@@ -122,6 +123,7 @@ Live robot-frame pose is available when:
 
 - accepted registration is loaded
 - tool `0A` is visible and tracked
+- tracker data is fresh
 - `tip_pose_status` becomes `ok`
 
 Tracker operational-with-warning means:

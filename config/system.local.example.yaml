@@ -15,6 +15,10 @@ tracker_fallback_enabled: true
 tracker_type: "aurora"
 baudrate: 57600
 mock_mode: false
+# This drives the GUI refresh timer. For Pi bring-up, 20 Hz is a practical
+# default for fresher selected-servo status without pretending telemetry is
+# newer than it really is.
+poll_rate_hz: 20
 visualization_mode: "auto"
 visualization_safe_effects: true
 robot_overrides:
