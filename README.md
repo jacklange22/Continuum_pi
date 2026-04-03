@@ -180,6 +180,12 @@ Focused tracker-first launcher for tomorrow's Pi session:
 python scripts/run_tracker_mvp.py
 ```
 
+That launcher now opens the permanent `Tracking` tab. The permanent GUI split is:
+
+- `Tracking`: Aurora connect, validation, live tool state, staged `0B` pivot calibration, and accepted tip review
+- `Registration`: 4-point landmark capture, solve/review/save, and live robot-frame pose summary
+- `Tracker Legacy`: compatibility/diagnostic copy of the old combined workspace
+
 Current tracker-first MVP operator sequence:
 
 1. connect Aurora

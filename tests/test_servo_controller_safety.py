@@ -131,11 +131,49 @@ def _settings_4servo() -> Settings:
 
 
 class _ExplodingReadBus(MockDxlBus):
-    def read_telemetry(self, servo_ids: list[int]):
+    def read_telemetry(self, servo_ids: list[int], **kwargs):
         raise RuntimeError("mock telemetry read failure")
 
 
-def _servo_service(tmp_path: Path, *, dxl_bus=None, context_servo_ids: list[int] | None = None, robot_mode: str = "1-servo", calibration_path: Path | None = None) -> ServoService:
+class _TrackingReadBus(MockDxlBus):
+    def __init__(self, servo_ids: list[int]) -> None:
+        super().__init__(servo_ids)
+        self.live_read_calls: list[list[int]] = []
+        self.read_calls: list[tuple[list[int], dict]] = []
+
+    def read_live_telemetry(self, servo_ids: list[int]):
+        self.live_read_calls.append([int(servo_id) for servo_id in servo_ids])
+        return super().read_live_telemetry(servo_ids)
+
+    def read_telemetry(self, servo_ids: list[int], **kwargs):
+        self.read_calls.append(([int(servo_id) for servo_id in servo_ids], dict(kwargs)))
+        return super().read_telemetry(servo_ids, **kwargs)
+
+
+class _StaleControllerBus(MockDxlBus):
+    def read_live_telemetry(self, servo_ids: list[int]):
+        result = super().read_live_telemetry(servo_ids)
+        for servo_id in servo_ids:
+            result[int(servo_id)].last_read_monotonic_s = self._state[int(servo_id)].last_read_monotonic_s
+        return result
+
+    def read_telemetry(self, servo_ids: list[int], **kwargs):
+        result = super().read_telemetry(servo_ids, **kwargs)
+        for servo_id in servo_ids:
+            result[int(servo_id)].last_read_monotonic_s = self._state[int(servo_id)].last_read_monotonic_s
+        return result
+
+
+def _servo_service(
+    tmp_path: Path,
+    *,
+    dxl_bus=None,
+    context_servo_ids: list[int] | None = None,
+    robot_mode: str = "1-servo",
+    calibration_path: Path | None = None,
+    time_fn=None,
+    telemetry_stale_after_s: float = 0.25,
+) -> ServoService:
     if context_servo_ids is None:
         context_servo_ids = [1]
     if dxl_bus is None:
@@ -151,13 +189,13 @@ def _servo_service(tmp_path: Path, *, dxl_bus=None, context_servo_ids: list[int]
             fine_jog_step_ticks=5,
             coarse_jog_step_ticks=25,
             software_position_margin_ticks=64,
-            telemetry_stale_after_s=0.25,
+            telemetry_stale_after_s=telemetry_stale_after_s,
             pretension_step_ticks=2,
             pretension_timeout_s=2.0,
             pretension_settle_time_s=0.0,
             max_temperature_c=70,
             min_input_voltage_mv=4000,
-            time_fn=lambda: 0.0,
+            time_fn=time_fn or (lambda: 0.0),
         ),
         neutral_calibration=NeutralCalibrationService(
             path=calibration_path or (tmp_path / "neutral.json"),
@@ -174,7 +212,7 @@ def _servo_service(tmp_path: Path, *, dxl_bus=None, context_servo_ids: list[int]
         ),
         pretension_validation=PretensionValidationService(),
         sleep_fn=lambda _seconds: None,
-        time_fn=lambda: 0.0,
+        time_fn=time_fn or (lambda: 0.0),
     )
 
 
@@ -331,6 +369,11 @@ def test_servos_controller_reports_4servo_missing_and_unexpected_ids(tmp_path: P
     assert controller.state.unexpected_servo_ids == [9]
     assert controller.state.telemetry[3]["error"] is not None
 
+    controller.refresh()
+
+    assert controller.state.unexpected_servo_ids == [9]
+    assert controller.state.detected_servo_ids == [1, 2, 4, 9]
+
 
 def test_servos_controller_four_servo_selection_and_jog_only_moves_selected_servo(tmp_path: Path) -> None:
     settings = _settings_4servo()
@@ -356,3 +399,112 @@ def test_servos_controller_four_servo_selection_and_jog_only_moves_selected_serv
     assert service.dxl_bus._state[1].present_position == before[1]
     assert service.dxl_bus._state[2].present_position == before[2]
     assert service.dxl_bus._state[4].present_position == before[4]
+
+
+def test_servos_controller_exposes_selected_servo_freshness_fields(tmp_path: Path) -> None:
+    settings = _settings_4servo()
+    service = _servo_service(
+        tmp_path,
+        dxl_bus=MockDxlBus([1, 2, 3, 4]),
+        context_servo_ids=[1, 2, 3, 4],
+        robot_mode="4-servo",
+    )
+    service.connect("/dev/ttyACM0", 57600)
+    controller = ServosController(service, settings)
+
+    controller.set_selected_servo(2)
+
+    assert controller.state.selected_servo_id == 2
+    assert controller.state.selected_servo_torque_enabled is False
+    assert controller.state.selected_servo_telemetry_age_s is not None
+    assert controller.state.selected_servo_last_read_label.endswith("ago")
+    assert controller.state.selected_servo_telemetry_fresh is True
+    assert controller.state.telemetry[2]["telemetry_age_s"] is not None
+    assert controller.state.telemetry[2]["freshness_threshold_s"] == 0.25
+
+
+def test_servos_controller_keeps_last_motion_state_per_servo(tmp_path: Path) -> None:
+    settings = _settings_4servo()
+    service = _servo_service(
+        tmp_path,
+        dxl_bus=MockDxlBus([1, 2, 3, 4]),
+        context_servo_ids=[1, 2, 3, 4],
+        robot_mode="4-servo",
+    )
+    service.connect("/dev/ttyACM0", 57600)
+    controller = ServosController(service, settings)
+
+    controller.set_selected_servo(3)
+    controller.fine_jog(3, 1)
+    controller.set_selected_servo(1)
+
+    assert controller.state.selected_servo_id == 1
+    assert controller.state.selected_servo_last_action_label == "None"
+    assert controller.state.selected_servo_last_result_label == "None"
+    assert controller.state.selected_servo_last_target_tick is None
+    assert controller.state.selected_servo_last_motion_summary == "No jog command sent yet."
+
+
+def test_servos_controller_uses_live_read_path_for_4servo_refresh(tmp_path: Path) -> None:
+    settings = _settings_4servo()
+    bus = _TrackingReadBus([1, 2, 3, 4])
+    service = _servo_service(
+        tmp_path,
+        dxl_bus=bus,
+        context_servo_ids=[1, 2, 3, 4],
+        robot_mode="4-servo",
+    )
+    service.connect("/dev/ttyACM0", 57600)
+
+    controller = ServosController(service, settings)
+
+    assert bus.live_read_calls[-1] == [1, 2, 3, 4]
+    assert all(call[1].get("include_identity") is False for call in bus.read_calls)
+    assert all(call[1].get("include_limits") is False for call in bus.read_calls)
+
+
+def test_servos_controller_formats_stale_telemetry_reason_honestly(tmp_path: Path) -> None:
+    settings = _settings_4servo()
+    bus = _StaleControllerBus([1, 2, 3, 4])
+    for servo_id in [1, 2, 3, 4]:
+        bus._state[servo_id].last_read_monotonic_s = 0.0
+    service = _servo_service(
+        tmp_path,
+        dxl_bus=bus,
+        context_servo_ids=[1, 2, 3, 4],
+        robot_mode="4-servo",
+        time_fn=lambda: 1.0,
+        telemetry_stale_after_s=0.25,
+    )
+    service.connect("/dev/ttyACM0", 57600)
+
+    controller = ServosController(service, settings)
+
+    assert controller.state.selected_servo_telemetry_status_label == "Stale"
+    assert controller.state.selected_servo_telemetry_fresh is False
+    assert controller.state.selected_servo_telemetry_age_s == 1.0
+    assert controller.state.selected_servo_reason_label == "Telemetry is stale (1.000 s > 0.250 s)."
+    assert controller.state.telemetry[1]["block_reason"] == "Telemetry is stale (1.000 s > 0.250 s)."
+
+
+def test_servos_controller_jog_does_not_trigger_full_table_refresh_reads(tmp_path: Path) -> None:
+    settings = _settings_4servo()
+    bus = _TrackingReadBus([1, 2, 3, 4])
+    service = _servo_service(
+        tmp_path,
+        dxl_bus=bus,
+        context_servo_ids=[1, 2, 3, 4],
+        robot_mode="4-servo",
+    )
+    service.connect("/dev/ttyACM0", 57600)
+    controller = ServosController(service, settings)
+    bus.live_read_calls.clear()
+    bus.read_calls.clear()
+
+    controller.fine_jog(3, 1)
+
+    assert bus.live_read_calls == [[3], [3]]
+    assert len(bus.read_calls) == 2
+    assert all(call[0] == [3] for call in bus.read_calls)
+    assert all(call[1].get("include_identity") is False for call in bus.read_calls)
+    assert all(call[1].get("include_limits") is False for call in bus.read_calls)

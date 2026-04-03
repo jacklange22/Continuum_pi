@@ -34,6 +34,8 @@ tracker_max_stale_interval_s: 0.25
 tracker_max_consecutive_missing_frames: 20
 tracker_require_valid_transforms: true
 poll_rate_hz: 10
+# The GUI refresh timer is not a substitute for honest servo freshness checks;
+# stale telemetry is still blocked using `telemetry_stale_after_s`.
 packet_capture_dir: "data/tracker_captures"
 neutral_setpoints_path: "data/calibrations/neutral_setpoints.json"
 latest_registration_path: "data/registrations/latest_registration.json"

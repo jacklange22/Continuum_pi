@@ -316,6 +316,22 @@ class ServoService:
     def read_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
         return self.dxl_bus.read_telemetry(servo_ids)
 
+    def read_live_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
+        return self.dxl_bus.read_live_telemetry(servo_ids)
+
+    def telemetry_age_s(self, telemetry: ServoTelemetry | None) -> float | None:
+        if telemetry is None:
+            return None
+        return self.safety_guard.telemetry_age_s(telemetry.last_read_monotonic_s)
+
+    def telemetry_is_fresh(self, telemetry: ServoTelemetry | None) -> bool | None:
+        if telemetry is None:
+            return None
+        return self.safety_guard.telemetry_is_fresh(telemetry.last_read_monotonic_s)
+
+    def telemetry_freshness_threshold_s(self) -> float:
+        return float(self.safety_guard.telemetry_stale_after_s)
+
     def load_neutral_setpoints(self) -> dict[int, int]:
         return self.neutral_calibration.load_neutral_setpoints()
 
@@ -876,7 +892,12 @@ class ServoService:
         require_calibrated_bounds: bool,
         telemetry: ServoTelemetry | None = None,
     ) -> ServoMotionAssessment:
-        current = telemetry or self.read_telemetry([servo_id])[int(servo_id)]
+        if telemetry is not None:
+            current = telemetry
+        elif require_calibrated_bounds:
+            current = self.read_telemetry([servo_id])[int(servo_id)]
+        else:
+            current = self.read_live_telemetry([servo_id])[int(servo_id)]
         errors: list[str] = []
         safe_min: int | None = None
         safe_max: int | None = None
@@ -989,7 +1010,7 @@ class ServoService:
         goal = int(assessment.telemetry.present_position + delta_ticks)
         self._validate_goal_against_assessment(assessment, goal)
         self.dxl_bus.write_goal_positions({int(servo_id): goal})
-        updated = self.read_telemetry([int(servo_id)])
+        updated = self.read_live_telemetry([int(servo_id)])
         self._validate_post_motion(updated[int(servo_id)])
         return ServoCommandResult(
             positions_by_id={int(servo_id): goal},
@@ -1070,7 +1091,12 @@ class ServoService:
         max_offset_ticks: int | None = None,
         pretension_current_threshold_ma: int | None = None,
     ):
-        assessment = self.assess_motion(int(servo_id), require_calibrated_bounds=False)
+        full_telemetry = self.read_telemetry([int(servo_id)])[int(servo_id)]
+        assessment = self.assess_motion(
+            int(servo_id),
+            require_calibrated_bounds=False,
+            telemetry=full_telemetry,
+        )
         if not assessment.ready:
             raise RuntimeError(f"Servo {servo_id} is not safe to calibrate: {assessment.reason}")
         if assessment.telemetry.present_position is None:
@@ -1599,7 +1625,7 @@ class ServoService:
         updated_assessment: ServoMotionAssessment | None = None
         try:
             self.dxl_bus.write_goal_positions({int(plan.servo_id): int(plan.clamped_target_tick)})
-            updated = self.read_telemetry([int(plan.servo_id)])[int(plan.servo_id)]
+            updated = self.read_live_telemetry([int(plan.servo_id)])[int(plan.servo_id)]
             self._validate_post_motion(updated)
             updated_assessment = self.assess_motion(
                 int(plan.servo_id),

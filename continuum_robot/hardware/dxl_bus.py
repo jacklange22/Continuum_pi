@@ -320,7 +320,17 @@ class DxlBus:
                 f"Servo ID readback mismatch after assignment: expected {new_id}, got {readback_id}."
             )
 
-    def read_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
+    def read_live_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
+        """Return the lighter-weight runtime telemetry subset used by the GUI bring-up loop."""
+        return self.read_telemetry(servo_ids, include_identity=False, include_limits=False)
+
+    def read_telemetry(
+        self,
+        servo_ids: list[int],
+        *,
+        include_identity: bool = True,
+        include_limits: bool = True,
+    ) -> dict[int, ServoTelemetry]:
         """Return telemetry map for requested IDs."""
         if not self.is_connected:
             return {
@@ -332,14 +342,15 @@ class DxlBus:
         read_time = time.monotonic()
         for servo_id in servo_ids:
             reported_id_raw, reported_id_error = self._read1(servo_id, self.config.control_table["servo_id"])
-            model_raw, model_error = self._read2(servo_id, self.config.control_table["model_number"])
-            firmware_raw, firmware_error = self._read1(servo_id, self.config.control_table["firmware_version"])
+            model_raw: int | None = None
+            model_error: str | None = None
+            firmware_raw: int | None = None
+            firmware_error: str | None = None
+            if include_identity:
+                model_raw, model_error = self._read2(servo_id, self.config.control_table["model_number"])
+                firmware_raw, firmware_error = self._read1(servo_id, self.config.control_table["firmware_version"])
             operating_mode_raw, operating_mode_error = self._read1(servo_id, self.config.control_table["operating_mode"])
-            current_limit_raw, current_limit_error = self._read2(servo_id, self.config.control_table["current_limit"])
-            max_limit_raw, max_limit_error = self._read4(servo_id, self.config.control_table["max_position_limit"])
-            min_limit_raw, min_limit_error = self._read4(servo_id, self.config.control_table["min_position_limit"])
             torque_enabled_raw, torque_enabled_error = self._read1(servo_id, self.config.control_table["torque_enable"])
-            watchdog_raw, watchdog_error = self._read1(servo_id, self.config.control_table["bus_watchdog"])
             position_raw, position_error = self._read4(servo_id, self.config.control_table["present_position"])
             current_raw, current_error = self._read2(servo_id, self.config.control_table["present_current"])
             voltage_raw, voltage_error = self._read2(servo_id, self.config.control_table["present_input_voltage"])
@@ -347,6 +358,19 @@ class DxlBus:
             hardware_raw, hardware_status_error = self._read1(
                 servo_id, self.config.control_table["hardware_error_status"]
             )
+            current_limit_raw: int | None = None
+            current_limit_error: str | None = None
+            max_limit_raw: int | None = None
+            max_limit_error: str | None = None
+            min_limit_raw: int | None = None
+            min_limit_error: str | None = None
+            watchdog_raw: int | None = None
+            watchdog_error: str | None = None
+            if include_limits:
+                current_limit_raw, current_limit_error = self._read2(servo_id, self.config.control_table["current_limit"])
+                max_limit_raw, max_limit_error = self._read4(servo_id, self.config.control_table["max_position_limit"])
+                min_limit_raw, min_limit_error = self._read4(servo_id, self.config.control_table["min_position_limit"])
+                watchdog_raw, watchdog_error = self._read1(servo_id, self.config.control_table["bus_watchdog"])
 
             identity_messages = [
                 message

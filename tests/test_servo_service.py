@@ -39,16 +39,16 @@ class _RecordingIdBus(MockDxlBus):
 
 
 class _StaleTelemetryBus(MockDxlBus):
-    def read_telemetry(self, servo_ids: list[int]) -> dict[int, object]:
-        result = super().read_telemetry(servo_ids)
+    def read_telemetry(self, servo_ids: list[int], **kwargs) -> dict[int, object]:
+        result = super().read_telemetry(servo_ids, **kwargs)
         for servo_id in servo_ids:
             result[int(servo_id)].last_read_monotonic_s = self._state[int(servo_id)].last_read_monotonic_s
         return result
 
 
 class _StalePretensionBus(_PretensionBus):
-    def read_telemetry(self, servo_ids: list[int]) -> dict[int, object]:
-        result = super().read_telemetry(servo_ids)
+    def read_telemetry(self, servo_ids: list[int], **kwargs) -> dict[int, object]:
+        result = super().read_telemetry(servo_ids, **kwargs)
         for servo_id in servo_ids:
             result[int(servo_id)].last_read_monotonic_s = self._state[int(servo_id)].last_read_monotonic_s
         return result

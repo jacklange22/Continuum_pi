@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -29,9 +30,10 @@ from continuum_robot.gui.widgets.registration_plot_widget import RegistrationPlo
 class RegistrationTab(QWidget):
     """Guided 4-point robot-body alignment workflow."""
 
-    def __init__(self, controller, parent=None) -> None:
+    def __init__(self, controller, workflow_controller=None, parent=None) -> None:
         super().__init__(parent)
         self.controller = controller
+        self.workflow_controller = workflow_controller
         self._selected_slot_labels: list[QLabel] = []
         self.setObjectName("registrationWorkspace")
         self.setStyleSheet(
@@ -88,6 +90,28 @@ class RegistrationTab(QWidget):
         )
         self.workflow_hint.setWordWrap(True)
         self.workflow_hint.setProperty("role", "hint")
+
+        self.dependency_status_label = QLabel("Waiting for tracker and accepted tip file.")
+        self.dependency_status_label.setProperty("role", "status")
+        self.tip_file_label = QLabel("none")
+        self.tip_geometry_label = QLabel("not ready")
+        self.accepted_registration_label = QLabel("No accepted registration saved.")
+        self.live_pose_label = QLabel("not ready")
+        self.dependency_text = QTextEdit()
+        self.dependency_text.setReadOnly(True)
+        self.dependency_text.setMinimumHeight(110)
+        self.dependency_text.setMaximumHeight(170)
+
+        dependency_box = QGroupBox("Dependencies & Pose")
+        dependency_layout = QVBoxLayout(dependency_box)
+        dependency_form = QFormLayout()
+        dependency_form.addRow("Workflow gate", self.dependency_status_label)
+        dependency_form.addRow("Accepted tip file", self.tip_file_label)
+        dependency_form.addRow("Tip geometry", self.tip_geometry_label)
+        dependency_form.addRow("Accepted registration", self.accepted_registration_label)
+        dependency_form.addRow("Live robot-frame pose", self.live_pose_label)
+        dependency_layout.addLayout(dependency_form)
+        dependency_layout.addWidget(self.dependency_text)
 
         self.begin_button = QPushButton("Begin Session")
         self.capture_button = QPushButton("Capture Sample")
@@ -262,20 +286,32 @@ class RegistrationTab(QWidget):
         lower_splitter.setStretchFactor(1, 4)
         lower_splitter.setSizes([420, 540])
 
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(14)
+        content_layout.addWidget(dependency_box)
+        content_layout.addLayout(button_row_primary)
+        content_layout.addLayout(button_row_secondary)
+        content_layout.addWidget(top_splitter, 3)
+        content_layout.addWidget(lower_splitter, 2)
+        content_layout.addWidget(status_box)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setWidget(content_widget)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(14)
         layout.addWidget(self.title_label)
         layout.addWidget(self.workflow_hint)
-        layout.addLayout(button_row_primary)
-        layout.addLayout(button_row_secondary)
-        layout.addWidget(top_splitter, 3)
-        layout.addWidget(lower_splitter, 2)
-        layout.addWidget(status_box)
+        layout.addWidget(self.scroll_area, 1)
 
-    def update(self, state: RegistrationViewState) -> None:
+    def update(self, state: RegistrationViewState, workflow_state=None) -> None:
         session_status = "Solved - ready to save" if state.pending_accept else ("Capturing" if state.active else "Idle")
         self.session_status_label.setText(session_status)
+        self._update_dependencies(state, workflow_state)
         if state.selected_model_labels:
             self.selection_summary_label.setText(
                 f"{len(state.selected_model_labels)} / 4 selected: {', '.join(state.selected_model_labels)}"
@@ -302,7 +338,10 @@ class RegistrationTab(QWidget):
         self.result_status_label.setText(state.result_status)
         self.result_path_label.setText(state.last_result_path or "None")
 
-        self.begin_button.setEnabled(self.controller.can_begin_session())
+        begin_enabled = self.controller.can_begin_session()
+        if workflow_state is not None and not state.active and not state.pending_accept:
+            begin_enabled = begin_enabled and bool(getattr(workflow_state, "registration_ready", False))
+        self.begin_button.setEnabled(begin_enabled)
         self.capture_button.setEnabled(state.active and state.current_label is not None)
         self.complete_button.setEnabled(state.active and self.controller.is_ready_to_complete_current())
         self.solve_button.setEnabled(state.active and self.controller.is_ready_to_solve())
@@ -373,7 +412,9 @@ class RegistrationTab(QWidget):
         )
 
         lines = [state.status_message]
-        if not self.controller.can_begin_session() and not state.active and not state.pending_accept:
+        if workflow_state is not None and getattr(workflow_state, "registration_blockers", []):
+            lines.append("Workflow blockers: " + " ".join(getattr(workflow_state, "registration_blockers", [])))
+        elif not self.controller.can_begin_session() and not state.active and not state.pending_accept:
             lines.append(self.controller.begin_session_readiness_message())
         if state.active and not self.controller.is_ready_to_solve():
             lines.append(self.controller.solve_readiness_message())
@@ -391,6 +432,61 @@ class RegistrationTab(QWidget):
         if state.last_error:
             lines.append(f"Error: {state.last_error}")
         self.status_text.setPlainText("\n".join(lines))
+
+    def _update_dependencies(self, state: RegistrationViewState, workflow_state) -> None:
+        if workflow_state is None:
+            self.dependency_status_label.setText(
+                self.controller.begin_session_readiness_message()
+                if not state.active and not state.pending_accept
+                else "Registration session active."
+            )
+            self.tip_file_label.setText(state.capture_geometry_status)
+            self.tip_geometry_label.setText(state.capture_geometry_status)
+            self.accepted_registration_label.setText(state.result_status)
+            self.live_pose_label.setText("Load an accepted registration to compute live pose.")
+            self.dependency_text.setPlainText(
+                "\n".join(
+                    [
+                        "Registration depends on a valid tracker session and accepted pen-probe tip geometry.",
+                        f"Capture geometry: {state.capture_geometry_status}",
+                    ]
+                )
+            )
+            return
+
+        blockers = list(getattr(workflow_state, "registration_blockers", []))
+        if blockers:
+            self.dependency_status_label.setText("Blocked: " + " ".join(blockers))
+        elif state.pending_accept:
+            self.dependency_status_label.setText("Solved and pending save.")
+        elif state.active:
+            self.dependency_status_label.setText("Capture in progress.")
+        else:
+            self.dependency_status_label.setText("Ready for registration workflow.")
+
+        self.tip_file_label.setText(getattr(workflow_state, "pivot_tip_path", "") or "none")
+        self.tip_geometry_label.setText(getattr(workflow_state, "measurement_point_message", state.capture_geometry_status))
+        self.accepted_registration_label.setText(
+            getattr(workflow_state, "latest_registration_status", state.result_status) or state.result_status
+        )
+        if getattr(workflow_state, "live_tip_position_mm", None) is not None:
+            live_pose_text = (
+                f"{getattr(workflow_state, 'live_tip_status', 'ok')} | "
+                + ", ".join(f"{float(value):.2f}" for value in getattr(workflow_state, "live_tip_position_mm"))
+            )
+        else:
+            live_pose_text = getattr(workflow_state, "live_tip_status", "not ready")
+        self.live_pose_label.setText(live_pose_text)
+
+        dependency_lines = []
+        if blockers:
+            dependency_lines.append("Blocked until: " + " ".join(blockers))
+        else:
+            dependency_lines.append(
+                "Tracker validation, accepted tip geometry, and landmark selection are in place for registration."
+            )
+        dependency_lines.extend(list(getattr(workflow_state, "transform_summary_lines", [])))
+        self.dependency_text.setPlainText("\n".join(dependency_lines))
 
     def _update_selection_slots(self, state: RegistrationViewState) -> None:
         for index, label_widget in enumerate(self._selected_slot_labels):

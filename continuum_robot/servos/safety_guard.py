@@ -88,13 +88,26 @@ class SafetyGuard:
 
     def validate_telemetry_freshness(self, read_monotonic_s: float | None) -> None:
         """Raise ValueError when telemetry age is unknown or stale."""
-        if read_monotonic_s is None:
+        age = self.telemetry_age_s(read_monotonic_s)
+        if age is None:
             raise ValueError("Telemetry freshness is unknown.")
-        age = self._time_fn() - float(read_monotonic_s)
         if age > self.telemetry_stale_after_s:
             raise ValueError(
-                f"Telemetry is stale ({age:.3f} s old, limit {self.telemetry_stale_after_s:.3f} s)."
+                f"Telemetry is stale ({age:.3f} s > {self.telemetry_stale_after_s:.3f} s)."
             )
+
+    def telemetry_age_s(self, read_monotonic_s: float | None) -> float | None:
+        """Return telemetry age in seconds, or None when the read time is unknown."""
+        if read_monotonic_s is None:
+            return None
+        return max(0.0, float(self._time_fn()) - float(read_monotonic_s))
+
+    def telemetry_is_fresh(self, read_monotonic_s: float | None) -> bool | None:
+        """Return whether telemetry is within the configured freshness limit."""
+        age = self.telemetry_age_s(read_monotonic_s)
+        if age is None:
+            return None
+        return bool(age <= float(self.telemetry_stale_after_s))
 
     def validate_jog_delta(self, delta_ticks: int) -> None:
         """Keep manual jogs within the configured bring-up step size."""

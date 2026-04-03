@@ -1,4 +1,4 @@
-"""Launch the GUI directly into the tracker-first MVP workflow."""
+"""Launch the GUI directly into the consolidated tracker workflow."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ def main() -> int:
     app = QApplication.instance() or QApplication([])
     context = build_app_context()
     window = AppWindow(context)
-    window.tab_widget.setCurrentWidget(window.tracker_mvp_tab)
+    window.tab_widget.setCurrentWidget(window.tracking_tab)
     window.show()
     exit_code = app.exec()
     window.shutdown()

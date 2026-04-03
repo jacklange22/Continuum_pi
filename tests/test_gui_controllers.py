@@ -30,12 +30,13 @@ from continuum_robot.gui.controllers.registration_controller import Registration
 from continuum_robot.gui.controllers.servos_controller import ServosController
 from continuum_robot.gui.controllers.system_controller import SystemController, SystemViewState
 from continuum_robot.gui.controllers.experiment_controller import ExperimentController
-from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpController
+from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpController, TrackerMvpViewState
 from continuum_robot.gui.tabs.experiment_tab import ExperimentTab
 from continuum_robot.gui.tabs.registration_tab import RegistrationTab
 from continuum_robot.gui.tabs.servos_tab import ServosTab
 from continuum_robot.gui.tabs.system_tab import SystemTab
 from continuum_robot.gui.tabs.tracker_mvp_tab import TrackerMvpTab
+from continuum_robot.gui.tabs.tracking_tab import TrackingTab
 from continuum_robot.experiments.experiment_loader import ExperimentLoader
 from continuum_robot.experiments.experiment_runner import ExperimentRunner
 from continuum_robot.hardware.mock_dxl_bus import MockDxlBus
@@ -258,6 +259,100 @@ def test_tracker_mvp_tab_wraps_full_workflow_in_scroll_area(tmp_path: Path) -> N
     assert tab.scroll_area.widget().findChild(RegistrationTab) is tab.registration_tab
 
 
+def test_tracking_tab_wraps_workspace_in_scroll_area(tmp_path: Path) -> None:
+    _app()
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(settings, tmp_path, tracking_service)
+    registration_controller = RegistrationController(
+        registration_service=registration_service,
+        registration_config=settings.registration,
+    )
+    experiment_runner = _experiment_runner(
+        settings,
+        tmp_path,
+        tracking_service,
+        _servo_service(tmp_path),
+        tmp_path / "latest_registration.json",
+    )
+    tracker_mvp_controller = TrackerMvpController(
+        tracking_service=tracking_service,
+        registration_service=registration_service,
+        registration_controller=registration_controller,
+        experiment_runner=experiment_runner,
+        settings=settings,
+        project_root=tmp_path,
+    )
+    tracking_controller = None
+    try:
+        from continuum_robot.gui.controllers.tracking_controller import TrackingController
+
+        tracking_controller = TrackingController(
+            tracking_service=tracking_service,
+            settings=settings,
+            registration_path=tmp_path / "latest_registration.json",
+        )
+        tab = TrackingTab(tracking_controller, workflow_controller=tracker_mvp_controller)
+        assert isinstance(tab.scroll_area, QScrollArea)
+        assert tab.scroll_area.widget() is not None
+    finally:
+        if tracking_controller is not None:
+            tracking_controller.shutdown()
+
+
+def test_registration_tab_uses_workflow_state_to_gate_begin_button(tmp_path: Path) -> None:
+    _app()
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(settings, tmp_path, tracking_service)
+    controller = RegistrationController(
+        registration_service=registration_service,
+        registration_config=settings.registration,
+    )
+    tab = RegistrationTab(controller)
+    workflow_state = TrackerMvpViewState(
+        tracker_port="/dev/mock-aurora",
+        registration_ready=False,
+        registration_blockers=["Accept the staged pivot tip file before registration."],
+        pivot_tip_path="data/tip_cals/generated_penprobe_tip.csv",
+        measurement_point_message="Pen-probe tip file loaded from data/tip_cals/generated_penprobe_tip.csv.",
+        latest_registration_status="No accepted registration saved.",
+        live_tip_status="missing_registration",
+    )
+
+    tab.update(controller.refresh(), workflow_state)
+
+    assert tab.begin_button.isEnabled() is False
+    assert "Blocked:" in tab.dependency_status_label.text()
+    assert "Accept the staged pivot tip file" in tab.dependency_text.toPlainText()
+
+
+def test_registration_tab_wraps_workspace_in_scroll_area(tmp_path: Path) -> None:
+    _app()
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(settings, tmp_path, tracking_service)
+    controller = RegistrationController(
+        registration_service=registration_service,
+        registration_config=settings.registration,
+    )
+    tab = RegistrationTab(controller)
+
+    assert isinstance(tab.scroll_area, QScrollArea)
+    assert tab.scroll_area.widget() is not None
+
+
+def test_app_window_promotes_tracking_and_registration_before_legacy(tmp_path: Path) -> None:
+    _app()
+    window = AppWindow(_app_context(tmp_path))
+    try:
+        labels = [window.tab_widget.tabText(index) for index in range(window.tab_widget.count())]
+        assert labels[:2] == ["Tracking", "Registration"]
+        assert labels[-1] == "Tracker Legacy"
+    finally:
+        window.shutdown()
+
+
 def test_servos_tab_wraps_workspace_in_scroll_area(tmp_path: Path) -> None:
     _app()
     controller = ServosController(_servo_service(tmp_path), _settings())
@@ -265,6 +360,25 @@ def test_servos_tab_wraps_workspace_in_scroll_area(tmp_path: Path) -> None:
 
     assert isinstance(tab.scroll_area, QScrollArea)
     assert tab.scroll_area.widget() is not None
+
+
+def test_servos_tab_selected_servo_panel_reflects_controller_state(tmp_path: Path) -> None:
+    _app()
+    service = _servo_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    controller = ServosController(service, _settings())
+    controller.set_selected_servo(2)
+    controller.fine_jog(2, 1)
+    tab = ServosTab(controller)
+
+    tab.update(controller.state)
+
+    assert tab.selected_servo_id_value_label.text() == "2"
+    assert tab.selected_servo_action_label.text() == "Tighten Fine"
+    assert tab.selected_servo_result_label.text() == "Sent"
+    assert tab.selected_servo_bounds_label.text() == "[0, 4095]"
+    assert tab.selected_servo_freshness_limit_label.text() == "0.250 s"
+    assert tab.selected_servo_position_label.text() == str(service.dxl_bus._state[2].present_position)
 
 
 def _app_context(tmp_path: Path) -> AppContext:
@@ -493,7 +607,19 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
             _wrap("experiment", window.experiment_controller.state),
         )
 
-        window.tab_widget.setCurrentIndex(0)
+        window.tab_widget.setCurrentWidget(window.tracking_tab)
+        counts = {key: 0 for key in counts}
+        window.refresh()
+        assert counts == {
+            "tracker_mvp": 1,
+            "system": 1,
+            "servos": 0,
+            "tracking": 1,
+            "registration": 0,
+            "experiment": 0,
+        }
+
+        window.tab_widget.setCurrentWidget(window.registration_tab)
         counts = {key: 0 for key in counts}
         window.refresh()
         assert counts == {
@@ -505,19 +631,7 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
             "experiment": 0,
         }
 
-        window.tab_widget.setCurrentIndex(1)
-        counts = {key: 0 for key in counts}
-        window.refresh()
-        assert counts == {
-            "tracker_mvp": 0,
-            "system": 1,
-            "servos": 0,
-            "tracking": 0,
-            "registration": 0,
-            "experiment": 0,
-        }
-
-        window.tab_widget.setCurrentIndex(4)
+        window.tab_widget.setCurrentWidget(window.experiment_tab)
         counts = {key: 0 for key in counts}
         window.refresh()
         assert counts == {
@@ -527,6 +641,18 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
             "tracking": 0,
             "registration": 0,
             "experiment": 1,
+        }
+
+        window.tab_widget.setCurrentWidget(window.tracker_mvp_tab)
+        counts = {key: 0 for key in counts}
+        window.refresh()
+        assert counts == {
+            "tracker_mvp": 1,
+            "system": 1,
+            "servos": 0,
+            "tracking": 0,
+            "registration": 1,
+            "experiment": 0,
         }
     finally:
         window.shutdown()

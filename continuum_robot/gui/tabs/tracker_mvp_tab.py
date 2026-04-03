@@ -91,12 +91,11 @@ class TrackerMvpTab(QWidget):
             """
         )
 
-        self.title_label = QLabel("Tracker-First MVP Workspace")
+        self.title_label = QLabel("Tracker Legacy / Diagnostic Workspace")
         self.title_label.setProperty("role", "title")
         self.workflow_hint = QLabel(
-            "Use this order tomorrow on the Pi: connect tracker, validate tracker health, confirm tool IDs, "
-            "confirm 0A/0B transforms are valid, collect and solve 0B pivot calibration, accept the tip file, "
-            "capture 4-point registration, save the accepted registration, then confirm live robot-frame pose from 0A."
+            "The canonical operator workflow now lives in the Tracking and Registration tabs. "
+            "Keep this legacy workspace only for compatibility checks or deeper tracker-first diagnostics."
         )
         self.workflow_hint.setProperty("role", "hint")
         self.workflow_hint.setWordWrap(True)

@@ -141,9 +141,15 @@ class ServosTab(QWidget):
         self.calibration_message_label.setWordWrap(True)
         self.calibration_message_label.setProperty("role", "hint")
 
+        self.selected_servo_id_value_label = QLabel("—")
+        self.selected_servo_torque_label = QLabel("—")
         self.selected_servo_position_label = QLabel("—")
         self.selected_servo_target_label = QLabel("—")
         self.selected_servo_bounds_label = QLabel("—")
+        self.selected_servo_last_read_label = QLabel("—")
+        self.selected_servo_age_label = QLabel("—")
+        self.selected_servo_freshness_limit_label = QLabel("—")
+        self.selected_servo_fresh_label = QLabel("—")
         self.selected_servo_action_label = QLabel("—")
         self.selected_servo_result_label = QLabel("—")
         self.selected_servo_reason_status_label = QLabel("—")
@@ -293,34 +299,37 @@ class ServosTab(QWidget):
         maintenance_layout.addWidget(self.assign_button)
         maintenance_layout.addWidget(self.maintenance_hint)
 
-        jog_box = QGroupBox("Bench Jog")
-        jog_layout = QGridLayout(jog_box)
-        jog_layout.addWidget(QLabel("Selected servo"), 0, 0)
-        jog_layout.addWidget(self.selector_buttons_widget, 0, 1, 1, 3)
-        jog_layout.addWidget(QLabel("Current"), 1, 0)
-        jog_layout.addWidget(self.selected_servo_position_label, 1, 1)
-        jog_layout.addWidget(QLabel("Target"), 1, 2)
-        jog_layout.addWidget(self.selected_servo_target_label, 1, 3)
-        jog_layout.addWidget(QLabel("Raw range"), 2, 0)
-        jog_layout.addWidget(self.selected_servo_bounds_label, 2, 1)
-        jog_layout.addWidget(QLabel("Telemetry"), 2, 2)
-        jog_layout.addWidget(self.selected_servo_telemetry_label, 2, 3)
-        jog_layout.addWidget(QLabel("Last action"), 3, 0)
-        jog_layout.addWidget(self.selected_servo_action_label, 3, 1)
-        jog_layout.addWidget(QLabel("Result"), 3, 2)
-        jog_layout.addWidget(self.selected_servo_result_label, 3, 3)
-        jog_layout.addWidget(QLabel("Reason"), 4, 0)
-        jog_layout.addWidget(self.selected_servo_reason_status_label, 4, 1, 1, 3)
-        jog_layout.addWidget(QLabel("Motion ready"), 5, 0)
-        jog_layout.addWidget(self.selected_servo_ready_label, 5, 1)
-        jog_layout.addWidget(QLabel("Convention"), 5, 2)
-        jog_layout.addWidget(self.selected_servo_direction_label, 5, 3)
-        jog_layout.addWidget(QLabel("Last motion"), 6, 0)
-        jog_layout.addWidget(self.selected_servo_last_motion_label, 6, 1, 1, 3)
-        jog_layout.addWidget(self.fine_minus_button, 7, 0)
-        jog_layout.addWidget(self.fine_plus_button, 7, 1)
-        jog_layout.addWidget(self.coarse_minus_button, 7, 2)
-        jog_layout.addWidget(self.coarse_plus_button, 7, 3)
+        jog_box = QGroupBox("Selected Servo Jog")
+        jog_layout = QVBoxLayout(jog_box)
+        selector_row = QHBoxLayout()
+        selector_row.addWidget(QLabel("Selected servo"))
+        selector_row.addWidget(self.selector_buttons_widget, 1)
+        jog_layout.addLayout(selector_row)
+        jog_form = QFormLayout()
+        jog_form.addRow("Selected", self.selected_servo_id_value_label)
+        jog_form.addRow("Torque", self.selected_servo_torque_label)
+        jog_form.addRow("Current", self.selected_servo_position_label)
+        jog_form.addRow("Target", self.selected_servo_target_label)
+        jog_form.addRow("Raw range", self.selected_servo_bounds_label)
+        jog_form.addRow("Last read", self.selected_servo_last_read_label)
+        jog_form.addRow("Telemetry age", self.selected_servo_age_label)
+        jog_form.addRow("Freshness limit", self.selected_servo_freshness_limit_label)
+        jog_form.addRow("Fresh", self.selected_servo_fresh_label)
+        jog_form.addRow("Telemetry", self.selected_servo_telemetry_label)
+        jog_form.addRow("Motion ready", self.selected_servo_ready_label)
+        jog_form.addRow("Last action", self.selected_servo_action_label)
+        jog_form.addRow("Result", self.selected_servo_result_label)
+        jog_form.addRow("Reason", self.selected_servo_reason_status_label)
+        jog_form.addRow("Last motion", self.selected_servo_last_motion_label)
+        jog_layout.addLayout(jog_form)
+        jog_layout.addWidget(self.selected_servo_direction_label)
+        jog_buttons = QHBoxLayout()
+        jog_buttons.setSpacing(10)
+        jog_buttons.addWidget(self.fine_minus_button)
+        jog_buttons.addWidget(self.fine_plus_button)
+        jog_buttons.addWidget(self.coarse_minus_button)
+        jog_buttons.addWidget(self.coarse_plus_button)
+        jog_layout.addLayout(jog_buttons)
 
         self.startup_box = QGroupBox("Startup Calibration")
         startup_layout = QFormLayout(self.startup_box)
@@ -364,16 +373,15 @@ class ServosTab(QWidget):
         telemetry_layout = QVBoxLayout(telemetry_box)
         self.telemetry_table = QTableWidget(0, 11)
         self.telemetry_table.setHorizontalHeaderLabels(
-            ["Servo", "Model / ID", "FW", "Mode", "Torque", "Position", "Current", "Voltage", "Temp", "Active range", "Status"]
+            ["ID", "State", "Torque", "Position", "Current", "Voltage", "Temp", "HW Err", "Age (s)", "Motion", "Reason"]
         )
         self.telemetry_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.telemetry_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.telemetry_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.telemetry_table.verticalHeader().setVisible(False)
         self.telemetry_table.cellClicked.connect(self._select_servo_from_row)
-        for column in range(0, 9):
+        for column in range(0, 10):
             self.telemetry_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
-        self.telemetry_table.horizontalHeader().setSectionResizeMode(9, QHeaderView.Stretch)
         self.telemetry_table.horizontalHeader().setSectionResizeMode(10, QHeaderView.Stretch)
         self.telemetry_table.setMinimumHeight(230)
         telemetry_layout.addWidget(self.telemetry_table)
@@ -470,14 +478,31 @@ class ServosTab(QWidget):
             bounds_text = f"[{state.selected_servo_safe_min_tick}, {state.selected_servo_safe_max_tick}]"
         else:
             bounds_text = str(selected_servo.get("safe_bounds", "—"))
+        freshness_limit_text = f"{float(state.telemetry_freshness_threshold_s):.3f} s"
         self.selected_servo_position_label.setText(str(current_position if current_position is not None else "—"))
+        self.selected_servo_id_value_label.setText(str(selected_servo_id) if selected_servo_id is not None else "—")
+        self.selected_servo_torque_label.setText("On" if state.selected_servo_torque_enabled else ("Off" if state.selected_servo_torque_enabled is False else "—"))
         self.selected_servo_target_label.setText(target_text)
         self.selected_servo_bounds_label.setText(bounds_text)
+        self.selected_servo_last_read_label.setText(state.selected_servo_last_read_label or "unknown")
+        self.selected_servo_age_label.setText(
+            f"{float(state.selected_servo_telemetry_age_s):.3f} s"
+            if state.selected_servo_telemetry_age_s is not None
+            else "—"
+        )
+        self.selected_servo_freshness_limit_label.setText(freshness_limit_text)
+        if state.selected_servo_telemetry_fresh is None:
+            fresh_text = "Unknown"
+        else:
+            fresh_text = "Yes" if state.selected_servo_telemetry_fresh else "No"
+        self.selected_servo_fresh_label.setText(fresh_text)
         self.selected_servo_action_label.setText(state.selected_servo_last_action_label or "—")
         self.selected_servo_result_label.setText(state.selected_servo_last_result_label or "—")
         self.selected_servo_reason_status_label.setText(state.selected_servo_reason_label or "none")
         self.selected_servo_telemetry_label.setText(state.selected_servo_telemetry_status_label or "Unknown")
-        self.selected_servo_direction_label.setText(state.position_convention_summary or "—")
+        self.selected_servo_direction_label.setText(
+            f"Convention: {state.position_convention_summary or '—'}"
+        )
         self.selected_servo_last_motion_label.setText(state.selected_servo_last_motion_summary)
         self.selected_servo_ready_label.setText("Yes" if state.selected_servo_motion_ready else "No")
         self._rebuild_servo_selector(state.servo_ids or state.expected_servo_ids, selected_servo_id)
@@ -538,28 +563,17 @@ class ServosTab(QWidget):
         sorted_servo_ids = sorted(state.telemetry)
         for row, servo_id in enumerate(sorted_servo_ids):
             item = state.telemetry[servo_id]
-            self.telemetry_table.setItem(row, 0, QTableWidgetItem(str(servo_id)))
-            self.telemetry_table.setItem(
-                row,
-                1,
-                QTableWidgetItem(
-                    f"{item['model_number']} (id {item['reported_servo_id']})"
-                    if item.get("reported_servo_id") is not None and item.get("model_number") is not None
-                    else str(item["model_number"])
-                ),
-            )
-            self.telemetry_table.setItem(row, 2, QTableWidgetItem(str(item["firmware_version"])))
-            self.telemetry_table.setItem(row, 3, QTableWidgetItem(str(item["operating_mode"])))
-            self.telemetry_table.setItem(row, 4, QTableWidgetItem("on" if item["torque_enabled"] else "off"))
-            self.telemetry_table.setItem(row, 5, QTableWidgetItem(str(item["position"])))
-            self.telemetry_table.setItem(row, 6, QTableWidgetItem(str(item["current_ma"])))
-            self.telemetry_table.setItem(row, 7, QTableWidgetItem(str(item["voltage_mv"])))
-            self.telemetry_table.setItem(row, 8, QTableWidgetItem(str(item["temperature_c"])))
-            self.telemetry_table.setItem(row, 9, QTableWidgetItem(str(item["safe_bounds"])))
-            status_text = str(item["ready"])
-            if item.get("error"):
-                status_text = f"{status_text} | {item['error']}"
-            self.telemetry_table.setItem(row, 10, QTableWidgetItem(status_text))
+            self.telemetry_table.setItem(row, 0, self._text_item(servo_id, align=Qt.AlignRight))
+            self.telemetry_table.setItem(row, 1, self._text_item(item.get("telemetry_status", "Unknown"), align=Qt.AlignCenter))
+            self.telemetry_table.setItem(row, 2, self._text_item(item.get("torque_label", "—"), align=Qt.AlignCenter))
+            self.telemetry_table.setItem(row, 3, self._text_item(self._display_value(item.get("position")), align=Qt.AlignRight))
+            self.telemetry_table.setItem(row, 4, self._text_item(self._display_value(item.get("current_ma")), align=Qt.AlignRight))
+            self.telemetry_table.setItem(row, 5, self._text_item(self._display_value(item.get("voltage_mv")), align=Qt.AlignRight))
+            self.telemetry_table.setItem(row, 6, self._text_item(self._display_value(item.get("temperature_c")), align=Qt.AlignRight))
+            self.telemetry_table.setItem(row, 7, self._text_item(item.get("hardware_error_text", "—"), align=Qt.AlignCenter))
+            self.telemetry_table.setItem(row, 8, self._text_item(self._age_text(item.get("telemetry_age_s")), align=Qt.AlignRight))
+            self.telemetry_table.setItem(row, 9, self._text_item("Yes" if item.get("motion_ready") else "No", align=Qt.AlignCenter))
+            self.telemetry_table.setItem(row, 10, self._text_item(item.get("block_reason", "ready")))
         if selected_servo_id in sorted_servo_ids:
             self.telemetry_table.selectRow(sorted_servo_ids.index(selected_servo_id))
         else:
@@ -669,9 +683,7 @@ class ServosTab(QWidget):
 
     def _select_servo(self, servo_id: int) -> None:
         self._sync_servo_selection(int(servo_id))
-        refresh_fn = getattr(self.controller, "refresh", None)
-        if callable(refresh_fn):
-            self.update(refresh_fn())
+        self.update(self.controller.state)
 
     def _select_servo_from_row(self, row: int, _column: int) -> None:
         item = self.telemetry_table.item(row, 0)
@@ -697,6 +709,20 @@ class ServosTab(QWidget):
                 self.controller.state.last_error = str(exc)
             if not getattr(self.controller.state, "status_message", ""):
                 self.controller.state.status_message = str(exc)
-        refresh_fn = getattr(self.controller, "refresh", None)
-        if callable(refresh_fn):
-            self.update(refresh_fn())
+        self.update(self.controller.state)
+
+    @staticmethod
+    def _display_value(value) -> str:
+        return "—" if value is None else str(value)
+
+    @staticmethod
+    def _age_text(age_s: float | None) -> str:
+        if age_s is None:
+            return "—"
+        return f"{float(age_s):.3f}"
+
+    @staticmethod
+    def _text_item(value, *, align: int = Qt.AlignLeft | Qt.AlignVCenter) -> QTableWidgetItem:
+        item = QTableWidgetItem(str(value))
+        item.setTextAlignment(int(align | Qt.AlignVCenter))
+        return item

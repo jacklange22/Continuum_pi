@@ -2,6 +2,13 @@
 
 This is the operator path for tomorrow's Pi session. Ignore servos and full experiments for this pass.
 
+The canonical GUI homes are now:
+
+- `Tracking`: tracker connect, validation, live tool status, staged `0B` pivot calibration, and accepted tip-file review
+- `Registration`: registration prerequisites, 4-point capture, solve/review/save, and live robot-frame pose summary
+
+`Tracker Legacy` remains in the GUI only as a compatibility/diagnostic surface.
+
 ## Exact Order
 
 1. Connect tracker
@@ -24,6 +31,8 @@ The focused GUI launcher is:
 ```bash
 python scripts/run_tracker_mvp.py
 ```
+
+That launcher now opens the consolidated `Tracking` tab directly.
 
 Or through the workflow wrapper:
 
@@ -164,4 +173,4 @@ Live robot-frame pose is missing after save:
 
 - confirm accepted registration path
 - confirm `0A` is visible
-- confirm `tip_pose_status` in the tracker-first workspace
+- confirm `tip_pose_status` in the `Registration` tab dependency summary

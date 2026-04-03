@@ -13,6 +13,7 @@ from continuum_robot.gui.controllers.system_controller import SystemController
 from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpController
 from continuum_robot.gui.controllers.tracking_controller import TrackingController
 from continuum_robot.gui.tabs.experiment_tab import ExperimentTab
+from continuum_robot.gui.tabs.registration_tab import RegistrationTab
 from continuum_robot.gui.tabs.servos_tab import ServosTab
 from continuum_robot.gui.tabs.system_tab import SystemTab
 from continuum_robot.gui.tabs.tracker_mvp_tab import TrackerMvpTab
@@ -68,16 +69,21 @@ class AppWindow(QMainWindow):
         )
 
         self.tab_widget = QTabWidget()
-        self.tracker_mvp_tab = TrackerMvpTab(self.tracker_mvp_controller, self.registration_controller)
         self.system_tab = SystemTab(self.system_controller)
         self.servos_tab = ServosTab(self.servos_controller)
-        self.tracking_tab = TrackingTab(self.tracking_controller)
+        self.tracking_tab = TrackingTab(self.tracking_controller, workflow_controller=self.tracker_mvp_controller)
+        self.registration_tab = RegistrationTab(
+            self.registration_controller,
+            workflow_controller=self.tracker_mvp_controller,
+        )
         self.experiment_tab = ExperimentTab(self.experiment_controller)
-        self.tab_widget.addTab(self.tracker_mvp_tab, "Tracker MVP")
+        self.tab_widget.addTab(self.tracking_tab, "Tracking")
+        self.tab_widget.addTab(self.registration_tab, "Registration")
         self.tab_widget.addTab(self.system_tab, "System")
         self.tab_widget.addTab(self.servos_tab, "Servos")
-        self.tab_widget.addTab(self.tracking_tab, "Tracking")
         self.tab_widget.addTab(self.experiment_tab, "Experiment")
+        self.tracker_mvp_tab = TrackerMvpTab(self.tracker_mvp_controller, self.registration_controller)
+        self.tab_widget.addTab(self.tracker_mvp_tab, "Tracker Legacy")
         self.tab_widget.currentChanged.connect(self._handle_tab_changed)
         self.setCentralWidget(self.tab_widget)
 
@@ -93,21 +99,31 @@ class AppWindow(QMainWindow):
 
     def refresh(self) -> None:
         system_state = self.system_controller.refresh()
-        current_index = self.tab_widget.currentIndex()
-        if current_index == 0:
+        current_widget = self.tab_widget.currentWidget()
+        if current_widget is self.tracking_tab:
+            tracker_mvp_state = self.tracker_mvp_controller.refresh()
+            tracking_state = self.tracking_controller.refresh()
+            self.tracking_tab.update(tracker_mvp_state, tracking_state)
+            self.statusBar().showMessage(tracker_mvp_state.status_message)
+            return
+        if current_widget is self.registration_tab:
+            registration_state = self.registration_controller.refresh()
+            tracker_mvp_state = self.tracker_mvp_controller.refresh()
+            self.registration_tab.update(registration_state, tracker_mvp_state)
+            self.statusBar().showMessage(registration_state.status_message)
+            return
+        if current_widget is self.system_tab:
+            self.system_tab.update(system_state)
+        elif current_widget is self.servos_tab:
+            self.servos_tab.update(self.servos_controller.refresh())
+        elif current_widget is self.experiment_tab:
+            self.experiment_tab.update(self.experiment_controller.refresh_prerequisites())
+        elif current_widget is self.tracker_mvp_tab:
             tracker_mvp_state = self.tracker_mvp_controller.refresh()
             registration_state = self.registration_controller.refresh()
             self.tracker_mvp_tab.update(tracker_mvp_state, registration_state)
             self.statusBar().showMessage(tracker_mvp_state.status_message)
             return
-        if current_index == 1:
-            self.system_tab.update(system_state)
-        elif current_index == 2:
-            self.servos_tab.update(self.servos_controller.refresh())
-        elif current_index == 3:
-            self.tracking_tab.update(self.tracking_controller.refresh())
-        elif current_index == 4:
-            self.experiment_tab.update(self.experiment_controller.refresh_prerequisites())
         self.statusBar().showMessage(system_state.status_message)
 
     def _handle_tab_changed(self, _index: int) -> None:

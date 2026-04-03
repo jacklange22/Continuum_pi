@@ -91,7 +91,16 @@ class MockDxlBus(DxlBus):
         telemetry.reported_servo_id = new_id
         self._state[new_id] = telemetry
 
-    def read_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
+    def read_live_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
+        return self.read_telemetry(servo_ids, include_identity=False, include_limits=False)
+
+    def read_telemetry(
+        self,
+        servo_ids: list[int],
+        *,
+        include_identity: bool = True,
+        include_limits: bool = True,
+    ) -> dict[int, ServoTelemetry]:
         result: dict[int, ServoTelemetry] = {}
         for servo_id in servo_ids:
             telemetry = self._state.get(servo_id)
@@ -112,14 +121,14 @@ class MockDxlBus(DxlBus):
                 result[servo_id] = ServoTelemetry(
                     servo_id=servo_id,
                     reported_servo_id=telemetry.reported_servo_id if telemetry.reported_servo_id is not None else servo_id,
-                    model_number=telemetry.model_number,
-                    firmware_version=telemetry.firmware_version,
+                    model_number=telemetry.model_number if include_identity else None,
+                    firmware_version=telemetry.firmware_version if include_identity else None,
                     operating_mode=telemetry.operating_mode,
                     torque_enabled=telemetry.torque_enabled,
-                    current_limit_ma=telemetry.current_limit_ma,
-                    min_position_limit=telemetry.min_position_limit,
-                    max_position_limit=telemetry.max_position_limit,
-                    bus_watchdog_value=telemetry.bus_watchdog_value,
+                    current_limit_ma=telemetry.current_limit_ma if include_limits else None,
+                    min_position_limit=telemetry.min_position_limit if include_limits else None,
+                    max_position_limit=telemetry.max_position_limit if include_limits else None,
+                    bus_watchdog_value=telemetry.bus_watchdog_value if include_limits else None,
                     present_position=telemetry.present_position,
                     present_current_ma=telemetry.present_current_ma,
                     present_voltage_mv=telemetry.present_voltage_mv,

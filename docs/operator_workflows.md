@@ -52,9 +52,9 @@ Success criteria:
 
 ## Workflow 3: Pivot Calibration
 
-Applies now in the tracker MVP workspace.
+Applies now in `Tracking`.
 
-1. Open `Tracker MVP`.
+1. Open `Tracking`.
 2. Validate tracker health and confirm `0B` is tracked.
 3. Start `0B` pivot collection.
 4. Move the probe through a wide range of orientations while the sample counter rises.
@@ -85,9 +85,9 @@ Success criteria:
 
 ## Workflow 5: 4-Point Registration
 
-Applies now.
+Applies now in `Registration`.
 
-1. Stay in `Tracker MVP`.
+1. Move to `Registration`.
 2. Confirm the accepted `0B` tip file is loaded.
 3. Choose 4 landmarks from the configured candidate set using the top-view map or the landmark list.
 4. Capture repeated `0B` samples for each selected landmark.
@@ -130,9 +130,9 @@ Target acceptance:
 ## Recommended Lab Order
 
 1. tracker doctor / smoke
-2. Tracker MVP connect + validation
-3. guided `0B` pivot calibration
-4. 4-point registration
+2. `Tracking` connect + validation
+3. guided `0B` pivot calibration in `Tracking`
+4. 4-point registration in `Registration`
 5. confirm live robot-frame pose
 6. one-servo OpenRB bring-up
 7. startup calibration and pretension
@@ -154,3 +154,8 @@ Hard failure:
 
 - tracker is not connected, no frames arrive, required tools are missing, transforms are invalid, or data is stale
 - do not proceed until the tracker returns to an operational state
+
+## Legacy Surface
+
+`Tracker Legacy` remains available only for compatibility checks and deeper tracker-first diagnostics.
+Normal operation should use `Tracking` plus `Registration`.
