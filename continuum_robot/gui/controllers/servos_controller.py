@@ -18,6 +18,9 @@ class ServosViewState:
     single_servo_mode: bool = False
     expected_servo_ids: list[int] = field(default_factory=list)
     servo_ids: list[int] = field(default_factory=list)
+    detected_servo_ids: list[int] = field(default_factory=list)
+    missing_servo_ids: list[int] = field(default_factory=list)
+    unexpected_servo_ids: list[int] = field(default_factory=list)
     neutral_setpoints: dict[int, int] = field(default_factory=dict)
     calibration_exists: bool = False
     calibration_compatible: bool = False
@@ -42,6 +45,11 @@ class ServosViewState:
     selected_servo_safe_max_tick: int | None = None
     selected_servo_last_motion_clamped: bool = False
     selected_servo_last_motion_summary: str = "No jog command sent yet."
+    selected_servo_last_action_label: str = "None"
+    selected_servo_last_result_label: str = "None"
+    selected_servo_reason_label: str = "none"
+    selected_servo_telemetry_status_label: str = "Unknown"
+    selected_servo_motion_ready: bool = False
     blocking_reasons: list[str] = field(default_factory=list)
     selected_servo_external_power_ready: bool | None = None
     pretension_running: bool = False
@@ -77,8 +85,8 @@ class ServosController:
                 "Mock servo backend ready."
                 if settings.runtime.mock_mode
                 else (
-                    "Hardware servo mode ready. Use one-servo bring-up first: connect OpenRB, "
-                    "prepare the bridge path, scan one servo, verify telemetry, then use fine jog only."
+                    "Hardware servo mode ready. Connect OpenRB, refresh readiness, verify the configured servos, "
+                    "then jog one selected servo at a time."
                 )
             ),
         )
@@ -89,11 +97,16 @@ class ServosController:
         self.state.connected = self.servo_service.is_connected
         self.state.robot_mode = self.settings.robot.mode
         self.state.expected_servo_ids = list(self.settings.robot.servo_ids)
-        self.state.single_servo_mode = self.settings.robot.mode == "1-servo" or len(self.state.servo_ids) == 1
+        self.state.single_servo_mode = (
+            self.settings.robot.mode == "1-servo" or len(self.state.expected_servo_ids) == 1
+        )
         self._refresh_calibration_summary()
         self._sync_active_neutral_setpoints()
         if not self.state.connected:
             self.state.telemetry = {}
+            self.state.detected_servo_ids = []
+            self.state.missing_servo_ids = list(self.state.expected_servo_ids)
+            self.state.unexpected_servo_ids = []
             self.state.selected_servo_external_power_ready = None
             self.state.bench_debug_text = self._build_disconnected_bench_debug_text()
             if self.state.discovery_status == "idle":
@@ -102,6 +115,7 @@ class ServosController:
             return self.state
         if self.state.single_servo_mode:
             return self._refresh_single_servo_state()
+        self.state.servo_ids = list(self.state.expected_servo_ids)
         if not self.state.servo_ids:
             self.state.telemetry = {}
             self.state.blocking_reasons = []
@@ -124,7 +138,7 @@ class ServosController:
             assessments = {
                 int(servo_id): self.servo_service.assess_motion(
                     int(servo_id),
-                    require_calibrated_bounds=True,
+                    require_calibrated_bounds=self.servo_service.require_calibrated_bounds_for_individual_motion(),
                     telemetry=item,
                 )
                 for servo_id, item in telemetry.items()
@@ -148,28 +162,53 @@ class ServosController:
                     "safe_max_tick": assessments[int(servo_id)].safe_max_tick,
                     "safe_bounds": self._assessment_bounds_text(assessments[int(servo_id)]),
                     "ready": self._assessment_status_text(assessments[int(servo_id)]),
+                    "motion_ready": bool(assessments[int(servo_id)].ready),
+                    "telemetry_status": self._telemetry_status_from_row(
+                        {
+                            "position": item.present_position,
+                            "current_ma": item.present_current_ma,
+                            "voltage_mv": item.present_voltage_mv,
+                            "temperature_c": item.present_temperature_c,
+                            "blocking_reasons": list(assessments[int(servo_id)].blocking_reasons),
+                        }
+                    ),
                     "position_convention": self.servo_service.position_convention_summary(),
                     "external_power_ready": assessments[int(servo_id)].external_power_ready,
                     "blocking_reasons": list(assessments[int(servo_id)].blocking_reasons),
                 }
                 for servo_id, item in telemetry.items()
             }
+            if self.state.selected_servo_id not in self.state.servo_ids and self.state.servo_ids:
+                self.state.selected_servo_id = int(self.state.servo_ids[0])
             selected = assessments.get(int(self.state.selected_servo_id)) if self.state.selected_servo_id is not None else None
             if selected is not None:
                 self.state.blocking_reasons = list(selected.blocking_reasons)
                 self.state.selected_servo_external_power_ready = selected.external_power_ready
+            if not self.state.detected_servo_ids and self.state.discovery_status == "idle":
+                self.state.missing_servo_ids = []
+                self.state.unexpected_servo_ids = []
+            self.state.bench_debug_text = self._build_multi_servo_bench_debug_text()
             self._sync_selected_servo_motion_state()
         return self.state
 
     def scan(self) -> list[int]:
         try:
-            discovery = self.servo_service.discover_one_servo(
-                expected_servo_id=self._expected_servo_id(),
-                allow_scan=True,
-            )
-            self._apply_discovery_snapshot(discovery)
+            if self.state.single_servo_mode:
+                discovery = self.servo_service.discover_one_servo(
+                    expected_servo_id=self._expected_servo_id(),
+                    allow_scan=True,
+                )
+                self._apply_discovery_snapshot(discovery)
+                result_ids = self.state.servo_ids
+            else:
+                snapshot = self.servo_service.build_configured_servo_bringup_snapshot(
+                    list(self.state.expected_servo_ids),
+                    allow_scan=True,
+                )
+                self._apply_configured_servo_snapshot(snapshot)
+                result_ids = list(snapshot.discovered_ids)
             self.state.last_error = None
-            return self.state.servo_ids
+            return result_ids
         except Exception as exc:
             self.state.last_error = str(exc)
             self.state.status_message = f"Servo scan failed: {exc}"
@@ -178,11 +217,18 @@ class ServosController:
             self.refresh()
 
     def refresh_readiness(self) -> ServosViewState:
-        discovery = self.servo_service.discover_one_servo(
-            expected_servo_id=self._expected_servo_id(),
-            allow_scan=False,
-        )
-        self._apply_discovery_snapshot(discovery)
+        if self.state.single_servo_mode:
+            discovery = self.servo_service.discover_one_servo(
+                expected_servo_id=self._expected_servo_id(),
+                allow_scan=False,
+            )
+            self._apply_discovery_snapshot(discovery)
+        else:
+            snapshot = self.servo_service.build_configured_servo_bringup_snapshot(
+                list(self.state.expected_servo_ids),
+                allow_scan=True,
+            )
+            self._apply_configured_servo_snapshot(snapshot)
         return self.refresh()
 
     def assign_servo_id(self, current_id: int, new_id: int) -> None:
@@ -265,11 +311,13 @@ class ServosController:
         self._refresh_calibration_summary()
         if self.state.calibration_exists and not self.state.calibration_compatible:
             self.state.status_message = (
-                "Saved servo calibration is incompatible with the active one-servo bench configuration. "
-                "The artifact is shown for review only and is not being used as active neutral bounds."
+                "Saved servo calibration is incompatible with the active servo configuration. "
+                "The artifact is shown for review only and is not being used as the active bring-up motion range."
             )
             return {}
-        self.state.status_message = "Loaded servo calibration artifact."
+        self.state.status_message = (
+            "Loaded servo calibration artifact. Bring-up jog still uses raw 0..4095 counts as the active range."
+        )
         return dict(self.state.neutral_setpoints)
 
     def save_startup_calibration(
@@ -392,14 +440,20 @@ class ServosController:
             return [int(servo_id)]
         return list(self.state.servo_ids)
 
+    def set_selected_servo(self, servo_id: int) -> ServosViewState:
+        self.state.selected_servo_id = int(servo_id)
+        return self.refresh()
+
     def _run_jog_action(self, servo_id: int, action: str) -> None:
+        self.state.selected_servo_id = int(servo_id)
+        self.state.selected_servo_last_action_label = self._format_action_label(action)
         result = self.servo_service.jog_servo_action(
             servo_id=int(servo_id),
             action=str(action),
         )
         self.state.status_message = result.message
         self.state.last_error = None if result.success else result.message
-        self._apply_jog_result(result)
+        self._apply_jog_result(result, action=str(action))
         if result.blocked:
             self.refresh()
             raise RuntimeError(result.message)
@@ -421,6 +475,9 @@ class ServosController:
     def _apply_discovery_snapshot(self, discovery) -> None:
         self.state.discovery_status = discovery.status
         self.state.discovery_message = discovery.message
+        self.state.detected_servo_ids = list(discovery.discovered_ids)
+        self.state.missing_servo_ids = []
+        self.state.unexpected_servo_ids = []
         if self.state.single_servo_mode and discovery.expected_servo_id is not None:
             self.state.servo_ids = [int(discovery.selected_servo_id or discovery.expected_servo_id)]
         else:
@@ -436,6 +493,31 @@ class ServosController:
             self.state.blocking_reasons = []
             self.state.selected_servo_external_power_ready = None
         self.state.status_message = discovery.message
+
+    def _apply_configured_servo_snapshot(self, snapshot) -> None:
+        self.state.discovery_status = snapshot.status
+        self.state.discovery_message = snapshot.message
+        self.state.servo_ids = list(snapshot.expected_servo_ids)
+        self.state.detected_servo_ids = list(snapshot.discovered_ids)
+        self.state.missing_servo_ids = list(snapshot.missing_servo_ids)
+        self.state.unexpected_servo_ids = list(snapshot.unexpected_servo_ids)
+        if self.state.selected_servo_id not in self.state.servo_ids and self.state.servo_ids:
+            self.state.selected_servo_id = int(self.state.servo_ids[0])
+        selected_entry = (
+            snapshot.servo_entries.get(int(self.state.selected_servo_id))
+            if self.state.selected_servo_id is not None
+            else None
+        )
+        if selected_entry is not None and selected_entry.motion_assessment is not None:
+            self.state.blocking_reasons = list(selected_entry.motion_assessment.blocking_reasons)
+            self.state.selected_servo_external_power_ready = (
+                selected_entry.motion_assessment.external_power_ready
+            )
+        else:
+            self.state.blocking_reasons = []
+            self.state.selected_servo_external_power_ready = None
+        self.state.status_message = snapshot.message
+        self.state.last_error = None if snapshot.status == "ready" else snapshot.message
 
     def _refresh_calibration_summary(self) -> None:
         summary = self.servo_service.get_calibration_summary()
@@ -495,6 +577,13 @@ class ServosController:
         snapshot = self.servo_service.build_bench_debug_snapshot(expected_servo_id)
         servo_id = int(snapshot.selected_servo_id or snapshot.expected_servo_id or 1)
         self.state.servo_ids = [servo_id] if snapshot.expected_servo_id is not None else []
+        self.state.detected_servo_ids = [servo_id] if snapshot.ping_ok else []
+        self.state.missing_servo_ids = (
+            []
+            if snapshot.ping_ok or snapshot.expected_servo_id is None
+            else [int(snapshot.expected_servo_id)]
+        )
+        self.state.unexpected_servo_ids = []
         self.state.selected_servo_id = servo_id if snapshot.expected_servo_id is not None else None
         self.state.discovery_status = snapshot.status
         self.state.discovery_message = snapshot.message
@@ -547,6 +636,8 @@ class ServosController:
             "safe_max_tick": assessment.safe_max_tick if assessment is not None else None,
             "safe_bounds": self._assessment_bounds_text(assessment) if assessment is not None else "unavailable",
             "ready": ready_text,
+            "motion_ready": bool(snapshot.motion_ready),
+            "telemetry_status": self._telemetry_status_from_snapshot(snapshot),
             "position_convention": self.servo_service.position_convention_summary(),
             "external_power_ready": snapshot.selected_servo_id is not None and snapshot.motion_assessment is not None and snapshot.motion_assessment.external_power_ready,
             "blocking_reasons": list(assessment.blocking_reasons) if assessment is not None else ([snapshot.motion_block_reason] if snapshot.motion_block_reason else []),
@@ -578,6 +669,8 @@ class ServosController:
                 f"last_hw_error={last_hw_error}",
                 f"calibration_entries_loaded={snapshot.calibration_entries_loaded}",
                 f"one_servo_mode_ok={snapshot.one_servo_mode_ok}",
+                f"active_range={self.servo_service.raw_position_range()[0]}..{self.servo_service.raw_position_range()[1]}",
+                f"motion_ready={snapshot.motion_ready}",
                 "position_convention=tighten->smaller_counts; loosen->larger_counts",
                 f"motion_block_reason={snapshot.motion_block_reason or 'none'}",
             ]
@@ -591,7 +684,7 @@ class ServosController:
                 f"bus_connected={self.state.connected}",
                 f"selected_port={self.settings.serial.openrb_port or 'unset'}",
                 f"selected_baud={self.settings.serial.baudrate}",
-                f"expected_servo_id={self._expected_servo_id()}",
+                f"expected_servo_ids={self.state.expected_servo_ids}",
                 "ping_ok=None",
                 "identity_read_ok=None",
                 "telemetry_read_ok=None",
@@ -602,12 +695,43 @@ class ServosController:
                 "last_hw_error=None",
                 f"calibration_entries_loaded={sorted(summary.servo_entries)}",
                 f"one_servo_mode_ok={self.state.single_servo_mode}",
+                f"active_range={self.servo_service.raw_position_range()[0]}..{self.servo_service.raw_position_range()[1]}",
+                "motion_ready=False",
                 "position_convention=tighten->smaller_counts; loosen->larger_counts",
                 f"motion_block_reason={extra_error or 'OpenRB/DYNAMIXEL not ready'}",
             ]
         )
 
-    def _apply_jog_result(self, result) -> None:
+    def _build_multi_servo_bench_debug_text(self) -> str:
+        selected_servo_id = self.state.selected_servo_id
+        selected = (
+            self.state.telemetry.get(int(selected_servo_id), {})
+            if selected_servo_id is not None
+            else {}
+        )
+        return "\n".join(
+            [
+                "Bench debug:",
+                f"bus_connected={self.state.connected}",
+                f"selected_port={self.settings.serial.openrb_port or 'unset'}",
+                f"selected_baud={self.settings.serial.baudrate}",
+                f"expected_servo_ids={self.state.expected_servo_ids}",
+                f"detected_servo_ids={self.state.detected_servo_ids}",
+                f"missing_servo_ids={self.state.missing_servo_ids}",
+                f"unexpected_servo_ids={self.state.unexpected_servo_ids}",
+                f"selected_servo_id={selected_servo_id}",
+                f"selected_position={selected.get('position')}",
+                f"selected_current={selected.get('current_ma')}",
+                f"selected_voltage={selected.get('voltage_mv')}",
+                f"selected_temperature={selected.get('temperature_c')}",
+                f"selected_motion_ready={selected.get('motion_ready')}",
+                f"selected_error={selected.get('error') or 'none'}",
+                f"active_range={self.servo_service.raw_position_range()[0]}..{self.servo_service.raw_position_range()[1]}",
+                "position_convention=tighten->smaller_counts; loosen->larger_counts",
+            ]
+        )
+
+    def _apply_jog_result(self, result, *, action: str) -> None:
         self.state.selected_servo_id = int(result.servo_id)
         self.state.selected_servo_current_position_tick = result.current_position_tick
         self.state.selected_servo_last_target_tick = result.goal_tick
@@ -615,7 +739,14 @@ class ServosController:
         self.state.selected_servo_safe_min_tick = result.safe_min_tick
         self.state.selected_servo_safe_max_tick = result.safe_max_tick
         self.state.selected_servo_last_motion_clamped = bool(result.clamped)
+        self.state.selected_servo_last_action_label = self._format_action_label(action)
+        self.state.selected_servo_motion_ready = bool(
+            result.assessment.ready if result.assessment is not None else False
+        )
+        self.state.selected_servo_telemetry_status_label = self._telemetry_status_from_result(result)
         if result.success:
+            self.state.selected_servo_last_result_label = "Clamped" if result.clamped else "Sent"
+            self.state.selected_servo_reason_label = "none"
             if result.clamped and result.goal_tick is not None:
                 self.state.selected_servo_last_motion_summary = (
                     f"sent {result.command_direction} to {result.goal_tick} (requested {result.unclamped_goal_tick}, clamped)"
@@ -627,6 +758,8 @@ class ServosController:
             else:
                 self.state.selected_servo_last_motion_summary = f"sent {result.command_direction}"
             return
+        self.state.selected_servo_last_result_label = "Blocked"
+        self.state.selected_servo_reason_label = result.message
         self.state.selected_servo_last_motion_summary = result.message
 
     def _sync_selected_servo_motion_state(self) -> None:
@@ -635,11 +768,24 @@ class ServosController:
             self.state.selected_servo_current_position_tick = None
             self.state.selected_servo_safe_min_tick = None
             self.state.selected_servo_safe_max_tick = None
+            self.state.selected_servo_motion_ready = False
+            self.state.selected_servo_reason_label = "none"
+            self.state.selected_servo_telemetry_status_label = "Unknown"
             return
         selected = self.state.telemetry.get(int(selected_servo_id), {})
         self.state.selected_servo_current_position_tick = selected.get("position")
-        self.state.selected_servo_safe_min_tick = selected.get("safe_min_tick")
-        self.state.selected_servo_safe_max_tick = selected.get("safe_max_tick")
+        raw_min, raw_max = self.servo_service.raw_position_range()
+        self.state.selected_servo_safe_min_tick = int(raw_min)
+        self.state.selected_servo_safe_max_tick = int(raw_max)
+        self.state.selected_servo_motion_ready = bool(selected.get("motion_ready", False))
+        self.state.selected_servo_telemetry_status_label = self._telemetry_status_from_row(selected)
+        blocking_reasons = [str(reason) for reason in selected.get("blocking_reasons", []) if str(reason).strip()]
+        if not blocking_reasons and self.state.blocking_reasons:
+            blocking_reasons = [str(reason) for reason in self.state.blocking_reasons if str(reason).strip()]
+        if blocking_reasons:
+            self.state.selected_servo_reason_label = blocking_reasons[0]
+        elif self.state.selected_servo_last_result_label != "Blocked":
+            self.state.selected_servo_reason_label = "none"
 
     def _sync_active_neutral_setpoints(self) -> None:
         summary = self.servo_service.get_calibration_summary()
@@ -655,3 +801,47 @@ class ServosController:
             ):
                 active_setpoints[int(servo_id)] = int(entry.neutral_setpoint)
         self.state.neutral_setpoints = active_setpoints
+
+    @staticmethod
+    def _format_action_label(action: str) -> str:
+        return " ".join(part.capitalize() for part in str(action).strip().split("_")) or "None"
+
+    @staticmethod
+    def _telemetry_status_from_snapshot(snapshot) -> str:
+        if snapshot.telemetry_read_ok is not True:
+            return "Unreadable"
+        assessment = snapshot.motion_assessment
+        if assessment is not None and any(
+            "telemetry is stale" in str(reason).lower() for reason in assessment.blocking_reasons
+        ):
+            return "Stale"
+        return "Live"
+
+    @staticmethod
+    def _telemetry_status_from_row(row: dict) -> str:
+        if not row:
+            return "Unknown"
+        for reason in row.get("blocking_reasons", []):
+            if "telemetry is stale" in str(reason).lower():
+                return "Stale"
+        if any(
+            row.get(field) is None
+            for field in ("position", "current_ma", "voltage_mv", "temperature_c")
+        ):
+            return "Unreadable"
+        return "Live"
+
+    def _telemetry_status_from_result(self, result) -> str:
+        if result.telemetry is None:
+            return "Unreadable"
+        return self._telemetry_status_from_row(
+            {
+                "position": result.telemetry.present_position,
+                "current_ma": result.telemetry.present_current_ma,
+                "voltage_mv": result.telemetry.present_voltage_mv,
+                "temperature_c": result.telemetry.present_temperature_c,
+                "blocking_reasons": list(
+                    result.assessment.blocking_reasons if result.assessment is not None else ()
+                ),
+            }
+        )

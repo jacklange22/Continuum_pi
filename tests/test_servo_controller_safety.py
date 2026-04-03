@@ -91,6 +91,45 @@ def _settings() -> Settings:
     )
 
 
+def _settings_4servo() -> Settings:
+    return Settings(
+        runtime=RuntimeConfig(mock_mode=True, robot_config="robot_4servo.yaml"),
+        robot=RobotConfig(
+            mode="4-servo",
+            servo_ids=[1, 2, 3, 4],
+            tendon_to_servo=[1, 2, 3, 4],
+            tightening_rotation_by_servo={1: "cw", 2: "cw", 3: "cw", 4: "cw"},
+        ),
+        serial=SerialConfig(
+            aurora_port="/dev/mock-aurora",
+            openrb_port="/dev/ttyACM0",
+            baudrate=57600,
+        ),
+        safety=SafetyConfig(
+            position_min_offset_ticks=-600,
+            position_max_offset_ticks=600,
+            max_current_ma=850,
+            default_pretension_current_threshold_ma=220,
+            pretension_current_balance_tolerance_ma=120,
+            fine_jog_step_ticks=5,
+            coarse_jog_step_ticks=25,
+            software_position_margin_ticks=64,
+            telemetry_stale_after_s=0.25,
+            pretension_step_ticks=2,
+            pretension_timeout_s=2.0,
+            pretension_settle_time_s=0.0,
+            max_temperature_c=70,
+            min_input_voltage_mv=4000,
+        ),
+        registration=RegistrationWorkflowConfig(),
+        experiment=ExperimentConfig(),
+        calibration=CalibrationConfig(
+            neutral_setpoints_path="data/calibrations/neutral_setpoints.json",
+            latest_registration_path="data/registrations/latest_registration.json",
+        ),
+    )
+
+
 class _ExplodingReadBus(MockDxlBus):
     def read_telemetry(self, servo_ids: list[int]):
         raise RuntimeError("mock telemetry read failure")
@@ -139,7 +178,7 @@ def _servo_service(tmp_path: Path, *, dxl_bus=None, context_servo_ids: list[int]
     )
 
 
-def test_system_controller_separates_bus_readiness_from_motion_readiness(tmp_path: Path) -> None:
+def test_system_controller_reports_motion_ready_in_single_servo_bench_mode_without_neutral_capture(tmp_path: Path) -> None:
     settings = _settings()
     servo_service = _servo_service(tmp_path)
     controller = SystemController(
@@ -152,31 +191,21 @@ def test_system_controller_separates_bus_readiness_from_motion_readiness(tmp_pat
     controller.connect_openrb()
 
     assert controller.state.bus_reachable is True
-    assert controller.state.motion_ready is False
-    assert "saved safe bounds" in controller.state.readiness_message
-
-    servo_service.capture_and_save_neutral_setpoints([1])
-    controller.refresh_readiness()
-
-    assert controller.state.bus_reachable is True
     assert controller.state.motion_ready is True
-    assert "Motion status: ready" in controller.state.readiness_message
+    assert "Active range: 0..4095" in controller.state.readiness_message
 
 
-def test_servos_controller_reports_motion_blocking_until_neutral_capture(tmp_path: Path) -> None:
+def test_servos_controller_allows_raw_range_bench_motion_without_neutral_capture(tmp_path: Path) -> None:
     settings = _settings()
     servo_service = _servo_service(tmp_path)
     servo_service.connect("/dev/mock-openrb", 57600)
     controller = ServosController(servo_service, settings)
 
-    assert any("saved safe bounds" in reason for reason in controller.state.blocking_reasons)
-    assert controller.state.telemetry[1]["ready"] != "ready"
-
-    controller.capture_neutral_setpoints()
-    controller.refresh()
-
     assert controller.state.blocking_reasons == []
     assert controller.state.telemetry[1]["ready"] == "ready"
+    assert controller.state.selected_servo_motion_ready is True
+    assert controller.state.selected_servo_safe_min_tick == 0
+    assert controller.state.selected_servo_safe_max_tick == 4095
 
 
 def test_servo_service_bench_snapshot_marks_ping_only_when_readback_fails(tmp_path: Path) -> None:
@@ -235,19 +264,95 @@ def test_servos_controller_exposes_current_target_and_clamp_state_after_jog(tmp_
     settings = _settings()
     service = _servo_service(tmp_path)
     service.connect("/dev/mock-openrb", 57600)
-    service.dxl_bus._state[1].present_position = 2050
-    service.save_startup_calibration(
-        servo_id=1,
-        min_offset_ticks=-10,
-        max_offset_ticks=5,
-        pretension_current_threshold_ma=220,
-    )
+    service.dxl_bus._state[1].present_position = 4090
     controller = ServosController(service, settings)
 
     controller.coarse_jog(1, -1)
 
-    assert controller.state.selected_servo_current_position_tick == 2055
-    assert controller.state.selected_servo_last_target_tick == 2055
-    assert controller.state.selected_servo_last_unclamped_target_tick == 2075
+    assert controller.state.selected_servo_current_position_tick == 4095
+    assert controller.state.selected_servo_last_target_tick == 4095
+    assert controller.state.selected_servo_last_unclamped_target_tick == 4115
     assert controller.state.selected_servo_last_motion_clamped is True
+    assert controller.state.selected_servo_last_result_label == "Clamped"
+    assert controller.state.selected_servo_safe_min_tick == 0
+    assert controller.state.selected_servo_safe_max_tick == 4095
     assert "sent loosen" in controller.state.selected_servo_last_motion_summary
+
+
+def test_servos_controller_preserves_last_blocked_reason_for_boundary_jog(tmp_path: Path) -> None:
+    settings = _settings()
+    service = _servo_service(tmp_path)
+    service.connect("/dev/mock-openrb", 57600)
+    service.dxl_bus._state[1].present_position = 0
+    controller = ServosController(service, settings)
+
+    try:
+        controller.fine_jog(1, 1)
+    except RuntimeError:
+        pass
+
+    assert controller.state.selected_servo_last_result_label == "Blocked"
+    assert "active minimum raw position 0" in controller.state.selected_servo_reason_label
+
+
+def test_system_controller_reports_configured_4servo_readiness(tmp_path: Path) -> None:
+    settings = _settings_4servo()
+    servo_service = _servo_service(tmp_path, context_servo_ids=[1, 2, 3, 4], robot_mode="4-servo")
+    controller = SystemController(
+        tracking_service=_TrackingStub(),
+        openrb_client=MockOpenRbClient(),
+        servo_service=servo_service,
+        settings=settings,
+    )
+
+    controller.connect_openrb()
+
+    assert controller.state.bus_reachable is True
+    assert controller.state.motion_ready is True
+    assert "expected=[1, 2, 3, 4]" in controller.state.readiness_message
+    assert "discovered_ids=[1, 2, 3, 4]" in controller.state.bench_debug_text
+
+
+def test_servos_controller_reports_4servo_missing_and_unexpected_ids(tmp_path: Path) -> None:
+    settings = _settings_4servo()
+    service = _servo_service(
+        tmp_path,
+        dxl_bus=MockDxlBus([1, 2, 4, 9]),
+        context_servo_ids=[1, 2, 3, 4],
+        robot_mode="4-servo",
+    )
+    service.connect("/dev/ttyACM0", 57600)
+    controller = ServosController(service, settings)
+
+    controller.refresh_readiness()
+
+    assert controller.state.detected_servo_ids == [1, 2, 4, 9]
+    assert controller.state.missing_servo_ids == [3]
+    assert controller.state.unexpected_servo_ids == [9]
+    assert controller.state.telemetry[3]["error"] is not None
+
+
+def test_servos_controller_four_servo_selection_and_jog_only_moves_selected_servo(tmp_path: Path) -> None:
+    settings = _settings_4servo()
+    service = _servo_service(
+        tmp_path,
+        dxl_bus=MockDxlBus([1, 2, 3, 4]),
+        context_servo_ids=[1, 2, 3, 4],
+        robot_mode="4-servo",
+    )
+    service.connect("/dev/ttyACM0", 57600)
+    controller = ServosController(service, settings)
+    before = {servo_id: telemetry.present_position for servo_id, telemetry in service.dxl_bus._state.items()}
+
+    controller.set_selected_servo(3)
+    controller.fine_jog(3, 1)
+
+    assert controller.state.selected_servo_id == 3
+    assert controller.state.selected_servo_last_action_label == "Tighten Fine"
+    assert controller.state.selected_servo_last_result_label == "Sent"
+    assert controller.state.selected_servo_safe_min_tick == 0
+    assert controller.state.selected_servo_safe_max_tick == 4095
+    assert service.dxl_bus._state[3].present_position == before[3] - 5
+    assert service.dxl_bus._state[1].present_position == before[1]
+    assert service.dxl_bus._state[2].present_position == before[2]
+    assert service.dxl_bus._state[4].present_position == before[4]

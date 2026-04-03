@@ -90,8 +90,8 @@ class SystemTab(QWidget):
         self.title_label = QLabel("System Workspace")
         self.title_label.setProperty("role", "title")
         self.workflow_hint = QLabel(
-            "Confirm tracker readiness and OpenRB status first. Then save any one-servo bring-up parameters "
-            "before reconnecting and moving to the Servos tab."
+            "Confirm OpenRB readiness here first. For Pi 4-servo bring-up, set `robot_4servo.yaml`, "
+            "`/dev/ttyACM0`, and `57600`, then move to the Servos tab and jog one selected servo at a time."
         )
         self.workflow_hint.setProperty("role", "hint")
         self.workflow_hint.setWordWrap(True)
@@ -195,7 +195,7 @@ class SystemTab(QWidget):
         self.save_parameters_button.setProperty("role", "primary")
         self.save_parameters_button.clicked.connect(self._save_runtime_parameters)
         self.parameters_hint = QLabel(
-            "These values update `config/system.local.yaml`. One-servo jog uses raw counts: tighten decreases position and loosen increases it."
+            "These values update `config/system.local.yaml`. Servo bring-up jog uses raw 0..4095 counts as the active range; the offset fields below are metadata for later mechanism-specific bounds."
         )
         self.parameters_hint.setProperty("role", "hint")
         self.parameters_hint.setWordWrap(True)
@@ -211,8 +211,8 @@ class SystemTab(QWidget):
         parameters_form.addRow("Baudrate", self.baudrate_spin)
         parameters_form.addRow("Fine jog (ticks)", self.fine_jog_spin)
         parameters_form.addRow("Coarse jog (ticks)", self.coarse_jog_spin)
-        parameters_form.addRow("Min offset (ticks)", self.min_offset_spin)
-        parameters_form.addRow("Max offset (ticks)", self.max_offset_spin)
+        parameters_form.addRow("App min offset metadata", self.min_offset_spin)
+        parameters_form.addRow("App max offset metadata", self.max_offset_spin)
         parameters_form.addRow("Software margin (ticks)", self.software_margin_spin)
         parameters_form.addRow("Telemetry fresh (s)", self.telemetry_freshness_spin)
         parameters_form.addRow("Pretension threshold (mA)", self.threshold_spin)

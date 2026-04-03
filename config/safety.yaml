@@ -1,3 +1,5 @@
+# Stored as later application-bounds metadata. The one-servo bench bringup
+# tool uses raw XC330 counts 0..4095 as its active jog range.
 position_min_offset_ticks: -600
 position_max_offset_ticks: 600
 max_current_ma: 850

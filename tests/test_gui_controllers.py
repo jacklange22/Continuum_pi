@@ -258,6 +258,15 @@ def test_tracker_mvp_tab_wraps_full_workflow_in_scroll_area(tmp_path: Path) -> N
     assert tab.scroll_area.widget().findChild(RegistrationTab) is tab.registration_tab
 
 
+def test_servos_tab_wraps_workspace_in_scroll_area(tmp_path: Path) -> None:
+    _app()
+    controller = ServosController(_servo_service(tmp_path), _settings())
+    tab = ServosTab(controller)
+
+    assert isinstance(tab.scroll_area, QScrollArea)
+    assert tab.scroll_area.widget() is not None
+
+
 def _app_context(tmp_path: Path) -> AppContext:
     settings = _settings()
     tracking_service = _tracking_service(settings, tmp_path)

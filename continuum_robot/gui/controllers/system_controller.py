@@ -147,7 +147,7 @@ class SystemController:
                 raise
             self.state.status_message = (
                 "OpenRB validated and prepared; DYNAMIXEL bus connected. "
-                "Use one-servo bring-up before attempting full robot motion."
+                "Use configured-servo bring-up next and jog one selected servo at a time."
             )
             self.state.last_error = None
         except Exception as exc:
@@ -182,23 +182,44 @@ class SystemController:
             self.state.bench_debug_text = self._build_disconnected_bench_debug_text()
             return self.refresh()
         try:
-            debug_snapshot = self.servo_service.build_bench_debug_snapshot(self._expected_servo_id())
-            self.state.bus_reachable = bool(debug_snapshot.bus_reachable)
-            self.state.motion_ready = bool(debug_snapshot.motion_ready)
-            self.state.external_power_ready = (
-                debug_snapshot.motion_assessment.external_power_ready
-                if debug_snapshot.motion_assessment is not None
-                else None
-            )
-            self.state.readiness_message = debug_snapshot.message
-            self.state.bench_debug_text = self._build_bench_debug_text(debug_snapshot)
-            self.state.last_error = (
-                debug_snapshot.message
-                if debug_snapshot.ping_ok is False
-                or debug_snapshot.identity_read_ok is False
-                or debug_snapshot.telemetry_read_ok is False
-                else None
-            )
+            if self.settings.robot.mode == "1-servo" or len(self.settings.robot.servo_ids) == 1:
+                debug_snapshot = self.servo_service.build_bench_debug_snapshot(self._expected_servo_id())
+                self.state.bus_reachable = bool(debug_snapshot.bus_reachable)
+                self.state.motion_ready = bool(debug_snapshot.motion_ready)
+                self.state.external_power_ready = (
+                    debug_snapshot.motion_assessment.external_power_ready
+                    if debug_snapshot.motion_assessment is not None
+                    else None
+                )
+                self.state.readiness_message = debug_snapshot.message
+                self.state.bench_debug_text = self._build_bench_debug_text(debug_snapshot)
+                self.state.last_error = (
+                    debug_snapshot.message
+                    if debug_snapshot.ping_ok is False
+                    or debug_snapshot.identity_read_ok is False
+                    or debug_snapshot.telemetry_read_ok is False
+                    else None
+                )
+            else:
+                snapshot = self.servo_service.build_configured_servo_bringup_snapshot(
+                    list(self.settings.robot.servo_ids),
+                    allow_scan=True,
+                )
+                self.state.bus_reachable = bool(snapshot.bus_reachable)
+                self.state.motion_ready = bool(snapshot.all_motion_ready)
+                external_power_flags = [
+                    entry.motion_assessment.external_power_ready
+                    for entry in snapshot.servo_entries.values()
+                    if entry.motion_assessment is not None
+                    and entry.motion_assessment.external_power_ready is not None
+                ]
+                if not external_power_flags:
+                    self.state.external_power_ready = None
+                else:
+                    self.state.external_power_ready = all(bool(flag) for flag in external_power_flags)
+                self.state.readiness_message = snapshot.message
+                self.state.bench_debug_text = self._build_configured_servo_bringup_debug_text(snapshot)
+                self.state.last_error = None if snapshot.status == "ready" else snapshot.message
         except Exception as exc:
             self.state.bus_reachable = False
             self.state.motion_ready = False
@@ -342,13 +363,13 @@ class SystemController:
             f"Robot config: {settings.runtime.robot_config}\n"
             f"Robot mode: {settings.robot.mode}\n"
             f"Fine/coarse jog: {settings.safety.fine_jog_step_ticks}/{settings.safety.coarse_jog_step_ticks} ticks\n"
-            f"Neutral-centered bounds: {settings.safety.position_min_offset_ticks}..{settings.safety.position_max_offset_ticks} ticks\n"
+            f"Application bounds metadata: {settings.safety.position_min_offset_ticks}..{settings.safety.position_max_offset_ticks} ticks\n"
             f"Software margin: {settings.safety.software_position_margin_ticks} ticks\n"
             f"Telemetry freshness timeout: {settings.safety.telemetry_stale_after_s}s\n"
             f"Minimum motion voltage: {settings.safety.min_input_voltage_mv} mV\n"
             f"Default pretension threshold: {settings.safety.default_pretension_current_threshold_ma} mA\n"
             f"DYNAMIXEL protocol version: {settings.serial.dynamixel_settings.get('protocol_version', 2.0)}\n"
-            "One-servo raw position convention: 0 = more tensioned, 4095 = untensioned, tighten -> smaller counts\n"
+            "Bring-up raw position convention: 0 = more tensioned, 4095 = untensioned, tighten -> smaller counts\n"
             f"{hardware_note}"
         )
 
@@ -358,7 +379,7 @@ class SystemController:
             return "Mock mode ready. Tracker, registration, and servo workflows can be exercised without hardware."
         return (
             "Hardware mode ready. Connect OpenRB, prepare the board for DYNAMIXEL pass-through, "
-            "refresh readiness, then discover and validate one servo."
+            "refresh readiness, verify the configured servos, then jog one selected servo at a time."
         )
 
     def _build_live_config_summary(self) -> str:
@@ -370,12 +391,12 @@ class SystemController:
             f"OpenRB port: {self.state.openrb_port}\n"
             f"Baudrate: {self.state.baudrate}\n"
             f"Fine/coarse jog: {self.state.fine_jog_step_ticks}/{self.state.coarse_jog_step_ticks} ticks\n"
-            f"Neutral-centered bounds: {self.state.position_min_offset_ticks}/{self.state.position_max_offset_ticks} ticks\n"
+            f"Application bounds metadata: {self.state.position_min_offset_ticks}/{self.state.position_max_offset_ticks} ticks\n"
             f"Software margin: {self.state.software_position_margin_ticks} ticks\n"
             f"Telemetry freshness timeout: {self.state.telemetry_freshness_timeout_s}s\n"
             f"Default pretension threshold: {self.state.pretension_threshold_ma} mA\n"
             f"Wrap direction metadata: {self.state.tightening_direction_default}\n"
-            "One-servo raw position convention: tighten -> smaller counts, loosen -> larger counts\n"
+            "Bring-up raw position convention: tighten -> smaller counts, loosen -> larger counts\n"
             f"OpenRB prepared: {self.state.openrb_prepared}\n"
             f"Bus reachable: {self.state.bus_reachable}\n"
             f"Motion ready: {self.state.motion_ready}\n"
@@ -421,8 +442,40 @@ class SystemController:
                 f"last_hw_error={last_hw_error}",
                 f"calibration_entries_loaded={snapshot.calibration_entries_loaded}",
                 f"one_servo_mode_ok={snapshot.one_servo_mode_ok}",
+                f"active_range={self.servo_service.raw_position_range()[0]}..{self.servo_service.raw_position_range()[1]}",
+                f"motion_ready={snapshot.motion_ready}",
                 "position_convention=tighten->smaller_counts; loosen->larger_counts",
                 f"motion_block_reason={snapshot.motion_block_reason or 'none'}",
+            ]
+        )
+
+    def _build_configured_servo_bringup_debug_text(self, snapshot) -> str:
+        openrb_connected = self.openrb_client.get_status_snapshot().connected
+        motion_ready_ids = [
+            entry.servo_id
+            for entry in snapshot.servo_entries.values()
+            if entry.motion_assessment is not None and entry.motion_assessment.ready
+        ]
+        telemetry_ok_ids = [
+            entry.servo_id for entry in snapshot.servo_entries.values() if entry.telemetry_read_ok
+        ]
+        return "\n".join(
+            [
+                "Bench debug:",
+                f"openrb_connected={openrb_connected}",
+                f"selected_port={snapshot.selected_port or self.state.openrb_port or 'unset'}",
+                f"selected_baud={snapshot.selected_baud or self.state.baudrate}",
+                f"expected_servo_ids={snapshot.expected_servo_ids}",
+                f"discovered_ids={snapshot.discovered_ids}",
+                f"missing_servo_ids={snapshot.missing_servo_ids}",
+                f"unexpected_servo_ids={snapshot.unexpected_servo_ids}",
+                f"telemetry_ok_ids={telemetry_ok_ids}",
+                f"motion_ready_ids={motion_ready_ids}",
+                f"all_expected_present={snapshot.all_expected_present}",
+                f"all_expected_telemetry_ok={snapshot.all_expected_telemetry_ok}",
+                f"all_motion_ready={snapshot.all_motion_ready}",
+                f"active_range={self.servo_service.raw_position_range()[0]}..{self.servo_service.raw_position_range()[1]}",
+                "position_convention=tighten->smaller_counts; loosen->larger_counts",
             ]
         )
 
@@ -434,7 +487,7 @@ class SystemController:
             f"openrb_connected={openrb_connected}",
             f"selected_port={self.state.openrb_port or 'unset'}",
             f"selected_baud={self.state.baudrate}",
-            f"expected_servo_id={self._expected_servo_id()}",
+            f"expected_servo_ids={self.state.expected_servo_ids}",
             "ping_ok=None",
             "identity_read_ok=None",
             "telemetry_read_ok=None",
@@ -445,6 +498,8 @@ class SystemController:
             "last_hw_error=None",
             f"calibration_entries_loaded={sorted(summary.servo_entries)}",
             f"one_servo_mode_ok={self.settings.robot.mode == '1-servo' and len(self.settings.robot.servo_ids) == 1}",
+            f"active_range={self.servo_service.raw_position_range()[0]}..{self.servo_service.raw_position_range()[1]}",
+            "motion_ready=False",
             "position_convention=tighten->smaller_counts; loosen->larger_counts",
             f"motion_block_reason={extra_error or 'OpenRB/DYNAMIXEL not ready'}",
         ]

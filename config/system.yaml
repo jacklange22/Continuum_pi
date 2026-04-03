@@ -1,11 +1,12 @@
 robot_config: "robot_4servo.yaml"
 aurora_port: ""
+# On the Pi, OpenRB-150 commonly appears here as `/dev/ttyACM0`.
 openrb_port: ""
 tracker_backend: "ndi"
 tracker_fallback_backend: "bridge"
 tracker_fallback_enabled: true
 tracker_type: "aurora"
-# The current one-servo OpenRB / XC330 bench path has been confirmed at 57600.
+# The current OpenRB / XC330 bring-up path has been confirmed at 57600.
 # Keep machine-specific overrides in system.local.yaml when the local bench setup differs.
 baudrate: 57600
 mock_mode: true

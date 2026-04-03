@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QTableWidget,
@@ -102,8 +103,8 @@ class ServosTab(QWidget):
         self.title_label = QLabel("Servo Workspace")
         self.title_label.setProperty("role", "title")
         self.workflow_hint = QLabel(
-            "Use one-servo bring-up first. Refresh readiness, discover and read one servo, "
-            "capture neutral, validate tiny bounded jogs, then run cautious threshold-based pretension."
+            "Use this workspace for servo bring-up only. Refresh readiness, verify the expected servos, "
+            "select one servo at a time, and jog it across the raw 0..4095 range."
         )
         self.workflow_hint.setProperty("role", "hint")
         self.workflow_hint.setWordWrap(True)
@@ -112,8 +113,14 @@ class ServosTab(QWidget):
         self.connection_label.setProperty("role", "status")
         self.mode_label = QLabel()
         self.mode_label.setWordWrap(True)
-        self.ids_label = QLabel()
-        self.ids_label.setWordWrap(True)
+        self.expected_ids_label = QLabel()
+        self.expected_ids_label.setWordWrap(True)
+        self.detected_ids_label = QLabel()
+        self.detected_ids_label.setWordWrap(True)
+        self.missing_ids_label = QLabel()
+        self.missing_ids_label.setWordWrap(True)
+        self.unexpected_ids_label = QLabel()
+        self.unexpected_ids_label.setWordWrap(True)
         self.selected_label = QLabel()
         self.selected_label.setWordWrap(True)
         self.discovery_label = QLabel()
@@ -137,9 +144,16 @@ class ServosTab(QWidget):
         self.selected_servo_position_label = QLabel("—")
         self.selected_servo_target_label = QLabel("—")
         self.selected_servo_bounds_label = QLabel("—")
+        self.selected_servo_action_label = QLabel("—")
+        self.selected_servo_result_label = QLabel("—")
+        self.selected_servo_reason_status_label = QLabel("—")
+        self.selected_servo_telemetry_label = QLabel("—")
         self.selected_servo_direction_label = QLabel("—")
         self.selected_servo_last_motion_label = QLabel("—")
         self.selected_servo_ready_label = QLabel("—")
+        self.selected_servo_reason_status_label.setWordWrap(True)
+        self.selected_servo_direction_label.setWordWrap(True)
+        self.selected_servo_last_motion_label.setWordWrap(True)
 
         self.scan_button = QPushButton("Discover / Read Servo")
         self.scan_button.setProperty("role", "primary")
@@ -166,6 +180,11 @@ class ServosTab(QWidget):
         self.jog_servo_spin = QSpinBox()
         self.jog_servo_spin.setRange(1, 252)
         self.jog_servo_spin.valueChanged.connect(self._sync_servo_selection)
+        self.selector_buttons_widget = QWidget()
+        self.selector_buttons_layout = QHBoxLayout(self.selector_buttons_widget)
+        self.selector_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        self.selector_buttons_layout.setSpacing(8)
+        self._selector_buttons: dict[int, QPushButton] = {}
         self.fine_minus_button = QPushButton("Loosen Fine")
         self.fine_plus_button = QPushButton("Tighten Fine")
         self.coarse_minus_button = QPushButton("Loosen Coarse")
@@ -216,16 +235,19 @@ class ServosTab(QWidget):
         self.apply_displacement_button = QPushButton("Apply Displacement")
         self.apply_displacement_button.clicked.connect(self._apply_displacement)
 
-        summary_box = QGroupBox("Bring-Up Summary")
+        summary_box = QGroupBox("Bench Bring-Up Summary")
         summary_layout = QFormLayout(summary_box)
         summary_layout.setLabelAlignment(Qt.AlignLeft)
         summary_layout.addRow("Connected", self.connection_label)
         summary_layout.addRow("Mode", self.mode_label)
-        summary_layout.addRow("Servo IDs", self.ids_label)
+        summary_layout.addRow("Expected servo IDs", self.expected_ids_label)
+        summary_layout.addRow("Detected servo IDs", self.detected_ids_label)
+        summary_layout.addRow("Missing expected", self.missing_ids_label)
+        summary_layout.addRow("Unexpected found", self.unexpected_ids_label)
         summary_layout.addRow("Selected servo", self.selected_label)
         summary_layout.addRow("Discovery", self.discovery_label)
-        summary_layout.addRow("Neutral values", self.neutral_label)
-        summary_layout.addRow("Motion blocking", self.blocking_label)
+        summary_layout.addRow("Neutral metadata", self.neutral_label)
+        summary_layout.addRow("Current safety block", self.blocking_label)
         summary_layout.addRow("Pretension", self.pretension_label)
 
         calibration_box = QGroupBox("Calibration State")
@@ -254,15 +276,6 @@ class ServosTab(QWidget):
         self.calibration_table.setMinimumHeight(180)
         calibration_layout.addWidget(self.calibration_table)
 
-        summary_splitter = QSplitter(Qt.Horizontal)
-        summary_splitter.setChildrenCollapsible(False)
-        summary_splitter.setHandleWidth(8)
-        summary_splitter.addWidget(summary_box)
-        summary_splitter.addWidget(calibration_box)
-        summary_splitter.setStretchFactor(0, 2)
-        summary_splitter.setStretchFactor(1, 3)
-        summary_splitter.setSizes([320, 620])
-
         maintenance_box = QGroupBox("Maintenance")
         maintenance_layout = QVBoxLayout(maintenance_box)
         maintenance_actions = QHBoxLayout()
@@ -280,26 +293,34 @@ class ServosTab(QWidget):
         maintenance_layout.addWidget(self.assign_button)
         maintenance_layout.addWidget(self.maintenance_hint)
 
-        jog_box = QGroupBox("Safe Jog")
+        jog_box = QGroupBox("Bench Jog")
         jog_layout = QGridLayout(jog_box)
-        jog_layout.addWidget(QLabel("Servo"), 0, 0)
-        jog_layout.addWidget(self.jog_servo_spin, 0, 1)
-        jog_layout.addWidget(QLabel("Current"), 0, 2)
-        jog_layout.addWidget(self.selected_servo_position_label, 0, 3)
-        jog_layout.addWidget(QLabel("Target"), 1, 0)
-        jog_layout.addWidget(self.selected_servo_target_label, 1, 1)
-        jog_layout.addWidget(QLabel("Safe bounds"), 1, 2)
-        jog_layout.addWidget(self.selected_servo_bounds_label, 1, 3)
-        jog_layout.addWidget(QLabel("Convention"), 2, 0)
-        jog_layout.addWidget(self.selected_servo_direction_label, 2, 1, 1, 3)
-        jog_layout.addWidget(QLabel("Last motion"), 3, 0)
-        jog_layout.addWidget(self.selected_servo_last_motion_label, 3, 1, 1, 3)
-        jog_layout.addWidget(QLabel("Motion ready"), 4, 0)
-        jog_layout.addWidget(self.selected_servo_ready_label, 4, 1, 1, 3)
-        jog_layout.addWidget(self.fine_minus_button, 5, 0)
-        jog_layout.addWidget(self.fine_plus_button, 5, 1)
-        jog_layout.addWidget(self.coarse_minus_button, 5, 2)
-        jog_layout.addWidget(self.coarse_plus_button, 5, 3)
+        jog_layout.addWidget(QLabel("Selected servo"), 0, 0)
+        jog_layout.addWidget(self.selector_buttons_widget, 0, 1, 1, 3)
+        jog_layout.addWidget(QLabel("Current"), 1, 0)
+        jog_layout.addWidget(self.selected_servo_position_label, 1, 1)
+        jog_layout.addWidget(QLabel("Target"), 1, 2)
+        jog_layout.addWidget(self.selected_servo_target_label, 1, 3)
+        jog_layout.addWidget(QLabel("Raw range"), 2, 0)
+        jog_layout.addWidget(self.selected_servo_bounds_label, 2, 1)
+        jog_layout.addWidget(QLabel("Telemetry"), 2, 2)
+        jog_layout.addWidget(self.selected_servo_telemetry_label, 2, 3)
+        jog_layout.addWidget(QLabel("Last action"), 3, 0)
+        jog_layout.addWidget(self.selected_servo_action_label, 3, 1)
+        jog_layout.addWidget(QLabel("Result"), 3, 2)
+        jog_layout.addWidget(self.selected_servo_result_label, 3, 3)
+        jog_layout.addWidget(QLabel("Reason"), 4, 0)
+        jog_layout.addWidget(self.selected_servo_reason_status_label, 4, 1, 1, 3)
+        jog_layout.addWidget(QLabel("Motion ready"), 5, 0)
+        jog_layout.addWidget(self.selected_servo_ready_label, 5, 1)
+        jog_layout.addWidget(QLabel("Convention"), 5, 2)
+        jog_layout.addWidget(self.selected_servo_direction_label, 5, 3)
+        jog_layout.addWidget(QLabel("Last motion"), 6, 0)
+        jog_layout.addWidget(self.selected_servo_last_motion_label, 6, 1, 1, 3)
+        jog_layout.addWidget(self.fine_minus_button, 7, 0)
+        jog_layout.addWidget(self.fine_plus_button, 7, 1)
+        jog_layout.addWidget(self.coarse_minus_button, 7, 2)
+        jog_layout.addWidget(self.coarse_plus_button, 7, 3)
 
         self.startup_box = QGroupBox("Startup Calibration")
         startup_layout = QFormLayout(self.startup_box)
@@ -309,8 +330,8 @@ class ServosTab(QWidget):
         startup_layout.addRow("Pretension threshold (mA)", self.threshold_spin)
         startup_layout.addRow(self.save_startup_button)
 
-        pretension_box = QGroupBox("Pretension")
-        pretension_layout = QFormLayout(pretension_box)
+        self.pretension_box = QGroupBox("Pretension")
+        pretension_layout = QFormLayout(self.pretension_box)
         pretension_layout.addRow("Servo", self.pretension_servo_spin)
         pretension_layout.addRow("Threshold (mA)", self.pretension_threshold_spin)
         pretension_buttons = QHBoxLayout()
@@ -328,10 +349,10 @@ class ServosTab(QWidget):
         left_layout = QVBoxLayout(left_column)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(12)
-        left_layout.addWidget(maintenance_box)
         left_layout.addWidget(jog_box)
+        left_layout.addWidget(maintenance_box)
+        left_layout.addWidget(self.pretension_box)
         left_layout.addWidget(self.startup_box)
-        left_layout.addWidget(pretension_box)
 
         self.displacement_box = QGroupBox("Tendon Displacement Command (cm)")
         self.displacement_layout = QGridLayout(self.displacement_box)
@@ -343,11 +364,13 @@ class ServosTab(QWidget):
         telemetry_layout = QVBoxLayout(telemetry_box)
         self.telemetry_table = QTableWidget(0, 11)
         self.telemetry_table.setHorizontalHeaderLabels(
-            ["Servo", "Model / ID", "FW", "Mode", "Torque", "Position", "Current", "Voltage", "Temp", "Safe bounds", "Status"]
+            ["Servo", "Model / ID", "FW", "Mode", "Torque", "Position", "Current", "Voltage", "Temp", "Active range", "Status"]
         )
         self.telemetry_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.telemetry_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.telemetry_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.telemetry_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.telemetry_table.verticalHeader().setVisible(False)
+        self.telemetry_table.cellClicked.connect(self._select_servo_from_row)
         for column in range(0, 9):
             self.telemetry_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
         self.telemetry_table.horizontalHeader().setSectionResizeMode(9, QHeaderView.Stretch)
@@ -359,8 +382,9 @@ class ServosTab(QWidget):
         right_layout = QVBoxLayout(right_column)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(12)
-        right_layout.addWidget(self.displacement_box)
         right_layout.addWidget(telemetry_box, 1)
+        right_layout.addWidget(calibration_box)
+        right_layout.addWidget(self.displacement_box)
 
         workspace_splitter = QSplitter(Qt.Horizontal)
         workspace_splitter.setChildrenCollapsible(False)
@@ -374,19 +398,29 @@ class ServosTab(QWidget):
         self.status_text = QTextEdit()
         self.status_text.setReadOnly(True)
         self.status_text.setMinimumHeight(82)
-        self.status_text.setMaximumHeight(124)
+        self.status_text.setMaximumHeight(180)
         status_box = QGroupBox("Operator Status")
         status_layout = QVBoxLayout(status_box)
         status_layout.addWidget(self.status_text)
+
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(14)
+        content_layout.addWidget(summary_box)
+        content_layout.addWidget(workspace_splitter)
+        content_layout.addWidget(status_box)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setWidget(content_widget)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(14)
         layout.addWidget(self.title_label)
         layout.addWidget(self.workflow_hint)
-        layout.addWidget(summary_splitter)
-        layout.addWidget(workspace_splitter, 1)
-        layout.addWidget(status_box)
+        layout.addWidget(self.scroll_area, 1)
 
     def update(self, state: ServosViewState) -> None:
         selected_servo_id = state.selected_servo_id or (state.servo_ids[0] if state.servo_ids else 1)
@@ -396,9 +430,17 @@ class ServosTab(QWidget):
         self.mode_label.setText(
             "One-servo bring-up"
             if state.single_servo_mode
-            else f"{state.robot_mode} (validate one servo first)"
+            else f"{state.robot_mode} individual-jog bring-up"
         )
-        self.ids_label.setText(", ".join(str(sid) for sid in state.servo_ids) or "none")
+        self.scan_button.setText(
+            "Discover / Read Servo"
+            if state.single_servo_mode
+            else "Discover / Read Configured Servos"
+        )
+        self.expected_ids_label.setText(", ".join(str(sid) for sid in state.expected_servo_ids) or "none")
+        self.detected_ids_label.setText(", ".join(str(sid) for sid in state.detected_servo_ids) or "none")
+        self.missing_ids_label.setText(", ".join(str(sid) for sid in state.missing_servo_ids) or "none")
+        self.unexpected_ids_label.setText(", ".join(str(sid) for sid in state.unexpected_servo_ids) or "none")
         self.selected_label.setText(str(selected_servo_id) if selected_servo_id is not None else "none")
         self.discovery_label.setText(state.discovery_message)
         self.neutral_label.setText(
@@ -431,16 +473,22 @@ class ServosTab(QWidget):
         self.selected_servo_position_label.setText(str(current_position if current_position is not None else "—"))
         self.selected_servo_target_label.setText(target_text)
         self.selected_servo_bounds_label.setText(bounds_text)
+        self.selected_servo_action_label.setText(state.selected_servo_last_action_label or "—")
+        self.selected_servo_result_label.setText(state.selected_servo_last_result_label or "—")
+        self.selected_servo_reason_status_label.setText(state.selected_servo_reason_label or "none")
+        self.selected_servo_telemetry_label.setText(state.selected_servo_telemetry_status_label or "Unknown")
         self.selected_servo_direction_label.setText(state.position_convention_summary or "—")
         self.selected_servo_last_motion_label.setText(state.selected_servo_last_motion_summary)
-        self.selected_servo_ready_label.setText(str(selected_servo.get("ready", "—")))
+        self.selected_servo_ready_label.setText("Yes" if state.selected_servo_motion_ready else "No")
+        self._rebuild_servo_selector(state.servo_ids or state.expected_servo_ids, selected_servo_id)
 
         has_neutral = bool(state.neutral_setpoints)
         any_servo = bool(state.servo_ids)
-        show_extended_motion = not state.single_servo_mode
-        motion_allowed = state.connected and any_servo and not state.blocking_reasons
-        self.startup_box.setVisible(show_extended_motion)
-        self.displacement_box.setVisible(show_extended_motion)
+        show_single_servo_advanced = state.single_servo_mode
+        motion_allowed = state.connected and any_servo and state.selected_servo_motion_ready
+        self.startup_box.setVisible(show_single_servo_advanced)
+        self.pretension_box.setVisible(show_single_servo_advanced)
+        self.displacement_box.setVisible(False)
         self.assign_button.setEnabled(state.connected and any_servo)
         self.scan_button.setEnabled(state.connected)
         self.refresh_readiness_button.setEnabled(state.connected)
@@ -450,12 +498,12 @@ class ServosTab(QWidget):
         self.fine_plus_button.setEnabled(motion_allowed)
         self.coarse_minus_button.setEnabled(motion_allowed)
         self.coarse_plus_button.setEnabled(motion_allowed)
-        self.save_startup_button.setEnabled(show_extended_motion and state.connected and any_servo)
-        self.start_pretension_button.setEnabled(motion_allowed and not state.pretension_running)
-        self.cancel_pretension_button.setEnabled(state.pretension_running)
-        self.retry_pretension_button.setEnabled(motion_allowed and not state.pretension_running)
-        self.accept_pretension_button.setEnabled(state.pretension_result_can_accept)
-        self.apply_displacement_button.setEnabled(show_extended_motion and state.connected and has_neutral)
+        self.save_startup_button.setEnabled(show_single_servo_advanced and state.connected and any_servo)
+        self.start_pretension_button.setEnabled(show_single_servo_advanced and motion_allowed and not state.pretension_running)
+        self.cancel_pretension_button.setEnabled(show_single_servo_advanced and state.pretension_running)
+        self.retry_pretension_button.setEnabled(show_single_servo_advanced and motion_allowed and not state.pretension_running)
+        self.accept_pretension_button.setEnabled(show_single_servo_advanced and state.pretension_result_can_accept)
+        self.apply_displacement_button.setEnabled(False)
 
         self._set_servo_spin_value(self.jog_servo_spin, selected_servo_id)
         self._set_servo_spin_value(self.calibration_servo_spin, selected_servo_id)
@@ -487,7 +535,8 @@ class ServosTab(QWidget):
             self.calibration_table.setItem(row, 6, QTableWidgetItem(item["status"]))
 
         self.telemetry_table.setRowCount(len(state.telemetry))
-        for row, servo_id in enumerate(sorted(state.telemetry)):
+        sorted_servo_ids = sorted(state.telemetry)
+        for row, servo_id in enumerate(sorted_servo_ids):
             item = state.telemetry[servo_id]
             self.telemetry_table.setItem(row, 0, QTableWidgetItem(str(servo_id)))
             self.telemetry_table.setItem(
@@ -511,6 +560,10 @@ class ServosTab(QWidget):
             if item.get("error"):
                 status_text = f"{status_text} | {item['error']}"
             self.telemetry_table.setItem(row, 10, QTableWidgetItem(status_text))
+        if selected_servo_id in sorted_servo_ids:
+            self.telemetry_table.selectRow(sorted_servo_ids.index(selected_servo_id))
+        else:
+            self.telemetry_table.clearSelection()
 
         lines = [state.status_message]
         if state.last_error:
@@ -539,6 +592,28 @@ class ServosTab(QWidget):
             self.displacement_inputs.append(spin)
             self._displacement_labels.append(label)
         self.displacement_layout.addWidget(self.apply_displacement_button, max(count, 1), 0, 1, 2)
+
+    def _rebuild_servo_selector(self, servo_ids: list[int], selected_servo_id: int | None) -> None:
+        desired_ids = [int(servo_id) for servo_id in servo_ids]
+        current_ids = sorted(self._selector_buttons)
+        if current_ids != desired_ids:
+            while self.selector_buttons_layout.count():
+                item = self.selector_buttons_layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            self._selector_buttons = {}
+            for servo_id in desired_ids:
+                button = QPushButton(f"Servo {servo_id}")
+                button.setCheckable(True)
+                button.clicked.connect(lambda _checked=False, sid=servo_id: self._select_servo(sid))
+                self.selector_buttons_layout.addWidget(button)
+                self._selector_buttons[int(servo_id)] = button
+            self.selector_buttons_layout.addStretch(1)
+        for servo_id, button in self._selector_buttons.items():
+            button.blockSignals(True)
+            button.setChecked(int(servo_id) == int(selected_servo_id) if selected_servo_id is not None else False)
+            button.blockSignals(False)
 
     def _update_displacement_values(self) -> None:
         self.controller.set_tendon_displacements([spin.value() for spin in self.displacement_inputs])
@@ -586,7 +661,27 @@ class ServosTab(QWidget):
                 spin.blockSignals(True)
                 spin.setValue(int(servo_id))
                 spin.blockSignals(False)
-        self.controller.state.selected_servo_id = int(servo_id)
+        set_selected = getattr(self.controller, "set_selected_servo", None)
+        if callable(set_selected):
+            set_selected(int(servo_id))
+        else:
+            self.controller.state.selected_servo_id = int(servo_id)
+
+    def _select_servo(self, servo_id: int) -> None:
+        self._sync_servo_selection(int(servo_id))
+        refresh_fn = getattr(self.controller, "refresh", None)
+        if callable(refresh_fn):
+            self.update(refresh_fn())
+
+    def _select_servo_from_row(self, row: int, _column: int) -> None:
+        item = self.telemetry_table.item(row, 0)
+        if item is None:
+            return
+        try:
+            servo_id = int(item.text())
+        except (TypeError, ValueError):
+            return
+        self._select_servo(int(servo_id))
 
     @staticmethod
     def _set_servo_spin_value(spin: QSpinBox, value: int) -> None:
@@ -597,8 +692,11 @@ class ServosTab(QWidget):
     def _safe_call(self, fn, *args, **kwargs) -> None:
         try:
             fn(*args, **kwargs)
-        except Exception:
-            pass
+        except Exception as exc:
+            if not getattr(self.controller.state, "last_error", None):
+                self.controller.state.last_error = str(exc)
+            if not getattr(self.controller.state, "status_message", ""):
+                self.controller.state.status_message = str(exc)
         refresh_fn = getattr(self.controller, "refresh", None)
         if callable(refresh_fn):
             self.update(refresh_fn())
