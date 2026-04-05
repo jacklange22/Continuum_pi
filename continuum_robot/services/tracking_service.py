@@ -453,6 +453,10 @@ class TrackingService:
         with self._lock:
             return copy.deepcopy(self._state)
 
+    def peek_snapshot(self) -> TrackingSnapshot:
+        """Return the current tracking state without implying stream consumption."""
+        return self.get_snapshot()
+
     def get_latest_tool(self, tool_id: str) -> ToolTrackingSnapshot | None:
         """Return a deep copy of one tool snapshot."""
         with self._lock:

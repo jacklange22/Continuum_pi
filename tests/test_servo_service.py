@@ -165,6 +165,28 @@ def test_servo_service_startup_calibration_persists_bounds_and_threshold(tmp_pat
     assert summary.servo_entries[1].tightening_rotation == "cw"
 
 
+def test_servo_service_build_runtime_snapshot_reports_consistent_counts(tmp_path: Path) -> None:
+    bus = MockDxlBus([1, 2, 3, 4])
+    for telemetry in bus._state.values():
+        telemetry.torque_enabled = True
+        telemetry.present_position = 4031
+        telemetry.present_current_ma = 160
+    service = _build_service(tmp_path, dxl_bus=bus)
+    service.connect("/dev/mock-openrb", 115200)
+
+    snapshot = service.build_runtime_servo_snapshot([1, 2, 3, 4], selected_servo_id=2)
+
+    assert snapshot.connected is True
+    assert snapshot.detected_servo_ids == [1, 2, 3, 4]
+    assert snapshot.telemetry_ready_count == 4
+    assert snapshot.motion_ready_count == 4
+    assert snapshot.pretension_ready_count == 4
+    assert snapshot.all_motion_ready is True
+    assert snapshot.entries[2].telemetry_status == "Live"
+    assert snapshot.entries[2].pretension_assessment is not None
+    assert snapshot.entries[2].pretension_assessment.ready is True
+
+
 def test_servo_service_blocks_jog_when_operating_mode_is_wrong(tmp_path: Path) -> None:
     bus = MockDxlBus([1])
     service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
@@ -299,6 +321,25 @@ def test_servo_service_directional_jog_uses_canonical_raw_position_convention(tm
     assert tighten.delta_ticks == -5
     assert loosen.success is True
     assert loosen.delta_ticks == 5
+
+
+def test_servo_service_move_servo_to_raw_target_refreshes_limits_when_live_snapshot_is_partial(tmp_path: Path) -> None:
+    bus = MockDxlBus([1])
+    bus._state[1].torque_enabled = True
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+
+    result = service.move_servo_to_raw_target(
+        servo_id=1,
+        target_tick=2055,
+        reason="pretension_validation",
+    )
+
+    assert result.success is True
+    assert result.blocked is False
+    assert result.goal_tick == 2055
+    assert result.safe_min_tick is not None
+    assert result.safe_max_tick is not None
 
 
 def test_servo_service_jog_action_clamps_to_full_raw_range_in_bench_mode(tmp_path: Path) -> None:

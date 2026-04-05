@@ -219,34 +219,26 @@ class SystemController:
                     else None
                 )
             else:
-                snapshot = self.servo_service.build_configured_servo_bringup_snapshot(
+                snapshot = self.servo_service.build_runtime_servo_snapshot(
                     list(self.settings.robot.servo_ids),
-                    allow_scan=True,
                 )
-                self.state.detected_servo_ids = list(snapshot.discovered_ids)
-                self.state.telemetry_ready_count = sum(
-                    1 for entry in snapshot.servo_entries.values() if entry.telemetry_read_ok
-                )
-                self.state.motion_ready_count = sum(
-                    1
-                    for entry in snapshot.servo_entries.values()
-                    if entry.motion_assessment is not None and entry.motion_assessment.ready
-                )
-                self.state.bus_reachable = bool(snapshot.bus_reachable)
+                self.state.detected_servo_ids = list(snapshot.detected_servo_ids)
+                self.state.telemetry_ready_count = int(snapshot.telemetry_ready_count)
+                self.state.motion_ready_count = int(snapshot.motion_ready_count)
+                self.state.bus_reachable = bool(snapshot.detected_servo_ids)
                 self.state.motion_ready = bool(snapshot.all_motion_ready)
                 external_power_flags = [
                     entry.motion_assessment.external_power_ready
-                    for entry in snapshot.servo_entries.values()
-                    if entry.motion_assessment is not None
-                    and entry.motion_assessment.external_power_ready is not None
+                    for entry in snapshot.entries.values()
+                    if entry.motion_assessment is not None and entry.motion_assessment.external_power_ready is not None
                 ]
                 if not external_power_flags:
                     self.state.external_power_ready = None
                 else:
                     self.state.external_power_ready = all(bool(flag) for flag in external_power_flags)
                 self.state.readiness_message = snapshot.message
-                self.state.bench_debug_text = self._build_configured_servo_bringup_debug_text(snapshot)
-                self.state.last_error = None if snapshot.status == "ready" else snapshot.message
+                self.state.bench_debug_text = self._build_runtime_servo_debug_text(snapshot)
+                self.state.last_error = None if snapshot.all_motion_ready else snapshot.message
         except Exception as exc:
             self.state.bus_reachable = False
             self.state.motion_ready = False
@@ -258,6 +250,28 @@ class SystemController:
             self.state.readiness_message = f"Readiness refresh failed: {exc}"
             self.state.bench_debug_text = self._build_disconnected_bench_debug_text(extra_error=str(exc))
         return self.refresh()
+
+    def sync_servo_runtime_snapshot(self, snapshot) -> SystemViewState:
+        """Keep System-tab servo readiness aligned with the canonical live servo snapshot."""
+        self.state.expected_servo_ids = [int(servo_id) for servo_id in getattr(snapshot, "expected_servo_ids", [])]
+        self.state.detected_servo_ids = [int(servo_id) for servo_id in getattr(snapshot, "detected_servo_ids", [])]
+        self.state.bus_reachable = bool(self.state.detected_servo_ids)
+        self.state.telemetry_ready_count = int(getattr(snapshot, "telemetry_ready_count", 0))
+        self.state.motion_ready_count = int(getattr(snapshot, "motion_ready_count", 0))
+        self.state.motion_ready = bool(getattr(snapshot, "all_motion_ready", False))
+        external_power_flags = [
+            entry.motion_assessment.external_power_ready
+            for entry in getattr(snapshot, "entries", {}).values()
+            if entry.motion_assessment is not None and entry.motion_assessment.external_power_ready is not None
+        ]
+        self.state.external_power_ready = (
+            all(bool(flag) for flag in external_power_flags) if external_power_flags else None
+        )
+        self.state.readiness_message = str(getattr(snapshot, "message", self.state.readiness_message))
+        self.state.bench_debug_text = self._build_runtime_servo_debug_text(snapshot)
+        if self.state.motion_ready:
+            self.state.last_error = None
+        return self.state
 
     def refresh(self) -> SystemViewState:
         tracker_state = self.tracking_service.get_snapshot()
@@ -295,6 +309,9 @@ class SystemController:
 
     def sync_servo_bringup_state(self, servo_state) -> SystemViewState:
         """Keep System-tab servo readiness summary aligned with the canonical servo controller state."""
+        snapshot = getattr(servo_state, "latest_runtime_snapshot", None)
+        if snapshot is not None:
+            return self.sync_servo_runtime_snapshot(snapshot)
         expected_ids = [int(servo_id) for servo_id in getattr(servo_state, "expected_servo_ids", [])]
         detected_ids = [int(servo_id) for servo_id in getattr(servo_state, "detected_servo_ids", [])]
         telemetry = dict(getattr(servo_state, "telemetry", {}))
@@ -603,6 +620,38 @@ class SystemController:
                 f"all_expected_present={snapshot.all_expected_present}",
                 f"all_expected_telemetry_ok={snapshot.all_expected_telemetry_ok}",
                 f"all_motion_ready={snapshot.all_motion_ready}",
+                f"active_range={self.servo_service.raw_position_range()[0]}..{self.servo_service.raw_position_range()[1]}",
+                "position_convention=tighten->smaller_counts; loosen->larger_counts",
+            ]
+        )
+
+    def _build_runtime_servo_debug_text(self, snapshot) -> str:
+        openrb_connected = self.openrb_client.get_status_snapshot().connected
+        motion_ready_ids = [
+            int(entry.servo_id)
+            for entry in getattr(snapshot, "entries", {}).values()
+            if entry.motion_assessment is not None and entry.motion_assessment.ready
+        ]
+        telemetry_ok_ids = [
+            int(entry.servo_id)
+            for entry in getattr(snapshot, "entries", {}).values()
+            if entry.telemetry_status == "Live"
+        ]
+        return "\n".join(
+            [
+                "Bench debug:",
+                f"openrb_connected={openrb_connected}",
+                f"selected_port={self.state.openrb_port or 'unset'}",
+                f"selected_baud={self.state.baudrate}",
+                f"expected_servo_ids={getattr(snapshot, 'expected_servo_ids', [])}",
+                f"discovered_ids={getattr(snapshot, 'detected_servo_ids', [])}",
+                f"detected_servo_ids={getattr(snapshot, 'detected_servo_ids', [])}",
+                f"missing_servo_ids={getattr(snapshot, 'missing_servo_ids', [])}",
+                f"unexpected_servo_ids={getattr(snapshot, 'unexpected_servo_ids', [])}",
+                f"telemetry_ok_ids={telemetry_ok_ids}",
+                f"motion_ready_ids={motion_ready_ids}",
+                f"freshness_threshold_s={self.state.telemetry_freshness_timeout_s:.3f}",
+                f"all_motion_ready={getattr(snapshot, 'all_motion_ready', False)}",
                 f"active_range={self.servo_service.raw_position_range()[0]}..{self.servo_service.raw_position_range()[1]}",
                 "position_convention=tighten->smaller_counts; loosen->larger_counts",
             ]

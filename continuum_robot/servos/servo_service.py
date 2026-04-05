@@ -196,6 +196,39 @@ class ConfiguredServoBringupSnapshot:
 
 
 @dataclass
+class ServoRuntimeStateEntry:
+    """Canonical live per-servo runtime state used by multiple GUI surfaces."""
+
+    servo_id: int
+    telemetry: ServoTelemetry | None
+    identity_read_ok: bool
+    telemetry_read_ok: bool
+    detected: bool
+    telemetry_status: str
+    motion_assessment: ServoMotionAssessment | None
+    pretension_assessment: ServoMotionAssessment | None
+    message: str
+
+
+@dataclass
+class ServoRuntimeStateSnapshot:
+    """Canonical multi-servo runtime snapshot shared by System, Servos, and Pretension."""
+
+    connected: bool
+    expected_servo_ids: list[int]
+    detected_servo_ids: list[int]
+    missing_servo_ids: list[int]
+    unexpected_servo_ids: list[int]
+    entries: dict[int, ServoRuntimeStateEntry]
+    telemetry_ready_count: int
+    motion_ready_count: int
+    pretension_ready_count: int
+    all_motion_ready: bool
+    selected_servo_id: int | None
+    message: str
+
+
+@dataclass
 class PretensionRoutineResult:
     """Outcome of the cautious startup pretension routine."""
 
@@ -818,6 +851,176 @@ class ServoService:
             message=message,
         )
 
+    def build_runtime_servo_snapshot(
+        self,
+        expected_servo_ids: list[int],
+        *,
+        selected_servo_id: int | None = None,
+        selected_pretension_parameters: PretensionParameters | None = None,
+        include_scan: bool = True,
+    ) -> ServoRuntimeStateSnapshot:
+        """Return one canonical live servo snapshot for GUI readiness surfaces."""
+        expected_ids = sorted({int(servo_id) for servo_id in expected_servo_ids})
+        if not self.is_connected:
+            return ServoRuntimeStateSnapshot(
+                connected=False,
+                expected_servo_ids=expected_ids,
+                detected_servo_ids=[],
+                missing_servo_ids=list(expected_ids),
+                unexpected_servo_ids=[],
+                entries={},
+                telemetry_ready_count=0,
+                motion_ready_count=0,
+                pretension_ready_count=0,
+                all_motion_ready=False,
+                selected_servo_id=int(selected_servo_id) if selected_servo_id is not None else None,
+                message="DYNAMIXEL bus is disconnected.",
+            )
+        if not expected_ids:
+            return ServoRuntimeStateSnapshot(
+                connected=True,
+                expected_servo_ids=[],
+                detected_servo_ids=[],
+                missing_servo_ids=[],
+                unexpected_servo_ids=[],
+                entries={},
+                telemetry_ready_count=0,
+                motion_ready_count=0,
+                pretension_ready_count=0,
+                all_motion_ready=False,
+                selected_servo_id=int(selected_servo_id) if selected_servo_id is not None else None,
+                message="No expected servo IDs are configured.",
+            )
+
+        discovered_ids = (
+            self.scan_ids(
+                min_id=int(self.dxl_bus.config.discovery_min_id),
+                max_id=int(self.dxl_bus.config.discovery_max_id),
+            )
+            if include_scan
+            else []
+        )
+        telemetry_by_id = self.read_telemetry(expected_ids)
+        entries: dict[int, ServoRuntimeStateEntry] = {}
+        detected_servo_ids: list[int] = []
+        telemetry_ready_count = 0
+        motion_ready_count = 0
+        pretension_ready_count = 0
+
+        for servo_id in expected_ids:
+            telemetry = telemetry_by_id.get(int(servo_id))
+            identity_read_ok = bool(telemetry is not None and self._identity_read_ok(telemetry))
+            telemetry_read_ok = bool(telemetry is not None and self._telemetry_read_ok(telemetry))
+            motion_assessment = (
+                self.assess_motion(
+                    int(servo_id),
+                    require_calibrated_bounds=self.require_calibrated_bounds_for_individual_motion(),
+                    telemetry=telemetry,
+                )
+                if telemetry is not None
+                else None
+            )
+            pretension_parameters = (
+                selected_pretension_parameters
+                if selected_servo_id is not None and int(servo_id) == int(selected_servo_id)
+                else None
+            )
+            pretension_assessment = (
+                self.assess_pretension_readiness(
+                    int(servo_id),
+                    parameters=pretension_parameters,
+                    telemetry=telemetry,
+                )
+                if telemetry is not None
+                else None
+            )
+            telemetry_status = self._runtime_telemetry_status(
+                telemetry=telemetry,
+                motion_assessment=motion_assessment,
+            )
+            detected = bool(
+                int(servo_id) in discovered_ids
+                or
+                telemetry_read_ok
+                or identity_read_ok
+                or (
+                    telemetry is not None
+                    and (
+                        telemetry.present_position is not None
+                        or telemetry.present_current_ma is not None
+                        or telemetry.reported_servo_id is not None
+                    )
+                )
+            )
+            if detected:
+                detected_servo_ids.append(int(servo_id))
+            if telemetry_status == "Live":
+                telemetry_ready_count += 1
+            if motion_assessment is not None and motion_assessment.ready:
+                motion_ready_count += 1
+            if pretension_assessment is not None and pretension_assessment.ready:
+                pretension_ready_count += 1
+            if telemetry is None:
+                message = f"Telemetry is unavailable for servo {servo_id}."
+            elif motion_assessment is not None and motion_assessment.ready:
+                message = f"Servo {servo_id} is ready for cautious motion."
+            elif motion_assessment is not None:
+                message = motion_assessment.reason
+            else:
+                message = f"Servo {servo_id} telemetry is unavailable."
+            entries[int(servo_id)] = ServoRuntimeStateEntry(
+                servo_id=int(servo_id),
+                telemetry=telemetry,
+                identity_read_ok=identity_read_ok,
+                telemetry_read_ok=telemetry_read_ok,
+                detected=detected,
+                telemetry_status=telemetry_status,
+                motion_assessment=motion_assessment,
+                pretension_assessment=pretension_assessment,
+                message=message,
+            )
+
+        combined_detected_ids = sorted({int(servo_id) for servo_id in detected_servo_ids} | {int(servo_id) for servo_id in discovered_ids})
+        unexpected_servo_ids = [
+            int(servo_id) for servo_id in sorted(discovered_ids) if int(servo_id) not in expected_ids
+        ]
+        missing_servo_ids = [servo_id for servo_id in expected_ids if servo_id not in combined_detected_ids]
+        total = len(expected_ids)
+        details = []
+        if include_scan:
+            details.extend(
+                [
+                    f"expected={expected_ids}",
+                    f"discovered_ids={sorted(discovered_ids)}",
+                ]
+            )
+        details.extend(
+            [
+                f"Detected {len(combined_detected_ids)}/{total}",
+                f"Telemetry {telemetry_ready_count}/{total}",
+                f"Motion ready {motion_ready_count}/{total}",
+            ]
+        )
+        if missing_servo_ids:
+            details.append(f"missing={missing_servo_ids}")
+        if unexpected_servo_ids:
+            details.append(f"unexpected={unexpected_servo_ids}")
+        message = " | ".join(details)
+        return ServoRuntimeStateSnapshot(
+            connected=True,
+            expected_servo_ids=expected_ids,
+            detected_servo_ids=combined_detected_ids,
+            missing_servo_ids=sorted(missing_servo_ids),
+            unexpected_servo_ids=unexpected_servo_ids,
+            entries=entries,
+            telemetry_ready_count=int(telemetry_ready_count),
+            motion_ready_count=int(motion_ready_count),
+            pretension_ready_count=int(pretension_ready_count),
+            all_motion_ready=bool(total > 0 and motion_ready_count == total),
+            selected_servo_id=int(selected_servo_id) if selected_servo_id is not None else None,
+            message=message,
+        )
+
     def discover_one_servo(
         self,
         *,
@@ -995,9 +1198,10 @@ class ServoService:
         parameters: PretensionParameters | None = None,
         telemetry: ServoTelemetry | None = None,
     ) -> PretensionWindow:
-        current = telemetry or self.read_telemetry([int(servo_id)])[int(servo_id)]
-        if current.min_position_limit is None or current.max_position_limit is None:
-            raise ValueError("Servo position limits are unavailable.")
+        current = self._telemetry_with_position_limits(
+            servo_id=int(servo_id),
+            telemetry=telemetry,
+        )
         hardware_safe_min = int(current.min_position_limit) + int(self.safety_guard.software_position_margin_ticks)
         hardware_safe_max = int(current.max_position_limit) - int(self.safety_guard.software_position_margin_ticks)
         hardware_safe_min = max(int(RAW_POSITION_MIN_TICK), int(hardware_safe_min))
@@ -2073,10 +2277,12 @@ class ServoService:
         telemetry: ServoTelemetry,
         require_calibrated_bounds: bool,
     ) -> tuple[int, int]:
-        if telemetry.min_position_limit is None or telemetry.max_position_limit is None:
-            raise ValueError("Servo position limits are unavailable.")
-        safe_min = int(telemetry.min_position_limit) + int(self.safety_guard.software_position_margin_ticks)
-        safe_max = int(telemetry.max_position_limit) - int(self.safety_guard.software_position_margin_ticks)
+        telemetry_with_limits = self._telemetry_with_position_limits(
+            servo_id=int(servo_id),
+            telemetry=telemetry,
+        )
+        safe_min = int(telemetry_with_limits.min_position_limit) + int(self.safety_guard.software_position_margin_ticks)
+        safe_max = int(telemetry_with_limits.max_position_limit) - int(self.safety_guard.software_position_margin_ticks)
         safe_min = max(int(RAW_POSITION_MIN_TICK), int(safe_min))
         safe_max = min(int(RAW_POSITION_MAX_TICK), int(safe_max))
         if safe_min > safe_max:
@@ -2102,6 +2308,20 @@ class ServoService:
                 f"Servo {servo_id} safe bounds are invalid after applying hardware and software limits."
             )
         return int(safe_min), int(safe_max)
+
+    def _telemetry_with_position_limits(
+        self,
+        *,
+        servo_id: int,
+        telemetry: ServoTelemetry | None,
+    ) -> ServoTelemetry:
+        current = telemetry or self.read_telemetry([int(servo_id)])[int(servo_id)]
+        if current.min_position_limit is not None and current.max_position_limit is not None:
+            return current
+        refreshed = self.read_telemetry([int(servo_id)])[int(servo_id)]
+        if refreshed.min_position_limit is None or refreshed.max_position_limit is None:
+            raise ValueError("Servo position limits are unavailable.")
+        return refreshed
 
     def _safe_bounds_from_neutral(
         self,
@@ -2449,6 +2669,33 @@ class ServoService:
             and telemetry.present_temperature_c is not None
             and telemetry.hardware_error_code is not None
         )
+
+    def _runtime_telemetry_status(
+        self,
+        *,
+        telemetry: ServoTelemetry | None,
+        motion_assessment: ServoMotionAssessment | None,
+    ) -> str:
+        if telemetry is None:
+            return "Unreadable"
+        fresh = self.telemetry_is_fresh(telemetry)
+        if fresh is False:
+            return "Stale"
+        if motion_assessment is not None:
+            for reason in motion_assessment.blocking_reasons:
+                if "telemetry is stale" in str(reason).lower():
+                    return "Stale"
+        if any(
+            value is None
+            for value in (
+                telemetry.present_position,
+                telemetry.present_current_ma,
+                telemetry.present_voltage_mv,
+                telemetry.present_temperature_c,
+            )
+        ):
+            return "Unreadable"
+        return "Live"
 
     @staticmethod
     def _missing_telemetry_fields(telemetry: ServoTelemetry) -> str:

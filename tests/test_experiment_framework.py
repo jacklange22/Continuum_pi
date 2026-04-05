@@ -2,6 +2,7 @@ from pathlib import Path
 import json
 
 import numpy as np
+import pytest
 
 from continuum_robot.config.schemas import (
     CalibrationConfig,
@@ -20,6 +21,7 @@ from continuum_robot.experiments.registry import ExperimentRegistry
 from continuum_robot.experiments.schedules import CommandScheduleConfig, command_schedule_checksum, generate_command_schedule
 from continuum_robot.experiments.schemas import ExperimentMetadata, ExperimentSummary, ExperimentTimeseriesSample
 from continuum_robot.hardware.mock_dxl_bus import MockDxlBus
+from continuum_robot.services.models import HEALTH_HEALTHY, ServiceHealthSnapshot, ToolTrackingSnapshot, TrackingSnapshot
 from continuum_robot.services.tracking_service import TrackingService
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
 from continuum_robot.servos.neutral_calibration_service import NeutralCalibrationService
@@ -56,6 +58,85 @@ def _servo_service(tmp_path: Path) -> ServoService:
         safety_guard=SafetyGuard(min_offset_ticks=-600, max_offset_ticks=600, max_current_ma=850),
         neutral_calibration=NeutralCalibrationService(path=tmp_path / "neutral.json"),
         pretension_validation=PretensionValidationService(),
+    )
+
+
+class _PretensionExperimentBus(MockDxlBus):
+    def __init__(self) -> None:
+        super().__init__([1, 2, 3, 4])
+        self._current_sequence = [180, 230, 180, 235, 180, 240]
+        for telemetry in self._state.values():
+            telemetry.torque_enabled = True
+            telemetry.present_position = 4031
+            telemetry.present_current_ma = 150
+
+    def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
+        super().write_goal_positions(positions_by_id)
+        if 1 in positions_by_id and self._current_sequence:
+            self._state[1].present_current_ma = self._current_sequence.pop(0)
+
+
+class _SequencedTrackingService:
+    def __init__(self, snapshots: list[TrackingSnapshot]) -> None:
+        self._snapshots = list(snapshots)
+        self._index = 0
+        self._thread = object()
+
+    def peek_snapshot(self) -> TrackingSnapshot:
+        if not self._snapshots:
+            raise RuntimeError("No tracking snapshots configured for test.")
+        if self._index >= len(self._snapshots):
+            return self._snapshots[-1]
+        return self._snapshots[self._index]
+
+    def get_snapshot(self) -> TrackingSnapshot:
+        if not self._snapshots:
+            raise RuntimeError("No tracking snapshots configured for test.")
+        if self._index >= len(self._snapshots):
+            return self._snapshots[-1]
+        snapshot = self._snapshots[self._index]
+        self._index += 1
+        return snapshot
+
+    def start(self) -> None:
+        self._thread = object()
+
+    def stop(self) -> None:
+        self._thread = None
+
+
+def _tracking_snapshot(*, translation_mm: list[float]) -> TrackingSnapshot:
+    return TrackingSnapshot(
+        health=ServiceHealthSnapshot(
+            name="tracking_service",
+            health=HEALTH_HEALTHY,
+            state="tracking",
+            status="ok",
+        ),
+        connection_state="tracking",
+        canonical_state="streaming_healthy",
+        backend_identity="mock",
+        selected_backend_name="mock",
+        runtime_coil_tool_id="0A",
+        registration_tool_id="0B",
+        tracker_data_age_s=0.01,
+        tracker_data_stale=False,
+        last_frame_number=1,
+        normalized_live_tool_ids=["0A"],
+        tools={
+            "0A": ToolTrackingSnapshot(
+                tool_id="0A",
+                present=True,
+                valid=True,
+                validity_known=True,
+                tracking_state="valid",
+                status="ok",
+                frame_number=1,
+                translation_mm=tuple(float(value) for value in translation_mm),
+                quaternion_wxyz=(1.0, 0.0, 0.0, 0.0),
+            ),
+            "0B": ToolTrackingSnapshot(tool_id="0B"),
+        },
     )
 
 
@@ -233,6 +314,72 @@ def test_replay_runner_loads_existing_dataset(tmp_path: Path) -> None:
     assert replay.success is True
     assert replay.summary.experiment_metrics["source_sample_count"] == 2
     assert replay.sample_count == 2
+
+
+def test_pretension_validation_experiment_records_servo_and_tracker_consistency(tmp_path: Path) -> None:
+    settings = _settings()
+    servo_service = ServoService(
+        dxl_bus=_PretensionExperimentBus(),
+        mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
+        safety_guard=SafetyGuard(
+            min_offset_ticks=-600,
+            max_offset_ticks=600,
+            max_current_ma=850,
+            default_pretension_current_threshold_ma=220,
+            fine_jog_step_ticks=5,
+            coarse_jog_step_ticks=25,
+            software_position_margin_ticks=64,
+            telemetry_stale_after_s=0.25,
+            pretension_step_ticks=2,
+            pretension_timeout_s=2.0,
+            pretension_settle_time_s=0.0,
+            pretension_baseline_sample_count=3,
+            pretension_current_filter_window=1,
+            pretension_current_delta_threshold_ma=60,
+            pretension_absolute_trigger_current_ma=500,
+            pretension_max_travel_ticks=320,
+        ),
+        neutral_calibration=NeutralCalibrationService(path=tmp_path / "pretension_neutral.json"),
+        pretension_validation=PretensionValidationService(),
+        sleep_fn=lambda _seconds: None,
+    )
+    servo_service.connect("/dev/mock-openrb", 115200)
+    tracking_service = _SequencedTrackingService(
+        [
+            _tracking_snapshot(translation_mm=[0.0, 0.0, 0.0]),
+            _tracking_snapshot(translation_mm=[1.0, 0.0, 0.0]),
+            _tracking_snapshot(translation_mm=[1.0, 0.0, 0.0]),
+            _tracking_snapshot(translation_mm=[0.0, 0.0, 0.0]),
+            _tracking_snapshot(translation_mm=[1.2, 0.0, 0.0]),
+            _tracking_snapshot(translation_mm=[1.2, 0.0, 0.0]),
+        ]
+    )
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        servo_service=servo_service,
+        tracking_service=tracking_service,
+    )
+
+    result = runner.run_experiment(
+        "pretension_validation",
+        config={
+            "servo_id": 1,
+            "run_count": 2,
+            "move_to_reference": False,
+            "validation_direction": "loosen",
+            "validation_delta_ticks": 6,
+        },
+    )
+
+    assert result.success is True
+    assert result.summary.experiment_metrics["run_count"] == 2
+    assert result.summary.experiment_metrics["successful_run_count"] == 2
+    assert result.summary.experiment_metrics["validation_displacement_mean_mm"] == pytest.approx(1.1)
+    assert result.summary.experiment_metrics["validation_displacement_spread_mm"] == pytest.approx(0.2)
+    bundle = runner.load_dataset(result.paths.output_dir)
+    assert any(sample.phase == "pretension_run" for sample in bundle.samples)
+    assert any(sample.phase == "validation_motion" for sample in bundle.samples)
 
 
 def test_collect_pose_command_dataset_marks_registration_missing(tmp_path: Path) -> None:

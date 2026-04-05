@@ -78,6 +78,7 @@ class ServosController:
         self._pretension_stop: threading.Event | None = None
         self._last_pretension_result: PretensionRoutineResult | None = None
         self._motion_state_by_servo: dict[int, dict[str, object]] = {}
+        self.latest_runtime_snapshot = None
         self.state = ServosViewState(
             connected=servo_service.is_connected,
             robot_mode=settings.robot.mode,
@@ -587,46 +588,42 @@ class ServosController:
         *,
         replace: bool,
     ) -> dict[int, ServoMotionAssessment]:
-        telemetry = self.servo_service.read_live_telemetry([int(servo_id) for servo_id in servo_ids])
+        target_ids = (
+            list(self.state.expected_servo_ids or servo_ids)
+            if replace
+            else [int(servo_id) for servo_id in servo_ids]
+        )
+        snapshot = self.servo_service.build_runtime_servo_snapshot(
+            target_ids,
+            selected_servo_id=self.state.selected_servo_id,
+            include_scan=bool(replace),
+        )
+        self.latest_runtime_snapshot = snapshot
         existing_rows = dict(self.state.telemetry)
         rows: dict[int, dict] = {} if replace else dict(existing_rows)
         assessments: dict[int, ServoMotionAssessment] = {}
-        detected_servo_ids: list[int] = (
-            list(self.state.unexpected_servo_ids) if replace else list(self.state.detected_servo_ids)
-        )
-        missing_servo_ids: list[int] = [] if replace else list(self.state.missing_servo_ids)
-        for servo_id in [int(item) for item in servo_ids]:
-            item = telemetry.get(int(servo_id))
-            if item is None:
-                if int(servo_id) not in missing_servo_ids:
-                    missing_servo_ids.append(int(servo_id))
-                detected_servo_ids = [sid for sid in detected_servo_ids if sid != int(servo_id)]
-                rows[int(servo_id)] = self._missing_telemetry_row(int(servo_id), existing_rows.get(int(servo_id)))
+        for servo_id in [int(item) for item in snapshot.expected_servo_ids]:
+            entry = snapshot.entries.get(int(servo_id))
+            if entry is None or entry.telemetry is None or entry.motion_assessment is None:
+                rows[int(servo_id)] = self._missing_telemetry_row(
+                    int(servo_id),
+                    existing_rows.get(int(servo_id)),
+                )
                 continue
-            assessment = self.servo_service.assess_motion(
-                int(servo_id),
-                require_calibrated_bounds=self.servo_service.require_calibrated_bounds_for_individual_motion(),
-                telemetry=item,
-            )
-            assessments[int(servo_id)] = assessment
+            assessment = entry.motion_assessment
+            assessments[int(servo_id)] = entry.motion_assessment
             row = self._telemetry_row_from_live_item(
                 int(servo_id),
-                item,
+                entry.telemetry,
                 assessment,
                 existing_row=existing_rows.get(int(servo_id)),
             )
             rows[int(servo_id)] = row
-            if self._telemetry_indicates_present(row):
-                if int(servo_id) not in detected_servo_ids:
-                    detected_servo_ids.append(int(servo_id))
-                missing_servo_ids = [sid for sid in missing_servo_ids if sid != int(servo_id)]
-            else:
-                if int(servo_id) not in missing_servo_ids:
-                    missing_servo_ids.append(int(servo_id))
-                detected_servo_ids = [sid for sid in detected_servo_ids if sid != int(servo_id)]
         self.state.telemetry = rows
-        self.state.detected_servo_ids = sorted(set(detected_servo_ids))
-        self.state.missing_servo_ids = sorted(set(missing_servo_ids))
+        if replace:
+            self.state.detected_servo_ids = list(snapshot.detected_servo_ids)
+            self.state.missing_servo_ids = list(snapshot.missing_servo_ids)
+            self.state.unexpected_servo_ids = list(snapshot.unexpected_servo_ids)
         return assessments
 
     def _refresh_selected_servo_live(self) -> None:

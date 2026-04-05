@@ -211,7 +211,14 @@ class ExperimentRunner:
         config_used: dict[str, Any],
         operator_notes: str,
     ) -> ExperimentMetadata:
-        tracking_snapshot = self.tracking_service.get_snapshot() if self.tracking_service is not None else None
+        if self.tracking_service is None:
+            tracking_snapshot = None
+        else:
+            snapshot_reader = getattr(self.tracking_service, "peek_snapshot", None)
+            if callable(snapshot_reader):
+                tracking_snapshot = snapshot_reader()
+            else:
+                tracking_snapshot = self.tracking_service.get_snapshot()
         backend_info = {
             "mock_mode": bool(self.settings.runtime.mock_mode),
             "tracking_backend_configured": getattr(self.settings.serial, "tracker_backend", ""),

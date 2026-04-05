@@ -347,7 +347,6 @@ class DxlBus:
             }
 
         result: dict[int, ServoTelemetry] = {}
-        read_time = time.monotonic()
         for servo_id in servo_ids:
             reported_id_raw: int | None = None
             reported_id_error: str | None = None
@@ -444,8 +443,11 @@ class DxlBus:
                 hardware_error=" | ".join(hardware_messages) or None,
                 identity_error=" | ".join(identity_messages) or None,
                 telemetry_error=" | ".join(telemetry_messages) or None,
-                last_read_monotonic_s=read_time,
+                last_read_monotonic_s=None,
             )
+        completed_at = time.monotonic()
+        for telemetry in result.values():
+            telemetry.last_read_monotonic_s = completed_at
         return result
 
     def _require_connected(self) -> None:

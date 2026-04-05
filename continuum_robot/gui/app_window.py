@@ -60,15 +60,19 @@ class AppWindow(QMainWindow):
             return
         if current_widget is self.system_tab:
             if self.system_controller.state.dynamixel_connected:
-                servo_state = self._refresh_servo_state()
-                system_state = self.system_controller.sync_servo_bringup_state(servo_state)
+                system_state = self.system_controller.refresh_readiness()
             self.system_tab.update(system_state)
         elif current_widget is self.servos_tab:
             servo_state = self._refresh_servo_state()
-            self.system_controller.sync_servo_bringup_state(servo_state)
+            if getattr(self.servos_controller, "latest_runtime_snapshot", None) is not None:
+                self.system_controller.sync_servo_runtime_snapshot(self.servos_controller.latest_runtime_snapshot)
+            else:
+                self.system_controller.sync_servo_bringup_state(servo_state)
             self.servos_tab.update(servo_state)
         elif current_widget is self.pretension_tab:
             pretension_state = self.pretension_controller.refresh()
+            if getattr(self.pretension_controller, "latest_runtime_snapshot", None) is not None:
+                self.system_controller.sync_servo_runtime_snapshot(self.pretension_controller.latest_runtime_snapshot)
             self.pretension_tab.update(pretension_state)
             self.statusBar().showMessage(pretension_state.status_message)
             return

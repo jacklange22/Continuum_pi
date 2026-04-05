@@ -581,6 +581,47 @@ def test_pretension_controller_applies_live_parameters_without_runtime_reload(tm
     assert "Hardware reconnect is not required" in controller.state.status_message
 
 
+def test_servos_and_pretension_controllers_share_fresh_selected_servo_state(tmp_path: Path) -> None:
+    settings = _settings()
+    service = _pretension_service(tmp_path, dxl_bus=_MultiServoPretensionBus(current_sequences={2: [180, 230]}))
+    service.connect("/dev/mock-openrb", 115200)
+    servos_controller = ServosController(service, settings)
+    pretension_controller = PretensionController(servo_service=service, settings=settings)
+
+    servos_controller.set_selected_servo(2)
+    servos_state = servos_controller.refresh_selected_servo()
+    pretension_controller.set_selected_servo(2)
+    pretension_state = pretension_controller.refresh()
+
+    assert servos_state.selected_servo_telemetry_fresh is True
+    assert pretension_state.selected_servo_telemetry_fresh is True
+    assert servos_state.selected_servo_motion_ready is True
+    assert pretension_state.selected_servo_pretension_ready is True
+    assert servos_state.selected_servo_telemetry_age_s is not None
+    assert pretension_state.selected_servo_telemetry_age_s is not None
+    assert servos_state.selected_servo_telemetry_age_s < settings.safety.telemetry_stale_after_s
+    assert pretension_state.selected_servo_telemetry_age_s < settings.safety.telemetry_stale_after_s
+
+
+def test_system_controller_refresh_readiness_uses_runtime_snapshot_counts(tmp_path: Path) -> None:
+    settings = _settings()
+    service = _pretension_service(tmp_path, dxl_bus=_MultiServoPretensionBus(current_sequences={}))
+    service.connect("/dev/mock-openrb", 115200)
+    controller = SystemController(
+        tracking_service=_tracking_service(settings, tmp_path),
+        openrb_client=MockOpenRbClient(),
+        servo_service=service,
+        settings=settings,
+    )
+
+    state = controller.refresh_readiness()
+
+    assert state.telemetry_ready_count == 4
+    assert state.motion_ready_count == 4
+    assert state.motion_ready is True
+    assert "Motion ready 4/4" in state.readiness_message
+
+
 def _app_context(tmp_path: Path) -> AppContext:
     settings = _settings()
     tracking_service = _tracking_service(settings, tmp_path)

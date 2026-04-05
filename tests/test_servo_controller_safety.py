@@ -483,7 +483,7 @@ def test_servos_controller_keeps_last_motion_state_per_servo(tmp_path: Path) -> 
     assert controller.state.selected_servo_last_motion_summary == "No jog command sent yet."
 
 
-def test_servos_controller_uses_live_read_path_for_4servo_refresh(tmp_path: Path) -> None:
+def test_servos_controller_uses_canonical_runtime_snapshot_for_4servo_refresh(tmp_path: Path) -> None:
     settings = _settings_4servo()
     bus = _TrackingReadBus([1, 2, 3, 4])
     service = _servo_service(
@@ -496,10 +496,9 @@ def test_servos_controller_uses_live_read_path_for_4servo_refresh(tmp_path: Path
 
     controller = ServosController(service, settings)
 
-    assert bus.live_read_calls[-1] == [1, 2, 3, 4]
-    assert all(call[1].get("include_reported_id") is False for call in bus.read_calls)
-    assert all(call[1].get("include_identity") is False for call in bus.read_calls)
-    assert all(call[1].get("include_limits") is False for call in bus.read_calls)
+    assert bus.live_read_calls == []
+    assert bus.read_calls
+    assert bus.read_calls[-1][0] == [1, 2, 3, 4]
 
 
 def test_servos_controller_formats_stale_telemetry_reason_honestly(tmp_path: Path) -> None:
@@ -550,7 +549,7 @@ def test_servos_controller_jog_does_not_trigger_full_table_refresh_reads(tmp_pat
     assert all(call[1].get("include_limits") is False for call in bus.read_calls)
 
 
-def test_servos_controller_refresh_selected_servo_uses_selected_only_live_read(tmp_path: Path) -> None:
+def test_servos_controller_refresh_selected_servo_uses_selected_only_runtime_refresh(tmp_path: Path) -> None:
     settings = _settings_4servo()
     bus = _TrackingReadBus([1, 2, 3, 4])
     service = _servo_service(
@@ -567,12 +566,10 @@ def test_servos_controller_refresh_selected_servo_uses_selected_only_live_read(t
 
     controller.refresh_selected_servo()
 
-    assert bus.live_read_calls == [[4]]
+    assert bus.live_read_calls == []
     assert len(bus.read_calls) == 1
     assert bus.read_calls[0][0] == [4]
-    assert bus.read_calls[0][1].get("include_reported_id") is False
-    assert bus.read_calls[0][1].get("include_identity") is False
-    assert bus.read_calls[0][1].get("include_limits") is False
+    assert bus.read_calls[0][1] == {}
 
 
 def test_system_controller_save_runtime_parameters_persists_poll_rate(tmp_path: Path) -> None:

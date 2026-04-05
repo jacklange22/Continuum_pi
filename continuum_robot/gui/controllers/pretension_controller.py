@@ -117,6 +117,7 @@ class PretensionController:
         self._pretension_stop = threading.Event()
         self._last_result: PretensionRoutineResult | None = None
         self._selection_changed = True
+        self.latest_runtime_snapshot = None
         self.refresh()
 
     def refresh(self) -> PretensionViewState:
@@ -128,6 +129,7 @@ class PretensionController:
             self.state.selected_servo_id = int(self.state.expected_servo_ids[0])
             self._selection_changed = True
         if not self.state.connected:
+            self.latest_runtime_snapshot = None
             self.state.servo_rows = [
                 {
                     "servo_id": int(servo_id),
@@ -143,8 +145,14 @@ class PretensionController:
             return self.state
 
         try:
-            telemetry_by_id = self.servo_service.read_telemetry(list(self.state.expected_servo_ids))
+            snapshot = self.servo_service.build_runtime_servo_snapshot(
+                list(self.state.expected_servo_ids),
+                selected_servo_id=self.state.selected_servo_id,
+                selected_pretension_parameters=self._current_parameters(),
+            )
+            self.latest_runtime_snapshot = snapshot
         except Exception as exc:
+            self.latest_runtime_snapshot = None
             self.state.last_error = str(exc)
             self.state.status_message = f"Pretension telemetry refresh failed: {exc}"
             self.state.servo_rows = [
@@ -164,21 +172,23 @@ class PretensionController:
         selected_motion: ServoMotionAssessment | None = None
         selected_pretension: ServoMotionAssessment | None = None
         selected_telemetry = None
-        selected_parameters = self._current_parameters()
-        for servo_id in self.state.expected_servo_ids:
-            telemetry = telemetry_by_id.get(int(servo_id))
+        for servo_id in snapshot.expected_servo_ids:
+            entry = snapshot.entries.get(int(servo_id))
+            telemetry = entry.telemetry if entry is not None else None
+            motion = entry.motion_assessment if entry is not None else None
+            pretension = entry.pretension_assessment if entry is not None else None
             if telemetry is None:
+                self.state.servo_rows.append(
+                    {
+                        "servo_id": int(servo_id),
+                        "selected": int(servo_id) == int(self.state.selected_servo_id or -1),
+                        "position": None,
+                        "current_ma": None,
+                        "pretension_ready": False,
+                        "status": "Telemetry unavailable",
+                    }
+                )
                 continue
-            motion = self.servo_service.assess_motion(
-                int(servo_id),
-                require_calibrated_bounds=False,
-                telemetry=telemetry,
-            )
-            pretension = self.servo_service.assess_pretension_readiness(
-                int(servo_id),
-                parameters=selected_parameters if int(servo_id) == int(self.state.selected_servo_id or -1) else None,
-                telemetry=telemetry,
-            )
             if int(servo_id) == int(self.state.selected_servo_id or -1):
                 selected_motion = motion
                 selected_pretension = pretension
@@ -189,8 +199,12 @@ class PretensionController:
                     "selected": int(servo_id) == int(self.state.selected_servo_id or -1),
                     "position": telemetry.present_position,
                     "current_ma": telemetry.present_current_ma,
-                    "pretension_ready": bool(pretension.ready),
-                    "status": "Ready" if pretension.ready else self._first_reason(pretension.blocking_reasons),
+                    "pretension_ready": bool(pretension.ready) if pretension is not None else False,
+                    "status": (
+                        "Ready"
+                        if pretension is not None and pretension.ready
+                        else self._first_reason(pretension.blocking_reasons if pretension is not None else ())
+                    ),
                 }
             )
 
