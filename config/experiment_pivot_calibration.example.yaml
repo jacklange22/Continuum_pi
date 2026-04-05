@@ -2,7 +2,8 @@ tool_id: "0B"
 input_path: "data/examples/pivot_calibration_sample.csv"
 # Durable accepted tip files stay under `data/tip_cals/`.
 # Review datasets from the tracker workflow are written separately under
-# `data/experiments/pivot/runs/`.
+# `data/experiments/pivot/runs/`, with raw pivot captures under
+# `data/experiments/pivot/captures/`.
 output_tip_file: "data/tip_cals/generated_penprobe_tip.csv"
 std_dev_threshold: 3.0
 min_samples: 8

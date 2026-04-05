@@ -36,5 +36,3 @@ data/registrations/*
 !data/registrations/.gitkeep
 data/tracker_captures/*
 !data/tracker_captures/.gitkeep
-data/runs/*
-!data/runs/.gitkeep

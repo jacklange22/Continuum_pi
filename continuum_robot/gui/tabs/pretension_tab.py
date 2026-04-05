@@ -488,13 +488,16 @@ class PretensionTab(QWidget):
         self.stop_reason_label.setText(state.stop_reason or "—")
         self._set_plain_text_preserving_view(self.log_text, state.log_text)
 
-        self.refresh_button.setEnabled(True)
+        self.servo_table.setEnabled(not state.pretension_running)
+        self.refresh_button.setEnabled(not state.pretension_running)
         self.measure_baseline_button.setEnabled(state.can_measure_baseline)
         self.move_reference_button.setEnabled(state.can_move_to_reference)
         self.pretension_button.setEnabled(state.can_start)
         self.stop_button.setEnabled(state.can_stop)
         self.save_button.setEnabled(state.can_save)
-        self.save_startup_button.setEnabled(bool(state.connected and state.selected_servo_id is not None))
+        self.save_startup_button.setEnabled(
+            bool(state.connected and state.selected_servo_id is not None and not state.pretension_running)
+        )
         self.apply_live_button.setEnabled(not state.pretension_running)
         self.save_defaults_button.setEnabled(not state.pretension_running)
 

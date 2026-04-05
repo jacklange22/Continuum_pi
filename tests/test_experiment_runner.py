@@ -64,7 +64,7 @@ def test_experiment_runner_routes_csv_points_through_canonical_dataset(tmp_path:
         settings=settings,
         tracking_service=tracking_service,
         servo_service=servo_service,
-        output_dir=tmp_path / "runs",
+        output_dir=tmp_path / "data" / "experiments",
         default_settle_time_s=0.0,
         registration_path=tmp_path / "latest_registration.json",
         sleep_fn=lambda _seconds: None,
@@ -82,3 +82,42 @@ def test_experiment_runner_routes_csv_points_through_canonical_dataset(tmp_path:
     assert (summary.output_path / "metadata.json").exists()
     assert (summary.output_path / "samples.jsonl").exists()
     assert (summary.output_path / "summary.json").exists()
+
+
+def test_experiment_runner_load_dataset_resolves_legacy_runs_path(tmp_path: Path) -> None:
+    settings = _settings()
+    servo_service = ServoService(
+        dxl_bus=MockDxlBus([1, 2, 3, 4]),
+        mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
+        safety_guard=SafetyGuard(min_offset_ticks=-600, max_offset_ticks=600, max_current_ma=850),
+        neutral_calibration=NeutralCalibrationService(path=tmp_path / "neutral.json"),
+        pretension_validation=PretensionValidationService(),
+    )
+    tracking_service = TrackingService(
+        live_backend=MockTrackerManager(poll_hz=30),
+        port=settings.serial.aurora_port,
+        registration_path=tmp_path / "latest_registration.json",
+        config_source="test",
+        runtime_coil_tool_id=settings.registration.coil_tool_id,
+        registration_tool_id=settings.registration.capture_tool_id,
+    )
+    runner = ExperimentRunner(
+        project_root=tmp_path,
+        settings=settings,
+        tracking_service=tracking_service,
+        servo_service=servo_service,
+        output_dir=tmp_path / "data" / "experiments",
+        default_settle_time_s=0.0,
+        registration_path=tmp_path / "latest_registration.json",
+        sleep_fn=lambda _seconds: None,
+    )
+    result = runner.run_experiment("dataset_schema_roundtrip", config={"sample_count": 1})
+    migrated_root = tmp_path / "data" / "experiments" / "pivot" / "runs"
+    migrated_root.mkdir(parents=True, exist_ok=True)
+    migrated_path = migrated_root / "legacy_bundle"
+    result.paths.output_dir.rename(migrated_path)
+
+    bundle = runner.load_dataset(tmp_path / "runs" / "legacy_bundle")
+
+    assert bundle.metadata.experiment_name == "dataset_schema_roundtrip"
+    assert bundle.paths.output_dir == migrated_path

@@ -106,12 +106,15 @@ Persistent runtime artifacts:
 - `data/registrations/` for durable accepted/latest registration artifacts
 - `data/tracker_captures/` for raw tracker packet captures
 - `data/tracker_validations/` for saved tracker validation reports
-- `data/experiments/` for canonical experiment datasets, including pivot runtime bundles under `data/experiments/pivot/`
+- `data/experiments/` for canonical experiment datasets
+- `data/experiments/pivot/captures/` for raw pivot-review capture CSVs
+- `data/experiments/pivot/runs/` for tracker-guided pivot review bundles
 - `data/logs/`
 
 Current architectural rule:
 
 - configuration defines defaults and candidate geometry; accepted calibrations and experiment outputs live under `data/`
+- repo-root `runs/` is retired and should not be used as an active runtime artifact location
 
 ## Recommended Next Architecture Boundary Work
 

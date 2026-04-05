@@ -167,7 +167,7 @@ def _runner(
         settings=settings,
         tracking_service=tracking_service or _tracking_service(settings, tmp_path, registration_path),
         servo_service=servo_service or _servo_service(tmp_path),
-        output_dir=tmp_path / "runs",
+        output_dir=tmp_path / "data" / "experiments",
         default_settle_time_s=0.0,
         registration_path=registration_path,
         sleep_fn=lambda _seconds: None,

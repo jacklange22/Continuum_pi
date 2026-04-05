@@ -6,7 +6,11 @@ from dataclasses import dataclass, field
 import threading
 
 from continuum_robot.config.settings import Settings
-from continuum_robot.servos.servo_service import PretensionRoutineResult, ServoMotionAssessment
+from continuum_robot.servos.servo_service import (
+    PretensionRoutineResult,
+    ServoBusBusyError,
+    ServoMotionAssessment,
+)
 
 
 @dataclass
@@ -137,6 +141,12 @@ class ServosController:
         if self.state.servo_ids:
             try:
                 assessments = self._refresh_live_telemetry_rows(self.state.servo_ids, replace=True)
+            except ServoBusBusyError as exc:
+                self.state.status_message = str(exc)
+                self.state.last_error = None
+                self.state.bench_debug_text = self._build_multi_servo_bench_debug_text()
+                self._sync_selected_servo_motion_state()
+                return self.state
             except Exception as exc:
                 self.state.last_error = str(exc)
                 self.state.status_message = f"Telemetry refresh failed: {exc}"
@@ -632,6 +642,12 @@ class ServosController:
             return
         try:
             assessments = self._refresh_live_telemetry_rows([int(self.state.selected_servo_id)], replace=False)
+        except ServoBusBusyError as exc:
+            self.state.status_message = str(exc)
+            self.state.last_error = None
+            self.state.bench_debug_text = self._build_multi_servo_bench_debug_text()
+            self._sync_selected_servo_motion_state()
+            return
         except Exception as exc:
             self.state.last_error = str(exc)
             self.state.status_message = f"Selected-servo refresh failed: {exc}"

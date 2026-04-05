@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+import threading
 import time
 from typing import Callable
 
@@ -296,6 +298,35 @@ class PretensionWindow:
     effective_max_target_tick: int
 
 
+@dataclass
+class ServoBusOwnershipStatus:
+    """Structured ownership state for the live DYNAMIXEL bus."""
+
+    active: bool
+    owner: str | None
+    reason: str | None
+    servo_id: int | None
+    held_by_current_thread: bool
+    started_at_monotonic_s: float | None
+
+
+class ServoBusBusyError(RuntimeError):
+    """Raised when a non-owner thread tries to touch the live bus during an exclusive run."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        owner: str | None = None,
+        reason: str | None = None,
+        servo_id: int | None = None,
+    ) -> None:
+        super().__init__(str(message))
+        self.owner = owner
+        self.reason = reason
+        self.servo_id = servo_id
+
+
 class ServoService:
     """Coordinates mapping, validation, persistence, and low-level bus writes."""
 
@@ -317,16 +348,30 @@ class ServoService:
         self.pretension_validation = pretension_validation
         self._sleep_fn = sleep_fn
         self._time_fn = time_fn
+        self._bus_state_lock = threading.RLock()
+        self._bus_io_lock = threading.RLock()
+        self._exclusive_bus_owner: str | None = None
+        self._exclusive_bus_reason: str | None = None
+        self._exclusive_bus_servo_id: int | None = None
+        self._exclusive_bus_thread_id: int | None = None
+        self._exclusive_bus_started_at: float | None = None
+        self._exclusive_bus_depth: int = 0
 
     @property
     def is_connected(self) -> bool:
         return self.dxl_bus.is_connected
 
     def connect(self, port: str, baudrate: int) -> None:
-        self.dxl_bus.connect(port, baudrate)
+        self._guard_bus_call(
+            "connect to OpenRB / DYNAMIXEL",
+            lambda: self.dxl_bus.connect(port, baudrate),
+        )
 
     def disconnect(self) -> None:
-        self.dxl_bus.disconnect()
+        self._guard_bus_call(
+            "disconnect OpenRB / DYNAMIXEL",
+            self.dxl_bus.disconnect,
+        )
 
     @staticmethod
     def position_convention_summary() -> str:
@@ -347,10 +392,13 @@ class ServoService:
         return False
 
     def scan_ids(self, min_id: int = 1, max_id: int = 20) -> list[int]:
-        return self.dxl_bus.scan_ids(min_id=min_id, max_id=max_id)
+        return self._guard_bus_call(
+            "scan configured servo IDs",
+            lambda: self.dxl_bus.scan_ids(min_id=min_id, max_id=max_id),
+        )
 
     def assign_servo_id(self, current_id: int, new_id: int) -> None:
-        self.dxl_bus.write_servo_id(current_id, new_id)
+        self._write_servo_id(int(current_id), int(new_id))
 
     def assign_servo_id_safely(self, current_id: int, new_id: int) -> ServoIdAssignmentResult:
         discovery = self.discover_one_servo(expected_servo_id=int(current_id), allow_scan=True)
@@ -378,7 +426,7 @@ class ServoService:
                 ),
             )
         try:
-            self.dxl_bus.write_servo_id(int(current_id), int(new_id))
+            self._write_servo_id(int(current_id), int(new_id))
         except Exception as exc:
             return ServoIdAssignmentResult(
                 current_id=int(current_id),
@@ -400,10 +448,79 @@ class ServoService:
         )
 
     def read_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
-        return self.dxl_bus.read_telemetry(servo_ids)
+        return self._guard_bus_call(
+            "read servo telemetry",
+            lambda: self.dxl_bus.read_telemetry(servo_ids),
+        )
 
     def read_live_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
-        return self.dxl_bus.read_live_telemetry(servo_ids)
+        return self._guard_bus_call(
+            "read live servo telemetry",
+            lambda: self.dxl_bus.read_live_telemetry(servo_ids),
+        )
+
+    def bus_ownership_status(self) -> ServoBusOwnershipStatus:
+        """Return the current exclusive-bus ownership state."""
+        with self._bus_state_lock:
+            thread_id = threading.get_ident()
+            return ServoBusOwnershipStatus(
+                active=self._exclusive_bus_thread_id is not None,
+                owner=self._exclusive_bus_owner,
+                reason=self._exclusive_bus_reason,
+                servo_id=self._exclusive_bus_servo_id,
+                held_by_current_thread=self._exclusive_bus_thread_id == thread_id,
+                started_at_monotonic_s=self._exclusive_bus_started_at,
+            )
+
+    def has_exclusive_bus_owner(self) -> bool:
+        return bool(self.bus_ownership_status().active)
+
+    def bus_busy_message(self, *, action: str | None = None) -> str:
+        status = self.bus_ownership_status()
+        return self._format_bus_busy_message(status, action=action)
+
+    @contextmanager
+    def exclusive_bus_operation(
+        self,
+        *,
+        owner: str,
+        servo_id: int | None = None,
+        reason: str | None = None,
+    ):
+        """Grant one thread exclusive ownership of the live DYNAMIXEL bus."""
+        owner_name = str(owner).strip() or "servo operation"
+        current_thread_id = threading.get_ident()
+        with self._bus_state_lock:
+            if self._exclusive_bus_thread_id is None:
+                self._exclusive_bus_owner = owner_name
+                self._exclusive_bus_reason = str(reason).strip() if reason else None
+                self._exclusive_bus_servo_id = int(servo_id) if servo_id is not None else None
+                self._exclusive_bus_thread_id = current_thread_id
+                self._exclusive_bus_started_at = float(self._time_fn())
+                self._exclusive_bus_depth = 1
+            elif self._exclusive_bus_thread_id == current_thread_id:
+                self._exclusive_bus_depth += 1
+            else:
+                status = self.bus_ownership_status()
+                raise ServoBusBusyError(
+                    self._format_bus_busy_message(status, action=owner_name),
+                    owner=status.owner,
+                    reason=status.reason,
+                    servo_id=status.servo_id,
+                )
+        try:
+            yield self.bus_ownership_status()
+        finally:
+            with self._bus_state_lock:
+                if self._exclusive_bus_thread_id != current_thread_id:
+                    return
+                self._exclusive_bus_depth = max(0, int(self._exclusive_bus_depth) - 1)
+                if self._exclusive_bus_depth == 0:
+                    self._exclusive_bus_owner = None
+                    self._exclusive_bus_reason = None
+                    self._exclusive_bus_servo_id = None
+                    self._exclusive_bus_thread_id = None
+                    self._exclusive_bus_started_at = None
 
     def telemetry_age_s(self, telemetry: ServoTelemetry | None) -> float | None:
         if telemetry is None:
@@ -417,6 +534,69 @@ class ServoService:
 
     def telemetry_freshness_threshold_s(self) -> float:
         return float(self.safety_guard.telemetry_stale_after_s)
+
+    def _guard_bus_call(self, action: str, fn: Callable[[], object]):
+        self._assert_bus_access(action=action)
+        with self._bus_io_lock:
+            self._assert_bus_access(action=action)
+            return fn()
+
+    def _assert_bus_access(self, *, action: str) -> None:
+        status = self.bus_ownership_status()
+        if status.active and not status.held_by_current_thread:
+            raise ServoBusBusyError(
+                self._format_bus_busy_message(status, action=action),
+                owner=status.owner,
+                reason=status.reason,
+                servo_id=status.servo_id,
+            )
+
+    def _format_bus_busy_message(
+        self,
+        status: ServoBusOwnershipStatus,
+        *,
+        action: str | None = None,
+    ) -> str:
+        if not status.active:
+            return "DYNAMIXEL bus is available."
+        owner_text = str(status.owner or "servo operation")
+        servo_text = (
+            f" on servo {int(status.servo_id)}"
+            if status.servo_id is not None
+            else ""
+        )
+        reason_text = f" ({status.reason})" if status.reason else ""
+        action_text = f"{action} is paused because " if action else ""
+        return (
+            f"{action_text}the DYNAMIXEL bus is owned by active {owner_text}{servo_text}{reason_text}. "
+            "Background refresh is paused until that run ends."
+        )
+
+    def _write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
+        self._guard_bus_call(
+            "write servo goal positions",
+            lambda: self.dxl_bus.write_goal_positions(positions_by_id),
+        )
+
+    def _write_servo_id(self, current_id: int, new_id: int) -> None:
+        self._guard_bus_call(
+            "write servo ID",
+            lambda: self.dxl_bus.write_servo_id(int(current_id), int(new_id)),
+        )
+
+    def _ping_servo(self, servo_id: int) -> bool:
+        return bool(
+            self._guard_bus_call(
+                "ping servo",
+                lambda: self.dxl_bus.ping_servo(int(servo_id)),
+            )
+        )
+
+    def _ping_servo_snapshot(self, servo_id: int):
+        return self._guard_bus_call(
+            "ping servo",
+            lambda: self.dxl_bus.ping_servo_snapshot(int(servo_id)),
+        )
 
     def load_neutral_setpoints(self) -> dict[int, int]:
         return self.neutral_calibration.load_neutral_setpoints()
@@ -531,7 +711,7 @@ class ServoService:
                 message="No expected servo ID is configured.",
             )
 
-        ping = self.dxl_bus.ping_servo_snapshot(int(expected_servo_id))
+        ping = self._ping_servo_snapshot(int(expected_servo_id))
         if not ping.responded:
             ping_message = ping.error or f"Servo {expected_servo_id} did not respond to ping."
             return ServoBenchDebugSnapshot(
@@ -719,7 +899,7 @@ class ServoService:
             discovered_ids = [
                 servo_id
                 for servo_id in expected_ids
-                if self.dxl_bus.ping_servo(int(servo_id))
+                if self._ping_servo(int(servo_id))
             ]
 
         telemetry_by_id = self.read_telemetry(list(expected_ids))
@@ -1041,7 +1221,7 @@ class ServoService:
                 message="DYNAMIXEL bus is disconnected.",
             )
 
-        if expected_servo_id is not None and self.dxl_bus.ping_servo(int(expected_servo_id)):
+        if expected_servo_id is not None and self._ping_servo(int(expected_servo_id)):
             debug_snapshot = self.build_bench_debug_snapshot(int(expected_servo_id))
             discovery_status = (
                 "expected_id_read_ok"
@@ -1413,7 +1593,7 @@ class ServoService:
                 safe_max_tick=int(window.effective_max_target_tick),
                 clamped=False,
             )
-        self.dxl_bus.write_goal_positions({int(servo_id): int(goal_tick)})
+        self._write_goal_positions({int(servo_id): int(goal_tick)})
         if float(config.settle_time_s) > 0.0:
             self._sleep_fn(float(config.settle_time_s))
         updated = self.read_telemetry([int(servo_id)])[int(servo_id)]
@@ -1506,7 +1686,7 @@ class ServoService:
                 safe_max_tick=safe_max,
                 clamped=clamped,
             )
-        self.dxl_bus.write_goal_positions({int(servo_id): int(goal_tick)})
+        self._write_goal_positions({int(servo_id): int(goal_tick)})
         updated = self.read_live_telemetry([int(servo_id)])[int(servo_id)]
         self._validate_post_motion(updated)
         updated_assessment = self.assess_motion(
@@ -1660,7 +1840,7 @@ class ServoService:
             raise RuntimeError(f"Servo {servo_id} position is unavailable.")
         goal = int(assessment.telemetry.present_position + delta_ticks)
         self._validate_goal_against_assessment(assessment, goal)
-        self.dxl_bus.write_goal_positions({int(servo_id): goal})
+        self._write_goal_positions({int(servo_id): goal})
         updated = self.read_live_telemetry([int(servo_id)])
         self._validate_post_motion(updated[int(servo_id)])
         return ServoCommandResult(
@@ -1723,8 +1903,8 @@ class ServoService:
                     f"Servo {servo_id} is not safe for displacement control: {assessment.reason}"
                 )
             self._validate_goal_against_assessment(assessment, int(payload[servo_id]))
-        self.dxl_bus.write_goal_positions(payload)
-        telemetry = self.dxl_bus.read_telemetry(servo_ids)
+        self._write_goal_positions(payload)
+        telemetry = self.read_telemetry(servo_ids)
         for servo_id in servo_ids:
             self._validate_post_motion(telemetry[int(servo_id)])
         return ServoCommandResult(
@@ -1845,7 +2025,26 @@ class ServoService:
             raise ValueError(
                 "Pretension absolute trigger current must stay below the hard current stop."
             )
+        with self.exclusive_bus_operation(
+            owner="pretension run",
+            servo_id=int(servo_id),
+            reason="selected-servo pretension",
+        ):
+            return self._run_pretension_routine_with_owned_bus(
+                servo_id=int(servo_id),
+                config=config,
+                stop_requested=stop_requested,
+                progress_callback=progress_callback,
+            )
 
+    def _run_pretension_routine_with_owned_bus(
+        self,
+        *,
+        servo_id: int,
+        config: PretensionParameters,
+        stop_requested: Callable[[], bool] | None,
+        progress_callback: Callable[[PretensionRoutineResult], None] | None,
+    ) -> PretensionRoutineResult:
         started_at = float(self._time_fn())
         assessment = self.assess_pretension_readiness(int(servo_id), parameters=config)
         if not assessment.ready:
@@ -2219,7 +2418,7 @@ class ServoService:
                 filtered_current_ma=filtered_current,
                 current_delta_ma=current_delta,
             )
-            self.dxl_bus.write_goal_positions({int(servo_id): int(next_goal)})
+            self._write_goal_positions({int(servo_id): int(next_goal)})
             steps_taken += 1
             self._sleep_fn(float(config.settle_time_s))
 
@@ -2528,7 +2727,7 @@ class ServoService:
         updated: ServoTelemetry | None = None
         updated_assessment: ServoMotionAssessment | None = None
         try:
-            self.dxl_bus.write_goal_positions({int(plan.servo_id): int(plan.clamped_target_tick)})
+            self._write_goal_positions({int(plan.servo_id): int(plan.clamped_target_tick)})
             updated = self.read_live_telemetry([int(plan.servo_id)])[int(plan.servo_id)]
             self._validate_post_motion(updated)
             updated_assessment = self.assess_motion(

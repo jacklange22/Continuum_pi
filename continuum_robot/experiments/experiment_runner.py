@@ -75,7 +75,8 @@ class ExperimentRunner:
 
     def load_dataset(self, path: Path):
         """Load one canonical experiment dataset bundle."""
-        return self.dataset_loader.load_dataset(Path(path))
+        resolved = self._resolve_dataset_path(Path(path))
+        return self.dataset_loader.load_dataset(resolved)
 
     def run_experiment(
         self,
@@ -202,6 +203,22 @@ class ExperimentRunner:
             rows_written=result.summary.sample_counts.get("total", result.sample_count),
             message=result.message,
         )
+
+    def _resolve_dataset_path(self, path: Path) -> Path:
+        candidate = Path(path)
+        if candidate.exists():
+            return candidate
+        legacy_root = self.project_root / "runs"
+        new_root = self.project_root / "data" / "experiments" / "pivot" / "runs"
+        try:
+            relative = candidate.relative_to(legacy_root)
+        except ValueError:
+            if not candidate.is_absolute() and candidate.parts and candidate.parts[0] == "runs":
+                relative = Path(*candidate.parts[1:])
+            else:
+                return candidate
+        migrated = new_root / relative
+        return migrated if migrated.exists() else candidate
 
     def _build_metadata(
         self,

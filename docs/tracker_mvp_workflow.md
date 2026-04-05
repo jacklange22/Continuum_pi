@@ -50,6 +50,7 @@ Pivot calibration:
 
 - raw live capture CSV under `data/experiments/pivot/captures/*_pivot_0B_samples.csv`
 - review dataset bundle under `data/experiments/pivot/runs/*_pivot_calibration_review/`
+- older repo-root `runs/` bundles are legacy only and should be migrated into `data/experiments/pivot/runs/`
 - `metadata.json`
 - `samples.jsonl`
 - `summary.json`

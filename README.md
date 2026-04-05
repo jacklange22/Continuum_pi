@@ -50,7 +50,7 @@ Legacy registration compatibility is preserved:
 - `docs/`: migration notes and operator-facing design notes
 - `scripts/`: bootstrap, diagnostics, benchmark, validation, launch helpers
 - `tests/`: unit and mock-backed integration coverage
-- `data/`: runtime outputs for registrations, captures, runs, logs, calibrations
+- `data/`: canonical runtime outputs for experiments, pivot captures/review bundles, registrations, tracker captures, logs, and calibrations
 - `tracker_bridge/`: legacy C++ Aurora bridge, retained for comparison only
 - `references/`: read-only legacy reference material
 - `tools/`: read-only registration assets and lab inputs
@@ -700,6 +700,14 @@ Every run writes one directory under `data/experiments/` containing:
 - `metadata.json`
 - `samples.jsonl`
 - `summary.json`
+
+Artifact layout:
+
+- canonical experiment bundles live under `data/experiments/`
+- tracker-guided pivot review bundles live under `data/experiments/pivot/runs/`
+- raw pivot capture CSVs live under `data/experiments/pivot/captures/`
+- durable tip files stay under `data/tip_cals/`
+- repo-root `runs/` is retired and kept only as a legacy path that older references may still mention
 
 ### Project-Critical Experiments
 

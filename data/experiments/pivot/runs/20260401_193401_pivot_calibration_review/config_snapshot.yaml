@@ -3,8 +3,8 @@ sample_count: 80
 sample_period_s: 0.02
 std_dev_threshold: 3.0
 min_samples: 12
-output_tip_file: /home/continuum-pi/Continuum_pi/data/tip_cals/staged/20260401_181404_generated_penprobe_tip.csv
-input_path: /home/continuum-pi/Continuum_pi/data/pivot_captures/20260401_181404_pivot_0B_samples.csv
+output_tip_file: data/tip_cals/staged/20260401_193401_generated_penprobe_tip.csv
+input_path: data/experiments/pivot/captures/20260401_193401_pivot_0B_samples.csv
 dry_run: false
 seed: 0
 synthetic_tip_vector_mm:

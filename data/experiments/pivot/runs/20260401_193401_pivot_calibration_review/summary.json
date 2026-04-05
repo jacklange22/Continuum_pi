@@ -17,7 +17,7 @@
   },
   "status": "success",
   "experiment_metrics": {
-    "pivot_input_path": "/home/continuum-pi/Continuum_pi/data/pivot_captures/20260401_193401_pivot_0B_samples.csv",
+    "pivot_input_path": "data/experiments/pivot/captures/20260401_193401_pivot_0B_samples.csv",
     "pivot_input_format": "canonical_headered_csv",
     "pivot_input_tool_id": "0B",
     "pivot_input_header_columns": [
@@ -1533,7 +1533,7 @@
     "pivot_rejected_indices": [
       189
     ],
-    "tip_output_file": "/home/continuum-pi/Continuum_pi/data/tip_cals/staged/20260401_193401_generated_penprobe_tip.csv",
+    "tip_output_file": "data/tip_cals/staged/20260401_193401_generated_penprobe_tip.csv",
     "tip_calibration_available": true,
     "status": "success",
     "summary_requirements": {

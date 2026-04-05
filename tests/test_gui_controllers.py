@@ -4,6 +4,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from pathlib import Path
 import json
+import threading
 import time
 
 import numpy as np
@@ -601,6 +602,112 @@ def test_servos_and_pretension_controllers_share_fresh_selected_servo_state(tmp_
     assert pretension_state.selected_servo_telemetry_age_s is not None
     assert servos_state.selected_servo_telemetry_age_s < settings.safety.telemetry_stale_after_s
     assert pretension_state.selected_servo_telemetry_age_s < settings.safety.telemetry_stale_after_s
+
+
+def test_pretension_controller_refresh_uses_cached_state_while_run_owns_bus(tmp_path: Path) -> None:
+    settings = _settings()
+    service = _pretension_service(tmp_path, dxl_bus=_MultiServoPretensionBus(current_sequences={2: [180, 230]}))
+    service.connect("/dev/mock-openrb", 115200)
+    controller = PretensionController(servo_service=service, settings=settings)
+    controller.set_selected_servo(2)
+    controller.state.pretension_running = True
+    controller.state.selected_servo_position_tick = 4010
+    controller.state.selected_servo_current_ma = 188
+    ready = threading.Event()
+    release = threading.Event()
+
+    def _owner() -> None:
+        with service.exclusive_bus_operation(
+            owner="pretension run",
+            servo_id=2,
+            reason="selected-servo pretension",
+        ):
+            ready.set()
+            release.wait(timeout=1.0)
+
+    thread = threading.Thread(target=_owner, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=1.0)
+    try:
+        state = controller.refresh()
+        assert state.selected_servo_position_tick == 4010
+        assert state.selected_servo_current_ma == 188
+        assert "background refresh is paused" in state.selected_servo_block_reason
+        assert state.can_stop is True
+        assert state.can_start is False
+    finally:
+        release.set()
+        thread.join(timeout=1.0)
+
+
+def test_servos_controller_refresh_selected_servo_preserves_cached_state_when_bus_busy(tmp_path: Path) -> None:
+    settings = _settings()
+    service = _pretension_service(tmp_path, dxl_bus=_MultiServoPretensionBus(current_sequences={2: [180, 230]}))
+    service.connect("/dev/mock-openrb", 115200)
+    controller = ServosController(servo_service=service, settings=settings)
+    controller.set_selected_servo(2)
+    controller.refresh_selected_servo()
+    cached_position = controller.state.selected_servo_current_position_tick
+    ready = threading.Event()
+    release = threading.Event()
+
+    def _owner() -> None:
+        with service.exclusive_bus_operation(
+            owner="pretension run",
+            servo_id=2,
+            reason="selected-servo pretension",
+        ):
+            ready.set()
+            release.wait(timeout=1.0)
+
+    thread = threading.Thread(target=_owner, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=1.0)
+    try:
+        state = controller.refresh_selected_servo()
+        assert state.selected_servo_current_position_tick == cached_position
+        assert "owned by active pretension run on servo 2" in state.status_message
+        assert state.last_error is None
+    finally:
+        release.set()
+        thread.join(timeout=1.0)
+
+
+def test_system_controller_refresh_readiness_preserves_counts_when_bus_busy(tmp_path: Path) -> None:
+    settings = _settings()
+    service = _pretension_service(tmp_path, dxl_bus=_MultiServoPretensionBus(current_sequences={}))
+    service.connect("/dev/mock-openrb", 115200)
+    controller = SystemController(
+        tracking_service=_tracking_service(settings, tmp_path),
+        openrb_client=MockOpenRbClient(),
+        servo_service=service,
+        settings=settings,
+    )
+    snapshot = service.build_runtime_servo_snapshot([1, 2, 3, 4], selected_servo_id=2)
+    controller.sync_servo_runtime_snapshot(snapshot)
+    ready = threading.Event()
+    release = threading.Event()
+
+    def _owner() -> None:
+        with service.exclusive_bus_operation(
+            owner="pretension run",
+            servo_id=2,
+            reason="selected-servo pretension",
+        ):
+            ready.set()
+            release.wait(timeout=1.0)
+
+    thread = threading.Thread(target=_owner, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=1.0)
+    try:
+        state = controller.refresh_readiness()
+        assert state.motion_ready_count == snapshot.motion_ready_count
+        assert state.telemetry_ready_count == snapshot.telemetry_ready_count
+        assert "owned by active pretension run on servo 2" in state.readiness_message
+    finally:
+        release.set()
+        thread.join(timeout=1.0)
 
 
 def test_system_controller_refresh_readiness_uses_runtime_snapshot_counts(tmp_path: Path) -> None:

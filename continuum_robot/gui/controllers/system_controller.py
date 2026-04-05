@@ -8,6 +8,7 @@ from pathlib import Path
 from continuum_robot.config.config_loader import ConfigLoader
 from continuum_robot.config.settings import Settings
 from continuum_robot.hardware.serial_ports import SerialPortInfo, discover_serial_ports
+from continuum_robot.servos.servo_service import ServoBusBusyError
 
 
 @dataclass
@@ -239,6 +240,10 @@ class SystemController:
                 self.state.readiness_message = snapshot.message
                 self.state.bench_debug_text = self._build_runtime_servo_debug_text(snapshot)
                 self.state.last_error = None if snapshot.all_motion_ready else snapshot.message
+        except ServoBusBusyError as exc:
+            self.state.readiness_message = str(exc)
+            self.state.status_message = str(exc)
+            self.state.last_error = None
         except Exception as exc:
             self.state.bus_reachable = False
             self.state.motion_ready = False

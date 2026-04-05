@@ -1,9 +1,9 @@
 {
   "schema_version": "1.0",
   "experiment_name": "pivot_calibration",
-  "run_id": "79c3570bdee1",
-  "timestamp_utc": "2026-04-01T18:14:54.200780+00:00",
-  "git_commit": "513c925cba5bc3e88e99ba7dbd1601ac69242a91",
+  "run_id": "08c611fcea7b",
+  "timestamp_utc": "2026-04-01T19:34:01.795914+00:00",
+  "git_commit": "ccdf29dacaa871ddc120b56996544e903b7ff93b",
   "backend_info": {
     "mock_mode": false,
     "tracking_backend_configured": "ndi",
@@ -13,7 +13,7 @@
     "servo_connected": false
   },
   "registration_info": {
-    "path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+    "path": "data/registrations/latest_registration.json",
     "exists": false,
     "tracking_registration_state": "missing_registration",
     "tip_pose_status": "missing_registration"
@@ -24,8 +24,8 @@
     "sample_period_s": 0.02,
     "std_dev_threshold": 3.0,
     "min_samples": 12,
-    "output_tip_file": "/home/continuum-pi/Continuum_pi/data/tip_cals/staged/20260401_181454_generated_penprobe_tip.csv",
-    "input_path": "/home/continuum-pi/Continuum_pi/data/pivot_captures/20260401_181454_pivot_0B_samples.csv",
+    "output_tip_file": "data/tip_cals/staged/20260401_193401_generated_penprobe_tip.csv",
+    "input_path": "data/experiments/pivot/captures/20260401_193401_pivot_0B_samples.csv",
     "dry_run": false,
     "seed": 0,
     "synthetic_tip_vector_mm": [

@@ -10,6 +10,7 @@ from continuum_robot.servos.servo_service import (
     PretensionBaselineMeasurement,
     PretensionParameters,
     PretensionRoutineResult,
+    ServoBusBusyError,
     ServoJogResult,
     ServoMotionAssessment,
 )
@@ -143,6 +144,17 @@ class PretensionController:
             ]
             self._sync_selected_from_disconnected_state()
             return self.state
+        if self.state.pretension_running and self.servo_service.has_exclusive_bus_owner():
+            self.state.selected_servo_block_reason = (
+                "Pretension run owns the DYNAMIXEL bus; background refresh is paused until the run ends."
+            )
+            self.state.can_measure_baseline = False
+            self.state.can_move_to_reference = False
+            self.state.can_start = False
+            self.state.can_stop = True
+            self.state.can_save = False
+            self.state.comparison_rows = self._comparison_rows()
+            return self.state
 
         try:
             snapshot = self.servo_service.build_runtime_servo_snapshot(
@@ -151,6 +163,20 @@ class PretensionController:
                 selected_pretension_parameters=self._current_parameters(),
             )
             self.latest_runtime_snapshot = snapshot
+        except ServoBusBusyError as exc:
+            self.latest_runtime_snapshot = None
+            self.state.selected_servo_block_reason = str(exc)
+            self.state.status_message = (
+                self.state.status_message if self.state.pretension_running else str(exc)
+            )
+            self.state.last_error = None if self.state.pretension_running else str(exc)
+            self.state.can_measure_baseline = False
+            self.state.can_move_to_reference = False
+            self.state.can_start = False
+            self.state.can_stop = bool(self.state.pretension_running)
+            self.state.can_save = False
+            self.state.comparison_rows = self._comparison_rows()
+            return self.state
         except Exception as exc:
             self.latest_runtime_snapshot = None
             self.state.last_error = str(exc)
@@ -212,6 +238,8 @@ class PretensionController:
         return self.state
 
     def set_selected_servo(self, servo_id: int) -> PretensionViewState:
+        if self.state.pretension_running:
+            raise RuntimeError("Cannot change the selected servo while pretension is running.")
         if self.state.selected_servo_id != int(servo_id):
             self._last_result = None
             self.state.can_save = False
@@ -371,10 +399,19 @@ class PretensionController:
         if self._pretension_thread is not None and self._pretension_thread.is_alive():
             raise RuntimeError("Pretension is already running.")
         self.refresh()
-        readiness = self.servo_service.assess_pretension_readiness(
-            int(servo_id),
-            parameters=parameters,
-        )
+        try:
+            readiness = self.servo_service.assess_pretension_readiness(
+                int(servo_id),
+                parameters=parameters,
+            )
+        except ServoBusBusyError as exc:
+            self.state.run_state = "blocked"
+            self.state.run_state_label = "Blocked"
+            self.state.run_state_message = f"Pretension blocked: {exc}"
+            self.state.status_message = self.state.run_state_message
+            self.state.last_error = self.state.run_state_message
+            self._append_log(f"Pretension blocked for servo {servo_id}: {exc}")
+            return
         if not readiness.ready:
             self.state.run_state = "blocked"
             self.state.run_state_label = "Blocked"
@@ -407,6 +444,15 @@ class PretensionController:
             self.state.baseline_current_ma = result.baseline_current_ma
             self.state.baseline_filtered_current_ma = result.filtered_current_ma
             self.state.selected_servo_filtered_current_ma = result.filtered_current_ma
+            if result.current_position_tick is not None:
+                self.state.selected_servo_position_tick = int(result.current_position_tick)
+            if result.final_current_ma is not None:
+                self.state.selected_servo_current_ma = int(result.final_current_ma)
+            self.state.selected_servo_telemetry_age_s = 0.0
+            self.state.selected_servo_telemetry_fresh = True
+            self.state.selected_servo_block_reason = (
+                "Pretension run owns the DYNAMIXEL bus; background refresh is paused until the run ends."
+            )
             self.state.run_state = str(result.status)
             self.state.run_state_label = self._format_run_state(result.status)
             self.state.run_state_message = result.message

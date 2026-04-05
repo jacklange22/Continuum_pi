@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -12,7 +13,11 @@ from continuum_robot.servos.neutral_calibration_service import (
 )
 from continuum_robot.servos.pretension_validation_service import PretensionValidationService
 from continuum_robot.servos.safety_guard import SafetyGuard
-from continuum_robot.servos.servo_service import PretensionParameters, ServoService
+from continuum_robot.servos.servo_service import (
+    PretensionParameters,
+    ServoBusBusyError,
+    ServoService,
+)
 
 
 class _PretensionBus(MockDxlBus):
@@ -185,6 +190,32 @@ def test_servo_service_build_runtime_snapshot_reports_consistent_counts(tmp_path
     assert snapshot.entries[2].telemetry_status == "Live"
     assert snapshot.entries[2].pretension_assessment is not None
     assert snapshot.entries[2].pretension_assessment.ready is True
+
+
+def test_servo_service_blocks_non_owner_bus_reads_during_exclusive_pretension(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, dxl_bus=MockDxlBus([1]), context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    owner_ready = threading.Event()
+    release_owner = threading.Event()
+
+    def _owner() -> None:
+        with service.exclusive_bus_operation(
+            owner="pretension run",
+            servo_id=1,
+            reason="selected-servo pretension",
+        ):
+            owner_ready.set()
+            release_owner.wait(timeout=1.0)
+
+    thread = threading.Thread(target=_owner, daemon=True)
+    thread.start()
+    assert owner_ready.wait(timeout=1.0)
+    try:
+        with pytest.raises(ServoBusBusyError, match="owned by active pretension run on servo 1"):
+            service.read_telemetry([1])
+    finally:
+        release_owner.set()
+        thread.join(timeout=1.0)
 
 
 def test_servo_service_blocks_jog_when_operating_mode_is_wrong(tmp_path: Path) -> None:
