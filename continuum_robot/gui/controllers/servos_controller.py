@@ -402,7 +402,7 @@ class ServosController:
     def shutdown(self) -> None:
         self.cancel_pretension()
         if self._pretension_thread is not None:
-            self._pretension_thread.join(timeout=0.2)
+            self._pretension_thread.join(timeout=1.0)
 
     def _expected_servo_id(self) -> int | None:
         if self.state.selected_servo_id is not None:

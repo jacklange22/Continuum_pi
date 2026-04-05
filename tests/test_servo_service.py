@@ -20,6 +20,8 @@ class _PretensionBus(MockDxlBus):
         super().__init__([1])
         self._current_sequence = list(current_sequence)
         self._state[1].max_position_limit = max_limit
+        self._state[1].present_position = 4031
+        self._state[1].present_current_ma = 150
 
     def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
         super().write_goal_positions(positions_by_id)
@@ -59,6 +61,7 @@ class _BaselineSequenceBus(MockDxlBus):
         super().__init__([1])
         self._baseline_sequence = list(baseline_sequence)
         self._state[1].torque_enabled = True
+        self._state[1].present_position = 4031
 
     def read_telemetry(self, servo_ids: list[int], **kwargs) -> dict[int, object]:
         result = super().read_telemetry(servo_ids, **kwargs)
@@ -504,7 +507,7 @@ def test_servo_service_pretension_uses_decreasing_raw_position_for_tightening(tm
     )
 
     assert result.success is True
-    assert bus._state[1].present_position < 2048
+    assert bus._state[1].present_position < 4031
 
 
 def test_servo_service_pretension_fails_on_overcurrent(tmp_path: Path) -> None:
@@ -527,7 +530,6 @@ def test_servo_service_pretension_fails_on_overcurrent(tmp_path: Path) -> None:
 
 def test_servo_service_pretension_fails_on_travel_limit(tmp_path: Path) -> None:
     bus = _PretensionBus(current_sequence=[], max_limit=4095)
-    bus._state[1].present_position = 64
     bus._state[1].torque_enabled = True
     service = _build_service(tmp_path, dxl_bus=bus)
     service.connect("/dev/mock-openrb", 115200)
@@ -536,6 +538,17 @@ def test_servo_service_pretension_fails_on_travel_limit(tmp_path: Path) -> None:
 
     assert result.success is False
     assert result.status == "travel_limit"
+
+
+def test_servo_service_pretension_blocks_until_servo_is_in_pretension_window(tmp_path: Path) -> None:
+    bus = _PretensionBus(current_sequence=[])
+    bus._state[1].present_position = 64
+    bus._state[1].torque_enabled = True
+    service = _build_service(tmp_path, dxl_bus=bus)
+    service.connect("/dev/mock-openrb", 115200)
+
+    with pytest.raises(RuntimeError, match="Move to the untensioned reference"):
+        service.run_pretension_routine(servo_id=1)
 
 
 def test_servo_service_pretension_fails_on_timeout(tmp_path: Path) -> None:
@@ -593,7 +606,7 @@ def test_servo_service_measures_filtered_pretension_baseline(tmp_path: Path) -> 
 
 
 def test_servo_service_pretension_uses_baseline_delta_trigger_for_mvp(tmp_path: Path) -> None:
-    bus = _PretensionBus(current_sequence=[180, 205])
+    bus = _PretensionBus(current_sequence=[180, 215])
     bus._state[1].torque_enabled = True
     service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
     service.connect("/dev/mock-openrb", 115200)

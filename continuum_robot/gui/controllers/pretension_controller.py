@@ -36,12 +36,16 @@ class PretensionViewState:
     selected_servo_hardware_error_text: str = "—"
     selected_servo_telemetry_age_s: float | None = None
     selected_servo_telemetry_fresh: bool | None = None
+    selected_servo_untensioned_reference_tick: int | None = None
+    selected_servo_effective_min_target_tick: int | None = None
+    selected_servo_effective_max_target_tick: int | None = None
     selected_servo_safe_min_tick: int | None = None
     selected_servo_safe_max_tick: int | None = None
     selected_servo_tightening_rotation: str | None = None
     selected_servo_direction_summary: str = "tighten lowers counts"
     selected_servo_block_reason: str = "Select a servo to begin."
     selected_servo_saved_summary: str = "No pretension result saved yet."
+    comparison_rows: list[dict[str, str]] = field(default_factory=list)
     calibration_path: str = ""
     default_untensioned_reference_tick: int = 4095
     default_step_ticks: int = 2
@@ -82,7 +86,8 @@ class PretensionViewState:
 class PretensionController:
     """Owns the dedicated selected-servo pretension operator workflow."""
 
-    def __init__(self, *, servo_service, settings) -> None:
+    def __init__(self, *, servo_service, settings, config_loader=None) -> None:
+        self.config_loader = config_loader
         self.servo_service = servo_service
         self.settings = settings
         default_servo_id = settings.robot.servo_ids[0] if settings.robot.servo_ids else None
@@ -100,7 +105,7 @@ class PretensionController:
             default_filter_window=int(settings.safety.pretension_current_filter_window),
             default_current_delta_threshold_ma=int(settings.safety.pretension_current_delta_threshold_ma),
             default_absolute_trigger_current_ma=settings.safety.pretension_absolute_trigger_current_ma,
-            default_hard_current_stop_ma=int(settings.safety.max_current_ma),
+            default_hard_current_stop_ma=int(settings.safety.pretension_hard_current_stop_ma),
             default_max_travel_ticks=int(settings.safety.pretension_max_travel_ticks),
             default_timeout_s=float(settings.safety.pretension_timeout_s),
             default_min_offset_ticks=int(settings.safety.position_min_offset_ticks),
@@ -159,6 +164,7 @@ class PretensionController:
         selected_motion: ServoMotionAssessment | None = None
         selected_pretension: ServoMotionAssessment | None = None
         selected_telemetry = None
+        selected_parameters = self._current_parameters()
         for servo_id in self.state.expected_servo_ids:
             telemetry = telemetry_by_id.get(int(servo_id))
             if telemetry is None:
@@ -170,6 +176,7 @@ class PretensionController:
             )
             pretension = self.servo_service.assess_pretension_readiness(
                 int(servo_id),
+                parameters=selected_parameters if int(servo_id) == int(self.state.selected_servo_id or -1) else None,
                 telemetry=telemetry,
             )
             if int(servo_id) == int(self.state.selected_servo_id or -1):
@@ -221,6 +228,7 @@ class PretensionController:
             servo_id=int(servo_id),
             sample_count=int(sample_count),
             filter_window=int(filter_window),
+            parameters=self._current_parameters(),
         )
         self.state.baseline_current_ma = float(baseline.baseline_current_ma)
         self.state.baseline_filtered_current_ma = float(baseline.filtered_current_ma)
@@ -242,10 +250,9 @@ class PretensionController:
 
     def move_to_untensioned_reference(self, *, reference_tick: int) -> ServoJogResult:
         servo_id = self._require_selected_servo_id()
-        result = self.servo_service.move_servo_to_raw_target(
+        result = self.servo_service.move_servo_to_pretension_reference(
             servo_id=int(servo_id),
-            target_tick=int(reference_tick),
-            reason="pretension untensioned reference",
+            parameters=self._current_parameters(reference_tick=int(reference_tick)),
         )
         self.state.status_message = result.message
         self.state.last_error = None if result.success else result.message
@@ -278,15 +285,86 @@ class PretensionController:
         self.refresh()
         return entry
 
+    def apply_live_parameters(self, *, parameters: PretensionParameters) -> PretensionParameters:
+        applied = self.servo_service.apply_live_pretension_defaults(parameters)
+        self.settings.safety.pretension_untensioned_reference_tick = int(applied.untensioned_reference_tick)
+        self.settings.safety.pretension_step_ticks = int(applied.step_ticks)
+        self.settings.safety.pretension_settle_time_s = float(applied.settle_time_s)
+        self.settings.safety.pretension_baseline_sample_count = int(applied.baseline_sample_count)
+        self.settings.safety.pretension_current_filter_window = int(applied.current_filter_window)
+        self.settings.safety.pretension_current_delta_threshold_ma = int(applied.current_delta_threshold_ma)
+        self.settings.safety.pretension_absolute_trigger_current_ma = (
+            None if applied.absolute_trigger_current_ma is None else int(applied.absolute_trigger_current_ma)
+        )
+        self.settings.safety.pretension_hard_current_stop_ma = int(applied.hard_current_stop_ma)
+        self.settings.safety.pretension_max_travel_ticks = int(applied.max_travel_ticks)
+        self.settings.safety.pretension_timeout_s = float(applied.timeout_s)
+        self.state.default_untensioned_reference_tick = int(applied.untensioned_reference_tick)
+        self.state.default_step_ticks = int(applied.step_ticks)
+        self.state.default_settle_time_s = float(applied.settle_time_s)
+        self.state.default_baseline_sample_count = int(applied.baseline_sample_count)
+        self.state.default_filter_window = int(applied.current_filter_window)
+        self.state.default_current_delta_threshold_ma = int(applied.current_delta_threshold_ma)
+        self.state.default_absolute_trigger_current_ma = (
+            None if applied.absolute_trigger_current_ma is None else int(applied.absolute_trigger_current_ma)
+        )
+        self.state.default_hard_current_stop_ma = int(applied.hard_current_stop_ma)
+        self.state.default_max_travel_ticks = int(applied.max_travel_ticks)
+        self.state.default_timeout_s = float(applied.timeout_s)
+        self._selection_changed = True
+        status_message = "Applied pretension tuning parameters live. Hardware reconnect is not required."
+        self.state.last_error = None
+        self._append_log(
+            "Applied pretension parameters live: "
+            f"ref={applied.untensioned_reference_tick}, step={applied.step_ticks}, "
+            f"delta={applied.current_delta_threshold_ma} mA, hard stop={applied.hard_current_stop_ma} mA."
+        )
+        self.refresh()
+        self.state.status_message = status_message
+        self.state.last_error = None
+        return applied
+
+    def save_pretension_defaults(self, *, parameters: PretensionParameters) -> str:
+        if self.config_loader is None:
+            raise RuntimeError("Config loader is unavailable; pretension defaults cannot be saved from the GUI.")
+        applied = self.apply_live_parameters(parameters=parameters)
+        path = self.config_loader.save_system_local_overrides(
+            {
+                "safety_overrides": {
+                    "pretension_untensioned_reference_tick": int(applied.untensioned_reference_tick),
+                    "pretension_step_ticks": int(applied.step_ticks),
+                    "pretension_settle_time_s": float(applied.settle_time_s),
+                    "pretension_baseline_sample_count": int(applied.baseline_sample_count),
+                    "pretension_current_filter_window": int(applied.current_filter_window),
+                    "pretension_current_delta_threshold_ma": int(applied.current_delta_threshold_ma),
+                    "pretension_absolute_trigger_current_ma": applied.absolute_trigger_current_ma,
+                    "pretension_hard_current_stop_ma": int(applied.hard_current_stop_ma),
+                    "pretension_max_travel_ticks": int(applied.max_travel_ticks),
+                    "pretension_timeout_s": float(applied.timeout_s),
+                }
+            }
+        )
+        status_message = f"Saved pretension defaults to {path} and applied them live. Hardware reconnect is not required."
+        self.state.last_error = None
+        self._append_log(f"Saved pretension defaults to {path}.")
+        self.refresh()
+        self.state.status_message = status_message
+        self.state.last_error = None
+        return str(path)
+
     def start_pretension(self, *, parameters: PretensionParameters) -> None:
         servo_id = self._require_selected_servo_id()
         if self._pretension_thread is not None and self._pretension_thread.is_alive():
             raise RuntimeError("Pretension is already running.")
         self.refresh()
-        if not self.state.selected_servo_pretension_ready:
+        readiness = self.servo_service.assess_pretension_readiness(
+            int(servo_id),
+            parameters=parameters,
+        )
+        if not readiness.ready:
             self.state.run_state = "blocked"
             self.state.run_state_label = "Blocked"
-            self.state.run_state_message = self.state.selected_servo_block_reason
+            self.state.run_state_message = readiness.reason
             self.state.status_message = self.state.run_state_message
             self.state.last_error = self.state.run_state_message
             self._append_log(f"Pretension blocked for servo {servo_id}: {self.state.run_state_message}")
@@ -393,7 +471,7 @@ class PretensionController:
     def shutdown(self) -> None:
         self.stop_pretension()
         if self._pretension_thread is not None:
-            self._pretension_thread.join(timeout=0.2)
+            self._pretension_thread.join(timeout=1.0)
 
     def _sync_selected_from_disconnected_state(self) -> None:
         self.state.selected_servo_torque_enabled = None
@@ -407,10 +485,14 @@ class PretensionController:
         self.state.selected_servo_hardware_error_text = "Disconnected"
         self.state.selected_servo_telemetry_age_s = None
         self.state.selected_servo_telemetry_fresh = None
+        self.state.selected_servo_untensioned_reference_tick = None
+        self.state.selected_servo_effective_min_target_tick = None
+        self.state.selected_servo_effective_max_target_tick = None
         self.state.selected_servo_safe_min_tick = None
         self.state.selected_servo_safe_max_tick = None
         self.state.selected_servo_block_reason = "OpenRB / DYNAMIXEL bus is disconnected."
         self.state.selected_servo_saved_summary = self._saved_summary_for_selected_servo()
+        self.state.comparison_rows = self._comparison_rows()
         self.state.can_measure_baseline = False
         self.state.can_move_to_reference = False
         self.state.can_start = False
@@ -453,6 +535,23 @@ class PretensionController:
         )
         self.state.selected_servo_telemetry_age_s = self.servo_service.telemetry_age_s(telemetry)
         self.state.selected_servo_telemetry_fresh = self.servo_service.telemetry_is_fresh(telemetry)
+        try:
+            window = self.servo_service.pretension_window_for_servo(
+                servo_id=int(self.state.selected_servo_id),
+                parameters=self._current_parameters(),
+                telemetry=telemetry,
+            )
+        except Exception:
+            window = None
+        self.state.selected_servo_untensioned_reference_tick = (
+            int(window.untensioned_reference_tick) if window is not None else None
+        )
+        self.state.selected_servo_effective_min_target_tick = (
+            int(window.effective_min_target_tick) if window is not None else None
+        )
+        self.state.selected_servo_effective_max_target_tick = (
+            int(window.effective_max_target_tick) if window is not None else None
+        )
         self.state.selected_servo_safe_min_tick = (
             pretension_assessment.safe_min_tick if pretension_assessment is not None else None
         )
@@ -466,7 +565,7 @@ class PretensionController:
             f"Tightening rotation: {direction_text}. Raw XC330 counts tighten by lowering the position value."
         )
         self.state.selected_servo_block_reason = (
-            self._first_reason(pretension_assessment.blocking_reasons if pretension_assessment else ())
+            (pretension_assessment.reason if pretension_assessment is not None else "Pretension assessment unavailable.")
             if not self.state.selected_servo_pretension_ready
             else "Ready for selected-servo pretension."
         )
@@ -486,7 +585,8 @@ class PretensionController:
             self.state.baseline_filtered_current_ma = None
             self.state.baseline_samples_label = "Not measured."
             self._selection_changed = False
-        self.state.can_measure_baseline = bool(self.state.selected_servo_motion_ready and not self.state.pretension_running)
+        self.state.comparison_rows = self._comparison_rows()
+        self.state.can_measure_baseline = bool(self.state.selected_servo_pretension_ready and not self.state.pretension_running)
         self.state.can_move_to_reference = bool(self.state.selected_servo_motion_ready and not self.state.pretension_running)
         self.state.can_start = bool(self.state.selected_servo_pretension_ready and not self.state.pretension_running)
         self.state.can_stop = bool(self.state.pretension_running)
@@ -495,12 +595,13 @@ class PretensionController:
         servo_id = self.state.selected_servo_id
         if servo_id is None:
             return "No servo selected."
-        entry = self.servo_service.neutral_calibration.entry_by_servo_id(int(servo_id))
+        summary = self.servo_service.get_calibration_summary()
+        entry = summary.servo_entries.get(int(servo_id)) if summary.exists else None
         if entry is None:
             return "No saved calibration artifact for this servo."
         if entry.latest_pretension_run:
             record = entry.latest_pretension_run
-            status = record.get("status") or entry.pretension_result_status or "saved"
+            status = entry.pretension_result_status or record.get("status") or "saved"
             position = record.get("final_position_tick", entry.pretension_final_position_tick)
             return f"Latest run: {status} @ {position if position is not None else '—'}."
         if entry.pretension_final_position_tick is not None:
@@ -521,11 +622,59 @@ class PretensionController:
             raise RuntimeError("Select a servo before using the pretension workspace.")
         return int(self.state.selected_servo_id)
 
+    def _current_parameters(self, *, reference_tick: int | None = None) -> PretensionParameters:
+        return PretensionParameters(
+            untensioned_reference_tick=(
+                int(reference_tick)
+                if reference_tick is not None
+                else int(self.state.default_untensioned_reference_tick)
+            ),
+            step_ticks=int(self.state.default_step_ticks),
+            settle_time_s=float(self.state.default_settle_time_s),
+            baseline_sample_count=int(self.state.default_baseline_sample_count),
+            current_filter_window=int(self.state.default_filter_window),
+            current_delta_threshold_ma=int(self.state.default_current_delta_threshold_ma),
+            absolute_trigger_current_ma=(
+                None
+                if self.state.default_absolute_trigger_current_ma in (None, 0)
+                else int(self.state.default_absolute_trigger_current_ma)
+            ),
+            hard_current_stop_ma=int(self.state.default_hard_current_stop_ma),
+            max_travel_ticks=int(self.state.default_max_travel_ticks),
+            timeout_s=float(self.state.default_timeout_s),
+        )
+
+    def _comparison_rows(self) -> list[dict[str, str]]:
+        summary = self.servo_service.get_calibration_summary()
+        rows: list[dict[str, str]] = []
+        for servo_id in self.state.expected_servo_ids:
+            entry = summary.servo_entries.get(int(servo_id)) if summary.exists else None
+            record = dict(entry.latest_pretension_run or {}) if entry and entry.latest_pretension_run else {}
+            rows.append(
+                {
+                    "servo_id": str(int(servo_id)),
+                    "status": str((entry.pretension_result_status if entry else None) or record.get("status") or "—"),
+                    "final_position": self._display(
+                        record.get("final_position_tick") if record else (entry.pretension_final_position_tick if entry else None)
+                    ),
+                    "baseline_current": self._display(record.get("baseline_current_ma")),
+                    "trigger_current": self._display(record.get("trigger_current_ma")),
+                    "travel_used": self._display(record.get("travel_used_ticks")),
+                    "reason": str(record.get("stop_reason") or "—"),
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _display(value) -> str:
+        return "—" if value is None else str(value)
+
     @staticmethod
     def _format_run_state(status: str) -> str:
         mapping = {
             "idle": "Idle",
             "ready": "Ready",
+            "moving_to_reference": "Moving To Reference",
             "baseline_ready": "Baseline Ready",
             "running": "Running",
             "threshold_reached": "Completed",

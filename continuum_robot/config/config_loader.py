@@ -125,6 +125,12 @@ class ConfigLoader:
             pretension_absolute_trigger_current_ma=self._maybe_int(
                 safety_data.get("pretension_absolute_trigger_current_ma", 220)
             ),
+            pretension_hard_current_stop_ma=int(
+                safety_data.get(
+                    "pretension_hard_current_stop_ma",
+                    safety_data.get("max_current_ma", 850),
+                )
+            ),
             pretension_max_travel_ticks=int(safety_data.get("pretension_max_travel_ticks", 320)),
             max_temperature_c=int(safety_data.get("max_temperature_c", 70)),
             min_input_voltage_mv=int(safety_data.get("min_input_voltage_mv", 4000)),

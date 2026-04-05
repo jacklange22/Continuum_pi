@@ -203,6 +203,8 @@ class _MultiServoPretensionBus(MockDxlBus):
         self._current_sequences = {int(key): list(values) for key, values in current_sequences.items()}
         for telemetry in self._state.values():
             telemetry.torque_enabled = True
+            telemetry.present_position = 4031
+            telemetry.present_current_ma = 150
 
     def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
         super().write_goal_positions(positions_by_id)
@@ -485,6 +487,22 @@ def test_pretension_tab_wraps_workspace_in_scroll_area(tmp_path: Path) -> None:
     assert tab.scroll_area.widget() is not None
 
 
+def test_pretension_tab_preserves_unsaved_parameter_edits_across_refresh(tmp_path: Path) -> None:
+    _app()
+    service = _pretension_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    controller = PretensionController(servo_service=service, settings=_settings())
+    tab = PretensionTab(controller)
+
+    tab.update(controller.state)
+    tab.step_ticks_spin.setValue(7)
+    tab.current_delta_spin.setValue(95)
+    tab.update(controller.refresh())
+
+    assert tab.step_ticks_spin.value() == 7
+    assert tab.current_delta_spin.value() == 95
+
+
 def test_pretension_controller_runs_only_on_selected_servo_and_persists_result(tmp_path: Path) -> None:
     settings = _settings()
     bus = _MultiServoPretensionBus(current_sequences={2: [180, 230]})
@@ -520,6 +538,7 @@ def test_pretension_controller_runs_only_on_selected_servo_and_persists_result(t
     assert summary.servo_entries[2].pretension_result_status == "accepted"
     assert summary.servo_entries[2].latest_pretension_run is not None
     assert summary.servo_entries[2].latest_pretension_run["status"] == "threshold_reached"
+    assert any(row["servo_id"] == "2" and row["status"] == "accepted" for row in controller.state.comparison_rows)
 
 
 def test_pretension_controller_blocks_selected_servo_when_torque_is_off(tmp_path: Path) -> None:
@@ -533,6 +552,33 @@ def test_pretension_controller_blocks_selected_servo_when_torque_is_off(tmp_path
 
     assert controller.state.run_state == "blocked"
     assert "Torque must be enabled" in controller.state.run_state_message
+
+
+def test_pretension_controller_applies_live_parameters_without_runtime_reload(tmp_path: Path) -> None:
+    settings = _settings()
+    service = _pretension_service(tmp_path)
+    controller = PretensionController(servo_service=service, settings=settings)
+
+    controller.apply_live_parameters(
+        parameters=PretensionParameters(
+            untensioned_reference_tick=4010,
+            step_ticks=4,
+            settle_time_s=0.1,
+            baseline_sample_count=6,
+            current_filter_window=4,
+            current_delta_threshold_ma=75,
+            absolute_trigger_current_ma=260,
+            hard_current_stop_ma=600,
+            max_travel_ticks=220,
+            timeout_s=6.0,
+        )
+    )
+
+    assert service.safety_guard.pretension_untensioned_reference_tick == 4010
+    assert service.safety_guard.pretension_step_ticks == 4
+    assert service.safety_guard.pretension_hard_current_stop_ma == 600
+    assert controller.state.default_max_travel_ticks == 220
+    assert "Hardware reconnect is not required" in controller.state.status_message
 
 
 def _app_context(tmp_path: Path) -> AppContext:
@@ -616,6 +662,16 @@ class _PortSelectionController:
         return self.state
 
 
+class _PretensionConfigLoader:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.saved_overrides: dict | None = None
+
+    def save_system_local_overrides(self, overrides: dict) -> Path:
+        self.saved_overrides = dict(overrides)
+        return self.path
+
+
 def test_system_controller_connects_mock_tracker_and_openrb(tmp_path: Path) -> None:
     settings = _settings()
     tracking_service = _tracking_service(settings, tmp_path)
@@ -640,6 +696,33 @@ def test_system_controller_connects_mock_tracker_and_openrb(tmp_path: Path) -> N
     finally:
         controller.disconnect_tracker()
         controller.disconnect_openrb()
+
+
+def test_system_controller_disconnects_servo_bus_before_openrb_client(tmp_path: Path) -> None:
+    order: list[str] = []
+
+    class _ServoServiceStub:
+        is_connected = True
+
+        def disconnect(self) -> None:
+            order.append("servo")
+
+    class _OpenRbStub(MockOpenRbClient):
+        def disconnect(self) -> None:
+            order.append("openrb")
+            super().disconnect()
+
+    settings = _settings()
+    controller = SystemController(
+        tracking_service=_tracking_service(settings, tmp_path),
+        openrb_client=_OpenRbStub(),
+        servo_service=_ServoServiceStub(),
+        settings=settings,
+    )
+
+    controller.disconnect_openrb()
+
+    assert order == ["servo", "openrb"]
 
 
 def test_system_controller_saves_runtime_parameters(tmp_path: Path) -> None:
@@ -694,6 +777,34 @@ def test_system_controller_saves_runtime_parameters(tmp_path: Path) -> None:
     assert saved["safety_overrides"]["fine_jog_step_ticks"] == 3
     assert saved["safety_overrides"]["position_min_offset_ticks"] == -120
     assert saved["robot_overrides"]["tightening_rotation_by_servo"]["1"] == "ccw"
+
+
+def test_pretension_controller_saves_defaults_without_runtime_rebuild(tmp_path: Path) -> None:
+    settings = _settings()
+    service = _pretension_service(tmp_path)
+    loader = _PretensionConfigLoader(tmp_path / "system.local.yaml")
+    controller = PretensionController(servo_service=service, settings=settings, config_loader=loader)
+
+    saved_path = controller.save_pretension_defaults(
+        parameters=PretensionParameters(
+            untensioned_reference_tick=4025,
+            step_ticks=3,
+            settle_time_s=0.15,
+            baseline_sample_count=7,
+            current_filter_window=5,
+            current_delta_threshold_ma=80,
+            absolute_trigger_current_ma=240,
+            hard_current_stop_ma=610,
+            max_travel_ticks=260,
+            timeout_s=8.0,
+        )
+    )
+
+    assert saved_path.endswith("system.local.yaml")
+    assert loader.saved_overrides is not None
+    assert loader.saved_overrides["safety_overrides"]["pretension_step_ticks"] == 3
+    assert loader.saved_overrides["safety_overrides"]["pretension_hard_current_stop_ma"] == 610
+    assert service.safety_guard.pretension_current_delta_threshold_ma == 80
 
 
 def test_system_tab_preserves_selected_ports_between_refreshes() -> None:
@@ -1007,6 +1118,7 @@ def test_servos_controller_saves_startup_calibration_and_accepts_pretension(tmp_
     )
     service.connect("/dev/mock-openrb", 115200)
     service.dxl_bus._state[1].torque_enabled = True
+    service.dxl_bus._state[1].present_position = 4031
     controller = ServosController(service, settings)
 
     controller.save_startup_calibration(

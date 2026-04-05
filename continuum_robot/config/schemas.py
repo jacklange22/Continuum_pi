@@ -79,6 +79,7 @@ class SafetyConfig:
     pretension_current_filter_window: int = 3
     pretension_current_delta_threshold_ma: int = 60
     pretension_absolute_trigger_current_ma: int | None = 220
+    pretension_hard_current_stop_ma: int = 850
     pretension_max_travel_ticks: int = 320
     max_temperature_c: int = 70
     min_input_voltage_mv: int = 4000

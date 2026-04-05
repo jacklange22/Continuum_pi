@@ -27,6 +27,7 @@ class SafetyGuard:
         pretension_current_filter_window: int = 3,
         pretension_current_delta_threshold_ma: int = 60,
         pretension_absolute_trigger_current_ma: int | None = 220,
+        pretension_hard_current_stop_ma: int | None = None,
         pretension_max_travel_ticks: int = 320,
         max_temperature_c: int = 70,
         min_input_voltage_mv: int = 4000,
@@ -49,6 +50,11 @@ class SafetyGuard:
         self.pretension_current_filter_window = pretension_current_filter_window
         self.pretension_current_delta_threshold_ma = pretension_current_delta_threshold_ma
         self.pretension_absolute_trigger_current_ma = pretension_absolute_trigger_current_ma
+        self.pretension_hard_current_stop_ma = (
+            max_current_ma
+            if pretension_hard_current_stop_ma in (None, "")
+            else int(pretension_hard_current_stop_ma)
+        )
         self.pretension_max_travel_ticks = pretension_max_travel_ticks
         self.max_temperature_c = max_temperature_c
         self.min_input_voltage_mv = min_input_voltage_mv

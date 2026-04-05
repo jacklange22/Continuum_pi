@@ -164,11 +164,15 @@ class SystemController:
 
     def disconnect_openrb(self) -> None:
         try:
-            self.openrb_client.disconnect()
             self.servo_service.disconnect()
+            self.openrb_client.disconnect()
             self.state.status_message = "OpenRB and DYNAMIXEL bus disconnected."
             self.state.last_error = None
         except Exception as exc:
+            try:
+                self.openrb_client.disconnect()
+            except Exception:
+                pass
             self.state.last_error = str(exc)
             self.state.status_message = f"OpenRB disconnect failed: {exc}"
         self.refresh()

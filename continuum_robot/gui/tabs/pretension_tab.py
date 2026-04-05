@@ -32,6 +32,10 @@ class PretensionTab(QWidget):
     def __init__(self, controller, parent=None) -> None:
         super().__init__(parent)
         self.controller = controller
+        self._updating_parameter_widgets = False
+        self._parameter_dirty = False
+        self._applied_parameter_values: dict[str, object] = {}
+        self._last_selected_servo_id: int | None = None
         self.setObjectName("pretensionWorkspace")
         self.setStyleSheet(
             """
@@ -140,6 +144,8 @@ class PretensionTab(QWidget):
         self.voltage_label = QLabel("—")
         self.temperature_label = QLabel("—")
         self.bounds_label = QLabel("—")
+        self.reference_label = QLabel("—")
+        self.travel_window_label = QLabel("—")
         self.direction_label = QLabel("—")
         self.hardware_error_label = QLabel("—")
         self.block_reason_label = QLabel("—")
@@ -159,6 +165,8 @@ class PretensionTab(QWidget):
         feedback_layout.addRow("Filtered current", self.filtered_current_label)
         feedback_layout.addRow("Voltage (mV)", self.voltage_label)
         feedback_layout.addRow("Temperature (C)", self.temperature_label)
+        feedback_layout.addRow("Untensioned reference", self.reference_label)
+        feedback_layout.addRow("Effective travel window", self.travel_window_label)
         feedback_layout.addRow("Pretension-safe range", self.bounds_label)
         feedback_layout.addRow("Direction", self.direction_label)
         feedback_layout.addRow("Hardware error", self.hardware_error_label)
@@ -195,6 +203,20 @@ class PretensionTab(QWidget):
         self.max_offset_spin.setRange(0, 4096)
         self.threshold_spin = QSpinBox()
         self.threshold_spin.setRange(1, 5000)
+        for widget in (
+            self.untensioned_reference_spin,
+            self.step_ticks_spin,
+            self.settle_time_spin,
+            self.baseline_sample_spin,
+            self.filter_window_spin,
+            self.current_delta_spin,
+            self.absolute_trigger_spin,
+            self.hard_current_spin,
+            self.max_travel_spin,
+            self.timeout_spin,
+        ):
+            signal = getattr(widget, "valueChanged")
+            signal.connect(self._mark_parameter_dirty)
 
         parameter_box = QGroupBox("Pretension Parameters")
         parameter_layout = QFormLayout(parameter_box)
@@ -212,6 +234,16 @@ class PretensionTab(QWidget):
         parameter_layout.addRow("Neutral min offset", self.min_offset_spin)
         parameter_layout.addRow("Neutral max offset", self.max_offset_spin)
         parameter_layout.addRow("Saved threshold (mA)", self.threshold_spin)
+        self.apply_live_button = QPushButton("Apply Live Parameters")
+        self.apply_live_button.setProperty("role", "primary")
+        self.save_defaults_button = QPushButton("Save Parameters as Defaults")
+        self.apply_live_button.clicked.connect(self._apply_live_parameters)
+        self.save_defaults_button.clicked.connect(self._save_parameter_defaults)
+        parameter_buttons = QHBoxLayout()
+        parameter_buttons.setSpacing(10)
+        parameter_buttons.addWidget(self.apply_live_button)
+        parameter_buttons.addWidget(self.save_defaults_button)
+        parameter_layout.addRow(parameter_buttons)
 
         self.refresh_button = QPushButton("Refresh Selected Servo")
         self.measure_baseline_button = QPushButton("Measure / Refresh Baseline")
@@ -293,6 +325,24 @@ class PretensionTab(QWidget):
         log_layout.addLayout(log_button_row)
         log_layout.addWidget(self.log_text)
 
+        self.comparison_table = QTableWidget(0, 6)
+        self.comparison_table.setHorizontalHeaderLabels(
+            ["Servo", "Status", "Final Pos", "Baseline (mA)", "Trigger (mA)", "Travel / Reason"]
+        )
+        self.comparison_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.comparison_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.comparison_table.verticalHeader().setVisible(False)
+        self.comparison_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.comparison_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.comparison_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.comparison_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.comparison_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.comparison_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
+        self.comparison_table.setMinimumHeight(180)
+        comparison_box = QGroupBox("Saved Pretension Comparison")
+        comparison_layout = QVBoxLayout(comparison_box)
+        comparison_layout.addWidget(self.comparison_table)
+
         left_column = QWidget()
         left_layout = QVBoxLayout(left_column)
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -300,6 +350,7 @@ class PretensionTab(QWidget):
         left_layout.addWidget(selection_box)
         left_layout.addWidget(parameter_box)
         left_layout.addWidget(actions_box)
+        left_layout.addWidget(comparison_box)
         left_layout.addStretch(1)
 
         right_column = QWidget()
@@ -342,19 +393,17 @@ class PretensionTab(QWidget):
             if state.connected
             else "Disconnected: connect OpenRB / DYNAMIXEL before pretensioning."
         )
-        self._set_spin_if_not_focused(self.untensioned_reference_spin, state.default_untensioned_reference_tick)
-        self._set_spin_if_not_focused(self.step_ticks_spin, state.default_step_ticks)
-        self._set_double_if_not_focused(self.settle_time_spin, state.default_settle_time_s)
-        self._set_spin_if_not_focused(self.baseline_sample_spin, state.default_baseline_sample_count)
-        self._set_spin_if_not_focused(self.filter_window_spin, state.default_filter_window)
-        self._set_spin_if_not_focused(self.current_delta_spin, state.default_current_delta_threshold_ma)
-        self._set_spin_if_not_focused(
-            self.absolute_trigger_spin,
-            0 if state.default_absolute_trigger_current_ma is None else int(state.default_absolute_trigger_current_ma),
-        )
-        self._set_spin_if_not_focused(self.hard_current_spin, state.default_hard_current_stop_ma)
-        self._set_spin_if_not_focused(self.max_travel_spin, state.default_max_travel_ticks)
-        self._set_double_if_not_focused(self.timeout_spin, state.default_timeout_s)
+        applied_values = self._parameter_values_from_state(state)
+        if self._last_selected_servo_id != state.selected_servo_id:
+            self._parameter_dirty = False
+            self._apply_parameter_values(applied_values)
+            self._last_selected_servo_id = state.selected_servo_id
+        elif not self._parameter_dirty:
+            self._apply_parameter_values(applied_values)
+        elif self._current_parameter_values() == applied_values:
+            self._parameter_dirty = False
+            self._apply_parameter_values(applied_values)
+        self._applied_parameter_values = applied_values
         self._set_spin_if_not_focused(self.min_offset_spin, state.default_min_offset_ticks)
         self._set_spin_if_not_focused(self.max_offset_spin, state.default_max_offset_ticks)
         self._set_spin_if_not_focused(
@@ -395,6 +444,16 @@ class PretensionTab(QWidget):
         )
         self.voltage_label.setText(self._display(state.selected_servo_voltage_mv))
         self.temperature_label.setText(self._display(state.selected_servo_temperature_c))
+        self.reference_label.setText(self._display(state.selected_servo_untensioned_reference_tick))
+        if (
+            state.selected_servo_effective_min_target_tick is not None
+            and state.selected_servo_effective_max_target_tick is not None
+        ):
+            self.travel_window_label.setText(
+                f"[{state.selected_servo_effective_min_target_tick}, {state.selected_servo_effective_max_target_tick}]"
+            )
+        else:
+            self.travel_window_label.setText("—")
         if state.selected_servo_safe_min_tick is not None and state.selected_servo_safe_max_tick is not None:
             self.bounds_label.setText(f"[{state.selected_servo_safe_min_tick}, {state.selected_servo_safe_max_tick}]")
         else:
@@ -411,14 +470,17 @@ class PretensionTab(QWidget):
         self.last_target_label.setText(self._display(state.last_commanded_target_tick))
         self.current_position_label.setText(self._display(state.selected_servo_position_tick))
         effective_absolute = (
-            f", abs {state.default_absolute_trigger_current_ma} mA"
-            if state.default_absolute_trigger_current_ma is not None
+            f", abs {self.absolute_trigger_spin.value()} mA"
+            if self.absolute_trigger_spin.value() > 0
             else ""
         )
         self.trigger_label.setText(
             "—"
             if state.baseline_current_ma is None
-            else f"baseline {state.baseline_current_ma:.1f} mA + delta {self.current_delta_spin.value()} mA{effective_absolute}"
+            else (
+                f"baseline {state.baseline_current_ma:.1f} mA + delta {self.current_delta_spin.value()} mA"
+                f"{effective_absolute}, hard stop {self.hard_current_spin.value()} mA"
+            )
         )
         self.steps_label.setText(str(state.steps_taken))
         self.elapsed_label.setText(f"{state.elapsed_s:.2f} s")
@@ -433,6 +495,25 @@ class PretensionTab(QWidget):
         self.stop_button.setEnabled(state.can_stop)
         self.save_button.setEnabled(state.can_save)
         self.save_startup_button.setEnabled(bool(state.connected and state.selected_servo_id is not None))
+        self.apply_live_button.setEnabled(not state.pretension_running)
+        self.save_defaults_button.setEnabled(not state.pretension_running)
+
+        self.comparison_table.setRowCount(len(state.comparison_rows))
+        for row, item in enumerate(state.comparison_rows):
+            self.comparison_table.setItem(row, 0, self._item(item["servo_id"], align=Qt.AlignRight))
+            self.comparison_table.setItem(row, 1, self._item(item["status"]))
+            self.comparison_table.setItem(row, 2, self._item(item["final_position"], align=Qt.AlignRight))
+            self.comparison_table.setItem(row, 3, self._item(item["baseline_current"], align=Qt.AlignRight))
+            self.comparison_table.setItem(row, 4, self._item(item["trigger_current"], align=Qt.AlignRight))
+            self.comparison_table.setItem(
+                row,
+                5,
+                self._item(
+                    f"{item['travel_used']} / {item['reason']}"
+                    if item["travel_used"] != "—"
+                    else item["reason"]
+                ),
+            )
 
     def _select_row_servo(self, row: int, _column: int) -> None:
         item = self.servo_table.item(row, 0)
@@ -458,20 +539,16 @@ class PretensionTab(QWidget):
         )
 
     def _start_pretension(self) -> None:
-        absolute_trigger_value = int(self.absolute_trigger_spin.value())
-        parameters = PretensionParameters(
-            untensioned_reference_tick=int(self.untensioned_reference_spin.value()),
-            step_ticks=int(self.step_ticks_spin.value()),
-            settle_time_s=float(self.settle_time_spin.value()),
-            baseline_sample_count=int(self.baseline_sample_spin.value()),
-            current_filter_window=int(self.filter_window_spin.value()),
-            current_delta_threshold_ma=int(self.current_delta_spin.value()),
-            absolute_trigger_current_ma=(None if absolute_trigger_value <= 0 else absolute_trigger_value),
-            hard_current_stop_ma=int(self.hard_current_spin.value()),
-            max_travel_ticks=int(self.max_travel_spin.value()),
-            timeout_s=float(self.timeout_spin.value()),
-        )
+        parameters = self._parameters_from_widgets()
         self._safe_call(self.controller.start_pretension, parameters=parameters)
+
+    def _apply_live_parameters(self) -> None:
+        self._safe_call(self.controller.apply_live_parameters, parameters=self._parameters_from_widgets())
+        self._parameter_dirty = False
+
+    def _save_parameter_defaults(self) -> None:
+        self._safe_call(self.controller.save_pretension_defaults, parameters=self._parameters_from_widgets())
+        self._parameter_dirty = False
 
     def _save_startup_calibration(self) -> None:
         self._safe_call(
@@ -490,6 +567,11 @@ class PretensionTab(QWidget):
             self.controller.state.status_message = str(exc)
         self.update(self.controller.state)
 
+    def _mark_parameter_dirty(self, *_args) -> None:
+        if self._updating_parameter_widgets:
+            return
+        self._parameter_dirty = True
+
     @staticmethod
     def _copy_text(text: str) -> None:
         QApplication.clipboard().setText(str(text))
@@ -506,6 +588,70 @@ class PretensionTab(QWidget):
         widget.setPlainText(new_text)
         v_scroll.setValue(min(old_v, v_scroll.maximum()))
         h_scroll.setValue(min(old_h, h_scroll.maximum()))
+
+    def _apply_parameter_values(self, values: dict[str, object]) -> None:
+        self._updating_parameter_widgets = True
+        try:
+            self.untensioned_reference_spin.setValue(int(values["untensioned_reference_tick"]))
+            self.step_ticks_spin.setValue(int(values["step_ticks"]))
+            self.settle_time_spin.setValue(float(values["settle_time_s"]))
+            self.baseline_sample_spin.setValue(int(values["baseline_sample_count"]))
+            self.filter_window_spin.setValue(int(values["current_filter_window"]))
+            self.current_delta_spin.setValue(int(values["current_delta_threshold_ma"]))
+            self.absolute_trigger_spin.setValue(int(values["absolute_trigger_current_ma"] or 0))
+            self.hard_current_spin.setValue(int(values["hard_current_stop_ma"]))
+            self.max_travel_spin.setValue(int(values["max_travel_ticks"]))
+            self.timeout_spin.setValue(float(values["timeout_s"]))
+        finally:
+            self._updating_parameter_widgets = False
+
+    def _current_parameter_values(self) -> dict[str, object]:
+        return {
+            "untensioned_reference_tick": int(self.untensioned_reference_spin.value()),
+            "step_ticks": int(self.step_ticks_spin.value()),
+            "settle_time_s": float(self.settle_time_spin.value()),
+            "baseline_sample_count": int(self.baseline_sample_spin.value()),
+            "current_filter_window": int(self.filter_window_spin.value()),
+            "current_delta_threshold_ma": int(self.current_delta_spin.value()),
+            "absolute_trigger_current_ma": (None if int(self.absolute_trigger_spin.value()) <= 0 else int(self.absolute_trigger_spin.value())),
+            "hard_current_stop_ma": int(self.hard_current_spin.value()),
+            "max_travel_ticks": int(self.max_travel_spin.value()),
+            "timeout_s": float(self.timeout_spin.value()),
+        }
+
+    @staticmethod
+    def _parameter_values_from_state(state) -> dict[str, object]:
+        return {
+            "untensioned_reference_tick": int(state.default_untensioned_reference_tick),
+            "step_ticks": int(state.default_step_ticks),
+            "settle_time_s": float(state.default_settle_time_s),
+            "baseline_sample_count": int(state.default_baseline_sample_count),
+            "current_filter_window": int(state.default_filter_window),
+            "current_delta_threshold_ma": int(state.default_current_delta_threshold_ma),
+            "absolute_trigger_current_ma": (
+                None
+                if state.default_absolute_trigger_current_ma in (None, 0)
+                else int(state.default_absolute_trigger_current_ma)
+            ),
+            "hard_current_stop_ma": int(state.default_hard_current_stop_ma),
+            "max_travel_ticks": int(state.default_max_travel_ticks),
+            "timeout_s": float(state.default_timeout_s),
+        }
+
+    def _parameters_from_widgets(self) -> PretensionParameters:
+        absolute_trigger_value = int(self.absolute_trigger_spin.value())
+        return PretensionParameters(
+            untensioned_reference_tick=int(self.untensioned_reference_spin.value()),
+            step_ticks=int(self.step_ticks_spin.value()),
+            settle_time_s=float(self.settle_time_spin.value()),
+            baseline_sample_count=int(self.baseline_sample_spin.value()),
+            current_filter_window=int(self.filter_window_spin.value()),
+            current_delta_threshold_ma=int(self.current_delta_spin.value()),
+            absolute_trigger_current_ma=(None if absolute_trigger_value <= 0 else absolute_trigger_value),
+            hard_current_stop_ma=int(self.hard_current_spin.value()),
+            max_travel_ticks=int(self.max_travel_spin.value()),
+            timeout_s=float(self.timeout_spin.value()),
+        )
 
     @staticmethod
     def _set_spin_if_not_focused(spin: QSpinBox, value: int) -> None:

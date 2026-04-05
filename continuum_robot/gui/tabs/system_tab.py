@@ -221,7 +221,8 @@ class SystemTab(QWidget):
         self.save_parameters_button.clicked.connect(self._save_runtime_parameters)
         self.parameters_hint = QLabel(
             "Save + Apply writes `config/system.local.yaml`, then rebuilds the controllers and services "
-            "using the saved values. Existing hardware connections are closed during reload."
+            "using the saved values. Existing hardware connections are closed during reload. "
+            "Use the Pretension tab for live pretension tuning; this page is for runtime/connection settings."
         )
         self.parameters_hint.setProperty("role", "hint")
         self.parameters_hint.setWordWrap(True)

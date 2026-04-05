@@ -49,6 +49,7 @@ safety_overrides:
   pretension_current_filter_window: 3
   pretension_current_delta_threshold_ma: 60
   pretension_absolute_trigger_current_ma: 220
+  pretension_hard_current_stop_ma: 850
   pretension_max_travel_ticks: 320
 read_timeout_s: 0.05
 frame_timeout_s: 0.5

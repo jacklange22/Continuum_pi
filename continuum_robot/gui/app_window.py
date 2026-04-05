@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QMainWindow, QTabWidget
 
@@ -112,7 +114,11 @@ class AppWindow(QMainWindow):
             config_loader=context.config_loader,
         )
         self.servos_controller = ServosController(servo_service=servo_service, settings=settings)
-        self.pretension_controller = PretensionController(servo_service=servo_service, settings=settings)
+        self.pretension_controller = PretensionController(
+            servo_service=servo_service,
+            settings=settings,
+            config_loader=context.config_loader,
+        )
         self.tracking_controller = TrackingController(
             tracking_service=tracking_service,
             settings=settings,
@@ -194,6 +200,9 @@ class AppWindow(QMainWindow):
 
         self._refresh_timer.stop()
         self._shutdown_workspace()
+        settle_s = float(self.context.settings.serial.openrb_settings.get("port_settle_time_s", 0.15) or 0.0)
+        if settle_s > 0.0:
+            time.sleep(settle_s)
         self._build_workspace(reloaded_context, selected_tab_label="System")
         self.system_controller.state.saved_overrides_path = str(saved_path)
         self.system_controller.state.status_message = (

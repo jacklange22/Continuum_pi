@@ -41,6 +41,8 @@ poll_rate_hz: 20
 packet_capture_dir: "data/tracker_captures"
 neutral_setpoints_path: "data/calibrations/neutral_setpoints.json"
 latest_registration_path: "data/registrations/latest_registration.json"
+safety_overrides:
+  pretension_hard_current_stop_ma: 850
 openrb_settings:
   connect_timeout_s: 0.5
   port_settle_time_s: 0.15
