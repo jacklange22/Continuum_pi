@@ -85,6 +85,7 @@ def build_visualization_model(
             metrics=metrics,
             tool_id=str(config_payload.get("tool_id", "0B")),
             color_mode=color_mode,
+            show_centroids=show_centroids,
             show_truth=show_truth,
             acceptance=config_payload.get("acceptance", {}),
         )
@@ -194,55 +195,68 @@ def _build_grid_model(
     metrics: dict[str, Any],
     tool_id: str,
     color_mode: str,
+    show_centroids: bool,
     show_truth: bool,
     acceptance: dict[str, Any],
 ) -> VisualizationModel:
-    measurement_samples = [sample for sample in samples if sample.phase == "sample"]
-    grouped: dict[str, list[tuple[float, float, float]]] = {}
-    truth_points: list[tuple[float, float, float]] = []
-    for sample in measurement_samples:
-        position, _ = extract_tip_or_tool_position_mm(sample, tool_id=tool_id, prefer_robot_frame=True)
-        if position is None:
-            continue
-        key = _grid_group_key(sample=sample, color_mode=color_mode)
-        grouped.setdefault(key, []).append(tuple(float(value) for value in position))
-        truth_point = sample.extra.get("truth_point_mm")
-        if isinstance(truth_point, list) and len(truth_point) == 3:
-            truth_points.append(tuple(float(value) for value in truth_point))
-    series = _grouped_series(grouped, base_label="Measured")
+    _ = samples, tool_id, color_mode
+    per_point = metrics.get("per_point_metrics", {}) or {}
+    ordered_labels = sorted(per_point, key=_label_sort_key)
+    truth_points = [
+        tuple(float(value) for value in per_point[label].get("truth_point_mm", []))
+        for label in ordered_labels
+        if isinstance(per_point[label].get("truth_point_mm"), list) and len(per_point[label]["truth_point_mm"]) == 3
+    ]
+    aligned_centroids = [
+        tuple(float(value) for value in per_point[label].get("aligned_centroid_truth_mm", []))
+        for label in ordered_labels
+        if isinstance(per_point[label].get("aligned_centroid_truth_mm"), list)
+        and len(per_point[label]["aligned_centroid_truth_mm"]) == 3
+    ]
+    series: list[ScatterSeries3D] = []
     if show_truth and truth_points:
-        unique_truth = sorted(set(truth_points))
         series.append(
             ScatterSeries3D(
                 name="Truth Grid",
                 color_hex="#111827",
-                points_xyz=list(unique_truth),
+                points_xyz=truth_points,
                 point_size=0.18,
                 mesh="cube",
             )
         )
-    per_point = metrics.get("per_point_metrics", {}) or {}
-    point_rms = metrics.get("pointwise_rms_error_mm", {}) or {}
+    if show_centroids and aligned_centroids:
+        series.append(
+            ScatterSeries3D(
+                name="Aligned Measured Centroids",
+                color_hex="#2563eb",
+                points_xyz=aligned_centroids,
+                point_size=0.16,
+                mesh="sphere",
+            )
+        )
+    point_rms = metrics.get("per_point_residual_mm") or metrics.get("pointwise_rms_error_mm") or {}
     point_chart = ChartModel(
         kind="bar",
-        title="Per-Point RMS Error",
+        title="Per-Point Residual",
         x_title="Grid Point",
-        y_title="RMS Error (mm)",
-        caption="Mean point error relative to truth for each physical grid location.",
-        categories=[str(point) for point in sorted(point_rms, key=int)],
-        values=[float(point_rms[point]) for point in sorted(point_rms, key=int)],
+        y_title="Residual (mm)",
+        caption="Residual norm for each labeled point after best-fit rigid alignment of the ideal grid to the measured centroids.",
+        categories=[str(point) for point in sorted(point_rms, key=_label_sort_key)],
+        values=[float(point_rms[point]) for point in sorted(point_rms, key=_label_sort_key)],
         color_hex="#dc2626",
     )
-    bias = [float(value) for value in (metrics.get("per_axis_bias_mm") or [0.0, 0.0, 0.0])]
-    bias_chart = ChartModel(
+    spread_chart = ChartModel(
         kind="bar",
-        title="Per-Axis Bias",
-        x_title="Axis",
-        y_title="Bias (mm)",
-        caption="Signed mean tracker bias by axis.",
-        categories=["X", "Y", "Z"],
-        values=bias,
-        color_hex="#2563eb",
+        title="Within-Point Spread",
+        x_title="Grid Point",
+        y_title="Spread RMS (mm)",
+        caption="RMS spread of accepted samples around each point centroid before the global alignment solve.",
+        categories=ordered_labels,
+        values=[
+            float(per_point[label].get("sample_spread_rms_mm", 0.0) or 0.0)
+            for label in ordered_labels
+        ],
+        color_hex="#0f766e",
     )
     acceptance_lines = _acceptance_lines(
         experiment_name="aurora_grid_accuracy",
@@ -251,16 +265,18 @@ def _build_grid_model(
     )
     summary_lines = [
         f"Run status: {metrics.get('status', 'unknown')}",
-        f"Overall RMS error: {_fmt(metrics.get('overall_rms_error_mm'))} mm",
-        f"Outliers: {metrics.get('outlier_count', 0)}",
-        f"Registration available: {metrics.get('registration_available', False)}",
+        f"Aligned RMS residual: {_fmt(metrics.get('overall_rms_residual_mm') or metrics.get('overall_rms_error_mm'))} mm",
+        f"Max residual: {_fmt(metrics.get('max_residual_mm'))} mm",
+        f"Mean within-point spread: {_fmt(metrics.get('mean_within_point_spread_mm'))} mm",
+        f"Sample outliers rejected: {metrics.get('outlier_count', 0)}",
+        f"Aligned points: {metrics.get('point_count_aligned', 0)}",
         f"Tip calibration available: {metrics.get('tip_calibration_available', False)}",
-        f"Points summarized: {len(per_point)}",
+        f"Points summarized: {len(ordered_labels)}",
     ]
     summary_lines.extend(acceptance_lines)
     return VisualizationModel(
         series_3d=series,
-        charts=[point_chart, bias_chart],
+        charts=[point_chart, spread_chart],
         summary_lines=summary_lines,
     )
 
@@ -467,7 +483,7 @@ def _acceptance_lines(*, experiment_name: str, metrics: dict[str, Any], acceptan
             reasons.append(f"valid samples {int(valid_count)} < minimum {int(min_valid)}")
     elif experiment_name == "aurora_grid_accuracy":
         _apply_threshold("overall_rms_error_mm", "grid_rms_warn_mm", "grid_rms_fail_mm", "grid RMS")
-        total_points = max(1, int(metrics.get("valid_sample_count", 0) or 0))
+        total_points = max(1, int(metrics.get("raw_sample_count", 0) or metrics.get("valid_sample_count", 0) or 0))
         outlier_count = int(metrics.get("outlier_count", 0) or 0)
         outlier_rate = float(outlier_count) / float(total_points)
         warn_rate = acceptance.get("outlier_rate_warn")
@@ -500,6 +516,12 @@ def _acceptance_lines(*, experiment_name: str, metrics: dict[str, Any], acceptan
     else:
         lines.append("Threshold reasons: all configured thresholds passed.")
     return lines
+
+
+def _label_sort_key(value: Any) -> tuple[int, str]:
+    text = str(value)
+    digits = "".join(ch for ch in text if ch.isdigit())
+    return (int(digits) if digits else 10**9, text)
 
 
 def _build_generic_model(

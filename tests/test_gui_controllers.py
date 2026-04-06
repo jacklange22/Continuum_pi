@@ -1530,12 +1530,15 @@ def test_registration_controller_load_latest_populates_saved_result_state(tmp_pa
 def test_experiment_workspace_selection_binds_example_config(tmp_path: Path) -> None:
     controller = _experiment_controller(tmp_path)
 
+    empty_state = controller.refresh()
+    assert empty_state.selected_experiment == ""
+
     controller.select_experiment("command_schedule_validation")
     state = controller.refresh()
 
     assert state.selected_experiment == "command_schedule_validation"
     assert state.experiment_title == "Command Schedule Validation"
-    assert any(field.key == "schedule.kind" for field in state.parameter_fields)
+    assert "schedule:" in state.config_text
 
 
 def test_experiment_workspace_hides_operational_pivot_workflow_from_selector(tmp_path: Path) -> None:
@@ -1596,18 +1599,46 @@ def test_experiment_workspace_blocks_grid_accuracy_without_tip_calibration(tmp_p
     assert any("Tip calibration is required" in message for message in state.preflight_report.blocking_messages)
 
 
+def test_grid_accuracy_page_captures_labeled_points_and_updates_preview(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("aurora_grid_accuracy")
+    state = controller.refresh()
+    tab.update(state)
+    page = tab._page_for("aurora_grid_accuracy")
+
+    page.rows_spin.setValue(2)
+    page.cols_spin.setValue(2)
+    page.samples_spin.setValue(2)
+    page.capture_selected_point()
+    page._selected_target_index = 1
+    page.capture_selected_point()
+    page._selected_target_index = 2
+    page.capture_selected_point()
+
+    refreshed = controller.refresh()
+    tab.update(refreshed)
+
+    assert refreshed.preflight_report.overall_status == "ok_to_run"
+    assert len(controller.get_config_value("captured_points", [])) == 3
+    assert page.point_table.item(0, 2).text() == "2"
+    assert "P03" in page.selected_point_label.text()
+    assert any(label == "Raw Samples" for label, _value in refreshed.result_details)
+
+
 def test_experiment_workspace_parameter_edit_updates_serialized_config(tmp_path: Path) -> None:
     controller = _experiment_controller(tmp_path)
     controller.select_experiment("command_schedule_validation")
 
-    controller.set_parameter_value("schedule.kind", "trajectory")
+    controller.set_config_value("schedule.kind", "trajectory")
     controller.set_parameter_value("schedule.trajectory_points_cm", "- [0.0, 0.0, 0.0, 0.0]\n- [0.1, 0.0, 0.0, 0.0]")
     state = controller.refresh()
 
     assert state.config_error is None
     assert "trajectory" in state.config_text
     assert "trajectory_points_cm" in state.config_text
-    assert any(field.key == "schedule.trajectory_points_cm" for field in state.parameter_fields)
+    assert controller.get_config_value("schedule.kind") == "trajectory"
 
 
 def test_experiment_workspace_loads_prior_run_and_history(tmp_path: Path) -> None:
@@ -1645,9 +1676,13 @@ def test_experiment_workspace_tab_updates_without_crashing_in_mock_mode(tmp_path
     tab = ExperimentTab(controller)
     try:
         tab.update(controller.refresh())
+        assert tab.page_stack.currentWidget() is tab.empty_page
         controller.select_experiment("aurora_grid_accuracy")
         tab.update(controller.refresh())
-        assert tab.viewer_3d.backend_mode == "placeholder"
+        page = tab._page_for("aurora_grid_accuracy")
+        assert tab.page_stack.currentWidget() is page
+        assert page.viewer_3d is not None
+        assert page.viewer_3d.backend_mode == "placeholder"
     finally:
         controller.shutdown()
 
@@ -1670,19 +1705,40 @@ def test_registration_and_experiment_tabs_expose_resizable_layout_defaults(tmp_p
     )
     servos_controller = ServosController(servo_service, settings)
     registration_tab = RegistrationTab(registration_controller)
-    experiment_tab = ExperimentTab(_experiment_controller(tmp_path))
+    experiment_controller = _experiment_controller(tmp_path)
+    experiment_tab = ExperimentTab(experiment_controller)
+    experiment_controller.select_experiment("repeatability_dataset")
+    experiment_tab.update(experiment_controller.refresh())
+    repeatability_page = experiment_tab._page_for("repeatability_dataset")
     servos_tab = ServosTab(servos_controller)
     system_tab = SystemTab(system_controller)
 
     assert registration_tab.points_table.minimumHeight() >= 200
     assert registration_tab.samples_table.minimumHeight() >= 200
     assert registration_tab.landmark_map.minimumHeight() >= 200
-    assert experiment_tab.parameter_editor.minimumHeight() >= 240
-    assert experiment_tab.config_preview.minimumHeight() >= 100
-    assert experiment_tab.viewer_3d.minimumHeight() >= 300
+    assert experiment_tab.experiment_combo.minimumHeight() >= 40
+    assert repeatability_page.parameter_scroll.minimumWidth() >= 300
+    assert repeatability_page.viewer_3d is not None
+    assert repeatability_page.viewer_3d.minimumHeight() >= 280
     assert servos_tab.telemetry_table.minimumHeight() >= 200
     assert servos_tab.calibration_table.minimumHeight() >= 160
     assert system_tab.config_summary.minimumHeight() >= 200
+
+
+def test_experiment_shell_routes_selection_to_custom_pages(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+
+    tab.update(controller.refresh())
+    assert tab.page_stack.currentWidget() is tab.empty_page
+
+    controller.select_experiment("replay_runner")
+    tab.update(controller.refresh())
+    replay_page = tab._page_for("replay_runner")
+
+    assert tab.page_stack.currentWidget() is replay_page
+    assert replay_page.experiment_name == "replay_runner"
 
 
 def test_registration_tab_capture_button_records_sample_into_service_session(tmp_path: Path) -> None:

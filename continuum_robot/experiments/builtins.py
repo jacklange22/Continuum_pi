@@ -992,6 +992,7 @@ def register_builtin_experiments(registry) -> None:
         description=PretensionValidationExperiment.description,
         category="validation",
         tags=["Pretension", "Tracking", "Servo"],
+        workspace_visible=False,
         default_config_path="config/experiment_pretension_validation.example.yaml",
         factory=PretensionValidationExperiment.from_dict,
     )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 import random
 from typing import Any
@@ -13,6 +14,7 @@ from continuum_robot.experiments.dataset_io import ExperimentDatasetLoader
 from continuum_robot.experiments.dataset_tools import extract_tip_or_tool_position_mm
 from continuum_robot.experiments.framework import BaseExperiment, ExperimentHardwareRequirements, ExperimentSession
 from continuum_robot.experiments.metrics import (
+    as_points_n3,
     centroid_mm,
     group_positions_by_key,
     per_axis_bias_mm,
@@ -28,10 +30,9 @@ from continuum_robot.experiments.pivot_utils import (
     write_tip_vector_file,
 )
 from continuum_robot.experiments.sample_builders import sample_from_tracking_snapshot
+from continuum_robot.experiments.schemas import ExperimentTimeseriesSample
 from continuum_robot.experiments.validation import (
     STATUS_INVALID_INSUFFICIENT_SAMPLES,
-    STATUS_INVALID_INVALID_TRANSFORMS,
-    STATUS_INVALID_MISSING_REGISTRATION,
     STATUS_INVALID_MISSING_TIP_CAL,
     STATUS_PARTIAL_SUCCESS,
     STATUS_SUCCESS,
@@ -125,14 +126,23 @@ class GridDefinitionConfig:
     synthetic_noise_std_mm: float = 0.25
     synthetic_bias_mm: list[float] = field(default_factory=lambda: [0.2, -0.1, 0.05])
     outlier_threshold_mm: float = 1.0
+    captured_points: list[dict[str, Any]] = field(default_factory=list)
     acceptance: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "GridDefinitionConfig":
         payload = dict(payload or {})
+        dimensions_payload = payload.get("dimensions")
+        if dimensions_payload in (None, ""):
+            rows = payload.get("rows")
+            cols = payload.get("cols")
+            if rows not in (None, "") and cols not in (None, ""):
+                dimensions_payload = [int(cols), int(rows)]
+            else:
+                dimensions_payload = [3, 3]
         return cls(
             spacing_mm=float(payload.get("spacing_mm", 25.4)),
-            dimensions=[int(value) for value in payload.get("dimensions", [3, 3])],
+            dimensions=[int(value) for value in dimensions_payload],
             point_ordering=str(payload.get("point_ordering", "row_major")),
             repetitions_per_point=int(payload.get("repetitions_per_point", 3)),
             samples_per_point=int(payload.get("samples_per_point", 3)),
@@ -161,8 +171,22 @@ class GridDefinitionConfig:
             synthetic_noise_std_mm=float(payload.get("synthetic_noise_std_mm", 0.25)),
             synthetic_bias_mm=[float(value) for value in payload.get("synthetic_bias_mm", [0.2, -0.1, 0.05])],
             outlier_threshold_mm=float(payload.get("outlier_threshold_mm", 1.0)),
+            captured_points=[
+                dict(point)
+                for point in payload.get("captured_points", []) or []
+                if isinstance(point, dict)
+            ],
             acceptance=dict(payload.get("acceptance", {}) or {}),
         )
+
+
+@dataclass
+class GridAccuracyPreview:
+    """Normalized capture-session preview for the aligned grid validation workflow."""
+
+    truth_catalog: list[dict[str, Any]]
+    samples: list[ExperimentTimeseriesSample]
+    metrics: dict[str, Any]
 
 
 @dataclass
@@ -392,7 +416,10 @@ class AuroraGridAccuracyExperiment(BaseExperiment):
     """Grid-based Aurora accuracy and precision characterization."""
 
     name = "aurora_grid_accuracy"
-    description = "Measure per-point Aurora accuracy, bias, and spread on a physical or synthetic grid."
+    description = (
+        "Capture labeled 0B grid points, rigidly align them to an ideal truth grid, "
+        "and report residual consistency after alignment."
+    )
     hardware_requirements = ExperimentHardwareRequirements(mock_compatible=True)
 
     def __init__(self, config: GridDefinitionConfig) -> None:
@@ -403,63 +430,93 @@ class AuroraGridAccuracyExperiment(BaseExperiment):
     def from_dict(cls, payload: dict[str, Any] | None = None) -> "AuroraGridAccuracyExperiment":
         return cls(config=GridDefinitionConfig.from_dict(payload))
 
+    def config_dict(self) -> dict[str, Any]:
+        payload = super().config_dict()
+        captured_points = payload.pop("captured_points", []) or []
+        if captured_points:
+            payload["captured_point_count"] = int(len(captured_points))
+            payload["captured_sample_count"] = int(
+                sum(len(point.get("raw_samples", []) or []) for point in captured_points if isinstance(point, dict))
+            )
+        return payload
+
     def setup(self, session: ExperimentSession) -> None:
         if session.context.tracking_service is not None and getattr(session.context.tracking_service, "_thread", None) is None:
             session.context.tracking_service.start()
             self._tracking_started_here = True
 
     def execute(self, session: ExperimentSession) -> None:
-        truth_points = load_grid_truth_points(self.config, project_root=session.context.project_root)
+        preview = build_grid_accuracy_preview(
+            self.config,
+            project_root=session.context.project_root,
+        )
+        truth_points = [entry["truth_point_mm"] for entry in preview.truth_catalog]
         tip_vector, tip_calibration_available = _load_tip_vector(session, self.config)
-        registration_available = session.context.registration_path.exists()
         rng = np.random.default_rng(self.config.seed)
-        total = len(truth_points) * max(1, self.config.repetitions_per_point) * max(1, self.config.samples_per_point)
-        completed = 0
-        for point_index, truth_point in enumerate(truth_points):
-            for repetition_index in range(max(1, self.config.repetitions_per_point)):
-                if self.config.settle_time_s > 0:
-                    session.context.sleep_fn(self.config.settle_time_s)
-                for sample_index in range(max(1, self.config.samples_per_point)):
-                    measured_tracker = (
-                        np.asarray(truth_point, dtype=float)
-                        + np.asarray(self.config.synthetic_bias_mm, dtype=float)
-                        + rng.normal(0.0, self.config.synthetic_noise_std_mm, size=3)
-                    )
-                    if tip_vector is None and self.config.use_tip_calibration:
-                        status_flags = ["missing_tip_calibration"]
-                    else:
-                        status_flags = ["dry_run"] if self.config.dry_run else []
-                    robot_position = None
-                    if self.config.truth_frame == "robot" and registration_available:
-                        robot_position = measured_tracker.tolist()
-                    elif self.config.truth_frame == "tracker":
-                        robot_position = None
-                    sample = sample_from_tracking_snapshot(
-                        session,
-                        snapshot=_grid_snapshot(session, self.config.tool_id),
-                        phase="sample",
-                        step_index=point_index,
-                        sample_index=sample_index,
-                        target_index=point_index,
-                        revisit_index=repetition_index,
-                        commanded_cable_deltas_cm=[],
-                        commanded_motor_values={},
-                        override_tracker_position_mm=measured_tracker.tolist(),
-                        override_robot_position_mm=robot_position,
-                        tracker_tool_id=self.config.tool_id,
-                        status_flags=status_flags,
-                        extra={"truth_point_mm": [float(value) for value in truth_point]},
-                    )
-                    session.add_sample(sample)
-                    completed += 1
-                    session.update_progress(completed, total, {"phase": "sample", "target_index": point_index})
+        if preview.samples:
+            total = len(preview.samples)
+            for completed, sample in enumerate(preview.samples, start=1):
+                session.raise_if_stop_requested()
+                session.add_sample(sample)
+                session.update_progress(
+                    completed,
+                    total,
+                    {
+                        "phase": sample.phase,
+                        "target_index": sample.target_index,
+                    },
+                )
+        else:
+            total = len(truth_points) * max(1, self.config.repetitions_per_point) * max(1, self.config.samples_per_point)
+            completed = 0
+            truth_catalog = preview.truth_catalog
+            truth_to_tracker_R, truth_to_tracker_t = _synthetic_grid_alignment(self.config.seed)
+            for point_index, truth_point in enumerate(truth_points):
+                truth_entry = truth_catalog[point_index]
+                for repetition_index in range(max(1, self.config.repetitions_per_point)):
+                    if self.config.settle_time_s > 0:
+                        session.context.sleep_fn(self.config.settle_time_s)
+                    for sample_index in range(max(1, self.config.samples_per_point)):
+                        measured_tracker = (
+                            (truth_to_tracker_R @ np.asarray(truth_point, dtype=float))
+                            + truth_to_tracker_t
+                            + rng.normal(0.0, self.config.synthetic_noise_std_mm, size=3)
+                        )
+                        if tip_vector is None and self.config.use_tip_calibration:
+                            status_flags = ["missing_tip_calibration"]
+                            position_source = "missing_tip_calibration"
+                        else:
+                            status_flags = ["dry_run"] if self.config.dry_run else []
+                            position_source = "tip" if tip_vector is not None else "coil_origin"
+                        sample = sample_from_tracking_snapshot(
+                            session,
+                            snapshot=_grid_snapshot(session, self.config.tool_id),
+                            phase="sample",
+                            step_index=point_index,
+                            sample_index=sample_index,
+                            target_index=point_index,
+                            revisit_index=repetition_index,
+                            commanded_cable_deltas_cm=[],
+                            commanded_motor_values={},
+                            override_tracker_position_mm=measured_tracker.tolist(),
+                            tracker_tool_id=self.config.tool_id,
+                            status_flags=status_flags,
+                            extra={
+                                "truth_label": truth_entry["label"],
+                                "truth_point_mm": [float(value) for value in truth_point],
+                                "position_source": position_source,
+                            },
+                        )
+                        session.add_sample(sample)
+                        completed += 1
+                        session.update_progress(completed, total, {"phase": "sample", "target_index": point_index})
         metrics = compute_grid_accuracy_metrics(
             session.samples,
             truth_points_mm=truth_points,
             tool_id=self.config.tool_id,
-            truth_frame=self.config.truth_frame,
+            truth_frame="grid_local",
             outlier_threshold_mm=self.config.outlier_threshold_mm,
-            registration_available=registration_available,
+            registration_available=session.context.registration_path.exists(),
             tip_calibration_available=tip_calibration_available,
             require_tip_calibration=self.config.use_tip_calibration,
             allow_coil_origin_fallback=self.config.allow_coil_origin_fallback,
@@ -816,6 +873,200 @@ def load_grid_truth_points(config: GridDefinitionConfig, *, project_root: Path) 
     return [[float(value) for value in point] for point in coordinates]
 
 
+def build_grid_truth_catalog(
+    config: GridDefinitionConfig,
+    *,
+    project_root: Path,
+) -> list[dict[str, Any]]:
+    """Return labeled truth-grid points for the custom Aurora grid page and backend."""
+    truth_points = load_grid_truth_points(config, project_root=project_root)
+    return [
+        {
+            "label": f"P{index + 1:02d}",
+            "target_index": index,
+            "truth_point_mm": [float(value) for value in point],
+        }
+        for index, point in enumerate(truth_points)
+    ]
+
+
+def build_grid_accuracy_preview(
+    config: GridDefinitionConfig,
+    *,
+    project_root: Path,
+) -> GridAccuracyPreview:
+    """Normalize captured point records into canonical samples plus aligned residual metrics."""
+    truth_catalog = build_grid_truth_catalog(config, project_root=project_root)
+    samples = grid_capture_records_to_samples(config.captured_points, truth_catalog=truth_catalog, tool_id=config.tool_id)
+    tip_calibration_available = any(
+        (sample.extra.get("position_source") == "tip")
+        for sample in samples
+    ) or bool(config.tip_vector_mm or config.tip_file)
+    metrics = compute_grid_accuracy_metrics(
+        samples,
+        truth_points_mm=[entry["truth_point_mm"] for entry in truth_catalog],
+        tool_id=config.tool_id,
+        truth_frame="grid_local",
+        outlier_threshold_mm=config.outlier_threshold_mm,
+        registration_available=False,
+        tip_calibration_available=tip_calibration_available,
+        require_tip_calibration=config.use_tip_calibration,
+        allow_coil_origin_fallback=config.allow_coil_origin_fallback,
+    )
+    return GridAccuracyPreview(truth_catalog=truth_catalog, samples=samples, metrics=metrics)
+
+
+def resolve_grid_tip_vector(
+    config: GridDefinitionConfig,
+    *,
+    project_root: Path,
+) -> tuple[list[float] | None, bool]:
+    """Resolve the configured grid tip vector for page-side capture or runner execution."""
+    if config.tip_vector_mm is not None:
+        return [float(value) for value in config.tip_vector_mm], True
+    if config.tip_file:
+        path = _resolve_repo_path(project_root, config.tip_file)
+        arr = np.loadtxt(path, delimiter=",")
+        arr = np.asarray(arr, dtype=float).reshape(-1)
+        if arr.shape == (3,):
+            return [float(value) for value in arr], True
+    return None, False
+
+
+def grid_capture_records_to_samples(
+    captured_points: list[dict[str, Any]],
+    *,
+    truth_catalog: list[dict[str, Any]],
+    tool_id: str,
+) -> list[ExperimentTimeseriesSample]:
+    """Convert page-side captured point records into canonical experiment samples."""
+    truth_by_index = {
+        int(entry["target_index"]): entry
+        for entry in truth_catalog
+    }
+    output: list[ExperimentTimeseriesSample] = []
+    for point_record in captured_points or []:
+        if not isinstance(point_record, dict):
+            continue
+        try:
+            target_index = int(point_record.get("target_index"))
+        except Exception:
+            continue
+        truth_entry = truth_by_index.get(target_index)
+        if truth_entry is None:
+            continue
+        label = str(point_record.get("label") or truth_entry["label"])
+        raw_samples = point_record.get("raw_samples", []) or []
+        for sample_index, raw_sample in enumerate(raw_samples):
+            if not isinstance(raw_sample, dict):
+                continue
+            position_mm = raw_sample.get("position_mm")
+            if not (isinstance(position_mm, list) and len(position_mm) == 3):
+                continue
+            quaternion = raw_sample.get("quaternion_wxyz")
+            if not (isinstance(quaternion, list) and len(quaternion) == 4):
+                quaternion = [1.0, 0.0, 0.0, 0.0]
+            tracker_frame_id = raw_sample.get("tracker_frame_id")
+            freshness_s = raw_sample.get("freshness_s")
+            status_flags = sorted(set(str(flag) for flag in raw_sample.get("status_flags", []) or []))
+            if raw_sample.get("position_source") == "coil_origin":
+                status_flags.append("coil_origin_fallback")
+            output.append(
+                ExperimentTimeseriesSample(
+                    monotonic_time_s=float(raw_sample.get("monotonic_time_s", float(sample_index))),
+                    wall_time_utc=str(
+                        raw_sample.get("wall_time_utc")
+                        or datetime.now(timezone.utc).isoformat()
+                    ),
+                    phase="sample",
+                    step_index=target_index,
+                    sample_index=sample_index,
+                    cycle_index=None,
+                    target_index=target_index,
+                    revisit_index=int(point_record.get("capture_round", 0) or 0),
+                    approach_index=None,
+                    commanded_motor_values={},
+                    commanded_cable_deltas_cm=[],
+                    tracker_frame_id=int(tracker_frame_id) if tracker_frame_id is not None else None,
+                    tool_ids_seen=[str(tool_id)],
+                    transform_validity={str(tool_id): str(raw_sample.get("tracking_state", "valid"))},
+                    pose_in_tracker_frame={
+                        str(tool_id): {
+                            "tracking_state": str(raw_sample.get("tracking_state", "valid")),
+                            "translation_mm": [float(value) for value in position_mm],
+                            "quaternion_wxyz": [float(value) for value in quaternion],
+                            "frame_number": int(tracker_frame_id) if tracker_frame_id is not None else None,
+                        }
+                    },
+                    pose_in_robot_frame={},
+                    freshness_s=(float(freshness_s) if freshness_s is not None else None),
+                    latency_s=(float(freshness_s) if freshness_s is not None else None),
+                    status_flags=sorted(set(status_flags)),
+                    backend_health={
+                        "position_source": str(raw_sample.get("position_source", "tracker_tool")),
+                        "measurement_mode": "captured_point",
+                    },
+                    extra={
+                        "truth_label": label,
+                        "truth_point_mm": [float(value) for value in truth_entry["truth_point_mm"]],
+                        "position_source": str(raw_sample.get("position_source", "tracker_tool")),
+                    },
+                )
+            )
+    return output
+
+
+def capture_grid_measurement_from_snapshot(
+    snapshot,
+    *,
+    tool_id: str,
+    tip_vector_mm: list[float] | None,
+    require_tip_calibration: bool,
+    allow_coil_origin_fallback: bool,
+) -> dict[str, Any]:
+    """Extract one tracker-frame measurement for the selected 0B capture point."""
+    if snapshot.tracker_data_stale:
+        raise RuntimeError("Tracker telemetry is stale. Wait for fresh frames before capturing.")
+    tool = snapshot.tools.get(tool_id)
+    if tool is None or not tool.present:
+        raise RuntimeError(f"Tool {tool_id} is not currently visible.")
+    if tool.translation_mm is None:
+        raise RuntimeError(f"Tool {tool_id} translation is unavailable.")
+    if tool.quaternion_wxyz is None:
+        raise RuntimeError(f"Tool {tool_id} orientation is unavailable.")
+    if str(tool.tracking_state).lower() not in {"valid", "tracking", "enabled"}:
+        raise RuntimeError(f"Tool {tool_id} is not valid for capture ({tool.tracking_state}).")
+
+    position_source = "tip"
+    position_mm = None
+    if tip_vector_mm is not None:
+        rotation = quat_wxyz_to_rotmat(tuple(float(value) for value in tool.quaternion_wxyz))
+        translation = np.asarray(tool.translation_mm, dtype=float)
+        tip_offset = np.asarray(tip_vector_mm, dtype=float)
+        position_mm = (rotation @ tip_offset) + translation
+    elif require_tip_calibration and not allow_coil_origin_fallback:
+        raise RuntimeError("Tip calibration is required for this grid capture.")
+    else:
+        position_mm = np.asarray(tool.translation_mm, dtype=float)
+        position_source = "coil_origin"
+
+    status_flags: list[str] = []
+    if snapshot.tracker_data_stale:
+        status_flags.append("tracker_data_stale")
+    status_flags.extend(str(flag) for flag in snapshot.tracker_faults)
+    status_flags.extend(str(flag) for flag in snapshot.pipeline_faults)
+    return {
+        "position_mm": [float(value) for value in position_mm.tolist()],
+        "tool_translation_mm": [float(value) for value in tool.translation_mm],
+        "quaternion_wxyz": [float(value) for value in tool.quaternion_wxyz],
+        "tracker_frame_id": tool.frame_number,
+        "freshness_s": snapshot.tracker_data_age_s,
+        "tracking_state": str(tool.tracking_state),
+        "status_flags": status_flags,
+        "position_source": position_source,
+    }
+
+
 def compute_grid_accuracy_metrics(
     samples,
     *,
@@ -828,7 +1079,7 @@ def compute_grid_accuracy_metrics(
     require_tip_calibration: bool,
     allow_coil_origin_fallback: bool,
 ) -> dict[str, Any]:
-    """Compute grid accuracy metrics and shared status classification."""
+    """Compute aligned grid-consistency metrics from canonical samples."""
     measurement_samples = [sample for sample in samples if sample.phase == "sample" and sample.target_index is not None]
     grouped = group_positions_by_key(
         measurement_samples,
@@ -836,7 +1087,7 @@ def compute_grid_accuracy_metrics(
         position_fn=lambda sample: extract_tip_or_tool_position_mm(
             sample,
             tool_id=tool_id,
-            prefer_robot_frame=(truth_frame == "robot"),
+            prefer_robot_frame=False,
         )[0],
     )
     valid_point_count = sum(1 for positions in grouped.values() if positions)
@@ -845,63 +1096,209 @@ def compute_grid_accuracy_metrics(
             "status": STATUS_INVALID_INSUFFICIENT_SAMPLES,
             "per_point_metrics": {},
             "overall_rms_error_mm": None,
+            "overall_rms_residual_mm": None,
+            "max_residual_mm": None,
+            "mean_within_point_spread_mm": None,
+            "max_within_point_spread_mm": None,
             "per_axis_bias_mm": None,
             "outlier_count": 0,
+            "residual_outlier_count": 0,
+            "raw_sample_count": 0,
+            "accepted_sample_count": 0,
+            "point_count_aligned": 0,
             "registration_available": registration_available,
             "tip_calibration_available": tip_calibration_available,
         }
-    truth_by_index = {index: truth_points_mm[index] for index in range(len(truth_points_mm))}
+    truth_by_index = {index: [float(value) for value in truth_points_mm[index]] for index in range(len(truth_points_mm))}
+    samples_by_index: dict[int, list[Any]] = {}
+    for sample in measurement_samples:
+        samples_by_index.setdefault(int(sample.target_index), []).append(sample)
+
     per_point_metrics: dict[str, Any] = {}
-    measured_all: list[list[float]] = []
-    truth_all: list[list[float]] = []
+    measured_centroids: list[list[float]] = []
+    truth_used: list[list[float]] = []
+    aligned_keys: list[str] = []
+    raw_sample_count = 0
+    accepted_sample_count = 0
     outlier_count = 0
-    for point_index, positions in grouped.items():
-        centroid = centroid_mm(positions)
-        truth = truth_by_index.get(int(point_index))
-        spread = spread_rms_mm(positions, centroid_xyz=centroid)
-        residual_distances = [
-            float(np.linalg.norm(np.asarray(position, dtype=float) - centroid))
+    for point_index in sorted(grouped):
+        positions = grouped.get(point_index, [])
+        if not positions:
+            continue
+        raw_sample_count += len(positions)
+        raw_positions_arr = as_points_n3(positions, name="grid_point_samples")
+        raw_centroid = centroid_mm(positions)
+        robust_center = np.median(raw_positions_arr, axis=0)
+        raw_spread = spread_rms_mm(positions, centroid_xyz=raw_centroid)
+        distances = [
+            float(np.linalg.norm(np.asarray(position, dtype=float) - robust_center))
             for position in positions
         ]
-        point_outliers = sum(1 for distance in residual_distances if distance > float(outlier_threshold_mm))
-        outlier_count += point_outliers
+        accepted_indices = [
+            index
+            for index, distance in enumerate(distances)
+            if distance <= float(outlier_threshold_mm)
+        ]
+        if not accepted_indices:
+            accepted_indices = list(range(len(positions)))
+        rejected_indices = [index for index in range(len(positions)) if index not in accepted_indices]
+        accepted_positions = [positions[index] for index in accepted_indices]
+        accepted_centroid = centroid_mm(accepted_positions)
+        accepted_spread = spread_rms_mm(accepted_positions, centroid_xyz=accepted_centroid)
+        accepted_sample_count += len(accepted_positions)
+        outlier_count += len(rejected_indices)
+        point_samples = samples_by_index.get(point_index, [])
+        label = next(
+            (
+                str(sample.extra.get("truth_label"))
+                for sample in point_samples
+                if sample.extra.get("truth_label")
+            ),
+            f"P{point_index + 1:02d}",
+        )
+        truth_point = truth_by_index.get(point_index)
         point_metrics = {
-            "count": len(positions),
-            "mean_measured_position_mm": [float(value) for value in centroid],
-            "sample_spread_rms_mm": spread,
-            "outlier_count": point_outliers,
+            "target_index": int(point_index),
+            "label": label,
+            "truth_point_mm": [float(value) for value in truth_point] if truth_point is not None else None,
+            "raw_sample_count": len(positions),
+            "accepted_sample_count": len(accepted_positions),
+            "accepted_sample_indices": accepted_indices,
+            "rejected_sample_indices": rejected_indices,
+            "centroid_mm": [float(value) for value in accepted_centroid],
+            "mean_measured_position_mm": [float(value) for value in accepted_centroid],
+            "sample_spread_rms_mm": accepted_spread,
+            "raw_sample_spread_rms_mm": raw_spread,
+            "outlier_count": len(rejected_indices),
+            "status": (
+                "complete" if len(positions) > 0 else "not_captured"
+            ),
         }
-        if truth is not None and (
-            truth_frame == "tracker" or (truth_frame == "robot" and registration_available)
-        ):
-            truth_stack = np.repeat(np.asarray(truth, dtype=float).reshape(1, 3), len(positions), axis=0)
-            point_metrics["rms_error_mm"] = rms_error_mm(positions, truth_stack.tolist())
-            measured_all.extend(positions)
-            truth_all.extend(truth_stack.tolist())
-        per_point_metrics[str(point_index)] = point_metrics
-    overall_rms = rms_error_mm(measured_all, truth_all) if measured_all else None
-    bias = per_axis_bias_mm(measured_all, truth_all) if measured_all else None
-    per_point_rms = pointwise_rms_errors_mm(grouped, truth_by_index) if measured_all else {}
+        per_point_metrics[label] = point_metrics
+        if truth_point is not None:
+            truth_used.append([float(value) for value in truth_point])
+            measured_centroids.append([float(value) for value in accepted_centroid])
+            aligned_keys.append(label)
+
+    overall_rms = None
+    max_residual = None
+    bias = None
+    residual_outlier_count = 0
+    alignment_transform = None
+    mean_spread = None
+    max_spread = None
+    per_point_residuals: dict[str, float] = {}
+    if measured_centroids and len(measured_centroids) >= 3:
+        truth_arr = as_points_n3(truth_used, name="truth_points_mm")
+        measured_arr = as_points_n3(measured_centroids, name="measured_centroids_mm")
+        try:
+            alignment = _solve_rigid_fit_truth_to_measured(truth_arr, measured_arr)
+        except ValueError:
+            alignment = None
+        if alignment is not None:
+            aligned_truth = alignment["aligned_truth_mm"]
+            residual_vectors = measured_arr - aligned_truth
+            residual_norms = np.linalg.norm(residual_vectors, axis=1)
+            overall_rms = float(np.sqrt(np.mean(residual_norms ** 2)))
+            max_residual = float(np.max(residual_norms)) if residual_norms.size else None
+            bias = [float(value) for value in residual_vectors.mean(axis=0)]
+            residual_outlier_count = int(np.sum(residual_norms > float(outlier_threshold_mm)))
+            alignment_transform = alignment["T_truth_to_measured"].tolist()
+            spreads = []
+            for index, label in enumerate(aligned_keys):
+                point_metrics = per_point_metrics[label]
+                point_metrics["aligned_truth_point_mm"] = [float(value) for value in aligned_truth[index].tolist()]
+                aligned_centroid_truth = alignment["measured_in_truth_mm"][index]
+                point_metrics["aligned_centroid_truth_mm"] = [float(value) for value in aligned_centroid_truth.tolist()]
+                point_metrics["residual_vector_mm"] = [float(value) for value in residual_vectors[index].tolist()]
+                point_metrics["residual_mm"] = float(residual_norms[index])
+                per_point_residuals[label] = float(residual_norms[index])
+                spreads.append(float(point_metrics["sample_spread_rms_mm"]))
+            if spreads:
+                mean_spread = float(np.mean(spreads))
+                max_spread = float(np.max(spreads))
+
     if require_tip_calibration and not tip_calibration_available and not allow_coil_origin_fallback:
         status = STATUS_INVALID_MISSING_TIP_CAL
-    elif truth_frame == "robot" and not registration_available:
-        status = STATUS_INVALID_MISSING_REGISTRATION
-    elif require_tip_calibration and not tip_calibration_available and allow_coil_origin_fallback:
-        status = STATUS_PARTIAL_SUCCESS
     elif overall_rms is None:
+        status = STATUS_INVALID_INSUFFICIENT_SAMPLES
+    elif require_tip_calibration and not tip_calibration_available and allow_coil_origin_fallback:
         status = STATUS_PARTIAL_SUCCESS
     else:
         status = STATUS_SUCCESS
     return {
         "status": status,
         "per_point_metrics": per_point_metrics,
-        "pointwise_rms_error_mm": per_point_rms,
+        "pointwise_rms_error_mm": per_point_residuals,
+        "per_point_residual_mm": per_point_residuals,
         "overall_rms_error_mm": overall_rms,
+        "overall_rms_residual_mm": overall_rms,
+        "max_residual_mm": max_residual,
+        "mean_within_point_spread_mm": mean_spread,
+        "max_within_point_spread_mm": max_spread,
         "per_axis_bias_mm": bias,
         "outlier_count": outlier_count,
+        "residual_outlier_count": residual_outlier_count,
+        "raw_sample_count": raw_sample_count,
+        "accepted_sample_count": accepted_sample_count,
+        "valid_sample_count": accepted_sample_count,
+        "point_count_aligned": len(per_point_residuals),
+        "alignment_transform_truth_to_measured": alignment_transform,
         "registration_available": registration_available,
         "tip_calibration_available": tip_calibration_available,
     }
+
+
+def _solve_rigid_fit_truth_to_measured(
+    truth_points: np.ndarray,
+    measured_points: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """Solve the best-fit rigid transform from truth-grid coordinates to measured centroids."""
+    truth = as_points_n3(truth_points, name="truth_points")
+    measured = as_points_n3(measured_points, name="measured_points")
+    if truth.shape != measured.shape:
+        raise ValueError("truth_points and measured_points must have the same shape")
+    if truth.shape[0] < 3:
+        raise ValueError("At least three labeled grid points are required for rigid alignment")
+    truth_centroid = truth.mean(axis=0)
+    measured_centroid = measured.mean(axis=0)
+    truth_centered = truth - truth_centroid
+    measured_centered = measured - measured_centroid
+    if np.linalg.matrix_rank(truth_centered) < 2 or np.linalg.matrix_rank(measured_centered) < 2:
+        raise ValueError("Grid points must span a 2D plane to support aligned residual analysis")
+    covariance = truth_centered.T @ measured_centered
+    U, _singular_values, Vt = np.linalg.svd(covariance)
+    rotation = Vt.T @ U.T
+    if np.linalg.det(rotation) < 0.0:
+        Vt[-1, :] *= -1.0
+        rotation = Vt.T @ U.T
+    translation = measured_centroid - (rotation @ truth_centroid)
+    aligned_truth = (rotation @ truth.T).T + translation
+    measured_in_truth = (rotation.T @ (measured - translation).T).T
+    transform = np.eye(4, dtype=float)
+    transform[0:3, 0:3] = rotation
+    transform[0:3, 3] = translation
+    return {
+        "rotation": rotation,
+        "translation": translation,
+        "aligned_truth_mm": aligned_truth,
+        "measured_in_truth_mm": measured_in_truth,
+        "T_truth_to_measured": transform,
+    }
+
+
+def _synthetic_grid_alignment(seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """Generate a deterministic truth-grid placement in tracker frame for dry-run captures."""
+    rng = np.random.default_rng(seed or 0)
+    angles_rad = rng.uniform(low=-0.18, high=0.18, size=3)
+    cx, cy, cz = np.cos(angles_rad)
+    sx, sy, sz = np.sin(angles_rad)
+    Rx = np.array([[1.0, 0.0, 0.0], [0.0, cx, -sx], [0.0, sx, cx]], dtype=float)
+    Ry = np.array([[cy, 0.0, sy], [0.0, 1.0, 0.0], [-sy, 0.0, cy]], dtype=float)
+    Rz = np.array([[cz, -sz, 0.0], [sz, cz, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+    rotation = Rz @ Ry @ Rx
+    translation = np.asarray([18.0, -24.0, 42.0], dtype=float)
+    return rotation, translation
 
 
 def _synthetic_repeatability_position_mm(
@@ -988,15 +1385,7 @@ def _load_neutral_ticks(session: ExperimentSession) -> list[int]:
 
 
 def _load_tip_vector(session: ExperimentSession, config: GridDefinitionConfig) -> tuple[list[float] | None, bool]:
-    if config.tip_vector_mm is not None:
-        return [float(value) for value in config.tip_vector_mm], True
-    if config.tip_file:
-        path = _resolve_repo_path(session.context.project_root, config.tip_file)
-        arr = np.loadtxt(path, delimiter=",")
-        arr = np.asarray(arr, dtype=float).reshape(-1)
-        if arr.shape == (3,):
-            return [float(value) for value in arr], True
-    return None, False
+    return resolve_grid_tip_vector(config, project_root=session.context.project_root)
 
 
 def _resolve_repo_path(project_root: Path, raw_path: str | Path) -> Path:

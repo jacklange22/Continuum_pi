@@ -234,7 +234,7 @@ def evaluate_preflight(
                 _ok(
                     "grid_definition",
                     "Grid Definition",
-                    f"Grid definition is {dims} with {config.spacing_mm:.2f} mm spacing.",
+                    f"Ideal truth grid is {dims} with {config.spacing_mm:.2f} mm spacing.",
                 )
             )
         if config.truth_points_file:
@@ -254,7 +254,7 @@ def evaluate_preflight(
                 _info(
                     "truth_grid",
                     "Truth Grid",
-                    "Truth grid will be generated from spacing and dimensions in the config.",
+                    "Truth grid will be generated in a local grid frame and aligned in code to the measured centroids. Registration is not required.",
                 )
             )
         checks.append(
@@ -289,19 +289,13 @@ def evaluate_preflight(
         else:
             checks.append(_info("tip_calibration", "Tip Calibration", "Tip calibration is not required for this run."))
 
-        if config.truth_frame == "robot":
-            if registration_path.exists():
-                checks.append(_ok("registration", "Registration", f"Registration file found: {registration_path}"))
-            else:
-                checks.append(
-                    _blocked(
-                        "registration",
-                        "Registration",
-                        "Robot-frame grid accuracy requires registration. Save a registration file first or change truth_frame to tracker.",
-                    )
-                )
-        else:
-            checks.append(_info("registration", "Registration", "Tracker-frame truth does not require registration."))
+        checks.append(
+            _info(
+                "registration",
+                "Registration",
+                "Aligned grid-consistency validation does not require registration. Board placement is solved from the captured labeled points.",
+            )
+        )
 
         if config.dry_run:
             checks.append(_info("mode", "Run Mode", "Grid accuracy will run in dry-run/mock mode."))
@@ -313,6 +307,49 @@ def evaluate_preflight(
                     "mode",
                     "Run Mode",
                     "Live grid accuracy requires healthy tracker streaming. Confirm frames and tool visibility before running.",
+                )
+            )
+
+        complete_points = 0
+        partial_points = 0
+        raw_samples = 0
+        required_samples = max(1, int(config.samples_per_point))
+        for point in config.captured_points:
+            if not isinstance(point, dict):
+                continue
+            point_samples = point.get("raw_samples", []) or []
+            sample_count = len(point_samples)
+            raw_samples += sample_count
+            if sample_count >= required_samples:
+                complete_points += 1
+            elif sample_count > 0:
+                partial_points += 1
+        if complete_points == 0 and partial_points == 0 and raw_samples == 0:
+            complete_points = int(payload.get("captured_point_count", 0) or 0)
+            raw_samples = int(payload.get("captured_sample_count", 0) or 0)
+        if complete_points >= 3:
+            checks.append(
+                _ok(
+                    "captured_points",
+                    "Captured Points",
+                    f"{complete_points} grid points are complete ({raw_samples} raw samples). The aligned residual solve is ready.",
+                )
+            )
+        elif partial_points > 0 or raw_samples > 0:
+            checks.append(
+                _blocked(
+                    "captured_points",
+                    "Captured Points",
+                    f"Capture at least 3 complete labeled points before saving. "
+                    f"Currently {complete_points} complete, {partial_points} partial, {raw_samples} raw samples.",
+                )
+            )
+        else:
+            checks.append(
+                _blocked(
+                    "captured_points",
+                    "Captured Points",
+                    "No labeled grid points are captured yet. Select a point on the custom page and capture samples with tool 0B.",
                 )
             )
 

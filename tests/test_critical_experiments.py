@@ -14,8 +14,10 @@ from continuum_robot.config.schemas import (
 )
 from continuum_robot.config.settings import Settings
 from continuum_robot.experiments.critical_experiments import (
+    GridDefinitionConfig,
     RepeatabilityScheduleConfig,
     analyze_repeatability_dataset,
+    build_grid_accuracy_preview,
     compute_grid_accuracy_metrics,
     compute_repeatability_metrics,
     generate_repeatability_schedule,
@@ -254,20 +256,25 @@ def test_repeatability_metrics_on_synthetic_samples() -> None:
     assert "1->0" in metrics["approach_conditioned_spread_mm"]
 
 
-def test_aurora_grid_metrics_compute_rms_bias_and_spread() -> None:
+def test_aurora_grid_metrics_fit_truth_grid_and_report_residuals() -> None:
     samples = [
-        _sample(tool_id="0B", tracker_position=[1.0, 0.0, 0.0], robot_position=None, target_index=0, revisit_index=0, sample_index=0),
-        _sample(tool_id="0B", tracker_position=[0.0, 1.0, 0.0], robot_position=None, target_index=0, revisit_index=1, sample_index=1),
-        _sample(tool_id="0B", tracker_position=[11.0, 0.0, 0.0], robot_position=None, target_index=1, revisit_index=0, sample_index=2),
-        _sample(tool_id="0B", tracker_position=[10.0, 1.0, 0.0], robot_position=None, target_index=1, revisit_index=1, sample_index=3),
+        _sample(tool_id="0B", tracker_position=[5.5, 2.0, 1.0], robot_position=None, target_index=0, revisit_index=0, sample_index=0),
+        _sample(tool_id="0B", tracker_position=[4.5, 2.0, 1.0], robot_position=None, target_index=0, revisit_index=1, sample_index=1),
+        _sample(tool_id="0B", tracker_position=[15.5, 2.0, 1.0], robot_position=None, target_index=1, revisit_index=0, sample_index=2),
+        _sample(tool_id="0B", tracker_position=[14.5, 2.0, 1.0], robot_position=None, target_index=1, revisit_index=1, sample_index=3),
+        _sample(tool_id="0B", tracker_position=[5.0, 12.5, 1.0], robot_position=None, target_index=2, revisit_index=0, sample_index=4),
+        _sample(tool_id="0B", tracker_position=[5.0, 11.5, 1.0], robot_position=None, target_index=2, revisit_index=1, sample_index=5),
     ]
+    for sample, label in zip(samples, ["P01", "P01", "P02", "P02", "P03", "P03"]):
+        sample.extra["truth_label"] = label
+        sample.extra["truth_point_mm"] = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0]][int(label[-2:]) - 1]
 
     metrics = compute_grid_accuracy_metrics(
         samples,
-        truth_points_mm=[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
+        truth_points_mm=[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0]],
         tool_id="0B",
-        truth_frame="tracker",
-        outlier_threshold_mm=2.0,
+        truth_frame="grid_local",
+        outlier_threshold_mm=1.0,
         registration_available=False,
         tip_calibration_available=True,
         require_tip_calibration=False,
@@ -275,10 +282,61 @@ def test_aurora_grid_metrics_compute_rms_bias_and_spread() -> None:
     )
 
     assert metrics["status"] == "success"
-    assert np.isclose(metrics["overall_rms_error_mm"], 1.0)
-    assert np.allclose(metrics["per_axis_bias_mm"], [0.5, 0.5, 0.0])
-    assert np.isclose(metrics["per_point_metrics"]["0"]["sample_spread_rms_mm"], np.sqrt(0.5))
-    assert np.isclose(metrics["pointwise_rms_error_mm"]["1"], 1.0)
+    assert np.isclose(metrics["overall_rms_error_mm"], 0.0, atol=1e-9)
+    assert np.isclose(metrics["mean_within_point_spread_mm"], 0.5)
+    assert np.isclose(metrics["per_point_metrics"]["P01"]["sample_spread_rms_mm"], 0.5)
+    assert np.isclose(metrics["per_point_metrics"]["P02"]["residual_mm"], 0.0, atol=1e-9)
+    assert metrics["point_count_aligned"] == 3
+
+
+def test_aurora_grid_preview_normalizes_captured_points_and_rejects_outliers(tmp_path: Path) -> None:
+    preview = build_grid_accuracy_preview(
+        config=GridDefinitionConfig.from_dict({
+            "rows": 2,
+            "cols": 2,
+            "spacing_mm": 25.4,
+            "samples_per_point": 3,
+            "tool_id": "0B",
+            "use_tip_calibration": True,
+            "tip_vector_mm": [0.0, 0.0, 125.0],
+            "outlier_threshold_mm": 1.0,
+            "captured_points": [
+                {
+                    "label": "P01",
+                    "target_index": 0,
+                    "raw_samples": [
+                        {"position_mm": [10.0, 0.0, 0.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                        {"position_mm": [10.2, 0.0, 0.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                        {"position_mm": [14.5, 0.0, 0.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                    ],
+                },
+                {
+                    "label": "P02",
+                    "target_index": 1,
+                    "raw_samples": [
+                        {"position_mm": [35.4, 0.0, 0.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                        {"position_mm": [35.6, 0.0, 0.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                        {"position_mm": [35.5, 0.1, 0.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                    ],
+                },
+                {
+                    "label": "P03",
+                    "target_index": 2,
+                    "raw_samples": [
+                        {"position_mm": [10.0, 25.4, 0.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                        {"position_mm": [10.1, 25.5, 0.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                        {"position_mm": [9.9, 25.3, 0.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                    ],
+                },
+            ],
+        }),
+        project_root=tmp_path,
+    )
+
+    assert len(preview.samples) == 9
+    assert preview.metrics["outlier_count"] == 1
+    assert preview.metrics["per_point_metrics"]["P01"]["accepted_sample_count"] == 2
+    assert preview.metrics["point_count_aligned"] == 3
 
 
 def test_pivot_calibration_least_squares_recovers_tip_on_synthetic_data() -> None:
@@ -392,7 +450,7 @@ def test_aurora_grid_accuracy_missing_tip_calibration_is_classified(tmp_path: Pa
     assert result.summary.status == "invalid_due_to_missing_tip_cal"
 
 
-def test_aurora_grid_accuracy_missing_registration_is_classified(tmp_path: Path) -> None:
+def test_aurora_grid_accuracy_no_longer_requires_registration(tmp_path: Path) -> None:
     runner = _runner(tmp_path)
     result = runner.run_experiment(
         "aurora_grid_accuracy",
@@ -402,15 +460,62 @@ def test_aurora_grid_accuracy_missing_registration_is_classified(tmp_path: Path)
             "repetitions_per_point": 1,
             "samples_per_point": 1,
             "tool_id": "0B",
-            "truth_frame": "robot",
             "use_tip_calibration": True,
             "tip_vector_mm": [0.0, 0.0, 125.0],
             "allow_coil_origin_fallback": False,
         },
     )
 
-    assert result.success is False
-    assert result.summary.status == "invalid_due_to_missing_registration"
+    assert result.success is True
+    assert result.summary.status == "success"
+
+
+def test_aurora_grid_accuracy_run_saves_captured_point_dataset(tmp_path: Path) -> None:
+    runner = _runner(tmp_path)
+    result = runner.run_experiment(
+        "aurora_grid_accuracy",
+        config={
+            "rows": 2,
+            "cols": 2,
+            "spacing_mm": 25.4,
+            "samples_per_point": 2,
+            "tool_id": "0B",
+            "use_tip_calibration": True,
+            "tip_vector_mm": [0.0, 0.0, 125.0],
+            "outlier_threshold_mm": 1.0,
+            "captured_points": [
+                {
+                    "label": "P01",
+                    "target_index": 0,
+                    "raw_samples": [
+                        {"position_mm": [5.5, 2.0, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                        {"position_mm": [4.5, 2.0, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                    ],
+                },
+                {
+                    "label": "P02",
+                    "target_index": 1,
+                    "raw_samples": [
+                        {"position_mm": [30.9, 2.0, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                        {"position_mm": [29.9, 2.0, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                    ],
+                },
+                {
+                    "label": "P03",
+                    "target_index": 2,
+                    "raw_samples": [
+                        {"position_mm": [5.4, 27.4, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                        {"position_mm": [4.4, 27.4, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                    ],
+                },
+            ],
+        },
+    )
+
+    assert result.success is True
+    assert result.paths.output_dir.parent == tmp_path / "data" / "experiments"
+    assert result.summary.experiment_metrics["point_count_aligned"] == 3
+    assert result.summary.experiment_metrics["alignment_transform_truth_to_measured"] is not None
 
 
 def test_repeatability_dataset_records_robot_frame_when_registration_exists(tmp_path: Path) -> None:

@@ -11,13 +11,8 @@ from typing import Any
 
 import yaml
 
-from continuum_robot.gui.experiment_parameters import (
-    ExperimentParameterField,
-    apply_field_value,
-    build_parameter_fields,
-    dump_payload,
-    parse_field_value,
-)
+from continuum_robot.experiments.critical_experiments import GridDefinitionConfig, build_grid_accuracy_preview
+from continuum_robot.gui.experiment_parameters import apply_field_value, dump_payload, parse_field_value
 from continuum_robot.gui.experiment_preflight import PreflightReport, RUN_BLOCKED, evaluate_preflight
 from continuum_robot.gui.experiment_visualization import VisualizationModel, build_visualization_model
 
@@ -56,8 +51,6 @@ class ExperimentViewState:
     experiment_description: str = ""
     experiment_category: str = ""
     experiment_badges: list[str] = field(default_factory=list)
-    parameter_fields: list[ExperimentParameterField] = field(default_factory=list)
-    parameter_error_count: int = 0
     config_text: str = ""
     config_error: str | None = None
     operator_notes: str = ""
@@ -69,7 +62,7 @@ class ExperimentViewState:
     run_active: bool = False
     progress_current: int = 0
     progress_total: int = 0
-    status_message: str = "Select an experiment and review the validation checks."
+    status_message: str = "Select an experiment to open its validation workspace."
     last_error: str | None = None
     last_output_path: str | None = None
     loaded_run_path: str | None = None
@@ -121,14 +114,8 @@ class ExperimentController:
             experiment_options=list(self._options_by_name.values()),
             output_root=str(experiment_runner.output_dir),
         )
-        default_experiment = (
-            "repeatability_dataset"
-            if "repeatability_dataset" in self._options_by_name
-            else next(iter(self._options_by_name), "")
-        )
-        if not default_experiment:
+        if not self._options_by_name:
             raise RuntimeError("No workspace-visible experiments are registered.")
-        self.select_experiment(default_experiment)
 
     def refresh(self) -> ExperimentViewState:
         with self._lock:
@@ -143,6 +130,33 @@ class ExperimentController:
             config_error = self._current_config_error_locked()
             history_dirty = self._history_dirty
             planned_output_dir = output_root / self._planned_output_dir_name
+
+        if not selected_experiment:
+            with self._lock:
+                if history_dirty:
+                    self.state.history = []
+                    self._history_dirty = False
+                self.state.experiment_title = "Select An Experiment"
+                self.state.experiment_description = (
+                    "Choose a structured validation or data-generation run from the dropdown above."
+                )
+                self.state.experiment_category = ""
+                self.state.experiment_badges = []
+                self.state.config_error = None
+                self.state.preflight_report = PreflightReport(
+                    overall_status=RUN_BLOCKED,
+                    experiment_name="",
+                    planned_output_dir="",
+                )
+                self.state.run_checklist = []
+                self.state.result_details = [("Workspace", "Select an experiment to load its custom page.")]
+                self.state.planned_output_dir = ""
+                self.state.visualization_model = VisualizationModel(
+                    summary_lines=["Select an experiment to view run outputs and analysis."]
+                )
+                self.state.result_summary_lines = list(self.state.visualization_model.summary_lines)
+                self.state.config_text = ""
+                return self.state
 
         history = None
         if history_dirty:
@@ -164,6 +178,16 @@ class ExperimentController:
             project_root=self.project_root,
         )
 
+        preview = None
+        if selected_experiment == "aurora_grid_accuracy":
+            try:
+                preview = build_grid_accuracy_preview(
+                    config=GridDefinitionConfig.from_dict(config_payload),
+                    project_root=self.project_root,
+                )
+            except Exception:
+                preview = None
+
         visualization_model = self._build_visualization_model(
             experiment_name=selected_experiment,
             bundle=current_bundle,
@@ -172,6 +196,7 @@ class ExperimentController:
             show_centroids=show_centroids,
             show_truth=show_truth,
             config_payload=config_payload,
+            preview=preview,
         )
         checklist = self._build_run_checklist(
             experiment_name=selected_experiment,
@@ -179,7 +204,7 @@ class ExperimentController:
             tracking_snapshot=tracking_snapshot,
             planned_output_dir=planned_output_dir,
         )
-        result_details = self._build_result_details(current_bundle)
+        result_details = self._build_result_details(current_bundle, preview_metrics=(preview.metrics if preview is not None else None))
 
         with self._lock:
             if history is not None:
@@ -222,25 +247,36 @@ class ExperimentController:
 
     def load_defaults(self) -> None:
         """Reload the default example config for the selected experiment."""
+        if not self.state.selected_experiment:
+            return
         self.select_experiment(self.state.selected_experiment)
+
+    def clear_selection(self) -> None:
+        """Return the experiment workspace to its empty selector state."""
+        with self._lock:
+            self.state.selected_experiment = ""
+            self.state.loaded_run_path = None
+            self.state.last_output_path = None
+            self.state.last_error = None
+            self.state.status_message = "Select an experiment to open its validation workspace."
+            self._selected_payload = {}
+            self._field_drafts.clear()
+            self._field_errors.clear()
+            self._raw_config_error = None
+            self._current_bundle = None
+            self._live_samples = []
+            self._history_dirty = True
+            self._planned_output_dir_name = ""
+            self.state.config_text = ""
 
     def set_parameter_value(self, key: str, raw_value: str) -> None:
         with self._lock:
-            field = next((item for item in self.state.parameter_fields if item.key == key), None)
-            if field is None:
-                return
             self._field_drafts[key] = str(raw_value)
             try:
-                parsed_value = parse_field_value(value_kind=field.value_kind, raw_value=raw_value)
+                parsed_value = parse_field_value(value_kind="yaml", raw_value=raw_value)
             except ValueError as exc:
                 self._field_errors[key] = str(exc)
                 self.state.config_error = self._current_config_error_locked()
-                self.state.parameter_fields = build_parameter_fields(
-                    self._selected_payload,
-                    drafts=self._field_drafts,
-                    errors=self._field_errors,
-                )
-                self.state.parameter_error_count = len(self._field_errors)
                 return
             self._field_errors.pop(key, None)
             self._raw_config_error = None
@@ -249,7 +285,34 @@ class ExperimentController:
             self._live_samples = []
             self._visualization_dirty = True
             self._reset_planned_output_dir_locked()
-            self._sync_parameter_state_locked()
+            self._sync_config_text_locked()
+
+    def set_config_value(self, key: str, value: Any) -> None:
+        """Update one typed config value from a custom experiment page."""
+        with self._lock:
+            self._field_errors.pop(key, None)
+            self._raw_config_error = None
+            self._selected_payload = apply_field_value(self._selected_payload, key=key, value=value)
+            self._current_bundle = None
+            self._live_samples = []
+            self._visualization_dirty = True
+            self._reset_planned_output_dir_locked()
+            self._sync_config_text_locked()
+
+    def config_payload(self) -> dict[str, Any]:
+        """Return a copy of the current selected experiment payload."""
+        with self._lock:
+            return dict(self._selected_payload)
+
+    def get_config_value(self, key: str, default: Any = None) -> Any:
+        """Return one nested config value using dot-path lookup."""
+        with self._lock:
+            current: Any = self._selected_payload
+            for segment in [part for part in str(key).split(".") if part]:
+                if not isinstance(current, dict) or segment not in current:
+                    return default
+                current = current[segment]
+            return current
 
     def set_config_text(self, text: str) -> None:
         payload, error = self._parse_config_text(text)
@@ -268,7 +331,7 @@ class ExperimentController:
             self._live_samples = []
             self._visualization_dirty = True
             self._reset_planned_output_dir_locked()
-            self._sync_parameter_state_locked()
+            self._sync_config_text_locked()
 
     def set_operator_notes(self, notes: str) -> None:
         with self._lock:
@@ -402,7 +465,7 @@ class ExperimentController:
             self._field_errors.clear()
             self._field_drafts.clear()
             self._raw_config_error = None
-            self._sync_parameter_state_locked()
+            self._sync_config_text_locked()
             self._reset_planned_output_dir_locked()
 
     def shutdown(self, timeout_s: float = 2.0) -> None:
@@ -425,7 +488,16 @@ class ExperimentController:
                 badges=badges,
                 default_config_path=descriptor.default_config_path,
             )
-        return options
+        preferred_order = [
+            "repeatability_dataset",
+            "aurora_grid_accuracy",
+            "command_schedule_validation",
+            "collect_pose_command_dataset",
+            "replay_runner",
+        ]
+        ordered_names = [name for name in preferred_order if name in options]
+        ordered_names.extend(sorted(name for name in options if name not in ordered_names))
+        return {name: options[name] for name in ordered_names}
 
     def _default_config_path(self, experiment_name: str) -> Path:
         option = self._options_by_name[experiment_name]
@@ -465,31 +537,27 @@ class ExperimentController:
         self._field_errors.clear()
         self._field_drafts.clear()
         self._raw_config_error = None
-        self._sync_parameter_state_locked()
+        self._sync_config_text_locked()
 
-    def _sync_parameter_state_locked(self) -> None:
-        fields = build_parameter_fields(
-            self._selected_payload,
-            drafts=self._field_drafts,
-            errors=self._field_errors,
-        )
-        self.state.parameter_fields = fields
-        self.state.parameter_error_count = len([field for field in fields if field.error])
+    def _sync_config_text_locked(self) -> None:
         self.state.config_text = dump_payload(self._selected_payload)
         self.state.config_error = self._current_config_error_locked()
-        for field in fields:
-            self._field_drafts.setdefault(field.key, field.raw_value)
 
     def _current_config_error_locked(self) -> str | None:
         if self._raw_config_error:
             return self._raw_config_error
-        invalid_fields = [field for field in build_parameter_fields(self._selected_payload, drafts=self._field_drafts, errors=self._field_errors) if field.error]
-        if not invalid_fields:
+        if not self._field_errors:
             return None
-        rendered = "; ".join(f"{field.label}: {field.error}" for field in invalid_fields[:3])
+        rendered = "; ".join(
+            f"{key}: {message}"
+            for key, message in list(self._field_errors.items())[:3]
+        )
         return f"Parameter edits are invalid. {rendered}"
 
     def _reset_planned_output_dir_locked(self) -> None:
+        if not self.state.selected_experiment:
+            self._planned_output_dir_name = ""
+            return
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         safe_name = self.state.selected_experiment.replace(" ", "_")
         self._planned_output_dir_name = f"{timestamp}_{safe_name}"
@@ -610,6 +678,7 @@ class ExperimentController:
         show_centroids: bool,
         show_truth: bool,
         config_payload: dict[str, Any],
+        preview=None,
     ) -> VisualizationModel:
         if bundle is not None:
             metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
@@ -618,6 +687,16 @@ class ExperimentController:
                 samples=bundle.samples,
                 metrics=metrics,
                 config_payload=config_payload or bundle.metadata.config_used,
+                color_mode=color_mode,
+                show_centroids=show_centroids,
+                show_truth=show_truth,
+            )
+        if preview is not None and experiment_name == "aurora_grid_accuracy":
+            return build_visualization_model(
+                experiment_name=experiment_name,
+                samples=preview.samples,
+                metrics=preview.metrics,
+                config_payload=config_payload,
                 color_mode=color_mode,
                 show_centroids=show_centroids,
                 show_truth=show_truth,
@@ -653,8 +732,23 @@ class ExperimentController:
             ("Config Summary", self._config_summary_label(experiment_name, config_payload)),
         ]
 
-    def _build_result_details(self, bundle) -> list[tuple[str, str]]:
+    def _build_result_details(self, bundle, *, preview_metrics: dict[str, Any] | None = None) -> list[tuple[str, str]]:
         if bundle is None:
+            if preview_metrics:
+                return [
+                    ("Aligned Points", str(int(preview_metrics.get("point_count_aligned", 0) or 0))),
+                    ("Raw Samples", str(int(preview_metrics.get("raw_sample_count", 0) or 0))),
+                    ("Accepted Samples", str(int(preview_metrics.get("accepted_sample_count", 0) or 0))),
+                    (
+                        "RMS Residual",
+                        self._format_metric_value(preview_metrics.get("overall_rms_residual_mm")),
+                    ),
+                    ("Max Residual", self._format_metric_value(preview_metrics.get("max_residual_mm"))),
+                    (
+                        "Mean Spread",
+                        self._format_metric_value(preview_metrics.get("mean_within_point_spread_mm")),
+                    ),
+                ]
             return [("Last Run", "No run loaded yet.")]
         pairs = [
             ("Status", bundle.summary.status),
@@ -697,9 +791,12 @@ class ExperimentController:
                 f"{int(schedule.get('samples_per_point', 0) or 0)} samples/point"
             )
         if experiment_name == "aurora_grid_accuracy":
+            captured_points = config_payload.get("captured_points", []) or []
+            captured_count = len(captured_points) if captured_points else int(config_payload.get("captured_point_count", 0) or 0)
             return (
                 f"{config_payload.get('dimensions', [])} @ {config_payload.get('spacing_mm', 'n/a')} mm, "
-                f"{int(config_payload.get('repetitions_per_point', 0) or 0)} repetitions"
+                f"{captured_count} captured points, "
+                f"{int(config_payload.get('samples_per_point', 0) or 0)} samples/point"
             )
         if experiment_name == "command_schedule_validation":
             schedule = config_payload.get("schedule", {}) or {}
@@ -730,3 +827,11 @@ class ExperimentController:
     @staticmethod
     def _label_from_metric_key(key: str) -> str:
         return " ".join(segment.capitalize() for segment in str(key).split("_"))
+
+    @staticmethod
+    def _format_metric_value(value: Any) -> str:
+        if value is None:
+            return "n/a"
+        if isinstance(value, float):
+            return f"{value:.3f}"
+        return str(value)
