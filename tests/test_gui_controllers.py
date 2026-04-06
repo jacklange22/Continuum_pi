@@ -1530,12 +1530,23 @@ def test_registration_controller_load_latest_populates_saved_result_state(tmp_pa
 def test_experiment_workspace_selection_binds_example_config(tmp_path: Path) -> None:
     controller = _experiment_controller(tmp_path)
 
-    controller.select_experiment("pivot_calibration")
+    controller.select_experiment("command_schedule_validation")
     state = controller.refresh()
 
-    assert state.selected_experiment == "pivot_calibration"
-    assert "input_path" in state.config_text
-    assert state.experiment_title == "Pivot Calibration"
+    assert state.selected_experiment == "command_schedule_validation"
+    assert state.experiment_title == "Command Schedule Validation"
+    assert any(field.key == "schedule.kind" for field in state.parameter_fields)
+
+
+def test_experiment_workspace_hides_operational_pivot_workflow_from_selector(tmp_path: Path) -> None:
+    controller = _experiment_controller(tmp_path)
+
+    option_names = [option.name for option in controller.refresh().experiment_options]
+
+    assert "pivot_calibration" not in option_names
+    assert "repeatability_dataset" in option_names
+    assert "command_schedule_validation" in option_names
+    assert "collect_pose_command_dataset" in option_names
 
 
 def test_experiment_workspace_preflight_warns_for_repeatability_without_registration(tmp_path: Path) -> None:
@@ -1585,73 +1596,47 @@ def test_experiment_workspace_blocks_grid_accuracy_without_tip_calibration(tmp_p
     assert any("Tip calibration is required" in message for message in state.preflight_report.blocking_messages)
 
 
-def test_experiment_workspace_requires_confirmation_before_pivot_overwrite(tmp_path: Path) -> None:
+def test_experiment_workspace_parameter_edit_updates_serialized_config(tmp_path: Path) -> None:
     controller = _experiment_controller(tmp_path)
-    input_csv = tmp_path / "pivot.csv"
-    input_csv.write_text(
-        "\n".join(
-            [
-                "0B,1,0,0,0,15,-30,-60",
-                "0B,0,1,0,0,15,10,140",
-                "0B,0,0,1,0,35,-30,140",
-                "0B,0,0,0,1,35,10,-60",
-                "0B,0.70710678,0.70710678,0,0,15,90,20",
-                "0B,0.70710678,-0.70710678,0,0,15,-110,60",
-                "0B,0.70710678,0,0.70710678,0,-75,-30,50",
-                "0B,0.70710678,0,-0.70710678,0,125,-30,30",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    existing_tip = tmp_path / "tip.csv"
-    existing_tip.write_text("0,0,100\n", encoding="utf-8")
-    controller.select_experiment("pivot_calibration")
-    controller.set_config_text(
-        "\n".join(
-            [
-                "tool_id: \"0B\"",
-                f"input_path: \"{input_csv}\"",
-                f"output_tip_file: \"{existing_tip}\"",
-                "min_samples: 8",
-            ]
-        )
-    )
+    controller.select_experiment("command_schedule_validation")
 
+    controller.set_parameter_value("schedule.kind", "trajectory")
+    controller.set_parameter_value("schedule.trajectory_points_cm", "- [0.0, 0.0, 0.0, 0.0]\n- [0.1, 0.0, 0.0, 0.0]")
     state = controller.refresh()
 
-    assert state.preflight_report.overall_status == "ok_with_warning"
-    assert state.preflight_report.requires_confirmation is True
-    try:
-        controller.run()
-    except RuntimeError as exc:
-        assert "overwrite confirmation" in str(exc)
-    else:
-        raise AssertionError("Expected overwrite confirmation error.")
+    assert state.config_error is None
+    assert "trajectory" in state.config_text
+    assert "trajectory_points_cm" in state.config_text
+    assert any(field.key == "schedule.trajectory_points_cm" for field in state.parameter_fields)
 
 
 def test_experiment_workspace_loads_prior_run_and_history(tmp_path: Path) -> None:
     controller = _experiment_controller(tmp_path)
     result = controller.experiment_runner.run_experiment(
-        "pivot_calibration",
+        "command_schedule_validation",
         config={
-            "tool_id": "0B",
-            "input_path": "data/examples/pivot_calibration_sample.csv",
-            "output_tip_file": str(tmp_path / "generated_tip.csv"),
-            "min_samples": 8,
+            "schedule": {
+                "kind": "babble",
+                "dimensions": 4,
+                "amplitude_cm": 0.1,
+                "babble_count": 5,
+            },
         },
-        output_dir=tmp_path / "data" / "experiments" / "pivot" / "runs",
-        output_dir_name="saved_pivot_run",
+        output_dir=tmp_path / "data" / "experiments",
+        output_dir_name="saved_schedule_run",
     )
     assert result.success is True
 
+    controller.select_experiment("command_schedule_validation")
     state = controller.refresh()
-    assert any("saved_pivot_run" in entry.path for entry in state.history)
+    assert any("saved_schedule_run" in entry.path for entry in state.history)
 
     controller.load_run(result.paths.output_dir)
     loaded = controller.refresh()
     assert loaded.loaded_run_path == str(result.paths.output_dir)
-    assert loaded.selected_experiment == "pivot_calibration"
+    assert loaded.selected_experiment == "command_schedule_validation"
     assert loaded.visualization_model.summary_lines
+    assert any(label == "Run ID" for label, _value in loaded.result_details)
 
 
 def test_experiment_workspace_tab_updates_without_crashing_in_mock_mode(tmp_path: Path) -> None:
@@ -1692,7 +1677,8 @@ def test_registration_and_experiment_tabs_expose_resizable_layout_defaults(tmp_p
     assert registration_tab.points_table.minimumHeight() >= 200
     assert registration_tab.samples_table.minimumHeight() >= 200
     assert registration_tab.landmark_map.minimumHeight() >= 200
-    assert experiment_tab.config_edit.minimumHeight() >= 230
+    assert experiment_tab.parameter_editor.minimumHeight() >= 240
+    assert experiment_tab.config_preview.minimumHeight() >= 100
     assert experiment_tab.viewer_3d.minimumHeight() >= 300
     assert servos_tab.telemetry_table.minimumHeight() >= 200
     assert servos_tab.calibration_table.minimumHeight() >= 160

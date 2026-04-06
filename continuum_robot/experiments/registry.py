@@ -13,7 +13,12 @@ class ExperimentDescriptor:
     """Registered experiment metadata."""
 
     name: str
+    title: str
     description: str
+    category: str
+    tags: tuple[str, ...]
+    workspace_visible: bool
+    default_config_path: str | None
     factory: Callable[[dict[str, Any] | None], BaseExperiment]
 
 
@@ -28,6 +33,11 @@ class ExperimentRegistry:
         *,
         name: str,
         description: str,
+        title: str | None = None,
+        category: str = "validation",
+        tags: list[str] | tuple[str, ...] | None = None,
+        workspace_visible: bool = True,
+        default_config_path: str | None = None,
         factory: Callable[[dict[str, Any] | None], BaseExperiment],
     ) -> None:
         """Register one experiment by name."""
@@ -36,7 +46,16 @@ class ExperimentRegistry:
             raise ValueError("Experiment name must not be empty")
         self._descriptors[key] = ExperimentDescriptor(
             name=key,
+            title=str(title or key.replace("_", " ").title()).strip(),
             description=str(description).strip(),
+            category=str(category).strip() or "validation",
+            tags=tuple(str(tag).strip() for tag in (tags or []) if str(tag).strip()),
+            workspace_visible=bool(workspace_visible),
+            default_config_path=(
+                str(default_config_path).strip()
+                if default_config_path not in (None, "")
+                else None
+            ),
             factory=factory,
         )
 

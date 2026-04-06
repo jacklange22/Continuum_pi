@@ -96,7 +96,12 @@ def build_visualization_model(
             color_mode=color_mode,
             acceptance=config_payload.get("acceptance", {}),
         )
-    return VisualizationModel(summary_lines=["No visualization is available for the selected experiment."])
+    return _build_generic_model(
+        experiment_name=experiment_name,
+        samples=samples,
+        metrics=metrics,
+        tool_id=str(config_payload.get("tool_id") or config_payload.get("tracker_tool_id") or "0A"),
+    )
 
 
 def _build_repeatability_model(
@@ -495,3 +500,72 @@ def _acceptance_lines(*, experiment_name: str, metrics: dict[str, Any], acceptan
     else:
         lines.append("Threshold reasons: all configured thresholds passed.")
     return lines
+
+
+def _build_generic_model(
+    *,
+    experiment_name: str,
+    samples,
+    metrics: dict[str, Any],
+    tool_id: str,
+) -> VisualizationModel:
+    grouped: dict[str, list[tuple[float, float, float]]] = {}
+    phase_counts: dict[str, int] = {}
+    command_norms: list[tuple[float, float]] = []
+    for index, sample in enumerate(samples):
+        phase = str(sample.phase or "sample")
+        phase_counts[phase] = int(phase_counts.get(phase, 0) + 1)
+        if sample.commanded_cable_deltas_cm:
+            norm = float(np.linalg.norm(np.asarray(sample.commanded_cable_deltas_cm, dtype=float)))
+            command_norms.append((float(index), norm))
+        position, _frame_name = extract_tip_or_tool_position_mm(sample, tool_id=tool_id, prefer_robot_frame=True)
+        if position is not None:
+            grouped.setdefault(phase, []).append(tuple(float(value) for value in position))
+
+    summary_lines = [
+        f"Experiment: {experiment_name}",
+        f"Samples loaded: {len(samples)}",
+        f"Metric count: {len(metrics)}",
+    ]
+    scalar_metrics = [
+        (key, value)
+        for key, value in metrics.items()
+        if isinstance(value, (str, int, float, bool))
+    ]
+    for key, value in scalar_metrics[:8]:
+        rendered = f"{float(value):.3f}" if isinstance(value, float) else str(value)
+        summary_lines.append(f"{key}: {rendered}")
+    if not scalar_metrics:
+        summary_lines.append("No scalar summary metrics are available for this experiment yet.")
+
+    charts: list[ChartModel] = []
+    if phase_counts:
+        charts.append(
+            ChartModel(
+                kind="bar",
+                title="Samples By Phase",
+                x_title="Phase",
+                y_title="Count",
+                caption="How many canonical samples were recorded in each experiment phase.",
+                categories=list(phase_counts.keys()),
+                values=[float(value) for value in phase_counts.values()],
+                color_hex="#2563eb",
+            )
+        )
+    if command_norms:
+        charts.append(
+            ChartModel(
+                kind="line",
+                title="Command Magnitude",
+                x_title="Sample Index",
+                y_title="Command Norm",
+                caption="Euclidean norm of commanded cable displacement by sample index.",
+                points_xy=command_norms,
+                color_hex="#0f766e",
+            )
+        )
+    return VisualizationModel(
+        series_3d=_grouped_series(grouped, base_label="Samples"),
+        charts=charts,
+        summary_lines=summary_lines,
+    )

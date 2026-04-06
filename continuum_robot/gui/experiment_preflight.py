@@ -7,11 +7,18 @@ from pathlib import Path
 import os
 from typing import Any
 
+from continuum_robot.experiments.builtins import (
+    CollectPoseCommandDatasetConfig,
+    CommandScheduleValidationConfig,
+    PretensionValidationExperimentConfig,
+    ReplayRunnerConfig,
+)
 from continuum_robot.experiments.critical_experiments import (
     GridDefinitionConfig,
     PivotCalibrationConfig,
     RepeatabilityDatasetConfig,
 )
+from continuum_robot.experiments.schedules import generate_command_schedule
 
 
 PREFLIGHT_OK = "ok"
@@ -109,30 +116,6 @@ def evaluate_preflight(
 
     checks.append(
         PreflightCheck(
-            key="tracking_state",
-            label="Tracking",
-            status=(
-                PREFLIGHT_OK
-                if tracker_ready
-                else (PREFLIGHT_INFO if settings.runtime.mock_mode else PREFLIGHT_BLOCKED)
-            ),
-            message=(
-                f"Tracker is ready on backend {backend_name} with state {tracking_snapshot.canonical_state}."
-                if tracker_ready
-                else (
-                    f"App is in mock mode. The {backend_name} backend will self-start for dry-run execution."
-                    if settings.runtime.mock_mode
-                    else (
-                        f"Tracker is not ready. Current state is {tracking_snapshot.canonical_state} on backend {backend_name}. "
-                        "Start tracking and confirm live frames before running."
-                    )
-                )
-            ),
-        )
-    )
-
-    checks.append(
-        PreflightCheck(
             key="output_root",
             label="Output Path",
             status=_output_status(output_root),
@@ -149,6 +132,7 @@ def evaluate_preflight(
         )
 
     if experiment_name == "repeatability_dataset":
+        checks.append(_tracking_state_check(settings=settings, tracker_ready=tracker_ready, backend_name=backend_name, tracking_snapshot=tracking_snapshot))
         config = RepeatabilityDatasetConfig.from_dict(payload)
         expected_dims = len(settings.robot.tendon_to_servo or settings.robot.servo_ids)
         target_lengths = {len(point) for point in config.schedule.target_points_cm}
@@ -234,6 +218,7 @@ def evaluate_preflight(
             )
 
     elif experiment_name == "aurora_grid_accuracy":
+        checks.append(_tracking_state_check(settings=settings, tracker_ready=tracker_ready, backend_name=backend_name, tracking_snapshot=tracking_snapshot))
         config = GridDefinitionConfig.from_dict(payload)
         dims = list(config.dimensions)
         if len(dims) not in {2, 3} or any(value <= 0 for value in dims) or config.spacing_mm <= 0.0:
@@ -332,6 +317,7 @@ def evaluate_preflight(
             )
 
     elif experiment_name == "pivot_calibration":
+        checks.append(_tracking_state_check(settings=settings, tracker_ready=tracker_ready, backend_name=backend_name, tracking_snapshot=tracking_snapshot))
         config = PivotCalibrationConfig.from_dict(payload)
         if config.input_path:
             input_path = _resolve_repo_path(project_root, config.input_path)
@@ -394,6 +380,175 @@ def evaluate_preflight(
         else:
             checks.append(_info("registration", "Registration", "Pivot calibration does not require registration."))
 
+    elif experiment_name == "command_schedule_validation":
+        config = CommandScheduleValidationConfig.from_dict(payload)
+        try:
+            points = generate_command_schedule(config.schedule)
+        except Exception as exc:
+            checks.append(
+                _blocked(
+                    "schedule",
+                    "Schedule",
+                    f"Command schedule is invalid: {exc}",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "schedule",
+                    "Schedule",
+                    f"{len(points)} command points generated from a {config.schedule.kind} schedule in {config.schedule.dimensions} dimensions.",
+                )
+            )
+        checks.append(_info("tracking_state", "Tracking", "Tracker input is not required for schedule validation."))
+        checks.append(_info("mode", "Run Mode", "Schedule validation is a pure software validation run."))
+        checks.append(_info("registration", "Registration", "Registration is not required for schedule validation."))
+
+    elif experiment_name == "collect_pose_command_dataset":
+        checks.append(_tracking_state_check(settings=settings, tracker_ready=tracker_ready, backend_name=backend_name, tracking_snapshot=tracking_snapshot))
+        config = CollectPoseCommandDatasetConfig.from_dict(payload)
+        try:
+            points = (
+                list(config.command_points)
+                if config.command_points
+                else generate_command_schedule(config.command_schedule)
+            )
+        except Exception as exc:
+            checks.append(
+                _blocked(
+                    "schedule",
+                    "Command Schedule",
+                    f"Dataset collection schedule is invalid: {exc}",
+                )
+            )
+            points = []
+        if points:
+            checks.append(
+                _ok(
+                    "schedule",
+                    "Command Schedule",
+                    f"{len(points)} command point(s) will be sampled with {max(1, int(config.sample_count_per_point))} sample(s) per point.",
+                )
+            )
+        expected_dims = len(settings.robot.tendon_to_servo or settings.robot.servo_ids)
+        neutral_count = len(neutral_setpoints)
+        if config.dry_run:
+            checks.append(_info("mode", "Run Mode", "Dataset collection will run in dry-run mode."))
+            checks.append(
+                PreflightCheck(
+                    "neutral_setpoints",
+                    "Neutral Setpoints",
+                    PREFLIGHT_OK if neutral_count == expected_dims else PREFLIGHT_WARNING,
+                    (
+                        f"Neutral setpoints are available for all {expected_dims} tendons."
+                        if neutral_count == expected_dims
+                        else "Neutral setpoints are incomplete. Dry-run output can still be recorded, but live command replay would be partial."
+                    ),
+                )
+            )
+        elif not servo_connected:
+            checks.append(
+                _blocked(
+                    "mode",
+                    "Run Mode",
+                    "Live dataset collection requires a connected servo service.",
+                )
+            )
+        else:
+            checks.append(_ok("mode", "Run Mode", "Live dataset collection will use the connected servo service."))
+            checks.append(
+                PreflightCheck(
+                    "neutral_setpoints",
+                    "Neutral Setpoints",
+                    PREFLIGHT_OK if neutral_count == expected_dims else PREFLIGHT_BLOCKED,
+                    (
+                        f"Neutral setpoints are available for all {expected_dims} tendons."
+                        if neutral_count == expected_dims
+                        else "Live dataset collection requires neutral setpoints for every tendon."
+                    ),
+                )
+            )
+        if registration_path.exists():
+            checks.append(_ok("registration", "Registration", f"Registration file found: {registration_path}"))
+        else:
+            checks.append(
+                _warning(
+                    "registration",
+                    "Registration",
+                    "Registration file is missing. Samples will still be saved, but robot-frame pose will be unavailable.",
+                )
+            )
+
+    elif experiment_name == "replay_runner":
+        config = ReplayRunnerConfig.from_dict(payload)
+        if not config.dataset_path:
+            checks.append(_blocked("dataset_path", "Replay Dataset", "Replay runner requires dataset_path."))
+        else:
+            dataset_path = _resolve_repo_path(project_root, config.dataset_path)
+            if dataset_path.exists():
+                checks.append(_ok("dataset_path", "Replay Dataset", f"Replay dataset found: {dataset_path}"))
+            else:
+                checks.append(_blocked("dataset_path", "Replay Dataset", f"Replay dataset is missing: {dataset_path}"))
+        checks.append(_info("tracking_state", "Tracking", "Replay runner uses saved datasets and does not require live tracking."))
+        checks.append(_info("mode", "Run Mode", "Replay runner is an offline analysis workflow."))
+        checks.append(_info("registration", "Registration", "Replay runner uses the saved dataset state."))
+
+    elif experiment_name == "pretension_validation":
+        checks.append(_tracking_state_check(settings=settings, tracker_ready=tracker_ready, backend_name=backend_name, tracking_snapshot=tracking_snapshot))
+        config = PretensionValidationExperimentConfig.from_dict(payload)
+        if not servo_connected:
+            checks.append(_blocked("servo_service", "Servo Service", "Pretension validation requires a connected servo service."))
+        else:
+            checks.append(_ok("servo_service", "Servo Service", "Pretension validation can use the connected servo service."))
+        configured_ids = [int(value) for value in (settings.robot.servo_ids or [])]
+        if configured_ids and int(config.servo_id) not in configured_ids:
+            checks.append(
+                _blocked(
+                    "servo_id",
+                    "Servo ID",
+                    f"Servo {config.servo_id} is not part of the configured robot servo IDs {configured_ids}.",
+                )
+            )
+        else:
+            checks.append(_ok("servo_id", "Servo ID", f"Pretension validation will target servo {config.servo_id}."))
+        if config.validation_direction not in {"tighten", "loosen"}:
+            checks.append(
+                _blocked(
+                    "validation_direction",
+                    "Validation Command",
+                    "validation_direction must be 'tighten' or 'loosen'.",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "validation_direction",
+                    "Validation Command",
+                    f"Tracker validation will apply a {config.validation_direction} delta of {config.validation_delta_ticks} ticks after each pretension run.",
+                )
+            )
+        checks.append(
+            _tool_check(
+                tool_id=config.tracker_tool_id,
+                snapshot=tracking_snapshot,
+                mock_mode=bool(settings.runtime.mock_mode),
+            )
+        )
+        checks.append(
+            _info(
+                "registration",
+                "Registration",
+                "Registration is optional. Pretension validation can compare tracker-frame displacement even without robot-frame registration.",
+            )
+        )
+        checks.append(
+            _ok(
+                "run_count",
+                "Run Count",
+                f"{max(1, int(config.run_count))} repeated validation run(s) will be collected for comparison.",
+            )
+        )
+
     else:
         checks.append(_blocked("experiment", "Experiment", f"Unsupported experiment selection: {experiment_name}"))
 
@@ -440,6 +595,30 @@ def _tool_check(*, tool_id: str, snapshot, mock_mode: bool) -> PreflightCheck:
         "tool_ids",
         "Tool IDs",
         f"Required tool {tool_id} is not currently tracked. Confirm the tool is enabled in Aurora and visible in the Tracking tab.",
+    )
+
+
+def _tracking_state_check(*, settings, tracker_ready: bool, backend_name: str, tracking_snapshot) -> PreflightCheck:
+    return PreflightCheck(
+        key="tracking_state",
+        label="Tracking",
+        status=(
+            PREFLIGHT_OK
+            if tracker_ready
+            else (PREFLIGHT_INFO if settings.runtime.mock_mode else PREFLIGHT_BLOCKED)
+        ),
+        message=(
+            f"Tracker is ready on backend {backend_name} with state {tracking_snapshot.canonical_state}."
+            if tracker_ready
+            else (
+                f"App is in mock mode. The {backend_name} backend will self-start for dry-run execution."
+                if settings.runtime.mock_mode
+                else (
+                    f"Tracker is not ready. Current state is {tracking_snapshot.canonical_state} on backend {backend_name}. "
+                    "Start tracking and confirm live frames before running."
+                )
+            )
+        ),
     )
 
 

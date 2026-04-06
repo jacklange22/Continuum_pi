@@ -631,17 +631,30 @@ def register_critical_experiments(registry) -> None:
     """Register the project-critical experiments."""
     registry.register(
         name=RepeatabilityDatasetExperiment.name,
+        title="Repeatability Dataset",
         description=RepeatabilityDatasetExperiment.description,
+        category="validation",
+        tags=["Repeatability", "Tracking", "Servo"],
+        default_config_path="config/experiment_repeatability_dataset.example.yaml",
         factory=RepeatabilityDatasetExperiment.from_dict,
     )
     registry.register(
         name=AuroraGridAccuracyExperiment.name,
+        title="Aurora Grid Accuracy",
         description=AuroraGridAccuracyExperiment.description,
+        category="validation",
+        tags=["Tracking", "Grid", "Accuracy"],
+        default_config_path="config/experiment_aurora_grid_accuracy.example.yaml",
         factory=AuroraGridAccuracyExperiment.from_dict,
     )
     registry.register(
         name=PivotCalibrationExperiment.name,
+        title="Pivot Calibration",
         description=PivotCalibrationExperiment.description,
+        category="calibration",
+        tags=["Pivot", "Tip File"],
+        workspace_visible=False,
+        default_config_path="config/experiment_pivot_calibration.example.yaml",
         factory=PivotCalibrationExperiment.from_dict,
     )
 

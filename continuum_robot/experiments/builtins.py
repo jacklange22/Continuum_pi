@@ -943,37 +943,65 @@ def register_builtin_experiments(registry) -> None:
     """Register the built-in canonical experiments."""
     registry.register(
         name=TrackerPipelineMockExperiment.name,
+        title="Tracker Pipeline Mock",
         description=TrackerPipelineMockExperiment.description,
+        category="diagnostic",
+        tags=["Mock", "Tracking"],
+        workspace_visible=False,
         factory=TrackerPipelineMockExperiment.from_dict,
     )
     registry.register(
         name=TransformChainValidationExperiment.name,
+        title="Transform Chain Validation",
         description=TransformChainValidationExperiment.description,
+        category="diagnostic",
+        tags=["Mock", "Transforms"],
+        workspace_visible=False,
         factory=TransformChainValidationExperiment.from_dict,
     )
     registry.register(
         name=CommandScheduleValidationExperiment.name,
+        title="Command Schedule Validation",
         description=CommandScheduleValidationExperiment.description,
+        category="validation",
+        tags=["Commands", "Schedule"],
+        default_config_path="config/experiment_command_schedule_validation.example.yaml",
         factory=CommandScheduleValidationExperiment.from_dict,
     )
     registry.register(
         name=DatasetSchemaRoundtripExperiment.name,
+        title="Dataset Schema Roundtrip",
         description=DatasetSchemaRoundtripExperiment.description,
+        category="diagnostic",
+        tags=["Schema", "Roundtrip"],
+        workspace_visible=False,
         factory=DatasetSchemaRoundtripExperiment.from_dict,
     )
     registry.register(
         name=ReplayRunnerExperiment.name,
+        title="Replay Runner",
         description=ReplayRunnerExperiment.description,
+        category="analysis",
+        tags=["Replay", "Offline"],
+        default_config_path="config/experiment_replay_runner.example.yaml",
         factory=ReplayRunnerExperiment.from_dict,
     )
     registry.register(
         name=PretensionValidationExperiment.name,
+        title="Pretension Validation",
         description=PretensionValidationExperiment.description,
+        category="validation",
+        tags=["Pretension", "Tracking", "Servo"],
+        default_config_path="config/experiment_pretension_validation.example.yaml",
         factory=PretensionValidationExperiment.from_dict,
     )
     registry.register(
         name=CollectPoseCommandDatasetExperiment.name,
+        title="Collect Pose Command Dataset",
         description=CollectPoseCommandDatasetExperiment.description,
+        category="dataset",
+        tags=["Commands", "Tracking", "Servo"],
+        default_config_path="config/experiment_collect_pose_command_dataset.example.yaml",
         factory=CollectPoseCommandDatasetExperiment.from_dict,
     )
     register_critical_experiments(registry)
