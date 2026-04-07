@@ -38,8 +38,11 @@ from PySide6.QtWidgets import (
 from continuum_robot.experiments.critical_experiments import (
     GridAccuracyPreview,
     GridDefinitionConfig,
+    RepeatabilityDatasetConfig,
+    RepeatabilityPreview,
     build_grid_accuracy_preview,
     build_grid_truth_catalog,
+    build_repeatability_preview,
     capture_grid_measurement_from_snapshot,
     resolve_grid_tip_vector,
 )
@@ -316,20 +319,58 @@ class ExperimentPageBase(QWidget):
 
 class RepeatabilityDatasetPage(ExperimentPageBase):
     show_visualization = True
-    page_hint = "Use this page for the main repeatability dataset runs. It focuses on target scheduling, revisit structure, and output review."
+    page_hint = (
+        "Run the thesis-facing repeatability dataset by revisiting the same commanded targets from different prior states. "
+        "This page focuses on per-target spread, path dependence, and how close the system is to the < 1 mm repeatability goal."
+    )
+
+    def __init__(self, controller, experiment_name: str, parent=None) -> None:
+        super().__init__(controller, experiment_name, parent)
+        self.run_button.setText("Run Repeatability Dataset")
 
     def _build_parameter_sections(self) -> None:
-        mode_card = ExperimentCard("Run Mode", "Configure the live/dry-run mode and the tracked tool used for repeatability.")
+        mode_card = ExperimentCard(
+            "Run Setup",
+            "Repeatability uses repeated target revisits. Registration is preferred so the saved metrics land in robot frame; without it the run still saves, but it is marked partial success.",
+        )
         mode_form = QFormLayout()
         self.dry_run_check = QCheckBox("Dry Run")
         self.dry_run_check.toggled.connect(lambda value: self.controller.set_config_value("dry_run", bool(value)))
         self.tool_id_edit = QLineEdit()
         self.tool_id_edit.editingFinished.connect(lambda: self.controller.set_config_value("tool_id", self.tool_id_edit.text().strip() or "0A"))
+        self.target_set_combo = QComboBox()
+        self.target_set_combo.addItem("Single-Segment Ring 17", "single_segment_ring_17")
+        self.target_set_combo.addItem("Manual Targets", "manual")
+        self.target_set_combo.currentIndexChanged.connect(self._on_target_set_changed)
+        self.low_magnitude_spin = QDoubleSpinBox()
+        self.low_magnitude_spin.setRange(0.0, 10.0)
+        self.low_magnitude_spin.setDecimals(3)
+        self.low_magnitude_spin.setSingleStep(0.01)
+        self.low_magnitude_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("schedule.low_magnitude_cm", float(value))
+        )
+        self.high_magnitude_spin = QDoubleSpinBox()
+        self.high_magnitude_spin.setRange(0.0, 10.0)
+        self.high_magnitude_spin.setDecimals(3)
+        self.high_magnitude_spin.setSingleStep(0.01)
+        self.high_magnitude_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("schedule.high_magnitude_cm", float(value))
+        )
+        self.seed_spin = QSpinBox()
+        self.seed_spin.setRange(0, 999999)
+        self.seed_spin.valueChanged.connect(lambda value: self.controller.set_config_value("schedule.seed", int(value)))
         mode_form.addRow("Mode", self.dry_run_check)
         mode_form.addRow("Tool ID", self.tool_id_edit)
+        mode_form.addRow("Target Set", self.target_set_combo)
+        mode_form.addRow("Low Magnitude (cm)", self.low_magnitude_spin)
+        mode_form.addRow("High Magnitude (cm)", self.high_magnitude_spin)
+        mode_form.addRow("Random Seed", self.seed_spin)
         mode_card.body_layout.addLayout(mode_form)
 
-        schedule_card = ExperimentCard("Schedule", "Define the revisit pattern and the target command points that will be sampled.")
+        schedule_card = ExperimentCard(
+            "Revisit Schedule",
+            "Each target is revisited from different prior states. Tune the revisit count, settle time, and sampling depth without editing raw YAML.",
+        )
         schedule_form = QFormLayout()
         self.revisit_count_spin = QSpinBox()
         self.revisit_count_spin.setRange(1, 100)
@@ -347,36 +388,129 @@ class RepeatabilityDatasetPage(ExperimentPageBase):
             lambda value: self.controller.set_config_value("schedule.randomize_approach_order", bool(value))
         )
         schedule_form.addRow("Revisit Count", self.revisit_count_spin)
-        schedule_form.addRow("Samples / Point", self.samples_per_point_spin)
+        schedule_form.addRow("Samples / Visit", self.samples_per_point_spin)
         schedule_form.addRow("Settle Time (s)", self.settle_time_spin)
         schedule_form.addRow("Approach Order", self.randomize_check)
         schedule_card.body_layout.addLayout(schedule_form)
-        target_label = QLabel("Target Points (YAML list)")
+        target_label = QLabel("Manual Targets (YAML list)")
         target_label.setProperty("role", "muted")
         self.target_points_edit = QPlainTextEdit()
         self.target_points_edit.setMinimumHeight(150)
         self.target_points_edit.textChanged.connect(
             lambda: self.controller.set_parameter_value("schedule.target_points_cm", self.target_points_edit.toPlainText())
         )
-        schedule_card.body_layout.addWidget(target_label)
+        self.manual_target_label = target_label
+        schedule_card.body_layout.addWidget(self.manual_target_label)
         schedule_card.body_layout.addWidget(self.target_points_edit)
+
+        summary_card = ExperimentCard(
+            "Schedule Preview",
+            "Preview the target set, planned revisit count, and grouped target classes before running.",
+        )
+        self.schedule_summary_widget = KeyValueSummaryWidget()
+        summary_card.body_layout.addWidget(self.schedule_summary_widget)
+
+        targets_card = ExperimentCard(
+            "Target Catalog",
+            "Review the labeled repeatability targets and how many different prior states will feed each revisit cluster.",
+        )
+        self.target_table = QTableWidget(0, 5)
+        self.target_table.setHorizontalHeaderLabels(
+            ["Label", "Groups", "Command (cm)", "Planned Visits", "Unique Prior States"]
+        )
+        self.target_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.target_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.target_table.verticalHeader().setVisible(False)
+        self.target_table.horizontalHeader().setStretchLastSection(True)
+        self.target_table.setMinimumHeight(250)
+        targets_card.body_layout.addWidget(self.target_table)
 
         self.parameter_layout.addWidget(mode_card)
         self.parameter_layout.addWidget(schedule_card)
+        self.parameter_layout.addWidget(summary_card)
+        self.parameter_layout.addWidget(targets_card)
 
     def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
         _ = state
-        self._set_checkbox(self.dry_run_check, bool(self.controller.get_config_value("dry_run", True)))
-        self._set_line_text(self.tool_id_edit, str(self.controller.get_config_value("tool_id", "0A")))
-        self._set_spin(self.revisit_count_spin, int(self.controller.get_config_value("schedule.revisit_count", 3)))
-        self._set_spin(self.samples_per_point_spin, int(self.controller.get_config_value("schedule.samples_per_point", 3)))
-        self._set_double(self.settle_time_spin, float(self.controller.get_config_value("schedule.settle_time_s", 0.0)))
-        self._set_checkbox(
-            self.randomize_check,
-            bool(self.controller.get_config_value("schedule.randomize_approach_order", False)),
+        config = self._repeatability_config()
+        preview = self._current_preview(config=config)
+        self._set_checkbox(self.dry_run_check, bool(config.dry_run))
+        self._set_line_text(self.tool_id_edit, str(config.tool_id or "0A"))
+        self._set_combo_value(self.target_set_combo, str(config.schedule.target_set or "single_segment_ring_17"))
+        self._set_double(self.low_magnitude_spin, float(config.schedule.low_magnitude_cm))
+        self._set_double(self.high_magnitude_spin, float(config.schedule.high_magnitude_cm))
+        self._set_spin(self.seed_spin, int(config.schedule.seed))
+        self._set_spin(self.revisit_count_spin, int(config.schedule.revisit_count))
+        self._set_spin(self.samples_per_point_spin, int(config.schedule.samples_per_point))
+        self._set_double(self.settle_time_spin, float(config.schedule.settle_time_s))
+        self._set_checkbox(self.randomize_check, bool(config.schedule.randomize_approach_order))
+        self._set_plain_text(self.target_points_edit, _yaml_block(config.schedule.target_points_cm))
+        manual_mode = str(config.schedule.target_set or "single_segment_ring_17") == "manual"
+        self.manual_target_label.setVisible(manual_mode)
+        self.target_points_edit.setVisible(manual_mode)
+        self.low_magnitude_spin.setEnabled(not manual_mode)
+        self.high_magnitude_spin.setEnabled(not manual_mode)
+        self._sync_target_table(preview)
+        self._sync_schedule_summary(preview)
+
+    def _on_target_set_changed(self) -> None:
+        self.controller.set_config_value("schedule.target_set", str(self.target_set_combo.currentData()))
+        try:
+            self.set_state(self.controller.refresh())
+        except Exception:
+            return
+
+    def _repeatability_config(self) -> RepeatabilityDatasetConfig:
+        return RepeatabilityDatasetConfig.from_dict(self.controller.config_payload())
+
+    def _current_preview(self, *, config: RepeatabilityDatasetConfig | None = None) -> RepeatabilityPreview:
+        config = config or self._repeatability_config()
+        try:
+            tendon_count = len(self.controller.settings.robot.tendon_to_servo or self.controller.settings.robot.servo_ids)
+            return build_repeatability_preview(config, tendon_count=tendon_count)
+        except Exception:
+            return RepeatabilityPreview(target_catalog=[], visits=[], summary={})
+
+    def _sync_target_table(self, preview: RepeatabilityPreview) -> None:
+        visits_by_target = dict(preview.summary.get("visits_by_target", {}) or {})
+        approach_counts = dict(preview.summary.get("unique_approach_counts", {}) or {})
+        with QSignalBlocker(self.target_table):
+            self.target_table.setRowCount(len(preview.target_catalog))
+            for row, entry in enumerate(preview.target_catalog):
+                target_key = str(entry.get("target_index"))
+                groups = ", ".join(str(tag) for tag in entry.get("group_tags", []) or []) or str(entry.get("axis_class", ""))
+                cells = [
+                    str(entry.get("label", f"T{row + 1:02d}")),
+                    groups,
+                    _render_inline_list(entry.get("tendon_deltas_cm", [])),
+                    str(int(visits_by_target.get(target_key, 0) or 0)),
+                    str(int(approach_counts.get(target_key, 0) or 0)),
+                ]
+                for column, text in enumerate(cells):
+                    self.target_table.setItem(row, column, QTableWidgetItem(text))
+
+    def _sync_schedule_summary(self, preview: RepeatabilityPreview) -> None:
+        axis_counts = dict(preview.summary.get("axis_counts", {}) or {})
+        magnitude_counts = dict(preview.summary.get("magnitude_counts", {}) or {})
+        self.schedule_summary_widget.set_pairs(
+            [
+                ("Target Set", str(preview.summary.get("target_set", "n/a")).replace("_", " ")),
+                ("Targets", str(int(preview.summary.get("target_count", 0) or 0))),
+                ("Planned Revisits", str(int(preview.summary.get("visit_count", 0) or 0))),
+                ("Planned Samples", str(int(preview.summary.get("planned_sample_count", 0) or 0))),
+                (
+                    "Axis Groups",
+                    f"on-axis={int(axis_counts.get('on_axis', 0) or 0)}, "
+                    f"off-axis={int(axis_counts.get('off_axis', 0) or 0)}",
+                ),
+                (
+                    "Magnitude Groups",
+                    f"low={int(magnitude_counts.get('low', 0) or 0)}, "
+                    f"high={int(magnitude_counts.get('high', 0) or 0)}",
+                ),
+                ("Thesis Goal", "< 1.0 mm overall repeatability RMS"),
+            ]
         )
-        target_points = self.controller.get_config_value("schedule.target_points_cm", [])
-        self._set_plain_text(self.target_points_edit, _yaml_block(target_points))
 
 
 class AuroraGridAccuracyPage(ExperimentPageBase):

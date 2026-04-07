@@ -133,10 +133,14 @@ def _build_repeatability_model(
             distances_mm.append(float(np.linalg.norm(np.asarray(position, dtype=float) - center)))
 
     series = _grouped_series(grouped, base_label="Samples")
+    ordered_target_metrics = sorted(
+        (metrics.get("per_target_metrics", {}) or {}).values(),
+        key=lambda item: int(item.get("target_index", 10**9)),
+    )
     if show_centroids:
         centroid_points = [
             tuple(float(value) for value in point_metrics["centroid_mm"])
-            for _, point_metrics in sorted((metrics.get("per_target_metrics", {}) or {}).items(), key=lambda item: int(item[0]))
+            for point_metrics in ordered_target_metrics
             if point_metrics.get("centroid_mm")
         ]
         if centroid_points:
@@ -153,22 +157,60 @@ def _build_repeatability_model(
     per_target = metrics.get("per_target_metrics", {}) or {}
     spread_chart = ChartModel(
         kind="bar",
-        title="Per-Target Spread",
+        title="Per-Target Repeatability RMS",
         x_title="Target",
-        y_title="Spread RMS (mm)",
-        caption="Each bar shows the RMS spread for one revisited target in the selected pose frame.",
-        categories=[str(target) for target in sorted(per_target, key=int)],
-        values=[float(per_target[target]["spread_rms_mm"]) for target in sorted(per_target, key=int)],
+        y_title="Repeatability RMS (mm)",
+        caption="Each bar shows the RMS spread for one revisited target after repeated returns from different prior states.",
+        categories=[str(point_metrics.get("label", f"T{index + 1:02d}")) for index, point_metrics in enumerate(ordered_target_metrics)],
+        values=[float(point_metrics.get("spread_rms_mm", 0.0) or 0.0) for point_metrics in ordered_target_metrics],
         color_hex="#2563eb",
     )
-    histogram = _histogram_chart(
-        title="Repeatability Error Distribution",
-        values=distances_mm,
-        x_title="Distance To Target Centroid (mm)",
-        y_title="Count",
-        caption="Histogram of sample distances from each target centroid.",
-        color_hex="#0f766e",
+    max_chart = ChartModel(
+        kind="bar",
+        title="Per-Target Max Deviation",
+        x_title="Target",
+        y_title="Max Deviation (mm)",
+        caption="Maximum deviation from the target centroid for each revisited target.",
+        categories=[str(point_metrics.get("label", f"T{index + 1:02d}")) for index, point_metrics in enumerate(ordered_target_metrics)],
+        values=[float(point_metrics.get("max_deviation_mm", 0.0) or 0.0) for point_metrics in ordered_target_metrics],
+        color_hex="#dc2626",
     )
+    charts: list[ChartModel] = [spread_chart, max_chart]
+    group_metrics = metrics.get("group_metrics", {}) or {}
+    group_categories: list[str] = []
+    group_values: list[float] = []
+    axis_groups = group_metrics.get("axis_class", {}) or {}
+    magnitude_groups = group_metrics.get("magnitude_class", {}) or {}
+    for label, value in sorted(axis_groups.items()):
+        group_categories.append(f"axis:{label}")
+        group_values.append(float(value.get("mean_target_rms_mm", 0.0) or 0.0))
+    for label, value in sorted(magnitude_groups.items()):
+        group_categories.append(f"mag:{label}")
+        group_values.append(float(value.get("mean_target_rms_mm", 0.0) or 0.0))
+    if group_categories:
+        charts.append(
+            ChartModel(
+                kind="bar",
+                title="Grouped Mean Target RMS",
+                x_title="Target Group",
+                y_title="Mean Target RMS (mm)",
+                caption="Legacy-inspired grouped comparison across on-axis/off-axis and low/high-magnitude target classes when those classes are defined.",
+                categories=group_categories,
+                values=group_values,
+                color_hex="#0f766e",
+            )
+        )
+    else:
+        charts.append(
+            _histogram_chart(
+                title="Repeatability Error Distribution",
+                values=distances_mm,
+                x_title="Distance To Target Centroid (mm)",
+                y_title="Count",
+                caption="Histogram of sample distances from each target centroid.",
+                color_hex="#0f766e",
+            )
+        )
     acceptance_lines = _acceptance_lines(
         experiment_name="repeatability_dataset",
         metrics=metrics,
@@ -177,14 +219,23 @@ def _build_repeatability_model(
     summary_lines = [
         f"Run status: {metrics.get('status', 'unknown')}",
         f"Pose frame: {metrics.get('position_frame', 'unknown')}",
+        f"Targets summarized: {metrics.get('target_count', len(per_target))}",
+        f"Target revisits: {metrics.get('visit_count', 0)}",
         f"Valid samples: {metrics.get('valid_sample_count', 0)}",
         f"Invalid samples: {metrics.get('invalid_sample_count', 0)}",
         f"Overall repeatability RMS: {_fmt(metrics.get('overall_repeatability_rms_mm'))} mm",
+        f"Overall max deviation: {_fmt(metrics.get('overall_max_deviation_mm'))} mm",
+        f"Path-dependence RMS shift: {_fmt(metrics.get('path_dependence_rms_mm'))} mm",
+        (
+            "Thesis target (< 1.000 mm): PASS"
+            if metrics.get("thesis_goal_pass")
+            else "Thesis target (< 1.000 mm): not yet met"
+        ),
     ]
     summary_lines.extend(acceptance_lines)
     return VisualizationModel(
         series_3d=series,
-        charts=[spread_chart, histogram],
+        charts=charts,
         summary_lines=summary_lines,
     )
 
@@ -357,7 +408,7 @@ def _repeatability_group_key(*, sample, color_mode: str) -> str:
         return f"Revisit {sample.revisit_index}"
     if color_mode == "validity":
         return "Valid" if "tracker_data_stale" not in sample.status_flags else "Stale"
-    return f"Target {sample.target_index}"
+    return str(sample.extra.get("target_label") or f"Target {sample.target_index}")
 
 
 def _grid_group_key(*, sample, color_mode: str) -> str:

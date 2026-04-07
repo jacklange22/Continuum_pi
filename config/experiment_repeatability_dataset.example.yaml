@@ -3,13 +3,15 @@ tool_id: "0A"
 synthetic_noise_std_mm: 0.35
 synthetic_hysteresis_mm: 0.8
 schedule:
-  target_points_cm:
-    - [0.00, 0.00, 0.00, 0.00]
-    - [0.10, 0.00, 0.00, 0.00]
-    - [0.00, 0.10, 0.00, 0.00]
-    - [0.00, 0.00, 0.10, 0.00]
-  revisit_count: 3
-  randomize_approach_order: false
+  target_set: "single_segment_ring_17"
+  low_magnitude_cm: 0.10
+  high_magnitude_cm: 0.20
+  revisit_count: 4
+  randomize_approach_order: true
   seed: 7
   settle_time_s: 0.0
   samples_per_point: 3
+acceptance:
+  repeatability_rms_warn_mm: 1.0
+  repeatability_rms_fail_mm: 1.5
+  min_valid_sample_count: 20

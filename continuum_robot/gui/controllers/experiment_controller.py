@@ -11,7 +11,12 @@ from typing import Any
 
 import yaml
 
-from continuum_robot.experiments.critical_experiments import GridDefinitionConfig, build_grid_accuracy_preview
+from continuum_robot.experiments.critical_experiments import (
+    GridDefinitionConfig,
+    RepeatabilityDatasetConfig,
+    build_grid_accuracy_preview,
+    build_repeatability_preview,
+)
 from continuum_robot.gui.experiment_parameters import apply_field_value, dump_payload, parse_field_value
 from continuum_robot.gui.experiment_preflight import PreflightReport, RUN_BLOCKED, evaluate_preflight
 from continuum_robot.gui.experiment_visualization import VisualizationModel, build_visualization_model
@@ -783,12 +788,20 @@ class ExperimentController:
     @staticmethod
     def _config_summary_label(experiment_name: str, config_payload: dict[str, Any]) -> str:
         if experiment_name == "repeatability_dataset":
-            schedule = config_payload.get("schedule", {}) or {}
-            targets = len(schedule.get("target_points_cm", []) or [])
+            schedule = RepeatabilityDatasetConfig.from_dict(config_payload).schedule
+            try:
+                preview = build_repeatability_preview(
+                    RepeatabilityDatasetConfig.from_dict(config_payload),
+                    tendon_count=None,
+                )
+                target_count = int(preview.summary.get("target_count", 0) or 0)
+            except Exception:
+                target_count = len(schedule.target_points_cm or [])
             return (
-                f"{targets} targets, "
-                f"{int(schedule.get('revisit_count', 0) or 0)} revisits, "
-                f"{int(schedule.get('samples_per_point', 0) or 0)} samples/point"
+                f"{str(schedule.target_set).replace('_', ' ')}, "
+                f"{target_count} targets, "
+                f"{int(schedule.revisit_count)} revisits, "
+                f"{int(schedule.samples_per_point)} samples/visit"
             )
         if experiment_name == "aurora_grid_accuracy":
             captured_points = config_payload.get("captured_points", []) or []

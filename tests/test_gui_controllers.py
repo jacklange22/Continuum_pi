@@ -1627,6 +1627,30 @@ def test_grid_accuracy_page_captures_labeled_points_and_updates_preview(tmp_path
     assert any(label == "Raw Samples" for label, _value in refreshed.result_details)
 
 
+def test_repeatability_page_uses_custom_schedule_preview_and_target_catalog(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("repeatability_dataset")
+    state = controller.refresh()
+    tab.update(state)
+    page = tab._page_for("repeatability_dataset")
+
+    assert page.target_set_combo.currentData() == "single_segment_ring_17"
+    assert page.manual_target_label.isHidden() is True
+    assert page.target_table.rowCount() == 17
+    assert page.target_table.item(0, 0).text() == "Home"
+    assert "single_segment_ring_17" in controller.refresh().config_text
+
+    page.target_set_combo.setCurrentIndex(page.target_set_combo.findData("manual"))
+    page.target_points_edit.setPlainText("- [0.0, 0.0, 0.0, 0.0]\n- [0.1, 0.0, 0.0, 0.0]")
+    tab.update(controller.refresh())
+
+    assert page.manual_target_label.isHidden() is False
+    assert controller.get_config_value("schedule.target_set") == "manual"
+    assert page.target_table.rowCount() == 2
+
+
 def test_experiment_workspace_parameter_edit_updates_serialized_config(tmp_path: Path) -> None:
     controller = _experiment_controller(tmp_path)
     controller.select_experiment("command_schedule_validation")

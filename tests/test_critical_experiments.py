@@ -15,9 +15,11 @@ from continuum_robot.config.schemas import (
 from continuum_robot.config.settings import Settings
 from continuum_robot.experiments.critical_experiments import (
     GridDefinitionConfig,
+    RepeatabilityDatasetConfig,
     RepeatabilityScheduleConfig,
     analyze_repeatability_dataset,
     build_grid_accuracy_preview,
+    build_repeatability_preview,
     compute_grid_accuracy_metrics,
     compute_repeatability_metrics,
     generate_repeatability_schedule,
@@ -235,6 +237,34 @@ def test_repeatability_schedule_generation_is_deterministic_and_cycles_approache
     ]
 
 
+def test_repeatability_preview_builds_legacy_ring_target_catalog() -> None:
+    preview = build_repeatability_preview(
+        RepeatabilityDatasetConfig.from_dict(
+            {
+                "schedule": {
+                    "target_set": "single_segment_ring_17",
+                    "low_magnitude_cm": 0.10,
+                    "high_magnitude_cm": 0.20,
+                    "revisit_count": 4,
+                    "samples_per_point": 3,
+                }
+            }
+        ),
+        tendon_count=4,
+    )
+
+    assert preview.summary["target_count"] == 17
+    assert preview.summary["visit_count"] == 68
+    assert preview.summary["planned_sample_count"] == 204
+    assert preview.summary["axis_counts"]["on_axis"] == 8
+    assert preview.summary["axis_counts"]["off_axis"] == 8
+    assert preview.summary["magnitude_counts"]["low"] == 8
+    assert preview.summary["magnitude_counts"]["high"] == 8
+    assert preview.target_catalog[0]["label"] == "Home"
+    assert preview.target_catalog[1]["label"] == "L000"
+    assert preview.target_catalog[9]["label"] == "H000"
+
+
 def test_repeatability_metrics_on_synthetic_samples() -> None:
     samples = [
         _sample(tool_id="0A", tracker_position=[0.1, 0.0, 0.0], robot_position=[0.0, 0.0, 0.0], target_index=0, revisit_index=0, approach_index=1, sample_index=0),
@@ -254,6 +284,39 @@ def test_repeatability_metrics_on_synthetic_samples() -> None:
     assert np.isclose(metrics["per_target_metrics"]["0"]["spread_rms_mm"], np.sqrt(4.0 / 9.0))
     assert np.isclose(metrics["overall_repeatability_rms_mm"], np.sqrt(4.0 / 9.0))
     assert "1->0" in metrics["approach_conditioned_spread_mm"]
+    assert np.isclose(metrics["overall_max_deviation_mm"], np.sqrt(5.0) / 3.0)
+    assert metrics["visit_count"] == 6
+    assert metrics["target_count"] == 2
+
+
+def test_repeatability_metrics_compute_grouped_and_path_dependence_metrics() -> None:
+    samples = [
+        _sample(tool_id="0A", tracker_position=[0.0, 0.0, 0.0], robot_position=[0.0, 0.0, 0.0], target_index=0, revisit_index=0, approach_index=1, sample_index=0),
+        _sample(tool_id="0A", tracker_position=[0.2, 0.0, 0.0], robot_position=[0.2, 0.0, 0.0], target_index=0, revisit_index=1, approach_index=2, sample_index=1),
+        _sample(tool_id="0A", tracker_position=[10.0, 0.0, 0.0], robot_position=[10.0, 0.0, 0.0], target_index=1, revisit_index=0, approach_index=0, sample_index=2),
+        _sample(tool_id="0A", tracker_position=[10.2, 0.0, 0.0], robot_position=[10.2, 0.0, 0.0], target_index=1, revisit_index=1, approach_index=2, sample_index=3),
+        _sample(tool_id="0A", tracker_position=[0.0, 10.0, 0.0], robot_position=[0.0, 10.0, 0.0], target_index=2, revisit_index=0, approach_index=0, sample_index=4),
+        _sample(tool_id="0A", tracker_position=[0.3, 10.0, 0.0], robot_position=[0.3, 10.0, 0.0], target_index=2, revisit_index=1, approach_index=1, sample_index=5),
+    ]
+    metadata = {
+        0: {"target_label": "L000", "target_axis_class": "on_axis", "target_magnitude_class": "low", "target_groups": ["low", "on_axis", "low_on_axis"]},
+        1: {"target_label": "L045", "target_axis_class": "off_axis", "target_magnitude_class": "low", "target_groups": ["low", "off_axis", "low_off_axis"]},
+        2: {"target_label": "H000", "target_axis_class": "on_axis", "target_magnitude_class": "high", "target_groups": ["high", "on_axis", "high_on_axis"]},
+    }
+    approach_labels = {0: "L000", 1: "L045", 2: "H000"}
+    for sample in samples:
+        sample.extra.update(metadata[int(sample.target_index)])
+        sample.extra["approach_label"] = approach_labels[int(sample.approach_index)]
+
+    metrics = compute_repeatability_metrics(samples, tool_id="0A")
+
+    assert metrics["per_target_metrics"]["0"]["label"] == "L000"
+    assert metrics["group_metrics"]["axis_class"]["on_axis"]["target_count"] == 2
+    assert metrics["group_metrics"]["axis_class"]["off_axis"]["target_count"] == 1
+    assert metrics["group_metrics"]["magnitude_class"]["low"]["target_count"] == 2
+    assert metrics["group_metrics"]["magnitude_class"]["high"]["target_count"] == 1
+    assert metrics["path_dependence_rms_mm"] is not None
+    assert "L045->H000" in metrics["approach_conditioned_centroid_shift_mm"]
 
 
 def test_aurora_grid_metrics_fit_truth_grid_and_report_residuals() -> None:
@@ -428,6 +491,37 @@ def test_repeatability_dataset_reports_partial_success_without_registration(tmp_
     assert analysis["experiment_name"] == "repeatability_dataset"
     assert analysis["summary_status"] == "partial_success"
     assert analysis["valid_sample_count"] > 0
+
+
+def test_repeatability_dataset_run_saves_prior_state_identity_and_target_catalog(tmp_path: Path) -> None:
+    runner = _runner(tmp_path)
+    result = runner.run_experiment(
+        "repeatability_dataset",
+        config={
+            "dry_run": True,
+            "tool_id": "0A",
+            "schedule": {
+                "target_set": "single_segment_ring_17",
+                "low_magnitude_cm": 0.10,
+                "high_magnitude_cm": 0.20,
+                "revisit_count": 2,
+                "samples_per_point": 1,
+                "randomize_approach_order": False,
+            },
+        },
+    )
+
+    assert result.success is True
+    assert result.paths.output_dir.parent == tmp_path / "data" / "experiments"
+    assert result.summary.experiment_metrics["target_catalog"]
+    assert result.summary.experiment_metrics["planned_visit_count"] == 34
+    bundle = runner.load_dataset(result.paths.output_dir)
+    measurement_samples = [sample for sample in bundle.samples if sample.phase == "sample"]
+    assert measurement_samples
+    first = measurement_samples[0]
+    assert first.extra["target_label"]
+    assert first.extra["approach_label"]
+    assert first.extra["target_set"] == "single_segment_ring_17"
 
 
 def test_aurora_grid_accuracy_missing_tip_calibration_is_classified(tmp_path: Path) -> None:

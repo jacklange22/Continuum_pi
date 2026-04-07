@@ -44,7 +44,11 @@ from continuum_robot.tracking.transforms import quat_wxyz_to_rotmat, rotmat_to_q
 class RepeatabilityScheduleConfig:
     """Config for repeatability revisit scheduling."""
 
+    target_set: str = ""
+    target_labels: list[str] = field(default_factory=list)
     target_points_cm: list[list[float]] = field(default_factory=list)
+    low_magnitude_cm: float = 0.10
+    high_magnitude_cm: float = 0.20
     revisit_count: int = 3
     randomize_approach_order: bool = False
     seed: int = 0
@@ -54,11 +58,18 @@ class RepeatabilityScheduleConfig:
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "RepeatabilityScheduleConfig":
         payload = dict(payload or {})
+        explicit_target_set = str(payload.get("target_set", "") or "").strip()
+        target_points_payload = payload.get("target_points_cm", []) or []
+        target_set = explicit_target_set or ("manual" if target_points_payload else "single_segment_ring_17")
         return cls(
+            target_set=target_set,
+            target_labels=[str(value) for value in payload.get("target_labels", []) or []],
             target_points_cm=[
                 [float(value) for value in point]
-                for point in payload.get("target_points_cm", []) or []
+                for point in target_points_payload
             ],
+            low_magnitude_cm=float(payload.get("low_magnitude_cm", 0.10)),
+            high_magnitude_cm=float(payload.get("high_magnitude_cm", 0.20)),
             revisit_count=int(payload.get("revisit_count", 3)),
             randomize_approach_order=bool(payload.get("randomize_approach_order", False)),
             seed=int(payload.get("seed", 0)),
@@ -77,6 +88,14 @@ class RepeatabilityVisit:
     approach_index: int
     approach_deltas_cm: list[float]
     target_deltas_cm: list[float]
+    approach_label: str = ""
+    target_label: str = ""
+    approach_groups: list[str] = field(default_factory=list)
+    target_groups: list[str] = field(default_factory=list)
+    approach_axis_class: str | None = None
+    target_axis_class: str | None = None
+    approach_magnitude_class: str | None = None
+    target_magnitude_class: str | None = None
 
 
 @dataclass
@@ -190,6 +209,15 @@ class GridAccuracyPreview:
 
 
 @dataclass
+class RepeatabilityPreview:
+    """Resolved target/schedule preview for the repeatability page and preflight."""
+
+    target_catalog: list[dict[str, Any]]
+    visits: list[RepeatabilityVisit]
+    summary: dict[str, Any]
+
+
+@dataclass
 class PivotCalibrationConfig:
     """Config for pivot calibration and tip file generation."""
 
@@ -233,7 +261,10 @@ class RepeatabilityDatasetExperiment(BaseExperiment):
     """Main repeatability and core robot dataset experiment."""
 
     name = "repeatability_dataset"
-    description = "Revisit target command points from multiple prior states and summarize repeatability."
+    description = (
+        "Revisit the same commanded targets from different prior states, save a canonical repeatability dataset, "
+        "and summarize per-target spread plus path-dependence."
+    )
     hardware_requirements = ExperimentHardwareRequirements(tracking_required=True, mock_compatible=True)
 
     def __init__(self, config: RepeatabilityDatasetConfig) -> None:
@@ -252,16 +283,39 @@ class RepeatabilityDatasetExperiment(BaseExperiment):
         self._neutral_ticks = _load_neutral_ticks(session)
 
     def precheck(self, session: ExperimentSession) -> None:
-        if not self.config.schedule.target_points_cm:
-            raise RuntimeError("repeatability_dataset requires schedule.target_points_cm")
+        tendon_count = len(session.context.settings.robot.tendon_to_servo or session.context.settings.robot.servo_ids)
+        target_catalog = build_repeatability_target_catalog(self.config.schedule, tendon_count=tendon_count)
+        if not target_catalog:
+            raise RuntimeError("repeatability_dataset requires at least one repeatability target")
 
     def execute(self, session: ExperimentSession) -> None:
-        visits = generate_repeatability_schedule(self.config.schedule)
+        tendon_count = len(session.context.settings.robot.tendon_to_servo or session.context.settings.robot.servo_ids)
+        target_catalog = build_repeatability_target_catalog(self.config.schedule, tendon_count=tendon_count)
+        resolved_target_set = str(self.config.schedule.target_set or "").strip() or (
+            "manual" if self.config.schedule.target_points_cm else "single_segment_ring_17"
+        )
+        visits = generate_repeatability_schedule(
+            self.config.schedule,
+            tendon_count=tendon_count,
+            target_catalog=target_catalog,
+        )
         rng = np.random.default_rng(self.config.schedule.seed)
         total = len(visits) * (3 + max(1, self.config.schedule.samples_per_point))
         completed = 0
-        for visit in visits:
+        for visit_sequence_index, visit in enumerate(visits):
             session.raise_if_stop_requested()
+            visit_extra = {
+                "target_label": visit.target_label,
+                "approach_label": visit.approach_label,
+                "target_groups": list(visit.target_groups),
+                "approach_groups": list(visit.approach_groups),
+                "target_axis_class": visit.target_axis_class,
+                "approach_axis_class": visit.approach_axis_class,
+                "target_magnitude_class": visit.target_magnitude_class,
+                "approach_magnitude_class": visit.approach_magnitude_class,
+                "target_set": resolved_target_set,
+                "visit_sequence_index": int(visit_sequence_index),
+            }
             approach_payload = _issue_command_payload(
                 session,
                 tendon_displacement_cm=visit.approach_deltas_cm,
@@ -295,6 +349,7 @@ class RepeatabilityDatasetExperiment(BaseExperiment):
                     ),
                     tracker_tool_id=self.config.tool_id,
                     status_flags=["dry_run"] if self.config.dry_run else [],
+                    extra=visit_extra,
                 )
             )
             completed += 1
@@ -320,6 +375,7 @@ class RepeatabilityDatasetExperiment(BaseExperiment):
                     ),
                     tracker_tool_id=self.config.tool_id,
                     status_flags=["dry_run"] if self.config.dry_run else [],
+                    extra=visit_extra,
                 )
             )
             completed += 1
@@ -357,6 +413,7 @@ class RepeatabilityDatasetExperiment(BaseExperiment):
                     ),
                     tracker_tool_id=self.config.tool_id,
                     status_flags=["dry_run"] if self.config.dry_run else [],
+                    extra=visit_extra,
                 )
             )
             completed += 1
@@ -387,11 +444,25 @@ class RepeatabilityDatasetExperiment(BaseExperiment):
                         ),
                         tracker_tool_id=self.config.tool_id,
                         status_flags=["dry_run"] if self.config.dry_run else [],
+                        extra=visit_extra,
                     )
                 )
                 completed += 1
                 session.update_progress(completed, total, {"phase": "sample", "target_index": visit.target_index})
         metrics = compute_repeatability_metrics(session.samples, tool_id=self.config.tool_id)
+        metrics["target_catalog"] = [
+            {
+                "target_index": int(entry["target_index"]),
+                "label": str(entry["label"]),
+                "tendon_deltas_cm": [float(value) for value in entry["tendon_deltas_cm"]],
+                "axis_class": str(entry.get("axis_class", "")),
+                "magnitude_class": str(entry.get("magnitude_class", "")),
+                "group_tags": [str(tag) for tag in entry.get("group_tags", []) or []],
+            }
+            for entry in target_catalog
+        ]
+        metrics["planned_visit_count"] = len(visits)
+        metrics["planned_sample_count"] = len(visits) * max(1, self.config.schedule.samples_per_point)
         metrics["registration_available"] = session.context.registration_path.exists()
         metrics["summary_requirements"] = {"force_status": metrics["status"]}
         session.metrics.update(metrics)
@@ -399,7 +470,7 @@ class RepeatabilityDatasetExperiment(BaseExperiment):
     def finalize(self, session: ExperimentSession) -> None:
         try:
             if not self.config.dry_run and session.context.servo_service.is_connected and self._neutral_ticks:
-                zero_vector = [0.0] * len(self.config.schedule.target_points_cm[0])
+                zero_vector = [0.0] * len(self._neutral_ticks)
                 _issue_command_payload(
                     session,
                     tendon_displacement_cm=zero_vector,
@@ -716,11 +787,109 @@ def register_critical_experiments(registry) -> None:
     )
 
 
-def generate_repeatability_schedule(config: RepeatabilityScheduleConfig) -> list[RepeatabilityVisit]:
+def build_repeatability_target_catalog(
+    config: RepeatabilityScheduleConfig,
+    *,
+    tendon_count: int | None = None,
+) -> list[dict[str, Any]]:
+    """Resolve the configured repeatability target set into labeled canonical targets."""
+    target_set = str(config.target_set or "").strip().lower()
+    if not target_set:
+        target_set = "manual" if config.target_points_cm else "single_segment_ring_17"
+    if target_set == "single_segment_ring_17":
+        return _build_single_segment_ring_targets(
+            low_magnitude_cm=float(config.low_magnitude_cm),
+            high_magnitude_cm=float(config.high_magnitude_cm),
+            tendon_count=(4 if tendon_count in (None, 0) else int(tendon_count)),
+        )
+    if target_set == "manual":
+        targets = [[float(value) for value in point] for point in config.target_points_cm]
+        if not targets:
+            return []
+        if tendon_count is not None:
+            bad = sorted({len(point) for point in targets if len(point) != int(tendon_count)})
+            if bad:
+                raise ValueError(
+                    f"Manual repeatability targets must contain {int(tendon_count)} tendon values, found {bad}."
+                )
+        labels = [str(value).strip() for value in config.target_labels if str(value).strip()]
+        catalog: list[dict[str, Any]] = []
+        for index, point in enumerate(targets):
+            label = labels[index] if index < len(labels) else f"T{index + 1:02d}"
+            catalog.append(
+                {
+                    "target_index": int(index),
+                    "label": label,
+                    "tendon_deltas_cm": [float(value) for value in point],
+                    "axis_class": "custom",
+                    "magnitude_class": "custom",
+                    "angle_deg": None,
+                    "group_tags": ["custom"],
+                }
+            )
+        return catalog
+    raise ValueError(f"Unsupported repeatability target set: {config.target_set}")
+
+
+def build_repeatability_preview(
+    config: RepeatabilityDatasetConfig,
+    *,
+    tendon_count: int | None = None,
+) -> RepeatabilityPreview:
+    """Build the repeatability target/schedule preview for the custom page."""
+    target_catalog = build_repeatability_target_catalog(config.schedule, tendon_count=tendon_count)
+    visits = generate_repeatability_schedule(
+        config.schedule,
+        tendon_count=tendon_count,
+        target_catalog=target_catalog,
+    )
+    axis_counts: dict[str, int] = {}
+    magnitude_counts: dict[str, int] = {}
+    visits_by_target: dict[int, int] = {}
+    unique_approaches_by_target: dict[int, set[int]] = {}
+    for entry in target_catalog:
+        axis = str(entry.get("axis_class", "unknown"))
+        magnitude = str(entry.get("magnitude_class", "unknown"))
+        axis_counts[axis] = int(axis_counts.get(axis, 0) + 1)
+        magnitude_counts[magnitude] = int(magnitude_counts.get(magnitude, 0) + 1)
+        visits_by_target[int(entry["target_index"])] = 0
+        unique_approaches_by_target[int(entry["target_index"])] = set()
+    for visit in visits:
+        visits_by_target[int(visit.target_index)] = int(visits_by_target.get(int(visit.target_index), 0) + 1)
+        unique_approaches_by_target.setdefault(int(visit.target_index), set()).add(int(visit.approach_index))
+    resolved_target_set = str(config.schedule.target_set or "").strip() or (
+        "manual" if config.schedule.target_points_cm else "single_segment_ring_17"
+    )
+    summary = {
+        "target_set": resolved_target_set,
+        "target_count": len(target_catalog),
+        "visit_count": len(visits),
+        "planned_sample_count": len(visits) * max(1, int(config.schedule.samples_per_point)),
+        "axis_counts": axis_counts,
+        "magnitude_counts": magnitude_counts,
+        "visits_by_target": {str(key): int(value) for key, value in visits_by_target.items()},
+        "unique_approach_counts": {
+            str(key): len(value)
+            for key, value in unique_approaches_by_target.items()
+        },
+    }
+    return RepeatabilityPreview(target_catalog=target_catalog, visits=visits, summary=summary)
+
+
+def generate_repeatability_schedule(
+    config: RepeatabilityScheduleConfig,
+    *,
+    tendon_count: int | None = None,
+    target_catalog: list[dict[str, Any]] | None = None,
+) -> list[RepeatabilityVisit]:
     """Generate deterministic or randomized revisit ordering for repeatability."""
-    targets = [[float(value) for value in point] for point in config.target_points_cm]
-    if not targets:
+    catalog = list(target_catalog or build_repeatability_target_catalog(config, tendon_count=tendon_count))
+    if not catalog:
         raise ValueError("Repeatability schedule requires at least one target point")
+    targets = [
+        [float(value) for value in entry["tendon_deltas_cm"]]
+        for entry in catalog
+    ]
     n_targets = len(targets)
     sequences_by_target: dict[int, list[int]] = {}
     rng = random.Random(config.seed)
@@ -742,6 +911,8 @@ def generate_repeatability_schedule(config: RepeatabilityScheduleConfig) -> list
     for cycle_index in range(max(1, config.revisit_count)):
         for target_index in range(n_targets):
             approach_index = sequences_by_target[target_index][cycle_index]
+            target_entry = catalog[target_index]
+            approach_entry = catalog[approach_index]
             visits.append(
                 RepeatabilityVisit(
                     cycle_index=cycle_index,
@@ -750,6 +921,30 @@ def generate_repeatability_schedule(config: RepeatabilityScheduleConfig) -> list
                     approach_index=approach_index,
                     approach_deltas_cm=list(targets[approach_index]),
                     target_deltas_cm=list(targets[target_index]),
+                    approach_label=str(approach_entry.get("label", f"T{approach_index + 1:02d}")),
+                    target_label=str(target_entry.get("label", f"T{target_index + 1:02d}")),
+                    approach_groups=[str(value) for value in approach_entry.get("group_tags", []) or []],
+                    target_groups=[str(value) for value in target_entry.get("group_tags", []) or []],
+                    approach_axis_class=(
+                        str(approach_entry.get("axis_class"))
+                        if approach_entry.get("axis_class") is not None
+                        else None
+                    ),
+                    target_axis_class=(
+                        str(target_entry.get("axis_class"))
+                        if target_entry.get("axis_class") is not None
+                        else None
+                    ),
+                    approach_magnitude_class=(
+                        str(approach_entry.get("magnitude_class"))
+                        if approach_entry.get("magnitude_class") is not None
+                        else None
+                    ),
+                    target_magnitude_class=(
+                        str(target_entry.get("magnitude_class"))
+                        if target_entry.get("magnitude_class") is not None
+                        else None
+                    ),
                 )
             )
     return visits
@@ -776,54 +971,198 @@ def compute_repeatability_metrics(
     if not valid_samples:
         return {
             "status": STATUS_INVALID_INSUFFICIENT_SAMPLES,
+            "position_frame": "unknown",
+            "registration_available": False,
+            "tip_calibration_available": True,
+            "target_count": 0,
+            "visit_count": 0,
             "valid_sample_count": 0,
             "invalid_sample_count": invalid_count,
             "dropped_sample_count": invalid_count,
+            "overall_max_deviation_mm": None,
+            "path_dependence_rms_mm": None,
+            "path_dependence_max_shift_mm": None,
             "per_target_metrics": {},
             "overall_repeatability_rms_mm": None,
+            "per_target_repeatability_rms_mm": {},
+            "per_target_max_deviation_mm": {},
+            "approach_conditioned_centroid_shift_mm": {},
+            "per_target_path_dependence_mm": {},
+            "group_metrics": {},
         }
     grouped = group_positions_by_key(
         [item[0] for item in valid_samples],
         key_fn=lambda sample: int(sample.target_index),
         position_fn=lambda sample: extract_tip_or_tool_position_mm(sample, tool_id=tool_id, prefer_robot_frame=True)[0],
     )
+    samples_by_target: dict[int, list[tuple[Any, list[float]]]] = {}
+    for sample, position in valid_samples:
+        samples_by_target.setdefault(int(sample.target_index), []).append((sample, [float(value) for value in position]))
     per_target_metrics: dict[str, Any] = {}
     centroid_by_target: dict[int, np.ndarray] = {}
-    for target_index, positions in grouped.items():
+    per_target_repeatability: dict[str, float] = {}
+    per_target_max_deviation: dict[str, float] = {}
+    overall_deviation_norms: list[float] = []
+    for target_index in sorted(grouped):
+        positions = grouped[target_index]
         centroid = centroid_mm(positions)
         centroid_by_target[int(target_index)] = centroid
-        per_target_metrics[str(target_index)] = {
+        target_samples = samples_by_target.get(int(target_index), [])
+        label = next(
+            (
+                str(sample.extra.get("target_label"))
+                for sample, _position in target_samples
+                if sample.extra.get("target_label")
+            ),
+            f"T{int(target_index) + 1:02d}",
+        )
+        axis_class = next(
+            (
+                str(sample.extra.get("target_axis_class"))
+                for sample, _position in target_samples
+                if sample.extra.get("target_axis_class") not in (None, "")
+            ),
+            None,
+        )
+        magnitude_class = next(
+            (
+                str(sample.extra.get("target_magnitude_class"))
+                for sample, _position in target_samples
+                if sample.extra.get("target_magnitude_class") not in (None, "")
+            ),
+            None,
+        )
+        group_tags = sorted(
+            {
+                str(tag)
+                for sample, _position in target_samples
+                for tag in (sample.extra.get("target_groups", []) or [])
+                if str(tag)
+            }
+        )
+        deviation_norms = [
+            float(np.linalg.norm(np.asarray(position, dtype=float) - centroid))
+            for position in positions
+        ]
+        overall_deviation_norms.extend(deviation_norms)
+        target_key = str(target_index)
+        per_target_repeatability[target_key] = spread_rms_mm(positions, centroid_xyz=centroid)
+        per_target_max_deviation[target_key] = max(deviation_norms) if deviation_norms else 0.0
+        per_target_metrics[target_key] = {
+            "target_index": int(target_index),
+            "label": label,
             "count": len(positions),
             "centroid_mm": [float(value) for value in centroid],
-            "spread_rms_mm": spread_rms_mm(positions, centroid_xyz=centroid),
+            "spread_rms_mm": per_target_repeatability[target_key],
+            "max_deviation_mm": per_target_max_deviation[target_key],
+            "mean_deviation_mm": float(np.mean(deviation_norms)) if deviation_norms else 0.0,
+            "revisit_count": len({sample.revisit_index for sample, _position in target_samples}),
+            "approach_state_count": len({sample.approach_index for sample, _position in target_samples}),
+            "axis_class": axis_class,
+            "magnitude_class": magnitude_class,
+            "group_tags": group_tags,
         }
     rms_terms = []
-    conditioned_groups: dict[str, list[list[float]]] = {}
+    conditioned_groups: dict[str, list[tuple[Any, list[float]]]] = {}
     for sample, position in valid_samples:
         center = centroid_by_target[int(sample.target_index)]
         rms_terms.append(float(np.sum((np.asarray(position, dtype=float) - center) ** 2)))
-        conditioned_groups.setdefault(
-            f"{sample.approach_index}->{sample.target_index}",
-            [],
-        ).append([float(value) for value in position])
-    conditioned_spread = {
-        key: spread_rms_mm(points)
-        for key, points in conditioned_groups.items()
-        if len(points) >= 2
+        explicit_target_label = sample.extra.get("target_label")
+        explicit_approach_label = sample.extra.get("approach_label")
+        target_label = str(explicit_target_label or f"T{int(sample.target_index) + 1:02d}")
+        approach_label = str(
+            explicit_approach_label
+            or (
+                f"T{int(sample.approach_index) + 1:02d}"
+                if sample.approach_index is not None
+                else "Unknown"
+            )
+        )
+        if explicit_target_label or explicit_approach_label:
+            key = f"{approach_label}->{target_label}"
+        else:
+            key = f"{sample.approach_index}->{sample.target_index}"
+        conditioned_groups.setdefault(key, []).append((sample, [float(value) for value in position]))
+    conditioned_metrics: dict[str, Any] = {}
+    conditioned_spread: dict[str, float] = {}
+    conditioned_shift: dict[str, float] = {}
+    per_target_path_groups: dict[str, list[float]] = {}
+    for key, rows in conditioned_groups.items():
+        positions = [position for _sample, position in rows]
+        group_centroid = centroid_mm(positions)
+        target_index = int(rows[0][0].target_index)
+        group_spread = spread_rms_mm(positions, centroid_xyz=group_centroid) if len(positions) >= 2 else 0.0
+        centroid_shift = float(np.linalg.norm(group_centroid - centroid_by_target[target_index]))
+        conditioned_shift[key] = centroid_shift
+        per_target_path_groups.setdefault(str(target_index), []).append(centroid_shift)
+        if len(positions) >= 2:
+            conditioned_spread[key] = group_spread
+        conditioned_metrics[key] = {
+            "target_index": target_index,
+            "approach_index": (
+                int(rows[0][0].approach_index)
+                if rows[0][0].approach_index is not None
+                else None
+            ),
+            "sample_count": len(positions),
+            "centroid_mm": [float(value) for value in group_centroid],
+            "spread_rms_mm": group_spread,
+            "centroid_shift_mm": centroid_shift,
+            "target_label": str(rows[0][0].extra.get("target_label") or per_target_metrics[str(target_index)]["label"]),
+            "approach_label": str(rows[0][0].extra.get("approach_label") or key.split("->", 1)[0]),
+        }
+    per_target_path_dependence = {
+        target_key: {
+            "mean_centroid_shift_mm": float(np.mean(shifts)),
+            "max_centroid_shift_mm": float(np.max(shifts)),
+            "approach_pair_count": len(shifts),
+        }
+        for target_key, shifts in per_target_path_groups.items()
+        if shifts
     }
+    path_shift_values = [float(value) for values in per_target_path_groups.values() for value in values]
+    group_metrics = _compute_repeatability_group_metrics(per_target_metrics)
+    visit_count = len(
+        {
+            (
+                int(sample.target_index),
+                int(sample.revisit_index) if sample.revisit_index is not None else -1,
+                int(sample.approach_index) if sample.approach_index is not None else -1,
+            )
+            for sample, _position in valid_samples
+        }
+    )
     registration_available = any(frame == "robot" for frame in frames_seen)
     status = STATUS_SUCCESS if registration_available else STATUS_PARTIAL_SUCCESS
     return {
         "status": status,
         "position_frame": "robot" if registration_available else "tracker",
+        "registration_available": registration_available,
+        "tip_calibration_available": True,
+        "target_count": len(per_target_metrics),
+        "visit_count": visit_count,
         "valid_sample_count": len(valid_samples),
         "invalid_sample_count": invalid_count,
         "dropped_sample_count": invalid_count,
-        "per_target_metrics": per_target_metrics,
         "overall_repeatability_rms_mm": float(np.sqrt(np.mean(rms_terms))),
+        "overall_max_deviation_mm": (float(np.max(overall_deviation_norms)) if overall_deviation_norms else None),
+        "path_dependence_rms_mm": (
+            float(np.sqrt(np.mean(np.square(path_shift_values))))
+            if path_shift_values
+            else None
+        ),
+        "path_dependence_max_shift_mm": (float(np.max(path_shift_values)) if path_shift_values else None),
+        "per_target_metrics": per_target_metrics,
+        "per_target_repeatability_rms_mm": per_target_repeatability,
+        "per_target_max_deviation_mm": per_target_max_deviation,
         "approach_conditioned_spread_mm": conditioned_spread,
-        "registration_available": registration_available,
-        "tip_calibration_available": True,
+        "approach_conditioned_centroid_shift_mm": conditioned_shift,
+        "approach_conditioned_metrics": conditioned_metrics,
+        "per_target_path_dependence_mm": per_target_path_dependence,
+        "group_metrics": group_metrics,
+        "thesis_repeatability_goal_mm": 1.0,
+        "thesis_goal_pass": float(np.sqrt(np.mean(rms_terms))) <= 1.0,
+        "thesis_goal_margin_mm": 1.0 - float(np.sqrt(np.mean(rms_terms))),
     }
 
 
@@ -835,6 +1174,87 @@ def analyze_repeatability_dataset(path: Path, *, tool_id: str = "0A") -> dict[st
     metrics["experiment_name"] = bundle.metadata.experiment_name
     metrics["summary_status"] = bundle.summary.status
     return metrics
+
+
+def _build_single_segment_ring_targets(
+    *,
+    low_magnitude_cm: float,
+    high_magnitude_cm: float,
+    tendon_count: int,
+) -> list[dict[str, Any]]:
+    """Legacy-inspired repeatability targets for the current 4-tendon single segment."""
+    if int(tendon_count) != 4:
+        raise ValueError(
+            "The single_segment_ring_17 preset is currently defined for the 4-tendon single-segment robot. "
+            "Use the manual target set for other tendon counts."
+        )
+    catalog = [
+        {
+            "target_index": 0,
+            "label": "Home",
+            "tendon_deltas_cm": [0.0, 0.0, 0.0, 0.0],
+            "axis_class": "home",
+            "magnitude_class": "home",
+            "angle_deg": None,
+            "group_tags": ["home"],
+        }
+    ]
+    target_index = 1
+    for magnitude_class, magnitude_cm in (("low", low_magnitude_cm), ("high", high_magnitude_cm)):
+        for angle_deg in range(0, 360, 45):
+            angle_rad = np.deg2rad(float(angle_deg))
+            deltas = np.asarray(
+                [
+                    -magnitude_cm * np.cos(angle_rad),
+                    -magnitude_cm * np.sin(angle_rad),
+                    magnitude_cm * np.cos(angle_rad),
+                    magnitude_cm * np.sin(angle_rad),
+                ],
+                dtype=float,
+            )
+            axis_class = "on_axis" if angle_deg % 90 == 0 else "off_axis"
+            catalog.append(
+                {
+                    "target_index": int(target_index),
+                    "label": f"{magnitude_class[0].upper()}{angle_deg:03d}",
+                    "tendon_deltas_cm": [float(value) for value in deltas.tolist()],
+                    "axis_class": axis_class,
+                    "magnitude_class": magnitude_class,
+                    "angle_deg": float(angle_deg),
+                    "group_tags": [
+                        magnitude_class,
+                        axis_class,
+                        f"{magnitude_class}_{axis_class}",
+                    ],
+                }
+            )
+            target_index += 1
+    return catalog
+
+
+def _compute_repeatability_group_metrics(per_target_metrics: dict[str, Any]) -> dict[str, Any]:
+    """Summarize per-target spread by useful legacy-inspired target classes."""
+    grouped_metrics: dict[str, Any] = {}
+    for class_name in ("axis_class", "magnitude_class"):
+        grouped_rows: dict[str, list[dict[str, Any]]] = {}
+        for point_metrics in per_target_metrics.values():
+            class_value = point_metrics.get(class_name)
+            if class_value in (None, "", "home", "custom"):
+                continue
+            grouped_rows.setdefault(str(class_value), []).append(point_metrics)
+        if not grouped_rows:
+            continue
+        grouped_metrics[class_name] = {}
+        for class_value, rows in grouped_rows.items():
+            spread_values = [float(row.get("spread_rms_mm", 0.0) or 0.0) for row in rows]
+            max_values = [float(row.get("max_deviation_mm", 0.0) or 0.0) for row in rows]
+            grouped_metrics[class_name][class_value] = {
+                "target_count": len(rows),
+                "mean_target_rms_mm": float(np.mean(spread_values)) if spread_values else 0.0,
+                "max_target_rms_mm": float(np.max(spread_values)) if spread_values else 0.0,
+                "mean_max_deviation_mm": float(np.mean(max_values)) if max_values else 0.0,
+            }
+    return grouped_metrics
 
 
 def load_grid_truth_points(config: GridDefinitionConfig, *, project_root: Path) -> list[list[float]]:

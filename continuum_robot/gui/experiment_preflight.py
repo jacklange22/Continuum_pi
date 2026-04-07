@@ -17,6 +17,7 @@ from continuum_robot.experiments.critical_experiments import (
     GridDefinitionConfig,
     PivotCalibrationConfig,
     RepeatabilityDatasetConfig,
+    build_repeatability_preview,
 )
 from continuum_robot.experiments.schedules import generate_command_schedule
 
@@ -135,26 +136,37 @@ def evaluate_preflight(
         checks.append(_tracking_state_check(settings=settings, tracker_ready=tracker_ready, backend_name=backend_name, tracking_snapshot=tracking_snapshot))
         config = RepeatabilityDatasetConfig.from_dict(payload)
         expected_dims = len(settings.robot.tendon_to_servo or settings.robot.servo_ids)
-        target_lengths = {len(point) for point in config.schedule.target_points_cm}
-        if not config.schedule.target_points_cm:
-            checks.append(_blocked("config_targets", "Schedule", "Repeatability schedule has no target points."))
-        elif target_lengths != {expected_dims}:
+        try:
+            preview = build_repeatability_preview(config, tendon_count=expected_dims)
+        except ValueError as exc:
             checks.append(
                 _blocked(
-                    "dimensions",
-                    "Dimensionality",
-                    f"Repeatability targets do not match the configured robot. "
-                    f"Expected {expected_dims} tendon values per point, found {sorted(target_lengths)}. Fix schedule.target_points_cm.",
+                    "config_targets",
+                    "Schedule",
+                    str(exc),
                 )
             )
         else:
-            checks.append(
-                _ok(
-                    "dimensions",
-                    "Dimensionality",
-                    f"Repeatability targets match the configured {expected_dims}-tendon robot.",
+            if not preview.target_catalog:
+                checks.append(_blocked("config_targets", "Schedule", "Repeatability schedule has no target points."))
+            else:
+                checks.append(
+                    _ok(
+                        "dimensions",
+                        "Dimensionality",
+                        f"Repeatability targets match the configured {expected_dims}-tendon robot.",
+                    )
                 )
-            )
+                checks.append(
+                    _info(
+                        "schedule",
+                        "Schedule",
+                        f"{preview.summary['target_count']} targets, "
+                        f"{preview.summary['visit_count']} revisits, "
+                        f"{preview.summary['planned_sample_count']} planned measurement samples "
+                        f"using target set '{config.schedule.target_set}'.",
+                    )
+                )
 
         checks.append(
             _tool_check(
