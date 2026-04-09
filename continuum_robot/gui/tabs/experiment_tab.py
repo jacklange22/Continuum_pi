@@ -36,12 +36,12 @@ class ExperimentTab(QWidget):
                 color: #0f172a;
             }
             QWidget#experimentWorkspace QLabel[role="page-title"] {
-                font-size: 24px;
+                font-size: 22px;
                 font-weight: 700;
                 color: #0f172a;
             }
             QWidget#experimentWorkspace QLabel[role="section-title"] {
-                font-size: 15px;
+                font-size: 16px;
                 font-weight: 700;
                 color: #0f172a;
             }
@@ -64,12 +64,12 @@ class ExperimentTab(QWidget):
                 border-radius: 16px;
             }
             QWidget#experimentWorkspace QComboBox {
-                min-height: 48px;
+                min-height: 40px;
                 border: 1px solid #dbe4ee;
-                border-radius: 14px;
+                border-radius: 12px;
                 background: #fbfdff;
-                padding: 8px 12px;
-                font-size: 15px;
+                padding: 6px 12px;
+                font-size: 14px;
                 font-weight: 600;
             }
             QWidget#experimentWorkspace QPushButton {
@@ -103,7 +103,7 @@ class ExperimentTab(QWidget):
         self.page_title = QLabel("Experiments")
         self.page_title.setProperty("role", "page-title")
         self.page_subtitle = QLabel(
-            "Choose a structured validation or data-generation run. Routine setup, calibration, and tuning workflows stay in their dedicated tabs."
+            "Structured validation and dataset runs. Routine setup, calibration, and tuning stay in their dedicated tabs."
         )
         self.page_subtitle.setProperty("role", "body")
         self.page_subtitle.setWordWrap(True)
@@ -120,45 +120,42 @@ class ExperimentTab(QWidget):
         self.selected_badges_label = QLabel("")
         self.selected_badges_label.setProperty("role", "muted")
         self.selected_badges_label.setWordWrap(True)
-
-        header_card = _ShellCard()
-        header_row = QHBoxLayout()
-        header_row.setContentsMargins(0, 0, 0, 0)
-        header_row.setSpacing(18)
-        header_left = QWidget()
-        header_left_layout = QVBoxLayout(header_left)
-        header_left_layout.setContentsMargins(0, 0, 0, 0)
-        header_left_layout.setSpacing(6)
-        header_left_layout.addWidget(self.page_title)
-        header_left_layout.addWidget(self.page_subtitle)
-        header_right = QWidget()
-        header_right_layout = QVBoxLayout(header_right)
-        header_right_layout.setContentsMargins(0, 0, 0, 0)
-        header_right_layout.setSpacing(8)
-        header_right_layout.addWidget(self.selected_status_chip, 0, Qt.AlignRight)
-        header_right_layout.addWidget(self.selected_experiment_title)
-        header_right_layout.addWidget(self.selected_experiment_description)
-        header_right_layout.addWidget(self.selected_badges_label)
-        header_row.addWidget(header_left, 3)
-        header_row.addWidget(header_right, 4)
-        header_card.body_layout.addLayout(header_row)
+        self.selected_badges_label.hide()
 
         self.experiment_combo = QComboBox()
-        self.experiment_combo.setMinimumHeight(48)
+        self.experiment_combo.setMinimumHeight(40)
         self.experiment_combo.currentIndexChanged.connect(self._on_experiment_selected)
         self.load_defaults_button = QPushButton("Load Defaults")
         self.load_defaults_button.setProperty("variant", "ghost")
         self.load_defaults_button.clicked.connect(self.controller.load_defaults)
-        selector_card = _ShellCard(
-            "Experiment Selection",
-            "Select the validation workflow you want to run. The matching custom page will load below.",
-        )
+        header_card = _ShellCard()
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(10)
+        title_column = QWidget()
+        title_layout = QVBoxLayout(title_column)
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(4)
+        title_layout.addWidget(self.page_title)
+        title_layout.addWidget(self.page_subtitle)
+        title_row.addWidget(title_column, 1)
+        title_row.addWidget(self.selected_status_chip, 0, Qt.AlignRight | Qt.AlignTop)
+        header_card.body_layout.addLayout(title_row)
+
         selector_row = QHBoxLayout()
         selector_row.setContentsMargins(0, 0, 0, 0)
         selector_row.setSpacing(10)
         selector_row.addWidget(self.experiment_combo, 1)
         selector_row.addWidget(self.load_defaults_button)
-        selector_card.body_layout.addLayout(selector_row)
+        header_card.body_layout.addLayout(selector_row)
+        selected_summary = QWidget()
+        selected_summary_layout = QVBoxLayout(selected_summary)
+        selected_summary_layout.setContentsMargins(0, 0, 0, 0)
+        selected_summary_layout.setSpacing(4)
+        selected_summary_layout.addWidget(self.selected_experiment_title)
+        selected_summary_layout.addWidget(self.selected_experiment_description)
+        selected_summary_layout.addWidget(self.selected_badges_label)
+        header_card.body_layout.addWidget(selected_summary)
 
         self.page_stack = QStackedWidget()
         self.empty_page = EmptyExperimentWorkspace()
@@ -167,9 +164,8 @@ class ExperimentTab(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(16)
+        layout.setSpacing(14)
         layout.addWidget(header_card)
-        layout.addWidget(selector_card)
         layout.addWidget(self.page_stack, 1)
 
     def update(self, state: ExperimentViewState) -> None:
@@ -180,6 +176,7 @@ class ExperimentTab(QWidget):
                 "Pick an experiment from the dropdown to open its custom page."
             )
             self.selected_badges_label.setText("")
+            self.selected_badges_label.hide()
             self.selected_status_chip.setText("No Selection")
             self.selected_status_chip.setStyleSheet(
                 "padding: 5px 12px; border-radius: 999px; background: #e2e8f0; color: #334155; font-weight: 700;"
@@ -192,6 +189,7 @@ class ExperimentTab(QWidget):
         self.selected_experiment_title.setText(state.experiment_title)
         self.selected_experiment_description.setText(state.experiment_description)
         self.selected_badges_label.setText("  •  ".join(state.experiment_badges))
+        self.selected_badges_label.setVisible(bool(state.experiment_badges))
         self._update_status_chip(state)
         page = self._page_for(state.selected_experiment)
         page.set_state(state)

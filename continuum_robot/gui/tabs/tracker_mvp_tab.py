@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from continuum_robot.gui.controllers.registration_controller import RegistrationViewState
 from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpViewState
+from continuum_robot.gui.view_utils import set_text_document
 from continuum_robot.gui.tabs.registration_tab import RegistrationTab
 
 
@@ -287,7 +288,7 @@ class TrackerMvpTab(QWidget):
             f"0B={'tracked' if workflow_state.tool_0b_visible else workflow_state.tool_0b_status}"
         )
         self.validation_report_label.setText(workflow_state.validation_report_path or "none")
-        self.tracker_details.setPlainText("\n".join(workflow_state.validation_lines))
+        set_text_document(self.tracker_details, "\n".join(workflow_state.validation_lines), stick_to_bottom_if_at_bottom=True)
 
         self.tip_file_label.setText(workflow_state.pivot_tip_path or "none")
         self.pending_tip_file_label.setText(workflow_state.pivot_pending_tip_path or "none")
@@ -319,7 +320,7 @@ class TrackerMvpTab(QWidget):
         self.pivot_parse_label.setText(parse_text)
         self.pivot_capture_dataset_label.setText(workflow_state.pivot_capture_dataset_path or "none")
         self.pivot_run_path_label.setText(workflow_state.pivot_run_path or "none")
-        self.tip_preview_text.setPlainText(workflow_state.pivot_tip_preview)
+        set_text_document(self.tip_preview_text, workflow_state.pivot_tip_preview)
 
         self.registration_status_label.setText(workflow_state.latest_registration_status)
         if workflow_state.live_tip_position_mm is not None:
@@ -330,7 +331,7 @@ class TrackerMvpTab(QWidget):
         else:
             live_text = workflow_state.live_tip_status
         self.live_pose_label.setText(live_text)
-        self.transform_summary.setPlainText("\n".join(workflow_state.transform_summary_lines))
+        set_text_document(self.transform_summary, "\n".join(workflow_state.transform_summary_lines), stick_to_bottom_if_at_bottom=True)
 
         self.workflow_table.setRowCount(len(workflow_state.workflow_steps))
         for row, step in enumerate(workflow_state.workflow_steps):

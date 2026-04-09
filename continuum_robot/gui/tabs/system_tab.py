@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from continuum_robot.gui.controllers.system_controller import SystemViewState
+from continuum_robot.gui.view_utils import set_text_document
 
 
 class SystemTab(QWidget):
@@ -456,20 +457,7 @@ class SystemTab(QWidget):
 
     @staticmethod
     def _set_plain_text_preserving_view(widget: QPlainTextEdit, text: str) -> None:
-        new_text = str(text)
-        if widget.toPlainText() == new_text:
-            return
-        v_scroll = widget.verticalScrollBar()
-        h_scroll = widget.horizontalScrollBar()
-        old_v = v_scroll.value()
-        old_h = h_scroll.value()
-        was_at_bottom = old_v >= max(0, v_scroll.maximum() - 2)
-        widget.setPlainText(new_text)
-        if was_at_bottom:
-            v_scroll.setValue(v_scroll.maximum())
-        else:
-            v_scroll.setValue(min(old_v, v_scroll.maximum()))
-        h_scroll.setValue(min(old_h, h_scroll.maximum()))
+        set_text_document(widget, text, stick_to_bottom_if_at_bottom=True)
 
     @staticmethod
     def _copy_text(text: str) -> None:

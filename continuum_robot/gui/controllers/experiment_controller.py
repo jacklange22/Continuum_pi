@@ -134,7 +134,9 @@ class ExperimentController:
             config_payload = dict(self._selected_payload)
             config_error = self._current_config_error_locked()
             history_dirty = self._history_dirty
+            visualization_dirty = self._visualization_dirty
             planned_output_dir = output_root / self._planned_output_dir_name
+            cached_visualization_model = self.state.visualization_model
 
         if not selected_experiment:
             with self._lock:
@@ -193,16 +195,19 @@ class ExperimentController:
             except Exception:
                 preview = None
 
-        visualization_model = self._build_visualization_model(
-            experiment_name=selected_experiment,
-            bundle=current_bundle,
-            live_samples=live_samples,
-            color_mode=color_mode,
-            show_centroids=show_centroids,
-            show_truth=show_truth,
-            config_payload=config_payload,
-            preview=preview,
-        )
+        if visualization_dirty:
+            visualization_model = self._build_visualization_model(
+                experiment_name=selected_experiment,
+                bundle=current_bundle,
+                live_samples=live_samples,
+                color_mode=color_mode,
+                show_centroids=show_centroids,
+                show_truth=show_truth,
+                config_payload=config_payload,
+                preview=preview,
+            )
+        else:
+            visualization_model = cached_visualization_model
         checklist = self._build_run_checklist(
             experiment_name=selected_experiment,
             config_payload=config_payload,
@@ -227,6 +232,7 @@ class ExperimentController:
             self.state.visualization_model = visualization_model
             self.state.result_summary_lines = list(visualization_model.summary_lines)
             self.state.result_details = result_details
+            self._visualization_dirty = False
             return self.state
 
     def refresh_prerequisites(self) -> ExperimentViewState:

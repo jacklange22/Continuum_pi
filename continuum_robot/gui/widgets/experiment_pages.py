@@ -47,6 +47,7 @@ from continuum_robot.experiments.critical_experiments import (
     resolve_grid_tip_vector,
 )
 from continuum_robot.gui.controllers.experiment_controller import ExperimentViewState
+from continuum_robot.gui.view_utils import preserve_scroll_position, set_line_edit_text, set_text_document
 from continuum_robot.gui.widgets.experiment_3d_widget import Experiment3DWidget
 from continuum_robot.gui.widgets.experiment_preflight_widget import ExperimentPreflightWidget
 from continuum_robot.gui.widgets.experiment_results_widget import ExperimentResultsWidget
@@ -62,6 +63,7 @@ class ExperimentPageBase(QWidget):
         super().__init__(parent)
         self.controller = controller
         self.experiment_name = experiment_name
+        self._history_signature: tuple[tuple[str, str, str, str, str, str], ...] | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -189,12 +191,8 @@ class ExperimentPageBase(QWidget):
         layout.addLayout(bottom_row)
 
     def set_state(self, state: ExperimentViewState) -> None:
-        with QSignalBlocker(self.output_root_edit):
-            if self.output_root_edit.text() != state.output_root:
-                self.output_root_edit.setText(state.output_root)
-        with QSignalBlocker(self.notes_edit):
-            if self.notes_edit.toPlainText() != state.operator_notes:
-                self.notes_edit.setPlainText(state.operator_notes)
+        self._set_line_text(self.output_root_edit, state.output_root)
+        self._set_plain_text(self.notes_edit, state.operator_notes)
 
         self.preflight_widget.set_report(state.preflight_report)
         self.result_details_widget.set_pairs(state.result_details)
@@ -215,7 +213,7 @@ class ExperimentPageBase(QWidget):
             lines.append(f"Config: {state.config_error}")
         if state.last_error:
             lines.append(f"Error: {state.last_error}")
-        self.status_text.setPlainText("\n".join(lines))
+        set_text_document(self.status_text, "\n".join(lines), stick_to_bottom_if_at_bottom=True)
         self.results_widget.set_model(state.visualization_model)
         if self.viewer_3d is not None:
             self.viewer_3d.set_view_options(show_axes=state.show_axes, show_labels=state.show_labels)
@@ -266,33 +264,54 @@ class ExperimentPageBase(QWidget):
             self.results_widget.save_current_view(path)
 
     def _update_history(self, state: ExperimentViewState) -> None:
-        self.history_list.clear()
-        for entry in state.history:
-            item = QListWidgetItem()
-            item.setData(Qt.UserRole, entry.path)
-            item.setToolTip(entry.path)
-            self.history_list.addItem(item)
-            widget = HistoryItemWidget(
-                experiment_name=entry.experiment_name,
-                timestamp_utc=entry.timestamp_utc,
-                status=entry.status,
-                metric_summary=entry.metric_summary,
-                run_path=entry.path,
+        signature = tuple(
+            (
+                entry.path,
+                entry.experiment_name,
+                entry.timestamp_utc,
+                entry.status,
+                entry.label,
+                entry.metric_summary,
             )
-            item.setSizeHint(widget.sizeHint())
-            self.history_list.setItemWidget(item, widget)
+            for entry in state.history
+        )
+        if signature == self._history_signature:
+            return
+        self._history_signature = signature
+        selected_path = None
+        current_item = self.history_list.currentItem()
+        if current_item is not None:
+            selected_path = current_item.data(Qt.UserRole)
+
+        def _rebuild() -> None:
+            self.history_list.clear()
+            selected_row = None
+            for row, entry in enumerate(state.history):
+                item = QListWidgetItem()
+                item.setData(Qt.UserRole, entry.path)
+                item.setToolTip(entry.path)
+                self.history_list.addItem(item)
+                widget = HistoryItemWidget(
+                    experiment_name=entry.experiment_name,
+                    timestamp_utc=entry.timestamp_utc,
+                    status=entry.status,
+                    metric_summary=entry.metric_summary,
+                    run_path=entry.path,
+                )
+                item.setSizeHint(widget.sizeHint())
+                self.history_list.setItemWidget(item, widget)
+                if entry.path == selected_path:
+                    selected_row = row
+            if selected_row is not None:
+                self.history_list.setCurrentRow(selected_row)
+
+        preserve_scroll_position(self.history_list, _rebuild)
 
     def _set_line_text(self, widget: QLineEdit, value: str) -> None:
-        if widget.hasFocus():
-            return
-        with QSignalBlocker(widget):
-            widget.setText(str(value))
+        set_line_edit_text(widget, value, skip_if_focused=True, block_signals=True)
 
     def _set_plain_text(self, widget: QPlainTextEdit, value: str) -> None:
-        if widget.hasFocus():
-            return
-        with QSignalBlocker(widget):
-            widget.setPlainText(str(value))
+        set_text_document(widget, value, skip_if_focused=True, block_signals=True, stick_to_bottom_if_at_bottom=False)
 
     def _set_checkbox(self, widget: QCheckBox, value: bool) -> None:
         with QSignalBlocker(widget):
@@ -902,8 +921,12 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         lines = self._capture_log_lines or [
             "Select any grid label and capture a full sample batch. The aligned residual summary will update once at least three points are complete."
         ]
-        with QSignalBlocker(self.capture_status_text):
-            self.capture_status_text.setPlainText("\n".join(lines[-8:]))
+        set_text_document(
+            self.capture_status_text,
+            "\n".join(lines[-8:]),
+            block_signals=True,
+            stick_to_bottom_if_at_bottom=True,
+        )
 
     def _append_capture_log(self, message: str) -> None:
         timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -1159,17 +1182,22 @@ class KeyValueSummaryWidget(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._pairs_signature: tuple[tuple[str, str], ...] | None = None
         self.layout_ = QVBoxLayout(self)
         self.layout_.setContentsMargins(0, 0, 0, 0)
         self.layout_.setSpacing(8)
 
     def set_pairs(self, pairs: list[tuple[str, str]]) -> None:
+        signature = tuple((str(label), str(value)) for label, value in pairs)
+        if signature == self._pairs_signature:
+            return
+        self._pairs_signature = signature
         while self.layout_.count():
             item = self.layout_.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
-        for label, value in pairs:
+        for label, value in signature:
             row = QFrame()
             row.setStyleSheet("background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px;")
             row_layout = QHBoxLayout(row)

@@ -69,6 +69,8 @@ class AppWindow(QMainWindow):
             else:
                 self.system_controller.sync_servo_bringup_state(servo_state)
             self.servos_tab.update(servo_state)
+            self.statusBar().showMessage(servo_state.status_message)
+            return
         elif current_widget is self.pretension_tab:
             pretension_state = self.pretension_controller.refresh()
             if getattr(self.pretension_controller, "latest_runtime_snapshot", None) is not None:
@@ -77,7 +79,10 @@ class AppWindow(QMainWindow):
             self.statusBar().showMessage(pretension_state.status_message)
             return
         elif current_widget is self.experiment_tab:
-            self.experiment_tab.update(self.experiment_controller.refresh_prerequisites())
+            experiment_state = self.experiment_controller.refresh_prerequisites()
+            self.experiment_tab.update(experiment_state)
+            self.statusBar().showMessage(experiment_state.status_message)
+            return
         self.statusBar().showMessage(system_state.status_message)
 
     def _refresh_servo_state(self):

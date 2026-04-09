@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpViewState
 from continuum_robot.gui.controllers.tracking_controller import TrackingViewState
+from continuum_robot.gui.view_utils import set_text_document
 from continuum_robot.gui.widgets.tool_plot_widget import ToolPlotWidget
 
 
@@ -352,7 +353,7 @@ class TrackingTab(QWidget):
         self.pivot_parse_label.setText(parse_text)
         self.pivot_capture_dataset_label.setText(workflow_state.pivot_capture_dataset_path or "none")
         self.pivot_run_path_label.setText(workflow_state.pivot_run_path or "none")
-        self.tip_preview_text.setPlainText(workflow_state.pivot_tip_preview)
+        set_text_document(self.tip_preview_text, workflow_state.pivot_tip_preview)
 
         details_lines = [
             workflow_state.validation_summary,
@@ -384,20 +385,7 @@ class TrackingTab(QWidget):
 
     @staticmethod
     def _set_text_preserving_view(widget: QTextEdit, text: str) -> None:
-        new_text = str(text)
-        if widget.toPlainText() == new_text:
-            return
-        v_scroll = widget.verticalScrollBar()
-        h_scroll = widget.horizontalScrollBar()
-        old_v = v_scroll.value()
-        old_h = h_scroll.value()
-        was_at_bottom = old_v >= max(0, v_scroll.maximum() - 2)
-        widget.setPlainText(new_text)
-        if was_at_bottom:
-            v_scroll.setValue(v_scroll.maximum())
-        else:
-            v_scroll.setValue(min(old_v, v_scroll.maximum()))
-        h_scroll.setValue(min(old_h, h_scroll.maximum()))
+        set_text_document(widget, text, stick_to_bottom_if_at_bottom=True)
 
     def _set_combo_items(self, combo: QComboBox, ports, selected: str) -> None:
         if combo.hasFocus():

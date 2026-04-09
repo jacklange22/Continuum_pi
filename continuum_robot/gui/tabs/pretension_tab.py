@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from continuum_robot.servos.servo_service import PretensionParameters
+from continuum_robot.gui.view_utils import set_text_document
 
 
 class PretensionTab(QWidget):
@@ -581,16 +582,7 @@ class PretensionTab(QWidget):
 
     @staticmethod
     def _set_plain_text_preserving_view(widget: QPlainTextEdit, text: str) -> None:
-        new_text = str(text)
-        if widget.toPlainText() == new_text:
-            return
-        v_scroll = widget.verticalScrollBar()
-        h_scroll = widget.horizontalScrollBar()
-        old_v = v_scroll.value()
-        old_h = h_scroll.value()
-        widget.setPlainText(new_text)
-        v_scroll.setValue(min(old_v, v_scroll.maximum()))
-        h_scroll.setValue(min(old_h, h_scroll.maximum()))
+        set_text_document(widget, text, stick_to_bottom_if_at_bottom=False)
 
     def _apply_parameter_values(self, values: dict[str, object]) -> None:
         self._updating_parameter_widgets = True
@@ -679,5 +671,5 @@ class PretensionTab(QWidget):
     @staticmethod
     def _item(value, *, align: int = Qt.AlignLeft | Qt.AlignVCenter) -> QTableWidgetItem:
         item = QTableWidgetItem(str(value))
-        item.setTextAlignment(int(align | Qt.AlignVCenter))
+        item.setTextAlignment(align | Qt.AlignVCenter)
         return item

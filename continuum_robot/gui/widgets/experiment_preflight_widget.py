@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QListWidget, QListWidgetItem, QHBoxLayout, QVBoxLayout, QWidget
 
@@ -14,6 +16,7 @@ from continuum_robot.gui.experiment_preflight import (
     RUN_OK,
     RUN_WARNING,
 )
+from continuum_robot.gui.view_utils import preserve_scroll_position
 
 
 class ExperimentPreflightWidget(QWidget):
@@ -21,6 +24,7 @@ class ExperimentPreflightWidget(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._report_signature: str | None = None
         self.status_chip = QLabel("Preflight")
         self.status_chip.setAlignment(Qt.AlignCenter)
         self.status_chip.setMinimumWidth(108)
@@ -46,6 +50,10 @@ class ExperimentPreflightWidget(QWidget):
         layout.addWidget(self.list)
 
     def set_report(self, report) -> None:
+        signature = repr(asdict(report))
+        if self._report_signature == signature:
+            return
+        self._report_signature = signature
         color = {
             RUN_OK: ("#dcfce7", "#166534", "Ready"),
             RUN_WARNING: ("#fef3c7", "#92400e", "Warning"),
@@ -56,15 +64,17 @@ class ExperimentPreflightWidget(QWidget):
             f"padding: 6px 10px; border-radius: 999px; background: {color[0]}; color: {color[1]}; font-weight: 700;"
         )
         self.summary_label.setText(report.summary)
+        def _rebuild() -> None:
+            self.list.clear()
+            for check in report.checks:
+                widget = _PreflightRowWidget(check.label, _severity_label(check.status), check.message, check.status)
+                item = QListWidgetItem()
+                item.setSizeHint(widget.sizeHint())
+                item.setData(Qt.UserRole, check.key)
+                self.list.addItem(item)
+                self.list.setItemWidget(item, widget)
 
-        self.list.clear()
-        for check in report.checks:
-            widget = _PreflightRowWidget(check.label, _severity_label(check.status), check.message, check.status)
-            item = QListWidgetItem()
-            item.setSizeHint(widget.sizeHint())
-            item.setData(Qt.UserRole, check.key)
-            self.list.addItem(item)
-            self.list.setItemWidget(item, widget)
+        preserve_scroll_position(self.list, _rebuild)
 
 
 class _PreflightRowWidget(QWidget):

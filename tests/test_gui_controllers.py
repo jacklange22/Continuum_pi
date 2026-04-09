@@ -33,6 +33,7 @@ from continuum_robot.gui.controllers.servos_controller import ServosController
 from continuum_robot.gui.controllers.system_controller import SystemController, SystemViewState
 from continuum_robot.gui.controllers.experiment_controller import ExperimentController
 from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpController, TrackerMvpViewState
+from continuum_robot.gui.experiment_visualization import ChartModel, VisualizationModel
 from continuum_robot.gui.tabs.experiment_tab import ExperimentTab
 from continuum_robot.gui.tabs.pretension_tab import PretensionTab
 from continuum_robot.gui.tabs.registration_tab import RegistrationTab
@@ -40,6 +41,7 @@ from continuum_robot.gui.tabs.servos_tab import ServosTab
 from continuum_robot.gui.tabs.system_tab import SystemTab
 from continuum_robot.gui.tabs.tracker_mvp_tab import TrackerMvpTab
 from continuum_robot.gui.tabs.tracking_tab import TrackingTab
+from continuum_robot.gui.widgets.experiment_results_widget import ExperimentResultsWidget
 from continuum_robot.gui.widgets.tool_plot_widget import ToolPlotWidget
 from continuum_robot.experiments.experiment_loader import ExperimentLoader
 from continuum_robot.experiments.experiment_runner import ExperimentRunner
@@ -1050,6 +1052,52 @@ def test_system_tab_preserves_scrolled_diagnostics_position_on_update() -> None:
     assert tab.status_text.verticalScrollBar().value() >= previous_value - 2
 
 
+def test_experiment_results_widget_preserves_summary_scroll_on_update() -> None:
+    _app()
+    widget = ExperimentResultsWidget()
+    widget.resize(900, 700)
+    widget.show()
+
+    widget.set_model(
+        VisualizationModel(
+            summary_lines=[f"line {index}" for index in range(120)],
+            charts=[
+                ChartModel(
+                    kind="bar",
+                    title="Spread",
+                    x_title="Target",
+                    y_title="mm",
+                    categories=["A", "B"],
+                    values=[0.4, 0.6],
+                )
+            ],
+        )
+    )
+    QTest.qWait(20)
+    scroll_bar = widget.summary_text.verticalScrollBar()
+    scroll_bar.setValue(max(1, scroll_bar.maximum() // 2))
+    previous_value = scroll_bar.value()
+
+    widget.set_model(
+        VisualizationModel(
+            summary_lines=[f"line {index}" for index in range(121)],
+            charts=[
+                ChartModel(
+                    kind="bar",
+                    title="Spread",
+                    x_title="Target",
+                    y_title="mm",
+                    categories=["A", "B"],
+                    values=[0.5, 0.7],
+                )
+            ],
+        )
+    )
+    QTest.qWait(20)
+
+    assert widget.summary_text.verticalScrollBar().value() >= previous_value - 2
+
+
 def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _app()
     window = AppWindow(_app_context(tmp_path))
@@ -1711,6 +1759,25 @@ def test_experiment_workspace_tab_updates_without_crashing_in_mock_mode(tmp_path
         controller.shutdown()
 
 
+def test_experiment_shell_header_stays_compact_and_tracks_selection(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+
+    tab.update(controller.refresh())
+    assert tab.load_defaults_button.isEnabled() is False
+    assert tab.selected_status_chip.text() == "No Selection"
+    assert tab.selected_badges_label.isHidden() is True
+
+    controller.select_experiment("aurora_grid_accuracy")
+    tab.update(controller.refresh())
+
+    assert tab.load_defaults_button.isEnabled() is True
+    assert tab.selected_experiment_title.text() == "Aurora Grid Accuracy"
+    assert "align" in tab.selected_experiment_description.text().lower()
+    assert tab.selected_badges_label.isHidden() is False
+
+
 def test_registration_and_experiment_tabs_expose_resizable_layout_defaults(tmp_path: Path) -> None:
     _app()
     settings = _settings()
@@ -1763,6 +1830,25 @@ def test_experiment_shell_routes_selection_to_custom_pages(tmp_path: Path) -> No
 
     assert tab.page_stack.currentWidget() is replay_page
     assert replay_page.experiment_name == "replay_runner"
+
+
+def test_app_window_status_bar_tracks_active_servo_and_experiment_messages(tmp_path: Path) -> None:
+    _app()
+    window = AppWindow(_app_context(tmp_path))
+    try:
+        window._refresh_timer.stop()
+        window.servos_controller.state.status_message = "Servo workspace ready"
+        window.experiment_controller.state.status_message = "Experiment workspace ready"
+
+        window.tab_widget.setCurrentWidget(window.servos_tab)
+        window.refresh()
+        assert window.statusBar().currentMessage() == "Servo workspace ready"
+
+        window.tab_widget.setCurrentWidget(window.experiment_tab)
+        window.refresh()
+        assert window.statusBar().currentMessage() == "Experiment workspace ready"
+    finally:
+        window.shutdown()
 
 
 def test_registration_tab_capture_button_records_sample_into_service_session(tmp_path: Path) -> None:

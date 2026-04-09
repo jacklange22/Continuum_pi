@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from continuum_robot.gui.controllers.registration_controller import RegistrationViewState
+from continuum_robot.gui.view_utils import set_text_document
 from continuum_robot.gui.widgets.registration_landmark_map_widget import RegistrationLandmarkMapWidget
 from continuum_robot.gui.widgets.registration_plot_widget import RegistrationPlotWidget
 
@@ -431,7 +432,7 @@ class RegistrationTab(QWidget):
             lines.append(f"Residual norms: {rendered}")
         if state.last_error:
             lines.append(f"Error: {state.last_error}")
-        self.status_text.setPlainText("\n".join(lines))
+        set_text_document(self.status_text, "\n".join(lines), stick_to_bottom_if_at_bottom=True)
 
     def _update_dependencies(self, state: RegistrationViewState, workflow_state) -> None:
         if workflow_state is None:
@@ -444,13 +445,15 @@ class RegistrationTab(QWidget):
             self.tip_geometry_label.setText(state.capture_geometry_status)
             self.accepted_registration_label.setText(state.result_status)
             self.live_pose_label.setText("Load an accepted registration to compute live pose.")
-            self.dependency_text.setPlainText(
+            set_text_document(
+                self.dependency_text,
                 "\n".join(
                     [
                         "Registration depends on a valid tracker session and accepted pen-probe tip geometry.",
                         f"Capture geometry: {state.capture_geometry_status}",
                     ]
-                )
+                ),
+                stick_to_bottom_if_at_bottom=True,
             )
             return
 
@@ -486,7 +489,7 @@ class RegistrationTab(QWidget):
                 "Tracker validation, accepted tip geometry, and landmark selection are in place for registration."
             )
         dependency_lines.extend(list(getattr(workflow_state, "transform_summary_lines", [])))
-        self.dependency_text.setPlainText("\n".join(dependency_lines))
+        set_text_document(self.dependency_text, "\n".join(dependency_lines), stick_to_bottom_if_at_bottom=True)
 
     def _update_selection_slots(self, state: RegistrationViewState) -> None:
         for index, label_widget in enumerate(self._selected_slot_labels):

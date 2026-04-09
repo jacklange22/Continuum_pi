@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from PySide6.QtCharts import QBarCategoryAxis, QBarSeries, QBarSet, QChart, QChartView, QLineSeries, QValueAxis
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QLabel, QTabWidget, QTextEdit, QVBoxLayout, QWidget
 
 from continuum_robot.gui.experiment_visualization import ChartModel, VisualizationModel
+from continuum_robot.gui.view_utils import set_text_document
 
 
 class ExperimentResultsWidget(QWidget):
@@ -15,6 +18,7 @@ class ExperimentResultsWidget(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        self._model_signature: str | None = None
         self.summary_text = QTextEdit()
         self.summary_text.setReadOnly(True)
         self.summary_text.setStyleSheet(
@@ -46,13 +50,22 @@ class ExperimentResultsWidget(QWidget):
         layout.addWidget(self.tabs)
 
     def set_model(self, model: VisualizationModel) -> None:
+        signature = repr(asdict(model))
+        if self._model_signature == signature:
+            return
+        self._model_signature = signature
+        current_tab_name = self.tabs.tabText(self.tabs.currentIndex()) if self.tabs.count() else "Summary"
         while self.tabs.count() > 1:
             widget = self.tabs.widget(1)
             self.tabs.removeTab(1)
             widget.deleteLater()
-        self.summary_text.setPlainText("\n".join(model.summary_lines or ["No results loaded."]))
+        set_text_document(self.summary_text, "\n".join(model.summary_lines or ["No results loaded."]))
         for chart in model.charts:
             self.tabs.addTab(self._chart_widget(chart), chart.title)
+        for index in range(self.tabs.count()):
+            if self.tabs.tabText(index) == current_tab_name:
+                self.tabs.setCurrentIndex(index)
+                break
 
     def save_current_view(self, path: str) -> bool:
         widget = self.tabs.currentWidget()
