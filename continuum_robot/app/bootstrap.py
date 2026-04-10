@@ -18,7 +18,9 @@ from continuum_robot.registration.legacy_compat import RegistrationAssetPaths
 from continuum_robot.registration.live_registration_service import LiveRegistrationService
 from continuum_robot.registration.repository import RegistrationRepository
 from continuum_robot.registration.rigid_solver import RigidRegistrationSolver
+from continuum_robot.registration.runtime_tip_repository import RuntimeTipCalibrationRepository
 from continuum_robot.services.registration_service import RegistrationService
+from continuum_robot.services.runtime_tip_calibration_service import RuntimeTipCalibrationService
 from continuum_robot.services.system_health_service import SystemHealthService
 from continuum_robot.services.tracking_service import TrackingService
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
@@ -57,6 +59,10 @@ def build_app_context() -> AppContext:
 
     project_root = Path(__file__).resolve().parents[2]
     registration_path = _resolve_repo_path(project_root, settings.calibration.latest_registration_path)
+    runtime_tip_calibration_path = _resolve_repo_path(
+        project_root,
+        settings.calibration.latest_runtime_tip_calibration_path,
+    )
     registration_config_path = project_root / "config" / "registration.yaml"
     neutral_setpoints_path = _resolve_repo_path(project_root, settings.calibration.neutral_setpoints_path)
     experiment_output_dir = _resolve_repo_path(project_root, settings.experiment.output_dir)
@@ -122,6 +128,7 @@ def build_app_context() -> AppContext:
         ),
         stale_after_s=settings.serial.tracker_freshness_timeout_s,
         registration_path=registration_path,
+        runtime_tip_calibration_path=runtime_tip_calibration_path,
         runtime_coil_tool_id=settings.registration.coil_tool_id,
         registration_tool_id=settings.registration.capture_tool_id,
         config_source="config/system.yaml + config/registration.yaml",
@@ -130,6 +137,16 @@ def build_app_context() -> AppContext:
         tracking_service=tracking_service,
         repository=registration_repository,
         solver=rigid_solver,
+        config_path=registration_config_path,
+        config_source=str(registration_config_path),
+    )
+    runtime_tip_repository = RuntimeTipCalibrationRepository(latest_path=runtime_tip_calibration_path)
+    runtime_tip_calibration_service = RuntimeTipCalibrationService(
+        tracking_service=tracking_service,
+        registration_service=registration_service,
+        repository=runtime_tip_repository,
+        solver=rigid_solver,
+        registration_config=settings.registration,
         config_path=registration_config_path,
         config_source=str(registration_config_path),
     )
@@ -219,6 +236,8 @@ def build_app_context() -> AppContext:
     services.register("registration_repository", registration_repository)
     services.register("rigid_solver", rigid_solver)
     services.register("registration_service", registration_service)
+    services.register("runtime_tip_repository", runtime_tip_repository)
+    services.register("runtime_tip_calibration_service", runtime_tip_calibration_service)
     services.register("live_registration", live_registration_service)
     services.register("system_health_service", system_health_service)
     services.register("dxl_bus", dxl_bus)

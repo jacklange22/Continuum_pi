@@ -71,6 +71,7 @@ tracker_require_valid_transforms: true
 packet_capture_dir: "data/tracker_captures"
 neutral_setpoints_path: "data/calibrations/neutral_setpoints.json"
 latest_registration_path: "data/registrations/latest_registration.json"
+latest_runtime_tip_calibration_path: "data/calibrations/runtime_tip/latest_runtime_tip_calibration.json"
 openrb_settings:
   connect_timeout_s: 0.5
   port_settle_time_s: 0.15

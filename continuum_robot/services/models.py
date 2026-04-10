@@ -108,6 +108,12 @@ class TrackingSnapshot:
     stored_registration_coil_tool_id: str | None = None
     stored_registration_timestamp_utc: str | None = None
     stored_registration_fre_mm: float | None = None
+    runtime_tip_calibration_state: str = "missing_runtime_tip_calibration"
+    runtime_tip_calibration_path: str | None = None
+    stored_runtime_tip_measurement_tool_id: str | None = None
+    stored_runtime_tip_coil_tool_id: str | None = None
+    stored_runtime_tip_timestamp_utc: str | None = None
+    runtime_tip_identity_fallback: bool = False
     tip_calibration_source: str | None = None
     tip_pose_status: str = "missing_registration"
     T_robot_tip: list[list[float]] | None = None
@@ -146,6 +152,48 @@ class RegistrationSnapshot:
     validation_metrics: dict[str, Any] = field(default_factory=dict)
     latest_validation_summary: dict[str, Any] = field(default_factory=dict)
     pending_record: dict[str, Any] | None = None
+
+
+@dataclass
+class RuntimeTipCalibrationSnapshot:
+    """Runtime 0A hat-based tip calibration snapshot for the advanced workflow."""
+
+    health: ServiceHealthSnapshot
+    active: bool = False
+    measurement_tool_id: str = "0B"
+    coil_tool_id: str = "0A"
+    labels: list[str] = field(default_factory=list)
+    captures_per_landmark: int = 0
+    current_label_index: int = 0
+    current_label: str | None = None
+    truth_points_in_tip_by_label: dict[str, list[float]] = field(default_factory=dict)
+    raw_points_by_label: dict[str, list[list[float]]] = field(default_factory=dict)
+    captured_counts: dict[str, int] = field(default_factory=dict)
+    averaged_points_by_label: dict[str, list[float]] = field(default_factory=dict)
+    fit_residuals_by_label: dict[str, list[float]] = field(default_factory=dict)
+    fit_rmse_mm: float | None = None
+    max_residual_mm: float | None = None
+    translation_spread_summary_mm: dict[str, Any] = field(default_factory=dict)
+    rotation_spread_summary_deg: dict[str, Any] = field(default_factory=dict)
+    coil_sample_count: int = 0
+    coil_samples_captured: int = 0
+    averaged_coil_translation_mm: list[float] | None = None
+    averaged_coil_quaternion_wxyz: list[float] | None = None
+    T_tip_aurora: list[list[float]] | None = None
+    T_aurora_tip: list[list[float]] | None = None
+    T_aurora_coil_avg: list[list[float]] | None = None
+    T_coil_tip: list[list[float]] | None = None
+    pending_accept: bool = False
+    accepted_output_path: str | None = None
+    latest_accepted_path: str | None = None
+    validation_metrics: dict[str, Any] = field(default_factory=dict)
+    pending_record: dict[str, Any] | None = None
+    hat_geometry_path: str | None = None
+    hat_geometry_status: str = "unknown"
+    measurement_point_status: str = "unknown"
+    runtime_chain_state: str = "missing_runtime_tip_calibration"
+    runtime_chain_message: str = "Runtime tip calibration is not loaded."
+    status_message: str = "Runtime tip calibration idle."
 
 
 @dataclass

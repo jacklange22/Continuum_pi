@@ -149,6 +149,27 @@ Acceptance:
 - repeated runs report per-landmark residual trends across runs
 - the GUI shows whether any landmark is consistently worse than the others
 
+### `REG-V005` Runtime Tip Calibration Chain Validation
+
+Method:
+
+- launch `Open Runtime Tip Calibration` from `Registration`
+- capture the hat truth points with the accepted `0B` pen probe calibration
+- collect stationary `0A` samples
+- solve and save the runtime tip artifact
+- verify tracking reports that live tip pose is using the accepted runtime tip artifact
+
+Acceptance:
+
+- saved artifact includes `T_coil_tip`, `T_tip_aurora`, and `T_aurora_coil_avg`
+- hat-fit RMSE and max residual are saved
+- `0A` translation and rotation spread summaries are saved
+- tracking clearly distinguishes:
+  - accepted runtime tip artifact loaded
+  - missing runtime tip artifact
+  - identity fallback
+  - invalid runtime tip artifact
+
 ## Experiment Validation
 
 ### `EXP-V001` Pivot Calibration

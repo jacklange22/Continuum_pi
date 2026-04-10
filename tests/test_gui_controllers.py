@@ -50,7 +50,9 @@ from continuum_robot.hardware.mock_openrb_client import MockOpenRbClient
 from continuum_robot.hardware.serial_ports import SerialPortInfo
 from continuum_robot.registration.repository import RegistrationRepository
 from continuum_robot.registration.rigid_solver import RigidRegistrationSolver
+from continuum_robot.registration.runtime_tip_repository import RuntimeTipCalibrationRepository
 from continuum_robot.services.registration_service import RegistrationService
+from continuum_robot.services.runtime_tip_calibration_service import RuntimeTipCalibrationService
 from continuum_robot.services.tracking_service import TrackingService
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
 from continuum_robot.servos.neutral_calibration_service import (
@@ -222,6 +224,7 @@ def _tracking_service(settings: Settings, tmp_path: Path) -> TrackingService:
         live_backend=MockTrackerManager(poll_hz=10),
         port=settings.serial.aurora_port,
         registration_path=tmp_path / "latest_registration.json",
+        runtime_tip_calibration_path=tmp_path / "latest_runtime_tip_calibration.json",
         config_source="test",
         runtime_coil_tool_id=settings.registration.coil_tool_id,
         registration_tool_id=settings.registration.capture_tool_id,
@@ -262,6 +265,24 @@ def _registration_service(
         solver=RigidRegistrationSolver(),
         config_path=config_path,
         config_source=str(config_path),
+    )
+
+
+def _runtime_tip_calibration_service(
+    settings: Settings,
+    tmp_path: Path,
+    tracking_service: TrackingService,
+    registration_service: RegistrationService,
+) -> RuntimeTipCalibrationService:
+    return RuntimeTipCalibrationService(
+        tracking_service=tracking_service,
+        registration_service=registration_service,
+        repository=RuntimeTipCalibrationRepository(latest_path=tmp_path / "latest_runtime_tip_calibration.json"),
+        solver=RigidRegistrationSolver(),
+        registration_config=settings.registration,
+        config_path=tmp_path / "registration.yaml",
+        config_source="test-registration",
+        sleep_fn=lambda _seconds: None,
     )
 
 
@@ -405,6 +426,20 @@ def test_registration_tab_wraps_workspace_in_scroll_area(tmp_path: Path) -> None
 
     assert isinstance(tab.scroll_area, QScrollArea)
     assert tab.scroll_area.widget() is not None
+
+
+def test_registration_tab_launches_runtime_tip_calibration_dialog_from_app_window(tmp_path: Path) -> None:
+    _app()
+    window = AppWindow(_app_context(tmp_path))
+    try:
+        window._refresh_timer.stop()
+        window.show()
+        window.tab_widget.setCurrentWidget(window.registration_tab)
+        QTest.mouseClick(window.registration_tab.runtime_tip_button, Qt.LeftButton)
+
+        assert window.runtime_tip_calibration_dialog.isVisible() is True
+    finally:
+        window.shutdown()
 
 
 def test_tool_plot_widget_accepts_xyz_points() -> None:
@@ -736,6 +771,12 @@ def _app_context(tmp_path: Path) -> AppContext:
     tracking_service = _tracking_service(settings, tmp_path)
     servo_service = _servo_service(tmp_path)
     registration_service = _registration_service(settings, tmp_path, tracking_service)
+    runtime_tip_calibration_service = _runtime_tip_calibration_service(
+        settings,
+        tmp_path,
+        tracking_service,
+        registration_service,
+    )
     registration_path = tmp_path / "latest_registration.json"
     experiment_runner = _experiment_runner(
         settings,
@@ -747,6 +788,7 @@ def _app_context(tmp_path: Path) -> AppContext:
     services = ServiceRegistry()
     services.register("tracking_service", tracking_service)
     services.register("registration_service", registration_service)
+    services.register("runtime_tip_calibration_service", runtime_tip_calibration_service)
     services.register("servo_service", servo_service)
     services.register("openrb_client", MockOpenRbClient())
     services.register("experiment_loader", ExperimentLoader())

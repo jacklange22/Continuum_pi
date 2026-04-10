@@ -11,6 +11,7 @@ from continuum_robot.app.bootstrap import AppContext, build_app_context
 from continuum_robot.gui.controllers.experiment_controller import ExperimentController
 from continuum_robot.gui.controllers.pretension_controller import PretensionController
 from continuum_robot.gui.controllers.registration_controller import RegistrationController
+from continuum_robot.gui.controllers.runtime_tip_calibration_controller import RuntimeTipCalibrationController
 from continuum_robot.gui.controllers.servos_controller import ServosController
 from continuum_robot.gui.controllers.system_controller import SystemController
 from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpController
@@ -21,6 +22,7 @@ from continuum_robot.gui.tabs.registration_tab import RegistrationTab
 from continuum_robot.gui.tabs.servos_tab import ServosTab
 from continuum_robot.gui.tabs.system_tab import SystemTab
 from continuum_robot.gui.tabs.tracking_tab import TrackingTab
+from continuum_robot.gui.widgets.runtime_tip_calibration_dialog import RuntimeTipCalibrationDialog
 
 
 class AppWindow(QMainWindow):
@@ -110,6 +112,7 @@ class AppWindow(QMainWindow):
         settings = context.settings
         tracking_service = context.services.get("tracking_service")
         registration_service = context.services.get("registration_service")
+        runtime_tip_calibration_service = context.services.get("runtime_tip_calibration_service")
         servo_service = context.services.get("servo_service")
         openrb_client = context.services.get("openrb_client")
         experiment_loader = context.services.get("experiment_loader")
@@ -138,6 +141,13 @@ class AppWindow(QMainWindow):
             registration_config=settings.registration,
         )
         self.registration_controller.load_latest_result()
+        self.runtime_tip_calibration_controller = RuntimeTipCalibrationController(
+            runtime_tip_calibration_service=runtime_tip_calibration_service,
+        )
+        self.runtime_tip_calibration_dialog = RuntimeTipCalibrationDialog(
+            self.runtime_tip_calibration_controller,
+            parent=self,
+        )
         self.experiment_controller = ExperimentController(
             experiment_loader=experiment_loader,
             experiment_runner=experiment_runner,
@@ -163,6 +173,7 @@ class AppWindow(QMainWindow):
         self.registration_tab = RegistrationTab(
             self.registration_controller,
             workflow_controller=self.tracker_mvp_controller,
+            open_runtime_tip_calibration=self._open_runtime_tip_calibration,
         )
         self.servos_tab = ServosTab(self.servos_controller)
         self.pretension_tab = PretensionTab(self.pretension_controller)
@@ -221,6 +232,12 @@ class AppWindow(QMainWindow):
         self.refresh()
 
     def _shutdown_workspace(self) -> None:
+        dialog = getattr(self, "runtime_tip_calibration_dialog", None)
+        if dialog is not None:
+            try:
+                dialog.close()
+            except Exception:
+                pass
         for attribute in ("servos_controller", "pretension_controller", "experiment_controller", "tracking_controller"):
             controller = getattr(self, attribute, None)
             if controller is None:
@@ -239,3 +256,12 @@ class AppWindow(QMainWindow):
     @classmethod
     def _refresh_interval_ms(cls, poll_rate_hz: int) -> int:
         return max(cls.MIN_REFRESH_INTERVAL_MS, int(1000 / max(1, int(poll_rate_hz))))
+
+    def _open_runtime_tip_calibration(self) -> None:
+        dialog = getattr(self, "runtime_tip_calibration_dialog", None)
+        if dialog is None:
+            return
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        dialog.refresh()

@@ -194,7 +194,15 @@ For the simple tracker MVP, the artifact now records two different transform con
 - `capture_tip_provenance`: the accepted `0B` tip file and vector used during registration capture
 - `live_pose_tip_transform`: the saved `T_coil_tip` source used later for live robot-frame pose from `0A`
 
-This is intentional because the tracker MVP uses the pivot-calibrated `0B` tip file during capture, while `T_coil_tip` remains identity by design unless a separate `0A -> tip` calibration workflow exists.
+This is intentional because the tracker MVP uses the pivot-calibrated `0B` tip file during capture, while the live `0A -> tip` transform is now owned by the separate advanced runtime tip calibration workflow.
+
+That workflow:
+
+- uses the known hat geometry under `tools/all_tip_registration_points_in_sw` and `tools/T_sw_2_tip`
+- captures hat points with the calibrated `0B` pen probe
+- solves `T_tip_aurora`
+- averages stationary live `0A` coil poses
+- saves `T_coil_tip` as a separate artifact under `data/calibrations/runtime_tip/`
 
 The older field names `raw_captured_landmarks_robot_xyz` and `averaged_landmarks_robot_xyz`
 are historical. In the current simple workflow they contain the captured measurement-point

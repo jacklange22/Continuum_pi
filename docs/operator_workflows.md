@@ -118,6 +118,33 @@ Success criteria:
 - repeated registration-validation summary is written under `data/registrations/validation/`
 - tracking pipeline can use the saved registration on the next refresh
 
+## Workflow 5B: Runtime Tip Calibration
+
+Applies now as an advanced workflow launched from `Registration`.
+
+1. In `Registration`, click `Open Runtime Tip Calibration`.
+2. Confirm the accepted `0B` tip file is loaded and the hat truth geometry is ready.
+3. Begin the runtime tip calibration session.
+4. Capture the configured hat points with the calibrated `0B` pen probe.
+5. Mark each hat point complete after enough samples.
+6. Collect stationary `0A` samples while the hat defines the fixed Tip frame.
+7. Solve the calibration.
+8. Review:
+   - hat fit RMSE
+   - max hat residual
+   - per-point residuals and spreads
+   - `0A` translation spread
+   - `0A` rotation spread
+   - runtime chain status
+9. Save the accepted runtime tip calibration artifact.
+
+Success criteria:
+
+- canonical artifact saved under `data/calibrations/runtime_tip/`
+- artifact records `T_coil_tip`, `T_tip_aurora`, and `T_aurora_coil_avg`
+- tracking reports that the live chain is using the accepted runtime tip calibration
+- live robot-frame tip pose is no longer on identity fallback
+
 ## Workflow 6: Repeatability Dataset
 
 Applies now in dry-run and later with live hardware.
@@ -140,10 +167,11 @@ Target acceptance:
 2. `Tracking` connect + validation
 3. guided `0B` pivot calibration in `Tracking`
 4. 4-point registration in `Registration`
-5. confirm live robot-frame pose
-6. one-servo OpenRB bring-up
-7. startup calibration and pretension
-8. repeatability dataset
+5. runtime tip calibration from `Registration`
+6. confirm live robot-frame pose
+7. one-servo OpenRB bring-up
+8. startup calibration and pretension
+9. repeatability dataset
 
 ## Tracker Verdicts
 

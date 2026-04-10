@@ -180,8 +180,9 @@ class RegistrationService:
             if target_label not in self._state.raw_points_by_label:
                 raise ValueError(f"Unknown registration label: {target_label}")
 
-        measurement_tool = self._require_tool_snapshot(self._config.measurement_tool_id)
-        sample = self._measurement_point_from_tool_snapshot(measurement_tool)
+        capture = self.sample_measurement_point_capture()
+        measurement_tool = capture["measurement_tool_snapshot"]
+        sample = capture["point_xyz_mm"]
 
         with self._lock:
             self._state.raw_points_by_label[target_label].append(sample)
@@ -198,6 +199,19 @@ class RegistrationService:
             self._state.health.state = "capturing"
             self._recompute_health_locked()
         return sample
+
+    def sample_measurement_point_capture(self) -> dict[str, object]:
+        """Capture the current 0B-measured point without mutating session state."""
+        measurement_status = self.get_measurement_point_status(refresh=True)
+        if not measurement_status["ready"]:
+            raise RuntimeError(str(measurement_status["message"]))
+        measurement_tool = self._require_tool_snapshot(self._config.measurement_tool_id)
+        point_xyz_mm = self._measurement_point_from_tool_snapshot(measurement_tool)
+        return {
+            "point_xyz_mm": list(point_xyz_mm),
+            "measurement_tool_snapshot": measurement_tool,
+            "measurement_point_status": measurement_status,
+        }
 
     def peek_current_measurement_point(self) -> dict[str, object]:
         """Return the current tracked measurement-point pose for GUI display."""
@@ -1099,12 +1113,29 @@ class RegistrationService:
         role_match = (
             snapshot.stored_registration_measurement_tool_id == self._config.measurement_tool_id
             and snapshot.stored_registration_coil_tool_id == self._config.coil_tool_id
+            and snapshot.stored_runtime_tip_measurement_tool_id in (None, self._config.measurement_tool_id)
+            and snapshot.stored_runtime_tip_coil_tool_id in (None, self._config.coil_tool_id)
         )
         if not loaded_latest:
             state = "registration_not_loaded"
             message = (
                 f"Tracking registration state is {snapshot.registration_state}; "
                 "live robot-frame pose is not currently using the accepted registration."
+            )
+        elif snapshot.runtime_tip_calibration_state == "invalid_runtime_tip_calibration":
+            state = "invalid_runtime_tip_calibration"
+            message = "Tracking rejected the runtime 0A hat-based tip calibration artifact."
+        elif snapshot.runtime_tip_calibration_state == "missing_runtime_tip_calibration":
+            state = "missing_runtime_tip_calibration"
+            message = (
+                "Tracking loaded the accepted base registration, but no separate runtime 0A tip calibration artifact "
+                "is available yet."
+            )
+        elif snapshot.runtime_tip_calibration_state == "identity_tip_fallback":
+            state = "identity_tip_fallback"
+            message = (
+                "Tracking is still using the identity 0A-to-tip fallback. "
+                "Run the separate runtime tip calibration before trusting robot-frame tip pose."
             )
         elif not timestamp_matches:
             state = "stale_registration_loaded"
@@ -1140,6 +1171,12 @@ class RegistrationService:
             "stored_registration_fre_mm": snapshot.stored_registration_fre_mm,
             "stored_registration_measurement_tool_id": snapshot.stored_registration_measurement_tool_id,
             "stored_registration_coil_tool_id": snapshot.stored_registration_coil_tool_id,
+            "runtime_tip_calibration_state": snapshot.runtime_tip_calibration_state,
+            "runtime_tip_calibration_path": snapshot.runtime_tip_calibration_path,
+            "stored_runtime_tip_timestamp_utc": snapshot.stored_runtime_tip_timestamp_utc,
+            "stored_runtime_tip_measurement_tool_id": snapshot.stored_runtime_tip_measurement_tool_id,
+            "stored_runtime_tip_coil_tool_id": snapshot.stored_runtime_tip_coil_tool_id,
+            "runtime_tip_identity_fallback": snapshot.runtime_tip_identity_fallback,
         }
 
     @staticmethod
@@ -1196,6 +1233,14 @@ class RegistrationService:
             if condition_number is not None:
                 lines.append(f"Landmark conditioning: {float(condition_number):.3f}")
         lines.append(str(tracking_summary.get("message") or ""))
+        runtime_tip_timestamp = tracking_summary.get("stored_runtime_tip_timestamp_utc")
+        if runtime_tip_timestamp is not None:
+            lines.append(f"Loaded runtime tip calibration: {runtime_tip_timestamp}")
+        elif tracking_summary.get("runtime_tip_calibration_state"):
+            lines.append(
+                "Runtime tip calibration state: "
+                f"{tracking_summary.get('runtime_tip_calibration_state')}"
+            )
         if history_summary:
             lines.append(RegistrationService._comparison_message(history_summary))
             worst_history_label = history_summary.get("worst_landmark_by_mean_residual")
@@ -1233,7 +1278,7 @@ class RegistrationService:
             "assumption": (
                 "Simple 4-point registration calibrates T_robot_aurora from 0B pen-probe captures. "
                 "It does not solve a separate 0A-to-tip offset, so T_coil_tip remains identity by design "
-                "until a dedicated live-pose tip calibration is introduced."
+                "until the separate runtime 0A hat-based tip calibration is performed."
             ),
             "T_coil_tip": matrix.tolist(),
         }

@@ -15,6 +15,16 @@ penprobe_file: "data/tip_cals/generated_penprobe_tip.csv"
 quaternion_average_method: "sign_aligned_mean"
 model_tre_reference_radius_mm: 5.0
 tip_tre_reference_radius_mm: 3.0
+# Separate advanced 0A runtime tip calibration, used for the live chain
+# T_robot_tip = T_robot_aurora @ T_aurora_coil @ T_coil_tip.
+# This is distinct from 0B pivot calibration and from base registration.
+runtime_tip_truth_points_file: "tools/all_tip_registration_points_in_sw"
+runtime_tip_T_sw_2_tip_file: "tools/T_sw_2_tip"
+runtime_tip_captures_per_landmark: 3
+runtime_tip_coil_sample_count: 50
+runtime_tip_coil_sample_interval_s: 0.02
+runtime_tip_max_hat_rmse_mm: 2.0
+runtime_tip_setup_id: ""
 # Candidate landmarks derived from the protected SolidWorks registration model
 # points under tools/12_model_registration_points_in_sw transformed by
 # tools/T_sw_2_model into the robot/body frame. The operator still chooses the

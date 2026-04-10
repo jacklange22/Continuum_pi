@@ -171,6 +171,29 @@ class ConfigLoader:
             max_fre_mm=self._maybe_float(
                 (registration_data.get("validation", {}) or {}).get("max_fre_mm", 2.0)
             ),
+            runtime_tip_truth_points_file=self._maybe_path(
+                registration_data.get("runtime_tip_truth_points_file", "tools/all_tip_registration_points_in_sw")
+            ),
+            runtime_tip_T_sw_2_tip_file=self._maybe_path(
+                registration_data.get("runtime_tip_T_sw_2_tip_file", "tools/T_sw_2_tip")
+            ),
+            runtime_tip_captures_per_landmark=int(
+                registration_data.get("runtime_tip_captures_per_landmark", 3)
+            ),
+            runtime_tip_coil_sample_count=int(
+                registration_data.get("runtime_tip_coil_sample_count", 50)
+            ),
+            runtime_tip_coil_sample_interval_s=float(
+                registration_data.get("runtime_tip_coil_sample_interval_s", 0.02)
+            ),
+            runtime_tip_max_hat_rmse_mm=self._maybe_float(
+                registration_data.get("runtime_tip_max_hat_rmse_mm", 2.0)
+            ),
+            runtime_tip_setup_id=(
+                str(registration_data.get("runtime_tip_setup_id"))
+                if registration_data.get("runtime_tip_setup_id") not in (None, "")
+                else None
+            ),
         )
         experiment = ExperimentConfig(
             default_settle_time_s=float(experiment_data.get("default_settle_time_s", 2.0)),
@@ -183,6 +206,12 @@ class ConfigLoader:
             ),
             latest_registration_path=str(
                 system_data.get("latest_registration_path", "data/registrations/latest_registration.json")
+            ),
+            latest_runtime_tip_calibration_path=str(
+                system_data.get(
+                    "latest_runtime_tip_calibration_path",
+                    "data/calibrations/runtime_tip/latest_runtime_tip_calibration.json",
+                )
             ),
         )
         return Settings(

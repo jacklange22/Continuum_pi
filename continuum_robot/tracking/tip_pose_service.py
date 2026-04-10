@@ -42,10 +42,56 @@ class TipPoseService:
             )
 
         payload = json.loads(registration_path.read_text(encoding="utf-8"))
-        T_robot_aurora = cls._load_T_robot_aurora(payload, registration_path)
-        T_coil_tip = cls._load_T_coil_tip(payload, registration_path)
+        return cls(
+            cls.load_inputs_from_payloads(
+                registration_payload=payload,
+                registration_path=registration_path,
+            )
+        )
 
-        return cls(TipPoseInputs(T_robot_aurora=T_robot_aurora, T_coil_tip=T_coil_tip))
+    @classmethod
+    def from_artifacts(
+        cls,
+        *,
+        registration_path: Path,
+        runtime_tip_calibration_path: Path | None = None,
+    ) -> "TipPoseService":
+        """Load transform inputs from separate registration and runtime-tip artifacts."""
+        if not registration_path.exists():
+            raise FileNotFoundError(
+                f"Missing registration file: {registration_path}. "
+                "Run registration first to generate latest_registration.json."
+            )
+        registration_payload = json.loads(registration_path.read_text(encoding="utf-8"))
+        runtime_payload = None
+        if runtime_tip_calibration_path is not None and runtime_tip_calibration_path.exists():
+            runtime_payload = json.loads(runtime_tip_calibration_path.read_text(encoding="utf-8"))
+        return cls(
+            cls.load_inputs_from_payloads(
+                registration_payload=registration_payload,
+                registration_path=registration_path,
+                runtime_tip_calibration_payload=runtime_payload,
+                runtime_tip_calibration_path=runtime_tip_calibration_path,
+            )
+        )
+
+    @classmethod
+    def load_inputs_from_payloads(
+        cls,
+        *,
+        registration_payload: dict,
+        registration_path: Path,
+        runtime_tip_calibration_payload: dict | None = None,
+        runtime_tip_calibration_path: Path | None = None,
+    ) -> TipPoseInputs:
+        """Return parsed transform inputs from the given artifacts."""
+        T_robot_aurora = cls._load_T_robot_aurora(registration_payload, registration_path)
+        if runtime_tip_calibration_payload is not None:
+            runtime_path = runtime_tip_calibration_path or registration_path
+            T_coil_tip = cls._load_T_coil_tip(runtime_tip_calibration_payload, runtime_path)
+        else:
+            T_coil_tip = cls._load_T_coil_tip(registration_payload, registration_path)
+        return TipPoseInputs(T_robot_aurora=T_robot_aurora, T_coil_tip=T_coil_tip)
 
     @staticmethod
     def _load_T_robot_aurora(payload: dict, registration_path: Path) -> np.ndarray:

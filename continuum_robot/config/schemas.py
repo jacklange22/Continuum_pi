@@ -115,6 +115,13 @@ class RegistrationWorkflowConfig:
     model_tre_reference_radius_mm: float = 5.0
     tip_tre_reference_radius_mm: float = 3.0
     max_fre_mm: float | None = 2.0
+    runtime_tip_truth_points_file: str | None = "tools/all_tip_registration_points_in_sw"
+    runtime_tip_T_sw_2_tip_file: str | None = "tools/T_sw_2_tip"
+    runtime_tip_captures_per_landmark: int = 3
+    runtime_tip_coil_sample_count: int = 50
+    runtime_tip_coil_sample_interval_s: float = 0.02
+    runtime_tip_max_hat_rmse_mm: float | None = 2.0
+    runtime_tip_setup_id: str | None = None
 
 
 @dataclass
@@ -132,3 +139,6 @@ class CalibrationConfig:
 
     neutral_setpoints_path: str = "data/calibrations/neutral_setpoints.json"
     latest_registration_path: str = "data/registrations/latest_registration.json"
+    latest_runtime_tip_calibration_path: str = (
+        "data/calibrations/runtime_tip/latest_runtime_tip_calibration.json"
+    )

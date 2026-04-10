@@ -51,6 +51,7 @@ class TrackingService:
     _FAILED_FAULTS = {
         "no_serial_connection",
         "invalid_registration",
+        "invalid_runtime_tip_calibration",
         "registration_role_mismatch",
         "invalid_transform_chain",
     }
@@ -68,6 +69,7 @@ class TrackingService:
         live_poll_hz: float = 20.0,
         stale_after_s: float = 0.5,
         registration_path: Path | None = None,
+        runtime_tip_calibration_path: Path | None = None,
         runtime_coil_tool_id: str = "0A",
         registration_tool_id: str = "0B",
         config_source: str = "config/system.yaml",
@@ -100,7 +102,13 @@ class TrackingService:
         self.backend_identity = backend_identity or self._default_backend_identity(live_backend, aurora_client)
 
         project_root = Path(__file__).resolve().parents[2]
-        self.registration_path = registration_path or (project_root / "data" / "registrations" / "latest_registration.json")
+        self.registration_path = registration_path or (
+            project_root / "data" / "registrations" / "latest_registration.json"
+        )
+        self.runtime_tip_calibration_path = runtime_tip_calibration_path or self._default_runtime_tip_path(
+            project_root=project_root,
+            registration_path=self.registration_path,
+        )
 
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -111,6 +119,8 @@ class TrackingService:
         self._registration_role_error: str | None = None
         self._registration_measurement_tool_id: str | None = None
         self._registration_coil_tool_id: str | None = None
+        self._runtime_tip_measurement_tool_id: str | None = None
+        self._runtime_tip_coil_tool_id: str | None = None
         self._backend_started_here = False
         self._started_monotonic: float | None = None
         self._last_frame_monotonic: float | None = None
@@ -291,11 +301,19 @@ class TrackingService:
             self._registration_role_error = None
             self._registration_measurement_tool_id = None
             self._registration_coil_tool_id = None
+            self._runtime_tip_measurement_tool_id = None
+            self._runtime_tip_coil_tool_id = None
             self._state.registration_path = str(self.registration_path)
             self._state.stored_registration_measurement_tool_id = None
             self._state.stored_registration_coil_tool_id = None
             self._state.stored_registration_timestamp_utc = None
             self._state.stored_registration_fre_mm = None
+            self._state.runtime_tip_calibration_path = str(self.runtime_tip_calibration_path)
+            self._state.stored_runtime_tip_measurement_tool_id = None
+            self._state.stored_runtime_tip_coil_tool_id = None
+            self._state.stored_runtime_tip_timestamp_utc = None
+            self._state.runtime_tip_calibration_state = "missing_runtime_tip_calibration"
+            self._state.runtime_tip_identity_fallback = False
             self._state.registration_state = "missing_registration"
             self._state.tip_calibration_source = None
             self._state.tip_pose_status = "missing_registration"
@@ -307,17 +325,11 @@ class TrackingService:
 
         try:
             payload = json.loads(self.registration_path.read_text(encoding="utf-8"))
-            tip_service = TipPoseService.from_registration_file(self.registration_path)
             config_used = payload.get("config_used", {}) if isinstance(payload.get("config_used"), dict) else {}
             live_pose_tip_transform = (
                 payload.get("live_pose_tip_transform", {})
                 if isinstance(payload.get("live_pose_tip_transform"), dict)
                 else {}
-            )
-            tip_calibration_source = (
-                live_pose_tip_transform.get("source")
-                or config_used.get("tip_calibration_source")
-                or "unknown"
             )
             measurement_tool_id = (
                 config_used.get("measurement_tool_id")
@@ -329,10 +341,11 @@ class TrackingService:
             stored_fre = payload.get("fre_mm")
             if stored_fre is None and isinstance(payload.get("validation_metrics"), dict):
                 stored_fre = payload["validation_metrics"].get("overall_fre_mm")
-            role_error = self._build_registration_role_error(
+            registration_role_error = self._build_registration_role_error(
                 measurement_tool_id=str(measurement_tool_id) if measurement_tool_id is not None else None,
                 coil_tool_id=str(coil_tool_id) if coil_tool_id is not None else None,
             )
+            T_robot_aurora = TipPoseService._load_T_robot_aurora(payload, self.registration_path)
         except Exception as exc:
             with self._lock:
                 self._state.registration_state = "invalid_registration"
@@ -342,14 +355,129 @@ class TrackingService:
                 self._recompute_health_locked()
             return
 
+        runtime_tip_calibration_state = "missing_runtime_tip_calibration"
+        runtime_tip_identity_fallback = False
+        runtime_tip_source: str | None = None
+        runtime_tip_measurement_tool_id: str | None = None
+        runtime_tip_coil_tool_id: str | None = None
+        runtime_tip_timestamp_utc: str | None = None
+        runtime_tip_role_error: str | None = None
+        T_coil_tip: np.ndarray | None = None
+        runtime_tip_error: str | None = None
+        runtime_tip_payload: dict[str, Any] | None = None
+
+        if self.runtime_tip_calibration_path.exists():
+            try:
+                runtime_tip_payload = json.loads(self.runtime_tip_calibration_path.read_text(encoding="utf-8"))
+                T_coil_tip = TipPoseService._load_T_coil_tip(
+                    runtime_tip_payload,
+                    self.runtime_tip_calibration_path,
+                )
+                runtime_tip_calibration_state = "loaded"
+                runtime_tip_source = (
+                    runtime_tip_payload.get("calibration_kind")
+                    or (runtime_tip_payload.get("validation_metrics", {}) or {}).get("calibration_kind")
+                    or "runtime_tip_calibration_artifact"
+                )
+                runtime_tip_measurement_tool_id = (
+                    runtime_tip_payload.get("measurement_tool_id")
+                    or (runtime_tip_payload.get("config_used", {}) or {}).get("measurement_tool_id")
+                )
+                runtime_tip_coil_tool_id = (
+                    runtime_tip_payload.get("coil_tool_id")
+                    or (runtime_tip_payload.get("config_used", {}) or {}).get("coil_tool_id")
+                )
+                runtime_tip_timestamp_utc = (
+                    str(runtime_tip_payload.get("timestamp_utc"))
+                    if runtime_tip_payload.get("timestamp_utc") is not None
+                    else None
+                )
+                runtime_tip_role_error = self._build_registration_role_error(
+                    measurement_tool_id=(
+                        str(runtime_tip_measurement_tool_id)
+                        if runtime_tip_measurement_tool_id is not None
+                        else None
+                    ),
+                    coil_tool_id=(
+                        str(runtime_tip_coil_tool_id)
+                        if runtime_tip_coil_tool_id is not None
+                        else None
+                    ),
+                )
+            except Exception as exc:
+                runtime_tip_calibration_state = "invalid_runtime_tip_calibration"
+                runtime_tip_error = str(exc)
+        elif "T_coil_tip" in payload or "T_tip_2_coil" in payload:
+            try:
+                T_coil_tip = TipPoseService._load_T_coil_tip(payload, self.registration_path)
+                assert_rigid_transform_matrix(np.asarray(T_coil_tip, dtype=float), "T_coil_tip")
+            except Exception as exc:
+                with self._lock:
+                    self._state.registration_state = "invalid_registration"
+                    self._state.health.last_error = str(exc)
+                    self._state.last_error = str(exc)
+                    self._state.tip_pose_status = "invalid_registration"
+                    self._recompute_health_locked()
+                return
+            runtime_tip_source = (
+                live_pose_tip_transform.get("source")
+                or config_used.get("tip_calibration_source")
+                or "registration_artifact_tip_transform"
+            )
+            if runtime_tip_source == "identity_assumption_simple_registration":
+                runtime_tip_calibration_state = "identity_tip_fallback"
+                runtime_tip_identity_fallback = True
+            else:
+                runtime_tip_calibration_state = "loaded_from_registration_artifact"
+            runtime_tip_measurement_tool_id = str(measurement_tool_id) if measurement_tool_id is not None else None
+            runtime_tip_coil_tool_id = str(coil_tool_id) if coil_tool_id is not None else None
+            runtime_tip_timestamp_utc = str(stored_timestamp) if stored_timestamp is not None else None
+            runtime_tip_role_error = registration_role_error
+        else:
+            T_coil_tip = np.eye(4, dtype=float)
+            runtime_tip_source = "identity_runtime_tip_fallback"
+            runtime_tip_calibration_state = "identity_tip_fallback"
+            runtime_tip_identity_fallback = True
+            runtime_tip_measurement_tool_id = str(measurement_tool_id) if measurement_tool_id is not None else None
+            runtime_tip_coil_tool_id = str(coil_tool_id) if coil_tool_id is not None else None
+            runtime_tip_timestamp_utc = None
+
+        role_error = "; ".join(
+            issue
+            for issue in [registration_role_error, runtime_tip_role_error]
+            if issue
+        ) or None
+        tip_service = (
+            TipPoseService(
+                TipPoseService.load_inputs_from_payloads(
+                    registration_payload=payload,
+                    registration_path=self.registration_path,
+                    runtime_tip_calibration_payload=(
+                        runtime_tip_payload
+                        if runtime_tip_calibration_state == "loaded"
+                        else {"T_coil_tip": np.asarray(T_coil_tip, dtype=float).tolist()}
+                    ),
+                    runtime_tip_calibration_path=self.runtime_tip_calibration_path,
+                )
+            )
+            if runtime_tip_calibration_state != "invalid_runtime_tip_calibration" and T_coil_tip is not None
+            else None
+        )
+
         with self._lock:
             self._tip_service = tip_service
-            self._tip_calibration_source = tip_calibration_source
+            self._tip_calibration_source = runtime_tip_source
             self._registration_role_error = role_error
             self._registration_measurement_tool_id = (
                 str(measurement_tool_id) if measurement_tool_id is not None else None
             )
             self._registration_coil_tool_id = str(coil_tool_id) if coil_tool_id is not None else None
+            self._runtime_tip_measurement_tool_id = (
+                str(runtime_tip_measurement_tool_id) if runtime_tip_measurement_tool_id is not None else None
+            )
+            self._runtime_tip_coil_tool_id = (
+                str(runtime_tip_coil_tool_id) if runtime_tip_coil_tool_id is not None else None
+            )
             self._state.registration_state = "loaded"
             self._state.stored_registration_measurement_tool_id = self._registration_measurement_tool_id
             self._state.stored_registration_coil_tool_id = self._registration_coil_tool_id
@@ -357,13 +485,22 @@ class TrackingService:
                 str(stored_timestamp) if stored_timestamp is not None else None
             )
             self._state.stored_registration_fre_mm = float(stored_fre) if stored_fre is not None else None
-            self._state.tip_calibration_source = tip_calibration_source
-            self._state.health.last_error = None
-            self._state.last_error = None
-            if role_error is not None:
+            self._state.runtime_tip_calibration_state = runtime_tip_calibration_state
+            self._state.stored_runtime_tip_measurement_tool_id = self._runtime_tip_measurement_tool_id
+            self._state.stored_runtime_tip_coil_tool_id = self._runtime_tip_coil_tool_id
+            self._state.stored_runtime_tip_timestamp_utc = runtime_tip_timestamp_utc
+            self._state.runtime_tip_identity_fallback = runtime_tip_identity_fallback
+            self._state.tip_calibration_source = runtime_tip_source
+            self._state.health.last_error = runtime_tip_error
+            self._state.last_error = runtime_tip_error
+            if runtime_tip_calibration_state == "invalid_runtime_tip_calibration":
+                self._state.tip_pose_status = "invalid_runtime_tip_calibration"
+            elif role_error is not None:
                 self._state.tip_pose_status = "role_mismatch"
                 self._state.health.last_error = role_error
                 self._state.last_error = role_error
+            elif runtime_tip_identity_fallback:
+                self._state.tip_pose_status = "identity_tip_fallback"
             self._recompute_health_locked()
 
     def ingest_frame(
@@ -897,7 +1034,10 @@ class TrackingService:
         self._state.tip_pose_timestamp_utc = None
 
         if self._tip_service is None:
-            self._state.tip_pose_status = self._state.registration_state
+            if self._state.runtime_tip_calibration_state == "invalid_runtime_tip_calibration":
+                self._state.tip_pose_status = "invalid_runtime_tip_calibration"
+            else:
+                self._state.tip_pose_status = self._state.registration_state
             return
 
         if self._registration_role_error is not None:
@@ -926,7 +1066,9 @@ class TrackingService:
             self._state.last_error = str(exc)
             return
 
-        self._state.tip_pose_status = "ok"
+        self._state.tip_pose_status = (
+            "identity_tip_fallback" if self._state.runtime_tip_identity_fallback else "ok"
+        )
         self._state.T_robot_tip = T_robot_tip.tolist()
         self._state.tip_pose_timestamp_utc = packet_timestamp
         self._state.last_good_T_robot_tip = T_robot_tip.tolist()
@@ -1010,6 +1152,12 @@ class TrackingService:
             pipeline_faults.append("missing_registration")
         elif self._state.registration_state == "invalid_registration":
             pipeline_faults.append("invalid_registration")
+        elif self._state.runtime_tip_calibration_state == "missing_runtime_tip_calibration":
+            pipeline_faults.append("missing_runtime_tip_calibration")
+        elif self._state.runtime_tip_calibration_state == "invalid_runtime_tip_calibration":
+            pipeline_faults.append("invalid_runtime_tip_calibration")
+        elif self._state.runtime_tip_calibration_state == "identity_tip_fallback":
+            pipeline_faults.append("identity_tip_fallback")
         if self._registration_role_error is not None:
             pipeline_faults.append("registration_role_mismatch")
         if self._state.tip_pose_status == "invalid_transform_chain":
@@ -1034,6 +1182,12 @@ class TrackingService:
             "stored_registration_coil_tool_id": self._registration_coil_tool_id,
             "stored_registration_timestamp_utc": self._state.stored_registration_timestamp_utc,
             "stored_registration_fre_mm": self._state.stored_registration_fre_mm,
+            "runtime_tip_calibration_state": self._state.runtime_tip_calibration_state,
+            "runtime_tip_calibration_path": self._state.runtime_tip_calibration_path,
+            "stored_runtime_tip_measurement_tool_id": self._runtime_tip_measurement_tool_id,
+            "stored_runtime_tip_coil_tool_id": self._runtime_tip_coil_tool_id,
+            "stored_runtime_tip_timestamp_utc": self._state.stored_runtime_tip_timestamp_utc,
+            "runtime_tip_identity_fallback": self._state.runtime_tip_identity_fallback,
             "packets_received_count": self._state.packets_received_count,
             "bad_packets_count": self._state.bad_packets_count,
             "crc_failures_count": self._state.crc_failures_count,
@@ -1119,11 +1273,11 @@ class TrackingService:
         issues: list[str] = []
         if measurement_tool_id is not None and measurement_tool_id != self.registration_tool_id:
             issues.append(
-                f"registration file expects measurement tool {measurement_tool_id} but runtime registration tool is {self.registration_tool_id}"
+                f"transform artifact expects measurement tool {measurement_tool_id} but runtime registration tool is {self.registration_tool_id}"
             )
         if coil_tool_id is not None and coil_tool_id != self.runtime_coil_tool_id:
             issues.append(
-                f"registration file expects coil tool {coil_tool_id} but runtime coil tool is {self.runtime_coil_tool_id}"
+                f"transform artifact expects coil tool {coil_tool_id} but runtime coil tool is {self.runtime_coil_tool_id}"
             )
         if not issues:
             return None
@@ -1152,6 +1306,17 @@ class TrackingService:
             if candidate not in (None, ""):
                 return str(candidate)
         return None
+
+    @staticmethod
+    def _default_runtime_tip_path(*, project_root: Path, registration_path: Path) -> Path:
+        if registration_path.parent.name == "registrations":
+            return (
+                registration_path.parent.parent
+                / "calibrations"
+                / "runtime_tip"
+                / "latest_runtime_tip_calibration.json"
+            )
+        return registration_path.parent / "latest_runtime_tip_calibration.json"
 
     @classmethod
     def _default_backend_identity(cls, live_backend, aurora_client: AuroraClient | None) -> str:

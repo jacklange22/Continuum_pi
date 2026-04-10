@@ -89,7 +89,7 @@ def test_registration_service_solves_and_accepts_registration(tmp_path: Path) ->
     frame = build_transform_frame_from_records(frame_number=7, records=[build_tool_0A_record(translation_xyz=(1.0, 2.0, 3.0))])
     tracking_service.ingest_frame(frame, source="test")
     tracking_snapshot = tracking_service.get_snapshot()
-    assert tracking_snapshot.tip_pose_status == "ok"
+    assert tracking_snapshot.tip_pose_status == "identity_tip_fallback"
     assert tracking_snapshot.T_robot_tip is not None
     assert np.allclose([row[3] for row in tracking_snapshot.T_robot_tip[:3]], [1.0, 2.0, 3.0])
 
@@ -252,7 +252,11 @@ def test_registration_service_saves_richer_validation_metrics_and_runtime_applic
     assert latest_validation["runtime_application"]["loaded_latest_registration"] is True
     assert latest_validation["runtime_application"]["timestamp_matches_latest"] is True
     assert trust["trust_state"] == "trusted"
-    assert trust["live_chain_state"] in {"registration_loaded_waiting_for_live_pose", "ok"}
+    assert trust["live_chain_state"] in {
+        "registration_loaded_waiting_for_live_pose",
+        "ok",
+        "identity_tip_fallback",
+    }
 
 
 def test_registration_service_repeated_validation_summary_compares_recent_runs(tmp_path: Path) -> None:

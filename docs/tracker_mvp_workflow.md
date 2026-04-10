@@ -84,10 +84,12 @@ For the current simple tracker MVP:
 - the captured tip points are then averaged and used to solve `T_robot_aurora`
 - the saved registration artifact stores `capture_tip_provenance` so you can prove which accepted tip file was used
 
-`T_coil_tip` in the saved registration artifact is a separate concept. It is used later for live robot-frame pose from tool `0A`.
+`T_coil_tip` is now owned by the separate advanced runtime tip calibration workflow launched from `Registration`.
 
-- In the current simple tracker MVP, `T_coil_tip` is identity by design unless another workflow provides a separate `0A -> tip` calibration.
-- This means the pivot-calibrated `0B` tip file is still used correctly for registration, even if the saved `T_coil_tip` is identity.
+- The runtime tip workflow uses the hat truth geometry to solve `T_tip_aurora` from `0B` captures.
+- It averages stationary live `0A` coil poses and computes `T_coil_tip`.
+- Tracking then uses the full chain `T_robot_tip = T_robot_aurora @ T_aurora_coil @ T_coil_tip`.
+- If no accepted runtime tip artifact exists, tracking reports explicit identity fallback instead of pretending the chain is fully calibrated.
 
 ## Pass / Fail Interpretation
 

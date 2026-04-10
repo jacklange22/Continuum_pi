@@ -913,6 +913,9 @@ class TrackerMvpController:
                 f"source={live_pose_tip_transform.get('source')}, "
                 f"assumption={live_pose_tip_transform.get('assumption') or 'none'}"
             )
+            lines.append(
+                "The runtime 0A tip chain may instead use the separate Runtime Tip Calibration artifact when one is accepted."
+            )
         elif self.state.latest_registration_path:
             lines.append("Saved registration is missing explicit tip provenance metadata.")
         return lines

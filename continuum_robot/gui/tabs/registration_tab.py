@@ -31,10 +31,11 @@ from continuum_robot.gui.widgets.registration_plot_widget import RegistrationPlo
 class RegistrationTab(QWidget):
     """Guided 4-point robot-body alignment workflow."""
 
-    def __init__(self, controller, workflow_controller=None, parent=None) -> None:
+    def __init__(self, controller, workflow_controller=None, open_runtime_tip_calibration=None, parent=None) -> None:
         super().__init__(parent)
         self.controller = controller
         self.workflow_controller = workflow_controller
+        self.open_runtime_tip_calibration = open_runtime_tip_calibration
         self._selected_slot_labels: list[QLabel] = []
         self.setObjectName("registrationWorkspace")
         self.setStyleSheet(
@@ -121,6 +122,7 @@ class RegistrationTab(QWidget):
         self.save_button = QPushButton("Save Registration")
         self.retry_button = QPushButton("Restart")
         self.load_button = QPushButton("Load Latest")
+        self.runtime_tip_button = QPushButton("Open Runtime Tip Calibration")
 
         self.begin_button.clicked.connect(lambda: self._safe_call(self.controller.begin_session))
         self.capture_button.clicked.connect(lambda: self._safe_call(self.controller.capture_current_label_sample))
@@ -129,6 +131,7 @@ class RegistrationTab(QWidget):
         self.save_button.clicked.connect(self._save_registration)
         self.retry_button.clicked.connect(lambda: self._safe_call(self.controller.retry_session))
         self.load_button.clicked.connect(lambda: self._safe_call(self.controller.load_latest_result))
+        self.runtime_tip_button.clicked.connect(self._open_runtime_tip_calibration)
 
         self.selection_hint = QLabel("Select exactly four unique model points in capture order.")
         self.selection_hint.setProperty("role", "hint")
@@ -226,6 +229,7 @@ class RegistrationTab(QWidget):
         button_row_secondary.setSpacing(10)
         button_row_secondary.addWidget(self.retry_button)
         button_row_secondary.addWidget(self.load_button)
+        button_row_secondary.addWidget(self.runtime_tip_button)
         button_row_secondary.addStretch(1)
 
         self.points_table = QTableWidget(0, 6)
@@ -374,6 +378,7 @@ class RegistrationTab(QWidget):
         self.solve_button.setEnabled(state.active and self.controller.is_ready_to_solve())
         self.save_button.setEnabled(state.pending_accept)
         self.retry_button.setEnabled(state.active or state.pending_accept)
+        self.runtime_tip_button.setEnabled(True)
 
         self._update_selection_slots(state)
         self._update_available_points_table(state)
@@ -590,6 +595,10 @@ class RegistrationTab(QWidget):
                 self._safe_call(lambda: self.controller.save_registration(confirm_overwrite=True))
             else:
                 self.update(self.controller.refresh())
+
+    def _open_runtime_tip_calibration(self) -> None:
+        if callable(self.open_runtime_tip_calibration):
+            self.open_runtime_tip_calibration()
 
     def _safe_call(self, fn) -> None:
         try:
