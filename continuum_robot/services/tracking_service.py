@@ -294,6 +294,8 @@ class TrackingService:
             self._state.registration_path = str(self.registration_path)
             self._state.stored_registration_measurement_tool_id = None
             self._state.stored_registration_coil_tool_id = None
+            self._state.stored_registration_timestamp_utc = None
+            self._state.stored_registration_fre_mm = None
             self._state.registration_state = "missing_registration"
             self._state.tip_calibration_source = None
             self._state.tip_pose_status = "missing_registration"
@@ -323,6 +325,10 @@ class TrackingService:
                 or payload.get("measurement_tool_id")
             )
             coil_tool_id = config_used.get("coil_tool_id") or payload.get("coil_tool_id")
+            stored_timestamp = payload.get("timestamp_utc")
+            stored_fre = payload.get("fre_mm")
+            if stored_fre is None and isinstance(payload.get("validation_metrics"), dict):
+                stored_fre = payload["validation_metrics"].get("overall_fre_mm")
             role_error = self._build_registration_role_error(
                 measurement_tool_id=str(measurement_tool_id) if measurement_tool_id is not None else None,
                 coil_tool_id=str(coil_tool_id) if coil_tool_id is not None else None,
@@ -347,6 +353,10 @@ class TrackingService:
             self._state.registration_state = "loaded"
             self._state.stored_registration_measurement_tool_id = self._registration_measurement_tool_id
             self._state.stored_registration_coil_tool_id = self._registration_coil_tool_id
+            self._state.stored_registration_timestamp_utc = (
+                str(stored_timestamp) if stored_timestamp is not None else None
+            )
+            self._state.stored_registration_fre_mm = float(stored_fre) if stored_fre is not None else None
             self._state.tip_calibration_source = tip_calibration_source
             self._state.health.last_error = None
             self._state.last_error = None
@@ -1022,6 +1032,8 @@ class TrackingService:
             "registration_tool_id": self.registration_tool_id,
             "stored_registration_measurement_tool_id": self._registration_measurement_tool_id,
             "stored_registration_coil_tool_id": self._registration_coil_tool_id,
+            "stored_registration_timestamp_utc": self._state.stored_registration_timestamp_utc,
+            "stored_registration_fre_mm": self._state.stored_registration_fre_mm,
             "packets_received_count": self._state.packets_received_count,
             "bad_packets_count": self._state.bad_packets_count,
             "crc_failures_count": self._state.crc_failures_count,

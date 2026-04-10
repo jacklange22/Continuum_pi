@@ -186,9 +186,15 @@ class RegistrationTab(QWidget):
         self.live_point_label = QLabel()
         self.samples_used_label = QLabel()
         self.fre_label = QLabel()
+        self.max_residual_label = QLabel()
         self.result_status_label = QLabel()
         self.result_path_label = QLabel()
         self.selected_points_label = QLabel()
+        self.trust_label = QLabel()
+        self.live_chain_label = QLabel()
+        self.comparison_label = QLabel()
+        for label in (self.trust_label, self.live_chain_label, self.comparison_label):
+            label.setWordWrap(True)
 
         summary_box = QGroupBox("Registration Summary")
         summary_layout = QFormLayout(summary_box)
@@ -201,6 +207,10 @@ class RegistrationTab(QWidget):
         summary_layout.addRow("Live tracked point", self.live_point_label)
         summary_layout.addRow("Samples captured", self.samples_used_label)
         summary_layout.addRow("RMSE / FRE", self.fre_label)
+        summary_layout.addRow("Max residual", self.max_residual_label)
+        summary_layout.addRow("Trust", self.trust_label)
+        summary_layout.addRow("Live chain", self.live_chain_label)
+        summary_layout.addRow("Repeated runs", self.comparison_label)
         summary_layout.addRow("Result status", self.result_status_label)
         summary_layout.addRow("Saved file", self.result_path_label)
 
@@ -267,6 +277,14 @@ class RegistrationTab(QWidget):
         status_layout = QVBoxLayout(status_box)
         status_layout.addWidget(self.status_text)
 
+        self.validation_text = QTextEdit()
+        self.validation_text.setReadOnly(True)
+        self.validation_text.setMinimumHeight(120)
+        self.validation_text.setMaximumHeight(180)
+        validation_box = QGroupBox("Validation & Trust")
+        validation_layout = QVBoxLayout(validation_box)
+        validation_layout.addWidget(self.validation_text)
+
         top_splitter = QSplitter(Qt.Horizontal)
         top_splitter.setChildrenCollapsible(False)
         top_splitter.setHandleWidth(8)
@@ -297,6 +315,7 @@ class RegistrationTab(QWidget):
         content_layout.addWidget(top_splitter, 3)
         content_layout.addWidget(lower_splitter, 2)
         content_layout.addWidget(status_box)
+        content_layout.addWidget(validation_box)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -336,6 +355,13 @@ class RegistrationTab(QWidget):
             self.fre_label.setText(fre_text)
         else:
             self.fre_label.setText("Not solved yet")
+        if state.max_residual_mm is not None:
+            self.max_residual_label.setText(f"{state.max_residual_mm:.3f} mm")
+        else:
+            self.max_residual_label.setText("—")
+        self.trust_label.setText(_trust_text(state.trust_state, state.trust_message))
+        self.live_chain_label.setText(_trust_text(state.live_chain_state, state.live_chain_message))
+        self.comparison_label.setText(state.comparison_message)
         self.result_status_label.setText(state.result_status)
         self.result_path_label.setText(state.last_result_path or "None")
 
@@ -433,6 +459,11 @@ class RegistrationTab(QWidget):
         if state.last_error:
             lines.append(f"Error: {state.last_error}")
         set_text_document(self.status_text, "\n".join(lines), stick_to_bottom_if_at_bottom=True)
+        set_text_document(
+            self.validation_text,
+            "\n".join(state.validation_lines or [state.trust_message, state.live_chain_message, state.comparison_message]),
+            stick_to_bottom_if_at_bottom=True,
+        )
 
     def _update_dependencies(self, state: RegistrationViewState, workflow_state) -> None:
         if workflow_state is None:
@@ -612,3 +643,11 @@ def _point_status(label: str, state: RegistrationViewState) -> str:
 def _display_name(label: str, state: RegistrationViewState) -> str:
     display = state.model_point_display_labels.get(label, label)
     return display if display == label else f"{display} ({label})"
+
+
+def _trust_text(state: str, message: str) -> str:
+    state_text = str(state).replace("_", " ").strip()
+    if not state_text:
+        return message
+    prefix = state_text.capitalize()
+    return f"{prefix}: {message}"

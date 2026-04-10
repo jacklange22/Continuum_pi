@@ -61,6 +61,8 @@ def _write_registration_file(path: Path, *, measurement_tool_id: str = "0B", coi
     path.write_text(
         json.dumps(
             {
+                "timestamp_utc": "2026-01-01T00:00:00Z",
+                "fre_mm": 0.25,
                 "T_robot_aurora": np.eye(4).tolist(),
                 "T_coil_tip": np.eye(4).tolist(),
                 "config_used": {
@@ -132,6 +134,8 @@ def test_tracking_service_live_backend_reports_tracked_tools_with_unknown_validi
     assert snapshot.tools["0A"].validity_known is False
     assert snapshot.tip_pose_status == "ok"
     assert snapshot.T_robot_tip is not None
+    assert snapshot.stored_registration_timestamp_utc == "2026-01-01T00:00:00Z"
+    assert snapshot.stored_registration_fre_mm == 0.25
 
 
 def test_tracking_service_live_backend_detects_role_mismatch(tmp_path: Path) -> None:

@@ -93,7 +93,13 @@ Applies now in `Registration`.
 4. Capture repeated `0B` samples for each selected landmark.
 5. Mark each selected point complete.
 6. Solve.
-7. Review FRE / RMSE and the per-landmark residuals.
+7. Review the validation summary before saving:
+   - FRE / RMSE
+   - max landmark residual
+   - worst landmark residual
+   - landmark geometry / spacing diagnostics
+   - live transform-chain status
+   - repeated-run comparison if prior registrations already exist
 8. Save the accepted registration.
 
 Rules:
@@ -109,6 +115,7 @@ Success criteria:
 - GUI shows selected landmarks, measured centroids, FRE, residuals, and output path
 - saved registration artifact shows the accepted `0B` tip provenance used during capture
 - saved registration artifact shows the live-pose `T_coil_tip` source explicitly
+- repeated registration-validation summary is written under `data/registrations/validation/`
 - tracking pipeline can use the saved registration on the next refresh
 
 ## Workflow 6: Repeatability Dataset

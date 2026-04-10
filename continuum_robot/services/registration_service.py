@@ -21,7 +21,13 @@ from continuum_robot.registration.legacy_compat import (
 )
 from continuum_robot.registration.repository import RegistrationRecord, RegistrationRepository
 from continuum_robot.registration.rigid_solver import RigidRegistrationSolver
-from continuum_robot.registration.validation import compute_fre_mm
+from continuum_robot.registration.validation import (
+    build_registration_history_summary,
+    compute_fre_mm,
+    compute_geometry_diagnostics,
+    compute_residual_norms_mm,
+    summarize_residual_norms_mm,
+)
 from continuum_robot.services.models import (
     HEALTH_DEGRADED,
     HEALTH_FAILED,
@@ -155,6 +161,7 @@ class RegistrationService:
             self._state.truth_points_in_sw_by_label = truth_points_in_sw_by_label
             self._state.group_by_label = group_by_label
             self._state.validation_metrics = {}
+            self._state.latest_validation_summary = {}
             self._state.pending_record = None
             self._state.health.last_error = None
             self._state.health.last_successful_update_utc = utc_now_iso()
@@ -260,7 +267,15 @@ class RegistrationService:
             record = self._pending_record
 
         output_path = self.repository.save_record(record)
+        validation_summary = self._build_repeated_validation_summary(
+            current_record_path=output_path,
+            current_record=record,
+        )
         self.tracking_service.refresh_registration()
+        validation_summary["runtime_application"] = self._build_runtime_application_summary(
+            expected_timestamp_utc=record.timestamp_utc
+        )
+        self.repository.save_validation_summary(validation_summary, timestamp_utc=record.timestamp_utc)
 
         with self._lock:
             self._state.accepted_output_path = str(output_path)
@@ -268,6 +283,7 @@ class RegistrationService:
             self._state.pending_accept = False
             self._state.active = False
             self._pending_record = None
+            self._state.latest_validation_summary = copy.deepcopy(validation_summary)
             self._state.pending_record = None
             self._state.health.last_error = None
             self._state.health.last_successful_update_utc = utc_now_iso()
@@ -284,6 +300,8 @@ class RegistrationService:
         latest_path = self.repository.root_dir / "latest_registration.json"
         with self._lock:
             self._state.latest_accepted_path = str(latest_path) if latest_path.exists() else None
+            if not latest_path.exists():
+                self._state.latest_validation_summary = {}
         if not latest_path.exists():
             return None
         payload = json.loads(latest_path.read_text(encoding="utf-8"))
@@ -323,6 +341,7 @@ class RegistrationService:
             )
             self._state.raw_coil_samples_by_label = dict(payload.get("raw_coil_samples_by_label", {}) or {})
             self._state.validation_metrics = dict(payload.get("validation_metrics", {}) or {})
+            self._state.latest_validation_summary = self.repository.load_latest_validation_summary() or {}
             self._state.pending_record = None
             self._recompute_health_locked()
         return payload
@@ -457,7 +476,7 @@ class RegistrationService:
             self._state.averaged_points_by_label = result.averaged_points_by_label
             self._state.residuals_by_label = result.residuals_by_label
             self._state.fre_mm = float(result.validation_metrics["overall_fre_mm"])
-            self._state.validation_metrics = copy.deepcopy(result.validation_metrics)
+            self._state.validation_metrics = copy.deepcopy(record.validation_metrics)
             self._state.pending_accept = True
             self._state.pending_record = asdict(record)
             self._state.health.last_error = None
@@ -508,15 +527,38 @@ class RegistrationService:
             label: residuals[idx, :].tolist()
             for idx, label in enumerate(labels)
         }
-        residual_norms_by_label = {
-            label: float(np.linalg.norm(residuals[idx, :]))
-            for idx, label in enumerate(labels)
-        }
+        residual_norms_by_label = compute_residual_norms_mm(residuals_by_label)
         fre_mm = float(compute_fre_mm(list(residuals_by_label.values())))
-        max_residual_mm = max(residual_norms_by_label.values(), default=0.0)
+        residual_summary = summarize_residual_norms_mm(residual_norms_by_label)
+        max_residual_mm = float(residual_summary["max_residual_mm"] or 0.0)
+        measured_geometry = compute_geometry_diagnostics(measured.tolist())
+        truth_geometry = compute_geometry_diagnostics(truth.tolist())
         if self._config.max_fre_mm is not None and fre_mm > self._config.max_fre_mm:
             raise RuntimeError(f"Registration FRE {fre_mm:.3f} mm exceeds limit {self._config.max_fre_mm:.3f} mm")
         T_coil_tip, live_pose_tip_transform = self._build_simple_live_pose_tip_transform()
+        validation_metrics = {
+            "overall_fre_mm": fre_mm,
+            "overall_rmse_mm": fre_mm,
+            "max_residual_mm": max_residual_mm,
+            "residual_norms_mm_by_label": residual_norms_by_label,
+            "residual_vectors_mm_by_label": residuals_by_label,
+            "registration_mode": "simple",
+            "landmark_count": len(labels),
+            "captures_per_landmark": captures_per_landmark,
+            "capture_counts_by_label": {
+                label: len(points)
+                for label, points in captures.items()
+            },
+            "measured_landmark_frame": "aurora",
+            "truth_landmark_frame": "robot",
+            "residual_frame": "robot",
+            "truth_geometry": truth_geometry,
+            "measured_geometry": measured_geometry,
+            "residual_summary": residual_summary,
+            "worst_landmark_label": residual_summary["worst_landmark_label"],
+            "worst_landmark_residual_mm": residual_summary["worst_landmark_residual_mm"],
+            "configured_max_fre_mm": self._config.max_fre_mm,
+        }
 
         record = RegistrationRecord(
             timestamp_utc=utc_now_iso(),
@@ -531,13 +573,7 @@ class RegistrationService:
             coil_tool_id=self._config.coil_tool_id,
             raw_measurement_tool_samples_by_label=copy.deepcopy(self._state.raw_measurement_tool_samples_by_label),
             raw_coil_samples_by_label=copy.deepcopy(self._state.raw_coil_samples_by_label),
-            validation_metrics={
-                "overall_fre_mm": fre_mm,
-                "overall_rmse_mm": fre_mm,
-                "max_residual_mm": max_residual_mm,
-                "residual_norms_mm_by_label": residual_norms_by_label,
-                "registration_mode": "simple",
-            },
+            validation_metrics=validation_metrics,
             capture_tip_provenance=capture_tip_provenance,
             live_pose_tip_transform=live_pose_tip_transform,
             config_used={
@@ -561,13 +597,7 @@ class RegistrationService:
             self._state.averaged_points_by_label = averaged
             self._state.residuals_by_label = residuals_by_label
             self._state.fre_mm = fre_mm
-            self._state.validation_metrics = {
-                "overall_fre_mm": fre_mm,
-                "overall_rmse_mm": fre_mm,
-                "max_residual_mm": max_residual_mm,
-                "residual_norms_mm_by_label": residual_norms_by_label,
-                "registration_mode": "simple",
-            }
+            self._state.validation_metrics = copy.deepcopy(validation_metrics)
             self._state.pending_accept = True
             self._state.pending_record = asdict(record)
             self._state.health.last_error = None
@@ -577,6 +607,16 @@ class RegistrationService:
             return copy.deepcopy(self._state.pending_record)
 
     def _record_from_legacy_result(self, result) -> RegistrationRecord:
+        validation_metrics = copy.deepcopy(result.validation_metrics)
+        residual_norms_by_label = compute_residual_norms_mm(result.residuals_by_label)
+        residual_summary = summarize_residual_norms_mm(residual_norms_by_label)
+        validation_metrics.setdefault("residual_norms_mm_by_label", residual_norms_by_label)
+        validation_metrics.setdefault("residual_vectors_mm_by_label", result.residuals_by_label)
+        validation_metrics.setdefault("max_residual_mm", residual_summary["max_residual_mm"])
+        validation_metrics.setdefault("residual_summary", residual_summary)
+        validation_metrics.setdefault("worst_landmark_label", residual_summary["worst_landmark_label"])
+        validation_metrics.setdefault("worst_landmark_residual_mm", residual_summary["worst_landmark_residual_mm"])
+        validation_metrics.setdefault("configured_max_fre_mm", self._config.max_fre_mm)
         legacy_capture_tip_provenance = self._build_capture_tip_provenance(self.get_measurement_point_status(refresh=True))
         live_pose_tip_transform = {
             "coil_tool_id": result.coil_tool_id,
@@ -603,7 +643,7 @@ class RegistrationService:
             raw_coil_samples_by_label=result.raw_coil_samples_by_label,
             truth_points_in_sw_by_label=result.truth_points_in_sw_by_label,
             group_by_label=result.group_by_label,
-            validation_metrics=result.validation_metrics,
+            validation_metrics=validation_metrics,
             capture_tip_provenance=legacy_capture_tip_provenance,
             live_pose_tip_transform=live_pose_tip_transform,
             config_used={
@@ -902,11 +942,269 @@ class RegistrationService:
             return {"path": str(latest_path), "error": str(exc)}
         return {
             "path": str(latest_path),
+            "timestamp_utc": payload.get("timestamp_utc"),
+            "fre_mm": payload.get("fre_mm"),
             "capture_tip_provenance": dict(payload.get("capture_tip_provenance", {}) or {}),
             "live_pose_tip_transform": dict(payload.get("live_pose_tip_transform", {}) or {}),
+            "validation_metrics": dict(payload.get("validation_metrics", {}) or {}),
             "config_used": dict(payload.get("config_used", {}) or {}),
             "T_coil_tip": copy.deepcopy(payload.get("T_coil_tip")),
         }
+
+    def get_registration_trust_summary(self) -> dict[str, object]:
+        """Return operator-facing trust and transform-chain summary for the latest accepted registration."""
+        latest_path = self.repository.root_dir / "latest_registration.json"
+        if not latest_path.exists():
+            return {
+                "accepted_exists": False,
+                "trust_state": "missing",
+                "trust_message": "No accepted registration saved.",
+                "live_chain_state": "missing_registration",
+                "live_chain_message": "Live robot-frame pose is unavailable until an accepted registration is saved.",
+                "comparison_message": "Repeat the registration workflow across runs to build comparison data.",
+                "detail_lines": [
+                    "Registration-dependent experiments should wait until an accepted registration exists.",
+                ],
+            }
+
+        try:
+            payload = json.loads(latest_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return {
+                "accepted_exists": True,
+                "trust_state": "invalid",
+                "trust_message": f"Accepted registration exists but could not be read: {exc}",
+                "live_chain_state": "invalid_registration",
+                "live_chain_message": "Tracking cannot trust the registration artifact until the file is readable again.",
+                "comparison_message": "Repeated-run comparison is unavailable while the accepted artifact is unreadable.",
+                "detail_lines": [f"Artifact error: {exc}"],
+            }
+
+        validation_metrics = dict(payload.get("validation_metrics", {}) or {})
+        history_summary = self.repository.load_latest_validation_summary() or {}
+        tracking_summary = self._build_runtime_application_summary(
+            expected_timestamp_utc=str(payload.get("timestamp_utc")) if payload.get("timestamp_utc") is not None else None
+        )
+        fre_mm = validation_metrics.get("overall_fre_mm")
+        max_residual_mm = validation_metrics.get("max_residual_mm")
+        residual_summary = dict(validation_metrics.get("residual_summary", {}) or {})
+        worst_label = residual_summary.get("worst_landmark_label") or validation_metrics.get("worst_landmark_label")
+        worst_residual_mm = residual_summary.get("worst_landmark_residual_mm") or validation_metrics.get(
+            "worst_landmark_residual_mm"
+        )
+        fre_limit_mm = validation_metrics.get("configured_max_fre_mm", self._config.max_fre_mm)
+        trust_state = "trusted"
+        trust_reasons: list[str] = []
+        if fre_mm is None:
+            trust_state = "warning"
+            trust_reasons.append("FRE is missing from the accepted artifact.")
+        elif fre_limit_mm is not None and float(fre_mm) > float(fre_limit_mm):
+            trust_state = "warning"
+            trust_reasons.append(
+                f"FRE {float(fre_mm):.3f} mm exceeds the configured limit {float(fre_limit_mm):.3f} mm."
+            )
+        if (
+            worst_residual_mm is not None
+            and fre_limit_mm is not None
+            and float(worst_residual_mm) > float(fre_limit_mm)
+        ):
+            trust_state = "warning"
+            label_text = f"{worst_label} " if worst_label else ""
+            trust_reasons.append(
+                f"Worst landmark residual {label_text}{float(worst_residual_mm):.3f} mm exceeds the configured limit."
+            )
+
+        if not trust_reasons:
+            fre_text = f"FRE {float(fre_mm):.3f} mm" if fre_mm is not None else "FRE unavailable"
+            if worst_residual_mm is not None and worst_label:
+                trust_reasons.append(
+                    f"{fre_text}; worst landmark {worst_label} = {float(worst_residual_mm):.3f} mm."
+                )
+            else:
+                trust_reasons.append(f"{fre_text}.")
+
+        comparison_message = self._comparison_message(history_summary)
+        detail_lines = self._build_trust_detail_lines(
+            payload=payload,
+            validation_metrics=validation_metrics,
+            history_summary=history_summary,
+            tracking_summary=tracking_summary,
+        )
+        return {
+            "accepted_exists": True,
+            "path": str(latest_path),
+            "timestamp_utc": payload.get("timestamp_utc"),
+            "fre_mm": float(fre_mm) if fre_mm is not None else None,
+            "max_residual_mm": float(max_residual_mm) if max_residual_mm is not None else None,
+            "worst_landmark_label": worst_label,
+            "worst_landmark_residual_mm": float(worst_residual_mm) if worst_residual_mm is not None else None,
+            "trust_state": trust_state,
+            "trust_message": " ".join(str(reason) for reason in trust_reasons),
+            "live_chain_state": tracking_summary["state"],
+            "live_chain_message": tracking_summary["message"],
+            "comparison_message": comparison_message,
+            "history_summary": history_summary,
+            "runtime_application": tracking_summary,
+            "detail_lines": detail_lines,
+        }
+
+    def _build_repeated_validation_summary(
+        self,
+        *,
+        current_record_path: Path,
+        current_record: RegistrationRecord,
+        comparison_limit: int = 5,
+    ) -> dict[str, object]:
+        current_payload = self.repository.load_payload(current_record_path)
+        recent_paths = [
+            path
+            for path in self.repository.list_saved_records(limit=max(1, comparison_limit + 1))
+            if path != current_record_path
+        ][: max(0, int(comparison_limit))]
+        previous_runs = [
+            (str(path), self.repository.load_payload(path))
+            for path in recent_paths
+        ]
+        summary = build_registration_history_summary(
+            current_payload=current_payload,
+            current_path=str(current_record_path),
+            previous_runs=previous_runs,
+        )
+        summary["generated_at_utc"] = utc_now_iso()
+        summary["validation_kind"] = "repeated_registration_comparison"
+        summary["current_record_timestamp_utc"] = current_record.timestamp_utc
+        summary["registration_mode"] = (
+            str(current_record.validation_metrics.get("registration_mode"))
+            if isinstance(current_record.validation_metrics, dict)
+            else None
+        )
+        summary["current_fre_mm"] = (
+            float(current_record.validation_metrics.get("overall_fre_mm"))
+            if isinstance(current_record.validation_metrics, dict)
+            and current_record.validation_metrics.get("overall_fre_mm") is not None
+            else float(current_record.fre_mm)
+        )
+        return summary
+
+    def _build_runtime_application_summary(self, *, expected_timestamp_utc: str | None = None) -> dict[str, object]:
+        snapshot = self.tracking_service.get_snapshot()
+        loaded_latest = bool(
+            snapshot.registration_state == "loaded"
+            and snapshot.registration_path == str(self.repository.root_dir / "latest_registration.json")
+        )
+        timestamp_matches = (
+            expected_timestamp_utc is None
+            or snapshot.stored_registration_timestamp_utc == expected_timestamp_utc
+        )
+        role_match = (
+            snapshot.stored_registration_measurement_tool_id == self._config.measurement_tool_id
+            and snapshot.stored_registration_coil_tool_id == self._config.coil_tool_id
+        )
+        if not loaded_latest:
+            state = "registration_not_loaded"
+            message = (
+                f"Tracking registration state is {snapshot.registration_state}; "
+                "live robot-frame pose is not currently using the accepted registration."
+            )
+        elif not timestamp_matches:
+            state = "stale_registration_loaded"
+            message = (
+                "Tracking loaded a registration artifact, but its timestamp does not match the latest accepted save."
+            )
+        elif not role_match:
+            state = "role_mismatch"
+            message = (
+                f"Tracking loaded the registration, but stored roles are measurement={snapshot.stored_registration_measurement_tool_id} "
+                f"and coil={snapshot.stored_registration_coil_tool_id} instead of "
+                f"{self._config.measurement_tool_id}/{self._config.coil_tool_id}."
+            )
+        elif snapshot.tip_pose_status == "ok":
+            state = "ok"
+            message = "Tracking is using this accepted registration and live robot-frame pose is available."
+        else:
+            state = "registration_loaded_waiting_for_live_pose"
+            message = (
+                f"Tracking loaded this accepted registration; live pose is waiting on runtime status "
+                f"'{snapshot.tip_pose_status}'."
+            )
+        return {
+            "state": state,
+            "message": message,
+            "registration_state": snapshot.registration_state,
+            "tip_pose_status": snapshot.tip_pose_status,
+            "registration_path": snapshot.registration_path,
+            "loaded_latest_registration": loaded_latest,
+            "timestamp_matches_latest": timestamp_matches,
+            "role_match": role_match,
+            "stored_registration_timestamp_utc": snapshot.stored_registration_timestamp_utc,
+            "stored_registration_fre_mm": snapshot.stored_registration_fre_mm,
+            "stored_registration_measurement_tool_id": snapshot.stored_registration_measurement_tool_id,
+            "stored_registration_coil_tool_id": snapshot.stored_registration_coil_tool_id,
+        }
+
+    @staticmethod
+    def _comparison_message(history_summary: dict[str, object]) -> str:
+        comparison_count = int(history_summary.get("comparison_count") or 0)
+        if comparison_count <= 0:
+            return "This is the first saved registration; repeat the workflow to build comparison data."
+        translation_summary = dict(history_summary.get("translation_delta_summary_mm", {}) or {})
+        rotation_summary = dict(history_summary.get("rotation_delta_summary_deg", {}) or {})
+        translation_mean = translation_summary.get("mean")
+        translation_max = translation_summary.get("max")
+        rotation_mean = rotation_summary.get("mean")
+        rotation_max = rotation_summary.get("max")
+        return (
+            f"Compared against {comparison_count} prior registration run(s): "
+            f"translation delta mean={float(translation_mean or 0.0):.3f} mm, "
+            f"max={float(translation_max or 0.0):.3f} mm; rotation delta mean="
+            f"{float(rotation_mean or 0.0):.3f} deg, max={float(rotation_max or 0.0):.3f} deg."
+        )
+
+    @staticmethod
+    def _build_trust_detail_lines(
+        *,
+        payload: dict[str, object],
+        validation_metrics: dict[str, object],
+        history_summary: dict[str, object],
+        tracking_summary: dict[str, object],
+    ) -> list[str]:
+        lines = [
+            f"Accepted registration file: {payload.get('timestamp_utc', 'unknown timestamp')}",
+        ]
+        fre = validation_metrics.get("overall_fre_mm")
+        max_residual = validation_metrics.get("max_residual_mm")
+        if fre is not None:
+            lines.append(f"FRE / RMSE: {float(fre):.3f} mm")
+        if max_residual is not None:
+            lines.append(f"Max landmark residual: {float(max_residual):.3f} mm")
+        residual_summary = dict(validation_metrics.get("residual_summary", {}) or {})
+        worst_label = residual_summary.get("worst_landmark_label") or validation_metrics.get("worst_landmark_label")
+        worst_residual = residual_summary.get("worst_landmark_residual_mm") or validation_metrics.get(
+            "worst_landmark_residual_mm"
+        )
+        if worst_label and worst_residual is not None:
+            lines.append(f"Worst landmark: {worst_label} = {float(worst_residual):.3f} mm")
+        truth_geometry = dict(validation_metrics.get("truth_geometry", {}) or {})
+        if truth_geometry:
+            rank = truth_geometry.get("geometry_rank")
+            min_pairwise = truth_geometry.get("min_pairwise_distance_mm")
+            condition_number = truth_geometry.get("condition_number")
+            if rank is not None:
+                lines.append(f"Landmark geometry rank: {int(rank)}")
+            if min_pairwise is not None:
+                lines.append(f"Minimum landmark spacing: {float(min_pairwise):.3f} mm")
+            if condition_number is not None:
+                lines.append(f"Landmark conditioning: {float(condition_number):.3f}")
+        lines.append(str(tracking_summary.get("message") or ""))
+        if history_summary:
+            lines.append(RegistrationService._comparison_message(history_summary))
+            worst_history_label = history_summary.get("worst_landmark_by_mean_residual")
+            worst_history_mean = history_summary.get("worst_landmark_mean_residual_mm")
+            if worst_history_label and worst_history_mean is not None:
+                lines.append(
+                    f"Across recent runs, the worst average landmark was {worst_history_label} at {float(worst_history_mean):.3f} mm."
+                )
+        return [line for line in lines if line]
 
     def _measurement_point_transform_matrix(self) -> np.ndarray:
         if self._assets is not None:
@@ -980,7 +1278,14 @@ class RegistrationService:
             "current_label": self._state.current_label,
             "pending_accept": self._state.pending_accept,
             "fre_mm": self._state.fre_mm,
+            "max_residual_mm": self._state.validation_metrics.get("max_residual_mm"),
+            "worst_landmark_label": self._state.validation_metrics.get("worst_landmark_label"),
             "latest_accepted_path": self._state.latest_accepted_path,
+            "latest_validation_comparison_count": (
+                self._state.latest_validation_summary.get("comparison_count")
+                if isinstance(self._state.latest_validation_summary, dict)
+                else None
+            ),
             "registration_mode": "legacy_compatible" if self._assets is not None else "simple",
             "measurement_point_source": self._simple_measurement_point_source,
             "measurement_point_ready": self._simple_measurement_point_ready,
@@ -989,7 +1294,17 @@ class RegistrationService:
         }
 
         if self._state.health.state == "accepted":
-            self._state.health.status = "Registration accepted and persisted"
+            if self._state.fre_mm is not None:
+                max_residual = self._state.validation_metrics.get("max_residual_mm")
+                if max_residual is not None:
+                    self._state.health.status = (
+                        f"Registration accepted with FRE {self._state.fre_mm:.3f} mm "
+                        f"and max residual {float(max_residual):.3f} mm"
+                    )
+                else:
+                    self._state.health.status = f"Registration accepted with FRE {self._state.fre_mm:.3f} mm"
+            else:
+                self._state.health.status = "Registration accepted and persisted"
         elif self._state.health.state == "ready_to_solve":
             self._state.health.status = "Registration captures complete; ready to solve"
         elif self._state.health.state == "solved":

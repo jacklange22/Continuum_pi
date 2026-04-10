@@ -124,13 +124,30 @@ Acceptance:
 Method:
 
 - perform repeated sample capture and solve
-- review FRE / RMSE before accepting
+- review FRE / RMSE, max landmark residual, worst landmark, and geometry diagnostics before accepting
 
 Acceptance:
 
 - accepted registration file is saved
 - saved result reloads into the GUI
 - tracking pipeline consumes the saved file on refresh
+- per-landmark residual norms are saved
+- transform-chain status reports whether tracking is using the accepted artifact
+
+### `REG-V004` Repeated Registration Validation
+
+Method:
+
+- repeat the full registration workflow multiple times with the same landmark set
+- save each accepted result
+- review the repeated-validation summary under `data/registrations/validation/`
+
+Acceptance:
+
+- repeated runs report transform deltas between solves
+- repeated runs report FRE summary across runs
+- repeated runs report per-landmark residual trends across runs
+- the GUI shows whether any landmark is consistently worse than the others
 
 ## Experiment Validation
 

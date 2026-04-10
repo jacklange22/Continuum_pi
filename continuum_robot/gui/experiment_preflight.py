@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 import os
 from typing import Any
@@ -218,16 +219,15 @@ def evaluate_preflight(
             )
             checks.append(PreflightCheck("neutral_setpoints", "Neutral Setpoints", status, message))
 
-        if registration_path.exists():
-            checks.append(_ok("registration", "Registration", f"Registration file found: {registration_path}"))
-        else:
-            checks.append(
-                _warning(
-                    "registration",
-                    "Registration",
-                    "Registration file is missing. The run can continue, but pose will stay in tracker frame only.",
-                )
+        checks.append(
+            _registration_quality_check(
+                registration_path=registration_path,
+                tracking_snapshot=tracking_snapshot,
+                missing_message=(
+                    "Registration file is missing. The run can continue, but pose will stay in tracker frame only."
+                ),
             )
+        )
 
     elif experiment_name == "aurora_grid_accuracy":
         checks.append(_tracking_state_check(settings=settings, tracker_ready=tracker_ready, backend_name=backend_name, tracking_snapshot=tracking_snapshot))
@@ -517,16 +517,15 @@ def evaluate_preflight(
                     ),
                 )
             )
-        if registration_path.exists():
-            checks.append(_ok("registration", "Registration", f"Registration file found: {registration_path}"))
-        else:
-            checks.append(
-                _warning(
-                    "registration",
-                    "Registration",
-                    "Registration file is missing. Samples will still be saved, but robot-frame pose will be unavailable.",
-                )
+        checks.append(
+            _registration_quality_check(
+                registration_path=registration_path,
+                tracking_snapshot=tracking_snapshot,
+                missing_message=(
+                    "Registration file is missing. Samples will still be saved, but robot-frame pose will be unavailable."
+                ),
             )
+        )
 
     elif experiment_name == "replay_runner":
         config = ReplayRunnerConfig.from_dict(payload)
@@ -668,6 +667,65 @@ def _tracking_state_check(*, settings, tracker_ready: bool, backend_name: str, t
                 )
             )
         ),
+    )
+
+
+def _registration_quality_check(*, registration_path: Path, tracking_snapshot, missing_message: str) -> PreflightCheck:
+    if not registration_path.exists():
+        return _warning("registration", "Registration", missing_message)
+
+    try:
+        payload = json.loads(registration_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return _warning(
+            "registration",
+            "Registration",
+            f"Registration file exists but could not be read: {exc}",
+        )
+
+    metrics = payload.get("validation_metrics", {}) if isinstance(payload.get("validation_metrics"), dict) else {}
+    fre_mm = metrics.get("overall_fre_mm", payload.get("fre_mm"))
+    max_residual_mm = metrics.get("max_residual_mm")
+    worst_label = metrics.get("worst_landmark_label")
+    if worst_label is None and isinstance(metrics.get("residual_summary"), dict):
+        worst_label = metrics["residual_summary"].get("worst_landmark_label")
+    worst_residual_mm = metrics.get("worst_landmark_residual_mm")
+    if worst_residual_mm is None and isinstance(metrics.get("residual_summary"), dict):
+        worst_residual_mm = metrics["residual_summary"].get("worst_landmark_residual_mm")
+    configured_limit = metrics.get("configured_max_fre_mm")
+
+    parts = [f"Registration file found: {registration_path}"]
+    if fre_mm is not None:
+        parts.append(f"FRE={float(fre_mm):.3f} mm")
+    if max_residual_mm is not None:
+        parts.append(f"max residual={float(max_residual_mm):.3f} mm")
+    if worst_label and worst_residual_mm is not None:
+        parts.append(f"worst landmark {worst_label}={float(worst_residual_mm):.3f} mm")
+
+    status = PREFLIGHT_OK
+    if configured_limit is not None and fre_mm is not None and float(fre_mm) > float(configured_limit):
+        status = PREFLIGHT_WARNING
+        parts.append(f"configured limit {float(configured_limit):.3f} mm exceeded")
+    elif configured_limit is not None and max_residual_mm is not None and float(max_residual_mm) > float(configured_limit):
+        status = PREFLIGHT_WARNING
+        parts.append("inspect landmark residual distribution")
+
+    canonical_state = getattr(tracking_snapshot, "canonical_state", "disconnected")
+    if canonical_state not in {"disconnected", "mock"}:
+        tracking_registration_state = getattr(tracking_snapshot, "registration_state", "missing_registration")
+        tip_pose_status = getattr(tracking_snapshot, "tip_pose_status", "missing_registration")
+        if tracking_registration_state != "loaded":
+            status = PREFLIGHT_WARNING
+            parts.append(f"tracking runtime registration state is {tracking_registration_state}")
+        elif tip_pose_status != "ok":
+            status = PREFLIGHT_WARNING
+            parts.append(f"live tip pose status is {tip_pose_status}")
+
+    return PreflightCheck(
+        "registration",
+        "Registration",
+        status,
+        "; ".join(parts),
     )
 
 

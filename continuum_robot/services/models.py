@@ -106,6 +106,8 @@ class TrackingSnapshot:
     registration_path: str | None = None
     stored_registration_measurement_tool_id: str | None = None
     stored_registration_coil_tool_id: str | None = None
+    stored_registration_timestamp_utc: str | None = None
+    stored_registration_fre_mm: float | None = None
     tip_calibration_source: str | None = None
     tip_pose_status: str = "missing_registration"
     T_robot_tip: list[list[float]] | None = None
@@ -142,6 +144,7 @@ class RegistrationSnapshot:
     raw_measurement_tool_samples_by_label: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     raw_coil_samples_by_label: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     validation_metrics: dict[str, Any] = field(default_factory=dict)
+    latest_validation_summary: dict[str, Any] = field(default_factory=dict)
     pending_record: dict[str, Any] | None = None
 
 

@@ -208,6 +208,95 @@ def test_registration_service_simple_registration_records_tip_provenance_and_app
     assert saved["config_used"]["capture_tip_offset_applied_before_solving"] is True
 
 
+def test_registration_service_saves_richer_validation_metrics_and_runtime_application_summary(tmp_path: Path) -> None:
+    tracking_service, registration_service = _make_services(
+        tmp_path,
+        config_lines=[
+            "landmark_labels: [L1, L2, L3, L4]",
+            "captures_per_landmark: 1",
+            'capture_tool_id: "0B"',
+            'coil_tool_id: "0A"',
+            "nominal_landmarks_robot_xyz_mm:",
+            "  L1: [0.0, 0.0, 0.0]",
+            "  L2: [10.0, 0.0, 0.0]",
+            "  L3: [0.0, 10.0, 0.0]",
+            "  L4: [0.0, 0.0, 10.0]",
+            "validation:",
+            "  max_fre_mm: 1.0",
+        ],
+    )
+
+    registration_service.begin_session()
+    for frame_number, label, xyz in [
+        (1, "L1", (0.0, 0.0, 0.0)),
+        (2, "L2", (10.0, 0.0, 0.0)),
+        (3, "L3", (0.0, 10.0, 0.0)),
+        (4, "L4", (0.0, 0.0, 10.0)),
+    ]:
+        _ingest_tool_0b_sample(tracking_service, frame_number, xyz)
+        registration_service.capture_sample(label)
+        registration_service.complete_landmark()
+
+    registration_service.solve_registration()
+    output_path = registration_service.accept_registration()
+    saved = json.loads(output_path.read_text(encoding="utf-8"))
+    latest_validation = registration_service.repository.load_latest_validation_summary()
+    trust = registration_service.get_registration_trust_summary()
+
+    assert saved["validation_metrics"]["truth_geometry"]["geometry_rank"] == 3
+    assert saved["validation_metrics"]["capture_counts_by_label"] == {"L1": 1, "L2": 1, "L3": 1, "L4": 1}
+    assert saved["validation_metrics"]["configured_max_fre_mm"] == 1.0
+    assert saved["validation_metrics"]["worst_landmark_label"] in {"L1", "L2", "L3", "L4"}
+    assert latest_validation is not None
+    assert latest_validation["comparison_count"] == 0
+    assert latest_validation["runtime_application"]["loaded_latest_registration"] is True
+    assert latest_validation["runtime_application"]["timestamp_matches_latest"] is True
+    assert trust["trust_state"] == "trusted"
+    assert trust["live_chain_state"] in {"registration_loaded_waiting_for_live_pose", "ok"}
+
+
+def test_registration_service_repeated_validation_summary_compares_recent_runs(tmp_path: Path) -> None:
+    tracking_service, registration_service = _make_services(
+        tmp_path,
+        config_lines=[
+            "landmark_labels: [L1, L2, L3, L4]",
+            "captures_per_landmark: 1",
+            'capture_tool_id: "0B"',
+            'coil_tool_id: "0A"',
+            "nominal_landmarks_robot_xyz_mm:",
+            "  L1: [0.0, 0.0, 0.0]",
+            "  L2: [10.0, 0.0, 0.0]",
+            "  L3: [0.0, 10.0, 0.0]",
+            "  L4: [0.0, 0.0, 10.0]",
+        ],
+    )
+
+    def _run_once(offset_mm: float) -> None:
+        registration_service.begin_session()
+        samples = [
+            (1, "L1", (0.0 + offset_mm, 0.0, 0.0)),
+            (2, "L2", (10.0 + offset_mm, 0.0, 0.0)),
+            (3, "L3", (0.0 + offset_mm, 10.0, 0.0)),
+            (4, "L4", (0.0 + offset_mm, 0.0, 10.0)),
+        ]
+        for frame_number, label, xyz in samples:
+            _ingest_tool_0b_sample(tracking_service, frame_number, xyz)
+            registration_service.capture_sample(label)
+            registration_service.complete_landmark()
+        registration_service.solve_registration()
+        registration_service.accept_registration()
+
+    _run_once(0.0)
+    _run_once(0.5)
+
+    latest_validation = registration_service.repository.load_latest_validation_summary()
+
+    assert latest_validation is not None
+    assert latest_validation["comparison_count"] == 1
+    assert latest_validation["translation_delta_summary_mm"]["max"] == pytest.approx(0.5)
+    assert latest_validation["history_run_count"] == 2
+
+
 def test_registration_service_rejects_stale_tracker_data_during_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     tracking_service, registration_service = _make_services(tmp_path)
     registration_service.begin_session()

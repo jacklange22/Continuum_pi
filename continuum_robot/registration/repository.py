@@ -45,9 +45,11 @@ class RegistrationRepository:
         project_root = Path(__file__).resolve().parents[2]
         self.root_dir = root_dir or (project_root / "data" / "registrations")
         self.root_dir.mkdir(parents=True, exist_ok=True)
+        self.validation_dir = self.root_dir / "validation"
+        self.validation_dir.mkdir(parents=True, exist_ok=True)
 
     def save_record(self, record: RegistrationRecord) -> Path:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
         path = self.root_dir / f"registration_{stamp}.json"
         payload = self._to_payload(record)
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -55,6 +57,35 @@ class RegistrationRepository:
         latest = self.root_dir / "latest_registration.json"
         latest.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return path
+
+    def list_saved_records(self, *, limit: int | None = None) -> list[Path]:
+        """Return timestamped accepted-registration payloads, newest first."""
+        paths = sorted(self.root_dir.glob("registration_*.json"), reverse=True)
+        if limit is not None:
+            return paths[: max(0, int(limit))]
+        return paths
+
+    @staticmethod
+    def load_payload(path: Path) -> dict[str, Any]:
+        """Load one saved registration or validation payload."""
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def save_validation_summary(self, summary: dict[str, Any], *, timestamp_utc: str | None = None) -> Path:
+        """Persist a repeated-run registration validation summary."""
+        stamp = _timestamp_stamp(timestamp_utc)
+        path = self.validation_dir / f"registration_validation_{stamp}.json"
+        path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+        latest = self.validation_dir / "latest_registration_validation.json"
+        latest.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        return path
+
+    def load_latest_validation_summary(self) -> dict[str, Any] | None:
+        """Load the latest repeated-run validation summary if it exists."""
+        latest = self.validation_dir / "latest_registration_validation.json"
+        if not latest.exists():
+            return None
+        return self.load_payload(latest)
 
     @staticmethod
     def _to_payload(record: RegistrationRecord) -> dict:
@@ -74,3 +105,16 @@ class RegistrationRepository:
         payload["raw_captured_landmarks_aurora_xyz"] = payload["raw_captured_landmarks_robot_xyz"]
         payload["averaged_landmarks_aurora_xyz"] = payload["averaged_landmarks_robot_xyz"]
         return payload
+
+
+def _timestamp_stamp(timestamp_utc: str | None) -> str:
+    if timestamp_utc:
+        try:
+            parsed = datetime.fromisoformat(str(timestamp_utc).replace("Z", "+00:00"))
+        except ValueError:
+            cleaned = "".join(character for character in str(timestamp_utc) if character.isdigit())
+            if cleaned:
+                return cleaned
+        else:
+            return parsed.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")

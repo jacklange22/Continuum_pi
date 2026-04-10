@@ -1573,6 +1573,9 @@ def test_registration_controller_load_latest_populates_saved_result_state(tmp_pa
     assert reloaded.state.last_result_path is not None
     assert reloaded.state.captured_counts == {"L1": 1, "L2": 1, "L3": 1, "L4": 1}
     assert reloaded.state.selected_model_labels == ["L1", "L2", "L3", "L4"]
+    assert reloaded.state.trust_state == "trusted"
+    assert "FRE" in reloaded.state.trust_message
+    assert reloaded.state.comparison_message.startswith("This is the first saved registration")
 
 
 def test_experiment_workspace_selection_binds_example_config(tmp_path: Path) -> None:
@@ -1613,7 +1616,21 @@ def test_experiment_workspace_preflight_warns_for_repeatability_without_registra
 def test_experiment_workspace_preflight_reads_registration_and_neutral_from_canonical_paths(tmp_path: Path) -> None:
     controller = _experiment_controller(tmp_path)
     controller.servo_service.save_neutral_setpoints({1: 2048, 2: 2048, 3: 2048, 4: 2048})
-    controller.registration_path.write_text("{}", encoding="utf-8")
+    controller.registration_path.write_text(
+        json.dumps(
+            {
+                "fre_mm": 0.4,
+                "validation_metrics": {
+                    "overall_fre_mm": 0.4,
+                    "max_residual_mm": 0.6,
+                    "worst_landmark_label": "L2",
+                    "worst_landmark_residual_mm": 0.6,
+                    "configured_max_fre_mm": 1.0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     controller.select_experiment("repeatability_dataset")
 
     state = controller.refresh()
@@ -1621,6 +1638,7 @@ def test_experiment_workspace_preflight_reads_registration_and_neutral_from_cano
 
     assert checks["neutral_setpoints"].status == "ok"
     assert checks["registration"].status == "ok"
+    assert "FRE=0.400 mm" in checks["registration"].message
 
 
 def test_experiment_workspace_blocks_grid_accuracy_without_tip_calibration(tmp_path: Path) -> None:

@@ -28,14 +28,22 @@ class RegistrationViewState:
     overwrite_target_path: str | None = None
     overwrite_required: bool = False
     fre_mm: float | None = None
+    max_residual_mm: float | None = None
     residuals_by_label: dict[str, list[float]] = field(default_factory=dict)
     validation_metrics: dict[str, object] = field(default_factory=dict)
+    latest_validation_summary: dict[str, object] = field(default_factory=dict)
     capture_geometry_status: str = "coil origin"
     current_tracked_xyz_mm: list[float] | None = None
     current_tracked_frame_id: int | None = None
     current_tracking_status: str = "waiting_for_tracking"
     completed_labels: list[str] = field(default_factory=list)
     accepted_registration_valid: bool = False
+    trust_state: str = "missing"
+    trust_message: str = "No accepted registration saved."
+    live_chain_state: str = "missing_registration"
+    live_chain_message: str = "Live robot-frame pose is unavailable until registration is saved."
+    comparison_message: str = "Repeat registration runs to build comparison data."
+    validation_lines: list[str] = field(default_factory=list)
     registration_mode: str = "simple"
     available_model_points_by_label: dict[str, list[float]] = field(default_factory=dict)
     available_model_labels: list[str] = field(default_factory=list)
@@ -87,9 +95,43 @@ class RegistrationController:
         snapshot = self.registration_service.get_snapshot()
         self._apply_snapshot(snapshot)
         live_point = self.registration_service.peek_current_measurement_point()
+        trust_summary = self.registration_service.get_registration_trust_summary()
         self.state.current_tracked_xyz_mm = live_point.get("point_xyz_mm")
         self.state.current_tracked_frame_id = live_point.get("frame_number")
         self.state.current_tracking_status = str(live_point.get("status", "unknown"))
+        self.state.trust_state = str(trust_summary.get("trust_state", "missing"))
+        self.state.trust_message = str(trust_summary.get("trust_message", "No accepted registration saved."))
+        self.state.live_chain_state = str(trust_summary.get("live_chain_state", "missing_registration"))
+        self.state.live_chain_message = str(
+            trust_summary.get(
+                "live_chain_message",
+                "Live robot-frame pose is unavailable until an accepted registration is saved.",
+            )
+        )
+        self.state.comparison_message = str(
+            trust_summary.get("comparison_message", "Repeat registration runs to build comparison data.")
+        )
+        self.state.validation_lines = [
+            str(line)
+            for line in trust_summary.get("detail_lines", [])
+            if str(line).strip()
+        ]
+        if self.state.pending_accept and self.state.fre_mm is not None:
+            pending_lines = [
+                f"Pending solve FRE / RMSE: {self.state.fre_mm:.3f} mm",
+            ]
+            if self.state.max_residual_mm is not None:
+                pending_lines.append(f"Pending solve max residual: {self.state.max_residual_mm:.3f} mm")
+            worst_label = self.state.validation_metrics.get("worst_landmark_label")
+            worst_residual = self.state.validation_metrics.get("worst_landmark_residual_mm")
+            if worst_label and worst_residual is not None:
+                pending_lines.append(f"Pending solve worst landmark: {worst_label} = {float(worst_residual):.3f} mm")
+            pending_lines.append("Save the accepted registration to add this run to the repeated-validation history.")
+            self.state.validation_lines = [*pending_lines, *self.state.validation_lines]
+        self.state.accepted_registration_valid = bool(
+            trust_summary.get("accepted_exists")
+            and self.state.trust_state != "invalid"
+        )
         return self.state
 
     def set_selected_model_point(self, slot_index: int, label: str) -> None:
@@ -226,9 +268,14 @@ class RegistrationController:
             payload = self.registration_service.solve_registration()
             self._apply_snapshot(self.registration_service.get_snapshot())
             samples_used = self.total_samples_captured()
+            max_residual_text = (
+                f" Max residual = {self.state.max_residual_mm:.3f} mm."
+                if self.state.max_residual_mm is not None
+                else ""
+            )
             self.state.status_message = (
                 f"Registration solved. RMSE/FRE = {self.state.fre_mm:.3f} mm using {samples_used} captured samples. "
-                "Review the result, then save the accepted registration."
+                f"{max_residual_text} Review the result, landmark residuals, and trust summary, then save the accepted registration."
             )
             self.refresh()
             return payload
@@ -373,12 +420,14 @@ class RegistrationController:
             snapshot.truth_points_in_sw_by_label or snapshot.nominal_landmarks_robot_xyz_mm
         )
         self.state.fre_mm = snapshot.fre_mm
+        max_residual = snapshot.validation_metrics.get("max_residual_mm")
+        self.state.max_residual_mm = float(max_residual) if max_residual is not None else None
         self.state.residuals_by_label = dict(snapshot.residuals_by_label)
         self.state.validation_metrics = dict(snapshot.validation_metrics)
+        self.state.latest_validation_summary = dict(snapshot.latest_validation_summary)
         self.state.pending_accept = bool(snapshot.pending_accept)
         self.state.last_result_path = snapshot.accepted_output_path or snapshot.latest_accepted_path
         self.state.last_error = snapshot.health.last_error
-        self.state.accepted_registration_valid = bool(snapshot.latest_accepted_path)
         overwrite_target = self._overwrite_target_path()
         self.state.overwrite_target_path = str(overwrite_target)
         self.state.overwrite_required = bool(snapshot.pending_accept and overwrite_target.exists())
@@ -524,6 +573,11 @@ class RegistrationController:
         if snapshot.pending_accept:
             return "Solved - review and save"
         if snapshot.latest_accepted_path:
+            max_residual = snapshot.validation_metrics.get("max_residual_mm")
+            if snapshot.fre_mm is not None and self.config.max_fre_mm is not None and snapshot.fre_mm > self.config.max_fre_mm:
+                return "Accepted - FRE above limit"
+            if max_residual is not None and self.config.max_fre_mm is not None and float(max_residual) > self.config.max_fre_mm:
+                return "Accepted - inspect landmark residuals"
             return "Accepted"
         if snapshot.health.last_error:
             return "Invalid"
