@@ -1,0 +1,35 @@
+Aurora Grid Accuracy Summary
+Aligned-grid consistency check. Measurement method: ideal local truth grid, centroid per labeled point, rigid no-scale best-fit alignment, residuals reported after alignment.
+
+Run ID: 3a39334eace6
+Timestamp: 2026-04-12T21:47:36.007563+00:00
+Status: success
+Grid: 3 x 3
+Spacing: 25.400 mm
+Samples / Point: 3
+Coverage: 9 / 9
+Point Status: 9 complete, 0 partial, 0 not started
+Solve Ready: yes
+Aligned Points: 9
+Raw Samples: 27
+Accepted Samples: 27
+Rejected Samples: 0
+Overall RMS Residual: 0.256 mm
+Max Residual: 0.411 mm
+Mean Within-Point Spread: 0.289 mm
+Max Within-Point Spread: 0.485 mm
+Tip Calibration Requested: yes
+Tip Calibration Used: yes
+Position Sources: tip=27
+Solve Readiness Reason: At least three labeled point centroids are available for the rigid alignment solve.
+
+Per-Point Metrics:
+- P01: raw=3/3, accepted=3, rejected=0, spread=0.181 mm, residual=0.226 mm, source=tip=3
+- P02: raw=3/3, accepted=3, rejected=0, spread=0.472 mm, residual=0.343 mm, source=tip=3
+- P03: raw=3/3, accepted=3, rejected=0, spread=0.247 mm, residual=0.411 mm, source=tip=3
+- P04: raw=3/3, accepted=3, rejected=0, spread=0.278 mm, residual=0.326 mm, source=tip=3
+- P05: raw=3/3, accepted=3, rejected=0, spread=0.485 mm, residual=0.211 mm, source=tip=3
+- P06: raw=3/3, accepted=3, rejected=0, spread=0.224 mm, residual=0.131 mm, source=tip=3
+- P07: raw=3/3, accepted=3, rejected=0, spread=0.235 mm, residual=0.177 mm, source=tip=3
+- P08: raw=3/3, accepted=3, rejected=0, spread=0.194 mm, residual=0.166 mm, source=tip=3
+- P09: raw=3/3, accepted=3, rejected=0, spread=0.287 mm, residual=0.154 mm, source=tip=3

@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "pivot_calibration",
+  "run_id": "6e65a8ed277a",
+  "timestamp_utc": "2026-04-03T16:10:31.069921+00:00",
+  "git_commit": "f7f5886ff302a1c61366ec696b32448794b81321",
+  "backend_info": {
+    "mock_mode": false,
+    "tracking_backend_configured": "ndi",
+    "tracking_backend_selected": "ndi",
+    "tracking_backend_identity": "ndi_tracker_python",
+    "tracking_state": "streaming_healthy",
+    "servo_connected": true
+  },
+  "registration_info": {
+    "path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+    "exists": true,
+    "tracking_registration_state": "loaded",
+    "tip_pose_status": "ok"
+  },
+  "config_used": {
+    "tool_id": "0B",
+    "sample_count": 80,
+    "sample_period_s": 0.02,
+    "std_dev_threshold": 3.0,
+    "min_samples": 12,
+    "output_tip_file": "/home/continuum-pi/Continuum_pi/data/tip_cals/staged/20260403_161031_generated_penprobe_tip.csv",
+    "input_path": "/home/continuum-pi/Continuum_pi/data/pivot_captures/20260403_161031_pivot_0B_samples.csv",
+    "dry_run": false,
+    "seed": 0,
+    "synthetic_tip_vector_mm": [
+      0.0,
+      0.0,
+      125.0
+    ],
+    "synthetic_pivot_point_mm": [
+      25.0,
+      -10.0,
+      40.0
+    ],
+    "synthetic_noise_std_mm": 0.25,
+    "synthetic_outlier_count": 0,
+    "acceptance": {}
+  },
+  "operator_notes": "tracker_mvp_gui_review"
+}

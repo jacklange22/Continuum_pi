@@ -1,0 +1,569 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "aurora_grid_accuracy",
+  "run_id": "3a39334eace6",
+  "success": true,
+  "sample_counts": {
+    "total": 27,
+    "phase::sample": 27
+  },
+  "dropped_frames": 0,
+  "invalid_transforms": 0,
+  "stage_pass_fail": {
+    "setup": "passed",
+    "precheck": "passed",
+    "execute": "passed",
+    "finalize": "passed"
+  },
+  "status": "success",
+  "experiment_metrics": {
+    "status": "success",
+    "per_point_metrics": {
+      "P01": {
+        "target_index": 0,
+        "label": "P01",
+        "truth_point_mm": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "raw_sample_count": 3,
+        "accepted_sample_count": 3,
+        "accepted_sample_indices": [
+          0,
+          1,
+          2
+        ],
+        "rejected_sample_indices": [],
+        "centroid_mm": [
+          0.2550306495793094,
+          -0.08610293010590758,
+          0.09648301526956465
+        ],
+        "mean_measured_position_mm": [
+          0.2550306495793094,
+          -0.08610293010590758,
+          0.09648301526956465
+        ],
+        "sample_spread_rms_mm": 0.1807598999831899,
+        "raw_sample_spread_rms_mm": 0.1807598999831899,
+        "outlier_count": 0,
+        "position_source_counts": {
+          "tip": 3
+        },
+        "position_source_summary": "tip=3",
+        "status": "complete",
+        "aligned_truth_point_mm": [
+          0.2355017245933091,
+          -0.22672756026601704,
+          -0.07941265296807497
+        ],
+        "aligned_centroid_truth_mm": [
+          0.019969279953786067,
+          0.14107229106363328,
+          0.17548728778953485
+        ],
+        "residual_vector_mm": [
+          0.019528924986000284,
+          0.14062463016010945,
+          0.17589566823763964
+        ],
+        "residual_mm": 0.2260441364502565
+      },
+      "P02": {
+        "target_index": 1,
+        "label": "P02",
+        "truth_point_mm": [
+          25.4,
+          0.0,
+          0.0
+        ],
+        "raw_sample_count": 3,
+        "accepted_sample_count": 3,
+        "accepted_sample_indices": [
+          0,
+          1,
+          2
+        ],
+        "rejected_sample_indices": [],
+        "centroid_mm": [
+          25.4898356042645,
+          -0.06504536004595458,
+          0.24497469790379756
+        ],
+        "mean_measured_position_mm": [
+          25.4898356042645,
+          -0.06504536004595458,
+          0.24497469790379756
+        ],
+        "sample_spread_rms_mm": 0.47180096942832944,
+        "raw_sample_spread_rms_mm": 0.47180096942832944,
+        "outlier_count": 0,
+        "position_source_counts": {
+          "tip": 3
+        },
+        "position_source_summary": "tip=3",
+        "status": "complete",
+        "aligned_truth_point_mm": [
+          25.635449254211167,
+          -0.20670643449060916,
+          -0.031824343669570744
+        ],
+        "aligned_centroid_truth_mm": [
+          25.25501691119492,
+          0.14250571192794786,
+          0.2766964591533296
+        ],
+        "residual_vector_mm": [
+          -0.14561364994666803,
+          0.1416610744446546,
+          0.2767990415733683
+        ],
+        "residual_mm": 0.34334953688557673
+      },
+      "P03": {
+        "target_index": 2,
+        "label": "P03",
+        "truth_point_mm": [
+          50.8,
+          0.0,
+          0.0
+        ],
+        "raw_sample_count": 3,
+        "accepted_sample_count": 3,
+        "accepted_sample_indices": [
+          0,
+          1,
+          2
+        ],
+        "rejected_sample_indices": [],
+        "centroid_mm": [
+          51.337913731023036,
+          -0.24705428335831836,
+          -0.2552456358586403
+        ],
+        "mean_measured_position_mm": [
+          51.337913731023036,
+          -0.24705428335831836,
+          -0.2552456358586403
+        ],
+        "sample_spread_rms_mm": 0.24667629339609817,
+        "raw_sample_spread_rms_mm": 0.24667629339609817,
+        "outlier_count": 0,
+        "position_source_counts": {
+          "tip": 3
+        },
+        "position_source_summary": "tip=3",
+        "status": "complete",
+        "aligned_truth_point_mm": [
+          51.03539678382903,
+          -0.18668530871520128,
+          0.01576396562893348
+        ],
+        "aligned_centroid_truth_mm": [
+          51.10196098590451,
+          -0.06132310957524645,
+          -0.2714151059927952
+        ],
+        "residual_vector_mm": [
+          0.30251694719400746,
+          -0.06036897464311708,
+          -0.2710096014875738
+        ],
+        "residual_mm": 0.410617973958151
+      },
+      "P04": {
+        "target_index": 3,
+        "label": "P04",
+        "truth_point_mm": [
+          0.0,
+          25.4,
+          0.0
+        ],
+        "raw_sample_count": 3,
+        "accepted_sample_count": 3,
+        "accepted_sample_indices": [
+          0,
+          1,
+          2
+        ],
+        "rejected_sample_indices": [],
+        "centroid_mm": [
+          0.2075260516751143,
+          25.032479897432733,
+          -0.3067373415591059
+        ],
+        "mean_measured_position_mm": [
+          0.2075260516751143,
+          25.032479897432733,
+          -0.3067373415591059
+        ],
+        "sample_spread_rms_mm": 0.27837483030724175,
+        "raw_sample_spread_rms_mm": 0.27837483030724175,
+        "outlier_count": 0,
+        "position_source_counts": {
+          "tip": 3
+        },
+        "position_source_summary": "tip=3",
+        "status": "complete",
+        "aligned_truth_point_mm": [
+          0.21535518418021263,
+          25.173176195245897,
+          -0.012454997390168435
+        ],
+        "aligned_centroid_truth_mm": [
+          -0.008491372138663317,
+          25.258534679168466,
+          -0.2938950513787483
+        ],
+        "residual_vector_mm": [
+          -0.00782913250509834,
+          -0.1406962978131645,
+          -0.2942823441689375
+        ],
+        "residual_mm": 0.3262803114251273
+      },
+      "P05": {
+        "target_index": 4,
+        "label": "P05",
+        "truth_point_mm": [
+          25.4,
+          25.4,
+          0.0
+        ],
+        "raw_sample_count": 3,
+        "accepted_sample_count": 3,
+        "accepted_sample_indices": [
+          0,
+          1,
+          2
+        ],
+        "rejected_sample_indices": [],
+        "centroid_mm": [
+          25.47460182988196,
+          25.044857334691255,
+          0.08695630982371455
+        ],
+        "mean_measured_position_mm": [
+          25.47460182988196,
+          25.044857334691255,
+          0.08695630982371455
+        ],
+        "sample_spread_rms_mm": 0.48461298397561947,
+        "raw_sample_spread_rms_mm": 0.48461298397561947,
+        "outlier_count": 0,
+        "position_source_counts": {
+          "tip": 3
+        },
+        "position_source_summary": "tip=3",
+        "status": "complete",
+        "aligned_truth_point_mm": [
+          25.61530271379807,
+          25.193197321021305,
+          0.035133311908335796
+        ],
+        "aligned_centroid_truth_mm": [
+          25.259279573483823,
+          25.25190878766187,
+          0.05247730729995848
+        ],
+        "residual_vector_mm": [
+          -0.1407008839161108,
+          -0.14833998633005052,
+          0.051822997915378755
+        ],
+        "residual_mm": 0.21091968469564856
+      },
+      "P06": {
+        "target_index": 5,
+        "label": "P06",
+        "truth_point_mm": [
+          50.8,
+          25.4,
+          0.0
+        ],
+        "raw_sample_count": 3,
+        "accepted_sample_count": 3,
+        "accepted_sample_indices": [
+          0,
+          1,
+          2
+        ],
+        "rejected_sample_indices": [],
+        "centroid_mm": [
+          50.97453650364781,
+          25.244196327355198,
+          -0.03739303181195982
+        ],
+        "mean_measured_position_mm": [
+          50.97453650364781,
+          25.244196327355198,
+          -0.03739303181195982
+        ],
+        "sample_spread_rms_mm": 0.22429319041902934,
+        "raw_sample_spread_rms_mm": 0.22429319041902934,
+        "outlier_count": 0,
+        "position_source_counts": {
+          "tip": 3
+        },
+        "position_source_summary": "tip=3",
+        "status": "complete",
+        "aligned_truth_point_mm": [
+          51.015250243415935,
+          25.213218446796713,
+          0.08272162120684003
+        ],
+        "aligned_centroid_truth_mm": [
+          50.75908572066686,
+          25.430693418510685,
+          -0.12011953782131567
+        ],
+        "residual_vector_mm": [
+          -0.04071373976812254,
+          0.030977880558484827,
+          -0.12011465301879984
+        ],
+        "residual_mm": 0.13055561098485516
+      },
+      "P07": {
+        "target_index": 6,
+        "label": "P07",
+        "truth_point_mm": [
+          0.0,
+          50.8,
+          0.0
+        ],
+        "raw_sample_count": 3,
+        "accepted_sample_count": 3,
+        "accepted_sample_indices": [
+          0,
+          1,
+          2
+        ],
+        "rejected_sample_indices": [],
+        "centroid_mm": [
+          0.26419389463705345,
+          50.67656555500408,
+          -0.07133894345435582
+        ],
+        "mean_measured_position_mm": [
+          0.26419389463705345,
+          50.67656555500408,
+          -0.07133894345435582
+        ],
+        "sample_spread_rms_mm": 0.23451739349640868,
+        "raw_sample_spread_rms_mm": 0.23451739349640868,
+        "outlier_count": 0,
+        "position_source_counts": {
+          "tip": 3
+        },
+        "position_source_summary": "tip=3",
+        "status": "complete",
+        "aligned_truth_point_mm": [
+          0.19520864376711616,
+          50.573079950757815,
+          0.0545026581877381
+        ],
+        "aligned_centroid_truth_mm": [
+          0.06883090793900715,
+          50.90309876043978,
+          -0.12624300192767968
+        ],
+        "residual_vector_mm": [
+          0.06898525086993729,
+          0.1034856042462664,
+          -0.1258416016420939
+        ],
+        "residual_mm": 0.17693033608641143
+      },
+      "P08": {
+        "target_index": 7,
+        "label": "P08",
+        "truth_point_mm": [
+          25.4,
+          50.8,
+          0.0
+        ],
+        "raw_sample_count": 3,
+        "accepted_sample_count": 3,
+        "accepted_sample_indices": [
+          0,
+          1,
+          2
+        ],
+        "rejected_sample_indices": [],
+        "centroid_mm": [
+          25.57269153314115,
+          50.55660368020529,
+          0.2620812610043339
+        ],
+        "mean_measured_position_mm": [
+          25.57269153314115,
+          50.55660368020529,
+          0.2620812610043339
+        ],
+        "sample_spread_rms_mm": 0.19408516663010356,
+        "raw_sample_spread_rms_mm": 0.19408516663010356,
+        "outlier_count": 0,
+        "position_source_counts": {
+          "tip": 3
+        },
+        "position_source_summary": "tip=3",
+        "status": "complete",
+        "aligned_truth_point_mm": [
+          25.595156173384975,
+          50.593101076533216,
+          0.10209096748624231
+        ],
+        "aligned_centroid_truth_mm": [
+          25.377806388391534,
+          50.76394231518482,
+          0.16012776458052227
+        ],
+        "residual_vector_mm": [
+          -0.02246464024382533,
+          -0.03649739632792404,
+          0.15999029351809158
+        ],
+        "residual_mm": 0.16563095731175123
+      },
+      "P09": {
+        "target_index": 8,
+        "label": "P09",
+        "truth_point_mm": [
+          50.8,
+          50.8,
+          0.0
+        ],
+        "raw_sample_count": 3,
+        "accepted_sample_count": 3,
+        "accepted_sample_indices": [
+          0,
+          1,
+          2
+        ],
+        "rejected_sample_indices": [],
+        "centroid_mm": [
+          50.96139462633264,
+          50.582275668013345,
+          0.29641947585767325
+        ],
+        "mean_measured_position_mm": [
+          50.96139462633264,
+          50.582275668013345,
+          0.29641947585767325
+        ],
+        "sample_spread_rms_mm": 0.28729240988215876,
+        "raw_sample_spread_rms_mm": 0.28729240988215876,
+        "outlier_count": 0,
+        "position_source_counts": {
+          "tip": 3
+        },
+        "position_source_summary": "tip=3",
+        "status": "complete",
+        "aligned_truth_point_mm": [
+          50.995103703002826,
+          50.61312220230863,
+          0.14967927678474657
+        ],
+        "aligned_centroid_truth_mm": [
+          50.766541604603994,
+          50.76956714561779,
+          0.14688387829721775
+        ],
+        "residual_vector_mm": [
+          -0.03370907667018486,
+          -0.03084653429528572,
+          0.14674019907292668
+        ],
+        "residual_mm": 0.15368961107358164
+      }
+    },
+    "pointwise_rms_error_mm": {
+      "P01": 0.2260441364502565,
+      "P02": 0.34334953688557673,
+      "P03": 0.410617973958151,
+      "P04": 0.3262803114251273,
+      "P05": 0.21091968469564856,
+      "P06": 0.13055561098485516,
+      "P07": 0.17693033608641143,
+      "P08": 0.16563095731175123,
+      "P09": 0.15368961107358164
+    },
+    "per_point_residual_mm": {
+      "P01": 0.2260441364502565,
+      "P02": 0.34334953688557673,
+      "P03": 0.410617973958151,
+      "P04": 0.3262803114251273,
+      "P05": 0.21091968469564856,
+      "P06": 0.13055561098485516,
+      "P07": 0.17693033608641143,
+      "P08": 0.16563095731175123,
+      "P09": 0.15368961107358164
+    },
+    "overall_rms_error_mm": 0.2555910695743852,
+    "overall_rms_residual_mm": 0.2555910695743852,
+    "max_residual_mm": 0.410617973958151,
+    "mean_within_point_spread_mm": 0.28915701527979765,
+    "max_within_point_spread_mm": 0.48461298397561947,
+    "per_axis_bias_mm": [
+      -7.207197801524975e-15,
+      -2.9544268266413887e-15,
+      -1.2335811384723961e-17
+    ],
+    "outlier_count": 0,
+    "residual_outlier_count": 0,
+    "raw_sample_count": 27,
+    "accepted_sample_count": 27,
+    "valid_sample_count": 27,
+    "rejected_sample_count": 0,
+    "point_count_total": 9,
+    "point_count_captured": 9,
+    "point_count_missing": 0,
+    "point_coverage_fraction": 1.0,
+    "point_count_aligned": 9,
+    "alignment_ready": true,
+    "alignment_ready_reason": "At least three labeled point centroids are available for the rigid alignment solve.",
+    "alignment_transform_truth_to_measured": [
+      [
+        0.9999979342369236,
+        -0.0007931708824053723,
+        -0.0018714705010006922,
+        0.2355017245933091
+      ],
+      [
+        0.0007882332982444045,
+        0.9999962108469258,
+        -0.0026376087763987856,
+        -0.22672756026601704
+      ],
+      [
+        0.0018735554841930798,
+        0.002636128172358525,
+        0.9999947702953784,
+        -0.07941265296807497
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "position_source_counts": {
+      "tip": 27
+    },
+    "registration_available": true,
+    "tip_calibration_available": true,
+    "tip_calibration_used": true,
+    "coil_origin_fallback_used": false,
+    "point_count_complete": 9,
+    "point_count_partial": 0,
+    "point_count_not_started": 0,
+    "summary_requirements": {
+      "force_status": "success"
+    }
+  },
+  "warning_messages": [],
+  "error_messages": []
+}
