@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -47,10 +48,16 @@ from continuum_robot.experiments.critical_experiments import (
     capture_grid_measurement_from_snapshot,
     resolve_grid_tip_vector,
 )
-from continuum_robot.experiments.builtins import PretensionValidationExperimentConfig
+from continuum_robot.experiments.grid_accuracy_outputs import build_grid_accuracy_summary_pairs
+from continuum_robot.experiments.builtins import (
+    PretensionValidationExperimentConfig,
+    TrackerTimingValidationConfig,
+)
 from continuum_robot.gui.controllers.experiment_controller import ExperimentViewState
+from continuum_robot.gui.theme import COLORS, chip_stylesheet
 from continuum_robot.gui.view_utils import preserve_scroll_position, set_line_edit_text, set_text_document
 from continuum_robot.gui.widgets.experiment_3d_widget import Experiment3DWidget
+from continuum_robot.gui.widgets.grid_accuracy_preview_widget import GridAccuracyPreviewWidget
 from continuum_robot.gui.widgets.experiment_preflight_widget import ExperimentPreflightWidget
 from continuum_robot.gui.widgets.experiment_results_widget import ExperimentResultsWidget
 
@@ -591,7 +598,7 @@ class RepeatabilityDatasetPage(ExperimentPageBase):
 
 
 class AuroraGridAccuracyPage(ExperimentPageBase):
-    show_visualization = True
+    show_visualization = False
     page_hint = (
         "Capture labeled 0B points on the physical mesh in any order, then fit the measured centroids "
         "to an ideal truth grid in code. The board's tracker-frame origin does not matter."
@@ -603,15 +610,16 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         self._point_table_signature: tuple[tuple[str, str, str, str, str, str, str], ...] | None = None
         self._preview_cache_key: str | None = None
         self._preview_cache: GridAccuracyPreview | None = None
+        self._capture_settings_locked = False
         super().__init__(controller, experiment_name, parent)
-        self.run_button.setText("Save Dataset")
+        self.run_button.setText("Save Grid Validation Run")
         self.refresh_button.setText("Refresh Tracker State")
         self.stop_button.hide()
 
     def _build_parameter_sections(self) -> None:
         params_card = ExperimentCard(
             "Grid Parameters",
-            "Set the ideal mesh geometry and the per-point capture settings used for the aligned residual analysis.",
+            "Set the ideal truth-grid geometry and the per-point capture settings used for the aligned residual analysis.",
         )
         params_form = QFormLayout()
         self.dry_run_check = QCheckBox("Dry Run")
@@ -663,9 +671,28 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         params_form.addRow("Settle Time (s)", self.settle_time_spin)
         params_form.addRow("Outlier Threshold (mm)", self.outlier_threshold_spin)
         params_form.addRow("Tip Calibration", self.use_tip_check)
-        params_form.addRow("Fallback", self.allow_fallback_check)
-        params_form.addRow("Tip Vector (mm)", self.tip_vector_edit)
         params_card.body_layout.addLayout(params_form)
+        self.capture_settings_notice = QLabel(
+            "Capture settings are locked after the first point is recorded. Use Restart Run to change grid geometry or sampling."
+        )
+        self.capture_settings_notice.setProperty("role", "muted")
+        self.capture_settings_notice.setWordWrap(True)
+        self.capture_settings_notice.setVisible(False)
+        params_card.body_layout.addWidget(self.capture_settings_notice)
+        self.advanced_options = CollapsibleSection("Advanced Capture Options")
+        advanced_form = QFormLayout()
+        advanced_form.setContentsMargins(0, 0, 0, 0)
+        advanced_form.setSpacing(10)
+        advanced_form.addRow("Fallback", self.allow_fallback_check)
+        advanced_form.addRow("Tip Vector (mm)", self.tip_vector_edit)
+        advanced_hint = QLabel(
+            "These options change how the 0B point position is derived. Leave them alone during a real capture session unless you intentionally restart the run."
+        )
+        advanced_hint.setProperty("role", "muted")
+        advanced_hint.setWordWrap(True)
+        self.advanced_options.body_layout.addLayout(advanced_form)
+        self.advanced_options.body_layout.addWidget(advanced_hint)
+        params_card.body_layout.addWidget(self.advanced_options)
 
         capture_card = ExperimentCard(
             "Labeled Point Capture",
@@ -680,13 +707,17 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         self.capture_selected_button = QPushButton("Capture Selected Point")
         self.capture_selected_button.setProperty("variant", "primary")
         self.capture_selected_button.clicked.connect(self.capture_selected_point)
+        self.next_incomplete_button = QPushButton("Next Incomplete")
+        self.next_incomplete_button.setProperty("variant", "ghost")
+        self.next_incomplete_button.clicked.connect(self.select_next_incomplete_point)
         self.clear_selected_button = QPushButton("Clear Selected Point")
         self.clear_selected_button.setProperty("variant", "ghost")
         self.clear_selected_button.clicked.connect(self.clear_selected_point)
-        self.clear_all_button = QPushButton("Clear All Points")
+        self.clear_all_button = QPushButton("Restart Run")
         self.clear_all_button.setProperty("variant", "ghost")
         self.clear_all_button.clicked.connect(self.clear_all_points)
         selection_row.addWidget(self.capture_selected_button)
+        selection_row.addWidget(self.next_incomplete_button)
         selection_row.addWidget(self.clear_selected_button)
         selection_row.addWidget(self.clear_all_button)
         capture_card.body_layout.addLayout(selection_row)
@@ -712,13 +743,21 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
 
         self.capture_status_text = QPlainTextEdit()
         self.capture_status_text.setReadOnly(True)
-        self.capture_status_text.setMinimumHeight(96)
-        self.capture_status_text.setMaximumHeight(120)
+        self.capture_status_text.setMinimumHeight(84)
+        self.capture_status_text.setMaximumHeight(112)
         self.capture_status_text.setPlaceholderText("Capture status and session notes will appear here.")
         capture_card.body_layout.addWidget(self.capture_status_text)
 
+        preview_card = ExperimentCard(
+            "Live Alignment Preview",
+            "Display-only view in the local grid frame. Truth points stay fixed; aligned centroids and residual vectors appear as soon as enough labeled points exist.",
+        )
+        self.grid_preview_widget = GridAccuracyPreviewWidget()
+        preview_card.body_layout.addWidget(self.grid_preview_widget)
+
         self.parameter_layout.addWidget(params_card)
         self.parameter_layout.addWidget(capture_card)
+        self.parameter_layout.addWidget(preview_card)
 
     def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
         _ = state
@@ -745,32 +784,45 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
             _render_inline_list(config.tip_vector_mm if config.tip_vector_mm is not None else [0.0, 0.0, 125.0]),
         )
         preview = self._current_preview(config=config)
+        has_captured_points = bool(self.controller.get_config_value("captured_points", []))
+        self._set_capture_settings_locked(has_captured_points)
         self._sync_point_table(preview, expected_samples=int(config.samples_per_point))
         self._sync_selected_point_summary(preview, expected_samples=int(config.samples_per_point))
         self._sync_capture_summary(preview, expected_samples=int(config.samples_per_point))
         self._sync_capture_status()
+        self.grid_preview_widget.set_preview(
+            truth_catalog=preview.truth_catalog,
+            metrics=preview.metrics,
+            selected_target_index=self._selected_target_index,
+            expected_samples=int(config.samples_per_point),
+        )
+        selected = self._selected_truth_entry(preview.truth_catalog)
+        point_metrics = (
+            (preview.metrics.get("per_point_metrics", {}) or {}).get(str(selected["label"]), {})
+            if selected is not None
+            else {}
+        )
+        selected_has_capture = int(point_metrics.get("raw_sample_count", 0) or 0) > 0
         self.capture_selected_button.setEnabled(not state.run_active)
-        self.clear_selected_button.setEnabled(not state.run_active)
-        self.clear_all_button.setEnabled(not state.run_active)
+        self.next_incomplete_button.setEnabled(not state.run_active and bool(preview.truth_catalog))
+        self.clear_selected_button.setEnabled(not state.run_active and selected_has_capture)
+        self.clear_all_button.setEnabled(not state.run_active and has_captured_points)
 
     def _on_mode_changed(self, value: bool) -> None:
         self.controller.set_config_value("dry_run", bool(value))
         self._refresh_now()
 
     def _apply_grid_geometry(self) -> None:
+        if self._capture_settings_locked:
+            self._append_capture_log("Restart the run before changing grid geometry or capture settings.")
+            self._refresh_now()
+            return
         dims = [int(self.cols_spin.value()), int(self.rows_spin.value())]
-        previous_dims = [int(value) for value in (self.controller.get_config_value("dimensions", [3, 3]) or [3, 3])]
-        previous_spacing = float(self.controller.get_config_value("spacing_mm", 25.4))
         spacing = float(self.spacing_spin.value())
-        geometry_changed = dims != previous_dims or not np.isclose(spacing, previous_spacing)
         self.controller.set_config_value("dimensions", dims)
         self.controller.set_config_value("spacing_mm", spacing)
         self.controller.set_config_value("truth_points_file", None)
         self.controller.set_config_value("truth_points_mm", [])
-        if geometry_changed and self.controller.get_config_value("captured_points", []):
-            self.controller.set_config_value("captured_points", [])
-            self._selected_target_index = 0
-            self._append_capture_log("Grid geometry changed. Cleared previously captured points.")
         self._refresh_now()
 
     def _on_point_selection_changed(self) -> None:
@@ -787,6 +839,27 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         self._update_selected_point_label(truth_catalog=preview.truth_catalog)
         self._sync_selected_point_summary(preview, expected_samples=expected_samples)
         self._sync_capture_summary(preview, expected_samples=expected_samples)
+        self.grid_preview_widget.set_preview(
+            truth_catalog=preview.truth_catalog,
+            metrics=preview.metrics,
+            selected_target_index=self._selected_target_index,
+            expected_samples=expected_samples,
+        )
+
+    def select_next_incomplete_point(self) -> None:
+        preview = self._current_preview()
+        expected_samples = max(1, int(self._grid_config().samples_per_point))
+        next_target_index = self._next_incomplete_target_index(
+            preview,
+            expected_samples=expected_samples,
+            start_after=int(self._selected_target_index),
+        )
+        if next_target_index is None:
+            self._append_capture_log("All grid points are complete.")
+            self._refresh_now()
+            return
+        self._selected_target_index = int(next_target_index)
+        self._refresh_now()
 
     def capture_selected_point(self) -> None:
         config = self._grid_config()
@@ -861,9 +934,16 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
     def clear_all_points(self) -> None:
         if not self.controller.get_config_value("captured_points", []):
             return
+        response = QMessageBox.question(
+            self,
+            "Restart Grid Run",
+            "Clear all captured points and restart this grid-validation run?\n\nThis does not delete saved runs on disk.",
+        )
+        if response != QMessageBox.Yes:
+            return
         self.controller.set_config_value("captured_points", [])
         self._selected_target_index = 0
-        self._append_capture_log("Cleared all captured grid points.")
+        self._append_capture_log("Restarted the grid-validation run and cleared all captured points.")
         self._refresh_now()
 
     def _collect_point_samples(self, *, config: GridDefinitionConfig, truth_entry: dict[str, object]) -> list[dict[str, object]]:
@@ -874,7 +954,12 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         raw_samples: list[dict[str, object]] = []
         for sample_index in range(sample_count):
             if config.dry_run:
-                raw_sample = self._synthetic_grid_sample(config=config, truth_entry=truth_entry, sample_index=sample_index)
+                raw_sample = self._synthetic_grid_sample(
+                    config=config,
+                    truth_entry=truth_entry,
+                    sample_index=sample_index,
+                    tip_available=tip_available,
+                )
             else:
                 snapshot = self.controller.tracking_service.get_snapshot()
                 raw_sample = capture_grid_measurement_from_snapshot(
@@ -897,8 +982,9 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         config: GridDefinitionConfig,
         truth_entry: dict[str, object],
         sample_index: int,
+        tip_available: bool,
     ) -> dict[str, object]:
-        if config.use_tip_calibration and config.tip_vector_mm is None and not config.allow_coil_origin_fallback:
+        if config.use_tip_calibration and not tip_available and not config.allow_coil_origin_fallback:
             raise RuntimeError("Tip calibration is required for this grid capture.")
         truth_point = np.asarray(truth_entry["truth_point_mm"], dtype=float)
         rng = np.random.default_rng(int(config.seed) + (int(truth_entry["target_index"]) * 100) + sample_index)
@@ -915,7 +1001,7 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
             "freshness_s": 0.0,
             "tracking_state": "valid",
             "status_flags": ["dry_run"],
-            "position_source": "tip" if config.tip_vector_mm is not None else "coil_origin",
+            "position_source": "tip" if tip_available else "coil_origin",
         }
 
     def _current_preview(self, *, config: GridDefinitionConfig | None = None):
@@ -967,7 +1053,11 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
             if truth_catalog:
                 with QSignalBlocker(self.point_table):
                     self.point_table.selectRow(self._selected_target_index)
-            self._update_selected_point_label(truth_catalog=truth_catalog)
+            self._update_selected_point_label(
+                truth_catalog=truth_catalog,
+                metrics=preview.metrics,
+                expected_samples=expected_samples,
+            )
             return
         self._point_table_signature = rows_signature
 
@@ -1008,23 +1098,20 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
                     self.point_table.selectRow(self._selected_target_index)
 
         preserve_scroll_position(self.point_table, _rebuild)
-        self._update_selected_point_label(truth_catalog=truth_catalog)
+        self._update_selected_point_label(
+            truth_catalog=truth_catalog,
+            metrics=preview.metrics,
+            expected_samples=expected_samples,
+        )
 
     def _sync_capture_summary(self, preview, *, expected_samples: int) -> None:
         metrics = preview.metrics
-        captured_points = [
-            record
-            for record in (self.controller.get_config_value("captured_points", []) or [])
-            if isinstance(record, dict)
-        ]
-        complete_points = sum(
-            1 for record in captured_points if len(record.get("raw_samples", []) or []) >= expected_samples
+        summary_lookup = dict(
+            build_grid_accuracy_summary_pairs(
+                metrics=metrics,
+                config_used=self.controller.config_payload(),
+            )
         )
-        partial_points = sum(
-            1 for record in captured_points if 0 < len(record.get("raw_samples", []) or []) < expected_samples
-        )
-        selected = self._selected_truth_entry(preview.truth_catalog)
-        selected_label = str(selected["label"]) if selected is not None else "n/a"
         next_target_index = self._next_incomplete_target_index(
             preview,
             expected_samples=expected_samples,
@@ -1037,17 +1124,19 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         )
         self.capture_summary_widget.set_pairs(
             [
-                ("Selected Point", selected_label),
-                ("Coverage", f"{complete_points} complete, {partial_points} partial, {len(preview.truth_catalog) - complete_points - partial_points} not started"),
-                ("Solve Ready", "Yes" if metrics.get("alignment_ready") else "No"),
+                ("Coverage", summary_lookup.get("Point Status", "n/a")),
+                (
+                    "Solve Ready",
+                    "Yes" if str(summary_lookup.get("Solve Ready", "")).lower() == "yes" else "No",
+                ),
                 ("Suggested Next", next_label),
-                ("Raw Samples", str(int(metrics.get("raw_sample_count", 0) or 0))),
-                ("Accepted Samples", str(int(metrics.get("accepted_sample_count", 0) or 0))),
-                ("Rejected Samples", str(int(metrics.get("rejected_sample_count", metrics.get("outlier_count", 0)) or 0))),
-                ("RMS Residual", _fmt_metric(metrics.get("overall_rms_residual_mm"))),
-                ("Max Residual", _fmt_metric(metrics.get("max_residual_mm"))),
-                ("Mean Spread", _fmt_metric(metrics.get("mean_within_point_spread_mm"))),
-                ("Max Spread", _fmt_metric(metrics.get("max_within_point_spread_mm"))),
+                ("Aligned Points", summary_lookup.get("Aligned Points", "0")),
+                ("Raw / Accepted / Rejected", _render_sample_triplet(metrics)),
+                ("RMS Residual", summary_lookup.get("Overall RMS Residual", "n/a")),
+                ("Max Residual", summary_lookup.get("Max Residual", "n/a")),
+                ("Mean Spread", summary_lookup.get("Mean Within-Point Spread", "n/a")),
+                ("Max Spread", summary_lookup.get("Max Within-Point Spread", "n/a")),
+                ("Tip Calibration Used", summary_lookup.get("Tip Calibration Used", "n/a")),
             ]
         )
 
@@ -1069,13 +1158,7 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         sample_count = len(raw_samples)
         accepted_count = int(point_metrics.get("accepted_sample_count", 0) or 0)
         rejected_count = int(point_metrics.get("outlier_count", 0) or 0)
-        position_sources = sorted(
-            {
-                str(sample.get("position_source", "tracker_tool"))
-                for sample in raw_samples
-                if isinstance(sample, dict)
-            }
-        )
+        position_source_summary = str(point_metrics.get("position_source_summary") or "n/a")
         next_target_index = self._next_incomplete_target_index(
             preview,
             expected_samples=expected_samples,
@@ -1087,6 +1170,7 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
             else "None"
         )
         truth_point = selected.get("truth_point_mm", [0.0, 0.0, 0.0])
+        remaining_samples = max(0, int(expected_samples) - int(sample_count))
         self.selected_point_summary_widget.set_pairs(
             [
                 ("Selected Point", label),
@@ -1099,19 +1183,19 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
                         rejected_count=rejected_count,
                     ),
                 ),
-                ("Raw Samples", str(sample_count)),
-                ("Accepted Samples", str(accepted_count)),
-                ("Rejected Samples", str(rejected_count)),
+                ("Raw / Accepted / Rejected", f"{sample_count} / {accepted_count} / {rejected_count}"),
+                ("Samples Needed", str(remaining_samples)),
                 ("Within-Point Spread", _fmt_metric(point_metrics.get("sample_spread_rms_mm"))),
                 ("Aligned Residual", _fmt_metric(point_metrics.get("residual_mm"))),
-                ("Position Source", ", ".join(position_sources) or "n/a"),
+                ("Position Sources", position_source_summary),
                 ("Suggested Next", suggested_next),
+                ("Solve Note", str(preview.metrics.get("alignment_ready_reason", "n/a"))),
             ]
         )
 
     def _sync_capture_status(self) -> None:
         lines = self._capture_log_lines or [
-            "Select any grid label and capture a full sample batch. The aligned residual summary will update once at least three points are complete."
+            "Select a grid label, capture the full sample batch with tool 0B, and review the aligned residual preview once at least three labeled points are complete."
         ]
         set_text_document(
             self.capture_status_text,
@@ -1132,15 +1216,27 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         except Exception:
             return
 
-    def _update_selected_point_label(self, *, truth_catalog: list[dict[str, object]] | None = None) -> None:
+    def _update_selected_point_label(
+        self,
+        *,
+        truth_catalog: list[dict[str, object]] | None = None,
+        metrics: dict[str, object] | None = None,
+        expected_samples: int | None = None,
+    ) -> None:
         truth_catalog = truth_catalog or self._current_preview().truth_catalog
         selected = self._selected_truth_entry(truth_catalog)
         if selected is None:
             self.selected_point_label.setText("Selected Point: n/a")
             return
+        metrics = dict(metrics or {})
+        point_metrics = (metrics.get("per_point_metrics", {}) or {}).get(str(selected["label"]), {})
         truth_point = selected.get("truth_point_mm", [0.0, 0.0, 0.0])
+        sample_count = int(point_metrics.get("raw_sample_count", 0) or 0)
+        expected = max(1, int(expected_samples or self._grid_config().samples_per_point))
+        remaining = max(0, expected - sample_count)
         self.selected_point_label.setText(
-            f"Selected Point: {selected['label']}  •  truth=({truth_point[0]:.1f}, {truth_point[1]:.1f}, {truth_point[2]:.1f}) mm"
+            f"Selected Point: {selected['label']}  •  truth=({truth_point[0]:.1f}, {truth_point[1]:.1f}, {truth_point[2]:.1f}) mm  •  "
+            f"{sample_count}/{expected} samples ({remaining} needed)"
         )
 
     @staticmethod
@@ -1153,18 +1249,37 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
             return f"Complete ({rejected_count} rejected)"
         return "Complete"
 
+    def _set_capture_settings_locked(self, locked: bool) -> None:
+        self._capture_settings_locked = bool(locked)
+        for widget in (
+            self.dry_run_check,
+            self.rows_spin,
+            self.cols_spin,
+            self.spacing_spin,
+            self.samples_spin,
+            self.settle_time_spin,
+            self.use_tip_check,
+            self.allow_fallback_check,
+            self.tip_vector_edit,
+        ):
+            widget.setEnabled(not self._capture_settings_locked)
+        self.capture_settings_notice.setVisible(self._capture_settings_locked)
+        self.advanced_options.setEnabled(not self._capture_settings_locked)
+        if self._capture_settings_locked:
+            self.advanced_options.toggle.setChecked(False)
+
     @staticmethod
     def _style_point_table_item(item: QTableWidgetItem, *, status: str) -> None:
         normalized = status.lower()
         if normalized.startswith("complete") and "rejected" not in normalized:
-            background = "#dcfce7"
-            foreground = "#166534"
+            background = "#14532d"
+            foreground = "#dcfce7"
         elif normalized.startswith("partial") or "rejected" in normalized:
-            background = "#fef3c7"
-            foreground = "#92400e"
+            background = "#7c2d12"
+            foreground = "#fde68a"
         else:
-            background = "#f8fafc"
-            foreground = "#475569"
+            background = COLORS.surface_bg
+            foreground = COLORS.text_muted
         item.setBackground(QColor(background))
         item.setForeground(QColor(foreground))
 
@@ -1218,6 +1333,131 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
             if sample_count < expected_samples:
                 return candidate_index
         return None
+
+
+class TrackerTimingValidationPage(ExperimentPageBase):
+    page_hint = (
+        "Benchmark the active Python Aurora backend acquisition path. This page measures backend timing and "
+        "duplicate-frame behavior, not GUI refresh rate."
+    )
+
+    def __init__(self, controller, experiment_name: str, parent=None) -> None:
+        super().__init__(controller, experiment_name, parent)
+        self.run_button.setText("Run Timing Diagnostic")
+
+    def _build_parameter_sections(self) -> None:
+        scope_card = ExperimentCard(
+            "Diagnostic Scope",
+            "Keep this run focused on the backend path actually used by the app. Use Tracking for live monitoring; use this page for saved timing evidence and figures.",
+        )
+        scope_form = QFormLayout()
+        self.tool_mode_combo = QComboBox()
+        self.tool_mode_combo.addItem("0A and 0B", "both")
+        self.tool_mode_combo.addItem("0A only", "0A")
+        self.tool_mode_combo.addItem("0B only", "0B")
+        self.tool_mode_combo.currentIndexChanged.connect(self._on_tool_mode_changed)
+        self.enable_servo_logging_check = QCheckBox("Log servo telemetry for timestamp alignment")
+        self.enable_servo_logging_check.toggled.connect(
+            lambda value: self.controller.set_config_value("enable_servo_logging", bool(value))
+        )
+        self.run_label_edit = QLineEdit()
+        self.run_label_edit.editingFinished.connect(
+            lambda: self.controller.set_config_value("run_label", self.run_label_edit.text().strip())
+        )
+        scope_form.addRow("Requested Tools", self.tool_mode_combo)
+        scope_form.addRow("Servo Sync", self.enable_servo_logging_check)
+        scope_form.addRow("Run Label", self.run_label_edit)
+        scope_card.body_layout.addLayout(scope_form)
+
+        params_card = ExperimentCard(
+            "Timing Parameters",
+            "Use duration for a fixed observation window or set analyzed-sample target to stop after a specific number of fresh post-warmup samples.",
+        )
+        params_form = QFormLayout()
+        self.duration_spin = QDoubleSpinBox()
+        self.duration_spin.setRange(0.1, 300.0)
+        self.duration_spin.setDecimals(2)
+        self.duration_spin.setSingleStep(0.5)
+        self.duration_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("run_duration_s", float(value))
+        )
+        self.sample_target_spin = QSpinBox()
+        self.sample_target_spin.setRange(0, 200000)
+        self.sample_target_spin.setSpecialValueText("Disabled")
+        self.sample_target_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value(
+                "sample_count_target",
+                None if int(value) <= 0 else int(value),
+            )
+        )
+        self.warmup_spin = QSpinBox()
+        self.warmup_spin.setRange(0, 10000)
+        self.warmup_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("warmup_samples", int(value))
+        )
+        self.timeout_spin = QDoubleSpinBox()
+        self.timeout_spin.setRange(0.2, 600.0)
+        self.timeout_spin.setDecimals(2)
+        self.timeout_spin.setSingleStep(0.5)
+        self.timeout_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("timeout_s", float(value))
+        )
+        params_form.addRow("Run Duration (s)", self.duration_spin)
+        params_form.addRow("Analyzed Sample Target", self.sample_target_spin)
+        params_form.addRow("Warmup Samples", self.warmup_spin)
+        params_form.addRow("Timeout (s)", self.timeout_spin)
+        params_card.body_layout.addLayout(params_form)
+
+        summary_card = ExperimentCard(
+            "What This Run Saves",
+            "Each run writes canonical timing samples, a summary JSON, a text note, and static figures for histogram, stage breakdown, and time-series timing behavior.",
+        )
+        self.parameter_summary_widget = KeyValueSummaryWidget()
+        summary_card.body_layout.addWidget(self.parameter_summary_widget)
+
+        self.parameter_layout.addWidget(scope_card)
+        self.parameter_layout.addWidget(params_card)
+        self.parameter_layout.addWidget(summary_card)
+
+    def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
+        _ = state
+        config = TrackerTimingValidationConfig.from_dict(self.controller.config_payload())
+        tool_mode = "both"
+        if config.requested_tool_ids == ["0A"]:
+            tool_mode = "0A"
+        elif config.requested_tool_ids == ["0B"]:
+            tool_mode = "0B"
+        self._set_combo_value(self.tool_mode_combo, tool_mode)
+        self._set_checkbox(self.enable_servo_logging_check, bool(config.enable_servo_logging))
+        self._set_line_text(self.run_label_edit, str(config.run_label or ""))
+        self._set_double(self.duration_spin, float(config.run_duration_s))
+        self._set_spin(self.sample_target_spin, int(config.sample_count_target or 0))
+        self._set_spin(self.warmup_spin, int(config.warmup_samples))
+        self._set_double(self.timeout_spin, float(config.timeout_s))
+        stop_mode = (
+            f"{int(config.sample_count_target)} analyzed samples"
+            if config.sample_count_target is not None
+            else f"{float(config.run_duration_s):.1f} s duration"
+        )
+        self.parameter_summary_widget.set_pairs(
+            [
+                ("Benchmark Truth", "Uses backend acquisition timing and device-frame freshness. GUI refresh rate is not part of the metric."),
+                ("Stop Condition", stop_mode),
+                (
+                    "Servo Sync",
+                    (
+                        "Servo telemetry timestamps will be saved and compared against tracker samples."
+                        if bool(config.enable_servo_logging)
+                        else "Servo sync logging is disabled for this run."
+                    ),
+                ),
+            ]
+        )
+
+    def _on_tool_mode_changed(self) -> None:
+        mode = str(self.tool_mode_combo.currentData() or "both")
+        requested_tool_ids = ["0A", "0B"] if mode == "both" else [mode]
+        self.controller.set_config_value("requested_tool_ids", requested_tool_ids)
 
 
 class PretensionValidationPage(ExperimentPageBase):
@@ -1668,6 +1908,35 @@ class ExperimentCard(QFrame):
         self.body_layout = layout
 
 
+class CollapsibleSection(QWidget):
+    """Small inline collapsible section for secondary controls."""
+
+    def __init__(self, title: str, parent=None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.toggle = QToolButton()
+        self.toggle.setText(title)
+        self.toggle.setCheckable(True)
+        self.toggle.setChecked(False)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.toggle.setArrowType(Qt.RightArrow)
+        self.toggle.setStyleSheet(f"color: {COLORS.text_secondary}; font-weight: 600;")
+        self.toggle.toggled.connect(self._set_open)
+        layout.addWidget(self.toggle, 0, Qt.AlignLeft)
+        self.body = QWidget()
+        self.body.setVisible(False)
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(0, 0, 0, 0)
+        self.body_layout.setSpacing(8)
+        layout.addWidget(self.body)
+
+    def _set_open(self, open_: bool) -> None:
+        self.toggle.setArrowType(Qt.DownArrow if open_ else Qt.RightArrow)
+        self.body.setVisible(bool(open_))
+
+
 class KeyValueSummaryWidget(QWidget):
     """Shared key/value summary rows."""
 
@@ -1690,7 +1959,9 @@ class KeyValueSummaryWidget(QWidget):
                 widget.deleteLater()
         for label, value in signature:
             row = QFrame()
-            row.setStyleSheet("background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px;")
+            row.setStyleSheet(
+                f"background: {COLORS.surface_bg}; border: 1px solid {COLORS.surface_border}; border-radius: 10px;"
+            )
             row_layout = QHBoxLayout(row)
             row_layout.setContentsMargins(10, 8, 10, 8)
             row_layout.setSpacing(12)
@@ -1698,7 +1969,7 @@ class KeyValueSummaryWidget(QWidget):
             key.setProperty("role", "muted")
             val = QLabel(value)
             val.setWordWrap(True)
-            val.setStyleSheet("color: #0f172a; font-weight: 600;")
+            val.setStyleSheet(f"color: {COLORS.text_primary}; font-weight: 600;")
             row_layout.addWidget(key, 1)
             row_layout.addWidget(val, 2)
             self.layout_.addWidget(row)
@@ -1711,18 +1982,16 @@ class HistoryItemWidget(QWidget):
     def __init__(self, *, experiment_name: str, timestamp_utc: str, status: str, metric_summary: str, run_path: str, parent=None) -> None:
         super().__init__(parent)
         title = QLabel(experiment_name.replace("_", " ").title())
-        title.setStyleSheet("font-weight: 700; color: #0f172a;")
+        title.setStyleSheet(f"font-weight: 700; color: {COLORS.text_primary};")
         chip = QLabel(_status_label(status))
-        chip.setStyleSheet(
-            f"padding: 4px 8px; border-radius: 999px; background: {_status_bg(status)}; color: {_status_fg(status)}; font-weight: 700;"
-        )
+        chip.setStyleSheet(chip_stylesheet(background=_status_bg(status), foreground=_status_fg(status)))
         stamp = QLabel(timestamp_utc.replace("T", " ").replace("+00:00", "Z"))
-        stamp.setStyleSheet("color: #64748b;")
+        stamp.setStyleSheet(f"color: {COLORS.text_muted};")
         metric = QLabel(metric_summary or "No metric summary")
         metric.setWordWrap(True)
-        metric.setStyleSheet("color: #334155;")
+        metric.setStyleSheet(f"color: {COLORS.text_secondary};")
         run_name = QLabel(run_path.split("/")[-1])
-        run_name.setStyleSheet("color: #94a3b8;")
+        run_name.setStyleSheet(f"color: {COLORS.text_subtle};")
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.addWidget(title, 1)
@@ -1734,7 +2003,9 @@ class HistoryItemWidget(QWidget):
         layout.addWidget(stamp)
         layout.addWidget(metric)
         layout.addWidget(run_name)
-        self.setStyleSheet("background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px;")
+        self.setStyleSheet(
+            f"background: {COLORS.surface_bg}; border: 1px solid {COLORS.surface_border}; border-radius: 12px;"
+        )
 
 
 def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBase:
@@ -1742,6 +2013,7 @@ def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBas
     factories: dict[str, Callable[[object], ExperimentPageBase]] = {
         "repeatability_dataset": lambda ctrl: RepeatabilityDatasetPage(ctrl, "repeatability_dataset"),
         "aurora_grid_accuracy": lambda ctrl: AuroraGridAccuracyPage(ctrl, "aurora_grid_accuracy"),
+        "tracker_timing_validation": lambda ctrl: TrackerTimingValidationPage(ctrl, "tracker_timing_validation"),
         "pretension_validation": lambda ctrl: PretensionValidationPage(ctrl, "pretension_validation"),
         "command_schedule_validation": lambda ctrl: CommandScheduleValidationPage(ctrl, "command_schedule_validation"),
         "collect_pose_command_dataset": lambda ctrl: CollectPoseCommandDatasetPage(ctrl, "collect_pose_command_dataset"),
@@ -1774,6 +2046,13 @@ def _apply_inline_list_edit(controller, key: str, text: str) -> None:
     controller.set_parameter_value(key, normalized)
 
 
+def _render_sample_triplet(metrics: dict[str, object]) -> str:
+    raw_count = int(metrics.get("raw_sample_count", 0) or 0)
+    accepted_count = int(metrics.get("accepted_sample_count", 0) or 0)
+    rejected_count = int(metrics.get("rejected_sample_count", metrics.get("outlier_count", 0)) or 0)
+    return f"{raw_count} / {accepted_count} / {rejected_count}"
+
+
 def _status_label(status: str) -> str:
     mapping = {
         "success": "Pass",
@@ -1794,15 +2073,15 @@ def _fmt_metric(value) -> str:
 
 def _status_bg(status: str) -> str:
     if status == "success":
-        return "#dcfce7"
+        return "#14532d"
     if status == "partial_success":
-        return "#fef3c7"
-    return "#fee2e2"
+        return "#7c2d12"
+    return "#7f1d1d"
 
 
 def _status_fg(status: str) -> str:
     if status == "success":
-        return "#166534"
+        return "#dcfce7"
     if status == "partial_success":
-        return "#92400e"
-    return "#991b1b"
+        return "#fde68a"
+    return "#fee2e2"

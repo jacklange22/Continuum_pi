@@ -653,6 +653,105 @@ def test_aurora_grid_accuracy_run_saves_captured_point_dataset(tmp_path: Path) -
     assert result.summary.experiment_metrics["alignment_ready"] is True
     assert result.summary.experiment_metrics["position_source_counts"]["tip"] == 6
     assert result.summary.experiment_metrics["alignment_transform_truth_to_measured"] is not None
+    plot_path = result.paths.output_dir / "grid_accuracy_alignment.png"
+    summary_text_path = result.paths.output_dir / "grid_accuracy_summary.txt"
+    assert plot_path.exists()
+    assert summary_text_path.exists()
+    summary_text = summary_text_path.read_text(encoding="utf-8").lower()
+    assert "aligned-grid consistency check" in summary_text
+    assert "overall rms residual" in summary_text
+    assert "tip calibration used: yes" in summary_text
+    assert "per-point metrics:" in summary_text
+    assert "- p01:" in summary_text
+
+
+def test_aurora_grid_accuracy_outputs_still_write_when_alignment_is_not_ready(tmp_path: Path) -> None:
+    runner = _runner(tmp_path)
+    result = runner.run_experiment(
+        "aurora_grid_accuracy",
+        config={
+            "rows": 2,
+            "cols": 2,
+            "spacing_mm": 25.4,
+            "samples_per_point": 2,
+            "tool_id": "0B",
+            "use_tip_calibration": True,
+            "tip_vector_mm": [0.0, 0.0, 125.0],
+            "outlier_threshold_mm": 1.0,
+            "captured_points": [
+                {
+                    "label": "P01",
+                    "target_index": 0,
+                    "raw_samples": [
+                        {"position_mm": [5.5, 2.0, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                        {"position_mm": [4.5, 2.0, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                    ],
+                },
+                {
+                    "label": "P02",
+                    "target_index": 1,
+                    "raw_samples": [
+                        {"position_mm": [30.9, 2.0, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                        {"position_mm": [29.9, 2.0, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "tip"},
+                    ],
+                },
+            ],
+        },
+    )
+
+    assert result.success is False
+    assert result.summary.experiment_metrics["alignment_ready"] is False
+    assert result.paths.output_dir.joinpath("grid_accuracy_alignment.png").exists()
+    assert result.paths.output_dir.joinpath("grid_accuracy_summary.txt").exists()
+
+
+def test_aurora_grid_preview_uses_actual_captured_position_source_not_current_tip_config(tmp_path: Path) -> None:
+    preview = build_grid_accuracy_preview(
+        config=GridDefinitionConfig.from_dict(
+            {
+                "rows": 2,
+                "cols": 2,
+                "spacing_mm": 25.4,
+                "samples_per_point": 2,
+                "tool_id": "0B",
+                "use_tip_calibration": True,
+                "tip_vector_mm": [0.0, 0.0, 125.0],
+                "allow_coil_origin_fallback": True,
+                "captured_points": [
+                    {
+                        "label": "P01",
+                        "target_index": 0,
+                        "raw_samples": [
+                            {"position_mm": [5.5, 2.0, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "coil_origin"},
+                            {"position_mm": [4.5, 2.0, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "coil_origin"},
+                        ],
+                    },
+                    {
+                        "label": "P02",
+                        "target_index": 1,
+                        "raw_samples": [
+                            {"position_mm": [30.9, 2.0, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "coil_origin"},
+                            {"position_mm": [29.9, 2.0, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "coil_origin"},
+                        ],
+                    },
+                    {
+                        "label": "P03",
+                        "target_index": 2,
+                        "raw_samples": [
+                            {"position_mm": [5.4, 27.4, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "coil_origin"},
+                            {"position_mm": [4.4, 27.4, 1.0], "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0], "tracking_state": "valid", "position_source": "coil_origin"},
+                        ],
+                    },
+                ],
+            }
+        ),
+        project_root=tmp_path,
+    )
+
+    assert preview.metrics["tip_calibration_available"] is False
+    assert preview.metrics["tip_calibration_used"] is False
+    assert preview.metrics["coil_origin_fallback_used"] is True
+    assert preview.metrics["status"] == "partial_success"
 
 
 def test_repeatability_dataset_records_robot_frame_when_registration_exists(tmp_path: Path) -> None:

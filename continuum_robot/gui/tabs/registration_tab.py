@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from continuum_robot.gui.controllers.registration_controller import RegistrationViewState
+from continuum_robot.gui.theme import COLORS, grouped_workspace_stylesheet, chip_stylesheet
 from continuum_robot.gui.view_utils import ResponsiveSplitterController, preserve_scroll_position, set_text_document
 from continuum_robot.gui.widgets.registration_landmark_map_widget import RegistrationLandmarkMapWidget
 from continuum_robot.gui.widgets.registration_plot_widget import RegistrationPlotWidget
@@ -39,58 +40,14 @@ class RegistrationTab(QWidget):
         self._selected_slot_labels: list[QLabel] = []
         self.setObjectName("registrationWorkspace")
         self.setStyleSheet(
-            """
-            QWidget#registrationWorkspace {
-                background: #eef3f8;
-            }
-            QWidget#registrationWorkspace QGroupBox {
-                border: 1px solid #d9e3ec;
-                border-radius: 16px;
-                margin-top: 16px;
-                padding-top: 10px;
-                background: #ffffff;
-            }
-            QWidget#registrationWorkspace QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 6px;
-                color: #0f172a;
-                font-weight: 700;
-            }
-            QWidget#registrationWorkspace QPushButton {
-                min-height: 36px;
-                padding: 0 14px;
-                border: 1px solid #dbe4ee;
-                border-radius: 10px;
-                background: #f8fafc;
-                color: #0f172a;
-                font-weight: 600;
-            }
-            QWidget#registrationWorkspace QLabel[role="hint"] {
-                color: #526173;
-            }
-            QWidget#registrationWorkspace QLabel[role="status"] {
-                padding: 8px 10px;
-                border-radius: 8px;
-                background: #e2e8f0;
-                color: #0f172a;
-                font-weight: 700;
-            }
-            QWidget#registrationWorkspace QTextEdit, QWidget#registrationWorkspace QTableWidget {
-                border: 1px solid #dbe4ee;
-                border-radius: 10px;
-                background: #fbfdff;
-                color: #0f172a;
-            }
-            QWidget#registrationWorkspace QPushButton[variant="ghost"] {
-                background: transparent;
-                color: #334155;
-            }
-            """
+            grouped_workspace_stylesheet(
+                object_name="registrationWorkspace",
+                input_selectors=["QTextEdit", "QTableWidget"],
+            )
         )
 
         self.title_label = QLabel("Registration Workspace")
-        self.title_label.setStyleSheet("font-size: 24px; font-weight: 700; color: #0f172a;")
+        self.title_label.setProperty("role", "title")
         self.workflow_hint = QLabel(
             "Choose four model points, capture one or more pen-probe samples for each, solve, review FRE, then save the accepted registration."
         )
@@ -562,12 +519,12 @@ class RegistrationTab(QWidget):
                 label = state.selected_model_labels[index]
                 label_widget.setText(f"{index + 1}. {_display_name(label, state)}")
                 label_widget.setStyleSheet(
-                    "padding: 8px 10px; border-radius: 8px; background: #dbeafe; color: #1e3a8a; font-weight: 700;"
+                    chip_stylesheet(background="#1d4ed8", foreground="#eff6ff")
                 )
             else:
                 label_widget.setText(f"{index + 1}. Unselected")
                 label_widget.setStyleSheet(
-                    "padding: 8px 10px; border-radius: 8px; background: #e2e8f0; color: #475569; font-weight: 700;"
+                    chip_stylesheet(background=COLORS.status_bg, foreground=COLORS.text_secondary)
                 )
         hint = (
             "Choose four unique enabled model points in capture order."
@@ -592,13 +549,17 @@ class RegistrationTab(QWidget):
                 self.available_points_table.setItem(row, 2, QTableWidgetItem(_render_point(point)))
                 self.available_points_table.setItem(row, 3, QTableWidgetItem(selection_text))
                 self.available_points_table.setItem(row, 4, QTableWidgetItem(status))
-                background = QColor("#eff6ff") if label in selected_lookup else (QColor("#f8fafc") if enabled else QColor("#f1f5f9"))
+                background = (
+                    QColor("#1e3a8a")
+                    if label in selected_lookup
+                    else (QColor(COLORS.surface_bg) if enabled else QColor("#1f2937"))
+                )
                 for column in range(self.available_points_table.columnCount()):
                     item = self.available_points_table.item(row, column)
                     if item is not None:
                         item.setBackground(background)
                         if not enabled:
-                            item.setForeground(QColor("#94a3b8"))
+                            item.setForeground(QColor(COLORS.text_subtle))
             self.available_points_table.clearSelection()
         preserve_scroll_position(self.available_points_table, _rebuild)
 

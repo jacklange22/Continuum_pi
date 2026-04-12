@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from continuum_robot.gui.controllers.experiment_controller import ExperimentViewState
+from continuum_robot.gui.theme import COLORS, chip_stylesheet, experiment_shell_stylesheet
 from continuum_robot.gui.widgets.experiment_pages import (
     EmptyExperimentWorkspace,
     build_experiment_page,
@@ -29,76 +30,7 @@ class ExperimentTab(QWidget):
         self.controller = controller
         self._pages: dict[str, QWidget] = {}
         self.setObjectName("experimentWorkspace")
-        self.setStyleSheet(
-            """
-            QWidget#experimentWorkspace {
-                background: #eef3f8;
-                color: #0f172a;
-            }
-            QWidget#experimentWorkspace QLabel[role="page-title"] {
-                font-size: 20px;
-                font-weight: 700;
-                color: #0f172a;
-            }
-            QWidget#experimentWorkspace QLabel[role="section-title"] {
-                font-size: 15px;
-                font-weight: 700;
-                color: #0f172a;
-            }
-            QWidget#experimentWorkspace QLabel[role="body"] {
-                color: #475569;
-            }
-            QWidget#experimentWorkspace QLabel[role="muted"] {
-                color: #556476;
-            }
-            QWidget#experimentWorkspace QLabel[role="chip"] {
-                padding: 5px 10px;
-                border-radius: 999px;
-                background: #e2e8f0;
-                color: #0f172a;
-                font-weight: 700;
-            }
-            QWidget#experimentWorkspace QFrame[role="card"] {
-                background: #ffffff;
-                border: 1px solid #d9e3ec;
-                border-radius: 16px;
-            }
-            QWidget#experimentWorkspace QComboBox {
-                min-height: 36px;
-                border: 1px solid #dbe4ee;
-                border-radius: 12px;
-                background: #fbfdff;
-                padding: 4px 10px;
-                font-size: 14px;
-                font-weight: 600;
-            }
-            QWidget#experimentWorkspace QPushButton {
-                min-height: 34px;
-                padding: 0 12px;
-                border: 1px solid #dbe4ee;
-                border-radius: 10px;
-                background: #f8fafc;
-                color: #0f172a;
-                font-weight: 600;
-            }
-            QWidget#experimentWorkspace QPushButton[variant="ghost"] {
-                background: transparent;
-                color: #334155;
-            }
-            QWidget#experimentWorkspace QLineEdit,
-            QWidget#experimentWorkspace QPlainTextEdit,
-            QWidget#experimentWorkspace QTextEdit,
-            QWidget#experimentWorkspace QListWidget,
-            QWidget#experimentWorkspace QSpinBox,
-            QWidget#experimentWorkspace QDoubleSpinBox,
-            QWidget#experimentWorkspace QCheckBox,
-            QWidget#experimentWorkspace QProgressBar {
-                border: 1px solid #dbe4ee;
-                border-radius: 10px;
-                background: #fbfdff;
-            }
-            """
-        )
+        self.setStyleSheet(experiment_shell_stylesheet(object_name="experimentWorkspace"))
 
         self.page_title = QLabel("Experiments")
         self.page_title.setProperty("role", "page-title")
@@ -179,7 +111,7 @@ class ExperimentTab(QWidget):
             self.selected_badges_label.hide()
             self.selected_status_chip.setText("No Selection")
             self.selected_status_chip.setStyleSheet(
-                "padding: 5px 12px; border-radius: 999px; background: #e2e8f0; color: #334155; font-weight: 700;"
+                chip_stylesheet(background=COLORS.status_bg, foreground=COLORS.text_secondary)
             )
             self.page_stack.setCurrentWidget(self.empty_page)
             self.load_defaults_button.setEnabled(False)
@@ -233,15 +165,13 @@ class ExperimentTab(QWidget):
     def _update_status_chip(self, state: ExperimentViewState) -> None:
         status = state.preflight_report.overall_status
         if status == "blocked":
-            bg, fg, text = "#fee2e2", "#991b1b", "Blocked"
+            bg, fg, text = "#7f1d1d", "#fee2e2", "Blocked"
         elif status == "ok_with_warning":
-            bg, fg, text = "#fef3c7", "#92400e", "Ready With Warning"
+            bg, fg, text = "#7c2d12", "#fde68a", "Ready With Warning"
         else:
-            bg, fg, text = "#dcfce7", "#166534", "Ready"
+            bg, fg, text = "#14532d", "#dcfce7", "Ready"
         self.selected_status_chip.setText(text)
-        self.selected_status_chip.setStyleSheet(
-            f"padding: 5px 12px; border-radius: 999px; background: {bg}; color: {fg}; font-weight: 700;"
-        )
+        self.selected_status_chip.setStyleSheet(chip_stylesheet(background=bg, foreground=fg))
 
 
 class _ShellCard(QFrame):

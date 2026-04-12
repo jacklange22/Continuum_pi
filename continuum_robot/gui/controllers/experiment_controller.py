@@ -17,6 +17,12 @@ from continuum_robot.experiments.critical_experiments import (
     build_grid_accuracy_preview,
     build_repeatability_preview,
 )
+from continuum_robot.tracking.timing_benchmark import (
+    compute_servo_sync_summary,
+    compute_tracker_timing_summary,
+    extract_servo_timing_records,
+    extract_tracker_timing_records,
+)
 from continuum_robot.gui.experiment_parameters import apply_field_value, dump_payload, parse_field_value
 from continuum_robot.gui.experiment_preflight import PreflightReport, RUN_BLOCKED, evaluate_preflight
 from continuum_robot.gui.experiment_visualization import VisualizationModel, build_visualization_model
@@ -186,6 +192,7 @@ class ExperimentController:
         )
 
         preview = None
+        preview_metrics = None
         if selected_experiment == "aurora_grid_accuracy":
             try:
                 preview = build_grid_accuracy_preview(
@@ -194,6 +201,12 @@ class ExperimentController:
                 )
             except Exception:
                 preview = None
+            preview_metrics = preview.metrics if preview is not None else None
+        elif selected_experiment == "tracker_timing_validation" and current_bundle is None and live_samples:
+            preview_metrics = self._build_tracker_timing_preview_metrics(
+                live_samples=live_samples,
+                config_payload=config_payload,
+            )
 
         if visualization_dirty:
             visualization_model = self._build_visualization_model(
@@ -217,7 +230,7 @@ class ExperimentController:
         result_details = self._build_result_details(
             current_bundle,
             experiment_name=selected_experiment,
-            preview_metrics=(preview.metrics if preview is not None else None),
+            preview_metrics=preview_metrics,
         )
 
         with self._lock:
@@ -506,6 +519,7 @@ class ExperimentController:
         preferred_order = [
             "repeatability_dataset",
             "aurora_grid_accuracy",
+            "tracker_timing_validation",
             "pretension_validation",
             "command_schedule_validation",
             "collect_pose_command_dataset",
@@ -682,6 +696,12 @@ class ExperimentController:
                 return f"travel={int(value)} ticks"
             value = metrics.get("trigger_current_ma")
             return f"trigger={float(value):.1f} mA" if value is not None else ""
+        if experiment_name == "tracker_timing_validation":
+            value = metrics.get("unique_frame_rate_hz")
+            if value is not None:
+                return f"unique={float(value):.2f} Hz"
+            value = metrics.get("mean_total_cycle_ms")
+            return f"mean={float(value):.2f} ms" if value is not None else ""
         return ""
 
     def _build_visualization_model(
@@ -729,6 +749,36 @@ class ExperimentController:
             )
         return VisualizationModel(summary_lines=["No run loaded."])
 
+    def _build_tracker_timing_preview_metrics(
+        self,
+        *,
+        live_samples,
+        config_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        tracker_records = extract_tracker_timing_records(live_samples)
+        servo_records = extract_servo_timing_records(live_samples)
+        requested_tool_ids = [
+            str(value).strip().upper()
+            for value in (config_payload.get("requested_tool_ids") or ["0A", "0B"])
+            if str(value).strip()
+        ] or ["0A", "0B"]
+        servo_sync = compute_servo_sync_summary(tracker_records, servo_records)
+        servo_sync["enabled"] = bool(config_payload.get("enable_servo_logging", False))
+        backend_identity = next(
+            (str(record.get("backend_identity")) for record in tracker_records if record.get("backend_identity")),
+            "",
+        )
+        return compute_tracker_timing_summary(
+            tracker_records,
+            requested_tool_ids=requested_tool_ids,
+            backend_identity=backend_identity,
+            configured_backend_name="",
+            selected_backend_name="",
+            run_duration_s=config_payload.get("run_duration_s"),
+            run_label=str(config_payload.get("run_label", "") or ""),
+            servo_sync_summary=servo_sync,
+        )
+
     def _build_run_checklist(
         self,
         *,
@@ -763,6 +813,12 @@ class ExperimentController:
                         f"{int(preview_metrics.get('point_count_captured', 0) or 0)} / "
                         f"{int(preview_metrics.get('point_count_total', 0) or 0)}",
                     ),
+                    (
+                        "Point Status",
+                        f"{int(preview_metrics.get('point_count_complete', 0) or 0)} complete, "
+                        f"{int(preview_metrics.get('point_count_partial', 0) or 0)} partial, "
+                        f"{int(preview_metrics.get('point_count_not_started', 0) or 0)} not started",
+                    ),
                     ("Solve Ready", "Yes" if preview_metrics.get("alignment_ready") else "Not Yet"),
                     ("Aligned Points", str(int(preview_metrics.get("point_count_aligned", 0) or 0))),
                     ("Raw Samples", str(int(preview_metrics.get("raw_sample_count", 0) or 0))),
@@ -781,6 +837,38 @@ class ExperimentController:
                         "Max Spread",
                         self._format_metric_value(preview_metrics.get("max_within_point_spread_mm")),
                     ),
+                    (
+                        "Tip Calibration Used",
+                        "Yes"
+                        if preview_metrics.get("tip_calibration_used")
+                        else ("Fallback Only" if preview_metrics.get("coil_origin_fallback_used") else "No"),
+                    ),
+                ]
+            if preview_metrics and experiment_name == "tracker_timing_validation":
+                return [
+                    ("Backend", str(preview_metrics.get("backend_identity", "n/a") or "n/a")),
+                    ("Analyzed Samples", str(int(preview_metrics.get("sample_count_analyzed", 0) or 0))),
+                    ("Warmup Discarded", str(int(preview_metrics.get("warmup_discarded_count", 0) or 0))),
+                    ("Effective Loop Hz", self._format_metric_value(preview_metrics.get("effective_loop_rate_hz"))),
+                    ("Unique-Frame Hz", self._format_metric_value(preview_metrics.get("unique_frame_rate_hz"))),
+                    ("Mean Total Time", self._format_metric_value(preview_metrics.get("mean_total_cycle_ms"))),
+                    ("P95 Total Time", self._format_metric_value(preview_metrics.get("p95_total_cycle_ms"))),
+                    (
+                        "Duplicate Frames",
+                        (
+                            f"{int(preview_metrics.get('duplicate_frame_count', 0) or 0)} "
+                            f"({100.0 * float(preview_metrics.get('duplicate_frame_ratio', 0.0) or 0.0):.1f}%)"
+                        ),
+                    ),
+                    (
+                        "Valid Requested Tools",
+                        (
+                            f"{100.0 * float(preview_metrics.get('valid_requested_tool_rate', 0.0) or 0.0):.1f}%"
+                            if preview_metrics.get("valid_requested_tool_rate") is not None
+                            else "n/a"
+                        ),
+                    ),
+                    ("Backend Errors", str(int(preview_metrics.get("error_sample_count", 0) or 0))),
                 ]
             if preview_metrics:
                 return [
@@ -800,12 +888,20 @@ class ExperimentController:
             pairs.append(("Config Snapshot", str(bundle.paths.config_snapshot_path)))
         if bundle_experiment_name == "aurora_grid_accuracy":
             metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
+            plot_path = bundle.paths.output_dir / "grid_accuracy_alignment.png"
+            summary_text_path = bundle.paths.output_dir / "grid_accuracy_summary.txt"
             pairs.extend(
                 [
                     (
                         "Coverage",
                         f"{int(metrics.get('point_count_captured', 0) or 0)} / "
                         f"{int(metrics.get('point_count_total', 0) or 0)}",
+                    ),
+                    (
+                        "Point Status",
+                        f"{int(metrics.get('point_count_complete', 0) or 0)} complete, "
+                        f"{int(metrics.get('point_count_partial', 0) or 0)} partial, "
+                        f"{int(metrics.get('point_count_not_started', 0) or 0)} not started",
                     ),
                     ("Aligned Points", str(int(metrics.get("point_count_aligned", 0) or 0))),
                     ("Raw Samples", str(int(metrics.get("raw_sample_count", 0) or 0))),
@@ -814,6 +910,14 @@ class ExperimentController:
                     ("RMS Residual", self._format_metric_value(metrics.get("overall_rms_residual_mm"))),
                     ("Max Residual", self._format_metric_value(metrics.get("max_residual_mm"))),
                     ("Mean Spread", self._format_metric_value(metrics.get("mean_within_point_spread_mm"))),
+                    (
+                        "Tip Calibration Used",
+                        "Yes"
+                        if metrics.get("tip_calibration_used")
+                        else ("Fallback Only" if metrics.get("coil_origin_fallback_used") else "No"),
+                    ),
+                    ("Alignment Plot", str(plot_path) if plot_path.exists() else "not written"),
+                    ("Summary Note", str(summary_text_path) if summary_text_path.exists() else "not written"),
                 ]
             )
             return pairs
@@ -838,6 +942,51 @@ class ExperimentController:
                 ]
             )
             return pairs
+        if bundle_experiment_name == "tracker_timing_validation":
+            metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
+            histogram_path = bundle.paths.output_dir / "aurora_timing_histogram.png"
+            breakdown_path = bundle.paths.output_dir / "aurora_timing_breakdown.png"
+            timeseries_path = bundle.paths.output_dir / "aurora_timing_timeseries.png"
+            summary_text_path = bundle.paths.output_dir / "aurora_timing_summary.txt"
+            sync_plot_path = bundle.paths.output_dir / "aurora_timing_sync_offsets.png"
+            pairs.extend(
+                [
+                    ("Backend", str(metrics.get("backend_identity", "n/a") or "n/a")),
+                    ("Tool IDs", ", ".join(metrics.get("requested_tool_ids", []) or [])),
+                    ("Analyzed Samples", str(int(metrics.get("sample_count_analyzed", 0) or 0))),
+                    ("Warmup Discarded", str(int(metrics.get("warmup_discarded_count", 0) or 0))),
+                    ("Effective Loop Hz", self._format_metric_value(metrics.get("effective_loop_rate_hz"))),
+                    ("Unique-Frame Hz", self._format_metric_value(metrics.get("unique_frame_rate_hz"))),
+                    ("Mean Total Time", self._format_metric_value(metrics.get("mean_total_cycle_ms"))),
+                    ("P95 Total Time", self._format_metric_value(metrics.get("p95_total_cycle_ms"))),
+                    (
+                        "Duplicate Frames",
+                        (
+                            f"{int(metrics.get('duplicate_frame_count', 0) or 0)} "
+                            f"({100.0 * float(metrics.get('duplicate_frame_ratio', 0.0) or 0.0):.1f}%)"
+                        ),
+                    ),
+                    (
+                        "Under 25 ms",
+                        (
+                            f"{float(metrics.get('percent_under_25ms', 0.0) or 0.0):.1f}%"
+                            if metrics.get("percent_under_25ms") is not None
+                            else "n/a"
+                        ),
+                    ),
+                    ("Histogram", str(histogram_path) if histogram_path.exists() else "not written"),
+                    ("Breakdown Plot", str(breakdown_path) if breakdown_path.exists() else "not written"),
+                    ("Timeseries Plot", str(timeseries_path) if timeseries_path.exists() else "not written"),
+                    ("Summary Note", str(summary_text_path) if summary_text_path.exists() else "not written"),
+                    (
+                        "Sync Plot",
+                        str(sync_plot_path)
+                        if sync_plot_path.exists()
+                        else ("not written" if metrics.get("servo_sync", {}).get("enabled") else "not requested"),
+                    ),
+                ]
+            )
+            return pairs
         scalar_metrics = [
             (key, value)
             for key, value in bundle.summary.experiment_metrics.items()
@@ -854,6 +1003,8 @@ class ExperimentController:
             return "offline"
         if experiment_name == "command_schedule_validation":
             return "software validation"
+        if experiment_name == "tracker_timing_validation":
+            return "backend diagnostic"
         if experiment_name == "pivot_calibration":
             return "offline" if config_payload.get("input_path") else ("dry-run" if bool(config_payload.get("dry_run", False)) else "live")
         return "dry-run" if bool(config_payload.get("dry_run", False)) else "live"
@@ -908,6 +1059,20 @@ class ExperimentController:
                 f"step {config_payload.get('step_ticks', 'live default')} ticks, "
                 f"max travel {config_payload.get('max_travel_ticks', 'live default')} ticks, "
                 f"tracker={'on' if bool(config_payload.get('include_tracker_displacement', True)) else 'off'}"
+            )
+        if experiment_name == "tracker_timing_validation":
+            tool_ids = ",".join(str(value) for value in (config_payload.get("requested_tool_ids") or ["0A", "0B"]))
+            sample_target = config_payload.get("sample_count_target")
+            stop_mode = (
+                f"{int(sample_target)} analyzed samples"
+                if sample_target not in (None, "", 0, "0")
+                else f"{float(config_payload.get('run_duration_s', 8.0) or 8.0):.1f} s"
+            )
+            return (
+                f"tools {tool_ids}, "
+                f"warmup {int(config_payload.get('warmup_samples', 10) or 0)}, "
+                f"stop {stop_mode}, "
+                f"servo sync={'on' if bool(config_payload.get('enable_servo_logging', False)) else 'off'}"
             )
         return "See experiment parameters."
 

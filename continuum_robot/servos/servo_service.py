@@ -356,6 +356,8 @@ class ServoService:
         self._exclusive_bus_thread_id: int | None = None
         self._exclusive_bus_started_at: float | None = None
         self._exclusive_bus_depth: int = 0
+        self._last_goal_positions_by_id: dict[int, int] = {}
+        self._last_goal_command_monotonic_s: dict[int, float] = {}
 
     @property
     def is_connected(self) -> bool:
@@ -372,6 +374,8 @@ class ServoService:
             "disconnect OpenRB / DYNAMIXEL",
             self.dxl_bus.disconnect,
         )
+        self._last_goal_positions_by_id.clear()
+        self._last_goal_command_monotonic_s.clear()
 
     @staticmethod
     def position_convention_summary() -> str:
@@ -535,6 +539,16 @@ class ServoService:
     def telemetry_freshness_threshold_s(self) -> float:
         return float(self.safety_guard.telemetry_stale_after_s)
 
+    def last_goal_positions(self) -> dict[int, int]:
+        """Return the most recently written goal positions by servo ID."""
+        with self._bus_state_lock:
+            return dict(self._last_goal_positions_by_id)
+
+    def last_goal_command_times(self) -> dict[int, float]:
+        """Return monotonic timestamps for the most recently written goal positions."""
+        with self._bus_state_lock:
+            return dict(self._last_goal_command_monotonic_s)
+
     def _guard_bus_call(self, action: str, fn: Callable[[], object]):
         self._assert_bus_access(action=action)
         with self._bus_io_lock:
@@ -577,6 +591,11 @@ class ServoService:
             "write servo goal positions",
             lambda: self.dxl_bus.write_goal_positions(positions_by_id),
         )
+        written_at = float(self._time_fn())
+        with self._bus_state_lock:
+            for servo_id, goal in dict(positions_by_id).items():
+                self._last_goal_positions_by_id[int(servo_id)] = int(goal)
+                self._last_goal_command_monotonic_s[int(servo_id)] = written_at
 
     def _write_servo_id(self, current_id: int, new_id: int) -> None:
         self._guard_bus_call(

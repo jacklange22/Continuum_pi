@@ -10,8 +10,9 @@ aurora_port: "/dev/ttyUSB0"
 # On macOS this is typically a `cu.usbmodem*` or `tty.usbmodem*` device.
 openrb_port: "/dev/ttyACM0"
 tracker_backend: "ndi"
-tracker_fallback_backend: "bridge"
-tracker_fallback_enabled: true
+# Keep legacy bridge fallback off unless you are explicitly validating it.
+tracker_fallback_backend:
+tracker_fallback_enabled: false
 tracker_type: "aurora"
 baudrate: 57600
 mock_mode: false
@@ -60,6 +61,7 @@ tracker_settings_overrides: {}
 tracker_tool_id_aliases:
   "10": "0A"
   "11": "0B"
+# Retained only for explicit legacy bridge fallback/debugging.
 tracker_socket_path: "/tmp/tracker_bridge.sock"
 tracker_bridge_executable: "bin/tracker_bridge"
 tracker_poll_ms: 20

@@ -5,8 +5,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
+from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtGui import QImage, QWheelEvent
 from PySide6.QtWidgets import QApplication
 
+from continuum_robot.gui.theme import COLORS
+from continuum_robot.gui.widgets.grid_accuracy_preview_widget import GridAccuracyPreviewWidget
 from continuum_robot.gui.widgets.lightweight_scene_3d_widget import SceneViewState
 from continuum_robot.gui.widgets.registration_plot_widget import (
     compute_registration_preview_alignment,
@@ -266,6 +271,156 @@ def test_tool_plot_widget_preserves_camera_state_across_benign_refresh() -> None
     )
 
     assert widget.view_state() == custom_view
+
+
+def test_grid_accuracy_preview_widget_renders_under_current_theme() -> None:
+    _app()
+    widget = GridAccuracyPreviewWidget()
+    widget.resize(720, 360)
+    widget.set_preview(
+        truth_catalog=[
+            {"label": "P01", "target_index": 0, "truth_point_mm": [0.0, 0.0, 0.0]},
+            {"label": "P02", "target_index": 1, "truth_point_mm": [25.4, 0.0, 0.0]},
+            {"label": "P03", "target_index": 2, "truth_point_mm": [0.0, 25.4, 0.0]},
+        ],
+        metrics={
+            "alignment_ready": True,
+            "alignment_ready_reason": "At least three labeled point centroids are available for the rigid alignment solve.",
+            "point_count_complete": 3,
+            "point_count_partial": 0,
+            "point_count_not_started": 0,
+            "per_point_metrics": {
+                "P01": {"raw_sample_count": 3, "outlier_count": 0, "aligned_centroid_truth_mm": [0.1, 0.0, 0.0], "residual_mm": 0.1},
+                "P02": {"raw_sample_count": 3, "outlier_count": 0, "aligned_centroid_truth_mm": [25.5, 0.0, 0.0], "residual_mm": 0.1},
+                "P03": {"raw_sample_count": 3, "outlier_count": 0, "aligned_centroid_truth_mm": [0.0, 25.2, 0.0], "residual_mm": 0.2},
+            },
+        },
+        selected_target_index=1,
+        expected_samples=3,
+    )
+
+    assert COLORS.accent == COLORS.button_primary_border
+    image = QImage(widget.size(), QImage.Format_ARGB32)
+    image.fill(0)
+    widget.render(image)
+
+    assert image.width() == 720
+    assert image.height() == 360
+
+
+def test_grid_accuracy_preview_widget_partial_state_renders_safely() -> None:
+    _app()
+    widget = GridAccuracyPreviewWidget()
+    widget.resize(720, 360)
+    widget.set_preview(
+        truth_catalog=[
+            {"label": "P01", "target_index": 0, "truth_point_mm": [0.0, 0.0, 0.0]},
+            {"label": "P02", "target_index": 1, "truth_point_mm": [25.4, 0.0, 0.0]},
+            {"label": "P03", "target_index": 2, "truth_point_mm": [0.0, 25.4, 0.0]},
+            {"label": "P04", "target_index": 3, "truth_point_mm": [25.4, 25.4, 0.0]},
+        ],
+        metrics={
+            "alignment_ready": False,
+            "alignment_ready_reason": "Capture 1 more labeled point(s) before aligned RMS residuals are available.",
+            "point_count_complete": 2,
+            "point_count_partial": 1,
+            "point_count_not_started": 1,
+            "per_point_metrics": {
+                "P01": {"raw_sample_count": 3, "outlier_count": 0},
+                "P02": {"raw_sample_count": 2, "outlier_count": 0},
+                "P03": {"raw_sample_count": 1, "outlier_count": 0},
+            },
+        },
+        selected_target_index=2,
+        expected_samples=3,
+    )
+
+    image = QImage(widget.size(), QImage.Format_ARGB32)
+    image.fill(0)
+    widget.render(image)
+
+    assert image.width() == 720
+    assert image.height() == 360
+
+
+def test_grid_accuracy_preview_widget_paint_failure_does_not_poison_future_renders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _app()
+    widget = GridAccuracyPreviewWidget()
+    widget.resize(720, 360)
+    widget.set_preview(
+        truth_catalog=[{"label": "P01", "target_index": 0, "truth_point_mm": [0.0, 0.0, 0.0]}],
+        metrics={
+            "alignment_ready": False,
+            "alignment_ready_reason": "Capture 2 more labeled point(s) before aligned RMS residuals are available.",
+            "point_count_complete": 0,
+            "point_count_partial": 0,
+            "point_count_not_started": 1,
+            "per_point_metrics": {},
+        },
+        selected_target_index=0,
+        expected_samples=3,
+    )
+
+    original = widget._paint_contents
+
+    def _boom(_painter):
+        raise RuntimeError("paint boom")
+
+    monkeypatch.setattr(widget, "_paint_contents", _boom)
+    failed_image = QImage(widget.size(), QImage.Format_ARGB32)
+    failed_image.fill(0)
+    widget.render(failed_image)
+
+    monkeypatch.setattr(widget, "_paint_contents", original)
+    recovered_image = QImage(widget.size(), QImage.Format_ARGB32)
+    recovered_image.fill(0)
+    widget.render(recovered_image)
+
+    assert failed_image.width() == 720
+    assert recovered_image.width() == 720
+
+
+def test_tool_plot_widget_ignores_wheel_zoom_without_control_modifier() -> None:
+    _app()
+    widget = ToolPlotWidget()
+    view = SceneViewState(yaw_deg=0.0, pitch_deg=0.0, zoom=2.0, pan_x_px=0.0, pan_y_px=0.0, target_xyz=(0.0, 0.0, 0.0))
+    widget.set_view_state(view)
+    event = QWheelEvent(
+        QPointF(20.0, 20.0),
+        QPointF(20.0, 20.0),
+        QPoint(0, 0),
+        QPoint(0, 120),
+        Qt.NoButton,
+        Qt.NoModifier,
+        Qt.ScrollUpdate,
+        False,
+    )
+
+    widget.wheelEvent(event)
+
+    assert widget.view_state() == view
+
+
+def test_tool_plot_widget_allows_control_wheel_zoom() -> None:
+    _app()
+    widget = ToolPlotWidget()
+    widget.set_view_state(SceneViewState(yaw_deg=0.0, pitch_deg=0.0, zoom=2.0, pan_x_px=0.0, pan_y_px=0.0, target_xyz=(0.0, 0.0, 0.0)))
+    event = QWheelEvent(
+        QPointF(20.0, 20.0),
+        QPointF(20.0, 20.0),
+        QPoint(0, 0),
+        QPoint(0, 120),
+        Qt.NoButton,
+        Qt.ControlModifier,
+        Qt.ScrollUpdate,
+        False,
+    )
+
+    widget.wheelEvent(event)
+
+    assert widget.view_state().zoom > 2.0
 
 
 def test_tool_plot_widget_handles_missing_registration_and_runtime_tip_without_crashing() -> None:

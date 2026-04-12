@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpViewState
 from continuum_robot.gui.controllers.tracking_controller import TrackingViewState
+from continuum_robot.gui.theme import grouped_workspace_stylesheet
 from continuum_robot.gui.view_utils import set_text_document
 from continuum_robot.gui.widgets.tool_plot_widget import ToolPlotWidget
 
@@ -32,66 +33,10 @@ class TrackingTab(QWidget):
         self.workflow_controller = workflow_controller
         self.setObjectName("trackingWorkspace")
         self.setStyleSheet(
-            """
-            QWidget#trackingWorkspace {
-                background: #eef3f8;
-                color: #0f172a;
-            }
-            QWidget#trackingWorkspace QGroupBox {
-                border: 1px solid #d9e3ec;
-                border-radius: 16px;
-                margin-top: 16px;
-                padding-top: 10px;
-                background: #ffffff;
-            }
-            QWidget#trackingWorkspace QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 6px;
-                color: #0f172a;
-                font-weight: 700;
-            }
-            QWidget#trackingWorkspace QLabel[role="title"] {
-                font-size: 24px;
-                font-weight: 700;
-                color: #0f172a;
-            }
-            QWidget#trackingWorkspace QLabel[role="hint"] {
-                color: #526173;
-            }
-            QWidget#trackingWorkspace QLabel[role="status"] {
-                padding: 8px 10px;
-                border-radius: 8px;
-                background: #e2e8f0;
-                color: #0f172a;
-                font-weight: 700;
-            }
-            QWidget#trackingWorkspace QComboBox,
-            QWidget#trackingWorkspace QTextEdit,
-            QWidget#trackingWorkspace QTableWidget {
-                border: 1px solid #dbe4ee;
-                border-radius: 10px;
-                background: #fbfdff;
-                color: #0f172a;
-            }
-            QWidget#trackingWorkspace QPushButton {
-                min-height: 36px;
-                padding: 0 14px;
-                border: 1px solid #dbe4ee;
-                border-radius: 10px;
-                background: #f8fafc;
-                color: #0f172a;
-                font-weight: 600;
-            }
-            QWidget#trackingWorkspace QPushButton[role="primary"] {
-                background: #dbeafe;
-                border-color: #93c5fd;
-            }
-            QWidget#trackingWorkspace QPushButton[variant="ghost"] {
-                background: transparent;
-                color: #334155;
-            }
-            """
+            grouped_workspace_stylesheet(
+                object_name="trackingWorkspace",
+                input_selectors=["QComboBox", "QTextEdit", "QTableWidget"],
+            )
         )
 
         self.title_label = QLabel("Tracking & Pivot")

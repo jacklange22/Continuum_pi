@@ -11,6 +11,8 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
+from continuum_robot.gui.theme import COLORS, qcolor
+
 
 Vec3 = tuple[float, float, float]
 Mat3 = tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
@@ -62,7 +64,7 @@ class SceneAxes3D:
 class SceneAnnotation3D:
     xyz: Vec3
     text: str
-    color_hex: str = "#0f172a"
+    color_hex: str = COLORS.text_primary
 
 
 @dataclass(frozen=True)
@@ -91,6 +93,7 @@ class LightweightScene3DWidget(QWidget):
 
     MIN_ZOOM = 0.08
     MAX_ZOOM = 40.0
+    ZOOM_MODIFIER = Qt.ControlModifier
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -183,6 +186,9 @@ class LightweightScene3DWidget(QWidget):
         super().mouseReleaseEvent(event)
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # pragma: no cover - exercised in GUI
+        if not bool(event.modifiers() & self.ZOOM_MODIFIER):
+            event.ignore()
+            return
         delta = event.angleDelta().y()
         if delta == 0:
             super().wheelEvent(event)
@@ -204,7 +210,7 @@ class LightweightScene3DWidget(QWidget):
     def paintEvent(self, event) -> None:  # pragma: no cover - covered indirectly via widget tests
         _ = event
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#f8fafc"))
+        painter.fillRect(self.rect(), qcolor(COLORS.surface_bg))
         painter.setRenderHint(QPainter.Antialiasing, True)
 
         viewport = QRectF(18.0, 16.0, max(40.0, self.width() - 36.0), max(40.0, self.height() - 32.0))
@@ -245,7 +251,7 @@ class LightweightScene3DWidget(QWidget):
             else:
                 painter.drawEllipse(point, radius, radius)
             if drawable["label"]:
-                painter.setPen(QPen(QColor("#0f172a")))
+                painter.setPen(QPen(qcolor(COLORS.text_primary)))
                 painter.drawText(point.x() + radius + 4.0, point.y() - radius - 3.0, drawable["label"])
         for annotation in drawables["annotations"]:
             painter.setPen(QPen(QColor(annotation["color"])))
@@ -290,7 +296,7 @@ class LightweightScene3DWidget(QWidget):
                         {
                             "point": QPointF(end_point.x() + 4.0, end_point.y() - 4.0),
                             "text": axis.label,
-                            "color": "#0f172a",
+                            "color": COLORS.text_primary,
                         }
                     )
                 elif not axis.label:
@@ -373,9 +379,9 @@ class LightweightScene3DWidget(QWidget):
         box_width = min(max(220.0, viewport.width() * 0.42), viewport.width() - 12.0)
         box = QRectF(viewport.left() + 8.0, viewport.top() + 8.0, box_width, box_height)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(255, 255, 255, 216))
+        painter.setBrush(qcolor(COLORS.overlay_bg, alpha=220))
         painter.drawRoundedRect(box, 10.0, 10.0)
-        painter.setPen(QPen(QColor("#0f172a")))
+        painter.setPen(QPen(qcolor(COLORS.text_primary)))
         y = box.top() + 18.0
         for line in overlay_lines:
             painter.drawText(QRectF(box.left() + 10.0, y - 12.0, box.width() - 20.0, 16.0), Qt.TextWordWrap, line)

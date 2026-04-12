@@ -1,5 +1,7 @@
 from pathlib import Path
 import json
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -103,6 +105,73 @@ class _SequencedTrackingService:
 
     def stop(self) -> None:
         self._thread = None
+
+
+class _TimingDiagnosticTrackingService:
+    def __init__(self, records: list[dict], *, backend_identity: str = "ndi_tracker_python") -> None:
+        self._records = [dict(record) for record in records]
+        self._listeners: list = []
+        self._thread = None
+        self._backend_identity = backend_identity
+        self._emitter_thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self._thread = object()
+
+    def stop(self) -> None:
+        self._thread = None
+        emitter = self._emitter_thread
+        if emitter is not None and emitter.is_alive():
+            emitter.join(timeout=1.0)
+        self._emitter_thread = None
+
+    def register_timing_listener(self, listener) -> None:
+        self._listeners.append(listener)
+        if self._emitter_thread is None:
+            self._emitter_thread = threading.Thread(target=self._emit_records, daemon=True)
+            self._emitter_thread.start()
+
+    def unregister_timing_listener(self, listener) -> None:
+        self._listeners = [item for item in self._listeners if item is not listener]
+
+    def _emit_records(self) -> None:
+        for record in self._records:
+            payload = dict(record)
+            payload.setdefault("backend_identity", self._backend_identity)
+            for listener in list(self._listeners):
+                listener(payload)
+            time.sleep(0.001)
+
+    def peek_snapshot(self) -> TrackingSnapshot:
+        return self.get_snapshot()
+
+    def get_snapshot(self) -> TrackingSnapshot:
+        return TrackingSnapshot(
+            health=ServiceHealthSnapshot(
+                name="tracking_service",
+                health=HEALTH_HEALTHY,
+                state="tracking",
+                status="ok",
+            ),
+            connection_state="tracking",
+            canonical_state="streaming_healthy",
+            backend_identity=self._backend_identity,
+            configured_backend_name="ndi",
+            selected_backend_name="ndi",
+            runtime_coil_tool_id="0A",
+            registration_tool_id="0B",
+            tracker_data_age_s=0.01,
+            tracker_data_stale=False,
+            last_frame_number=(
+                int(self._records[-1]["frame_number"])
+                if self._records and self._records[-1].get("frame_number") is not None
+                else None
+            ),
+            tools={
+                "0A": ToolTrackingSnapshot(tool_id="0A"),
+                "0B": ToolTrackingSnapshot(tool_id="0B"),
+            },
+        )
 
 
 def _tracking_snapshot(*, translation_mm: list[float]) -> TrackingSnapshot:
@@ -314,6 +383,182 @@ def test_replay_runner_loads_existing_dataset(tmp_path: Path) -> None:
     assert replay.success is True
     assert replay.summary.experiment_metrics["source_sample_count"] == 2
     assert replay.sample_count == 2
+
+
+def test_tracker_timing_validation_experiment_writes_canonical_outputs_and_summary(tmp_path: Path) -> None:
+    timing_records = [
+        {
+            "sample_start_monotonic_ns": 1_000_000_000,
+            "backend_call_start_ns": 1_000_000_000,
+            "backend_call_end_ns": 1_012_000_000,
+            "parse_complete_ns": 1_013_000_000,
+            "state_commit_complete_ns": 1_014_000_000,
+            "sample_commit_monotonic_ns": 1_014_000_000,
+            "observed_at_utc": "2026-01-01T00:00:00.000Z",
+            "frame_number": 11,
+            "frame_number_source": "device",
+            "is_new_frame": True,
+            "is_duplicate_frame": False,
+            "raw_payload_available": True,
+            "parsed_payload_available": True,
+            "output_committed": True,
+            "error_flag": False,
+            "tools_visible": ["0A", "0B"],
+            "raw_tool_ids": ["10", "11"],
+            "normalized_tool_ids": ["0A", "0B"],
+            "runtime_role_mappings": {"0A": "10", "0B": "11"},
+            "tool_validity": {"0A": "tracked", "0B": "tracked"},
+            "valid_transform_count": 2,
+            "total_cycle_ms": 14.0,
+            "backend_call_ms": 12.0,
+            "parse_ms": 1.0,
+            "state_commit_ms": 1.0,
+        },
+        {
+            "sample_start_monotonic_ns": 1_020_000_000,
+            "backend_call_start_ns": 1_020_000_000,
+            "backend_call_end_ns": 1_032_000_000,
+            "parse_complete_ns": 1_033_000_000,
+            "state_commit_complete_ns": 1_034_000_000,
+            "sample_commit_monotonic_ns": 1_034_000_000,
+            "observed_at_utc": "2026-01-01T00:00:00.020Z",
+            "frame_number": 11,
+            "frame_number_source": "device",
+            "is_new_frame": False,
+            "is_duplicate_frame": True,
+            "raw_payload_available": True,
+            "parsed_payload_available": True,
+            "output_committed": True,
+            "error_flag": False,
+            "tools_visible": ["0A"],
+            "raw_tool_ids": ["10"],
+            "normalized_tool_ids": ["0A"],
+            "runtime_role_mappings": {"0A": "10"},
+            "tool_validity": {"0A": "tracked", "0B": "missing"},
+            "valid_transform_count": 1,
+            "total_cycle_ms": 14.0,
+            "backend_call_ms": 12.0,
+            "parse_ms": 1.0,
+            "state_commit_ms": 1.0,
+        },
+        {
+            "sample_start_monotonic_ns": 1_040_000_000,
+            "backend_call_start_ns": 1_040_000_000,
+            "backend_call_end_ns": 1_052_000_000,
+            "parse_complete_ns": 1_053_000_000,
+            "state_commit_complete_ns": 1_054_000_000,
+            "sample_commit_monotonic_ns": 1_054_000_000,
+            "observed_at_utc": "2026-01-01T00:00:00.040Z",
+            "frame_number": 12,
+            "frame_number_source": "device",
+            "is_new_frame": True,
+            "is_duplicate_frame": False,
+            "raw_payload_available": True,
+            "parsed_payload_available": True,
+            "output_committed": True,
+            "error_flag": False,
+            "tools_visible": ["0A", "0B"],
+            "raw_tool_ids": ["10", "11"],
+            "normalized_tool_ids": ["0A", "0B"],
+            "runtime_role_mappings": {"0A": "10", "0B": "11"},
+            "tool_validity": {"0A": "tracked", "0B": "tracked"},
+            "valid_transform_count": 2,
+            "total_cycle_ms": 14.0,
+            "backend_call_ms": 12.0,
+            "parse_ms": 1.0,
+            "state_commit_ms": 1.0,
+        },
+    ]
+    runner = _runner(
+        tmp_path,
+        tracking_service=_TimingDiagnosticTrackingService(timing_records),
+    )
+
+    result = runner.run_experiment(
+        "tracker_timing_validation",
+        config={
+            "requested_tool_ids": ["0A", "0B"],
+            "sample_count_target": 2,
+            "warmup_samples": 1,
+            "timeout_s": 1.0,
+            "run_label": "bench_a",
+            "enable_servo_logging": False,
+        },
+    )
+
+    assert result.success is True
+    assert result.summary.experiment_metrics["backend_identity"] == "ndi_tracker_python"
+    assert result.summary.experiment_metrics["sample_count_analyzed"] == 2
+    assert result.summary.experiment_metrics["warmup_discarded_count"] == 1
+    assert result.summary.experiment_metrics["duplicate_frame_count"] == 1
+    assert result.summary.experiment_metrics["unique_frame_count"] == 1
+    assert result.summary.experiment_metrics["requested_tool_ids"] == ["0A", "0B"]
+    assert result.summary.experiment_metrics["servo_sync"]["enabled"] is False
+    assert result.paths.output_dir.joinpath("aurora_timing_histogram.png").exists()
+    assert result.paths.output_dir.joinpath("aurora_timing_breakdown.png").exists()
+    assert result.paths.output_dir.joinpath("aurora_timing_timeseries.png").exists()
+    assert result.paths.output_dir.joinpath("aurora_timing_summary.txt").exists()
+    assert not result.paths.output_dir.joinpath("aurora_timing_sync_offsets.png").exists()
+    summary_text = result.paths.output_dir.joinpath("aurora_timing_summary.txt").read_text(encoding="utf-8")
+    assert "GUI refresh rate is not used" in summary_text
+    assert "Backend get_frame" in summary_text
+    bundle = runner.load_dataset(result.paths.output_dir)
+    assert any(sample.extra.get("record_kind") == "tracker_timing" for sample in bundle.samples)
+
+
+def test_tracker_timing_validation_experiment_outputs_do_not_crash_when_optional_fields_are_missing(tmp_path: Path) -> None:
+    timing_records = [
+        {
+            "sample_start_monotonic_ns": 2_000_000_000,
+            "backend_call_start_ns": 2_000_000_000,
+            "backend_call_end_ns": 2_180_000_000,
+            "parse_complete_ns": None,
+            "state_commit_complete_ns": 2_180_000_000,
+            "sample_commit_monotonic_ns": 2_180_000_000,
+            "observed_at_utc": "2026-01-01T00:00:01.000Z",
+            "frame_number": None,
+            "frame_number_source": "missing",
+            "is_new_frame": None,
+            "is_duplicate_frame": None,
+            "raw_payload_available": False,
+            "parsed_payload_available": False,
+            "output_committed": False,
+            "error_flag": True,
+            "error_stage": "get_frame",
+            "error_message": "timeout",
+            "tools_visible": [],
+            "raw_tool_ids": [],
+            "normalized_tool_ids": [],
+            "runtime_role_mappings": {},
+            "tool_validity": {},
+            "valid_transform_count": 0,
+            "total_cycle_ms": 180.0,
+            "backend_call_ms": 180.0,
+            "parse_ms": None,
+            "state_commit_ms": 0.0,
+        }
+    ]
+    runner = _runner(
+        tmp_path,
+        tracking_service=_TimingDiagnosticTrackingService(timing_records),
+    )
+
+    result = runner.run_experiment(
+        "tracker_timing_validation",
+        config={
+            "requested_tool_ids": ["0A"],
+            "sample_count_target": 1,
+            "warmup_samples": 0,
+            "timeout_s": 1.0,
+            "enable_servo_logging": False,
+        },
+    )
+
+    assert result.success is True
+    assert result.paths.output_dir.joinpath("aurora_timing_histogram.png").exists()
+    assert result.paths.output_dir.joinpath("aurora_timing_breakdown.png").exists()
+    assert result.paths.output_dir.joinpath("aurora_timing_timeseries.png").exists()
+    assert result.summary.experiment_metrics["error_sample_count"] == 1
 
 
 def test_pretension_validation_experiment_records_current_displacement_trace_and_outputs(tmp_path: Path) -> None:

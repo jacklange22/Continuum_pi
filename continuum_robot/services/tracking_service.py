@@ -197,6 +197,23 @@ class TrackingService:
             return self.live_backend.probe_capabilities()
         return {}
 
+    def register_timing_listener(self, listener) -> None:
+        """Subscribe to backend timing records when the live backend supports them."""
+        if self.live_backend is None:
+            raise RuntimeError("Tracking service is not using a live backend.")
+        register = getattr(self.live_backend, "register_timing_listener", None)
+        if not callable(register):
+            raise RuntimeError("The configured live backend does not expose timing listeners.")
+        register(listener)
+
+    def unregister_timing_listener(self, listener) -> None:
+        """Remove a previously registered backend timing listener."""
+        if self.live_backend is None:
+            return
+        unregister = getattr(self.live_backend, "unregister_timing_listener", None)
+        if callable(unregister):
+            unregister(listener)
+
     def start(self, port: str | None = None) -> None:
         """Start the live backend poll loop or the compatibility serial loop."""
         if port is not None:
@@ -1331,7 +1348,16 @@ class TrackingService:
                 return "mock_tracker_manager"
             if name == "TrackerBackendNDI":
                 return "ndi_tracker_python"
-            return "tracker_bridge_json"
+            if name == "TrackingBackendRouter":
+                return "tracking_backend_router"
+            if name == "TrackerServiceManager":
+                return "tracker_bridge_json"
+            rendered = []
+            for index, char in enumerate(name):
+                if char.isupper() and index > 0 and name[index - 1].islower():
+                    rendered.append("_")
+                rendered.append(char.lower())
+            return "".join(rendered).strip("_") or "unknown_live_backend"
         if aurora_client is not None:
             return "legacy_client_packet_compat"
         return "unknown_backend"

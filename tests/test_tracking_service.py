@@ -40,6 +40,7 @@ class _FakeLiveBackend:
     def __init__(self, state: TrackerRuntimeState) -> None:
         self._state = state
         self._alive = False
+        self._timing_listeners = []
 
     def start(self) -> None:
         self._alive = True
@@ -55,6 +56,12 @@ class _FakeLiveBackend:
 
     def set_state(self, state: TrackerRuntimeState) -> None:
         self._state = state
+
+    def register_timing_listener(self, listener) -> None:
+        self._timing_listeners.append(listener)
+
+    def unregister_timing_listener(self, listener) -> None:
+        self._timing_listeners = [item for item in self._timing_listeners if item is not listener]
 
 
 def _write_registration_file(path: Path, *, measurement_tool_id: str = "0B", coil_tool_id: str = "0A") -> None:
@@ -127,7 +134,7 @@ def test_tracking_service_live_backend_reports_tracked_tools_with_unknown_validi
     finally:
         service.stop()
 
-    assert snapshot.backend_identity == "tracker_bridge_json"
+    assert snapshot.backend_identity == "fake_live_backend"
     assert snapshot.packets_received_count == 1
     assert snapshot.tools["0A"].tracking_state == "tracked"
     assert snapshot.tools["0A"].valid is None
@@ -136,6 +143,22 @@ def test_tracking_service_live_backend_reports_tracked_tools_with_unknown_validi
     assert snapshot.T_robot_tip is not None
     assert snapshot.stored_registration_timestamp_utc == "2026-01-01T00:00:00Z"
     assert snapshot.stored_registration_fre_mm == 0.25
+
+
+def test_tracking_service_forwards_timing_listener_registration_to_live_backend(tmp_path: Path) -> None:
+    backend = _FakeLiveBackend(_live_state(frame_number=1, tools={"0A": _tracked_tool("0A", frame_number=1)}))
+    service = TrackingService(
+        live_backend=backend,
+        port="/dev/ttyUSB0",
+        registration_path=tmp_path / "missing_registration.json",
+        config_source="test",
+    )
+
+    listener = lambda _record: None
+    service.register_timing_listener(listener)
+    service.unregister_timing_listener(listener)
+
+    assert backend._timing_listeners == []
 
 
 def test_tracking_service_live_backend_detects_role_mismatch(tmp_path: Path) -> None:

@@ -9,6 +9,12 @@ import numpy as np
 
 from continuum_robot.experiments.dataset_tools import extract_tip_or_tool_position_mm
 from continuum_robot.experiments.pretension_validation_outputs import extract_pretension_trace_points
+from continuum_robot.tracking.timing_benchmark import (
+    compute_servo_sync_summary,
+    compute_tracker_timing_summary,
+    extract_servo_timing_records,
+    extract_tracker_timing_records,
+)
 
 
 @dataclass
@@ -100,6 +106,8 @@ def build_visualization_model(
         )
     if experiment_name == "pretension_validation":
         return _build_pretension_validation_model(samples=samples, metrics=metrics)
+    if experiment_name == "tracker_timing_validation":
+        return _build_tracker_timing_model(samples=samples, metrics=metrics, config_payload=config_payload)
     return _build_generic_model(
         experiment_name=experiment_name,
         samples=samples,
@@ -150,7 +158,7 @@ def _build_repeatability_model(
             series.append(
                 ScatterSeries3D(
                     name="Centroids",
-                    color_hex="#111827",
+                    color_hex="#e2e8f0",
                     points_xyz=centroid_points,
                     point_size=0.18,
                     mesh="cube",
@@ -272,7 +280,7 @@ def _build_grid_model(
         series.append(
             ScatterSeries3D(
                 name="Truth Grid",
-                color_hex="#111827",
+                color_hex="#e2e8f0",
                 points_xyz=truth_points,
                 point_size=0.18,
                 mesh="cube",
@@ -319,6 +327,9 @@ def _build_grid_model(
     )
     point_count_captured = int(metrics.get("point_count_captured", 0) or 0)
     point_count_total = int(metrics.get("point_count_total", len(ordered_labels)) or 0)
+    point_count_complete = int(metrics.get("point_count_complete", 0) or 0)
+    point_count_partial = int(metrics.get("point_count_partial", 0) or 0)
+    point_count_not_started = int(metrics.get("point_count_not_started", 0) or 0)
     position_sources = metrics.get("position_source_counts", {}) or {}
     position_source_summary = ", ".join(
         f"{str(source)}={int(count)}"
@@ -327,6 +338,7 @@ def _build_grid_model(
     summary_lines = [
         f"Run status: {metrics.get('status', 'unknown')}",
         f"Coverage: {point_count_captured} / {point_count_total} labeled points captured",
+        f"Point status: {point_count_complete} complete, {point_count_partial} partial, {point_count_not_started} not started",
         f"Solve readiness: {metrics.get('alignment_ready_reason', 'n/a')}",
         (
             f"Raw / accepted / rejected samples: "
@@ -340,7 +352,11 @@ def _build_grid_model(
         f"Max within-point spread: {_fmt(metrics.get('max_within_point_spread_mm'))} mm",
         f"Aligned points: {metrics.get('point_count_aligned', 0)}",
         f"Position source counts: {position_source_summary}",
-        f"Tip calibration available: {metrics.get('tip_calibration_available', False)}",
+        (
+            "Tip calibration used: yes"
+            if metrics.get("tip_calibration_used")
+            else ("Tip calibration used: fallback only" if metrics.get("coil_origin_fallback_used") else "Tip calibration used: no")
+        ),
         f"Points summarized: {len(ordered_labels)}",
     ]
     summary_lines.extend(acceptance_lines)
@@ -733,4 +749,135 @@ def _build_pretension_validation_model(*, samples, metrics: dict[str, Any]) -> V
                 color_hex="#7c3aed",
             )
         )
+    return VisualizationModel(charts=charts, summary_lines=summary_lines)
+
+
+def _build_tracker_timing_model(*, samples, metrics: dict[str, Any], config_payload: dict[str, Any]) -> VisualizationModel:
+    tracker_records = extract_tracker_timing_records(samples)
+    servo_records = extract_servo_timing_records(samples)
+    requested_tool_ids = [
+        str(value).strip().upper()
+        for value in (config_payload.get("requested_tool_ids") or ["0A", "0B"])
+        if str(value).strip()
+    ] or ["0A", "0B"]
+    if not metrics:
+        servo_sync = compute_servo_sync_summary(tracker_records, servo_records)
+        servo_sync["enabled"] = bool(config_payload.get("enable_servo_logging", False))
+        backend_identity = next(
+            (str(record.get("backend_identity")) for record in tracker_records if record.get("backend_identity")),
+            "",
+        )
+        metrics = compute_tracker_timing_summary(
+            tracker_records,
+            requested_tool_ids=requested_tool_ids,
+            backend_identity=backend_identity,
+            configured_backend_name="",
+            selected_backend_name="",
+            run_duration_s=config_payload.get("run_duration_s"),
+            run_label=str(config_payload.get("run_label", "") or ""),
+            servo_sync_summary=servo_sync,
+        )
+
+    analyzed_records = [record for record in tracker_records if not bool(record.get("warmup_discarded", False))]
+    total_points = [
+        (float(index), float(record["total_cycle_ms"]))
+        for index, record in enumerate(analyzed_records)
+        if record.get("total_cycle_ms") is not None
+    ]
+    duplicate_points_present = any(bool(record.get("is_duplicate_frame", False)) for record in analyzed_records)
+    stage_chart = ChartModel(
+        kind="bar",
+        title="Stage Mean Timing",
+        x_title="Stage",
+        y_title="Mean Time (ms)",
+        caption="Mean host monotonic time spent in backend get_frame(), payload parsing, runtime commit, and the full sample cycle.",
+        categories=["get_frame", "parse", "commit", "total"],
+        values=[
+            float(metrics.get("mean_backend_call_ms", 0.0) or 0.0),
+            float(metrics.get("mean_parse_ms", 0.0) or 0.0),
+            float(metrics.get("mean_state_commit_ms", 0.0) or 0.0),
+            float(metrics.get("mean_total_cycle_ms", 0.0) or 0.0),
+        ],
+        color_hex="#0f766e",
+    )
+    per_tool_summary = dict(metrics.get("per_tool_summary", {}) or {})
+    tool_rate_chart = ChartModel(
+        kind="bar",
+        title="Per-Tool Valid Transform Rate",
+        x_title="Tool",
+        y_title="Valid Transform Rate (%)",
+        caption="Fraction of analyzed samples in which each requested tool produced a tracked transform.",
+        categories=list(per_tool_summary.keys()),
+        values=[
+            100.0 * float(value.get("valid_transform_rate", 0.0) or 0.0)
+            for value in per_tool_summary.values()
+        ],
+        color_hex="#2563eb",
+    )
+    charts = [
+        ChartModel(
+            kind="line",
+            title="Total Cycle Time",
+            x_title="Analyzed Sample Index",
+            y_title="Total Cycle Time (ms)",
+            caption="Total backend sample time over analyzed tracker samples. Duplicate device frames remain visible in the same series and are also reported separately in the summary.",
+            points_xy=total_points,
+            color_hex="#2563eb",
+        ),
+        stage_chart,
+    ]
+    if per_tool_summary:
+        charts.append(tool_rate_chart)
+    servo_sync = dict(metrics.get("servo_sync", {}) or {})
+    if servo_sync.get("enabled") and servo_sync.get("available"):
+        charts.append(
+            ChartModel(
+                kind="line",
+                title="Servo To Tracker Offset",
+                x_title="Servo Sample Index",
+                y_title="Absolute Offset (ms)",
+                caption="Nearest analyzed tracker sample offset for each logged servo telemetry sample.",
+                points_xy=[
+                    (float(index), float(value))
+                    for index, value in enumerate(servo_sync.get("servo_to_tracker_offsets_ms", []) or [])
+                ],
+                color_hex="#7c3aed",
+            )
+        )
+    summary_lines = [
+        f"Backend: {metrics.get('backend_identity', 'n/a')}",
+        f"Configured backend: {metrics.get('configured_backend_name', 'n/a') or 'n/a'}",
+        f"Selected backend: {metrics.get('selected_backend_name', 'n/a') or 'n/a'}",
+        f"Requested tools: {', '.join(metrics.get('requested_tool_ids', []) or requested_tool_ids)}",
+        f"Analyzed tracker samples: {int(metrics.get('sample_count_analyzed', 0) or 0)}",
+        f"Warmup discarded: {int(metrics.get('warmup_discarded_count', 0) or 0)}",
+        f"Effective loop rate: {_fmt(metrics.get('effective_loop_rate_hz'))} Hz",
+        f"Unique-frame rate: {_fmt(metrics.get('unique_frame_rate_hz'))} Hz",
+        f"Mean total cycle: {_fmt(metrics.get('mean_total_cycle_ms'))} ms",
+        f"P95 total cycle: {_fmt(metrics.get('p95_total_cycle_ms'))} ms",
+        f"P99 total cycle: {_fmt(metrics.get('p99_total_cycle_ms'))} ms",
+        (
+            f"Duplicate frames: {int(metrics.get('duplicate_frame_count', 0) or 0)} "
+            f"({100.0 * float(metrics.get('duplicate_frame_ratio', 0.0) or 0.0):.1f}%)"
+            if metrics.get("duplicate_frame_ratio") is not None
+            else "Duplicate frames: n/a"
+        ),
+        (
+            f"Samples under 25 ms: {float(metrics.get('percent_under_25ms', 0.0) or 0.0):.1f}%"
+            if metrics.get("percent_under_25ms") is not None
+            else "Samples under 25 ms: n/a"
+        ),
+        (
+            f"Invalid/missing requested-tool samples: {int(metrics.get('invalid_or_missing_requested_tool_sample_count', 0) or 0)}"
+        ),
+    ]
+    if duplicate_points_present:
+        summary_lines.append("Duplicate-frame samples remain included in the time-series; use unique-frame Hz to judge fresh-frame throughput.")
+    if servo_sync.get("enabled"):
+        if servo_sync.get("available"):
+            summary_lines.append(
+                f"Servo->tracker mean/p95 offset: {_fmt(servo_sync.get('servo_to_tracker_mean_offset_ms'))} / {_fmt(servo_sync.get('servo_to_tracker_p95_offset_ms'))} ms"
+            )
+        else:
+            summary_lines.append("Servo sync logging was requested, but no valid tracker-servo pairings were available.")
     return VisualizationModel(charts=charts, summary_lines=summary_lines)

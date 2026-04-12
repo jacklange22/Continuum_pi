@@ -1,0 +1,7 @@
+requested_tool_ids: ["0A", "0B"]
+run_duration_s: 8.0
+sample_count_target:
+warmup_samples: 10
+timeout_s: 20.0
+enable_servo_logging: false
+run_label: ""

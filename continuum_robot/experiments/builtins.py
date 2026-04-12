@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import math
 from pathlib import Path
+import threading
+import time
 from typing import Any
 
 from continuum_robot.experiments.dataset_io import ExperimentDatasetLoader, ExperimentDatasetWriter
@@ -13,6 +15,7 @@ from continuum_robot.experiments.experiment_models import ExperimentPoint
 from continuum_robot.experiments.framework import BaseExperiment, ExperimentHardwareRequirements, ExperimentSession
 from continuum_robot.experiments.critical_experiments import register_critical_experiments
 from continuum_robot.experiments.pretension_validation_outputs import write_pretension_validation_outputs
+from continuum_robot.experiments.tracker_timing_outputs import write_tracker_timing_outputs
 from continuum_robot.experiments.schedules import (
     CommandScheduleConfig,
     command_schedule_checksum,
@@ -21,6 +24,12 @@ from continuum_robot.experiments.schedules import (
 from continuum_robot.experiments.sample_builders import sample_from_tracking_snapshot
 from continuum_robot.experiments.schemas import ExperimentMetadata, ExperimentSummary, ExperimentTimeseriesSample
 from continuum_robot.servos.servo_service import PretensionParameters
+from continuum_robot.tracking.timing_benchmark import (
+    compute_servo_sync_summary,
+    compute_tracker_timing_summary,
+    extract_servo_timing_records,
+    extract_tracker_timing_records,
+)
 
 try:
     import numpy as np
@@ -201,6 +210,52 @@ class PretensionValidationExperimentConfig:
                 int(payload["max_travel_ticks"]) if payload.get("max_travel_ticks") not in (None, "") else None
             ),
             timeout_s=float(payload["timeout_s"]) if payload.get("timeout_s") not in (None, "") else None,
+        )
+
+
+@dataclass
+class TrackerTimingValidationConfig:
+    """Config for backend Aurora timing and throughput validation."""
+
+    requested_tool_ids: list[str] = field(default_factory=lambda: ["0A", "0B"])
+    run_duration_s: float = 8.0
+    sample_count_target: int | None = None
+    warmup_samples: int = 10
+    timeout_s: float = 20.0
+    enable_servo_logging: bool = False
+    run_label: str = ""
+    servo_poll_interval_s: float = 0.02
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> "TrackerTimingValidationConfig":
+        payload = dict(payload or {})
+        requested_tool_ids = [
+            str(value).strip().upper()
+            for value in (payload.get("requested_tool_ids") or ["0A", "0B"])
+            if str(value).strip()
+        ]
+        requested_tool_ids = [
+            tool_id
+            for tool_id in requested_tool_ids
+            if tool_id in {"0A", "0B"}
+        ] or ["0A", "0B"]
+        deduped_tool_ids: list[str] = []
+        for tool_id in requested_tool_ids:
+            if tool_id not in deduped_tool_ids:
+                deduped_tool_ids.append(tool_id)
+        return cls(
+            requested_tool_ids=deduped_tool_ids,
+            run_duration_s=float(payload.get("run_duration_s", 8.0)),
+            sample_count_target=(
+                int(payload["sample_count_target"])
+                if payload.get("sample_count_target") not in (None, "", 0, "0")
+                else None
+            ),
+            warmup_samples=max(0, int(payload.get("warmup_samples", 10))),
+            timeout_s=float(payload.get("timeout_s", 20.0)),
+            enable_servo_logging=bool(payload.get("enable_servo_logging", False)),
+            run_label=str(payload.get("run_label", "") or ""),
+            servo_poll_interval_s=float(payload.get("servo_poll_interval_s", 0.02)),
         )
 
 
@@ -444,6 +499,348 @@ class ReplayRunnerExperiment(BaseExperiment):
         session.set_metric("source_experiment_name", bundle.metadata.experiment_name)
         session.set_metric("source_sample_count", len(bundle.samples))
         session.set_metric("source_success", bundle.summary.success)
+
+
+class TrackerTimingValidationExperiment(BaseExperiment):
+    """Benchmark backend Aurora acquisition timing on the active Python tracker path."""
+
+    name = "tracker_timing_validation"
+    description = (
+        "Measure backend Aurora acquisition timing, duplicate-frame behavior, and optional "
+        "tracker-servo timestamp alignment using the active Python tracking backend."
+    )
+    hardware_requirements = ExperimentHardwareRequirements(
+        tracking_required=True,
+        servo_required=False,
+        mock_compatible=False,
+    )
+
+    def __init__(self, config: TrackerTimingValidationConfig) -> None:
+        super().__init__(config=config)
+        self._tracking_started_here = False
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None = None) -> "TrackerTimingValidationExperiment":
+        return cls(config=TrackerTimingValidationConfig.from_dict(payload))
+
+    def setup(self, session: ExperimentSession) -> None:
+        tracking_service = session.context.tracking_service
+        if tracking_service is not None and getattr(tracking_service, "_thread", None) is None:
+            tracking_service.start()
+            self._tracking_started_here = True
+
+    def precheck(self, session: ExperimentSession) -> None:
+        tracking_service = session.context.tracking_service
+        if tracking_service is None:
+            raise RuntimeError("tracker_timing_validation requires tracking_service.")
+        if not hasattr(tracking_service, "register_timing_listener"):
+            raise RuntimeError("Configured tracking service does not expose backend timing listeners.")
+        snapshot = tracking_service.get_snapshot()
+        backend_identity = str(snapshot.backend_identity or "")
+        selected_backend = str(snapshot.selected_backend_name or "")
+        if backend_identity == "tracker_bridge_json" or selected_backend == "bridge":
+            raise RuntimeError(
+                "tracker_timing_validation targets the Python NDI backend path. "
+                "Legacy tracker_bridge is not a valid benchmark backend for this diagnostic."
+            )
+
+    def execute(self, session: ExperimentSession) -> None:
+        tracking_service = session.context.tracking_service
+        servo_service = session.context.servo_service
+        requested_tool_ids = list(self.config.requested_tool_ids or ["0A", "0B"])
+        warmup_samples = max(0, int(self.config.warmup_samples))
+        run_duration_s = max(0.1, float(self.config.run_duration_s))
+        sample_count_target = (
+            int(self.config.sample_count_target)
+            if self.config.sample_count_target not in (None, "", 0)
+            else None
+        )
+        timeout_s = max(run_duration_s, float(self.config.timeout_s))
+        run_start_ns = time.monotonic_ns()
+        pending_tracker_records: list[dict[str, Any]] = []
+        pending_servo_records: list[dict[str, Any]] = []
+        queue_lock = threading.Lock()
+        servo_stop_event = threading.Event()
+        tracker_sample_index = 0
+        servo_sample_index = 0
+        analyzed_tracker_count = 0
+        timed_out = False
+
+        def timing_listener(record: dict[str, Any]) -> None:
+            normalized = dict(record or {})
+            normalized["requested_tool_ids"] = list(requested_tool_ids)
+            with queue_lock:
+                pending_tracker_records.append(normalized)
+
+        def drain_pending_records() -> None:
+            nonlocal tracker_sample_index, servo_sample_index, analyzed_tracker_count
+            with queue_lock:
+                tracker_batch = list(pending_tracker_records)
+                servo_batch = list(pending_servo_records)
+                pending_tracker_records.clear()
+                pending_servo_records.clear()
+            for record in tracker_batch:
+                warmup_discarded = tracker_sample_index < warmup_samples
+                record["warmup_discarded"] = bool(warmup_discarded)
+                if not warmup_discarded:
+                    analyzed_tracker_count += 1
+                session.add_sample(
+                    self._build_tracker_timing_sample(
+                        session,
+                        record=record,
+                        run_start_ns=run_start_ns,
+                        sample_index=tracker_sample_index,
+                    )
+                )
+                tracker_sample_index += 1
+            for record in servo_batch:
+                session.add_sample(
+                    self._build_servo_timing_sample(
+                        session,
+                        record=record,
+                        run_start_ns=run_start_ns,
+                        sample_index=servo_sample_index,
+                    )
+                )
+                servo_sample_index += 1
+
+        def poll_servo_loop() -> None:
+            servo_ids = [int(value) for value in (session.context.settings.robot.servo_ids or [])]
+            poll_interval_s = max(0.01, float(self.config.servo_poll_interval_s))
+            while not servo_stop_event.is_set():
+                sample_monotonic_ns = time.monotonic_ns()
+                try:
+                    telemetry_by_id = servo_service.read_live_telemetry(servo_ids)
+                    goal_positions = servo_service.last_goal_positions()
+                    goal_times = servo_service.last_goal_command_times()
+                    for servo_id in servo_ids:
+                        telemetry = telemetry_by_id.get(int(servo_id))
+                        pending_record = {
+                            "sample_monotonic_ns": int(sample_monotonic_ns),
+                            "servo_id": int(servo_id),
+                            "commanded_position_ticks": goal_positions.get(int(servo_id)),
+                            "commanded_position_age_s": (
+                                float(max(0.0, (sample_monotonic_ns / 1_000_000_000.0) - float(goal_times[int(servo_id)])))
+                                if int(servo_id) in goal_times
+                                else None
+                            ),
+                            "present_position_ticks": (
+                                int(telemetry.present_position)
+                                if telemetry is not None and telemetry.present_position is not None
+                                else None
+                            ),
+                            "present_current_ma": (
+                                int(telemetry.present_current_ma)
+                                if telemetry is not None and telemetry.present_current_ma is not None
+                                else None
+                            ),
+                            "telemetry_age_s": (
+                                servo_service.telemetry_age_s(telemetry)
+                                if telemetry is not None
+                                else None
+                            ),
+                            "reported_servo_id": (
+                                int(telemetry.reported_servo_id)
+                                if telemetry is not None and telemetry.reported_servo_id is not None
+                                else None
+                            ),
+                            "error_flag": False,
+                            "error_message": None,
+                        }
+                        with queue_lock:
+                            pending_servo_records.append(pending_record)
+                except Exception as exc:
+                    with queue_lock:
+                        pending_servo_records.append(
+                            {
+                                "sample_monotonic_ns": int(sample_monotonic_ns),
+                                "servo_id": None,
+                                "commanded_position_ticks": None,
+                                "present_position_ticks": None,
+                                "present_current_ma": None,
+                                "telemetry_age_s": None,
+                                "reported_servo_id": None,
+                                "error_flag": True,
+                                "error_message": str(exc),
+                            }
+                        )
+                    return
+                time.sleep(poll_interval_s)
+
+        tracking_service.register_timing_listener(timing_listener)
+        servo_thread: threading.Thread | None = None
+        if bool(self.config.enable_servo_logging) and bool(getattr(servo_service, "is_connected", False)):
+            servo_thread = threading.Thread(target=poll_servo_loop, daemon=True)
+            servo_thread.start()
+
+        try:
+            while True:
+                session.raise_if_stop_requested()
+                drain_pending_records()
+                elapsed_s = max(0.0, float(time.monotonic_ns() - run_start_ns) / 1_000_000_000.0)
+                if sample_count_target is not None:
+                    progress_total = max(1, int(sample_count_target))
+                    progress_current = min(progress_total, int(analyzed_tracker_count))
+                else:
+                    progress_total = max(1, int(round(run_duration_s * 1000.0)))
+                    progress_current = min(progress_total, int(round(elapsed_s * 1000.0)))
+                session.update_progress(
+                    progress_current,
+                    progress_total,
+                    {
+                        "phase": "timing_capture",
+                        "analyzed_tracker_samples": analyzed_tracker_count,
+                        "total_tracker_samples": tracker_sample_index,
+                    },
+                )
+                if sample_count_target is not None and analyzed_tracker_count >= sample_count_target:
+                    break
+                if sample_count_target is None and elapsed_s >= run_duration_s:
+                    break
+                if elapsed_s >= timeout_s:
+                    timed_out = True
+                    session.add_warning(
+                        "Timing diagnostic timed out before the configured stop condition completed."
+                    )
+                    break
+                time.sleep(0.005)
+        finally:
+            servo_stop_event.set()
+            if servo_thread is not None:
+                servo_thread.join(timeout=1.0)
+            tracking_service.unregister_timing_listener(timing_listener)
+            time.sleep(0.01)
+            drain_pending_records()
+
+        tracker_records = extract_tracker_timing_records(session.samples)
+        servo_records = extract_servo_timing_records(session.samples)
+        servo_sync = compute_servo_sync_summary(tracker_records, servo_records)
+        servo_sync["enabled"] = bool(self.config.enable_servo_logging)
+        if bool(self.config.enable_servo_logging) and not servo_records:
+            session.add_warning("Servo sync logging was requested, but no servo telemetry samples were captured.")
+            servo_sync["available"] = False
+        snapshot = tracking_service.get_snapshot()
+        force_status = "success"
+        if not tracker_records:
+            force_status = "invalid_due_to_insufficient_samples"
+        elif timed_out:
+            force_status = "partial_success"
+        metrics = compute_tracker_timing_summary(
+            tracker_records,
+            requested_tool_ids=requested_tool_ids,
+            backend_identity=str(snapshot.backend_identity or ""),
+            configured_backend_name=str(snapshot.configured_backend_name or ""),
+            selected_backend_name=str(snapshot.selected_backend_name or ""),
+            run_duration_s=run_duration_s if sample_count_target is None else None,
+            run_label=str(self.config.run_label or ""),
+            servo_sync_summary=servo_sync,
+        )
+        metrics.update(
+            {
+                "stop_mode": "sample_count" if sample_count_target is not None else "duration",
+                "sample_count_target": sample_count_target,
+                "warmup_samples_requested": int(warmup_samples),
+                "timeout_s": float(timeout_s),
+                "enable_servo_logging": bool(self.config.enable_servo_logging),
+                "servo_sample_count": len(servo_records),
+                "instrumented_stage_definitions": {
+                    "backend_call_ms": "Host monotonic time spent inside backend get_frame().",
+                    "parse_ms": "Host monotonic time from backend return to parsed tool transforms/runtime fields.",
+                    "state_commit_ms": "Host monotonic time from parsed payload to committed backend runtime state.",
+                    "total_cycle_ms": "Host monotonic time from cycle start to committed backend sample record.",
+                },
+                "summary_requirements": {"force_status": force_status},
+            }
+        )
+        session.metrics.update(metrics)
+
+    def finalize(self, session: ExperimentSession) -> None:
+        if self._tracking_started_here:
+            session.context.tracking_service.stop()
+            self._tracking_started_here = False
+
+    def write_outputs(self, session: ExperimentSession, paths, summary) -> None:
+        write_tracker_timing_outputs(
+            output_dir=paths.output_dir,
+            metadata=session.metadata,
+            summary=summary,
+            samples=session.samples,
+        )
+
+    @staticmethod
+    def _build_tracker_timing_sample(
+        session: ExperimentSession,
+        *,
+        record: dict[str, Any],
+        run_start_ns: int,
+        sample_index: int,
+    ) -> ExperimentTimeseriesSample:
+        commit_ns = int(record.get("sample_commit_monotonic_ns") or record.get("state_commit_complete_ns") or run_start_ns)
+        monotonic_time_s = max(0.0, float(commit_ns - int(run_start_ns)) / 1_000_000_000.0)
+        tool_validity = {
+            str(key): str(value)
+            for key, value in dict(record.get("tool_validity", {}) or {}).items()
+        }
+        status_flags: list[str] = ["tracker_timing"]
+        if bool(record.get("is_duplicate_frame", False)):
+            status_flags.append("duplicate_frame")
+        if bool(record.get("error_flag", False)):
+            status_flags.append("backend_error")
+        return ExperimentTimeseriesSample(
+            monotonic_time_s=monotonic_time_s,
+            wall_time_utc=str(record.get("observed_at_utc") or _utc_now_iso()),
+            phase="tracker_timing",
+            step_index=int(sample_index),
+            sample_index=int(sample_index),
+            tracker_frame_id=(
+                int(record["frame_number"])
+                if record.get("frame_number") is not None
+                else None
+            ),
+            tool_ids_seen=[str(value) for value in (record.get("tools_visible") or [])],
+            transform_validity=tool_validity,
+            freshness_s=None,
+            latency_s=None,
+            status_flags=status_flags,
+            backend_health={
+                "backend_identity": str(record.get("backend_identity", "")),
+                "error_flag": bool(record.get("error_flag", False)),
+                "error_stage": record.get("error_stage"),
+            },
+            extra={**dict(record), "record_kind": "tracker_timing"},
+        )
+
+    @staticmethod
+    def _build_servo_timing_sample(
+        session: ExperimentSession,
+        *,
+        record: dict[str, Any],
+        run_start_ns: int,
+        sample_index: int,
+    ) -> ExperimentTimeseriesSample:
+        sample_ns = int(record.get("sample_monotonic_ns") or run_start_ns)
+        monotonic_time_s = max(0.0, float(sample_ns - int(run_start_ns)) / 1_000_000_000.0)
+        servo_id = record.get("servo_id")
+        status_flags = ["servo_timing"]
+        if bool(record.get("error_flag", False)):
+            status_flags.append("servo_error")
+        commanded_motor_values = {}
+        if servo_id not in (None, ""):
+            commanded_motor_values["servo_id"] = int(servo_id)
+        if record.get("commanded_position_ticks") is not None:
+            commanded_motor_values["commanded_position_ticks"] = int(record["commanded_position_ticks"])
+        return ExperimentTimeseriesSample(
+            monotonic_time_s=monotonic_time_s,
+            wall_time_utc=_utc_now_iso(),
+            phase="servo_timing",
+            step_index=int(sample_index),
+            sample_index=int(sample_index),
+            tracker_frame_id=-1,
+            commanded_motor_values=commanded_motor_values,
+            status_flags=status_flags,
+            backend_health={"source": "servo_service"},
+            extra={**dict(record), "record_kind": "servo_timing"},
+        )
 
 
 class PretensionValidationExperiment(BaseExperiment):
@@ -1135,6 +1532,15 @@ def register_builtin_experiments(registry) -> None:
         tags=["Replay", "Offline"],
         default_config_path="config/experiment_replay_runner.example.yaml",
         factory=ReplayRunnerExperiment.from_dict,
+    )
+    registry.register(
+        name=TrackerTimingValidationExperiment.name,
+        title="Tracker Timing Validation",
+        description=TrackerTimingValidationExperiment.description,
+        category="diagnostic",
+        tags=["Tracking", "Timing", "Aurora"],
+        default_config_path="config/experiment_tracker_timing_validation.example.yaml",
+        factory=TrackerTimingValidationExperiment.from_dict,
     )
     registry.register(
         name=PretensionValidationExperiment.name,

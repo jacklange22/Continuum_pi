@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from continuum_robot.gui.controllers.servos_controller import ServosViewState
+from continuum_robot.gui.theme import grouped_workspace_stylesheet
 from continuum_robot.gui.view_utils import (
     ResponsiveSplitterController,
     preserve_scroll_position,
@@ -43,76 +44,10 @@ class ServosTab(QWidget):
 
         self.setObjectName("servoWorkspace")
         self.setStyleSheet(
-            """
-            QWidget#servoWorkspace {
-                background: #eef3f8;
-                color: #0f172a;
-            }
-            QWidget#servoWorkspace QGroupBox {
-                border: 1px solid #d9e3ec;
-                border-radius: 16px;
-                margin-top: 16px;
-                padding-top: 10px;
-                background: #ffffff;
-            }
-            QWidget#servoWorkspace QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 6px;
-                color: #0f172a;
-                font-weight: 700;
-            }
-            QWidget#servoWorkspace QLabel[role="title"] {
-                font-size: 24px;
-                font-weight: 700;
-                color: #0f172a;
-            }
-            QWidget#servoWorkspace QLabel[role="hint"] {
-                color: #475569;
-            }
-            QWidget#servoWorkspace QLabel[role="status"] {
-                padding: 8px 10px;
-                border-radius: 8px;
-                background: #e2e8f0;
-                color: #0f172a;
-                font-weight: 700;
-            }
-            QWidget#servoWorkspace QPushButton {
-                min-height: 36px;
-                padding: 0 14px;
-                border: 1px solid #dbe4ee;
-                border-radius: 10px;
-                background: #f8fafc;
-                color: #0f172a;
-                font-weight: 600;
-            }
-            QWidget#servoWorkspace QPushButton[role="primary"] {
-                background: #dbeafe;
-                border-color: #93c5fd;
-            }
-            QWidget#servoWorkspace QPushButton[role="danger"] {
-                background: #fee2e2;
-                border-color: #fecaca;
-            }
-            QWidget#servoWorkspace QPushButton[variant="ghost"] {
-                background: transparent;
-                color: #334155;
-            }
-            QWidget#servoWorkspace QPushButton:checked {
-                background: #dcfce7;
-                border-color: #4ade80;
-                color: #166534;
-            }
-            QWidget#servoWorkspace QSpinBox,
-            QWidget#servoWorkspace QDoubleSpinBox,
-            QWidget#servoWorkspace QPlainTextEdit,
-            QWidget#servoWorkspace QTableWidget {
-                border: 1px solid #dbe4ee;
-                border-radius: 10px;
-                background: #fbfdff;
-                color: #0f172a;
-            }
-            """
+            grouped_workspace_stylesheet(
+                object_name="servoWorkspace",
+                input_selectors=["QSpinBox", "QDoubleSpinBox", "QPlainTextEdit", "QTableWidget"],
+            )
         )
 
         self.title_label = QLabel("Servo Workspace")

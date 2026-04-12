@@ -9,6 +9,8 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen, QVector3D
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
+from continuum_robot.gui.theme import COLORS, qcolor
+
 try:
     from PySide6.QtDataVisualization import Q3DScatter, QAbstract3DSeries, QScatter3DSeries, QScatterDataItem, QScatterDataProxy
 
@@ -102,7 +104,8 @@ class Experiment3DWidget(QWidget):
         self.mode_label.setWordWrap(True)
         self.mode_label.setToolTip(self._backend_message)
         self.mode_label.setStyleSheet(
-            "padding: 4px 10px; border-radius: 999px; background: #eef2f7; color: #475569; font-weight: 600;"
+            f"padding: 4px 10px; border-radius: 999px; background: {COLORS.status_bg}; "
+            f"color: {COLORS.text_secondary}; font-weight: 600;"
         )
         layout.addWidget(self.mode_label)
 
@@ -115,7 +118,7 @@ class Experiment3DWidget(QWidget):
 
         self.legend_label = QLabel("No samples loaded.")
         self.legend_label.setWordWrap(True)
-        self.legend_label.setStyleSheet("color: #64748b; padding: 0 2px;")
+        self.legend_label.setStyleSheet(f"color: {COLORS.text_muted}; padding: 0 2px;")
         layout.addWidget(self.legend_label)
 
     @property
@@ -185,7 +188,8 @@ class Experiment3DWidget(QWidget):
         self._placeholder.setMinimumHeight(320)
         self._placeholder.setAlignment(Qt.AlignCenter)
         self._placeholder.setStyleSheet(
-            "border: 1px dashed #cbd5e1; border-radius: 14px; background: #f8fafc; color: #475569; padding: 24px;"
+            f"border: 1px dashed {COLORS.surface_border}; border-radius: 14px; "
+            f"background: {COLORS.surface_bg}; color: {COLORS.text_muted}; padding: 24px;"
         )
         layout.addWidget(self._placeholder)
 
@@ -261,7 +265,7 @@ class _ProjectionCanvas(QWidget):
         _ = event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.fillRect(self.rect(), QColor("#f8fafc"))
+        painter.fillRect(self.rect(), qcolor(COLORS.surface_bg))
 
         left_rect = QRectF(14.0, 12.0, max(40.0, (self.width() - 42.0) / 2.0), self.height() - 24.0)
         right_rect = QRectF(left_rect.right() + 12.0, 12.0, left_rect.width(), left_rect.height())
@@ -269,10 +273,10 @@ class _ProjectionCanvas(QWidget):
         self._draw_panel(painter, right_rect, "Side View (X/Z)", axis_a=0, axis_b=2)
 
     def _draw_panel(self, painter: QPainter, rect: QRectF, title: str, *, axis_a: int, axis_b: int) -> None:
-        painter.setPen(QPen(QColor("#cbd5e1"), 1))
-        painter.setBrush(QColor("#ffffff"))
+        painter.setPen(QPen(qcolor(COLORS.surface_border), 1))
+        painter.setBrush(qcolor(COLORS.surface_alt_bg))
         painter.drawRoundedRect(rect, 12.0, 12.0)
-        painter.setPen(QPen(QColor("#0f172a"), 1))
+        painter.setPen(QPen(qcolor(COLORS.text_primary), 1))
         painter.drawText(rect.adjusted(14.0, 10.0, -8.0, -8.0), f"{title}")
 
         all_points = [
@@ -282,7 +286,7 @@ class _ProjectionCanvas(QWidget):
         ]
         inner = rect.adjusted(16.0, 28.0, -16.0, -16.0)
         if not all_points:
-            painter.setPen(QPen(QColor("#64748b"), 1))
+            painter.setPen(QPen(qcolor(COLORS.text_muted), 1))
             painter.drawText(inner, Qt.AlignCenter, "No sample points to project yet.")
             return
 
@@ -298,7 +302,7 @@ class _ProjectionCanvas(QWidget):
         max_b += pad_b
 
         if self._show_axes:
-            painter.setPen(QPen(QColor("#cbd5e1"), 1))
+            painter.setPen(QPen(qcolor(COLORS.chart_grid), 1))
             mid_x = inner.left() + inner.width() / 2.0
             mid_y = inner.top() + inner.height() / 2.0
             painter.drawLine(QPointF(inner.left(), mid_y), QPointF(inner.right(), mid_y))
@@ -316,7 +320,7 @@ class _ProjectionCanvas(QWidget):
                 painter.drawEllipse(QPointF(px, py), radius, radius)
 
         if self._show_labels:
-            painter.setPen(QPen(QColor("#334155"), 1))
+            painter.setPen(QPen(qcolor(COLORS.text_secondary), 1))
             painter.drawText(inner.adjusted(4.0, 4.0, -4.0, -4.0), Qt.AlignBottom | Qt.AlignRight, f"{axis_a}/{axis_b}")
 
 

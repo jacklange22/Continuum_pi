@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QMainWindow, QTabWidget
+from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget
 
 from continuum_robot.app.bootstrap import AppContext, build_app_context
 from continuum_robot.gui.controllers.experiment_controller import ExperimentController
@@ -22,6 +22,7 @@ from continuum_robot.gui.tabs.registration_tab import RegistrationTab
 from continuum_robot.gui.tabs.servos_tab import ServosTab
 from continuum_robot.gui.tabs.system_tab import SystemTab
 from continuum_robot.gui.tabs.tracking_tab import TrackingTab
+from continuum_robot.gui.theme import apply_dark_theme
 from continuum_robot.gui.widgets.runtime_tip_calibration_dialog import RuntimeTipCalibrationDialog
 
 
@@ -33,6 +34,7 @@ class AppWindow(QMainWindow):
 
     def __init__(self, context: AppContext) -> None:
         super().__init__()
+        apply_dark_theme(QApplication.instance())
         self.context = context
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self.refresh)

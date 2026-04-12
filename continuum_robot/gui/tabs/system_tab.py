@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from continuum_robot.gui.controllers.system_controller import SystemViewState
+from continuum_robot.gui.theme import grouped_workspace_stylesheet
 from continuum_robot.gui.view_utils import set_text_document
 
 
@@ -43,67 +44,10 @@ class SystemTab(QWidget):
         self._applied_parameter_values: dict[str, object] = {}
         self.setObjectName("systemWorkspace")
         self.setStyleSheet(
-            """
-            QWidget#systemWorkspace {
-                background: #eef3f8;
-                color: #0f172a;
-            }
-            QWidget#systemWorkspace QGroupBox {
-                border: 1px solid #d9e3ec;
-                border-radius: 16px;
-                margin-top: 16px;
-                padding-top: 10px;
-                background: #ffffff;
-            }
-            QWidget#systemWorkspace QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 6px;
-                color: #0f172a;
-                font-weight: 700;
-            }
-            QWidget#systemWorkspace QLabel[role="title"] {
-                font-size: 24px;
-                font-weight: 700;
-                color: #0f172a;
-            }
-            QWidget#systemWorkspace QLabel[role="hint"] {
-                color: #475569;
-            }
-            QWidget#systemWorkspace QLabel[role="status"] {
-                padding: 8px 10px;
-                border-radius: 8px;
-                background: #e2e8f0;
-                color: #0f172a;
-                font-weight: 700;
-            }
-            QWidget#systemWorkspace QComboBox,
-            QWidget#systemWorkspace QSpinBox,
-            QWidget#systemWorkspace QDoubleSpinBox,
-            QWidget#systemWorkspace QPlainTextEdit {
-                border: 1px solid #dbe4ee;
-                border-radius: 10px;
-                background: #fbfdff;
-                color: #0f172a;
-            }
-            QWidget#systemWorkspace QPushButton {
-                min-height: 36px;
-                padding: 0 14px;
-                border: 1px solid #dbe4ee;
-                border-radius: 10px;
-                background: #f8fafc;
-                color: #0f172a;
-                font-weight: 600;
-            }
-            QWidget#systemWorkspace QPushButton[role="primary"] {
-                background: #dbeafe;
-                border-color: #93c5fd;
-            }
-            QWidget#systemWorkspace QPushButton[variant="ghost"] {
-                background: transparent;
-                color: #334155;
-            }
-            """
+            grouped_workspace_stylesheet(
+                object_name="systemWorkspace",
+                input_selectors=["QComboBox", "QSpinBox", "QDoubleSpinBox", "QPlainTextEdit"],
+            )
         )
 
         self.title_label = QLabel("System Workspace")

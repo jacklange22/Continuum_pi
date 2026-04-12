@@ -379,6 +379,17 @@ def _failure_stage_from_exception(exc: Exception) -> str:
     return "conversion"
 
 
+def _normalize_timing_tool_status(tool: TrackerToolState) -> str:
+    normalized = str(getattr(tool, "status", "") or "").strip().lower()
+    if normalized.startswith("tracked") or normalized in {"visible", "ok"}:
+        return "tracked"
+    if normalized.startswith("invalid"):
+        return "invalid"
+    if normalized == "missing":
+        return "missing"
+    return "unknown"
+
+
 def _matrix_from_quat_translation(
     quat_wxyz: tuple[float, float, float, float],
     translation_mm: tuple[float, float, float],
@@ -565,6 +576,7 @@ class TrackerBackendNDI:
         self._last_debug_signature: tuple[Any, ...] | None = None
         self._tracker_settings_snapshot: dict[str, Any] = {}
         self._last_frame_debug: dict[str, Any] = {}
+        self._timing_listeners: set[Callable[[dict[str, Any]], None]] = set()
         self._state = TrackerRuntimeState(
             connection_state="disconnected",
             canonical_state="disconnected",
@@ -586,6 +598,16 @@ class TrackerBackendNDI:
             backend_details={},
             tools={},
         )
+
+    def register_timing_listener(self, listener: Callable[[dict[str, Any]], None]) -> None:
+        """Subscribe to per-frame backend timing records."""
+        with self._lock:
+            self._timing_listeners.add(listener)
+
+    def unregister_timing_listener(self, listener: Callable[[dict[str, Any]], None]) -> None:
+        """Remove a previously registered timing listener."""
+        with self._lock:
+            self._timing_listeners.discard(listener)
 
     def start(self) -> None:
         if self.is_alive():
@@ -685,9 +707,93 @@ class TrackerBackendNDI:
                 )
 
                 while not self._stop_event.is_set():
+                    sample_start_ns = time.monotonic_ns()
                     observed_at_utc = utc_now_iso()
-                    frame_payload = self._get_frame(tracker)
-                    self._apply_frame_payload(frame_payload, observed_at_utc=observed_at_utc)
+                    backend_call_end_ns: int | None = None
+                    parse_complete_ns: int | None = None
+                    state_commit_complete_ns: int | None = None
+                    latest_frame: int | None = None
+                    frame_number_source = "missing"
+                    tools: dict[str, TrackerToolState] = {}
+                    debug: dict[str, Any] = {}
+                    raw_payload_available = False
+                    parsed_payload_available = False
+                    output_committed = False
+                    is_new_frame: bool | None = None
+                    is_duplicate_frame: bool | None = None
+                    error_stage: str | None = None
+                    error_message: str | None = None
+                    try:
+                        frame_payload = self._get_frame(tracker)
+                        backend_call_end_ns = time.monotonic_ns()
+                        observed_at_utc = utc_now_iso()
+                        raw_payload_available = True
+                        tools, latest_frame, frame_number_source, debug = self._parse_frame_payload_with_source(
+                            frame_payload,
+                            observed_at_utc=observed_at_utc,
+                        )
+                        parse_complete_ns = time.monotonic_ns()
+                        parsed_payload_available = True
+                        is_new_frame, is_duplicate_frame = self._classify_frame_number(latest_frame)
+                        self._commit_frame_payload(
+                            tools=tools,
+                            latest_frame=latest_frame,
+                            debug=debug,
+                            observed_at_utc=observed_at_utc,
+                        )
+                        state_commit_complete_ns = time.monotonic_ns()
+                        output_committed = True
+                    except Exception as exc:
+                        failure_ns = time.monotonic_ns()
+                        backend_call_end_ns = backend_call_end_ns or failure_ns
+                        state_commit_complete_ns = state_commit_complete_ns or failure_ns
+                        error_stage = (
+                            "get_frame"
+                            if not raw_payload_available
+                            else ("parse" if not parsed_payload_available else "commit")
+                        )
+                        error_message = str(exc)
+                        self._emit_timing_record(
+                            self._build_timing_record(
+                                sample_start_ns=sample_start_ns,
+                                backend_call_end_ns=backend_call_end_ns,
+                                parse_complete_ns=parse_complete_ns,
+                                state_commit_complete_ns=state_commit_complete_ns,
+                                observed_at_utc=observed_at_utc,
+                                latest_frame=latest_frame,
+                                frame_number_source=frame_number_source,
+                                tools=tools,
+                                debug=debug,
+                                raw_payload_available=raw_payload_available,
+                                parsed_payload_available=parsed_payload_available,
+                                output_committed=output_committed,
+                                is_new_frame=is_new_frame,
+                                is_duplicate_frame=is_duplicate_frame,
+                                error_stage=error_stage,
+                                error_message=error_message,
+                            )
+                        )
+                        raise
+                    self._emit_timing_record(
+                        self._build_timing_record(
+                            sample_start_ns=sample_start_ns,
+                            backend_call_end_ns=backend_call_end_ns or time.monotonic_ns(),
+                            parse_complete_ns=parse_complete_ns,
+                            state_commit_complete_ns=state_commit_complete_ns or time.monotonic_ns(),
+                            observed_at_utc=observed_at_utc,
+                            latest_frame=latest_frame,
+                            frame_number_source=frame_number_source,
+                            tools=tools,
+                            debug=debug,
+                            raw_payload_available=raw_payload_available,
+                            parsed_payload_available=parsed_payload_available,
+                            output_committed=output_committed,
+                            is_new_frame=is_new_frame,
+                            is_duplicate_frame=is_duplicate_frame,
+                            error_stage=error_stage,
+                            error_message=error_message,
+                        )
+                    )
                     time.sleep(self.poll_interval_ms / 1000.0)
             except Exception as exc:
                 if self._stop_event.is_set():
@@ -775,7 +881,25 @@ class TrackerBackendNDI:
         return get_frame_fn()
 
     def _apply_frame_payload(self, frame_payload: Any, *, observed_at_utc: str) -> None:
-        tools, latest_frame, debug = self._parse_frame_payload(frame_payload, observed_at_utc=observed_at_utc)
+        tools, latest_frame, _frame_number_source, debug = self._parse_frame_payload_with_source(
+            frame_payload,
+            observed_at_utc=observed_at_utc,
+        )
+        self._commit_frame_payload(
+            tools=tools,
+            latest_frame=latest_frame,
+            debug=debug,
+            observed_at_utc=observed_at_utc,
+        )
+
+    def _commit_frame_payload(
+        self,
+        *,
+        tools: dict[str, TrackerToolState],
+        latest_frame: int | None,
+        debug: dict[str, Any],
+        observed_at_utc: str,
+    ) -> None:
         self._frames_received_total += 1
         self._maybe_log_debug_frame(debug, latest_frame=latest_frame)
         with self._lock:
@@ -799,6 +923,18 @@ class TrackerBackendNDI:
         *,
         observed_at_utc: str,
     ) -> tuple[dict[str, TrackerToolState], int | None, dict[str, Any]]:
+        tools, latest_frame, _frame_number_source, debug = self._parse_frame_payload_with_source(
+            frame_payload,
+            observed_at_utc=observed_at_utc,
+        )
+        return tools, latest_frame, debug
+
+    def _parse_frame_payload_with_source(
+        self,
+        frame_payload: Any,
+        *,
+        observed_at_utc: str,
+    ) -> tuple[dict[str, TrackerToolState], int | None, str, dict[str, Any]]:
         if not isinstance(frame_payload, (list, tuple)) or len(frame_payload) < 5:
             raise RuntimeError(
                 "NDITracker.get_frame() returned an unsupported payload shape. "
@@ -942,10 +1078,14 @@ class TrackerBackendNDI:
                 tools[tool_id] = candidate
                 tool_transform_debug[tool_id] = debug_entry
 
+        latest_frame_source = "missing"
         latest_frame = max(observed_frames) if observed_frames else self._coerce_frame_number(frame_payload[2])
+        if latest_frame is not None:
+            latest_frame_source = "device"
         if latest_frame is None and tools:
             self._synthetic_frame_number += 1
             latest_frame = self._synthetic_frame_number
+            latest_frame_source = "synthetic"
             for tool in tools.values():
                 if tool.frame_number is None:
                     tool.frame_number = latest_frame
@@ -959,7 +1099,91 @@ class TrackerBackendNDI:
             "tool_payload_summaries": dict(tool_payload_summaries),
             "tool_transform_debug": dict(tool_transform_debug),
         }
-        return tools, latest_frame, debug
+        return tools, latest_frame, latest_frame_source, debug
+
+    def _classify_frame_number(self, latest_frame: int | None) -> tuple[bool | None, bool | None]:
+        if latest_frame is None:
+            return None, None
+        with self._lock:
+            previous_frame = self._state.latest_frame_number
+        if previous_frame is None:
+            return True, False
+        if int(latest_frame) == int(previous_frame):
+            return False, True
+        return True, False
+
+    def _build_timing_record(
+        self,
+        *,
+        sample_start_ns: int,
+        backend_call_end_ns: int,
+        parse_complete_ns: int | None,
+        state_commit_complete_ns: int,
+        observed_at_utc: str,
+        latest_frame: int | None,
+        frame_number_source: str,
+        tools: dict[str, TrackerToolState],
+        debug: dict[str, Any],
+        raw_payload_available: bool,
+        parsed_payload_available: bool,
+        output_committed: bool,
+        is_new_frame: bool | None,
+        is_duplicate_frame: bool | None,
+        error_stage: str | None,
+        error_message: str | None,
+    ) -> dict[str, Any]:
+        tool_validity = {
+            str(tool_id): _normalize_timing_tool_status(tool)
+            for tool_id, tool in sorted(tools.items())
+        }
+        valid_transform_count = sum(1 for status in tool_validity.values() if status == "tracked")
+        return {
+            "sample_start_monotonic_ns": int(sample_start_ns),
+            "backend_call_start_ns": int(sample_start_ns),
+            "backend_call_end_ns": int(backend_call_end_ns),
+            "parse_complete_ns": int(parse_complete_ns) if parse_complete_ns is not None else None,
+            "state_commit_complete_ns": int(state_commit_complete_ns),
+            "sample_commit_monotonic_ns": int(state_commit_complete_ns),
+            "observed_at_utc": str(observed_at_utc),
+            "backend_identity": self.backend_identity,
+            "requested_tool_ids": list(self.expected_tool_ids),
+            "frame_number": int(latest_frame) if latest_frame is not None else None,
+            "frame_number_source": str(frame_number_source),
+            "is_new_frame": is_new_frame,
+            "is_duplicate_frame": is_duplicate_frame,
+            "raw_payload_available": bool(raw_payload_available),
+            "parsed_payload_available": bool(parsed_payload_available),
+            "output_committed": bool(output_committed),
+            "error_flag": bool(error_message),
+            "error_stage": str(error_stage) if error_stage else None,
+            "error_message": str(error_message) if error_message else None,
+            "raw_tool_ids": list(debug.get("raw_tool_ids", [])),
+            "normalized_tool_ids": list(debug.get("normalized_tool_ids", [])),
+            "runtime_role_mappings": dict(debug.get("runtime_role_mappings", {})),
+            "tools_visible": sorted(tool_validity),
+            "tool_validity": tool_validity,
+            "valid_transform_count": int(valid_transform_count),
+            "total_cycle_ms": float(max(0, state_commit_complete_ns - sample_start_ns)) / 1_000_000.0,
+            "backend_call_ms": float(max(0, backend_call_end_ns - sample_start_ns)) / 1_000_000.0,
+            "parse_ms": (
+                float(max(0, parse_complete_ns - backend_call_end_ns)) / 1_000_000.0
+                if parse_complete_ns is not None
+                else None
+            ),
+            "state_commit_ms": float(
+                max(0, state_commit_complete_ns - (parse_complete_ns or backend_call_end_ns))
+            )
+            / 1_000_000.0,
+        }
+
+    def _emit_timing_record(self, record: dict[str, Any]) -> None:
+        with self._lock:
+            listeners = list(self._timing_listeners)
+        for listener in listeners:
+            try:
+                listener(dict(record))
+            except Exception:
+                continue
 
     @staticmethod
     def _coerce_frame_number(raw_frame_number: Any) -> int | None:

@@ -3,8 +3,10 @@ aurora_port: ""
 # On the Pi, OpenRB-150 commonly appears here as `/dev/ttyACM0`.
 openrb_port: ""
 tracker_backend: "ndi"
-tracker_fallback_backend: "bridge"
-tracker_fallback_enabled: true
+# Leave bridge fallback disabled unless you are explicitly debugging the legacy
+# compatibility path. The Python NDI backend is the active runtime path.
+tracker_fallback_backend:
+tracker_fallback_enabled: false
 tracker_type: "aurora"
 # The current OpenRB / XC330 bring-up path has been confirmed at 57600.
 # Keep machine-specific overrides in system.local.yaml when the local bench setup differs.
@@ -24,6 +26,7 @@ tracker_settings_overrides: {}
 tracker_tool_id_aliases:
   "10": "0A"
   "11": "0B"
+# Retained only for explicit legacy bridge fallback/debugging.
 tracker_socket_path: "/tmp/tracker_bridge.sock"
 tracker_bridge_executable: "bin/tracker_bridge"
 tracker_poll_ms: 20

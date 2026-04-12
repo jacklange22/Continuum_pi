@@ -16,6 +16,7 @@ from continuum_robot.gui.experiment_preflight import (
     RUN_OK,
     RUN_WARNING,
 )
+from continuum_robot.gui.theme import COLORS, chip_stylesheet
 from continuum_robot.gui.view_utils import preserve_scroll_position
 
 
@@ -30,7 +31,7 @@ class ExperimentPreflightWidget(QWidget):
         self.status_chip.setMinimumWidth(108)
         self.summary_label = QLabel("Preflight not evaluated.")
         self.summary_label.setWordWrap(True)
-        self.summary_label.setStyleSheet("color: #334155;")
+        self.summary_label.setStyleSheet(f"color: {COLORS.text_secondary};")
 
         summary_row = QHBoxLayout()
         summary_row.setContentsMargins(0, 0, 0, 0)
@@ -55,14 +56,12 @@ class ExperimentPreflightWidget(QWidget):
             return
         self._report_signature = signature
         color = {
-            RUN_OK: ("#dcfce7", "#166534", "Ready"),
-            RUN_WARNING: ("#fef3c7", "#92400e", "Warning"),
-            RUN_BLOCKED: ("#fee2e2", "#991b1b", "Blocked"),
-        }.get(report.overall_status, ("#e2e8f0", "#334155", "Info"))
+            RUN_OK: ("#14532d", "#dcfce7", "Ready"),
+            RUN_WARNING: ("#7c2d12", "#fde68a", "Warning"),
+            RUN_BLOCKED: ("#7f1d1d", "#fee2e2", "Blocked"),
+        }.get(report.overall_status, (COLORS.status_bg, COLORS.text_secondary, "Info"))
         self.status_chip.setText(color[2])
-        self.status_chip.setStyleSheet(
-            f"padding: 6px 10px; border-radius: 999px; background: {color[0]}; color: {color[1]}; font-weight: 700;"
-        )
+        self.status_chip.setStyleSheet(chip_stylesheet(background=color[0], foreground=color[1]))
         self.summary_label.setText(report.summary)
         def _rebuild() -> None:
             self.list.clear()
@@ -82,14 +81,12 @@ class _PreflightRowWidget(QWidget):
         super().__init__(parent)
         severity_label = QLabel(severity)
         bg, fg = _severity_colors(status)
-        severity_label.setStyleSheet(
-            f"padding: 4px 8px; border-radius: 999px; background: {bg}; color: {fg}; font-weight: 700;"
-        )
+        severity_label.setStyleSheet(chip_stylesheet(background=bg, foreground=fg))
         title_label = QLabel(label)
-        title_label.setStyleSheet("color: #0f172a; font-weight: 700;")
+        title_label.setStyleSheet(f"color: {COLORS.text_primary}; font-weight: 700;")
         message_label = QLabel(message)
         message_label.setWordWrap(True)
-        message_label.setStyleSheet("color: #475569;")
+        message_label.setStyleSheet(f"color: {COLORS.text_muted};")
 
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
@@ -102,16 +99,18 @@ class _PreflightRowWidget(QWidget):
         layout.setSpacing(4)
         layout.addLayout(title_row)
         layout.addWidget(message_label)
-        self.setStyleSheet("background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px;")
+        self.setStyleSheet(
+            f"background: {COLORS.surface_bg}; border: 1px solid {COLORS.surface_border}; border-radius: 10px;"
+        )
 
 
 def _severity_colors(status: str) -> tuple[str, str]:
     return {
-        PREFLIGHT_OK: ("#dcfce7", "#166534"),
-        PREFLIGHT_WARNING: ("#fef3c7", "#92400e"),
-        PREFLIGHT_BLOCKED: ("#fee2e2", "#991b1b"),
-        PREFLIGHT_INFO: ("#dbeafe", "#1d4ed8"),
-    }.get(status, ("#e2e8f0", "#334155"))
+        PREFLIGHT_OK: ("#14532d", "#dcfce7"),
+        PREFLIGHT_WARNING: ("#7c2d12", "#fde68a"),
+        PREFLIGHT_BLOCKED: ("#7f1d1d", "#fee2e2"),
+        PREFLIGHT_INFO: ("#1e3a8a", "#dbeafe"),
+    }.get(status, (COLORS.status_bg, COLORS.text_secondary))
 
 
 def _severity_label(status: str) -> str:

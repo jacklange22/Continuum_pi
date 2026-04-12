@@ -169,3 +169,5 @@ def test_config_loader_defaults_tracker_min_effective_fps_to_15_hz(tmp_path: Pat
     settings = ConfigLoader(base_dir=config_dir).load_settings()
 
     assert settings.serial.tracker_min_effective_fps == 15.0
+    assert settings.serial.tracker_fallback_enabled is False
+    assert settings.serial.tracker_fallback_backend is None

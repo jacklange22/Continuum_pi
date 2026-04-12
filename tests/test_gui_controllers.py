@@ -10,8 +10,9 @@ import time
 import numpy as np
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QBoxLayout, QScrollArea
+from PySide6.QtWidgets import QApplication, QBoxLayout, QMessageBox, QScrollArea
 
 from continuum_robot.app.bootstrap import AppContext
 from continuum_robot.app.service_registry import ServiceRegistry
@@ -1369,6 +1370,38 @@ def test_app_window_skips_hidden_tracking_and_registration_scene_updates(
         window.shutdown()
 
 
+def test_app_window_keeps_hidden_tracking_and_registration_scenes_idle_across_repeated_refreshes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _app()
+    window = AppWindow(_app_context(tmp_path))
+    try:
+        window._refresh_timer.stop()
+        counts = {"tracking_scene": 0, "registration_scene": 0}
+
+        def _count_tracking_scene(*args, **kwargs):
+            counts["tracking_scene"] += 1
+
+        def _count_registration_scene(*args, **kwargs):
+            counts["registration_scene"] += 1
+
+        monkeypatch.setattr(window.tracking_tab.plot_widget, "set_tracking_state", _count_tracking_scene)
+        monkeypatch.setattr(window.registration_tab.plot_widget, "set_data", _count_registration_scene)
+
+        window.tab_widget.setCurrentWidget(window.experiment_tab)
+        window.refresh()
+        window.refresh()
+        assert counts == {"tracking_scene": 0, "registration_scene": 0}
+
+        window.tab_widget.setCurrentWidget(window.system_tab)
+        window.refresh()
+        window.refresh()
+        assert counts == {"tracking_scene": 0, "registration_scene": 0}
+    finally:
+        window.shutdown()
+
+
 def test_servos_controller_captures_neutral_and_applies_displacement(tmp_path: Path) -> None:
     controller = ServosController(_servo_service(tmp_path), _settings())
     controller.servo_service.connect("/dev/mock-openrb", 115200)
@@ -1745,6 +1778,7 @@ def test_experiment_workspace_hides_operational_pivot_workflow_from_selector(tmp
 
     assert "pivot_calibration" not in option_names
     assert "repeatability_dataset" in option_names
+    assert "tracker_timing_validation" in option_names
     assert "pretension_validation" in option_names
     assert "command_schedule_validation" in option_names
     assert "collect_pose_command_dataset" in option_names
@@ -1872,6 +1906,42 @@ def test_grid_accuracy_page_shows_partial_status_and_selected_point_summary(tmp_
     assert page.point_table.item(0, 6).text().startswith("Partial")
     assert page.selected_point_summary_widget._pairs_signature is not None
     assert any(label == "Solve Ready" and value == "No" for label, value in page.capture_summary_widget._pairs_signature)
+    assert "1/3 samples" in page.selected_point_label.text()
+
+
+def test_grid_accuracy_page_locks_capture_settings_until_restart(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("aurora_grid_accuracy")
+    state = controller.refresh()
+    tab.update(state)
+    page = tab._page_for("aurora_grid_accuracy")
+
+    page.rows_spin.setValue(2)
+    page.cols_spin.setValue(2)
+    page.samples_spin.setValue(2)
+    page.capture_selected_point()
+
+    refreshed = controller.refresh()
+    tab.update(refreshed)
+
+    assert controller.get_config_value("captured_points", [])
+    assert page.rows_spin.isEnabled() is False
+    assert page.samples_spin.isEnabled() is False
+    assert page.capture_settings_notice.isHidden() is False
+
+    monkeypatch.setattr(
+        "continuum_robot.gui.widgets.experiment_pages.QMessageBox.question",
+        lambda *args, **kwargs: QMessageBox.Yes,
+    )
+    page.clear_all_points()
+    tab.update(controller.refresh())
+
+    assert controller.get_config_value("captured_points", []) == []
+    assert page.rows_spin.isEnabled() is True
+    assert page.samples_spin.isEnabled() is True
+    assert page.capture_settings_notice.isHidden() is True
 
 
 def test_grid_accuracy_page_recapture_replaces_existing_batch_without_duplicate_rows(tmp_path: Path) -> None:
@@ -1974,8 +2044,8 @@ def test_experiment_workspace_tab_updates_without_crashing_in_mock_mode(tmp_path
         tab.update(controller.refresh())
         page = tab._page_for("aurora_grid_accuracy")
         assert tab.page_stack.currentWidget() is page
-        assert page.viewer_3d is not None
-        assert page.viewer_3d.backend_mode == "placeholder"
+        assert page.viewer_3d is None
+        assert page.grid_preview_widget is not None
     finally:
         controller.shutdown()
 
@@ -2157,6 +2227,21 @@ def test_experiment_shell_routes_pretension_validation_to_custom_page(tmp_path: 
     assert pretension_page.run_button.text() == "Run Pretension Validation"
 
 
+def test_experiment_shell_routes_tracker_timing_validation_to_custom_page(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+
+    controller.select_experiment("tracker_timing_validation")
+    tab.update(controller.refresh())
+    timing_page = tab._page_for("tracker_timing_validation")
+
+    assert tab.page_stack.currentWidget() is timing_page
+    assert timing_page.experiment_name == "tracker_timing_validation"
+    assert timing_page.run_button.text() == "Run Timing Diagnostic"
+    assert timing_page.tool_mode_combo.currentData() == "both"
+
+
 def test_app_window_status_bar_tracks_active_servo_and_experiment_messages(tmp_path: Path) -> None:
     _app()
     window = AppWindow(_app_context(tmp_path))
@@ -2172,6 +2257,22 @@ def test_app_window_status_bar_tracks_active_servo_and_experiment_messages(tmp_p
         window.tab_widget.setCurrentWidget(window.experiment_tab)
         window.refresh()
         assert window.statusBar().currentMessage() == "Experiment workspace ready"
+    finally:
+        window.shutdown()
+
+
+def test_app_window_applies_dark_theme_palette_without_breaking_key_labels(tmp_path: Path) -> None:
+    app = _app()
+    window = AppWindow(_app_context(tmp_path))
+    try:
+        window._refresh_timer.stop()
+        palette = app.palette()
+        assert palette.color(QPalette.Window).lightness() < 40
+        assert palette.color(QPalette.WindowText).lightness() > 180
+        window.system_tab.update(window.system_controller.refresh())
+        assert window.system_tab.title_label.text() == "System Workspace"
+        assert window.system_tab.tracker_status_label.text() != ""
+        assert window.experiment_tab.selected_status_chip.text() != ""
     finally:
         window.shutdown()
 

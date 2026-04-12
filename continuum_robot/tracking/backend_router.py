@@ -254,6 +254,28 @@ class TrackingBackendRouter:
         tool = self._backend.get_latest_tool(tool_id)
         return copy.deepcopy(tool) if tool is not None else None
 
+    def register_timing_listener(self, listener) -> None:
+        """Forward a backend timing listener to the currently selected backend."""
+        backend = self._backend
+        if backend is None:
+            raise RuntimeError("Tracking backend is not started.")
+        register = getattr(backend, "register_timing_listener", None)
+        if not callable(register):
+            raise RuntimeError(
+                f"Selected tracking backend {self._state.selected_backend_name or 'unknown'} "
+                "does not expose backend timing listeners."
+            )
+        register(listener)
+
+    def unregister_timing_listener(self, listener) -> None:
+        """Remove a backend timing listener when the selected backend supports it."""
+        backend = self._backend
+        if backend is None:
+            return
+        unregister = getattr(backend, "unregister_timing_listener", None)
+        if callable(unregister):
+            unregister(listener)
+
     def _select_backend(
         self,
         backend_name: str,

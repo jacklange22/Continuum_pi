@@ -13,6 +13,7 @@ from continuum_robot.experiments.builtins import (
     CommandScheduleValidationConfig,
     PretensionValidationExperimentConfig,
     ReplayRunnerConfig,
+    TrackerTimingValidationConfig,
 )
 from continuum_robot.experiments.critical_experiments import (
     GridDefinitionConfig,
@@ -612,6 +613,114 @@ def evaluate_preflight(
                 "scientific_framing",
                 "Scientific Framing",
                 "This experiment validates current-displacement response and startup-state reproducibility. It does not claim true tendon-force sensing.",
+            )
+        )
+
+    elif experiment_name == "tracker_timing_validation":
+        config = TrackerTimingValidationConfig.from_dict(payload)
+        configured_backend = str(settings.serial.tracker_backend or "").strip().lower()
+        selected_backend = str(
+            tracking_snapshot.selected_backend_name or tracking_snapshot.backend_identity or ""
+        ).strip().lower()
+        if bool(settings.runtime.mock_mode):
+            checks.append(
+                _blocked(
+                    "mock_mode",
+                    "Runtime Mode",
+                    "Tracker timing validation is blocked in mock mode. Use the live Python NDI backend for a meaningful benchmark.",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "runtime_mode",
+                    "Runtime Mode",
+                    "Live runtime mode is enabled for a real backend timing benchmark.",
+                )
+            )
+        if configured_backend not in {"ndi", ""}:
+            checks.append(
+                _blocked(
+                    "configured_backend",
+                    "Configured Backend",
+                    f"Configured tracker backend is '{configured_backend}'. This diagnostic targets the Python NDI backend path only.",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "configured_backend",
+                    "Configured Backend",
+                    "Configured tracker backend is the Python NDI path.",
+                )
+            )
+        if selected_backend in {"bridge", "tracker_bridge_json"}:
+            checks.append(
+                _blocked(
+                    "selected_backend",
+                    "Selected Backend",
+                    "The active tracker backend is the legacy bridge path. This diagnostic should run against the Python NDI backend instead.",
+                )
+            )
+        elif tracker_ready:
+            checks.append(
+                _ok(
+                    "selected_backend",
+                    "Selected Backend",
+                    f"Live tracking is ready via {tracking_snapshot.backend_identity or tracking_snapshot.selected_backend_name or 'ndi'}.",
+                )
+            )
+        else:
+            checks.append(
+                _warning(
+                    "selected_backend",
+                    "Selected Backend",
+                    "Live tracking is not currently streaming. The experiment can start the backend, but the recorded run will only be meaningful if the Python NDI backend connects successfully.",
+                )
+            )
+        requested_tools = ", ".join(config.requested_tool_ids) or "n/a"
+        stop_mode = (
+            f"{int(config.sample_count_target)} analyzed samples"
+            if config.sample_count_target is not None
+            else f"{float(config.run_duration_s):.1f} s duration"
+        )
+        checks.append(
+            _info(
+                "benchmark_scope",
+                "Benchmark Scope",
+                f"Will benchmark requested tools {requested_tools}, discard {int(config.warmup_samples)} warmup sample(s), and stop after {stop_mode}.",
+            )
+        )
+        if bool(config.enable_servo_logging):
+            if servo_connected:
+                checks.append(
+                    _ok(
+                        "servo_logging",
+                        "Servo Sync Logging",
+                        "Servo telemetry will be logged alongside tracker timing samples for timestamp-alignment analysis.",
+                    )
+                )
+            else:
+                checks.append(
+                    _blocked(
+                        "servo_logging",
+                        "Servo Sync Logging",
+                        "Servo sync logging was requested, but the servo service is not connected.",
+                    )
+                )
+        else:
+            checks.append(
+                _info(
+                    "servo_logging",
+                    "Servo Sync Logging",
+                    "Servo sync logging is disabled for this run.",
+                )
+            )
+        checks.append(
+            _ok(
+                "scientific_framing",
+                "Scientific Framing",
+                "This diagnostic measures backend acquisition timing and duplicate/stale frame behavior. It does not use GUI refresh rate as a tracker-performance metric.",
             )
         )
 

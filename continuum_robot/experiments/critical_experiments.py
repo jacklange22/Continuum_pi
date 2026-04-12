@@ -13,6 +13,7 @@ import numpy as np
 from continuum_robot.experiments.dataset_io import ExperimentDatasetLoader
 from continuum_robot.experiments.dataset_tools import extract_tip_or_tool_position_mm
 from continuum_robot.experiments.framework import BaseExperiment, ExperimentHardwareRequirements, ExperimentSession
+from continuum_robot.experiments.grid_accuracy_outputs import write_grid_accuracy_outputs
 from continuum_robot.experiments.metrics import (
     as_points_n3,
     centroid_mm,
@@ -592,6 +593,14 @@ class AuroraGridAccuracyExperiment(BaseExperiment):
             require_tip_calibration=self.config.use_tip_calibration,
             allow_coil_origin_fallback=self.config.allow_coil_origin_fallback,
         )
+        if self.config.captured_points:
+            metrics.update(
+                _grid_capture_progress_metrics(
+                    captured_points=self.config.captured_points,
+                    truth_catalog=preview.truth_catalog,
+                    expected_samples=max(1, int(self.config.samples_per_point)),
+                )
+            )
         metrics["summary_requirements"] = {"force_status": metrics["status"]}
         session.metrics.update(metrics)
 
@@ -599,6 +608,13 @@ class AuroraGridAccuracyExperiment(BaseExperiment):
         if self._tracking_started_here:
             session.context.tracking_service.stop()
             self._tracking_started_here = False
+
+    def write_outputs(self, session: ExperimentSession, paths, summary) -> None:
+        write_grid_accuracy_outputs(
+            output_dir=paths.output_dir,
+            metadata=session.metadata,
+            summary=summary,
+        )
 
 
 class PivotCalibrationExperiment(BaseExperiment):
@@ -1318,10 +1334,10 @@ def build_grid_accuracy_preview(
     """Normalize captured point records into canonical samples plus aligned residual metrics."""
     truth_catalog = build_grid_truth_catalog(config, project_root=project_root)
     samples = grid_capture_records_to_samples(config.captured_points, truth_catalog=truth_catalog, tool_id=config.tool_id)
-    tip_calibration_available = any(
-        (sample.extra.get("position_source") == "tip")
-        for sample in samples
-    ) or bool(config.tip_vector_mm or config.tip_file)
+    tip_calibration_available = _grid_tip_calibration_used_by_samples(
+        samples,
+        fallback_configured=bool(config.tip_vector_mm or config.tip_file),
+    )
     metrics = compute_grid_accuracy_metrics(
         samples,
         truth_points_mm=[entry["truth_point_mm"] for entry in truth_catalog],
@@ -1332,6 +1348,13 @@ def build_grid_accuracy_preview(
         tip_calibration_available=tip_calibration_available,
         require_tip_calibration=config.use_tip_calibration,
         allow_coil_origin_fallback=config.allow_coil_origin_fallback,
+    )
+    metrics.update(
+        _grid_capture_progress_metrics(
+            captured_points=config.captured_points,
+            truth_catalog=truth_catalog,
+            expected_samples=max(1, int(config.samples_per_point)),
+        )
     )
     return GridAccuracyPreview(truth_catalog=truth_catalog, samples=samples, metrics=metrics)
 
@@ -1528,6 +1551,9 @@ def compute_grid_accuracy_metrics(
             "point_count_aligned": 0,
             "registration_available": registration_available,
             "tip_calibration_available": tip_calibration_available,
+            "tip_calibration_used": bool(tip_calibration_available),
+            "coil_origin_fallback_used": False,
+            "position_source_counts": {},
         }
     truth_by_index = {index: [float(value) for value in truth_points_mm[index]] for index in range(len(truth_points_mm))}
     samples_by_index: dict[int, list[Any]] = {}
@@ -1570,9 +1596,11 @@ def compute_grid_accuracy_metrics(
         accepted_sample_count += len(accepted_positions)
         outlier_count += len(rejected_indices)
         point_samples = samples_by_index.get(point_index, [])
+        point_position_source_counts: dict[str, int] = {}
         for sample in point_samples:
             position_source = str(sample.extra.get("position_source", "tracker_tool") or "tracker_tool")
             position_source_counts[position_source] = int(position_source_counts.get(position_source, 0) or 0) + 1
+            point_position_source_counts[position_source] = int(point_position_source_counts.get(position_source, 0) or 0) + 1
         label = next(
             (
                 str(sample.extra.get("truth_label"))
@@ -1595,6 +1623,12 @@ def compute_grid_accuracy_metrics(
             "sample_spread_rms_mm": accepted_spread,
             "raw_sample_spread_rms_mm": raw_spread,
             "outlier_count": len(rejected_indices),
+            "position_source_counts": point_position_source_counts,
+            "position_source_summary": ", ".join(
+                f"{source}={count}"
+                for source, count in sorted(point_position_source_counts.items())
+            )
+            or "n/a",
             "status": (
                 "complete" if len(positions) > 0 else "not_captured"
             ),
@@ -1655,11 +1689,14 @@ def compute_grid_accuracy_metrics(
                 point_metrics["residual_mm"] = float(residual_norms[index])
                 per_point_residuals[label] = float(residual_norms[index])
 
-    if require_tip_calibration and not tip_calibration_available and not allow_coil_origin_fallback:
+    coil_origin_fallback_used = bool(position_source_counts.get("coil_origin", 0) or 0)
+    tip_calibration_used = bool(position_source_counts.get("tip", 0) or 0) and not coil_origin_fallback_used
+
+    if require_tip_calibration and (coil_origin_fallback_used or not tip_calibration_available) and not allow_coil_origin_fallback:
         status = STATUS_INVALID_MISSING_TIP_CAL
     elif overall_rms is None:
         status = STATUS_INVALID_INSUFFICIENT_SAMPLES
-    elif require_tip_calibration and not tip_calibration_available and allow_coil_origin_fallback:
+    elif require_tip_calibration and (coil_origin_fallback_used or not tip_calibration_available) and allow_coil_origin_fallback:
         status = STATUS_PARTIAL_SUCCESS
     else:
         status = STATUS_SUCCESS
@@ -1691,6 +1728,49 @@ def compute_grid_accuracy_metrics(
         "position_source_counts": position_source_counts,
         "registration_available": registration_available,
         "tip_calibration_available": tip_calibration_available,
+        "tip_calibration_used": tip_calibration_used,
+        "coil_origin_fallback_used": coil_origin_fallback_used,
+    }
+
+
+def _grid_tip_calibration_used_by_samples(
+    samples,
+    *,
+    fallback_configured: bool,
+) -> bool:
+    """Return whether the current captured dataset actually used tip-based point positions."""
+    position_sources = {
+        str(sample.extra.get("position_source", "") or "")
+        for sample in samples or []
+        if getattr(sample, "extra", None)
+    }
+    if not position_sources:
+        return bool(fallback_configured)
+    return "tip" in position_sources and "coil_origin" not in position_sources
+
+
+def _grid_capture_progress_metrics(
+    *,
+    captured_points: list[dict[str, Any]],
+    truth_catalog: list[dict[str, Any]],
+    expected_samples: int,
+) -> dict[str, Any]:
+    """Summarize page-side capture completeness for the labeled grid workflow."""
+    complete = 0
+    partial = 0
+    for point in captured_points or []:
+        if not isinstance(point, dict):
+            continue
+        raw_count = len(point.get("raw_samples", []) or [])
+        if raw_count >= max(1, int(expected_samples)):
+            complete += 1
+        elif raw_count > 0:
+            partial += 1
+    total = len(truth_catalog)
+    return {
+        "point_count_complete": int(complete),
+        "point_count_partial": int(partial),
+        "point_count_not_started": max(0, int(total) - int(complete) - int(partial)),
     }
 
 

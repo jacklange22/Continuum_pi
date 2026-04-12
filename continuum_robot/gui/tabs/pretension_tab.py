@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from continuum_robot.servos.servo_service import PretensionParameters
+from continuum_robot.gui.theme import grouped_workspace_stylesheet
 from continuum_robot.gui.view_utils import (
     ResponsiveSplitterController,
     preserve_scroll_position,
@@ -43,71 +44,10 @@ class PretensionTab(QWidget):
         self._last_selected_servo_id: int | None = None
         self.setObjectName("pretensionWorkspace")
         self.setStyleSheet(
-            """
-            QWidget#pretensionWorkspace {
-                background: #eef3f8;
-                color: #0f172a;
-            }
-            QWidget#pretensionWorkspace QGroupBox {
-                border: 1px solid #d9e3ec;
-                border-radius: 16px;
-                margin-top: 16px;
-                padding-top: 10px;
-                background: #ffffff;
-            }
-            QWidget#pretensionWorkspace QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 6px;
-                color: #0f172a;
-                font-weight: 700;
-            }
-            QWidget#pretensionWorkspace QLabel[role="title"] {
-                font-size: 24px;
-                font-weight: 700;
-                color: #0f172a;
-            }
-            QWidget#pretensionWorkspace QLabel[role="hint"] {
-                color: #475569;
-            }
-            QWidget#pretensionWorkspace QLabel[role="status"] {
-                padding: 8px 10px;
-                border-radius: 8px;
-                background: #e2e8f0;
-                color: #0f172a;
-                font-weight: 700;
-            }
-            QWidget#pretensionWorkspace QPushButton {
-                min-height: 36px;
-                padding: 0 14px;
-                border: 1px solid #dbe4ee;
-                border-radius: 10px;
-                background: #f8fafc;
-                color: #0f172a;
-                font-weight: 600;
-            }
-            QWidget#pretensionWorkspace QPushButton[role="primary"] {
-                background: #dbeafe;
-                border-color: #93c5fd;
-            }
-            QWidget#pretensionWorkspace QPushButton[role="danger"] {
-                background: #fee2e2;
-                border-color: #fecaca;
-            }
-            QWidget#pretensionWorkspace QPushButton[variant="ghost"] {
-                background: transparent;
-                color: #334155;
-            }
-            QWidget#pretensionWorkspace QSpinBox,
-            QWidget#pretensionWorkspace QDoubleSpinBox,
-            QWidget#pretensionWorkspace QPlainTextEdit,
-            QWidget#pretensionWorkspace QTableWidget {
-                border: 1px solid #dbe4ee;
-                border-radius: 10px;
-                background: #fbfdff;
-                color: #0f172a;
-            }
-            """
+            grouped_workspace_stylesheet(
+                object_name="pretensionWorkspace",
+                input_selectors=["QSpinBox", "QDoubleSpinBox", "QPlainTextEdit", "QTableWidget"],
+            )
         )
 
         self.title_label = QLabel("Pretension Workspace")

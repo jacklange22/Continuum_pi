@@ -88,7 +88,7 @@ def build_app_context() -> AppContext:
     if tracker_backend_name not in {"ndi", "bridge", "disabled"}:
         raise ValueError(
             f"Unsupported tracker backend {settings.serial.tracker_backend!r}. "
-            "Use 'ndi', 'bridge', or 'disabled'."
+            "Use 'ndi' or 'disabled'. 'bridge' is retained only as an explicit legacy compatibility path."
         )
     tracking_backend = TrackingBackendRouter(
         mock_mode=settings.runtime.mock_mode,
