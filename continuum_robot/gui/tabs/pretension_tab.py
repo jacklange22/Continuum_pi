@@ -24,7 +24,11 @@ from PySide6.QtWidgets import (
 )
 
 from continuum_robot.servos.servo_service import PretensionParameters
-from continuum_robot.gui.view_utils import set_text_document
+from continuum_robot.gui.view_utils import (
+    ResponsiveSplitterController,
+    preserve_scroll_position,
+    set_text_document,
+)
 
 
 class PretensionTab(QWidget):
@@ -90,6 +94,10 @@ class PretensionTab(QWidget):
                 background: #fee2e2;
                 border-color: #fecaca;
             }
+            QWidget#pretensionWorkspace QPushButton[variant="ghost"] {
+                background: transparent;
+                color: #334155;
+            }
             QWidget#pretensionWorkspace QSpinBox,
             QWidget#pretensionWorkspace QDoubleSpinBox,
             QWidget#pretensionWorkspace QPlainTextEdit,
@@ -126,7 +134,7 @@ class PretensionTab(QWidget):
         self.servo_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.servo_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.servo_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
-        self.servo_table.setMinimumHeight(180)
+        self.servo_table.setMinimumHeight(160)
         self.servo_table.cellClicked.connect(self._select_row_servo)
 
         selection_box = QGroupBox("Servo Selection / Health Summary")
@@ -238,6 +246,7 @@ class PretensionTab(QWidget):
         self.apply_live_button = QPushButton("Apply Live Parameters")
         self.apply_live_button.setProperty("role", "primary")
         self.save_defaults_button = QPushButton("Save Parameters as Defaults")
+        self.save_defaults_button.setProperty("variant", "ghost")
         self.apply_live_button.clicked.connect(self._apply_live_parameters)
         self.save_defaults_button.clicked.connect(self._save_parameter_defaults)
         parameter_buttons = QHBoxLayout()
@@ -247,14 +256,19 @@ class PretensionTab(QWidget):
         parameter_layout.addRow(parameter_buttons)
 
         self.refresh_button = QPushButton("Refresh Selected Servo")
+        self.refresh_button.setProperty("variant", "ghost")
         self.measure_baseline_button = QPushButton("Measure / Refresh Baseline")
+        self.measure_baseline_button.setProperty("variant", "ghost")
         self.move_reference_button = QPushButton("Move to Untensioned Reference")
+        self.move_reference_button.setProperty("variant", "ghost")
         self.pretension_button = QPushButton("Pretension Selected Servo")
         self.pretension_button.setProperty("role", "primary")
         self.stop_button = QPushButton("Stop Pretension")
         self.stop_button.setProperty("role", "danger")
         self.save_button = QPushButton("Save Pretension Result")
+        self.save_button.setProperty("variant", "ghost")
         self.save_startup_button = QPushButton("Save Startup Calibration")
+        self.save_startup_button.setProperty("variant", "ghost")
 
         self.refresh_button.clicked.connect(lambda: self._safe_call(self.controller.refresh))
         self.measure_baseline_button.clicked.connect(self._measure_baseline)
@@ -339,7 +353,7 @@ class PretensionTab(QWidget):
         self.comparison_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.comparison_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.comparison_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
-        self.comparison_table.setMinimumHeight(180)
+        self.comparison_table.setMinimumHeight(160)
         comparison_box = QGroupBox("Saved Pretension Comparison")
         comparison_layout = QVBoxLayout(comparison_box)
         comparison_layout.addWidget(self.comparison_table)
@@ -362,20 +376,26 @@ class PretensionTab(QWidget):
         right_layout.addWidget(progress_box)
         right_layout.addWidget(log_box, 1)
 
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(8)
-        splitter.addWidget(left_column)
-        splitter.addWidget(right_column)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 4)
-        splitter.setSizes([460, 760])
+        self.workspace_splitter = QSplitter(Qt.Horizontal)
+        self.workspace_splitter.setChildrenCollapsible(False)
+        self.workspace_splitter.setHandleWidth(8)
+        self.workspace_splitter.addWidget(left_column)
+        self.workspace_splitter.addWidget(right_column)
+        self.workspace_splitter.setStretchFactor(0, 3)
+        self.workspace_splitter.setStretchFactor(1, 4)
+        self.workspace_splitter.setSizes([460, 760])
+        self._workspace_splitter_layout = ResponsiveSplitterController(
+            self.workspace_splitter,
+            collapse_below_width=1180,
+            horizontal_sizes=[460, 760],
+            vertical_sizes=[420, 620],
+        )
 
         content = QWidget()
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(14)
-        content_layout.addWidget(splitter)
+        content_layout.addWidget(self.workspace_splitter)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -387,6 +407,7 @@ class PretensionTab(QWidget):
         layout.addWidget(self.title_label)
         layout.addWidget(self.workflow_hint)
         layout.addWidget(self.scroll_area, 1)
+        self._apply_responsive_layout()
 
     def update(self, state) -> None:
         self.selection_status_label.setText(
@@ -412,20 +433,23 @@ class PretensionTab(QWidget):
             max(1, int(state.default_absolute_trigger_current_ma or 1)),
         )
 
-        self.servo_table.setRowCount(len(state.servo_rows))
         selected_row = None
-        for row, item in enumerate(state.servo_rows):
-            self.servo_table.setItem(row, 0, self._item(item["servo_id"], align=Qt.AlignRight))
-            self.servo_table.setItem(row, 1, self._item(self._display(item["position"]), align=Qt.AlignRight))
-            self.servo_table.setItem(row, 2, self._item(self._display(item["current_ma"]), align=Qt.AlignRight))
-            self.servo_table.setItem(row, 3, self._item("Yes" if item["pretension_ready"] else "No", align=Qt.AlignCenter))
-            self.servo_table.setItem(row, 4, self._item(item["status"]))
-            if item.get("selected"):
-                selected_row = row
-        if selected_row is not None:
-            self.servo_table.selectRow(selected_row)
-        else:
-            self.servo_table.clearSelection()
+        def _rebuild_servo_table() -> None:
+            nonlocal selected_row
+            self.servo_table.setRowCount(len(state.servo_rows))
+            for row, item in enumerate(state.servo_rows):
+                self.servo_table.setItem(row, 0, self._item(item["servo_id"], align=Qt.AlignRight))
+                self.servo_table.setItem(row, 1, self._item(self._display(item["position"]), align=Qt.AlignRight))
+                self.servo_table.setItem(row, 2, self._item(self._display(item["current_ma"]), align=Qt.AlignRight))
+                self.servo_table.setItem(row, 3, self._item("Yes" if item["pretension_ready"] else "No", align=Qt.AlignCenter))
+                self.servo_table.setItem(row, 4, self._item(item["status"]))
+                if item.get("selected"):
+                    selected_row = row
+            if selected_row is not None:
+                self.servo_table.selectRow(selected_row)
+            else:
+                self.servo_table.clearSelection()
+        preserve_scroll_position(self.servo_table, _rebuild_servo_table)
 
         self.selected_servo_label.setText(self._display(state.selected_servo_id))
         self.torque_label.setText("On" if state.selected_servo_torque_enabled else ("Off" if state.selected_servo_torque_enabled is False else "—"))
@@ -502,22 +526,24 @@ class PretensionTab(QWidget):
         self.apply_live_button.setEnabled(not state.pretension_running)
         self.save_defaults_button.setEnabled(not state.pretension_running)
 
-        self.comparison_table.setRowCount(len(state.comparison_rows))
-        for row, item in enumerate(state.comparison_rows):
-            self.comparison_table.setItem(row, 0, self._item(item["servo_id"], align=Qt.AlignRight))
-            self.comparison_table.setItem(row, 1, self._item(item["status"]))
-            self.comparison_table.setItem(row, 2, self._item(item["final_position"], align=Qt.AlignRight))
-            self.comparison_table.setItem(row, 3, self._item(item["baseline_current"], align=Qt.AlignRight))
-            self.comparison_table.setItem(row, 4, self._item(item["trigger_current"], align=Qt.AlignRight))
-            self.comparison_table.setItem(
-                row,
-                5,
-                self._item(
-                    f"{item['travel_used']} / {item['reason']}"
-                    if item["travel_used"] != "—"
-                    else item["reason"]
-                ),
-            )
+        def _rebuild_comparison_table() -> None:
+            self.comparison_table.setRowCount(len(state.comparison_rows))
+            for row, item in enumerate(state.comparison_rows):
+                self.comparison_table.setItem(row, 0, self._item(item["servo_id"], align=Qt.AlignRight))
+                self.comparison_table.setItem(row, 1, self._item(item["status"]))
+                self.comparison_table.setItem(row, 2, self._item(item["final_position"], align=Qt.AlignRight))
+                self.comparison_table.setItem(row, 3, self._item(item["baseline_current"], align=Qt.AlignRight))
+                self.comparison_table.setItem(row, 4, self._item(item["trigger_current"], align=Qt.AlignRight))
+                self.comparison_table.setItem(
+                    row,
+                    5,
+                    self._item(
+                        f"{item['travel_used']} / {item['reason']}"
+                        if item["travel_used"] != "—"
+                        else item["reason"]
+                    ),
+                )
+        preserve_scroll_position(self.comparison_table, _rebuild_comparison_table)
 
     def _select_row_servo(self, row: int, _column: int) -> None:
         item = self.servo_table.item(row, 0)
@@ -570,6 +596,14 @@ class PretensionTab(QWidget):
                 self.controller.state.last_error = str(exc)
             self.controller.state.status_message = str(exc)
         self.update(self.controller.state)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_responsive_layout()
+
+    def _apply_responsive_layout(self) -> None:
+        available_width = max(self.width(), self.scroll_area.viewport().width())
+        self._workspace_splitter_layout.apply(available_width)
 
     def _mark_parameter_dirty(self, *_args) -> None:
         if self._updating_parameter_widgets:

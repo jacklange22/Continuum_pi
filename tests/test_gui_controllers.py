@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QScrollArea
+from PySide6.QtWidgets import QApplication, QBoxLayout, QScrollArea
 
 from continuum_robot.app.bootstrap import AppContext
 from continuum_robot.app.service_registry import ServiceRegistry
@@ -384,6 +384,58 @@ def test_tracking_tab_wraps_workspace_in_scroll_area(tmp_path: Path) -> None:
     finally:
         if tracking_controller is not None:
             tracking_controller.shutdown()
+
+
+def test_tracking_tab_demotes_disconnect_and_diagnostic_actions(tmp_path: Path) -> None:
+    _app()
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(settings, tmp_path, tracking_service)
+    registration_controller = RegistrationController(
+        registration_service=registration_service,
+        registration_config=settings.registration,
+    )
+    experiment_runner = _experiment_runner(
+        settings,
+        tmp_path,
+        tracking_service,
+        _servo_service(tmp_path),
+        tmp_path / "latest_registration.json",
+    )
+    workflow_controller = TrackerMvpController(
+        tracking_service=tracking_service,
+        registration_service=registration_service,
+        registration_controller=registration_controller,
+        experiment_runner=experiment_runner,
+        settings=settings,
+        project_root=tmp_path,
+    )
+    from continuum_robot.gui.controllers.tracking_controller import TrackingController
+
+    live_controller = TrackingController(
+        tracking_service=tracking_service,
+        settings=settings,
+        registration_path=tmp_path / "latest_registration.json",
+    )
+    try:
+        tab = TrackingTab(live_controller, workflow_controller=workflow_controller)
+        tab.update(workflow_controller.refresh(), live_controller.refresh())
+
+        assert tab.connect_button.isEnabled() is True
+        assert tab.disconnect_button.isEnabled() is False
+        assert tab.validate_button.isEnabled() is False
+        assert tab.disconnect_button.property("variant") == "ghost"
+        assert tab.validate_button.property("variant") == "ghost"
+        assert tab.validate_button.text() == "Run Tracker Diagnostic"
+
+        workflow_controller.connect_tracker()
+        tab.update(workflow_controller.refresh(), live_controller.refresh())
+
+        assert tab.connect_button.isEnabled() is False
+        assert tab.disconnect_button.isEnabled() is True
+        assert tab.validate_button.isEnabled() is True
+    finally:
+        live_controller.shutdown()
 
 
 def test_registration_tab_uses_workflow_state_to_gate_begin_button(tmp_path: Path) -> None:
@@ -1041,6 +1093,21 @@ def test_system_tab_wraps_workspace_in_scroll_area() -> None:
     assert tab.scroll_area.widget() is not None
 
 
+def test_system_tab_surfaces_registration_runtime_tip_and_live_tip_summaries() -> None:
+    _app()
+    controller = _PortSelectionController()
+    controller.state.registration_summary = "loaded | latest_registration.json | FRE=0.400 mm"
+    controller.state.runtime_tip_summary = "accepted | latest_runtime_tip_calibration.json"
+    controller.state.live_tip_summary = "ready | tip_pose_status=ok"
+    tab = SystemTab(controller)
+
+    tab.update(controller.state)
+
+    assert "FRE=0.400 mm" in tab.registration_status_label.text()
+    assert "latest_runtime_tip_calibration.json" in tab.runtime_tip_status_label.text()
+    assert "tip_pose_status=ok" in tab.live_tip_status_label.text()
+
+
 def test_system_tab_save_apply_prefers_callback_when_available() -> None:
     _app()
     controller = _PortSelectionController()
@@ -1261,6 +1328,43 @@ def test_app_window_refreshes_only_the_active_tab(tmp_path: Path, monkeypatch: p
             "registration": 0,
             "experiment": 1,
         }
+    finally:
+        window.shutdown()
+
+
+def test_app_window_skips_hidden_tracking_and_registration_scene_updates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _app()
+    window = AppWindow(_app_context(tmp_path))
+    try:
+        window._refresh_timer.stop()
+        counts = {"tracking_scene": 0, "registration_scene": 0}
+
+        def _count_tracking_scene(*args, **kwargs):
+            counts["tracking_scene"] += 1
+
+        def _count_registration_scene(*args, **kwargs):
+            counts["registration_scene"] += 1
+
+        monkeypatch.setattr(window.tracking_tab.plot_widget, "set_tracking_state", _count_tracking_scene)
+        monkeypatch.setattr(window.registration_tab.plot_widget, "set_data", _count_registration_scene)
+
+        window.tab_widget.setCurrentWidget(window.servos_tab)
+        counts = {"tracking_scene": 0, "registration_scene": 0}
+        window.refresh()
+        assert counts == {"tracking_scene": 0, "registration_scene": 0}
+
+        window.tab_widget.setCurrentWidget(window.tracking_tab)
+        counts = {"tracking_scene": 0, "registration_scene": 0}
+        window.refresh()
+        assert counts == {"tracking_scene": 1, "registration_scene": 0}
+
+        window.tab_widget.setCurrentWidget(window.registration_tab)
+        counts = {"tracking_scene": 0, "registration_scene": 0}
+        window.refresh()
+        assert counts == {"tracking_scene": 0, "registration_scene": 1}
     finally:
         window.shutdown()
 
@@ -1641,6 +1745,7 @@ def test_experiment_workspace_hides_operational_pivot_workflow_from_selector(tmp
 
     assert "pivot_calibration" not in option_names
     assert "repeatability_dataset" in option_names
+    assert "pretension_validation" in option_names
     assert "command_schedule_validation" in option_names
     assert "collect_pose_command_dataset" in option_names
 
@@ -1731,8 +1836,64 @@ def test_grid_accuracy_page_captures_labeled_points_and_updates_preview(tmp_path
     assert refreshed.preflight_report.overall_status == "ok_to_run"
     assert len(controller.get_config_value("captured_points", [])) == 3
     assert page.point_table.item(0, 2).text() == "2"
-    assert "P03" in page.selected_point_label.text()
-    assert any(label == "Raw Samples" for label, _value in refreshed.result_details)
+    assert "P04" in page.selected_point_label.text()
+    assert any(label == "Coverage" for label, _value in refreshed.result_details)
+    assert page.capture_summary_widget._pairs_signature is not None
+
+
+def test_grid_accuracy_page_shows_partial_status_and_selected_point_summary(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("aurora_grid_accuracy")
+    controller.set_config_value("dimensions", [2, 2])
+    controller.set_config_value("samples_per_point", 3)
+    controller.set_config_value(
+        "captured_points",
+        [
+            {
+                "label": "P01",
+                "target_index": 0,
+                "raw_samples": [
+                    {
+                        "position_mm": [0.1, 0.0, 0.0],
+                        "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                        "tracking_state": "valid",
+                        "position_source": "tip",
+                    }
+                ],
+            }
+        ],
+    )
+    state = controller.refresh()
+    tab.update(state)
+    page = tab._page_for("aurora_grid_accuracy")
+
+    assert page.point_table.item(0, 6).text().startswith("Partial")
+    assert page.selected_point_summary_widget._pairs_signature is not None
+    assert any(label == "Solve Ready" and value == "No" for label, value in page.capture_summary_widget._pairs_signature)
+
+
+def test_grid_accuracy_page_recapture_replaces_existing_batch_without_duplicate_rows(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("aurora_grid_accuracy")
+    state = controller.refresh()
+    tab.update(state)
+    page = tab._page_for("aurora_grid_accuracy")
+
+    page.rows_spin.setValue(2)
+    page.cols_spin.setValue(2)
+    page.samples_spin.setValue(2)
+    page.capture_selected_point()
+    page._selected_target_index = 0
+    page.capture_selected_point()
+
+    captured_points = controller.get_config_value("captured_points", [])
+    assert len(captured_points) == 1
+    assert len(captured_points[0]["raw_samples"]) == 2
+    assert "recaptured" in page.capture_status_text.toPlainText().lower()
 
 
 def test_repeatability_page_uses_custom_schedule_preview_and_target_catalog(tmp_path: Path) -> None:
@@ -1819,6 +1980,55 @@ def test_experiment_workspace_tab_updates_without_crashing_in_mock_mode(tmp_path
         controller.shutdown()
 
 
+def test_repeatability_page_wraps_workspace_in_scroll_area_and_stacks_on_narrow_width(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("repeatability_dataset")
+    tab.resize(920, 760)
+    tab.show()
+    tab.update(controller.refresh())
+    QTest.qWait(20)
+    page = tab._page_for("repeatability_dataset")
+
+    assert isinstance(page.scroll_area, QScrollArea)
+    assert page.scroll_area.widget() is not None
+    assert page.top_row.direction() == QBoxLayout.TopToBottom
+    assert page.bottom_row.direction() == QBoxLayout.TopToBottom
+
+    tab.resize(1480, 900)
+    QTest.qWait(20)
+
+    assert page.top_row.direction() == QBoxLayout.LeftToRight
+    assert page.bottom_row.direction() == QBoxLayout.LeftToRight
+
+
+def test_repeatability_page_preserves_target_table_scroll_on_benign_refresh(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("repeatability_dataset")
+    controller.set_config_value("schedule.target_set", "manual")
+    controller.set_parameter_value(
+        "schedule.target_points_cm",
+        "\n".join(f"- [{0.01 * index:.3f}, 0.0, 0.0, 0.0]" for index in range(30)),
+    )
+    tab.resize(1100, 860)
+    tab.show()
+    tab.update(controller.refresh())
+    QTest.qWait(20)
+    page = tab._page_for("repeatability_dataset")
+
+    scroll_bar = page.target_table.verticalScrollBar()
+    scroll_bar.setValue(max(1, scroll_bar.maximum() // 2))
+    previous_value = scroll_bar.value()
+
+    tab.update(controller.refresh())
+    QTest.qWait(20)
+
+    assert page.target_table.verticalScrollBar().value() >= previous_value - 2
+
+
 def test_experiment_shell_header_stays_compact_and_tracks_selection(tmp_path: Path) -> None:
     _app()
     controller = _experiment_controller(tmp_path)
@@ -1864,16 +2074,57 @@ def test_registration_and_experiment_tabs_expose_resizable_layout_defaults(tmp_p
     servos_tab = ServosTab(servos_controller)
     system_tab = SystemTab(system_controller)
 
-    assert registration_tab.points_table.minimumHeight() >= 200
-    assert registration_tab.samples_table.minimumHeight() >= 200
+    assert registration_tab.points_table.minimumHeight() >= 180
+    assert registration_tab.samples_table.minimumHeight() >= 180
     assert registration_tab.landmark_map.minimumHeight() >= 200
-    assert experiment_tab.experiment_combo.minimumHeight() >= 40
+    assert experiment_tab.experiment_combo.minimumHeight() >= 36
     assert repeatability_page.parameter_scroll.minimumWidth() >= 300
     assert repeatability_page.viewer_3d is not None
     assert repeatability_page.viewer_3d.minimumHeight() >= 280
-    assert servos_tab.telemetry_table.minimumHeight() >= 200
+    assert servos_tab.telemetry_table.minimumHeight() >= 190
     assert servos_tab.calibration_table.minimumHeight() >= 160
-    assert system_tab.config_summary.minimumHeight() >= 200
+    assert system_tab.config_summary.minimumHeight() >= 170
+
+
+def test_registration_servos_and_pretension_tabs_stack_splitters_on_narrow_width(tmp_path: Path) -> None:
+    _app()
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    servo_service = _servo_service(tmp_path)
+    registration_service = _registration_service(settings, tmp_path, tracking_service)
+    registration_controller = RegistrationController(
+        registration_service=registration_service,
+        registration_config=settings.registration,
+    )
+    servos_controller = ServosController(servo_service, settings)
+    pretension_controller = PretensionController(servo_service=servo_service, settings=settings)
+
+    registration_tab = RegistrationTab(registration_controller)
+    servos_tab = ServosTab(servos_controller)
+    pretension_tab = PretensionTab(pretension_controller)
+
+    registration_tab.resize(920, 860)
+    registration_tab.show()
+    servos_tab.resize(920, 860)
+    servos_tab.show()
+    pretension_tab.resize(920, 860)
+    pretension_tab.show()
+    QTest.qWait(20)
+
+    assert registration_tab.top_splitter.orientation() == Qt.Vertical
+    assert registration_tab.lower_splitter.orientation() == Qt.Vertical
+    assert servos_tab.workspace_splitter.orientation() == Qt.Vertical
+    assert pretension_tab.workspace_splitter.orientation() == Qt.Vertical
+
+    registration_tab.resize(1500, 900)
+    servos_tab.resize(1500, 900)
+    pretension_tab.resize(1500, 900)
+    QTest.qWait(20)
+
+    assert registration_tab.top_splitter.orientation() == Qt.Horizontal
+    assert registration_tab.lower_splitter.orientation() == Qt.Horizontal
+    assert servos_tab.workspace_splitter.orientation() == Qt.Horizontal
+    assert pretension_tab.workspace_splitter.orientation() == Qt.Horizontal
 
 
 def test_experiment_shell_routes_selection_to_custom_pages(tmp_path: Path) -> None:
@@ -1890,6 +2141,20 @@ def test_experiment_shell_routes_selection_to_custom_pages(tmp_path: Path) -> No
 
     assert tab.page_stack.currentWidget() is replay_page
     assert replay_page.experiment_name == "replay_runner"
+
+
+def test_experiment_shell_routes_pretension_validation_to_custom_page(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+
+    controller.select_experiment("pretension_validation")
+    tab.update(controller.refresh())
+    pretension_page = tab._page_for("pretension_validation")
+
+    assert tab.page_stack.currentWidget() is pretension_page
+    assert pretension_page.experiment_name == "pretension_validation"
+    assert pretension_page.run_button.text() == "Run Pretension Validation"
 
 
 def test_app_window_status_bar_tracks_active_servo_and_experiment_messages(tmp_path: Path) -> None:
@@ -1909,6 +2174,28 @@ def test_app_window_status_bar_tracks_active_servo_and_experiment_messages(tmp_p
         assert window.statusBar().currentMessage() == "Experiment workspace ready"
     finally:
         window.shutdown()
+
+
+def test_servos_and_pretension_share_selected_servo_torque_truth(tmp_path: Path) -> None:
+    settings = _settings()
+    service = _servo_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    service.dxl_bus._state[2].torque_enabled = False
+
+    servos_controller = ServosController(service, settings)
+    pretension_controller = PretensionController(servo_service=service, settings=settings)
+    servos_controller.set_selected_servo(2)
+    pretension_controller.set_selected_servo(2)
+
+    assert servos_controller.state.selected_servo_torque_enabled is False
+    assert pretension_controller.state.selected_servo_torque_enabled is False
+
+    service.dxl_bus._state[2].torque_enabled = True
+    servos_controller.refresh_selected_servo()
+    pretension_controller.refresh()
+
+    assert servos_controller.state.selected_servo_torque_enabled is True
+    assert pretension_controller.state.selected_servo_torque_enabled is True
 
 
 def test_registration_tab_capture_button_records_sample_into_service_session(tmp_path: Path) -> None:

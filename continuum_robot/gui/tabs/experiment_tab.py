@@ -36,12 +36,12 @@ class ExperimentTab(QWidget):
                 color: #0f172a;
             }
             QWidget#experimentWorkspace QLabel[role="page-title"] {
-                font-size: 22px;
+                font-size: 20px;
                 font-weight: 700;
                 color: #0f172a;
             }
             QWidget#experimentWorkspace QLabel[role="section-title"] {
-                font-size: 16px;
+                font-size: 15px;
                 font-weight: 700;
                 color: #0f172a;
             }
@@ -64,17 +64,17 @@ class ExperimentTab(QWidget):
                 border-radius: 16px;
             }
             QWidget#experimentWorkspace QComboBox {
-                min-height: 40px;
+                min-height: 36px;
                 border: 1px solid #dbe4ee;
                 border-radius: 12px;
                 background: #fbfdff;
-                padding: 6px 12px;
+                padding: 4px 10px;
                 font-size: 14px;
                 font-weight: 600;
             }
             QWidget#experimentWorkspace QPushButton {
-                min-height: 38px;
-                padding: 0 14px;
+                min-height: 34px;
+                padding: 0 12px;
                 border: 1px solid #dbe4ee;
                 border-radius: 10px;
                 background: #f8fafc;
@@ -123,7 +123,7 @@ class ExperimentTab(QWidget):
         self.selected_badges_label.hide()
 
         self.experiment_combo = QComboBox()
-        self.experiment_combo.setMinimumHeight(40)
+        self.experiment_combo.setMinimumHeight(36)
         self.experiment_combo.currentIndexChanged.connect(self._on_experiment_selected)
         self.load_defaults_button = QPushButton("Load Defaults")
         self.load_defaults_button.setProperty("variant", "ghost")
@@ -131,11 +131,11 @@ class ExperimentTab(QWidget):
         header_card = _ShellCard()
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
-        title_row.setSpacing(10)
+        title_row.setSpacing(8)
         title_column = QWidget()
         title_layout = QVBoxLayout(title_column)
         title_layout.setContentsMargins(0, 0, 0, 0)
-        title_layout.setSpacing(4)
+        title_layout.setSpacing(2)
         title_layout.addWidget(self.page_title)
         title_layout.addWidget(self.page_subtitle)
         title_row.addWidget(title_column, 1)
@@ -163,8 +163,8 @@ class ExperimentTab(QWidget):
         self.page_stack.setCurrentWidget(self.empty_page)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(14)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
         layout.addWidget(header_card)
         layout.addWidget(self.page_stack, 1)
 

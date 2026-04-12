@@ -47,6 +47,12 @@ class TrackingViewState:
     diagnostic_lines: list[str] = field(default_factory=list)
     tools: dict[str, dict] = field(default_factory=dict)
     registration_path: str = ""
+    registration_state: str = "missing_registration"
+    runtime_tip_calibration_state: str = "missing_runtime_tip_calibration"
+    runtime_tip_identity_fallback: bool = False
+    tip_calibration_source: str | None = None
+    T_robot_aurora: list[list[float]] | None = None
+    T_robot_tip_matrix: list[list[float]] | None = None
     tip_position_mm: tuple[float, float, float] | None = None
     tip_direction_xyz: tuple[float, float, float] | None = None
     tip_status: str = "Registration not loaded"
@@ -132,6 +138,12 @@ class TrackingController:
         self.state.error_messages = list(snapshot.error_messages)
         self.state.runtime_coil_tool_id = snapshot.runtime_coil_tool_id
         self.state.registration_tool_id = snapshot.registration_tool_id
+        self.state.registration_state = snapshot.registration_state
+        self.state.runtime_tip_calibration_state = snapshot.runtime_tip_calibration_state
+        self.state.runtime_tip_identity_fallback = bool(snapshot.runtime_tip_identity_fallback)
+        self.state.tip_calibration_source = snapshot.tip_calibration_source
+        self.state.T_robot_aurora = snapshot.T_robot_aurora
+        self.state.T_robot_tip_matrix = snapshot.T_robot_tip
         self.state.tools = {
             tool_id: {
                 "present": tool.present,

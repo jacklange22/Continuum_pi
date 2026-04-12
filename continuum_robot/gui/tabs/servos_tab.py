@@ -25,7 +25,11 @@ from PySide6.QtWidgets import (
 )
 
 from continuum_robot.gui.controllers.servos_controller import ServosViewState
-from continuum_robot.gui.view_utils import set_text_document
+from continuum_robot.gui.view_utils import (
+    ResponsiveSplitterController,
+    preserve_scroll_position,
+    set_text_document,
+)
 
 
 class ServosTab(QWidget):
@@ -89,6 +93,10 @@ class ServosTab(QWidget):
             QWidget#servoWorkspace QPushButton[role="danger"] {
                 background: #fee2e2;
                 border-color: #fecaca;
+            }
+            QWidget#servoWorkspace QPushButton[variant="ghost"] {
+                background: transparent;
+                color: #334155;
             }
             QWidget#servoWorkspace QPushButton:checked {
                 background: #dcfce7;
@@ -176,10 +184,13 @@ class ServosTab(QWidget):
         self.scan_button.setProperty("role", "primary")
         self.scan_button.clicked.connect(lambda: self._safe_call(self.controller.scan))
         self.refresh_readiness_button = QPushButton("Refresh Readiness")
+        self.refresh_readiness_button.setProperty("variant", "ghost")
         self.refresh_readiness_button.clicked.connect(lambda: self._safe_call(self.controller.refresh_readiness))
         self.capture_neutral_button = QPushButton("Capture Neutral Metadata")
+        self.capture_neutral_button.setProperty("variant", "ghost")
         self.capture_neutral_button.clicked.connect(lambda: self._safe_call(self.controller.capture_neutral_setpoints))
         self.load_neutral_button = QPushButton("Load Calibration")
+        self.load_neutral_button.setProperty("variant", "ghost")
         self.load_neutral_button.clicked.connect(lambda: self._safe_call(self.controller.load_neutral_setpoints))
 
         self.jog_servo_spin = QSpinBox()
@@ -277,7 +288,7 @@ class ServosTab(QWidget):
         self.calibration_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.calibration_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
         self.calibration_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        self.calibration_table.setMinimumHeight(180)
+        self.calibration_table.setMinimumHeight(160)
         calibration_layout.addWidget(self.calibration_table)
 
         bringup_actions_box = QGroupBox("Bring-Up Actions")
@@ -390,7 +401,7 @@ class ServosTab(QWidget):
         for column in range(0, 10):
             self.telemetry_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
         self.telemetry_table.horizontalHeader().setSectionResizeMode(10, QHeaderView.Stretch)
-        self.telemetry_table.setMinimumHeight(230)
+        self.telemetry_table.setMinimumHeight(190)
         telemetry_layout.addWidget(self.telemetry_table)
 
         right_column = QWidget()
@@ -401,20 +412,26 @@ class ServosTab(QWidget):
         right_layout.addWidget(calibration_box)
         right_layout.addWidget(self.displacement_box)
 
-        workspace_splitter = QSplitter(Qt.Horizontal)
-        workspace_splitter.setChildrenCollapsible(False)
-        workspace_splitter.setHandleWidth(8)
-        workspace_splitter.addWidget(left_column)
-        workspace_splitter.addWidget(right_column)
-        workspace_splitter.setStretchFactor(0, 3)
-        workspace_splitter.setStretchFactor(1, 4)
-        workspace_splitter.setSizes([460, 700])
+        self.workspace_splitter = QSplitter(Qt.Horizontal)
+        self.workspace_splitter.setChildrenCollapsible(False)
+        self.workspace_splitter.setHandleWidth(8)
+        self.workspace_splitter.addWidget(left_column)
+        self.workspace_splitter.addWidget(right_column)
+        self.workspace_splitter.setStretchFactor(0, 3)
+        self.workspace_splitter.setStretchFactor(1, 4)
+        self.workspace_splitter.setSizes([460, 700])
+        self._workspace_splitter_layout = ResponsiveSplitterController(
+            self.workspace_splitter,
+            collapse_below_width=1180,
+            horizontal_sizes=[460, 700],
+            vertical_sizes=[360, 520],
+        )
 
         self.status_text = QPlainTextEdit()
         self.status_text.setReadOnly(True)
         self.status_text.setLineWrapMode(QPlainTextEdit.WidgetWidth)
-        self.status_text.setMinimumHeight(82)
-        self.status_text.setMaximumHeight(180)
+        self.status_text.setMinimumHeight(72)
+        self.status_text.setMaximumHeight(150)
         self.copy_status_button = QPushButton("Copy Summary")
         self.copy_status_button.clicked.connect(lambda: self._copy_text(self.status_text.toPlainText()))
         status_box = QGroupBox("Operator Summary")
@@ -430,7 +447,7 @@ class ServosTab(QWidget):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(14)
         content_layout.addWidget(summary_box)
-        content_layout.addWidget(workspace_splitter)
+        content_layout.addWidget(self.workspace_splitter)
         content_layout.addWidget(status_box)
 
         self.scroll_area = QScrollArea()
@@ -443,6 +460,7 @@ class ServosTab(QWidget):
         layout.addWidget(self.title_label)
         layout.addWidget(self.workflow_hint)
         layout.addWidget(self.scroll_area, 1)
+        self._apply_responsive_layout()
 
     def update(self, state: ServosViewState) -> None:
         selected_servo_id = (
@@ -576,35 +594,39 @@ class ServosTab(QWidget):
             spin.setValue(value)
             spin.blockSignals(False)
 
-        self.calibration_table.setRowCount(len(state.calibration_rows))
-        for row, item in enumerate(state.calibration_rows):
-            self.calibration_table.setItem(row, 0, QTableWidgetItem(item["servo_id"]))
-            self.calibration_table.setItem(row, 1, QTableWidgetItem(item["neutral"]))
-            self.calibration_table.setItem(row, 2, QTableWidgetItem(item["bounds"]))
-            self.calibration_table.setItem(row, 3, QTableWidgetItem(item["threshold"]))
-            self.calibration_table.setItem(row, 4, QTableWidgetItem(item["direction"]))
-            self.calibration_table.setItem(row, 5, QTableWidgetItem(item["pretension"]))
-            self.calibration_table.setItem(row, 6, QTableWidgetItem(item["status"]))
-
-        self.telemetry_table.setRowCount(len(state.telemetry))
         sorted_servo_ids = sorted(state.telemetry)
-        for row, servo_id in enumerate(sorted_servo_ids):
-            item = state.telemetry[servo_id]
-            self.telemetry_table.setItem(row, 0, self._text_item(servo_id, align=Qt.AlignRight))
-            self.telemetry_table.setItem(row, 1, self._text_item(item.get("telemetry_status", "Unknown"), align=Qt.AlignCenter))
-            self.telemetry_table.setItem(row, 2, self._text_item(item.get("torque_label", "—"), align=Qt.AlignCenter))
-            self.telemetry_table.setItem(row, 3, self._text_item(self._display_value(item.get("position")), align=Qt.AlignRight))
-            self.telemetry_table.setItem(row, 4, self._text_item(self._display_value(item.get("current_ma")), align=Qt.AlignRight))
-            self.telemetry_table.setItem(row, 5, self._text_item(self._display_value(item.get("voltage_mv")), align=Qt.AlignRight))
-            self.telemetry_table.setItem(row, 6, self._text_item(self._display_value(item.get("temperature_c")), align=Qt.AlignRight))
-            self.telemetry_table.setItem(row, 7, self._text_item(item.get("hardware_error_text", "—"), align=Qt.AlignCenter))
-            self.telemetry_table.setItem(row, 8, self._text_item(self._age_text(item.get("telemetry_age_s")), align=Qt.AlignRight))
-            self.telemetry_table.setItem(row, 9, self._text_item("Yes" if item.get("motion_ready") else "No", align=Qt.AlignCenter))
-            self.telemetry_table.setItem(row, 10, self._text_item(item.get("block_reason", "ready")))
-        if selected_servo_id in sorted_servo_ids:
-            self.telemetry_table.selectRow(sorted_servo_ids.index(selected_servo_id))
-        else:
-            self.telemetry_table.clearSelection()
+        def _rebuild_calibration_table() -> None:
+            self.calibration_table.setRowCount(len(state.calibration_rows))
+            for row, item in enumerate(state.calibration_rows):
+                self.calibration_table.setItem(row, 0, QTableWidgetItem(item["servo_id"]))
+                self.calibration_table.setItem(row, 1, QTableWidgetItem(item["neutral"]))
+                self.calibration_table.setItem(row, 2, QTableWidgetItem(item["bounds"]))
+                self.calibration_table.setItem(row, 3, QTableWidgetItem(item["threshold"]))
+                self.calibration_table.setItem(row, 4, QTableWidgetItem(item["direction"]))
+                self.calibration_table.setItem(row, 5, QTableWidgetItem(item["pretension"]))
+                self.calibration_table.setItem(row, 6, QTableWidgetItem(item["status"]))
+        preserve_scroll_position(self.calibration_table, _rebuild_calibration_table)
+
+        def _rebuild_telemetry_table() -> None:
+            self.telemetry_table.setRowCount(len(state.telemetry))
+            for row, servo_id in enumerate(sorted_servo_ids):
+                item = state.telemetry[servo_id]
+                self.telemetry_table.setItem(row, 0, self._text_item(servo_id, align=Qt.AlignRight))
+                self.telemetry_table.setItem(row, 1, self._text_item(item.get("telemetry_status", "Unknown"), align=Qt.AlignCenter))
+                self.telemetry_table.setItem(row, 2, self._text_item(item.get("torque_label", "—"), align=Qt.AlignCenter))
+                self.telemetry_table.setItem(row, 3, self._text_item(self._display_value(item.get("position")), align=Qt.AlignRight))
+                self.telemetry_table.setItem(row, 4, self._text_item(self._display_value(item.get("current_ma")), align=Qt.AlignRight))
+                self.telemetry_table.setItem(row, 5, self._text_item(self._display_value(item.get("voltage_mv")), align=Qt.AlignRight))
+                self.telemetry_table.setItem(row, 6, self._text_item(self._display_value(item.get("temperature_c")), align=Qt.AlignRight))
+                self.telemetry_table.setItem(row, 7, self._text_item(item.get("hardware_error_text", "—"), align=Qt.AlignCenter))
+                self.telemetry_table.setItem(row, 8, self._text_item(self._age_text(item.get("telemetry_age_s")), align=Qt.AlignRight))
+                self.telemetry_table.setItem(row, 9, self._text_item("Yes" if item.get("motion_ready") else "No", align=Qt.AlignCenter))
+                self.telemetry_table.setItem(row, 10, self._text_item(item.get("block_reason", "ready")))
+            if selected_servo_id in sorted_servo_ids:
+                self.telemetry_table.selectRow(sorted_servo_ids.index(selected_servo_id))
+            else:
+                self.telemetry_table.clearSelection()
+        preserve_scroll_position(self.telemetry_table, _rebuild_telemetry_table)
 
         operator_lines = [
             f"Servo: {selected_servo_id if selected_servo_id is not None else 'none'}",
@@ -738,6 +760,14 @@ class ServosTab(QWidget):
             if not getattr(self.controller.state, "status_message", ""):
                 self.controller.state.status_message = str(exc)
         self.update(self.controller.state)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_responsive_layout()
+
+    def _apply_responsive_layout(self) -> None:
+        available_width = max(self.width(), self.scroll_area.viewport().width())
+        self._workspace_splitter_layout.apply(available_width)
 
     @staticmethod
     def _copy_text(text: str) -> None:

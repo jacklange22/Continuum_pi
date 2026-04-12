@@ -16,6 +16,12 @@ class TendonDisplacementMapper:
         rev = displacement_cm / circumference_cm
         return int(round(rev * self.ticks_per_rev))
 
+    def ticks_to_displacement_mm(self, tick_delta: int | float) -> float:
+        """Convert a raw position delta in ticks to tendon travel in millimeters."""
+        circumference_cm = math.pi * self.spool_diameter_cm
+        rev = float(tick_delta) / float(self.ticks_per_rev)
+        return float(rev * circumference_cm * 10.0)
+
     def to_goal_positions(
         self, tendon_displacements_cm: list[float], neutral_ticks: list[int]
     ) -> list[int]:

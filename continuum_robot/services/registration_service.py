@@ -155,6 +155,7 @@ class RegistrationService:
             self._state.captured_counts = {label: 0 for label in labels}
             self._state.residuals_by_label = {}
             self._state.fre_mm = None
+            self._state.T_robot_aurora = None
             self._state.last_sample_xyz_mm = None
             self._state.pending_accept = False
             self._state.nominal_landmarks_robot_xyz_mm = nominal
@@ -348,6 +349,11 @@ class RegistrationService:
             }
             self._state.residuals_by_label = residuals
             self._state.fre_mm = float(payload["fre_mm"]) if payload.get("fre_mm") is not None else None
+            self._state.T_robot_aurora = (
+                list(payload.get("T_robot_aurora"))
+                if isinstance(payload.get("T_robot_aurora"), list)
+                else (list(payload.get("T_aurora_2_model")) if isinstance(payload.get("T_aurora_2_model"), list) else None)
+            )
             self._state.truth_points_in_sw_by_label = dict(payload.get("truth_points_in_sw_by_label", {}) or {})
             self._state.group_by_label = dict(payload.get("group_by_label", {}) or {})
             self._state.raw_measurement_tool_samples_by_label = dict(
@@ -611,6 +617,7 @@ class RegistrationService:
             self._state.averaged_points_by_label = averaged
             self._state.residuals_by_label = residuals_by_label
             self._state.fre_mm = fre_mm
+            self._state.T_robot_aurora = T_robot_aurora.tolist()
             self._state.validation_metrics = copy.deepcopy(validation_metrics)
             self._state.pending_accept = True
             self._state.pending_record = asdict(record)

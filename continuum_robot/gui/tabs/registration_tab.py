@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from continuum_robot.gui.controllers.registration_controller import RegistrationViewState
-from continuum_robot.gui.view_utils import set_text_document
+from continuum_robot.gui.view_utils import ResponsiveSplitterController, preserve_scroll_position, set_text_document
 from continuum_robot.gui.widgets.registration_landmark_map_widget import RegistrationLandmarkMapWidget
 from continuum_robot.gui.widgets.registration_plot_widget import RegistrationPlotWidget
 
@@ -82,6 +82,10 @@ class RegistrationTab(QWidget):
                 background: #fbfdff;
                 color: #0f172a;
             }
+            QWidget#registrationWorkspace QPushButton[variant="ghost"] {
+                background: transparent;
+                color: #334155;
+            }
             """
         )
 
@@ -96,13 +100,17 @@ class RegistrationTab(QWidget):
         self.dependency_status_label = QLabel("Waiting for tracker and accepted tip file.")
         self.dependency_status_label.setProperty("role", "status")
         self.tip_file_label = QLabel("none")
+        self.tip_file_label.setWordWrap(True)
         self.tip_geometry_label = QLabel("not ready")
+        self.tip_geometry_label.setWordWrap(True)
         self.accepted_registration_label = QLabel("No accepted registration saved.")
+        self.accepted_registration_label.setWordWrap(True)
         self.live_pose_label = QLabel("not ready")
+        self.live_pose_label.setWordWrap(True)
         self.dependency_text = QTextEdit()
         self.dependency_text.setReadOnly(True)
-        self.dependency_text.setMinimumHeight(110)
-        self.dependency_text.setMaximumHeight(170)
+        self.dependency_text.setMinimumHeight(90)
+        self.dependency_text.setMaximumHeight(150)
 
         dependency_box = QGroupBox("Dependencies & Pose")
         dependency_layout = QVBoxLayout(dependency_box)
@@ -116,13 +124,18 @@ class RegistrationTab(QWidget):
         dependency_layout.addWidget(self.dependency_text)
 
         self.begin_button = QPushButton("Begin Session")
+        self.begin_button.setProperty("role", "primary")
         self.capture_button = QPushButton("Capture Sample")
         self.complete_button = QPushButton("Mark Point Complete")
         self.solve_button = QPushButton("Solve Registration")
         self.save_button = QPushButton("Save Registration")
+        self.save_button.setProperty("role", "primary")
         self.retry_button = QPushButton("Restart")
+        self.retry_button.setProperty("variant", "ghost")
         self.load_button = QPushButton("Load Latest")
+        self.load_button.setProperty("variant", "ghost")
         self.runtime_tip_button = QPushButton("Open Runtime Tip Calibration")
+        self.runtime_tip_button.setProperty("variant", "ghost")
 
         self.begin_button.clicked.connect(lambda: self._safe_call(self.controller.begin_session))
         self.capture_button.clicked.connect(lambda: self._safe_call(self.controller.capture_current_label_sample))
@@ -168,7 +181,7 @@ class RegistrationTab(QWidget):
         self.available_points_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.available_points_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.available_points_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        self.available_points_table.setMinimumHeight(180)
+        self.available_points_table.setMinimumHeight(160)
         self.available_points_table.cellClicked.connect(self._on_available_point_clicked)
 
         selection_box = QGroupBox("Model Point Selection")
@@ -192,6 +205,7 @@ class RegistrationTab(QWidget):
         self.max_residual_label = QLabel()
         self.result_status_label = QLabel()
         self.result_path_label = QLabel()
+        self.result_path_label.setWordWrap(True)
         self.selected_points_label = QLabel()
         self.trust_label = QLabel()
         self.live_chain_label = QLabel()
@@ -245,7 +259,7 @@ class RegistrationTab(QWidget):
         self.points_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.points_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
         self.points_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        self.points_table.setMinimumHeight(220)
+        self.points_table.setMinimumHeight(180)
 
         points_box = QGroupBox("Selected Point Mapping")
         points_layout = QVBoxLayout(points_box)
@@ -261,53 +275,65 @@ class RegistrationTab(QWidget):
         self.samples_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.samples_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.samples_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
-        self.samples_table.setMinimumHeight(220)
+        self.samples_table.setMinimumHeight(180)
 
         samples_box = QGroupBox("Captured Samples")
         samples_layout = QVBoxLayout(samples_box)
         samples_layout.addWidget(self.samples_table)
 
         self.plot_widget = RegistrationPlotWidget()
-        self.plot_widget.setMinimumHeight(280)
+        self.plot_widget.setMinimumHeight(220)
         plot_box = QGroupBox("Registration Preview")
         plot_layout = QVBoxLayout(plot_box)
         plot_layout.addWidget(self.plot_widget)
 
         self.status_text = QTextEdit()
         self.status_text.setReadOnly(True)
-        self.status_text.setMinimumHeight(68)
-        self.status_text.setMaximumHeight(96)
+        self.status_text.setMinimumHeight(72)
+        self.status_text.setMaximumHeight(110)
         status_box = QGroupBox("Operator Status")
         status_layout = QVBoxLayout(status_box)
         status_layout.addWidget(self.status_text)
 
         self.validation_text = QTextEdit()
         self.validation_text.setReadOnly(True)
-        self.validation_text.setMinimumHeight(120)
-        self.validation_text.setMaximumHeight(180)
+        self.validation_text.setMinimumHeight(96)
+        self.validation_text.setMaximumHeight(150)
         validation_box = QGroupBox("Validation & Trust")
         validation_layout = QVBoxLayout(validation_box)
         validation_layout.addWidget(self.validation_text)
 
-        top_splitter = QSplitter(Qt.Horizontal)
-        top_splitter.setChildrenCollapsible(False)
-        top_splitter.setHandleWidth(8)
-        top_splitter.addWidget(selection_box)
-        top_splitter.addWidget(summary_box)
-        top_splitter.addWidget(plot_box)
-        top_splitter.setStretchFactor(0, 4)
-        top_splitter.setStretchFactor(1, 3)
-        top_splitter.setStretchFactor(2, 4)
-        top_splitter.setSizes([460, 340, 420])
+        self.top_splitter = QSplitter(Qt.Horizontal)
+        self.top_splitter.setChildrenCollapsible(False)
+        self.top_splitter.setHandleWidth(8)
+        self.top_splitter.addWidget(selection_box)
+        self.top_splitter.addWidget(summary_box)
+        self.top_splitter.addWidget(plot_box)
+        self.top_splitter.setStretchFactor(0, 4)
+        self.top_splitter.setStretchFactor(1, 3)
+        self.top_splitter.setStretchFactor(2, 4)
+        self.top_splitter.setSizes([460, 340, 420])
 
-        lower_splitter = QSplitter(Qt.Horizontal)
-        lower_splitter.setChildrenCollapsible(False)
-        lower_splitter.setHandleWidth(8)
-        lower_splitter.addWidget(points_box)
-        lower_splitter.addWidget(samples_box)
-        lower_splitter.setStretchFactor(0, 3)
-        lower_splitter.setStretchFactor(1, 4)
-        lower_splitter.setSizes([420, 540])
+        self.lower_splitter = QSplitter(Qt.Horizontal)
+        self.lower_splitter.setChildrenCollapsible(False)
+        self.lower_splitter.setHandleWidth(8)
+        self.lower_splitter.addWidget(points_box)
+        self.lower_splitter.addWidget(samples_box)
+        self.lower_splitter.setStretchFactor(0, 3)
+        self.lower_splitter.setStretchFactor(1, 4)
+        self.lower_splitter.setSizes([420, 540])
+        self._top_splitter_layout = ResponsiveSplitterController(
+            self.top_splitter,
+            collapse_below_width=1220,
+            horizontal_sizes=[460, 340, 420],
+            vertical_sizes=[360, 280, 260],
+        )
+        self._lower_splitter_layout = ResponsiveSplitterController(
+            self.lower_splitter,
+            collapse_below_width=1080,
+            horizontal_sizes=[420, 540],
+            vertical_sizes=[220, 220],
+        )
 
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
@@ -316,8 +342,8 @@ class RegistrationTab(QWidget):
         content_layout.addWidget(dependency_box)
         content_layout.addLayout(button_row_primary)
         content_layout.addLayout(button_row_secondary)
-        content_layout.addWidget(top_splitter, 3)
-        content_layout.addWidget(lower_splitter, 2)
+        content_layout.addWidget(self.top_splitter, 3)
+        content_layout.addWidget(self.lower_splitter, 2)
         content_layout.addWidget(status_box)
         content_layout.addWidget(validation_box)
 
@@ -331,6 +357,7 @@ class RegistrationTab(QWidget):
         layout.addWidget(self.title_label)
         layout.addWidget(self.workflow_hint)
         layout.addWidget(self.scroll_area, 1)
+        self._apply_responsive_layout()
 
     def update(self, state: RegistrationViewState, workflow_state=None) -> None:
         session_status = "Solved - ready to save" if state.pending_accept else ("Capturing" if state.active else "Idle")
@@ -389,58 +416,60 @@ class RegistrationTab(QWidget):
             selected_labels=state.selected_model_labels,
         )
 
-        self.points_table.setRowCount(len(state.landmark_labels))
-        captured_plot: dict[str, list[tuple[float, float]]] = {}
-        for row, label in enumerate(state.landmark_labels):
-            count = state.captured_counts.get(label, 0)
-            truth = state.truth_points_in_sw_by_label.get(label) or state.available_model_points_by_label.get(label)
-            centroid = state.averaged_points_by_label.get(label)
-            status = _point_status(label, state)
-            display_name = _display_name(label, state)
-            self.points_table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
-            self.points_table.setItem(row, 1, QTableWidgetItem(display_name))
-            self.points_table.setItem(row, 2, QTableWidgetItem(_render_point(truth)))
-            self.points_table.setItem(row, 3, QTableWidgetItem(f"{count} / {state.captures_per_landmark}+"))
-            self.points_table.setItem(row, 4, QTableWidgetItem(_render_point(centroid)))
-            self.points_table.setItem(row, 5, QTableWidgetItem(status))
-            captured_plot[label] = [
-                (float(sample[0]), float(sample[1]))
-                for sample in state.raw_samples_by_label.get(label, [])
-                if len(sample) >= 2
-            ]
+        def _rebuild_points_table() -> None:
+            self.points_table.setRowCount(len(state.landmark_labels))
+            for row, label in enumerate(state.landmark_labels):
+                count = state.captured_counts.get(label, 0)
+                truth = state.truth_points_in_sw_by_label.get(label) or state.available_model_points_by_label.get(label)
+                centroid = state.averaged_points_by_label.get(label)
+                status = _point_status(label, state)
+                display_name = _display_name(label, state)
+                self.points_table.setItem(row, 0, QTableWidgetItem(str(row + 1)))
+                self.points_table.setItem(row, 1, QTableWidgetItem(display_name))
+                self.points_table.setItem(row, 2, QTableWidgetItem(_render_point(truth)))
+                self.points_table.setItem(row, 3, QTableWidgetItem(f"{count} / {state.captures_per_landmark}+"))
+                self.points_table.setItem(row, 4, QTableWidgetItem(_render_point(centroid)))
+                self.points_table.setItem(row, 5, QTableWidgetItem(status))
+        preserve_scroll_position(self.points_table, _rebuild_points_table)
 
         sample_rows = [
             (label, index + 1, sample)
             for label in state.landmark_labels
             for index, sample in enumerate(state.raw_samples_by_label.get(label, []))
         ]
-        self.samples_table.setRowCount(len(sample_rows))
-        for row, (label, sample_index, sample) in enumerate(sample_rows):
-            self.samples_table.setItem(row, 0, QTableWidgetItem(label))
-            self.samples_table.setItem(row, 1, QTableWidgetItem(str(sample_index)))
-            self.samples_table.setItem(row, 2, QTableWidgetItem(_fmt_axis(sample, 0)))
-            self.samples_table.setItem(row, 3, QTableWidgetItem(_fmt_axis(sample, 1)))
-            self.samples_table.setItem(row, 4, QTableWidgetItem(_fmt_axis(sample, 2)))
+        def _rebuild_samples_table() -> None:
+            self.samples_table.setRowCount(len(sample_rows))
+            for row, (label, sample_index, sample) in enumerate(sample_rows):
+                self.samples_table.setItem(row, 0, QTableWidgetItem(label))
+                self.samples_table.setItem(row, 1, QTableWidgetItem(str(sample_index)))
+                self.samples_table.setItem(row, 2, QTableWidgetItem(_fmt_axis(sample, 0)))
+                self.samples_table.setItem(row, 3, QTableWidgetItem(_fmt_axis(sample, 1)))
+                self.samples_table.setItem(row, 4, QTableWidgetItem(_fmt_axis(sample, 2)))
+        preserve_scroll_position(self.samples_table, _rebuild_samples_table)
 
         nominal = {
-            label: (
-                float((state.truth_points_in_sw_by_label.get(label) or state.available_model_points_by_label.get(label))[0]),
-                float((state.truth_points_in_sw_by_label.get(label) or state.available_model_points_by_label.get(label))[1]),
+            label: tuple(
+                float(value)
+                for value in (state.truth_points_in_sw_by_label.get(label) or state.available_model_points_by_label.get(label))[0:3]
             )
             for label in state.landmark_labels
             if (state.truth_points_in_sw_by_label.get(label) or state.available_model_points_by_label.get(label)) is not None
         }
-        centroid_map = {
-            label: tuple(_mean_xy(samples))
-            for label, samples in state.raw_samples_by_label.items()
-            if samples
+        averaged_points = {
+            label: tuple(float(value) for value in point[0:3])
+            for label, point in state.averaged_points_by_label.items()
+            if point is not None and len(point) >= 3
         }
-        current_point = tuple(state.current_tracked_xyz_mm[:2]) if state.current_tracked_xyz_mm else None
+        current_point = tuple(float(value) for value in state.current_tracked_xyz_mm[0:3]) if state.current_tracked_xyz_mm else None
         self.plot_widget.set_data(
             nominal=nominal,
-            captured=captured_plot,
-            centroids=centroid_map,
+            captured=state.raw_samples_by_label,
+            averaged_points=averaged_points,
+            completed_labels=state.completed_labels,
+            selected_label=state.current_label or (state.selected_model_labels[0] if state.selected_model_labels else None),
             current_point=current_point,
+            solved_transform=state.T_robot_aurora,
+            solved_residuals_by_label=state.residuals_by_label,
         )
 
         lines = [state.status_message]
@@ -548,28 +577,30 @@ class RegistrationTab(QWidget):
         self.selection_hint.setText(hint)
 
     def _update_available_points_table(self, state: RegistrationViewState) -> None:
-        self.available_points_table.setRowCount(len(state.available_model_labels))
         selected = list(state.selected_model_labels)
         selected_lookup = {label: index + 1 for index, label in enumerate(selected)}
-        for row, label in enumerate(state.available_model_labels):
-            point = state.available_model_points_by_label.get(label)
-            display_name = state.model_point_display_labels.get(label, label)
-            enabled = state.model_point_enabled.get(label, True)
-            selection_text = f"Point {selected_lookup[label]}" if label in selected_lookup else "—"
-            status = "Disabled" if not enabled else (_point_status(label, state) if label in state.landmark_labels else "Available")
-            self.available_points_table.setItem(row, 0, QTableWidgetItem(label))
-            self.available_points_table.setItem(row, 1, QTableWidgetItem(display_name))
-            self.available_points_table.setItem(row, 2, QTableWidgetItem(_render_point(point)))
-            self.available_points_table.setItem(row, 3, QTableWidgetItem(selection_text))
-            self.available_points_table.setItem(row, 4, QTableWidgetItem(status))
-            background = QColor("#eff6ff") if label in selected_lookup else (QColor("#f8fafc") if enabled else QColor("#f1f5f9"))
-            for column in range(self.available_points_table.columnCount()):
-                item = self.available_points_table.item(row, column)
-                if item is not None:
-                    item.setBackground(background)
-                    if not enabled:
-                        item.setForeground(QColor("#94a3b8"))
-        self.available_points_table.clearSelection()
+        def _rebuild() -> None:
+            self.available_points_table.setRowCount(len(state.available_model_labels))
+            for row, label in enumerate(state.available_model_labels):
+                point = state.available_model_points_by_label.get(label)
+                display_name = state.model_point_display_labels.get(label, label)
+                enabled = state.model_point_enabled.get(label, True)
+                selection_text = f"Point {selected_lookup[label]}" if label in selected_lookup else "—"
+                status = "Disabled" if not enabled else (_point_status(label, state) if label in state.landmark_labels else "Available")
+                self.available_points_table.setItem(row, 0, QTableWidgetItem(label))
+                self.available_points_table.setItem(row, 1, QTableWidgetItem(display_name))
+                self.available_points_table.setItem(row, 2, QTableWidgetItem(_render_point(point)))
+                self.available_points_table.setItem(row, 3, QTableWidgetItem(selection_text))
+                self.available_points_table.setItem(row, 4, QTableWidgetItem(status))
+                background = QColor("#eff6ff") if label in selected_lookup else (QColor("#f8fafc") if enabled else QColor("#f1f5f9"))
+                for column in range(self.available_points_table.columnCount()):
+                    item = self.available_points_table.item(row, column)
+                    if item is not None:
+                        item.setBackground(background)
+                        if not enabled:
+                            item.setForeground(QColor("#94a3b8"))
+            self.available_points_table.clearSelection()
+        preserve_scroll_position(self.available_points_table, _rebuild)
 
     def _on_available_point_clicked(self, row: int, _column: int) -> None:
         item = self.available_points_table.item(row, 0)
@@ -613,6 +644,15 @@ class RegistrationTab(QWidget):
         if message not in (self.controller.state.status_message or ""):
             self.controller.state.status_message = f"Action failed: {message}"
 
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_responsive_layout()
+
+    def _apply_responsive_layout(self) -> None:
+        available_width = max(self.width(), self.scroll_area.viewport().width())
+        self._top_splitter_layout.apply(available_width)
+        self._lower_splitter_layout.apply(available_width)
+
 
 def _format_xyz(point: list[float] | None, status: str, frame_id: int | None) -> str:
     if point is None:
@@ -631,12 +671,6 @@ def _fmt_axis(point: list[float], index: int) -> str:
     if index >= len(point):
         return "—"
     return f"{float(point[index]):.3f}"
-
-
-def _mean_xy(samples: list[list[float]]) -> tuple[float, float]:
-    xs = [float(sample[0]) for sample in samples if len(sample) >= 2]
-    ys = [float(sample[1]) for sample in samples if len(sample) >= 2]
-    return (sum(xs) / len(xs), sum(ys) / len(ys))
 
 
 def _point_status(label: str, state: RegistrationViewState) -> str:

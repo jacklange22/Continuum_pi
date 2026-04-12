@@ -1,19 +1,35 @@
-"""Simple live isometric tool plot for operator feedback."""
+"""Lightweight live spatial monitor for Aurora tools and runtime tip pose."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QWidget
+from collections import deque
+from typing import Mapping, Sequence
+
+import numpy as np
+
+from continuum_robot.gui.widgets.lightweight_scene_3d_widget import (
+    LightweightScene3DWidget,
+    SceneAxes3D,
+    SceneLine3D,
+    SceneModel3D,
+    ScenePoint3D,
+    ScenePolyline3D,
+)
+from continuum_robot.tracking.transforms import make_transform_A_B
 
 
-class ToolPlotWidget(QWidget):
-    """Draw tracker tool and tip positions in a lightweight isometric 3D view."""
+class ToolPlotWidget(LightweightScene3DWidget):
+    """Draw tracker tools and tip pose in one lightweight interactive scene."""
+
+    MAX_TRAIL_POINTS = 18
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._points: dict[str, tuple[float, float, float]] = {}
-        self.setMinimumHeight(240)
+        self._trail_points_by_key: dict[str, deque[tuple[float, float, float]]] = {}
+        self._last_frame_by_key: dict[str, int | None] = {}
+        self._display_frame_label = "aurora"
+        self.setMinimumHeight(260)
 
     def set_points(self, points: dict[str, tuple[float, float] | tuple[float, float, float]]) -> None:
         normalized: dict[str, tuple[float, float, float]] = {}
@@ -23,133 +39,265 @@ class ToolPlotWidget(QWidget):
             else:
                 normalized[str(label)] = (float(coords[0]), float(coords[1]), 0.0)
         self._points = normalized
-        self.update()
+        scene = SceneModel3D(
+            frame_label="aurora",
+            overlay_lines=("Legacy compatibility point preview.",),
+            axes=(SceneAxes3D(key="frame", origin_xyz=(0.0, 0.0, 0.0), label="Aurora"),),
+            points=tuple(
+                ScenePoint3D(
+                    key=label,
+                    xyz=coords,
+                    color_hex=_tool_color(label),
+                    label=label,
+                    radius_px=6.0,
+                    shape="circle" if label != "tip" else "diamond",
+                )
+                for label, coords in normalized.items()
+            ),
+        )
+        self.set_scene(scene)
 
-    def paintEvent(self, event) -> None:
-        _ = event
-        painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#f7f7f5"))
-        painter.setRenderHint(QPainter.Antialiasing, True)
-
-        viewport = QRectF(24.0, 20.0, max(40.0, self.width() - 48.0), max(40.0, self.height() - 40.0))
-        projected_points = {
-            label: self._project_point(*coords)
-            for label, coords in self._points.items()
-        }
-        bounds = self._projected_bounds(projected_points.values())
-        scale = self._projection_scale(bounds, viewport)
-        center = QPointF(viewport.center().x(), viewport.center().y())
-        self._draw_projection_axes(painter, center, scale)
-        self._draw_projection_bounds(painter, center, scale, self._points)
-        colors = {
-            "0A": QColor("#0d6e6e"),
-            "0B": QColor("#d97706"),
-            "tip": QColor("#b91c1c"),
-        }
-        for label, (px_world, py_world) in projected_points.items():
-            px = center.x() + px_world * scale
-            py = center.y() - py_world * scale
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(colors.get(label, QColor("#374151")))
-            painter.drawEllipse(QPointF(px, py), 6.0, 6.0)
-            painter.setPen(QPen(QColor("#1f2937")))
-            painter.drawText(px + 8.0, py - 8.0, label)
-        painter.setPen(QPen(QColor("#64748b")))
-        painter.drawText(18.0, self.height() - 14.0, "Isometric view (mm)")
-
-    @staticmethod
-    def _project_point(x_mm: float, y_mm: float, z_mm: float) -> tuple[float, float]:
-        screen_x = (float(x_mm) - float(y_mm)) * 0.8660254
-        screen_y = float(z_mm) + (float(x_mm) + float(y_mm)) * 0.35
-        return screen_x, screen_y
-
-    @classmethod
-    def _projected_bounds(cls, points: list[tuple[float, float]] | tuple[tuple[float, float], ...]) -> tuple[float, float, float, float]:
-        projected = list(points)
-        if not projected:
-            return (-40.0, 40.0, -40.0, 40.0)
-        min_x = min(point[0] for point in projected)
-        max_x = max(point[0] for point in projected)
-        min_y = min(point[1] for point in projected)
-        max_y = max(point[1] for point in projected)
-        if max_x - min_x < 40.0:
-            center_x = (min_x + max_x) / 2.0
-            min_x = center_x - 20.0
-            max_x = center_x + 20.0
-        if max_y - min_y < 40.0:
-            center_y = (min_y + max_y) / 2.0
-            min_y = center_y - 20.0
-            max_y = center_y + 20.0
-        return (min_x - 10.0, max_x + 10.0, min_y - 10.0, max_y + 10.0)
-
-    @staticmethod
-    def _projection_scale(bounds: tuple[float, float, float, float], viewport: QRectF) -> float:
-        min_x, max_x, min_y, max_y = bounds
-        span_x = max(1.0, max_x - min_x)
-        span_y = max(1.0, max_y - min_y)
-        return min(viewport.width() / span_x, viewport.height() / span_y)
-
-    @classmethod
-    def _draw_projection_axes(cls, painter: QPainter, center: QPointF, scale: float) -> None:
-        origin = center
-        axes = {
-            "X": ((0.0, 0.0, 0.0), (35.0, 0.0, 0.0), QColor("#2563eb")),
-            "Y": ((0.0, 0.0, 0.0), (0.0, 35.0, 0.0), QColor("#10b981")),
-            "Z": ((0.0, 0.0, 0.0), (0.0, 0.0, 35.0), QColor("#dc2626")),
-        }
-        for label, (start, end, color) in axes.items():
-            start_x, start_y = cls._project_point(*start)
-            end_x, end_y = cls._project_point(*end)
-            painter.setPen(QPen(color, 1.5))
-            painter.drawLine(
-                QPointF(origin.x() + start_x * scale, origin.y() - start_y * scale),
-                QPointF(origin.x() + end_x * scale, origin.y() - end_y * scale),
-            )
-            painter.drawText(
-                origin.x() + end_x * scale + 4.0,
-                origin.y() - end_y * scale - 4.0,
-                label,
-            )
-
-    @classmethod
-    def _draw_projection_bounds(
-        cls,
-        painter: QPainter,
-        center: QPointF,
-        scale: float,
-        points: dict[str, tuple[float, float, float]],
-    ) -> None:
-        if points:
-            xs = [coords[0] for coords in points.values()]
-            ys = [coords[1] for coords in points.values()]
-            zs = [coords[2] for coords in points.values()]
-            min_x, max_x = min(xs) - 10.0, max(xs) + 10.0
-            min_y, max_y = min(ys) - 10.0, max(ys) + 10.0
-            min_z, max_z = min(zs) - 10.0, max(zs) + 10.0
+    def set_tracking_state(self, live_state) -> None:
+        scene, points_by_key, frame_label = build_tracking_scene_model(
+            live_state=live_state,
+            trail_points_by_key=self._trail_points_by_key,
+            last_frame_by_key=self._last_frame_by_key,
+        )
+        if frame_label != self._display_frame_label:
+            self._display_frame_label = frame_label
+            self._trail_points_by_key = {
+                key: deque([point], maxlen=self.MAX_TRAIL_POINTS)
+                for key, point in points_by_key.items()
+            }
+            self._last_frame_by_key = {
+                key: live_state.tools.get(key, {}).get("frame_number") if key in live_state.tools else None
+                for key in points_by_key
+            }
         else:
-            min_x = min_y = min_z = -45.0
-            max_x = max_y = max_z = 45.0
-        corners_3d = [
-            (min_x, min_y, min_z),
-            (max_x, min_y, min_z),
-            (max_x, max_y, min_z),
-            (min_x, max_y, min_z),
-            (min_x, min_y, max_z),
-            (max_x, min_y, max_z),
-            (max_x, max_y, max_z),
-            (min_x, max_y, max_z),
-        ]
-        projected = [cls._project_point(*corner) for corner in corners_3d]
-        edges = [
-            (0, 1), (1, 2), (2, 3), (3, 0),
-            (4, 5), (5, 6), (6, 7), (7, 4),
-            (0, 4), (1, 5), (2, 6), (3, 7),
-        ]
-        painter.setPen(QPen(QColor("#d1d5db"), 1))
-        for start, end in edges:
-            sx, sy = projected[start]
-            ex, ey = projected[end]
-            painter.drawLine(
-                QPointF(center.x() + sx * scale, center.y() - sy * scale),
-                QPointF(center.x() + ex * scale, center.y() - ey * scale),
+            self._update_trails(points_by_key=points_by_key, live_state=live_state)
+        self._points = dict(points_by_key)
+        self.set_scene(scene)
+
+    def _update_trails(self, *, points_by_key: dict[str, tuple[float, float, float]], live_state) -> None:
+        visible_keys = set(points_by_key)
+        for key in list(self._trail_points_by_key):
+            if key not in visible_keys:
+                self._trail_points_by_key.pop(key, None)
+                self._last_frame_by_key.pop(key, None)
+        for key, point in points_by_key.items():
+            frame_number = None
+            if key == "tip":
+                frame_number = live_state.latest_frame_number
+            else:
+                frame_number = live_state.tools.get(key, {}).get("frame_number")
+            if self._last_frame_by_key.get(key) == frame_number and key in self._trail_points_by_key:
+                continue
+            trail = self._trail_points_by_key.setdefault(key, deque(maxlen=self.MAX_TRAIL_POINTS))
+            if not trail or np.linalg.norm(np.asarray(trail[-1], dtype=float) - np.asarray(point, dtype=float)) > 0.5:
+                trail.append(point)
+            self._last_frame_by_key[key] = frame_number
+
+
+def build_tracking_scene_model(
+    *,
+    live_state,
+    trail_points_by_key: Mapping[str, Sequence[tuple[float, float, float]]] | None = None,
+    last_frame_by_key: Mapping[str, int | None] | None = None,
+) -> tuple[SceneModel3D, dict[str, tuple[float, float, float]], str]:
+    del last_frame_by_key
+    T_robot_aurora = _as_transform(getattr(live_state, "T_robot_aurora", None))
+    T_robot_tip = _as_transform(getattr(live_state, "T_robot_tip_matrix", None))
+    registration_loaded = str(getattr(live_state, "registration_state", "missing_registration")) == "loaded" and T_robot_aurora is not None
+    frame_label = "robot" if registration_loaded else "aurora"
+    frame_axes_label = "Robot" if registration_loaded else "Aurora"
+
+    points: list[ScenePoint3D] = []
+    lines: list[SceneLine3D] = []
+    axes: list[SceneAxes3D] = [SceneAxes3D(key="frame", origin_xyz=(0.0, 0.0, 0.0), label=frame_axes_label)]
+    polylines: list[ScenePolyline3D] = []
+    overlay_lines = [
+        f"0A raw pose: {_tool_overlay_state(live_state.tools.get('0A', {}))}",
+        f"0B raw pose: {_tool_overlay_state(live_state.tools.get('0B', {}))}",
+        f"Registration: {str(getattr(live_state, 'registration_state', 'missing_registration')).replace('_', ' ')}",
+        (
+            "Runtime tip: identity fallback"
+            if bool(getattr(live_state, "runtime_tip_identity_fallback", False))
+            else f"Runtime tip: {str(getattr(live_state, 'runtime_tip_calibration_state', 'missing_runtime_tip_calibration')).replace('_', ' ')}"
+        ),
+        f"Tip pose: {str(getattr(live_state, 'tip_pose_status', 'missing_registration')).replace('_', ' ')}",
+    ]
+
+    if registration_loaded:
+        lines.extend(_grid_lines(size_mm=80.0, step_mm=20.0))
+
+    display_points_by_key: dict[str, tuple[float, float, float]] = {}
+    for tool_id in ("0A", "0B"):
+        tool = live_state.tools.get(tool_id, {})
+        translation = tool.get("translation_mm")
+        quaternion = tool.get("quaternion_wxyz")
+        if translation is None:
+            continue
+        T_display_tool = _tool_transform_in_display_frame(
+            translation=translation,
+            quaternion=quaternion,
+            T_robot_aurora=T_robot_aurora,
+            registration_loaded=registration_loaded,
+        )
+        if T_display_tool is None:
+            continue
+        display_xyz = tuple(float(T_display_tool[row, 3]) for row in range(3))
+        display_points_by_key[tool_id] = display_xyz
+        points.append(
+            ScenePoint3D(
+                key=tool_id,
+                xyz=display_xyz,
+                color_hex=_tool_color(tool_id),
+                label=tool_id,
+                radius_px=6.0,
+                outline_hex="#ffffff",
+                shape="circle",
             )
+        )
+        axes.append(
+            SceneAxes3D(
+                key=f"{tool_id}_axes",
+                origin_xyz=display_xyz,
+                rotation_rows=_rotation_rows(T_display_tool[0:3, 0:3]),
+                axis_length_mm=12.0,
+                label=tool_id,
+            )
+        )
+
+    if registration_loaded and T_robot_tip is not None:
+        tip_xyz = tuple(float(T_robot_tip[row, 3]) for row in range(3))
+        display_points_by_key["tip"] = tip_xyz
+        points.append(
+            ScenePoint3D(
+                key="tip",
+                xyz=tip_xyz,
+                color_hex="#b91c1c",
+                label="tip",
+                radius_px=6.5,
+                outline_hex="#ffffff",
+                shape="diamond",
+            )
+        )
+        axes.append(
+            SceneAxes3D(
+                key="tip_axes",
+                origin_xyz=tip_xyz,
+                rotation_rows=_rotation_rows(T_robot_tip[0:3, 0:3]),
+                axis_length_mm=10.0,
+                label="Tip",
+            )
+        )
+
+    for key, trail_points in dict(trail_points_by_key or {}).items():
+        if key not in display_points_by_key:
+            continue
+        trail = []
+        for point in trail_points:
+            if not isinstance(point, Sequence) or isinstance(point, (str, bytes)) or len(point) < 3:
+                continue
+            trail.append(tuple(float(value) for value in point[0:3]))
+        current = display_points_by_key[key]
+        if not trail or trail[-1] != current:
+            trail = [*trail, current]
+        if len(trail) >= 2:
+            polylines.append(
+                ScenePolyline3D(
+                    key=f"{key}_trail",
+                    points_xyz=tuple(trail[-ToolPlotWidget.MAX_TRAIL_POINTS :]),
+                    color_hex=_trail_color(key),
+                    width_px=1.2,
+                )
+            )
+
+    scene = SceneModel3D(
+        frame_label=frame_label,
+        overlay_lines=tuple(overlay_lines),
+        points=tuple(points),
+        lines=tuple(lines),
+        polylines=tuple(polylines),
+        axes=tuple(axes),
+    )
+    return scene, display_points_by_key, frame_label
+
+
+def _tool_transform_in_display_frame(
+    *,
+    translation,
+    quaternion,
+    T_robot_aurora: np.ndarray | None,
+    registration_loaded: bool,
+) -> np.ndarray | None:
+    if translation is None or quaternion is None:
+        return None
+    T_aurora_tool = make_transform_A_B(tuple(float(value) for value in quaternion), tuple(float(value) for value in translation))
+    if registration_loaded and T_robot_aurora is not None:
+        return T_robot_aurora @ T_aurora_tool
+    return T_aurora_tool
+
+
+def _tool_overlay_state(tool: Mapping[str, object]) -> str:
+    translation = tool.get("translation_mm")
+    if translation is None:
+        return "missing"
+    tracking_state = str(tool.get("tracking_state", "unknown"))
+    status = str(tool.get("status", "unknown"))
+    return tracking_state if tracking_state == status else f"{tracking_state} ({status})"
+
+
+def _tool_color(label: str) -> str:
+    return {
+        "0A": "#0f766e",
+        "0B": "#d97706",
+        "tip": "#b91c1c",
+    }.get(label, "#334155")
+
+
+def _trail_color(label: str) -> str:
+    return {
+        "0A": "#99f6e4",
+        "0B": "#fde68a",
+        "tip": "#fecaca",
+    }.get(label, "#cbd5e1")
+
+
+def _rotation_rows(rotation: np.ndarray) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
+    return tuple(tuple(float(value) for value in row.tolist()) for row in np.asarray(rotation, dtype=float))
+
+
+def _grid_lines(*, size_mm: float, step_mm: float) -> list[SceneLine3D]:
+    lines: list[SceneLine3D] = []
+    half = float(size_mm) / 2.0
+    step = max(5.0, float(step_mm))
+    coordinate = -half
+    while coordinate <= half + 1e-6:
+        lines.append(
+            SceneLine3D(
+                start_xyz=(-half, coordinate, 0.0),
+                end_xyz=(half, coordinate, 0.0),
+                color_hex="#dbe4ee",
+                width_px=1.0,
+            )
+        )
+        lines.append(
+            SceneLine3D(
+                start_xyz=(coordinate, -half, 0.0),
+                end_xyz=(coordinate, half, 0.0),
+                color_hex="#dbe4ee",
+                width_px=1.0,
+            )
+        )
+        coordinate += step
+    return lines
+
+
+def _as_transform(matrix) -> np.ndarray | None:
+    if matrix is None:
+        return None
+    arr = np.asarray(matrix, dtype=float)
+    if arr.shape != (4, 4):
+        return None
+    return arr

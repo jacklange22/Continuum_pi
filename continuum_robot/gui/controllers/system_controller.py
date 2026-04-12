@@ -23,6 +23,9 @@ class SystemViewState:
     tracker_backend_identity: str = ""
     tracker_backend_running: bool = False
     tracker_backend_connected: bool = False
+    registration_summary: str = "Not loaded."
+    runtime_tip_summary: str = "Not loaded."
+    live_tip_summary: str = "Blocked."
     openrb_connected: bool = False
     openrb_prepared: bool = False
     dynamixel_connected: bool = False
@@ -292,6 +295,9 @@ class SystemController:
             if tracker_state.backend_connected is not None
             else tracker_state.socket_connected
         )
+        self.state.registration_summary = self._registration_summary(tracker_state)
+        self.state.runtime_tip_summary = self._runtime_tip_summary(tracker_state)
+        self.state.live_tip_summary = self._live_tip_summary(tracker_state)
         openrb_snapshot = self.openrb_client.get_status_snapshot()
         self.state.openrb_connected = openrb_snapshot.connected
         self.state.openrb_prepared = openrb_snapshot.prepared
@@ -311,6 +317,54 @@ class SystemController:
             self.state.last_error = tracker_state.last_error
         self.state.config_summary = self._build_live_config_summary()
         return self.state
+
+    @staticmethod
+    def _registration_summary(tracker_state) -> str:
+        state = str(getattr(tracker_state, "registration_state", "missing_registration"))
+        timestamp = getattr(tracker_state, "stored_registration_timestamp_utc", None)
+        fre = getattr(tracker_state, "stored_registration_fre_mm", None)
+        if state == "loaded":
+            parts = ["Loaded"]
+            if fre is not None:
+                parts.append(f"FRE {float(fre):.3f} mm")
+            if timestamp:
+                parts.append(str(timestamp))
+            return " | ".join(parts)
+        if state == "invalid_registration":
+            return "Warning | invalid registration artifact"
+        if state == "missing_registration":
+            return "Not loaded"
+        return str(state).replace("_", " ")
+
+    @staticmethod
+    def _runtime_tip_summary(tracker_state) -> str:
+        state = str(getattr(tracker_state, "runtime_tip_calibration_state", "missing_runtime_tip_calibration"))
+        timestamp = getattr(tracker_state, "stored_runtime_tip_timestamp_utc", None)
+        if state == "loaded":
+            return f"Loaded | {timestamp}" if timestamp else "Loaded"
+        if state == "identity_tip_fallback":
+            return "Warning | identity fallback"
+        if state == "missing_runtime_tip_calibration":
+            return "Not loaded"
+        if state == "invalid_runtime_tip_calibration":
+            return "Warning | invalid runtime tip artifact"
+        return str(state).replace("_", " ")
+
+    @staticmethod
+    def _live_tip_summary(tracker_state) -> str:
+        tip_pose_status = str(getattr(tracker_state, "tip_pose_status", "missing_registration"))
+        if tip_pose_status == "ok":
+            age_s = getattr(tracker_state, "tracker_data_age_s", None)
+            if getattr(tracker_state, "tracker_data_stale", False):
+                return f"Stale | {float(age_s):.3f} s" if age_s is not None else "Stale"
+            return "Ready"
+        if tip_pose_status == "missing_registration":
+            return "Blocked | registration not loaded"
+        if tip_pose_status == "identity_tip_fallback":
+            return "Warning | runtime tip fallback"
+        if tip_pose_status == "invalid_runtime_tip_calibration":
+            return "Blocked | invalid runtime tip artifact"
+        return str(tip_pose_status).replace("_", " ")
 
     def sync_servo_bringup_state(self, servo_state) -> SystemViewState:
         """Keep System-tab servo readiness summary aligned with the canonical servo controller state."""

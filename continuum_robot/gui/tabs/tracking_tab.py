@@ -87,6 +87,10 @@ class TrackingTab(QWidget):
                 background: #dbeafe;
                 border-color: #93c5fd;
             }
+            QWidget#trackingWorkspace QPushButton[variant="ghost"] {
+                background: transparent;
+                color: #334155;
+            }
             """
         )
 
@@ -109,19 +113,22 @@ class TrackingTab(QWidget):
         self.verdict_label = QLabel("not validated")
         self.tools_label = QLabel("none")
         self.validation_report_label = QLabel("none")
+        self.validation_report_label.setWordWrap(True)
         self.handoff_label = QLabel("Registration will unlock after tracker validation and accepted tip review.")
         self.handoff_label.setWordWrap(True)
 
-        connect_button = QPushButton("Connect Tracker")
-        connect_button.setProperty("role", "primary")
-        disconnect_button = QPushButton("Disconnect Tracker")
-        validate_button = QPushButton("Validate Tracker")
-        rescan_button = QPushButton("Rescan Ports")
-        connect_button.clicked.connect(self._connect_tracker)
-        disconnect_button.clicked.connect(self._disconnect_tracker)
-        validate_button.clicked.connect(self._validate_tracker)
-        rescan_button.clicked.connect(self._rescan_ports)
-        self._validate_button = validate_button
+        self.connect_button = QPushButton("Connect Tracker")
+        self.connect_button.setProperty("role", "primary")
+        self.disconnect_button = QPushButton("Disconnect Tracker")
+        self.disconnect_button.setProperty("variant", "ghost")
+        self.validate_button = QPushButton("Run Tracker Diagnostic")
+        self.validate_button.setProperty("variant", "ghost")
+        self.rescan_button = QPushButton("Rescan Ports")
+        self.rescan_button.setProperty("variant", "ghost")
+        self.connect_button.clicked.connect(self._connect_tracker)
+        self.disconnect_button.clicked.connect(self._disconnect_tracker)
+        self.validate_button.clicked.connect(self._validate_tracker)
+        self.rescan_button.clicked.connect(self._rescan_ports)
 
         readiness_box = QGroupBox("Tracker Readiness")
         readiness_layout = QVBoxLayout(readiness_box)
@@ -134,10 +141,11 @@ class TrackingTab(QWidget):
         readiness_form.addRow("Registration handoff", self.handoff_label)
         readiness_layout.addLayout(readiness_form)
         readiness_buttons = QHBoxLayout()
-        readiness_buttons.addWidget(connect_button)
-        readiness_buttons.addWidget(disconnect_button)
-        readiness_buttons.addWidget(validate_button)
-        readiness_buttons.addWidget(rescan_button)
+        readiness_buttons.addWidget(self.connect_button)
+        readiness_buttons.addWidget(self.disconnect_button)
+        readiness_buttons.addWidget(self.validate_button)
+        readiness_buttons.addWidget(self.rescan_button)
+        readiness_buttons.addStretch(1)
         readiness_layout.addLayout(readiness_buttons)
 
         self.backend_label = QLabel("unknown")
@@ -159,9 +167,9 @@ class TrackingTab(QWidget):
         self.tools_table = QTableWidget(0, 5)
         self.tools_table.setHorizontalHeaderLabels(["Tool", "Valid", "Status", "Translation mm", "Quality"])
         self.tools_table.verticalHeader().setVisible(False)
-        self.tools_table.setMinimumHeight(200)
+        self.tools_table.setMinimumHeight(180)
         self.plot_widget = ToolPlotWidget()
-        self.plot_widget.setMinimumHeight(320)
+        self.plot_widget.setMinimumHeight(260)
 
         live_box = QGroupBox("Live Tools")
         live_layout = QVBoxLayout(live_box)
@@ -169,17 +177,23 @@ class TrackingTab(QWidget):
         live_layout.addWidget(self.tools_table)
 
         self.tip_file_label = QLabel("none")
+        self.tip_file_label.setWordWrap(True)
         self.pending_tip_file_label = QLabel("none")
+        self.pending_tip_file_label.setWordWrap(True)
         self.pivot_collection_label = QLabel("not collecting")
         self.pivot_motion_label = QLabel("not measured")
         self.tip_geometry_label = QLabel("not ready")
         self.pivot_metrics_label = QLabel("No pivot run yet.")
+        self.pivot_metrics_label.setWordWrap(True)
         self.pivot_parse_label = QLabel("format not detected")
+        self.pivot_parse_label.setWordWrap(True)
         self.pivot_capture_dataset_label = QLabel("none")
+        self.pivot_capture_dataset_label.setWordWrap(True)
         self.pivot_run_path_label = QLabel("none")
+        self.pivot_run_path_label.setWordWrap(True)
         self.tip_preview_text = QTextEdit()
         self.tip_preview_text.setReadOnly(True)
-        self.tip_preview_text.setMinimumHeight(88)
+        self.tip_preview_text.setMinimumHeight(72)
 
         self._pivot_start_button = QPushButton("Start 0B Collection")
         self._pivot_start_button.setProperty("role", "primary")
@@ -217,8 +231,8 @@ class TrackingTab(QWidget):
 
         self.details_text = QTextEdit()
         self.details_text.setReadOnly(True)
-        self.details_text.setMinimumHeight(110)
-        self.details_text.setMaximumHeight(150)
+        self.details_text.setMinimumHeight(92)
+        self.details_text.setMaximumHeight(130)
         details_box = QGroupBox("Details")
         details_layout = QVBoxLayout(details_box)
         details_layout.addWidget(self.details_text)
@@ -252,12 +266,12 @@ class TrackingTab(QWidget):
             f"backend={workflow_state.backend_name or workflow_state.backend_identity}"
         )
         self.verdict_label.setText(
-            "passing"
+            "ready"
             if workflow_state.validation_passed
             else (
-                "operational with warning"
+                "warning"
                 if workflow_state.tracker_operational
-                else ("connected" if workflow_state.tracker_connected else "needs attention")
+                else ("connected" if workflow_state.tracker_connected else "blocked")
             )
         )
         self.tools_label.setText(
@@ -294,7 +308,6 @@ class TrackingTab(QWidget):
         )
 
         self.tools_table.setRowCount(len(live_state.tools))
-        plot_points: dict[str, tuple[float, float, float]] = {}
         for row, tool_id in enumerate(sorted(live_state.tools)):
             tool = live_state.tools[tool_id]
             translation = (
@@ -309,19 +322,7 @@ class TrackingTab(QWidget):
             self.tools_table.setItem(row, 2, QTableWidgetItem(status))
             self.tools_table.setItem(row, 3, QTableWidgetItem(translation))
             self.tools_table.setItem(row, 4, QTableWidgetItem(str(tool["quality"])))
-            if tool["translation_mm"] is not None:
-                plot_points[tool_id] = (
-                    float(tool["translation_mm"][0]),
-                    float(tool["translation_mm"][1]),
-                    float(tool["translation_mm"][2]),
-                )
-        if live_state.tip_position_mm:
-            plot_points["tip"] = (
-                float(live_state.tip_position_mm[0]),
-                float(live_state.tip_position_mm[1]),
-                float(live_state.tip_position_mm[2]),
-            )
-        self.plot_widget.set_points(plot_points)
+        self.plot_widget.set_tracking_state(live_state)
 
         self.tip_file_label.setText(workflow_state.pivot_tip_path or "none")
         self.pending_tip_file_label.setText(workflow_state.pivot_pending_tip_path or "none")
@@ -371,7 +372,13 @@ class TrackingTab(QWidget):
             workflow_state.available_ports,
             workflow_state.tracker_port,
         )
-        self._validate_button.setEnabled(bool(workflow_state.tracker_connected))
+        tracker_connected = bool(
+            workflow_state.tracker_connected or workflow_state.connection_state in {"connecting", "starting"}
+        )
+        self.connect_button.setEnabled(not tracker_connected)
+        self.disconnect_button.setEnabled(tracker_connected)
+        self.validate_button.setEnabled(bool(workflow_state.tracker_connected))
+        self.rescan_button.setEnabled(True)
         self._pivot_start_button.setEnabled(workflow_state.pivot_can_start)
         self._pivot_stop_button.setEnabled(workflow_state.pivot_can_stop)
         self._pivot_solve_button.setEnabled(workflow_state.pivot_can_solve)

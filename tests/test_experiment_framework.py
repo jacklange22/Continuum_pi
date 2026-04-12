@@ -316,7 +316,7 @@ def test_replay_runner_loads_existing_dataset(tmp_path: Path) -> None:
     assert replay.sample_count == 2
 
 
-def test_pretension_validation_experiment_records_servo_and_tracker_consistency(tmp_path: Path) -> None:
+def test_pretension_validation_experiment_records_current_displacement_trace_and_outputs(tmp_path: Path) -> None:
     settings = _settings()
     servo_service = ServoService(
         dxl_bus=_PretensionExperimentBus(),
@@ -365,21 +365,84 @@ def test_pretension_validation_experiment_records_servo_and_tracker_consistency(
         "pretension_validation",
         config={
             "servo_id": 1,
-            "run_count": 2,
             "move_to_reference": False,
-            "validation_direction": "loosen",
-            "validation_delta_ticks": 6,
+            "include_tracker_displacement": True,
         },
     )
 
     assert result.success is True
-    assert result.summary.experiment_metrics["run_count"] == 2
-    assert result.summary.experiment_metrics["successful_run_count"] == 2
-    assert result.summary.experiment_metrics["validation_displacement_mean_mm"] == pytest.approx(1.1)
-    assert result.summary.experiment_metrics["validation_displacement_spread_mm"] == pytest.approx(0.2)
+    assert result.summary.experiment_metrics["servo_id"] == 1
+    assert result.summary.experiment_metrics["accepted"] is True
+    assert result.summary.experiment_metrics["stop_reason"] == "baseline_delta_trigger"
+    assert result.summary.experiment_metrics["baseline_current_ma"] == pytest.approx(150.0)
+    assert result.summary.experiment_metrics["effective_trigger_current_ma"] == 210
+    assert result.summary.experiment_metrics["max_observed_displacement_mm"] == pytest.approx(1.2)
+    assert result.paths.output_dir.joinpath("pretension_response.png").exists()
+    summary_note = result.paths.output_dir / "pretension_summary.txt"
+    assert summary_note.exists()
+    summary_text = summary_note.read_text(encoding="utf-8").lower()
+    assert "engagement proxy" in summary_text
+    assert "tendon tension" not in summary_text
     bundle = runner.load_dataset(result.paths.output_dir)
-    assert any(sample.phase == "pretension_run" for sample in bundle.samples)
-    assert any(sample.phase == "validation_motion" for sample in bundle.samples)
+    assert any(sample.phase == "pretension_baseline" for sample in bundle.samples)
+    assert any(sample.phase == "pretension_step" for sample in bundle.samples)
+    assert any(sample.phase == "pretension_result" for sample in bundle.samples)
+    assert any(sample.extra.get("travel_from_untensioned_ticks") is not None for sample in bundle.samples)
+    assert any(sample.extra.get("tracker_displacement_mm") is not None for sample in bundle.samples)
+
+
+def test_pretension_validation_experiment_writes_outputs_without_tracker_data(tmp_path: Path) -> None:
+    settings = _settings()
+    servo_service = ServoService(
+        dxl_bus=_PretensionExperimentBus(),
+        mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
+        safety_guard=SafetyGuard(
+            min_offset_ticks=-600,
+            max_offset_ticks=600,
+            max_current_ma=850,
+            default_pretension_current_threshold_ma=220,
+            fine_jog_step_ticks=5,
+            coarse_jog_step_ticks=25,
+            software_position_margin_ticks=64,
+            telemetry_stale_after_s=0.25,
+            pretension_step_ticks=2,
+            pretension_timeout_s=2.0,
+            pretension_settle_time_s=0.0,
+            pretension_baseline_sample_count=3,
+            pretension_current_filter_window=1,
+            pretension_current_delta_threshold_ma=60,
+            pretension_absolute_trigger_current_ma=500,
+            pretension_max_travel_ticks=320,
+        ),
+        neutral_calibration=NeutralCalibrationService(path=tmp_path / "pretension_neutral.json"),
+        pretension_validation=PretensionValidationService(),
+        sleep_fn=lambda _seconds: None,
+    )
+    servo_service.connect("/dev/mock-openrb", 115200)
+    runner = ExperimentRunner(
+        project_root=Path(__file__).resolve().parents[1],
+        settings=settings,
+        tracking_service=None,
+        servo_service=servo_service,
+        output_dir=tmp_path / "data" / "experiments",
+        default_settle_time_s=0.0,
+        registration_path=tmp_path / "latest_registration.json",
+        sleep_fn=lambda _seconds: None,
+    )
+
+    result = runner.run_experiment(
+        "pretension_validation",
+        config={
+            "servo_id": 1,
+            "move_to_reference": False,
+            "include_tracker_displacement": True,
+        },
+    )
+
+    assert result.success is True
+    assert result.summary.experiment_metrics["tracker_metric_sample_count"] == 0
+    assert result.paths.output_dir.joinpath("pretension_response.png").exists()
+    assert result.paths.output_dir.joinpath("pretension_summary.txt").exists()
 
 
 def test_collect_pose_command_dataset_marks_registration_missing(tmp_path: Path) -> None:

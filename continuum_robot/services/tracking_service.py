@@ -308,6 +308,7 @@ class TrackingService:
             self._state.stored_registration_coil_tool_id = None
             self._state.stored_registration_timestamp_utc = None
             self._state.stored_registration_fre_mm = None
+            self._state.T_robot_aurora = None
             self._state.runtime_tip_calibration_path = str(self.runtime_tip_calibration_path)
             self._state.stored_runtime_tip_measurement_tool_id = None
             self._state.stored_runtime_tip_coil_tool_id = None
@@ -485,6 +486,7 @@ class TrackingService:
                 str(stored_timestamp) if stored_timestamp is not None else None
             )
             self._state.stored_registration_fre_mm = float(stored_fre) if stored_fre is not None else None
+            self._state.T_robot_aurora = T_robot_aurora.tolist()
             self._state.runtime_tip_calibration_state = runtime_tip_calibration_state
             self._state.stored_runtime_tip_measurement_tool_id = self._runtime_tip_measurement_tool_id
             self._state.stored_runtime_tip_coil_tool_id = self._runtime_tip_coil_tool_id

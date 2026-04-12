@@ -108,6 +108,7 @@ class TrackingSnapshot:
     stored_registration_coil_tool_id: str | None = None
     stored_registration_timestamp_utc: str | None = None
     stored_registration_fre_mm: float | None = None
+    T_robot_aurora: list[list[float]] | None = None
     runtime_tip_calibration_state: str = "missing_runtime_tip_calibration"
     runtime_tip_calibration_path: str | None = None
     stored_runtime_tip_measurement_tool_id: str | None = None
@@ -139,6 +140,7 @@ class RegistrationSnapshot:
     captured_counts: dict[str, int] = field(default_factory=dict)
     residuals_by_label: dict[str, list[float]] = field(default_factory=dict)
     fre_mm: float | None = None
+    T_robot_aurora: list[list[float]] | None = None
     last_sample_xyz_mm: list[float] | None = None
     pending_accept: bool = False
     accepted_output_path: str | None = None

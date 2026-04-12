@@ -542,7 +542,6 @@ def evaluate_preflight(
         checks.append(_info("registration", "Registration", "Replay runner uses the saved dataset state."))
 
     elif experiment_name == "pretension_validation":
-        checks.append(_tracking_state_check(settings=settings, tracker_ready=tracker_ready, backend_name=backend_name, tracking_snapshot=tracking_snapshot))
         config = PretensionValidationExperimentConfig.from_dict(payload)
         if not servo_connected:
             checks.append(_blocked("servo_service", "Servo Service", "Pretension validation requires a connected servo service."))
@@ -559,41 +558,60 @@ def evaluate_preflight(
             )
         else:
             checks.append(_ok("servo_id", "Servo ID", f"Pretension validation will target servo {config.servo_id}."))
-        if config.validation_direction not in {"tighten", "loosen"}:
+        if bool(config.include_tracker_displacement):
+            if tracker_ready:
+                checks.append(
+                    _ok(
+                        "tracking_state",
+                        "Tracking",
+                        "Tracker displacement will be sampled alongside the pretension trace when frames remain fresh.",
+                    )
+                )
+            else:
+                checks.append(
+                    _warning(
+                        "tracking_state",
+                        "Tracking",
+                        "Tracker displacement was requested, but live tracking is not currently ready. "
+                        "The run can still save current-versus-travel data only.",
+                    )
+                )
+        else:
+            checks.append(
+                _info(
+                    "tracking_state",
+                    "Tracking",
+                    "Tracker displacement is disabled for this run. Only servo current-versus-travel data will be collected.",
+                )
+            )
+        if int(config.step_ticks or 1) <= 0:
             checks.append(
                 _blocked(
-                    "validation_direction",
-                    "Validation Command",
-                    "validation_direction must be 'tighten' or 'loosen'.",
+                    "step_ticks",
+                    "Step Ticks",
+                    "step_ticks must be positive.",
                 )
             )
         else:
             checks.append(
                 _ok(
-                    "validation_direction",
-                    "Validation Command",
-                    f"Tracker validation will apply a {config.validation_direction} delta of {config.validation_delta_ticks} ticks after each pretension run.",
+                    "step_ticks",
+                    "Step Ticks",
+                    "Pretension response will be recorded against increasing travel from the untensioned reference.",
                 )
             )
-        checks.append(
-            _tool_check(
-                tool_id=config.tracker_tool_id,
-                snapshot=tracking_snapshot,
-                mock_mode=bool(settings.runtime.mock_mode),
-            )
-        )
         checks.append(
             _info(
                 "registration",
                 "Registration",
-                "Registration is optional. Pretension validation can compare tracker-frame displacement even without robot-frame registration.",
+                "Registration is optional. When present, tracker displacement will prefer robot-frame tip motion; otherwise it falls back to tracker-frame tool motion when available.",
             )
         )
         checks.append(
             _ok(
-                "run_count",
-                "Run Count",
-                f"{max(1, int(config.run_count))} repeated validation run(s) will be collected for comparison.",
+                "scientific_framing",
+                "Scientific Framing",
+                "This experiment validates current-displacement response and startup-state reproducibility. It does not claim true tendon-force sensing.",
             )
         )
 

@@ -350,6 +350,9 @@ def test_aurora_grid_metrics_fit_truth_grid_and_report_residuals() -> None:
     assert np.isclose(metrics["per_point_metrics"]["P01"]["sample_spread_rms_mm"], 0.5)
     assert np.isclose(metrics["per_point_metrics"]["P02"]["residual_mm"], 0.0, atol=1e-9)
     assert metrics["point_count_aligned"] == 3
+    assert metrics["alignment_ready"] is True
+    assert metrics["point_count_captured"] == 3
+    assert np.isclose(metrics["point_coverage_fraction"], 1.0)
 
 
 def test_aurora_grid_preview_normalizes_captured_points_and_rejects_outliers(tmp_path: Path) -> None:
@@ -398,8 +401,44 @@ def test_aurora_grid_preview_normalizes_captured_points_and_rejects_outliers(tmp
 
     assert len(preview.samples) == 9
     assert preview.metrics["outlier_count"] == 1
+    assert preview.metrics["rejected_sample_count"] == 1
     assert preview.metrics["per_point_metrics"]["P01"]["accepted_sample_count"] == 2
     assert preview.metrics["point_count_aligned"] == 3
+    assert preview.metrics["point_count_total"] == 4
+    assert preview.metrics["point_count_captured"] == 3
+    assert preview.metrics["alignment_ready"] is True
+    assert preview.metrics["position_source_counts"]["tip"] == 9
+
+
+def test_aurora_grid_metrics_reports_within_point_spread_before_alignment_ready() -> None:
+    samples = [
+        _sample(tool_id="0B", tracker_position=[5.2, 2.0, 1.0], robot_position=None, target_index=0, sample_index=0),
+        _sample(tool_id="0B", tracker_position=[4.8, 2.0, 1.0], robot_position=None, target_index=0, sample_index=1),
+        _sample(tool_id="0B", tracker_position=[15.1, 2.0, 1.0], robot_position=None, target_index=1, sample_index=2),
+        _sample(tool_id="0B", tracker_position=[14.9, 2.0, 1.0], robot_position=None, target_index=1, sample_index=3),
+    ]
+    for sample, label in zip(samples, ["P01", "P01", "P02", "P02"]):
+        sample.extra["truth_label"] = label
+        sample.extra["truth_point_mm"] = [[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]][int(label[-2:]) - 1]
+        sample.extra["position_source"] = "tip"
+
+    metrics = compute_grid_accuracy_metrics(
+        samples,
+        truth_points_mm=[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0]],
+        tool_id="0B",
+        truth_frame="grid_local",
+        outlier_threshold_mm=1.0,
+        registration_available=False,
+        tip_calibration_available=True,
+        require_tip_calibration=False,
+        allow_coil_origin_fallback=True,
+    )
+
+    assert metrics["alignment_ready"] is False
+    assert metrics["overall_rms_residual_mm"] is None
+    assert metrics["mean_within_point_spread_mm"] is not None
+    assert metrics["point_count_captured"] == 2
+    assert "Capture 1 more labeled point" in metrics["alignment_ready_reason"]
 
 
 def test_pivot_calibration_least_squares_recovers_tip_on_synthetic_data() -> None:
@@ -609,6 +648,10 @@ def test_aurora_grid_accuracy_run_saves_captured_point_dataset(tmp_path: Path) -
     assert result.success is True
     assert result.paths.output_dir.parent == tmp_path / "data" / "experiments"
     assert result.summary.experiment_metrics["point_count_aligned"] == 3
+    assert result.summary.experiment_metrics["point_count_captured"] == 3
+    assert result.summary.experiment_metrics["point_count_total"] == 4
+    assert result.summary.experiment_metrics["alignment_ready"] is True
+    assert result.summary.experiment_metrics["position_source_counts"]["tip"] == 6
     assert result.summary.experiment_metrics["alignment_transform_truth_to_measured"] is not None
 
 

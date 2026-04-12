@@ -1541,6 +1541,8 @@ def compute_grid_accuracy_metrics(
     raw_sample_count = 0
     accepted_sample_count = 0
     outlier_count = 0
+    per_point_spreads: list[float] = []
+    position_source_counts: dict[str, int] = {}
     for point_index in sorted(grouped):
         positions = grouped.get(point_index, [])
         if not positions:
@@ -1568,6 +1570,9 @@ def compute_grid_accuracy_metrics(
         accepted_sample_count += len(accepted_positions)
         outlier_count += len(rejected_indices)
         point_samples = samples_by_index.get(point_index, [])
+        for sample in point_samples:
+            position_source = str(sample.extra.get("position_source", "tracker_tool") or "tracker_tool")
+            position_source_counts[position_source] = int(position_source_counts.get(position_source, 0) or 0) + 1
         label = next(
             (
                 str(sample.extra.get("truth_label"))
@@ -1595,6 +1600,7 @@ def compute_grid_accuracy_metrics(
             ),
         }
         per_point_metrics[label] = point_metrics
+        per_point_spreads.append(float(accepted_spread))
         if truth_point is not None:
             truth_used.append([float(value) for value in truth_point])
             measured_centroids.append([float(value) for value in accepted_centroid])
@@ -1605,9 +1611,25 @@ def compute_grid_accuracy_metrics(
     bias = None
     residual_outlier_count = 0
     alignment_transform = None
-    mean_spread = None
-    max_spread = None
+    mean_spread = float(np.mean(per_point_spreads)) if per_point_spreads else None
+    max_spread = float(np.max(per_point_spreads)) if per_point_spreads else None
     per_point_residuals: dict[str, float] = {}
+    point_count_total = len(truth_points_mm)
+    point_count_captured = len(per_point_metrics)
+    point_count_missing = max(0, point_count_total - point_count_captured)
+    point_coverage_fraction = (
+        float(point_count_captured / point_count_total)
+        if point_count_total > 0
+        else None
+    )
+    alignment_ready = len(measured_centroids) >= 3
+    alignment_ready_reason = (
+        "At least three labeled point centroids are available for the rigid alignment solve."
+        if alignment_ready
+        else (
+            f"Capture {max(0, 3 - len(measured_centroids))} more labeled point(s) before aligned RMS residuals are available."
+        )
+    )
     if measured_centroids and len(measured_centroids) >= 3:
         truth_arr = as_points_n3(truth_used, name="truth_points_mm")
         measured_arr = as_points_n3(measured_centroids, name="measured_centroids_mm")
@@ -1624,7 +1646,6 @@ def compute_grid_accuracy_metrics(
             bias = [float(value) for value in residual_vectors.mean(axis=0)]
             residual_outlier_count = int(np.sum(residual_norms > float(outlier_threshold_mm)))
             alignment_transform = alignment["T_truth_to_measured"].tolist()
-            spreads = []
             for index, label in enumerate(aligned_keys):
                 point_metrics = per_point_metrics[label]
                 point_metrics["aligned_truth_point_mm"] = [float(value) for value in aligned_truth[index].tolist()]
@@ -1633,10 +1654,6 @@ def compute_grid_accuracy_metrics(
                 point_metrics["residual_vector_mm"] = [float(value) for value in residual_vectors[index].tolist()]
                 point_metrics["residual_mm"] = float(residual_norms[index])
                 per_point_residuals[label] = float(residual_norms[index])
-                spreads.append(float(point_metrics["sample_spread_rms_mm"]))
-            if spreads:
-                mean_spread = float(np.mean(spreads))
-                max_spread = float(np.max(spreads))
 
     if require_tip_calibration and not tip_calibration_available and not allow_coil_origin_fallback:
         status = STATUS_INVALID_MISSING_TIP_CAL
@@ -1662,8 +1679,16 @@ def compute_grid_accuracy_metrics(
         "raw_sample_count": raw_sample_count,
         "accepted_sample_count": accepted_sample_count,
         "valid_sample_count": accepted_sample_count,
+        "rejected_sample_count": outlier_count,
+        "point_count_total": point_count_total,
+        "point_count_captured": point_count_captured,
+        "point_count_missing": point_count_missing,
+        "point_coverage_fraction": point_coverage_fraction,
         "point_count_aligned": len(per_point_residuals),
+        "alignment_ready": alignment_ready,
+        "alignment_ready_reason": alignment_ready_reason,
         "alignment_transform_truth_to_measured": alignment_transform,
+        "position_source_counts": position_source_counts,
         "registration_available": registration_available,
         "tip_calibration_available": tip_calibration_available,
     }

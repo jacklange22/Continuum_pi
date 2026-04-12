@@ -214,7 +214,11 @@ class ExperimentController:
             tracking_snapshot=tracking_snapshot,
             planned_output_dir=planned_output_dir,
         )
-        result_details = self._build_result_details(current_bundle, preview_metrics=(preview.metrics if preview is not None else None))
+        result_details = self._build_result_details(
+            current_bundle,
+            experiment_name=selected_experiment,
+            preview_metrics=(preview.metrics if preview is not None else None),
+        )
 
         with self._lock:
             if history is not None:
@@ -502,6 +506,7 @@ class ExperimentController:
         preferred_order = [
             "repeatability_dataset",
             "aurora_grid_accuracy",
+            "pretension_validation",
             "command_schedule_validation",
             "collect_pose_command_dataset",
             "replay_runner",
@@ -672,11 +677,11 @@ class ExperimentController:
                 return f"source={source}"
             return ""
         if experiment_name == "pretension_validation":
-            value = metrics.get("validation_displacement_rms_mm")
+            value = metrics.get("travel_used_ticks")
             if value is not None:
-                return f"disp_rms={float(value):.3f} mm"
-            value = metrics.get("final_position_spread_ticks")
-            return f"spread={int(value)} ticks" if value is not None else ""
+                return f"travel={int(value)} ticks"
+            value = metrics.get("trigger_current_ma")
+            return f"trigger={float(value):.1f} mA" if value is not None else ""
         return ""
 
     def _build_visualization_model(
@@ -743,13 +748,26 @@ class ExperimentController:
             ("Config Summary", self._config_summary_label(experiment_name, config_payload)),
         ]
 
-    def _build_result_details(self, bundle, *, preview_metrics: dict[str, Any] | None = None) -> list[tuple[str, str]]:
+    def _build_result_details(
+        self,
+        bundle,
+        *,
+        experiment_name: str,
+        preview_metrics: dict[str, Any] | None = None,
+    ) -> list[tuple[str, str]]:
         if bundle is None:
-            if preview_metrics:
+            if preview_metrics and experiment_name == "aurora_grid_accuracy":
                 return [
+                    (
+                        "Coverage",
+                        f"{int(preview_metrics.get('point_count_captured', 0) or 0)} / "
+                        f"{int(preview_metrics.get('point_count_total', 0) or 0)}",
+                    ),
+                    ("Solve Ready", "Yes" if preview_metrics.get("alignment_ready") else "Not Yet"),
                     ("Aligned Points", str(int(preview_metrics.get("point_count_aligned", 0) or 0))),
                     ("Raw Samples", str(int(preview_metrics.get("raw_sample_count", 0) or 0))),
                     ("Accepted Samples", str(int(preview_metrics.get("accepted_sample_count", 0) or 0))),
+                    ("Rejected Samples", str(int(preview_metrics.get("rejected_sample_count", 0) or 0))),
                     (
                         "RMS Residual",
                         self._format_metric_value(preview_metrics.get("overall_rms_residual_mm")),
@@ -759,8 +777,17 @@ class ExperimentController:
                         "Mean Spread",
                         self._format_metric_value(preview_metrics.get("mean_within_point_spread_mm")),
                     ),
+                    (
+                        "Max Spread",
+                        self._format_metric_value(preview_metrics.get("max_within_point_spread_mm")),
+                    ),
+                ]
+            if preview_metrics:
+                return [
+                    ("Preview Status", self._format_metric_value(preview_metrics.get("status"))),
                 ]
             return [("Last Run", "No run loaded yet.")]
+        bundle_experiment_name = str(bundle.metadata.experiment_name or experiment_name)
         pairs = [
             ("Status", bundle.summary.status),
             ("Run ID", bundle.metadata.run_id),
@@ -771,6 +798,46 @@ class ExperimentController:
         ]
         if bundle.paths.config_snapshot_path is not None:
             pairs.append(("Config Snapshot", str(bundle.paths.config_snapshot_path)))
+        if bundle_experiment_name == "aurora_grid_accuracy":
+            metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
+            pairs.extend(
+                [
+                    (
+                        "Coverage",
+                        f"{int(metrics.get('point_count_captured', 0) or 0)} / "
+                        f"{int(metrics.get('point_count_total', 0) or 0)}",
+                    ),
+                    ("Aligned Points", str(int(metrics.get("point_count_aligned", 0) or 0))),
+                    ("Raw Samples", str(int(metrics.get("raw_sample_count", 0) or 0))),
+                    ("Accepted Samples", str(int(metrics.get("accepted_sample_count", 0) or 0))),
+                    ("Rejected Samples", str(int(metrics.get("rejected_sample_count", 0) or 0))),
+                    ("RMS Residual", self._format_metric_value(metrics.get("overall_rms_residual_mm"))),
+                    ("Max Residual", self._format_metric_value(metrics.get("max_residual_mm"))),
+                    ("Mean Spread", self._format_metric_value(metrics.get("mean_within_point_spread_mm"))),
+                ]
+            )
+            return pairs
+        if bundle_experiment_name == "pretension_validation":
+            metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
+            plot_path = bundle.paths.output_dir / "pretension_response.png"
+            summary_text_path = bundle.paths.output_dir / "pretension_summary.txt"
+            pairs.extend(
+                [
+                    ("Servo", str(metrics.get("servo_id", "n/a"))),
+                    ("Accepted", "Yes" if metrics.get("accepted") else "No"),
+                    ("Stop Reason", str(metrics.get("stop_reason", "n/a"))),
+                    ("Final Position", self._format_metric_value(metrics.get("final_position_tick"))),
+                    ("Travel Used (ticks)", self._format_metric_value(metrics.get("travel_used_ticks"))),
+                    ("Travel Used (mm)", self._format_metric_value(metrics.get("travel_used_mm"))),
+                    ("Baseline Current", self._format_metric_value(metrics.get("baseline_current_ma"))),
+                    ("Effective Trigger", self._format_metric_value(metrics.get("effective_trigger_current_ma"))),
+                    ("Trigger Current", self._format_metric_value(metrics.get("trigger_current_ma"))),
+                    ("Max Displacement", self._format_metric_value(metrics.get("max_observed_displacement_mm"))),
+                    ("Response Plot", str(plot_path) if plot_path.exists() else "not written"),
+                    ("Summary Note", str(summary_text_path) if summary_text_path.exists() else "not written"),
+                ]
+            )
+            return pairs
         scalar_metrics = [
             (key, value)
             for key, value in bundle.summary.experiment_metrics.items()
@@ -838,8 +905,9 @@ class ExperimentController:
         if experiment_name == "pretension_validation":
             return (
                 f"servo {config_payload.get('servo_id', 'n/a')}, "
-                f"{int(config_payload.get('run_count', 0) or 0)} runs, "
-                f"{config_payload.get('validation_direction', 'n/a')} {config_payload.get('validation_delta_ticks', 'n/a')} ticks"
+                f"step {config_payload.get('step_ticks', 'live default')} ticks, "
+                f"max travel {config_payload.get('max_travel_ticks', 'live default')} ticks, "
+                f"tracker={'on' if bool(config_payload.get('include_tracker_displacement', True)) else 'off'}"
             )
         return "See experiment parameters."
 

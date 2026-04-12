@@ -12,6 +12,7 @@ from continuum_robot.experiments.dataset_io import ExperimentDatasetLoader, Expe
 from continuum_robot.experiments.experiment_models import ExperimentPoint
 from continuum_robot.experiments.framework import BaseExperiment, ExperimentHardwareRequirements, ExperimentSession
 from continuum_robot.experiments.critical_experiments import register_critical_experiments
+from continuum_robot.experiments.pretension_validation_outputs import write_pretension_validation_outputs
 from continuum_robot.experiments.schedules import (
     CommandScheduleConfig,
     command_schedule_checksum,
@@ -137,16 +138,12 @@ class CollectPoseCommandDatasetConfig:
 
 @dataclass
 class PretensionValidationExperimentConfig:
-    """Config for repeated one-servo pretension validation."""
+    """Config for one-servo pretension response validation."""
 
     servo_id: int = 1
-    run_count: int = 3
     move_to_reference: bool = True
-    accept_results: bool = False
+    include_tracker_displacement: bool = True
     tracker_tool_id: str = "0A"
-    validation_direction: str = "loosen"
-    validation_delta_ticks: int = 6
-    validation_settle_time_s: float = 0.05
     untensioned_reference_tick: int | None = None
     step_ticks: int | None = None
     settle_time_s: float | None = None
@@ -157,21 +154,15 @@ class PretensionValidationExperimentConfig:
     hard_current_stop_ma: int | None = None
     max_travel_ticks: int | None = None
     timeout_s: float | None = None
-    max_final_position_spread_ticks: int | None = None
-    max_validation_displacement_spread_mm: float | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "PretensionValidationExperimentConfig":
         payload = dict(payload or {})
         return cls(
             servo_id=int(payload.get("servo_id", 1)),
-            run_count=max(1, int(payload.get("run_count", 3))),
             move_to_reference=bool(payload.get("move_to_reference", True)),
-            accept_results=bool(payload.get("accept_results", False)),
+            include_tracker_displacement=bool(payload.get("include_tracker_displacement", True)),
             tracker_tool_id=str(payload.get("tracker_tool_id", "0A")),
-            validation_direction=str(payload.get("validation_direction", "loosen")).strip().lower(),
-            validation_delta_ticks=max(1, int(payload.get("validation_delta_ticks", 6))),
-            validation_settle_time_s=float(payload.get("validation_settle_time_s", 0.05)),
             untensioned_reference_tick=(
                 int(payload["untensioned_reference_tick"])
                 if payload.get("untensioned_reference_tick") not in (None, "")
@@ -210,16 +201,6 @@ class PretensionValidationExperimentConfig:
                 int(payload["max_travel_ticks"]) if payload.get("max_travel_ticks") not in (None, "") else None
             ),
             timeout_s=float(payload["timeout_s"]) if payload.get("timeout_s") not in (None, "") else None,
-            max_final_position_spread_ticks=(
-                int(payload["max_final_position_spread_ticks"])
-                if payload.get("max_final_position_spread_ticks") not in (None, "")
-                else None
-            ),
-            max_validation_displacement_spread_mm=(
-                float(payload["max_validation_displacement_spread_mm"])
-                if payload.get("max_validation_displacement_spread_mm") not in (None, "")
-                else None
-            ),
         )
 
 
@@ -466,13 +447,13 @@ class ReplayRunnerExperiment(BaseExperiment):
 
 
 class PretensionValidationExperiment(BaseExperiment):
-    """Repeat one-servo pretension runs and compare servo + tracker-side consistency."""
+    """Capture one pretension response trace versus commanded travel."""
 
     name = "pretension_validation"
-    description = "Repeated one-servo pretension validation with tracker-side displacement checks."
+    description = "Validate pretension response versus commanded travel using current as an engagement proxy."
     hardware_requirements = ExperimentHardwareRequirements(
-        tracking_required=True,
         servo_required=True,
+        tracking_required=False,
         mock_compatible=True,
     )
 
@@ -486,194 +467,244 @@ class PretensionValidationExperiment(BaseExperiment):
 
     def setup(self, session: ExperimentSession) -> None:
         tracking_service = session.context.tracking_service
-        if tracking_service is not None and getattr(tracking_service, "_thread", None) is None:
+        if (
+            bool(self.config.include_tracker_displacement)
+            and tracking_service is not None
+            and getattr(tracking_service, "_thread", None) is None
+        ):
             tracking_service.start()
             self._tracking_started_here = True
 
     def precheck(self, session: ExperimentSession) -> None:
-        if session.context.tracking_service is None:
-            raise RuntimeError("pretension_validation requires tracking_service.")
         if not session.context.servo_service.is_connected:
             raise RuntimeError("pretension_validation requires a connected servo service.")
-        if self.config.validation_direction not in {"tighten", "loosen"}:
-            raise RuntimeError("pretension_validation requires validation_direction to be 'tighten' or 'loosen'.")
 
     def execute(self, session: ExperimentSession) -> None:
         servo_service = session.context.servo_service
         tracker_service = session.context.tracking_service
         validation_service = servo_service.pretension_validation
         parameters = self._pretension_parameters(session)
-        run_records: list[dict[str, Any]] = []
-        total = max(1, int(self.config.run_count))
-
-        for run_index in range(total):
-            session.raise_if_stop_requested()
-            if self.config.move_to_reference:
-                servo_service.move_servo_to_pretension_reference(
-                    servo_id=int(self.config.servo_id),
-                    parameters=parameters,
-                )
-            baseline = servo_service.measure_pretension_baseline(
-                servo_id=int(self.config.servo_id),
-                sample_count=int(parameters.baseline_sample_count),
-                filter_window=int(parameters.current_filter_window),
-                parameters=parameters,
+        mapper = getattr(servo_service, "mapper", None)
+        include_tracker = bool(self.config.include_tracker_displacement and tracker_service is not None)
+        if bool(self.config.include_tracker_displacement) and tracker_service is None:
+            session.add_warning(
+                "Tracker displacement was requested, but tracking_service is unavailable. "
+                "This run will save current-versus-travel data only."
             )
-            pretension_result = servo_service.run_pretension_routine(
+
+        sample_index = 0
+        progress_index = 0
+        estimated_total = max(4, int(parameters.max_travel_ticks // max(1, parameters.step_ticks)) + 4)
+        start_snapshot = tracker_service.get_snapshot() if include_tracker else None
+
+        if self.config.move_to_reference:
+            move_result = servo_service.move_servo_to_pretension_reference(
                 servo_id=int(self.config.servo_id),
                 parameters=parameters,
             )
-            accepted = False
-            if bool(self.config.accept_results) and pretension_result.success:
-                servo_service.accept_pretension_result(int(self.config.servo_id))
-                accepted = True
-
-            before_snapshot = tracker_service.get_snapshot()
-            validation_command = None
-            validation_metric = validation_service.compute_tracker_displacement(
-                before_snapshot,
-                before_snapshot,
-                tracker_tool_id=self.config.tracker_tool_id,
-            )
-            if pretension_result.final_position_tick is not None:
-                direction_sign = 1 if self.config.validation_direction == "loosen" else -1
-                target_tick = int(pretension_result.final_position_tick) + (
-                    direction_sign * int(self.config.validation_delta_ticks)
-                )
-                validation_command = servo_service.move_servo_to_raw_target(
-                    servo_id=int(self.config.servo_id),
-                    target_tick=int(target_tick),
-                    reason="pretension_validation",
-                )
-                if validation_command.blocked:
-                    session.add_warning(validation_command.message)
-                    validation_metric = validation_service.compute_tracker_displacement(
-                        None,
-                        None,
-                        tracker_tool_id=self.config.tracker_tool_id,
-                    )
-                else:
-                    if float(self.config.validation_settle_time_s) > 0.0:
-                        session.context.sleep_fn(float(self.config.validation_settle_time_s))
-                    after_snapshot = tracker_service.get_snapshot()
-                    validation_metric = validation_service.compute_tracker_displacement(
-                        before_snapshot,
-                        after_snapshot,
-                        tracker_tool_id=self.config.tracker_tool_id,
-                    )
-
-            run_record = {
-                "run_index": int(run_index),
-                "servo_id": int(self.config.servo_id),
-                "pretension_success": bool(pretension_result.success),
-                "accepted": bool(accepted),
-                "baseline_current_ma": float(baseline.baseline_current_ma),
-                "filtered_current_ma": float(pretension_result.filtered_current_ma or baseline.filtered_current_ma),
-                "trigger_current_ma": int(pretension_result.threshold_ma),
-                "final_position_tick": pretension_result.final_position_tick,
-                "travel_used_ticks": (
-                    None
-                    if pretension_result.final_position_tick is None
-                    or pretension_result.untensioned_reference_tick is None
-                    else int(pretension_result.untensioned_reference_tick) - int(pretension_result.final_position_tick)
+            if move_result.blocked or not move_result.success:
+                raise RuntimeError(move_result.message)
+            start_snapshot = tracker_service.get_snapshot() if include_tracker else start_snapshot
+            move_payload = self._trace_payload(
+                servo_id=int(self.config.servo_id),
+                run_state="move_to_reference",
+                commanded_position_ticks=move_result.goal_tick,
+                current_position_ticks=(
+                    move_result.telemetry.present_position if move_result.telemetry is not None else None
                 ),
-                "stop_reason": pretension_result.stop_reason,
-                "validation_direction": self.config.validation_direction,
-                "validation_delta_ticks": int(self.config.validation_delta_ticks),
-                "validation_target_tick": (
-                    validation_command.goal_tick
-                    if validation_command is not None
+                raw_current_ma=(
+                    move_result.telemetry.present_current_ma if move_result.telemetry is not None else None
+                ),
+                filtered_current_ma=(
+                    float(move_result.telemetry.present_current_ma)
+                    if move_result.telemetry is not None and move_result.telemetry.present_current_ma is not None
                     else None
                 ),
-                "validation_displacement_mm": validation_metric.displacement_magnitude_mm,
-                "validation_metric_frame": validation_metric.metric_frame,
-                "parameters": {
-                    "untensioned_reference_tick": int(parameters.untensioned_reference_tick),
-                    "step_ticks": int(parameters.step_ticks),
-                    "settle_time_s": float(parameters.settle_time_s),
-                    "baseline_sample_count": int(parameters.baseline_sample_count),
-                    "current_filter_window": int(parameters.current_filter_window),
-                    "current_delta_threshold_ma": int(parameters.current_delta_threshold_ma),
-                    "absolute_trigger_current_ma": parameters.absolute_trigger_current_ma,
-                    "hard_current_stop_ma": int(parameters.hard_current_stop_ma),
-                    "max_travel_ticks": int(parameters.max_travel_ticks),
-                    "timeout_s": float(parameters.timeout_s),
-                },
-            }
-            run_records.append(run_record)
+                baseline_current_ma=None,
+                effective_trigger_current_ma=None,
+                hard_current_stop_ma=int(parameters.hard_current_stop_ma),
+                untensioned_reference_tick=int(parameters.untensioned_reference_tick),
+                trigger_met=False,
+                stop_reason=None,
+                tracker_metric=(
+                    validation_service.compute_tracker_displacement(
+                        start_snapshot,
+                        start_snapshot,
+                        tracker_tool_id=self.config.tracker_tool_id,
+                    )
+                    if include_tracker and start_snapshot is not None
+                    else None
+                ),
+                mapper=mapper,
+            )
+            session.add_sample(
+                self._build_trace_sample(
+                    session,
+                    snapshot=start_snapshot if include_tracker else None,
+                    phase="move_to_reference",
+                    step_index=0,
+                    sample_index=sample_index,
+                    payload=move_payload,
+                )
+            )
+            sample_index += 1
 
-            session.add_sample(
-                _sample_from_tracking_snapshot(
-                    session,
-                    snapshot=before_snapshot,
-                    phase="pretension_run",
-                    step_index=int(run_index),
-                    sample_index=0,
-                    commanded_cable_deltas_cm=[],
-                    commanded_motor_values={"servo_id": int(self.config.servo_id)},
-                    status_flags=["pretension_validation"],
-                    extra={
-                        **run_record,
-                        "baseline_samples_ma": list(baseline.samples_ma),
-                    },
+        def _on_progress(result) -> None:
+            nonlocal sample_index, progress_index
+            tracker_snapshot = tracker_service.get_snapshot() if include_tracker else None
+            tracker_metric = (
+                validation_service.compute_tracker_displacement(
+                    start_snapshot,
+                    tracker_snapshot,
+                    tracker_tool_id=self.config.tracker_tool_id,
                 )
+                if include_tracker and start_snapshot is not None and tracker_snapshot is not None
+                else None
+            )
+            phase = self._phase_for_result_status(str(result.status))
+            payload = self._trace_payload(
+                servo_id=int(self.config.servo_id),
+                run_state=str(result.status),
+                commanded_position_ticks=result.last_commanded_target_tick,
+                current_position_ticks=result.current_position_tick,
+                raw_current_ma=result.final_current_ma,
+                filtered_current_ma=result.filtered_current_ma,
+                baseline_current_ma=result.baseline_current_ma,
+                effective_trigger_current_ma=result.threshold_ma,
+                hard_current_stop_ma=result.hard_current_stop_ma,
+                untensioned_reference_tick=result.untensioned_reference_tick,
+                trigger_met=bool(result.success and result.stop_reason in {"baseline_delta_trigger", "absolute_trigger", "combined_trigger"}),
+                stop_reason=result.stop_reason,
+                tracker_metric=tracker_metric,
+                mapper=mapper,
             )
             session.add_sample(
-                _sample_from_tracking_snapshot(
+                self._build_trace_sample(
                     session,
-                    snapshot=tracker_service.get_snapshot(),
-                    phase="validation_motion",
-                    step_index=int(run_index),
-                    sample_index=1,
-                    commanded_cable_deltas_cm=[],
-                    commanded_motor_values={
-                        "servo_id": int(self.config.servo_id),
-                        "validation_target_tick": run_record["validation_target_tick"],
-                    },
-                    status_flags=["pretension_validation"],
-                    extra={
-                        "run_index": int(run_index),
-                        "validation_metric_frame": validation_metric.metric_frame,
-                        "validation_displacement_mm": validation_metric.displacement_magnitude_mm,
-                        "validation_vector_mm": validation_metric.displacement_vector_mm,
-                        "validation_message": validation_metric.message,
-                        "pretension_stop_reason": pretension_result.stop_reason,
-                    },
+                    snapshot=tracker_snapshot if include_tracker else None,
+                    phase=phase,
+                    step_index=progress_index,
+                    sample_index=sample_index,
+                    payload=payload,
                 )
             )
+            sample_index += 1
+            progress_index += 1
             session.update_progress(
-                run_index + 1,
-                total,
+                min(progress_index, estimated_total),
+                estimated_total,
                 {
-                    "phase": "pretension_validation",
-                    "run_index": int(run_index),
-                    "pretension_status": pretension_result.status,
+                    "phase": phase,
+                    "servo_id": int(self.config.servo_id),
+                    "run_state": str(result.status),
                 },
             )
-            if not pretension_result.success:
-                session.add_warning(
-                    f"Pretension validation run {run_index + 1} ended with {pretension_result.status}: {pretension_result.stop_reason or pretension_result.message}"
-                )
 
-        metrics = validation_service.summarize_validation_runs(run_records)
-        metrics["runs"] = run_records
-        if (
-            self.config.max_final_position_spread_ticks is not None
-            and metrics.get("final_position_spread_ticks") is not None
-            and int(metrics["final_position_spread_ticks"]) > int(self.config.max_final_position_spread_ticks)
-        ):
+        pretension_result = servo_service.run_pretension_routine(
+            servo_id=int(self.config.servo_id),
+            parameters=parameters,
+            progress_callback=_on_progress,
+            stop_requested=session.stop_requested,
+        )
+
+        trace_points = [
+            sample.extra
+            for sample in session.samples
+            if sample.phase in {"move_to_reference", "pretension_baseline", "pretension_step", "pretension_result"}
+        ]
+        tracker_displacements = [
+            float(point["tracker_displacement_mm"])
+            for point in trace_points
+            if point.get("tracker_displacement_mm") is not None
+        ]
+        max_observed_current_ma = max(
+            (
+                float(point["raw_current_ma"])
+                for point in trace_points
+                if point.get("raw_current_ma") is not None
+            ),
+            default=None,
+        )
+        max_observed_filtered_current_ma = max(
+            (
+                float(point["filtered_current_ma"])
+                for point in trace_points
+                if point.get("filtered_current_ma") is not None
+            ),
+            default=None,
+        )
+        trigger_point = next((point for point in trace_points if bool(point.get("trigger_met"))), None)
+        travel_used_ticks = (
+            None
+            if pretension_result.final_position_tick is None or pretension_result.untensioned_reference_tick is None
+            else int(pretension_result.untensioned_reference_tick) - int(pretension_result.final_position_tick)
+        )
+        travel_used_mm = (
+            float(mapper.ticks_to_displacement_mm(travel_used_ticks))
+            if travel_used_ticks is not None and mapper is not None
+            else None
+        )
+        metrics = {
+            "servo_id": int(self.config.servo_id),
+            "accepted": bool(pretension_result.success),
+            "pretension_success": bool(pretension_result.success),
+            "stop_reason": pretension_result.stop_reason,
+            "status": pretension_result.status,
+            "final_position_tick": pretension_result.final_position_tick,
+            "travel_used_ticks": travel_used_ticks,
+            "travel_used_mm": travel_used_mm,
+            "baseline_current_ma": pretension_result.baseline_current_ma,
+            "effective_trigger_current_ma": pretension_result.threshold_ma,
+            "trigger_current_ma": (
+                pretension_result.filtered_current_ma if pretension_result.success else None
+            ),
+            "final_raw_current_ma": pretension_result.final_current_ma,
+            "final_filtered_current_ma": pretension_result.filtered_current_ma,
+            "hard_current_stop_ma": pretension_result.hard_current_stop_ma,
+            "max_observed_current_ma": max_observed_current_ma,
+            "max_observed_filtered_current_ma": max_observed_filtered_current_ma,
+            "max_observed_displacement_mm": max(tracker_displacements) if tracker_displacements else None,
+            "trigger_displacement_mm": (
+                float(trigger_point["tracker_displacement_mm"])
+                if trigger_point is not None and trigger_point.get("tracker_displacement_mm") is not None
+                else None
+            ),
+            "tracker_metric_frame": (
+                trigger_point.get("tracker_metric_frame")
+                if trigger_point is not None and trigger_point.get("tracker_metric_frame")
+                else next(
+                    (
+                        point.get("tracker_metric_frame")
+                        for point in trace_points
+                        if point.get("tracker_metric_frame") not in (None, "", "unavailable", "frame_mismatch")
+                    ),
+                    "unavailable",
+                )
+            ),
+            "tracker_metric_sample_count": len(tracker_displacements),
+            "trace_sample_count": len(trace_points),
+            "parameters": {
+                "servo_id": int(self.config.servo_id),
+                "move_to_reference": bool(self.config.move_to_reference),
+                "include_tracker_displacement": bool(self.config.include_tracker_displacement),
+                "tracker_tool_id": str(self.config.tracker_tool_id),
+                "untensioned_reference_tick": int(parameters.untensioned_reference_tick),
+                "step_ticks": int(parameters.step_ticks),
+                "settle_time_s": float(parameters.settle_time_s),
+                "baseline_sample_count": int(parameters.baseline_sample_count),
+                "current_filter_window": int(parameters.current_filter_window),
+                "current_delta_threshold_ma": int(parameters.current_delta_threshold_ma),
+                "absolute_trigger_current_ma": parameters.absolute_trigger_current_ma,
+                "hard_current_stop_ma": int(parameters.hard_current_stop_ma),
+                "max_travel_ticks": int(parameters.max_travel_ticks),
+                "timeout_s": float(parameters.timeout_s),
+            },
+        }
+        if not pretension_result.success:
             session.add_warning(
-                "Final pretension position spread exceeded the configured validation limit."
+                f"Pretension validation ended with {pretension_result.status}: "
+                f"{pretension_result.stop_reason or pretension_result.message}"
             )
-        if (
-            self.config.max_validation_displacement_spread_mm is not None
-            and metrics.get("validation_displacement_spread_mm") is not None
-            and float(metrics["validation_displacement_spread_mm"]) > float(self.config.max_validation_displacement_spread_mm)
-        ):
-            session.add_warning(
-                "Tracker displacement spread exceeded the configured validation limit."
-            )
-        if any(not bool(record.get("pretension_success")) for record in run_records):
             metrics["summary_requirements"] = {"force_status": "partial_success"}
         session.metrics.update(metrics)
 
@@ -681,6 +712,14 @@ class PretensionValidationExperiment(BaseExperiment):
         if self._tracking_started_here:
             session.context.tracking_service.stop()
             self._tracking_started_here = False
+
+    def write_outputs(self, session: ExperimentSession, paths, summary) -> None:
+        write_pretension_validation_outputs(
+            output_dir=paths.output_dir,
+            metadata=session.metadata,
+            summary=summary,
+            samples=session.samples,
+        )
 
     def _pretension_parameters(self, session: ExperimentSession) -> PretensionParameters:
         defaults = session.context.servo_service.default_pretension_parameters(int(self.config.servo_id))
@@ -728,6 +767,117 @@ class PretensionValidationExperiment(BaseExperiment):
             ),
             timeout_s=float(self.config.timeout_s) if self.config.timeout_s is not None else float(defaults.timeout_s),
         )
+
+    @staticmethod
+    def _phase_for_result_status(status: str) -> str:
+        normalized = str(status or "").strip().lower()
+        if normalized == "baseline_ready":
+            return "pretension_baseline"
+        if normalized == "running":
+            return "pretension_step"
+        return "pretension_result"
+
+    @staticmethod
+    def _build_trace_sample(
+        session: ExperimentSession,
+        *,
+        snapshot,
+        phase: str,
+        step_index: int,
+        sample_index: int,
+        payload: dict[str, Any],
+    ) -> ExperimentTimeseriesSample:
+        commanded_position = payload.get("commanded_position_ticks")
+        commanded_motor_values = {
+            "servo_id": int(payload["servo_id"]),
+            "commanded_position_ticks": commanded_position,
+        }
+        if snapshot is None:
+            return ExperimentTimeseriesSample(
+                monotonic_time_s=session.elapsed_s(),
+                wall_time_utc=_utc_now_iso(),
+                phase=phase,
+                step_index=int(step_index),
+                sample_index=int(sample_index),
+                commanded_motor_values=commanded_motor_values,
+                status_flags=["pretension_validation"],
+                extra=dict(payload),
+            )
+        return _sample_from_tracking_snapshot(
+            session,
+            snapshot=snapshot,
+            phase=phase,
+            step_index=int(step_index),
+            sample_index=int(sample_index),
+            commanded_cable_deltas_cm=[],
+            commanded_motor_values=commanded_motor_values,
+            status_flags=["pretension_validation"],
+            extra=dict(payload),
+        )
+
+    @staticmethod
+    def _trace_payload(
+        *,
+        servo_id: int,
+        run_state: str,
+        commanded_position_ticks: int | None,
+        current_position_ticks: int | None,
+        raw_current_ma: int | None,
+        filtered_current_ma: float | None,
+        baseline_current_ma: float | None,
+        effective_trigger_current_ma: int | None,
+        hard_current_stop_ma: int | None,
+        untensioned_reference_tick: int | None,
+        trigger_met: bool,
+        stop_reason: str | None,
+        tracker_metric,
+        mapper,
+    ) -> dict[str, Any]:
+        travel_ticks = (
+            None
+            if untensioned_reference_tick is None or current_position_ticks is None
+            else int(untensioned_reference_tick) - int(current_position_ticks)
+        )
+        travel_mm = (
+            float(mapper.ticks_to_displacement_mm(travel_ticks))
+            if travel_ticks is not None and mapper is not None
+            else None
+        )
+        return {
+            "servo_id": int(servo_id),
+            "run_state": str(run_state),
+            "commanded_position_ticks": commanded_position_ticks,
+            "current_position_ticks": current_position_ticks,
+            "travel_from_untensioned_ticks": travel_ticks,
+            "travel_from_untensioned_mm": travel_mm,
+            "raw_current_ma": (int(raw_current_ma) if raw_current_ma is not None else None),
+            "filtered_current_ma": (float(filtered_current_ma) if filtered_current_ma is not None else None),
+            "baseline_current_ma": (float(baseline_current_ma) if baseline_current_ma is not None else None),
+            "effective_trigger_current_ma": (
+                int(effective_trigger_current_ma) if effective_trigger_current_ma is not None else None
+            ),
+            "hard_current_stop_ma": (int(hard_current_stop_ma) if hard_current_stop_ma is not None else None),
+            "trigger_met": bool(trigger_met),
+            "stop_reason": stop_reason,
+            "tracker_displacement_mm": (
+                float(tracker_metric.displacement_magnitude_mm)
+                if tracker_metric is not None and tracker_metric.displacement_magnitude_mm is not None
+                else None
+            ),
+            "tracker_displacement_vector_mm": (
+                list(tracker_metric.displacement_vector_mm)
+                if tracker_metric is not None and tracker_metric.displacement_vector_mm is not None
+                else None
+            ),
+            "tracker_metric_frame": (
+                str(tracker_metric.metric_frame)
+                if tracker_metric is not None and tracker_metric.metric_frame not in (None, "")
+                else None
+            ),
+            "tracker_metric_message": (
+                str(tracker_metric.message) if tracker_metric is not None and tracker_metric.message else None
+            ),
+        }
 
 
 class CollectPoseCommandDatasetExperiment(BaseExperiment):
@@ -992,7 +1142,6 @@ def register_builtin_experiments(registry) -> None:
         description=PretensionValidationExperiment.description,
         category="validation",
         tags=["Pretension", "Tracking", "Servo"],
-        workspace_visible=False,
         default_config_path="config/experiment_pretension_validation.example.yaml",
         factory=PretensionValidationExperiment.from_dict,
     )

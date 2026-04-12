@@ -8,7 +8,7 @@ import time
 from typing import Any, Callable
 
 from continuum_robot.config.settings import Settings
-from continuum_robot.experiments.schemas import ExperimentMetadata, ExperimentTimeseriesSample
+from continuum_robot.experiments.schemas import ExperimentDatasetPaths, ExperimentMetadata, ExperimentTimeseriesSample
 
 
 def _config_to_dict(config: Any) -> dict[str, Any]:
@@ -149,3 +149,11 @@ class BaseExperiment:
     def summarize(self, session: ExperimentSession) -> dict[str, Any]:
         """Return experiment-specific summary metrics."""
         return dict(session.metrics)
+
+    def write_outputs(
+        self,
+        session: ExperimentSession,
+        paths: ExperimentDatasetPaths,
+        summary,
+    ) -> None:
+        """Write any additional experiment-specific artifacts into the canonical run directory."""

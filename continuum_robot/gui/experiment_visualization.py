@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 
 from continuum_robot.experiments.dataset_tools import extract_tip_or_tool_position_mm
+from continuum_robot.experiments.pretension_validation_outputs import extract_pretension_trace_points
 
 
 @dataclass
@@ -97,6 +98,8 @@ def build_visualization_model(
             color_mode=color_mode,
             acceptance=config_payload.get("acceptance", {}),
         )
+    if experiment_name == "pretension_validation":
+        return _build_pretension_validation_model(samples=samples, metrics=metrics)
     return _build_generic_model(
         experiment_name=experiment_name,
         samples=samples,
@@ -314,13 +317,29 @@ def _build_grid_model(
         metrics=metrics,
         acceptance=acceptance,
     )
+    point_count_captured = int(metrics.get("point_count_captured", 0) or 0)
+    point_count_total = int(metrics.get("point_count_total", len(ordered_labels)) or 0)
+    position_sources = metrics.get("position_source_counts", {}) or {}
+    position_source_summary = ", ".join(
+        f"{str(source)}={int(count)}"
+        for source, count in sorted(position_sources.items())
+    ) or "n/a"
     summary_lines = [
         f"Run status: {metrics.get('status', 'unknown')}",
+        f"Coverage: {point_count_captured} / {point_count_total} labeled points captured",
+        f"Solve readiness: {metrics.get('alignment_ready_reason', 'n/a')}",
+        (
+            f"Raw / accepted / rejected samples: "
+            f"{int(metrics.get('raw_sample_count', 0) or 0)} / "
+            f"{int(metrics.get('accepted_sample_count', 0) or 0)} / "
+            f"{int(metrics.get('rejected_sample_count', metrics.get('outlier_count', 0)) or 0)}"
+        ),
         f"Aligned RMS residual: {_fmt(metrics.get('overall_rms_residual_mm') or metrics.get('overall_rms_error_mm'))} mm",
         f"Max residual: {_fmt(metrics.get('max_residual_mm'))} mm",
         f"Mean within-point spread: {_fmt(metrics.get('mean_within_point_spread_mm'))} mm",
-        f"Sample outliers rejected: {metrics.get('outlier_count', 0)}",
+        f"Max within-point spread: {_fmt(metrics.get('max_within_point_spread_mm'))} mm",
         f"Aligned points: {metrics.get('point_count_aligned', 0)}",
+        f"Position source counts: {position_source_summary}",
         f"Tip calibration available: {metrics.get('tip_calibration_available', False)}",
         f"Points summarized: {len(ordered_labels)}",
     ]
@@ -642,3 +661,76 @@ def _build_generic_model(
         charts=charts,
         summary_lines=summary_lines,
     )
+
+
+def _build_pretension_validation_model(*, samples, metrics: dict[str, Any]) -> VisualizationModel:
+    trace_points = extract_pretension_trace_points(samples)
+    use_mm = any(point.travel_from_untensioned_mm is not None for point in trace_points)
+    x_title = "Travel From Untensioned (mm)" if use_mm else "Travel From Untensioned (ticks)"
+    filtered_points = []
+    raw_points = []
+    displacement_points = []
+    for point in trace_points:
+        x_value = point.travel_from_untensioned_mm if use_mm else point.travel_from_untensioned_ticks
+        if x_value is None:
+            continue
+        if point.filtered_current_ma is not None:
+            filtered_points.append((float(x_value), float(point.filtered_current_ma)))
+        if point.raw_current_ma is not None:
+            raw_points.append((float(x_value), float(point.raw_current_ma)))
+        if point.tracker_displacement_mm is not None:
+            displacement_points.append((float(x_value), float(point.tracker_displacement_mm)))
+
+    summary_lines = [
+        f"Status: {metrics.get('status', 'unknown')}",
+        f"Servo: {metrics.get('servo_id', 'n/a')}",
+        f"Accepted: {'yes' if metrics.get('accepted') else 'no'}",
+        f"Stop Reason: {metrics.get('stop_reason', 'n/a')}",
+        f"Final Position: {_fmt(metrics.get('final_position_tick'))} ticks",
+        f"Travel Used (ticks): {_fmt(metrics.get('travel_used_ticks'))}",
+        f"Travel Used (mm): {_fmt(metrics.get('travel_used_mm'))}",
+        f"Baseline Current: {_fmt(metrics.get('baseline_current_ma'))} mA",
+        f"Effective Trigger: {_fmt(metrics.get('effective_trigger_current_ma'))} mA",
+        f"Trigger Current: {_fmt(metrics.get('trigger_current_ma'))} mA",
+        f"Hard Current Stop: {_fmt(metrics.get('hard_current_stop_ma'))} mA",
+        f"Max Tracker Displacement: {_fmt(metrics.get('max_observed_displacement_mm'))} mm",
+        "Current is treated here as an engagement proxy only. This run does not estimate tendon force.",
+    ]
+    charts: list[ChartModel] = []
+    if filtered_points:
+        charts.append(
+            ChartModel(
+                kind="line",
+                title="Filtered Current vs Travel",
+                x_title=x_title,
+                y_title="Filtered Current (mA)",
+                caption="Filtered present current across the pretension run, indexed by travel from the untensioned reference.",
+                points_xy=filtered_points,
+                color_hex="#2563eb",
+            )
+        )
+    if raw_points:
+        charts.append(
+            ChartModel(
+                kind="line",
+                title="Raw Current vs Travel",
+                x_title=x_title,
+                y_title="Raw Current (mA)",
+                caption="Raw present current recorded at each pretension trace sample.",
+                points_xy=raw_points,
+                color_hex="#94a3b8",
+            )
+        )
+    if displacement_points:
+        charts.append(
+            ChartModel(
+                kind="line",
+                title="Tracker Displacement vs Travel",
+                x_title=x_title,
+                y_title="Displacement (mm)",
+                caption="Tracker-side displacement relative to the run start, when live tracking was available.",
+                points_xy=displacement_points,
+                color_hex="#7c3aed",
+            )
+        )
+    return VisualizationModel(charts=charts, summary_lines=summary_lines)

@@ -32,6 +32,7 @@ class RegistrationViewState:
     residuals_by_label: dict[str, list[float]] = field(default_factory=dict)
     validation_metrics: dict[str, object] = field(default_factory=dict)
     latest_validation_summary: dict[str, object] = field(default_factory=dict)
+    T_robot_aurora: list[list[float]] | None = None
     capture_geometry_status: str = "coil origin"
     current_tracked_xyz_mm: list[float] | None = None
     current_tracked_frame_id: int | None = None
@@ -425,6 +426,7 @@ class RegistrationController:
         self.state.residuals_by_label = dict(snapshot.residuals_by_label)
         self.state.validation_metrics = dict(snapshot.validation_metrics)
         self.state.latest_validation_summary = dict(snapshot.latest_validation_summary)
+        self.state.T_robot_aurora = snapshot.T_robot_aurora
         self.state.pending_accept = bool(snapshot.pending_accept)
         self.state.last_result_path = snapshot.accepted_output_path or snapshot.latest_accepted_path
         self.state.last_error = snapshot.health.last_error

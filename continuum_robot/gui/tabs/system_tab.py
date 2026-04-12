@@ -99,6 +99,10 @@ class SystemTab(QWidget):
                 background: #dbeafe;
                 border-color: #93c5fd;
             }
+            QWidget#systemWorkspace QPushButton[variant="ghost"] {
+                background: transparent;
+                color: #334155;
+            }
             """
         )
 
@@ -123,6 +127,12 @@ class SystemTab(QWidget):
         self.freshness_label.setWordWrap(True)
         self.tracker_status_label = QLabel()
         self.tracker_status_label.setWordWrap(True)
+        self.registration_status_label = QLabel()
+        self.registration_status_label.setWordWrap(True)
+        self.runtime_tip_status_label = QLabel()
+        self.runtime_tip_status_label.setWordWrap(True)
+        self.live_tip_status_label = QLabel()
+        self.live_tip_status_label.setWordWrap(True)
         self.openrb_status_label = QLabel()
         self.openrb_status_label.setWordWrap(True)
         self.readiness_status_label = QLabel()
@@ -142,13 +152,19 @@ class SystemTab(QWidget):
         self.openrb_port_combo.editTextChanged.connect(self._sync_openrb_port)
 
         self.tracker_connect_button = QPushButton("Connect Tracker")
+        self.tracker_connect_button.setProperty("role", "primary")
         self.tracker_disconnect_button = QPushButton("Disconnect Tracker")
+        self.tracker_disconnect_button.setProperty("variant", "ghost")
         self.openrb_connect_button = QPushButton("Connect OpenRB")
         self.openrb_connect_button.setProperty("role", "primary")
         self.openrb_disconnect_button = QPushButton("Disconnect OpenRB")
-        self.prepare_button = QPushButton("Re-Validate OpenRB")
-        self.readiness_button = QPushButton("Refresh Readiness")
+        self.openrb_disconnect_button.setProperty("variant", "ghost")
+        self.prepare_button = QPushButton("Re-Prepare OpenRB")
+        self.prepare_button.setProperty("variant", "ghost")
+        self.readiness_button = QPushButton("Refresh Servo Readiness")
+        self.readiness_button.setProperty("variant", "ghost")
         self.refresh_button = QPushButton("Rescan Ports")
+        self.refresh_button.setProperty("variant", "ghost")
         self.refresh_button.clicked.connect(self._rescan_ports)
         self.tracker_connect_button.clicked.connect(self._connect_tracker)
         self.tracker_disconnect_button.clicked.connect(self.controller.disconnect_tracker)
@@ -169,6 +185,9 @@ class SystemTab(QWidget):
         summary_form.addRow("Aurora port", self.aurora_port_combo)
         summary_form.addRow("OpenRB port", self.openrb_port_combo)
         summary_form.addRow("Tracker state", self.tracker_status_label)
+        summary_form.addRow("Base registration", self.registration_status_label)
+        summary_form.addRow("Runtime tip calibration", self.runtime_tip_status_label)
+        summary_form.addRow("Live tip pose", self.live_tip_status_label)
         summary_form.addRow("OpenRB state", self.openrb_status_label)
         summary_form.addRow("Readiness", self.readiness_status_label)
         summary_form.addRow("Bus response", self.bus_status_label)
@@ -178,13 +197,14 @@ class SystemTab(QWidget):
         summary_primary_buttons = QHBoxLayout()
         summary_primary_buttons.setSpacing(10)
         summary_primary_buttons.addWidget(self.tracker_connect_button)
-        summary_primary_buttons.addWidget(self.tracker_disconnect_button)
         summary_primary_buttons.addWidget(self.openrb_connect_button)
-        summary_primary_buttons.addWidget(self.openrb_disconnect_button)
+        summary_primary_buttons.addStretch(1)
         summary_layout.addLayout(summary_primary_buttons)
 
         summary_secondary_buttons = QHBoxLayout()
         summary_secondary_buttons.setSpacing(10)
+        summary_secondary_buttons.addWidget(self.tracker_disconnect_button)
+        summary_secondary_buttons.addWidget(self.openrb_disconnect_button)
         summary_secondary_buttons.addWidget(self.prepare_button)
         summary_secondary_buttons.addWidget(self.readiness_button)
         summary_secondary_buttons.addWidget(self.refresh_button)
@@ -246,8 +266,8 @@ class SystemTab(QWidget):
 
         self.config_summary = QPlainTextEdit()
         self.config_summary.setReadOnly(True)
-        self.config_summary.setLineWrapMode(QPlainTextEdit.NoWrap)
-        self.config_summary.setMinimumHeight(220)
+        self.config_summary.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        self.config_summary.setMinimumHeight(170)
         self.copy_config_button = QPushButton("Copy Effective Config")
         self.copy_config_button.clicked.connect(lambda: self._copy_text(self.config_summary.toPlainText()))
 
@@ -261,8 +281,8 @@ class SystemTab(QWidget):
 
         self.status_text = QPlainTextEdit()
         self.status_text.setReadOnly(True)
-        self.status_text.setLineWrapMode(QPlainTextEdit.NoWrap)
-        self.status_text.setMinimumHeight(240)
+        self.status_text.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        self.status_text.setMinimumHeight(180)
         self.copy_diagnostics_button = QPushButton("Copy Diagnostics")
         self.copy_diagnostics_button.clicked.connect(lambda: self._copy_text(self.status_text.toPlainText()))
 
@@ -301,11 +321,14 @@ class SystemTab(QWidget):
         self.refresh_rate_label.setText(f"{int(state.poll_rate_hz)} Hz")
         self.freshness_label.setText(f"{float(state.telemetry_freshness_timeout_s):.3f} s")
         self.tracker_status_label.setText(
-            f"{state.tracker_connection_state} | backend={state.tracker_backend_identity} "
-            f"| running={state.tracker_backend_running} | connected={state.tracker_backend_connected}"
+            f"{state.tracker_connection_state} | backend={state.tracker_backend_identity or 'unknown'} "
+            f"| stream={'connected' if state.tracker_backend_connected else 'disconnected'}"
         )
+        self.registration_status_label.setText(state.registration_summary)
+        self.runtime_tip_status_label.setText(state.runtime_tip_summary)
+        self.live_tip_status_label.setText(state.live_tip_summary)
         self.openrb_status_label.setText(
-            f"{state.openrb_status} | prepared={state.openrb_prepared} | bus connected={state.dynamixel_connected}"
+            f"{state.openrb_status} | prepared={state.openrb_prepared} | bus={'connected' if state.dynamixel_connected else 'disconnected'}"
         )
         self.readiness_status_label.setText(
             state.readiness_message
@@ -340,6 +363,16 @@ class SystemTab(QWidget):
             self._apply_parameter_values(state, applied_values)
         self._applied_parameter_values = applied_values
         self.saved_path_label.setText(state.saved_overrides_path or "none")
+        tracker_connected = bool(
+            state.tracker_backend_connected or state.tracker_connection_state in {"starting", "connecting"}
+        )
+        openrb_connected = bool(state.openrb_connected or state.dynamixel_connected)
+        self.tracker_connect_button.setEnabled(not tracker_connected)
+        self.tracker_disconnect_button.setEnabled(tracker_connected)
+        self.openrb_connect_button.setEnabled(not openrb_connected)
+        self.openrb_disconnect_button.setEnabled(openrb_connected)
+        self.prepare_button.setEnabled(bool(state.openrb_connected))
+        self.readiness_button.setEnabled(bool(state.dynamixel_connected))
 
     def _set_combo_items(self, combo: QComboBox, ports, selected: str) -> None:
         if combo.hasFocus():

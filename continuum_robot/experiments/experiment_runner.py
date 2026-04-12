@@ -168,6 +168,13 @@ class ExperimentRunner:
             output_root=Path(output_dir) if output_dir is not None else None,
             output_dir_name=output_dir_name,
         )
+        try:
+            experiment.write_outputs(session, paths, summary)
+        except Exception as exc:
+            if message:
+                message = f"{message} Additional outputs failed: {exc}"
+            else:
+                message = f"Additional outputs failed: {exc}"
         if final_success:
             message = message or f"Completed experiment {experiment.name}."
         elif not message:

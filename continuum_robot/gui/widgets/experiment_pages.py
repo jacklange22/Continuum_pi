@@ -8,9 +8,10 @@ from typing import Callable
 import numpy as np
 import yaml
 from PySide6.QtCore import QSignalBlocker, Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QBoxLayout,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -46,6 +47,7 @@ from continuum_robot.experiments.critical_experiments import (
     capture_grid_measurement_from_snapshot,
     resolve_grid_tip_vector,
 )
+from continuum_robot.experiments.builtins import PretensionValidationExperimentConfig
 from continuum_robot.gui.controllers.experiment_controller import ExperimentViewState
 from continuum_robot.gui.view_utils import preserve_scroll_position, set_line_edit_text, set_text_document
 from continuum_robot.gui.widgets.experiment_3d_widget import Experiment3DWidget
@@ -64,24 +66,39 @@ class ExperimentPageBase(QWidget):
         self.controller = controller
         self.experiment_name = experiment_name
         self._history_signature: tuple[tuple[str, str, str, str, str, str], ...] | None = None
+        self._responsive_layout_mode = ""
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(14)
+        layout.setSpacing(0)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QFrame.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        layout.addWidget(self.scroll_area)
+
+        page_content = QWidget()
+        self.scroll_area.setWidget(page_content)
+        content_layout = QVBoxLayout(page_content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(14)
 
         if self.page_hint:
             hint = QLabel(self.page_hint)
             hint.setProperty("role", "body")
             hint.setWordWrap(True)
-            layout.addWidget(hint)
+            content_layout.addWidget(hint)
 
-        top_row = QHBoxLayout()
-        top_row.setContentsMargins(0, 0, 0, 0)
-        top_row.setSpacing(14)
+        self.top_row = QBoxLayout(QBoxLayout.LeftToRight)
+        self.top_row.setContentsMargins(0, 0, 0, 0)
+        self.top_row.setSpacing(14)
 
         self.parameter_scroll = QScrollArea()
         self.parameter_scroll.setWidgetResizable(True)
-        self.parameter_scroll.setMinimumWidth(360)
+        self.parameter_scroll.setFrameShape(QFrame.NoFrame)
+        self.parameter_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.parameter_scroll.setMinimumWidth(300)
         parameter_container = QWidget()
         self.parameter_layout = QVBoxLayout(parameter_container)
         self.parameter_layout.setContentsMargins(0, 0, 0, 0)
@@ -147,9 +164,9 @@ class ExperimentPageBase(QWidget):
         right_layout.addWidget(run_card)
         right_layout.addStretch(1)
 
-        top_row.addWidget(self.parameter_scroll, 3)
-        top_row.addWidget(right_column, 2)
-        layout.addLayout(top_row)
+        self.top_row.addWidget(self.parameter_scroll, 3)
+        self.top_row.addWidget(right_column, 2)
+        content_layout.addLayout(self.top_row)
 
         if self.show_visualization:
             self.viewer_3d = Experiment3DWidget(
@@ -159,7 +176,7 @@ class ExperimentPageBase(QWidget):
             self.viewer_3d.setMinimumHeight(300)
             viz_card = ExperimentCard("Visualization", "Experiment-specific spatial context when the selected run includes positional samples.")
             viz_card.body_layout.addWidget(self.viewer_3d)
-            layout.addWidget(viz_card)
+            content_layout.addWidget(viz_card)
         else:
             self.viewer_3d = None
 
@@ -180,15 +197,18 @@ class ExperimentPageBase(QWidget):
         self.history_list = QListWidget()
         self.history_list.itemDoubleClicked.connect(self._load_selected_history_item)
         self.history_list.setSpacing(8)
+        self.history_list.setMinimumHeight(220)
         history_card = ExperimentCard("Recent Runs", "Double-click a previous run to load its summary, output paths, and plots.")
         history_card.body_layout.addWidget(self.history_list)
 
-        bottom_row = QHBoxLayout()
-        bottom_row.setContentsMargins(0, 0, 0, 0)
-        bottom_row.setSpacing(14)
-        bottom_row.addWidget(results_card, 3)
-        bottom_row.addWidget(history_card, 2)
-        layout.addLayout(bottom_row)
+        self.bottom_row = QBoxLayout(QBoxLayout.LeftToRight)
+        self.bottom_row.setContentsMargins(0, 0, 0, 0)
+        self.bottom_row.setSpacing(14)
+        self.bottom_row.addWidget(results_card, 3)
+        self.bottom_row.addWidget(history_card, 2)
+        content_layout.addLayout(self.bottom_row)
+
+        self._apply_responsive_layout()
 
     def set_state(self, state: ExperimentViewState) -> None:
         self._set_line_text(self.output_root_edit, state.output_root)
@@ -335,6 +355,27 @@ class ExperimentPageBase(QWidget):
         with QSignalBlocker(widget):
             widget.setCurrentIndex(index)
 
+    def _apply_responsive_layout(self) -> None:
+        available_width = self.scroll_area.viewport().width() if self.scroll_area is not None else self.width()
+        mode = "stacked" if int(available_width) < 1240 else "wide"
+        if mode == self._responsive_layout_mode:
+            return
+        self._responsive_layout_mode = mode
+        if mode == "stacked":
+            self.top_row.setDirection(QBoxLayout.TopToBottom)
+            self.bottom_row.setDirection(QBoxLayout.TopToBottom)
+        else:
+            self.top_row.setDirection(QBoxLayout.LeftToRight)
+            self.bottom_row.setDirection(QBoxLayout.LeftToRight)
+        self.top_row.setStretch(0, 3)
+        self.top_row.setStretch(1, 2)
+        self.bottom_row.setStretch(0, 3)
+        self.bottom_row.setStretch(1, 2)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_responsive_layout()
+
 
 class RepeatabilityDatasetPage(ExperimentPageBase):
     show_visualization = True
@@ -441,7 +482,7 @@ class RepeatabilityDatasetPage(ExperimentPageBase):
         self.target_table.setSelectionMode(QAbstractItemView.NoSelection)
         self.target_table.verticalHeader().setVisible(False)
         self.target_table.horizontalHeader().setStretchLastSection(True)
-        self.target_table.setMinimumHeight(250)
+        self.target_table.setMinimumHeight(220)
         targets_card.body_layout.addWidget(self.target_table)
 
         self.parameter_layout.addWidget(mode_card)
@@ -493,20 +534,37 @@ class RepeatabilityDatasetPage(ExperimentPageBase):
     def _sync_target_table(self, preview: RepeatabilityPreview) -> None:
         visits_by_target = dict(preview.summary.get("visits_by_target", {}) or {})
         approach_counts = dict(preview.summary.get("unique_approach_counts", {}) or {})
-        with QSignalBlocker(self.target_table):
-            self.target_table.setRowCount(len(preview.target_catalog))
-            for row, entry in enumerate(preview.target_catalog):
-                target_key = str(entry.get("target_index"))
-                groups = ", ".join(str(tag) for tag in entry.get("group_tags", []) or []) or str(entry.get("axis_class", ""))
-                cells = [
-                    str(entry.get("label", f"T{row + 1:02d}")),
-                    groups,
-                    _render_inline_list(entry.get("tendon_deltas_cm", [])),
-                    str(int(visits_by_target.get(target_key, 0) or 0)),
-                    str(int(approach_counts.get(target_key, 0) or 0)),
-                ]
-                for column, text in enumerate(cells):
-                    self.target_table.setItem(row, column, QTableWidgetItem(text))
+        signature = tuple(
+            (
+                str(entry.get("label", f"T{row + 1:02d}")),
+                ", ".join(str(tag) for tag in entry.get("group_tags", []) or []) or str(entry.get("axis_class", "")),
+                _render_inline_list(entry.get("tendon_deltas_cm", [])),
+                str(int(visits_by_target.get(str(entry.get("target_index")), 0) or 0)),
+                str(int(approach_counts.get(str(entry.get("target_index")), 0) or 0)),
+            )
+            for row, entry in enumerate(preview.target_catalog)
+        )
+        if getattr(self, "_target_table_signature", None) == signature:
+            return
+        self._target_table_signature = signature
+
+        def _rebuild() -> None:
+            with QSignalBlocker(self.target_table):
+                self.target_table.setRowCount(len(preview.target_catalog))
+                for row, entry in enumerate(preview.target_catalog):
+                    target_key = str(entry.get("target_index"))
+                    groups = ", ".join(str(tag) for tag in entry.get("group_tags", []) or []) or str(entry.get("axis_class", ""))
+                    cells = [
+                        str(entry.get("label", f"T{row + 1:02d}")),
+                        groups,
+                        _render_inline_list(entry.get("tendon_deltas_cm", [])),
+                        str(int(visits_by_target.get(target_key, 0) or 0)),
+                        str(int(approach_counts.get(target_key, 0) or 0)),
+                    ]
+                    for column, text in enumerate(cells):
+                        self.target_table.setItem(row, column, QTableWidgetItem(text))
+
+        preserve_scroll_position(self.target_table, _rebuild)
 
     def _sync_schedule_summary(self, preview: RepeatabilityPreview) -> None:
         axis_counts = dict(preview.summary.get("axis_counts", {}) or {})
@@ -542,6 +600,9 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
         self._selected_target_index = 0
         self._capture_log_lines: list[str] = []
+        self._point_table_signature: tuple[tuple[str, str, str, str, str, str, str], ...] | None = None
+        self._preview_cache_key: str | None = None
+        self._preview_cache: GridAccuracyPreview | None = None
         super().__init__(controller, experiment_name, parent)
         self.run_button.setText("Save Dataset")
         self.refresh_button.setText("Refresh Tracker State")
@@ -630,6 +691,9 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         selection_row.addWidget(self.clear_all_button)
         capture_card.body_layout.addLayout(selection_row)
 
+        self.selected_point_summary_widget = KeyValueSummaryWidget()
+        capture_card.body_layout.addWidget(self.selected_point_summary_widget)
+
         self.point_table = QTableWidget(0, 7)
         self.point_table.setHorizontalHeaderLabels(
             ["Label", "Truth XY (mm)", "Samples", "Accepted", "Spread", "Residual", "Status"]
@@ -682,6 +746,7 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         )
         preview = self._current_preview(config=config)
         self._sync_point_table(preview, expected_samples=int(config.samples_per_point))
+        self._sync_selected_point_summary(preview, expected_samples=int(config.samples_per_point))
         self._sync_capture_summary(preview, expected_samples=int(config.samples_per_point))
         self._sync_capture_status()
         self.capture_selected_button.setEnabled(not state.run_active)
@@ -717,7 +782,11 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         if target_index is None:
             return
         self._selected_target_index = int(target_index)
-        self._update_selected_point_label()
+        preview = self._current_preview()
+        expected_samples = max(1, int(self._grid_config().samples_per_point))
+        self._update_selected_point_label(truth_catalog=preview.truth_catalog)
+        self._sync_selected_point_summary(preview, expected_samples=expected_samples)
+        self._sync_capture_summary(preview, expected_samples=expected_samples)
 
     def capture_selected_point(self) -> None:
         config = self._grid_config()
@@ -725,6 +794,10 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         truth_entry = self._selected_truth_entry(preview.truth_catalog)
         if truth_entry is None:
             return
+        had_existing_capture = any(
+            isinstance(record, dict) and int(record.get("target_index", -1)) == int(truth_entry["target_index"])
+            for record in (self.controller.get_config_value("captured_points", []) or [])
+        )
         try:
             raw_samples = self._collect_point_samples(config=config, truth_entry=truth_entry)
         except Exception as exc:
@@ -747,14 +820,32 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         )
         captured_points.sort(key=lambda record: int(record.get("target_index", 0)))
         self.controller.set_config_value("captured_points", captured_points)
-        self._append_capture_log(
-            f"{truth_entry['label']}: captured {len(raw_samples)} sample(s) using "
-            f"{raw_samples[0].get('position_source', 'tracker_tool') if raw_samples else 'tracker_tool'}."
+        updated_config = self._grid_config()
+        updated_preview = self._current_preview(config=updated_config)
+        point_metrics = (updated_preview.metrics.get("per_point_metrics", {}) or {}).get(str(truth_entry["label"]), {})
+        capture_action = "recaptured" if had_existing_capture else "captured"
+        capture_message = (
+            f"{truth_entry['label']}: {capture_action} {len(raw_samples)} raw sample(s), "
+            f"{int(point_metrics.get('accepted_sample_count', 0) or 0)} accepted, "
+            f"spread {_fmt_metric(point_metrics.get('sample_spread_rms_mm'))} mm, "
+            f"residual {_fmt_metric(point_metrics.get('residual_mm'))} mm."
         )
+        if not had_existing_capture:
+            next_target_index = self._next_incomplete_target_index(
+                updated_preview,
+                expected_samples=max(1, int(updated_config.samples_per_point)),
+                start_after=int(truth_entry["target_index"]),
+            )
+            if next_target_index is not None and next_target_index != int(truth_entry["target_index"]):
+                self._selected_target_index = int(next_target_index)
+                next_entry = updated_preview.truth_catalog[next_target_index]
+                capture_message += f" Next suggested point: {next_entry['label']}."
+        self._append_capture_log(capture_message)
         self._refresh_now()
 
     def clear_selected_point(self) -> None:
         target_index = int(self._selected_target_index)
+        label = f"P{target_index + 1:02d}"
         captured_points = [
             dict(record)
             for record in (self.controller.get_config_value("captured_points", []) or [])
@@ -764,7 +855,7 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         if len(kept_points) == len(captured_points):
             return
         self.controller.set_config_value("captured_points", kept_points)
-        self._append_capture_log(f"P{target_index + 1:02d}: cleared captured samples.")
+        self._append_capture_log(f"{label}: cleared captured samples.")
         self._refresh_now()
 
     def clear_all_points(self) -> None:
@@ -829,16 +920,22 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
 
     def _current_preview(self, *, config: GridDefinitionConfig | None = None):
         config = config or self._grid_config()
+        cache_key = repr(config)
+        if self._preview_cache_key == cache_key and self._preview_cache is not None:
+            return self._preview_cache
         try:
-            return build_grid_accuracy_preview(config, project_root=self.controller.project_root)
+            preview = build_grid_accuracy_preview(config, project_root=self.controller.project_root)
         except Exception as exc:
             if not self._capture_log_lines or "preview failed" not in self._capture_log_lines[-1]:
                 self._append_capture_log(f"Grid preview failed: {exc}")
-            return GridAccuracyPreview(
+            preview = GridAccuracyPreview(
                 truth_catalog=build_grid_truth_catalog(config, project_root=self.controller.project_root),
                 samples=[],
                 metrics={},
             )
+        self._preview_cache_key = cache_key
+        self._preview_cache = preview
+        return preview
 
     def _grid_config(self) -> GridDefinitionConfig:
         return GridDefinitionConfig.from_dict(self.controller.config_payload())
@@ -857,39 +954,60 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
             for record in (self.controller.get_config_value("captured_points", []) or [])
             if isinstance(record, dict)
         }
-        with QSignalBlocker(self.point_table):
-            self.point_table.setRowCount(len(truth_catalog))
-            for row, entry in enumerate(truth_catalog):
-                label = str(entry["label"])
-                point_metrics = metric_rows.get(label, {})
-                point_record = captured_rows.get(int(entry["target_index"]), {})
-                sample_count = len(point_record.get("raw_samples", []) or [])
-                accepted_count = int(point_metrics.get("accepted_sample_count", 0) or 0)
-                spread_text = _fmt_metric(point_metrics.get("sample_spread_rms_mm"))
-                residual_text = _fmt_metric(point_metrics.get("residual_mm"))
-                if sample_count <= 0:
-                    status = "Not captured"
-                elif sample_count < expected_samples:
-                    status = "Partial"
-                else:
-                    status = "Complete"
-                truth_xy = entry.get("truth_point_mm", [0.0, 0.0, 0.0])
-                cells = [
-                    (label, entry["target_index"]),
-                    (f"{truth_xy[0]:.1f}, {truth_xy[1]:.1f}", None),
-                    (str(sample_count), None),
-                    (str(accepted_count), None),
-                    (spread_text, None),
-                    (residual_text, None),
-                    (status, None),
-                ]
-                for column, (text, user_data) in enumerate(cells):
-                    item = QTableWidgetItem(str(text))
-                    if user_data is not None:
-                        item.setData(Qt.UserRole, user_data)
-                    self.point_table.setItem(row, column, item)
+        rows_signature = tuple(
+            self._point_row_signature(
+                entry=entry,
+                point_metrics=metric_rows.get(str(entry["label"]), {}),
+                point_record=captured_rows.get(int(entry["target_index"]), {}),
+                expected_samples=expected_samples,
+            )
+            for entry in truth_catalog
+        )
+        if rows_signature == self._point_table_signature:
             if truth_catalog:
-                self.point_table.selectRow(self._selected_target_index)
+                with QSignalBlocker(self.point_table):
+                    self.point_table.selectRow(self._selected_target_index)
+            self._update_selected_point_label(truth_catalog=truth_catalog)
+            return
+        self._point_table_signature = rows_signature
+
+        def _rebuild() -> None:
+            with QSignalBlocker(self.point_table):
+                self.point_table.setRowCount(len(truth_catalog))
+                for row, entry in enumerate(truth_catalog):
+                    label = str(entry["label"])
+                    point_metrics = metric_rows.get(label, {})
+                    point_record = captured_rows.get(int(entry["target_index"]), {})
+                    sample_count = len(point_record.get("raw_samples", []) or [])
+                    accepted_count = int(point_metrics.get("accepted_sample_count", 0) or 0)
+                    rejected_count = int(point_metrics.get("outlier_count", 0) or 0)
+                    spread_text = _fmt_metric(point_metrics.get("sample_spread_rms_mm"))
+                    residual_text = _fmt_metric(point_metrics.get("residual_mm"))
+                    status = self._point_capture_status(
+                        sample_count=sample_count,
+                        expected_samples=expected_samples,
+                        rejected_count=rejected_count,
+                    )
+                    truth_xy = entry.get("truth_point_mm", [0.0, 0.0, 0.0])
+                    cells = [
+                        (label, entry["target_index"]),
+                        (f"{truth_xy[0]:.1f}, {truth_xy[1]:.1f}", None),
+                        (str(sample_count), None),
+                        (str(accepted_count), None),
+                        (spread_text, None),
+                        (residual_text, None),
+                        (status, None),
+                    ]
+                    for column, (text, user_data) in enumerate(cells):
+                        item = QTableWidgetItem(str(text))
+                        if user_data is not None:
+                            item.setData(Qt.UserRole, user_data)
+                        self._style_point_table_item(item, status=status)
+                        self.point_table.setItem(row, column, item)
+                if truth_catalog:
+                    self.point_table.selectRow(self._selected_target_index)
+
+        preserve_scroll_position(self.point_table, _rebuild)
         self._update_selected_point_label(truth_catalog=truth_catalog)
 
     def _sync_capture_summary(self, preview, *, expected_samples: int) -> None:
@@ -902,18 +1020,92 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         complete_points = sum(
             1 for record in captured_points if len(record.get("raw_samples", []) or []) >= expected_samples
         )
+        partial_points = sum(
+            1 for record in captured_points if 0 < len(record.get("raw_samples", []) or []) < expected_samples
+        )
         selected = self._selected_truth_entry(preview.truth_catalog)
         selected_label = str(selected["label"]) if selected is not None else "n/a"
+        next_target_index = self._next_incomplete_target_index(
+            preview,
+            expected_samples=expected_samples,
+            start_after=int(self._selected_target_index),
+        )
+        next_label = (
+            str(preview.truth_catalog[next_target_index]["label"])
+            if next_target_index is not None and preview.truth_catalog
+            else "All complete"
+        )
         self.capture_summary_widget.set_pairs(
             [
                 ("Selected Point", selected_label),
-                ("Complete Points", f"{complete_points} / {len(preview.truth_catalog)}"),
+                ("Coverage", f"{complete_points} complete, {partial_points} partial, {len(preview.truth_catalog) - complete_points - partial_points} not started"),
+                ("Solve Ready", "Yes" if metrics.get("alignment_ready") else "No"),
+                ("Suggested Next", next_label),
                 ("Raw Samples", str(int(metrics.get("raw_sample_count", 0) or 0))),
                 ("Accepted Samples", str(int(metrics.get("accepted_sample_count", 0) or 0))),
+                ("Rejected Samples", str(int(metrics.get("rejected_sample_count", metrics.get("outlier_count", 0)) or 0))),
                 ("RMS Residual", _fmt_metric(metrics.get("overall_rms_residual_mm"))),
                 ("Max Residual", _fmt_metric(metrics.get("max_residual_mm"))),
                 ("Mean Spread", _fmt_metric(metrics.get("mean_within_point_spread_mm"))),
-                ("Rejected Samples", str(int(metrics.get("outlier_count", 0) or 0))),
+                ("Max Spread", _fmt_metric(metrics.get("max_within_point_spread_mm"))),
+            ]
+        )
+
+    def _sync_selected_point_summary(self, preview, *, expected_samples: int) -> None:
+        selected = self._selected_truth_entry(preview.truth_catalog)
+        if selected is None:
+            self.selected_point_summary_widget.set_pairs([("Selected Point", "n/a")])
+            return
+        label = str(selected["label"])
+        target_index = int(selected["target_index"])
+        point_metrics = (preview.metrics.get("per_point_metrics", {}) or {}).get(label, {})
+        captured_rows = {
+            int(record.get("target_index", -1)): record
+            for record in (self.controller.get_config_value("captured_points", []) or [])
+            if isinstance(record, dict)
+        }
+        point_record = captured_rows.get(target_index, {})
+        raw_samples = list(point_record.get("raw_samples", []) or [])
+        sample_count = len(raw_samples)
+        accepted_count = int(point_metrics.get("accepted_sample_count", 0) or 0)
+        rejected_count = int(point_metrics.get("outlier_count", 0) or 0)
+        position_sources = sorted(
+            {
+                str(sample.get("position_source", "tracker_tool"))
+                for sample in raw_samples
+                if isinstance(sample, dict)
+            }
+        )
+        next_target_index = self._next_incomplete_target_index(
+            preview,
+            expected_samples=expected_samples,
+            start_after=target_index,
+        )
+        suggested_next = (
+            str(preview.truth_catalog[next_target_index]["label"])
+            if next_target_index is not None and next_target_index != target_index
+            else "None"
+        )
+        truth_point = selected.get("truth_point_mm", [0.0, 0.0, 0.0])
+        self.selected_point_summary_widget.set_pairs(
+            [
+                ("Selected Point", label),
+                ("Truth Point", f"{truth_point[0]:.1f}, {truth_point[1]:.1f}, {truth_point[2]:.1f} mm"),
+                (
+                    "Capture Status",
+                    self._point_capture_status(
+                        sample_count=sample_count,
+                        expected_samples=expected_samples,
+                        rejected_count=rejected_count,
+                    ),
+                ),
+                ("Raw Samples", str(sample_count)),
+                ("Accepted Samples", str(accepted_count)),
+                ("Rejected Samples", str(rejected_count)),
+                ("Within-Point Spread", _fmt_metric(point_metrics.get("sample_spread_rms_mm"))),
+                ("Aligned Residual", _fmt_metric(point_metrics.get("residual_mm"))),
+                ("Position Source", ", ".join(position_sources) or "n/a"),
+                ("Suggested Next", suggested_next),
             ]
         )
 
@@ -931,6 +1123,8 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
     def _append_capture_log(self, message: str) -> None:
         timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
         self._capture_log_lines.append(f"[{timestamp}Z] {message}")
+        if len(self._capture_log_lines) > 100:
+            self._capture_log_lines = self._capture_log_lines[-100:]
 
     def _refresh_now(self) -> None:
         try:
@@ -948,6 +1142,303 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         self.selected_point_label.setText(
             f"Selected Point: {selected['label']}  •  truth=({truth_point[0]:.1f}, {truth_point[1]:.1f}, {truth_point[2]:.1f}) mm"
         )
+
+    @staticmethod
+    def _point_capture_status(*, sample_count: int, expected_samples: int, rejected_count: int) -> str:
+        if sample_count <= 0:
+            return "Not started"
+        if sample_count < expected_samples:
+            return f"Partial ({sample_count}/{expected_samples})"
+        if rejected_count > 0:
+            return f"Complete ({rejected_count} rejected)"
+        return "Complete"
+
+    @staticmethod
+    def _style_point_table_item(item: QTableWidgetItem, *, status: str) -> None:
+        normalized = status.lower()
+        if normalized.startswith("complete") and "rejected" not in normalized:
+            background = "#dcfce7"
+            foreground = "#166534"
+        elif normalized.startswith("partial") or "rejected" in normalized:
+            background = "#fef3c7"
+            foreground = "#92400e"
+        else:
+            background = "#f8fafc"
+            foreground = "#475569"
+        item.setBackground(QColor(background))
+        item.setForeground(QColor(foreground))
+
+    def _point_row_signature(
+        self,
+        *,
+        entry: dict[str, object],
+        point_metrics: dict[str, object],
+        point_record: dict[str, object],
+        expected_samples: int,
+    ) -> tuple[str, str, str, str, str, str, str]:
+        sample_count = len(point_record.get("raw_samples", []) or [])
+        accepted_count = int(point_metrics.get("accepted_sample_count", 0) or 0)
+        rejected_count = int(point_metrics.get("outlier_count", 0) or 0)
+        truth_xy = entry.get("truth_point_mm", [0.0, 0.0, 0.0])
+        status = self._point_capture_status(
+            sample_count=sample_count,
+            expected_samples=expected_samples,
+            rejected_count=rejected_count,
+        )
+        return (
+            str(entry["label"]),
+            f"{truth_xy[0]:.1f}, {truth_xy[1]:.1f}",
+            str(sample_count),
+            str(accepted_count),
+            _fmt_metric(point_metrics.get("sample_spread_rms_mm")),
+            _fmt_metric(point_metrics.get("residual_mm")),
+            status,
+        )
+
+    def _next_incomplete_target_index(
+        self,
+        preview,
+        *,
+        expected_samples: int,
+        start_after: int,
+    ) -> int | None:
+        truth_catalog = list(preview.truth_catalog)
+        if not truth_catalog:
+            return None
+        captured_rows = {
+            int(record.get("target_index", -1)): record
+            for record in (self.controller.get_config_value("captured_points", []) or [])
+            if isinstance(record, dict)
+        }
+        total = len(truth_catalog)
+        for offset in range(1, total + 1):
+            candidate_index = (int(start_after) + offset) % total
+            record = captured_rows.get(candidate_index, {})
+            sample_count = len(record.get("raw_samples", []) or [])
+            if sample_count < expected_samples:
+                return candidate_index
+        return None
+
+
+class PretensionValidationPage(ExperimentPageBase):
+    page_hint = (
+        "Validate pretension response against commanded travel for one selected servo. "
+        "Current is treated conservatively as an engagement proxy only, and optional tracker displacement "
+        "can be captured alongside the servo trace when live tracking is available."
+    )
+
+    def __init__(self, controller, experiment_name: str, parent=None) -> None:
+        super().__init__(controller, experiment_name, parent)
+        self.run_button.setText("Run Pretension Validation")
+
+    def _build_parameter_sections(self) -> None:
+        setup_card = ExperimentCard(
+            "Validation Setup",
+            "Keep this page focused on one servo at a time. Use the Pretension tab for tuning; use this page for canonical response-vs-travel datasets.",
+        )
+        setup_form = QFormLayout()
+        self.servo_combo = QComboBox()
+        configured_ids = list(self.controller.settings.robot.servo_ids or [])
+        if configured_ids:
+            for servo_id in configured_ids:
+                self.servo_combo.addItem(f"Servo {int(servo_id)}", str(int(servo_id)))
+        else:
+            self.servo_combo.addItem("Servo 1", "1")
+        self.servo_combo.currentIndexChanged.connect(self._on_servo_changed)
+        self.include_tracker_check = QCheckBox("Include tracker-side displacement when available")
+        self.include_tracker_check.toggled.connect(
+            lambda value: self.controller.set_config_value("include_tracker_displacement", bool(value))
+        )
+        setup_form.addRow("Servo", self.servo_combo)
+        setup_form.addRow("Tracker Metric", self.include_tracker_check)
+        setup_card.body_layout.addLayout(setup_form)
+        note = QLabel(
+            "Servo convention: raw XC330 position uses 0..4095 ticks, 4095 is untensioned, and tightening lowers raw counts."
+        )
+        note.setProperty("role", "muted")
+        note.setWordWrap(True)
+        setup_card.body_layout.addWidget(note)
+
+        params_card = ExperimentCard(
+            "Pretension Parameters",
+            "These values mirror the current live pretension parameters. Leave them on the resolved defaults unless you are intentionally validating a changed threshold or travel limit.",
+        )
+        params_form = QFormLayout()
+        self.untensioned_spin = QSpinBox()
+        self.untensioned_spin.setRange(0, 4095)
+        self.untensioned_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("untensioned_reference_tick", int(value))
+        )
+        self.step_ticks_spin = QSpinBox()
+        self.step_ticks_spin.setRange(1, 512)
+        self.step_ticks_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("step_ticks", int(value))
+        )
+        self.settle_time_spin = QDoubleSpinBox()
+        self.settle_time_spin.setRange(0.0, 60.0)
+        self.settle_time_spin.setDecimals(3)
+        self.settle_time_spin.setSingleStep(0.01)
+        self.settle_time_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("settle_time_s", float(value))
+        )
+        self.baseline_samples_spin = QSpinBox()
+        self.baseline_samples_spin.setRange(1, 100)
+        self.baseline_samples_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("baseline_sample_count", int(value))
+        )
+        self.filter_window_spin = QSpinBox()
+        self.filter_window_spin.setRange(1, 25)
+        self.filter_window_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("current_filter_window", int(value))
+        )
+        self.delta_trigger_spin = QSpinBox()
+        self.delta_trigger_spin.setRange(1, 5000)
+        self.delta_trigger_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("current_delta_threshold_ma", int(value))
+        )
+        self.absolute_trigger_spin = QSpinBox()
+        self.absolute_trigger_spin.setRange(0, 5000)
+        self.absolute_trigger_spin.setSpecialValueText("Disabled")
+        self.absolute_trigger_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value(
+                "absolute_trigger_current_ma",
+                None if int(value) <= 0 else int(value),
+            )
+        )
+        self.hard_stop_spin = QSpinBox()
+        self.hard_stop_spin.setRange(1, 5000)
+        self.hard_stop_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("hard_current_stop_ma", int(value))
+        )
+        self.max_travel_spin = QSpinBox()
+        self.max_travel_spin.setRange(1, 4095)
+        self.max_travel_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_travel_ticks", int(value))
+        )
+        self.timeout_spin = QDoubleSpinBox()
+        self.timeout_spin.setRange(0.1, 120.0)
+        self.timeout_spin.setDecimals(2)
+        self.timeout_spin.setSingleStep(0.1)
+        self.timeout_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("timeout_s", float(value))
+        )
+        params_form.addRow("Untensioned Reference", self.untensioned_spin)
+        params_form.addRow("Step Ticks", self.step_ticks_spin)
+        params_form.addRow("Settle Time (s)", self.settle_time_spin)
+        params_form.addRow("Baseline Samples", self.baseline_samples_spin)
+        params_form.addRow("Filter Window", self.filter_window_spin)
+        params_form.addRow("Current Delta Trigger (mA)", self.delta_trigger_spin)
+        params_form.addRow("Absolute Trigger (mA)", self.absolute_trigger_spin)
+        params_form.addRow("Hard Current Stop (mA)", self.hard_stop_spin)
+        params_form.addRow("Max Travel (ticks)", self.max_travel_spin)
+        params_form.addRow("Timeout (s)", self.timeout_spin)
+        params_card.body_layout.addLayout(params_form)
+
+        summary_card = ExperimentCard(
+            "What This Run Produces",
+            "Each run writes a canonical time-ordered sample series plus a static response plot and compact summary note under data/experiments/....",
+        )
+        self.parameter_summary_widget = KeyValueSummaryWidget()
+        summary_card.body_layout.addWidget(self.parameter_summary_widget)
+
+        self.parameter_layout.addWidget(setup_card)
+        self.parameter_layout.addWidget(params_card)
+        self.parameter_layout.addWidget(summary_card)
+
+    def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
+        _ = state
+        config = PretensionValidationExperimentConfig.from_dict(self.controller.config_payload())
+        defaults = self._resolved_defaults(config.servo_id)
+        self._set_combo_value(self.servo_combo, str(int(config.servo_id)))
+        self._set_checkbox(self.include_tracker_check, bool(config.include_tracker_displacement))
+        self._set_spin(
+            self.untensioned_spin,
+            int(config.untensioned_reference_tick if config.untensioned_reference_tick is not None else defaults.untensioned_reference_tick),
+        )
+        self._set_spin(
+            self.step_ticks_spin,
+            int(config.step_ticks if config.step_ticks is not None else defaults.step_ticks),
+        )
+        self._set_double(
+            self.settle_time_spin,
+            float(config.settle_time_s if config.settle_time_s is not None else defaults.settle_time_s),
+        )
+        self._set_spin(
+            self.baseline_samples_spin,
+            int(
+                config.baseline_sample_count
+                if config.baseline_sample_count is not None
+                else defaults.baseline_sample_count
+            ),
+        )
+        self._set_spin(
+            self.filter_window_spin,
+            int(
+                config.current_filter_window
+                if config.current_filter_window is not None
+                else defaults.current_filter_window
+            ),
+        )
+        self._set_spin(
+            self.delta_trigger_spin,
+            int(
+                config.current_delta_threshold_ma
+                if config.current_delta_threshold_ma is not None
+                else defaults.current_delta_threshold_ma
+            ),
+        )
+        self._set_spin(
+            self.absolute_trigger_spin,
+            int(
+                config.absolute_trigger_current_ma
+                if config.absolute_trigger_current_ma is not None
+                else (defaults.absolute_trigger_current_ma or 0)
+            ),
+        )
+        self._set_spin(
+            self.hard_stop_spin,
+            int(config.hard_current_stop_ma if config.hard_current_stop_ma is not None else defaults.hard_current_stop_ma),
+        )
+        self._set_spin(
+            self.max_travel_spin,
+            int(config.max_travel_ticks if config.max_travel_ticks is not None else defaults.max_travel_ticks),
+        )
+        self._set_double(
+            self.timeout_spin,
+            float(config.timeout_s if config.timeout_s is not None else defaults.timeout_s),
+        )
+        self.parameter_summary_widget.set_pairs(
+            [
+                ("Travel Axis", "Travel is plotted from the untensioned reference toward lower raw counts."),
+                ("Current Metric", "Current is saved as an engagement proxy, not a tendon-force estimate."),
+                (
+                    "Tracker Metric",
+                    (
+                        "Tracker displacement is sampled alongside the servo trace when available."
+                        if bool(config.include_tracker_displacement)
+                        else "Tracker displacement capture is disabled for this run."
+                    ),
+                ),
+            ]
+        )
+
+    def _on_servo_changed(self) -> None:
+        raw_servo_id = self.servo_combo.currentData()
+        servo_id = int(raw_servo_id) if raw_servo_id not in (None, "") else 1
+        self.controller.set_config_value("servo_id", servo_id)
+        self._refresh_now()
+
+    def _resolved_defaults(self, servo_id: int):
+        try:
+            return self.controller.servo_service.default_pretension_parameters(int(servo_id))
+        except Exception:
+            return self.controller.servo_service.default_pretension_parameters(1)
+
+    def _refresh_now(self) -> None:
+        try:
+            self.set_state(self.controller.refresh())
+        except Exception:
+            return
 
 
 class CommandScheduleValidationPage(ExperimentPageBase):
@@ -1251,6 +1742,7 @@ def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBas
     factories: dict[str, Callable[[object], ExperimentPageBase]] = {
         "repeatability_dataset": lambda ctrl: RepeatabilityDatasetPage(ctrl, "repeatability_dataset"),
         "aurora_grid_accuracy": lambda ctrl: AuroraGridAccuracyPage(ctrl, "aurora_grid_accuracy"),
+        "pretension_validation": lambda ctrl: PretensionValidationPage(ctrl, "pretension_validation"),
         "command_schedule_validation": lambda ctrl: CommandScheduleValidationPage(ctrl, "command_schedule_validation"),
         "collect_pose_command_dataset": lambda ctrl: CollectPoseCommandDatasetPage(ctrl, "collect_pose_command_dataset"),
         "replay_runner": lambda ctrl: ReplayRunnerPage(ctrl, "replay_runner"),

@@ -5,11 +5,43 @@ from __future__ import annotations
 from contextlib import nullcontext
 from typing import Callable
 
-from PySide6.QtCore import QSignalBlocker
-from PySide6.QtWidgets import QLineEdit, QPlainTextEdit, QTextEdit
+from PySide6.QtCore import QSignalBlocker, Qt
+from PySide6.QtWidgets import QLineEdit, QPlainTextEdit, QSplitter, QTextEdit
 
 
 TextDocumentWidget = QPlainTextEdit | QTextEdit
+
+
+class ResponsiveSplitterController:
+    """Switch one splitter between wide and stacked modes based on available width."""
+
+    def __init__(
+        self,
+        splitter: QSplitter,
+        *,
+        collapse_below_width: int,
+        horizontal_sizes: list[int] | tuple[int, ...] | None = None,
+        vertical_sizes: list[int] | tuple[int, ...] | None = None,
+    ) -> None:
+        self.splitter = splitter
+        self.collapse_below_width = int(collapse_below_width)
+        self.horizontal_sizes = list(horizontal_sizes or [])
+        self.vertical_sizes = list(vertical_sizes or [])
+
+    def apply(self, available_width: int) -> bool:
+        """Apply the correct orientation for the current available width."""
+
+        target_orientation = (
+            Qt.Vertical if int(available_width) < self.collapse_below_width else Qt.Horizontal
+        )
+        if self.splitter.orientation() == target_orientation:
+            return False
+        self.splitter.setOrientation(target_orientation)
+        if target_orientation == Qt.Horizontal and self.horizontal_sizes:
+            self.splitter.setSizes(list(self.horizontal_sizes))
+        elif target_orientation == Qt.Vertical and self.vertical_sizes:
+            self.splitter.setSizes(list(self.vertical_sizes))
+        return True
 
 
 def preserve_scroll_position(

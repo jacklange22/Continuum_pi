@@ -1,13 +1,11 @@
 servo_id: 1
-run_count: 5
-move_to_reference: true
-accept_results: false
-tracker_tool_id: "0A"
-validation_direction: "loosen"
-validation_delta_ticks: 6
-validation_settle_time_s: 0.05
 
-# Leave these unset to use the current live pretension defaults.
+# Leave individual fields unset to use the current live pretension defaults
+# from the active servo safety/runtime configuration.
+include_tracker_displacement: true
+tracker_tool_id: "0A"
+move_to_reference: true
+
 untensioned_reference_tick:
 step_ticks:
 settle_time_s:
@@ -18,7 +16,3 @@ absolute_trigger_current_ma:
 hard_current_stop_ma:
 max_travel_ticks:
 timeout_s:
-
-# Optional consistency thresholds for summary warnings.
-max_final_position_spread_ticks: 20
-max_validation_displacement_spread_mm: 1.0
