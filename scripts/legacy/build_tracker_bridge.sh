@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SRC="$ROOT_DIR/tracker_bridge/tracker_bridge.cpp"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SRC="$ROOT_DIR/legacy/tracker_bridge/tracker_bridge.cpp"
 OUT_DIR="$ROOT_DIR/bin"
 OUT="$OUT_DIR/tracker_bridge"
 
@@ -38,4 +38,4 @@ set -x
   -o "$OUT"
 set +x
 
-echo "Built tracker_bridge at: $OUT"
+echo "Built legacy tracker_bridge at: $OUT"

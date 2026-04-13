@@ -196,3 +196,10 @@ def test_config_loader_defaults_use_canonical_runtime_artifact_paths(tmp_path: P
         settings.calibration.latest_runtime_tip_calibration_path
         == "data/runtime_tip_calibration/latest_runtime_tip_calibration.json"
     )
+
+
+def test_repo_pivot_calibration_sample_lives_with_config_examples() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+
+    assert (repo_root / "config" / "pivot_calibration_sample.csv").exists()
+    assert not (repo_root / "examples").exists()

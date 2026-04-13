@@ -61,7 +61,7 @@ tracker_settings_overrides: {}
 tracker_tool_id_aliases:
   "10": "0A"
   "11": "0B"
-# Retained only for explicit legacy bridge fallback/debugging.
+# Retained only for the retired legacy bridge compatibility path.
 tracker_socket_path: "/tmp/tracker_bridge.sock"
 tracker_bridge_executable: "bin/tracker_bridge"
 tracker_poll_ms: 20

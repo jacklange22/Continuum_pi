@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from continuum_robot.gui.controllers.registration_controller import RegistrationViewState
 from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpViewState
+from continuum_robot.gui.theme import COLORS, grouped_workspace_stylesheet
 from continuum_robot.gui.view_utils import set_text_document
 from continuum_robot.gui.tabs.registration_tab import RegistrationTab
 
@@ -34,71 +35,30 @@ class TrackerMvpTab(QWidget):
         self.registration_controller = registration_controller
         self.setObjectName("trackerMvpWorkspace")
         self.setStyleSheet(
-            """
-            QWidget#trackerMvpWorkspace {
-                background: #eef3f8;
-                color: #0f172a;
-            }
-            QWidget#trackerMvpWorkspace QGroupBox {
-                border: 1px solid #d9e3ec;
-                border-radius: 16px;
-                margin-top: 16px;
-                padding-top: 10px;
-                background: #ffffff;
-            }
-            QWidget#trackerMvpWorkspace QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 6px;
-                color: #0f172a;
-                font-weight: 700;
-            }
-            QWidget#trackerMvpWorkspace QLabel[role="title"] {
-                font-size: 24px;
-                font-weight: 700;
-                color: #0f172a;
-            }
-            QWidget#trackerMvpWorkspace QLabel[role="hint"] {
-                color: #526173;
-            }
-            QWidget#trackerMvpWorkspace QLabel[role="status"] {
-                padding: 8px 10px;
-                border-radius: 8px;
-                background: #e2e8f0;
-                color: #0f172a;
-                font-weight: 700;
-            }
-            QWidget#trackerMvpWorkspace QComboBox,
-            QWidget#trackerMvpWorkspace QTextEdit,
-            QWidget#trackerMvpWorkspace QTableWidget {
-                border: 1px solid #dbe4ee;
-                border-radius: 10px;
-                background: #fbfdff;
-                color: #0f172a;
-            }
-            QWidget#trackerMvpWorkspace QPushButton {
-                min-height: 36px;
-                padding: 0 14px;
-                border: 1px solid #dbe4ee;
-                border-radius: 10px;
-                background: #f8fafc;
-                color: #0f172a;
-                font-weight: 600;
-            }
-            QWidget#trackerMvpWorkspace QPushButton[role="primary"] {
-                background: #dbeafe;
-                border-color: #93c5fd;
-            }
-            """
+            grouped_workspace_stylesheet(
+                object_name="trackerMvpWorkspace",
+                input_selectors=["QComboBox", "QTextEdit", "QTableWidget"],
+                extra_rules=(
+                    f"""
+                    QWidget#trackerMvpWorkspace QLabel[role="legacy-hint"] {{
+                        color: {COLORS.warning_fg};
+                        background: {COLORS.warning_bg};
+                        border: 1px solid {COLORS.surface_border};
+                        border-radius: 10px;
+                        padding: 8px 10px;
+                    }}
+                    """
+                ),
+            )
         )
 
-        self.title_label = QLabel("Tracker Legacy / Diagnostic Workspace")
+        self.title_label = QLabel("Legacy Tracker Compatibility Workspace")
         self.title_label.setProperty("role", "title")
         self.workflow_hint = QLabel(
             "The canonical operator workflow now lives in the Tracking and Registration tabs. "
             "Keep this legacy workspace only for compatibility checks or deeper tracker-first diagnostics."
         )
-        self.workflow_hint.setProperty("role", "hint")
+        self.workflow_hint.setProperty("role", "legacy-hint")
         self.workflow_hint.setWordWrap(True)
         self.status_label = QLabel("Connect tracker to begin.")
         self.status_label.setProperty("role", "status")
@@ -122,8 +82,11 @@ class TrackerMvpTab(QWidget):
         connect_button = QPushButton("Connect Tracker")
         connect_button.setProperty("role", "primary")
         disconnect_button = QPushButton("Disconnect Tracker")
+        disconnect_button.setProperty("variant", "ghost")
         validate_button = QPushButton("Validate Tracker")
+        validate_button.setProperty("variant", "ghost")
         rescan_button = QPushButton("Rescan Ports")
+        rescan_button.setProperty("variant", "ghost")
         connect_button.clicked.connect(self._connect_tracker)
         disconnect_button.clicked.connect(self._disconnect_tracker)
         validate_button.clicked.connect(self._validate_tracker)

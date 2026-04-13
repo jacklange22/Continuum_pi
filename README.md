@@ -14,7 +14,7 @@ The current live tracking path is Python-native:
 - [TrackingService](/Users/jacklange/Continuum/pi_code/continuum_robot/services/tracking_service.py)
 - diagnostics, benchmark, registration, GUI, and later servo control
 
-`tracker_bridge` remains in the repo only as a legacy compatibility/comparison path. It is not the default live backend.
+`tracker_bridge` remains in the repo only as a retired legacy compatibility/comparison path. It is not the default live backend.
 
 ## Core Conventions
 
@@ -49,9 +49,10 @@ Legacy registration compatibility is preserved:
 - `config/`: runtime YAML configuration
 - `docs/`: migration notes and operator-facing design notes
 - `scripts/`: bootstrap, diagnostics, benchmark, validation, launch helpers
+- `scripts/legacy/`: retired bridge-only helpers kept for comparison/debugging
 - `tests/`: unit and mock-backed integration coverage
-- `data/`: canonical runtime outputs for experiments, pivot captures/review bundles, registrations, tracker captures, logs, and calibrations
-- `tracker_bridge/`: legacy C++ Aurora bridge, retained for comparison only
+- `data/`: canonical runtime outputs for `pivot_calibration/`, `registrations/`, `runtime_tip_calibration/`, and `experiments/<experiment_name>/...`
+- `legacy/tracker_bridge/`: retired C++ Aurora bridge source, retained for comparison only
 - `references/`: read-only legacy reference material
 - `tools/`: read-only registration assets and lab inputs
 
@@ -90,7 +91,7 @@ Architecture diagram:
 Aurora USB/serial
   -> TrackingBackendRouter
       -> TrackerBackendNDI (preferred)
-      -> TrackerServiceManager / tracker_bridge (fallback/debug only)
+      -> TrackerServiceManager / legacy bridge (explicit compatibility path only)
   -> TrackingService
       -> GUI Tracking/System panels
       -> RegistrationService
@@ -149,7 +150,7 @@ Important:
 
 - this repo installs the Python package dependency, but it does not bundle or auto-detect whatever low-level vendor/runtime dependencies your local `scikit-surgerynditracker` install needs
 - live servo access uses the Robotis Python `dynamixel_sdk` module provided by the `dynamixel-sdk` package
-- if `tracker_backend: "bridge"` is used instead, you also need the external NDI SDK and the legacy C++ bridge build
+- if `tracker_backend: "bridge"` is used instead, you also need the external NDI SDK and the retired legacy bridge build
 
 ## Bootstrap
 
@@ -164,7 +165,7 @@ What bootstrap does:
 - creates `.venv/`
 - installs the package and dev dependencies
 - creates runtime directories under `data/`
-- optionally builds `tracker_bridge` when `BUILD_TRACKER_BRIDGE=1`
+- optionally builds the retired legacy `tracker_bridge` when `BUILD_TRACKER_BRIDGE=1`
 
 Unified workflow wrapper:
 
@@ -212,8 +213,8 @@ visualization_mode: "auto"
 visualization_safe_effects: true
 aurora_port: "/dev/ttyUSB0"
 tracker_backend: "ndi"
-tracker_fallback_backend: "bridge"
-tracker_fallback_enabled: true
+tracker_fallback_backend:
+tracker_fallback_enabled: false
 tracker_type: "aurora"
 tracker_poll_ms: 20
 tracker_freshness_timeout_s: 0.5
@@ -224,8 +225,8 @@ tracker_tool_id_aliases:
 
 Notes:
 
-- backend selection is explicit: the router tries `tracker_backend` first and only tries `tracker_fallback_backend` if fallback is enabled and the primary backend is unavailable or fails during startup
-- fallback is always recorded in startup messages and diagnostics; it is never silent
+- backend selection is explicit: the router tries `tracker_backend` first and only tries `tracker_fallback_backend` if legacy fallback is enabled and the primary backend is unavailable or fails during startup
+- legacy fallback is always recorded in startup messages and diagnostics; it is never silent
 - `visualization_mode: "auto"` uses the safest renderer for the current platform. On macOS the GUI stays on the projection fallback by default because QtDataVisualization is unstable there.
 - `visualization_safe_effects: true` keeps the native 3D path on conservative settings and disables risky QtDataVisualization effects.
 - raw live ids `10` and `11` are the current observed Aurora tool ids on the Pi
@@ -867,8 +868,8 @@ Migration notes for the old experiment ideas are in [experiments_migration.md](/
 
 Retained but not default:
 
-- [tracker_bridge.cpp](/Users/jacklange/Continuum/pi_code/tracker_bridge/tracker_bridge.cpp)
-- [tracker_service_manager.py](/Users/jacklange/Continuum/pi_code/continuum_robot/tracking/tracker_service_manager.py)
+- [tracker_bridge.cpp](/Users/jacklange/Continuum/pi_code/legacy/tracker_bridge/tracker_bridge.cpp)
+- [tracker_service_manager.py](/Users/jacklange/Continuum/pi_code/continuum_robot/tracking/legacy_bridge/tracker_service_manager.py)
 - [aurora_framer.py](/Users/jacklange/Continuum/pi_code/continuum_robot/tracking/aurora_framer.py)
 - [aurora_parser.py](/Users/jacklange/Continuum/pi_code/continuum_robot/tracking/aurora_parser.py)
 

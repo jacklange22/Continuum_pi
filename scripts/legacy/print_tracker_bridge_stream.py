@@ -9,8 +9,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from continuum_robot.tracking.tracker_protocol import parse_tracker_json_line
-from continuum_robot.tracking.tracker_socket_client import TrackerSocketClient
+from continuum_robot.tracking.legacy_bridge.tracker_protocol import parse_tracker_json_line
+from continuum_robot.tracking.legacy_bridge.tracker_socket_client import TrackerSocketClient
 
 
 def _parse_args() -> argparse.Namespace:

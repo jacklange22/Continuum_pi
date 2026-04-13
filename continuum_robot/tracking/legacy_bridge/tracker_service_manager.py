@@ -1,8 +1,8 @@
 """Legacy compatibility manager for the C++ tracker_bridge process and socket stream.
 
-The main live hardware path now uses the Python-native NDI backend. This module
-is retained so the bridge can still be launched for comparison or migration
-debugging, but it is no longer the default runtime source of truth.
+The main live hardware path uses the Python-native NDI backend. This module is
+kept under `legacy_bridge` so bridge fallback/debug behavior is explicit and
+isolated from the normal runtime path.
 """
 
 from __future__ import annotations
@@ -15,13 +15,13 @@ import subprocess
 import threading
 import time
 
-from continuum_robot.tracking.tracker_protocol import (
+from continuum_robot.tracking.legacy_bridge.tracker_protocol import (
     TrackerStatusMessage,
     TrackerTransformMessage,
     parse_tracker_json_line,
 )
+from continuum_robot.tracking.legacy_bridge.tracker_socket_client import TrackerSocketClient
 from continuum_robot.tracking.runtime_models import TrackerRuntimeState, TrackerToolState
-from continuum_robot.tracking.tracker_socket_client import TrackerSocketClient
 
 
 class TrackerServiceManager:
@@ -62,7 +62,7 @@ class TrackerServiceManager:
             connection_state="starting",
             canonical_state="connecting",
             last_error=None,
-            last_status_message="Starting tracker bridge",
+            last_status_message="Starting legacy tracker bridge",
         )
         try:
             self._launch_bridge_process()
@@ -75,7 +75,7 @@ class TrackerServiceManager:
                 connection_state="error",
                 canonical_state="error",
                 last_error=str(exc),
-                last_status_message=f"Tracker start failed: {exc}",
+                last_status_message=f"Legacy bridge start failed: {exc}",
             )
             raise
 
@@ -128,7 +128,7 @@ class TrackerServiceManager:
             backend_connected=False,
             connection_state="disconnected",
             canonical_state="disconnected",
-            last_status_message="Tracker disconnected",
+            last_status_message="Legacy tracker bridge disconnected",
         )
 
     def is_alive(self) -> bool:
@@ -149,7 +149,7 @@ class TrackerServiceManager:
         if not self.bridge_executable.exists():
             raise FileNotFoundError(
                 f"tracker_bridge executable not found: {self.bridge_executable}. "
-                "Build it with scripts/build_tracker_bridge.sh after setting "
+                "Build it with scripts/legacy/build_tracker_bridge.sh after setting "
                 "NDI_SDK_INCLUDE_DIR and NDI_SDK_LIB_DIR."
             )
         if not self.bridge_executable.is_file():
@@ -198,7 +198,7 @@ class TrackerServiceManager:
                     self._set_state(
                         connection_state="connecting",
                         canonical_state="connecting",
-                        last_status_message="Connecting to tracker socket",
+                        last_status_message="Connecting to legacy tracker socket",
                     )
                     self._client.connect(timeout_s=1.0)
                     self._set_state(
@@ -259,13 +259,19 @@ class TrackerServiceManager:
         )
 
         with self._lock:
-            self._state.tools[msg.tool_id] = tool_state
             self._state.latest_frame_number = msg.frame_number
             self._state.latest_timestamp = msg.timestamp
-            self._state.last_error = None
-            if self._state.connection_state not in {"error", "disconnected"}:
-                self._state.connection_state = "tracking"
-                self._state.canonical_state = "streaming_healthy"
+            self._state.backend_frame_counter += 1
+            self._state.tools[msg.tool_id] = tool_state
+            self._state.connection_state = "tracking"
+            self._state.canonical_state = "streaming_healthy"
+            self._state.last_status_message = f"Tracking {msg.tool_id}"
+            self._state.raw_tool_ids = sorted(self._state.tools)
+            self._state.normalized_tool_ids = sorted(self._state.tools)
+            self._state.backend_connected = True
+            self._state.socket_connected = True
+            self._state.bridge_running = True
+            self._state.backend_running = True
 
     def _set_state(self, **updates) -> None:
         with self._lock:
@@ -273,10 +279,14 @@ class TrackerServiceManager:
                 setattr(self._state, key, value)
 
     @staticmethod
-    def _pipe_log_loop(pipe, level: int, prefix: str) -> None:
+    def _pipe_log_loop(pipe, level: int, logger_name: str) -> None:
         if pipe is None:
             return
-        for line in pipe:
-            text = line.strip()
-            if text:
-                logging.log(level, "%s: %s", prefix, text)
+        logger = logging.getLogger(logger_name)
+        try:
+            for line in pipe:
+                text = line.rstrip()
+                if text:
+                    logger.log(level, text)
+        finally:
+            pipe.close()

@@ -1,5 +1,5 @@
 tool_id: "0B"
-input_path: "examples/pivot_calibration_sample.csv"
+input_path: "config/pivot_calibration_sample.csv"
 # Durable pivot artifacts stay under `data/pivot_calibration/`.
 output_tip_file: "data/pivot_calibration/generated_penprobe_tip.csv"
 std_dev_threshold: 3.0

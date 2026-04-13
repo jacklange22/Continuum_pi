@@ -3,7 +3,7 @@
 ## Overview
 
 - `continuum_robot/` contains the current Python application code for tracking, registration, servo control, experiments, config loading, and GUI/controller scaffolding.
-- `tracker_bridge/` contains the C++ Aurora bridge that owns the NDI `CombinedApi` lifecycle and publishes tracker data over a Unix socket.
+- `legacy/tracker_bridge/` contains the retired C++ Aurora bridge source kept only for legacy comparison/debugging. The active tracking runtime is the Python NDI path under `continuum_robot/tracking/`.
 - `config/` contains editable runtime YAML configuration.
 - `tests/` contains unit and integration-style coverage for transform math, tracker parsing, registration persistence, servo workflows, and related services.
 - `references/` contains read-only legacy reference scripts, captured data, vendor docs, and prior validation assets.
@@ -29,6 +29,7 @@
 Prefer the current application architecture over legacy scripts.
 
 - Tracking runtime: current tracking service / parser / GUI paths under `continuum_robot/`
+- Legacy bridge compatibility/reference only: `continuum_robot/tracking/legacy_bridge/` and `legacy/tracker_bridge/`
 - Registration runtime: current registration service / repository / GUI controller paths under `continuum_robot/`
 - Servo runtime: current OpenRB / DYNAMIXEL hardware seam and `ServoService` paths under `continuum_robot/`
 - Experiment runtime: current `ExperimentRunner` and GUI experiment workflow under `continuum_robot/`

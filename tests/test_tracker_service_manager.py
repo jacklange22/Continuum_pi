@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from continuum_robot.tracking.tracker_service_manager import TrackerServiceManager
+from continuum_robot.tracking.legacy_bridge.tracker_service_manager import TrackerServiceManager
 
 
 def test_tracker_service_manager_rejects_empty_aurora_port(tmp_path: Path) -> None:

@@ -13,10 +13,10 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
+from continuum_robot.tracking.legacy_bridge.tracker_service_manager import TrackerServiceManager
 from continuum_robot.tracking.mock_tracker_manager import MockTrackerManager
 from continuum_robot.tracking.ndi_backend import TrackerBackendNDI, load_ndi_tracker_class
 from continuum_robot.tracking.runtime_models import TrackerRuntimeState, TrackerToolState
-from continuum_robot.tracking.tracker_service_manager import TrackerServiceManager
 
 
 class TrackingBackendRouter:
@@ -122,8 +122,8 @@ class TrackingBackendRouter:
 
         startup_messages = [
             f"Configured preferred tracking backend: {self.preferred_backend}",
-            f"Configured fallback backend: {self.fallback_backend or 'none'}",
-            f"Fallback enabled: {self.fallback_enabled}",
+            f"Configured legacy fallback backend: {self.fallback_backend or 'none'}",
+            f"Legacy fallback enabled: {self.fallback_enabled}",
         ]
 
         if self.mock_mode:

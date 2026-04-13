@@ -5,7 +5,7 @@ import numpy as np
 from continuum_robot.registration.live_registration_service import LiveRegistrationService
 from continuum_robot.registration.repository import RegistrationRepository
 from continuum_robot.registration.rigid_solver import RigidRegistrationSolver
-from continuum_robot.tracking.tracker_service_manager import TrackerToolState
+from continuum_robot.tracking.runtime_models import TrackerToolState
 
 
 class _FakeTrackerManager:

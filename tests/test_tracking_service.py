@@ -7,7 +7,7 @@ import numpy as np
 from continuum_robot.hardware.mock_aurora_client import MockAuroraClient
 from continuum_robot.services.packet_capture import PacketCaptureWriter
 from continuum_robot.services.tracking_service import TrackingService
-from continuum_robot.tracking.tracker_service_manager import TrackerRuntimeState, TrackerToolState
+from continuum_robot.tracking.runtime_models import TrackerRuntimeState, TrackerToolState
 from tests.fixtures.aurora_samples import (
     build_tool_0A_record,
     build_tool_0B_record,

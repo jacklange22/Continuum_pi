@@ -1,6 +1,6 @@
 # Convenience export from pyproject.toml.
-# Python dependencies only: the NDI SDK / CombinedApi used by tracker_bridge
-# must be installed separately on the target machine.
+# Python dependencies only: the retired legacy bridge's NDI SDK / CombinedApi
+# must be installed separately if that compatibility path is built manually.
 numpy>=1.26
 PyYAML>=6.0
 pyserial>=3.5

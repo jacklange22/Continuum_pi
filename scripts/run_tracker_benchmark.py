@@ -112,8 +112,8 @@ def main() -> int:
     required_tool_ids = required_tool_ids_from_settings(settings)
 
     print(f"Tracker backend: {settings.serial.tracker_backend}")
-    print(f"Configured fallback backend: {settings.serial.tracker_fallback_backend}")
-    print(f"Fallback enabled: {settings.serial.tracker_fallback_enabled}")
+    print(f"Configured legacy fallback backend: {settings.serial.tracker_fallback_backend}")
+    print(f"Legacy fallback enabled: {settings.serial.tracker_fallback_enabled}")
     print(f"Tracker port: {configured_tracker_port or '/dev/mock-aurora'}")
     print(f"Benchmark duration: {args.duration_s:.2f}s")
     print(f"Startup wait: {max(2.0, float(args.duration_s)):.2f}s")

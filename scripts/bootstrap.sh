@@ -41,9 +41,9 @@ mkdir -p "$ROOT_DIR/bin"
 if [[ "$BUILD_TRACKER_BRIDGE" == "1" ]]; then
   : "${NDI_SDK_INCLUDE_DIR:?Set NDI_SDK_INCLUDE_DIR to the NDI SDK include directory}"
   : "${NDI_SDK_LIB_DIR:?Set NDI_SDK_LIB_DIR to the NDI SDK library directory}"
-  "$ROOT_DIR/scripts/build_tracker_bridge.sh"
+  "$ROOT_DIR/scripts/legacy/build_tracker_bridge.sh"
 else
-  echo "Skipping tracker_bridge build."
+  echo "Skipping legacy tracker_bridge build."
   echo "The default live tracker path is Python-native via scikit-surgerynditracker."
   echo "Set BUILD_TRACKER_BRIDGE=1 only if you need the legacy bridge compatibility backend."
 fi

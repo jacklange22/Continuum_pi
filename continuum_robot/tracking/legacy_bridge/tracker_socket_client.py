@@ -1,4 +1,4 @@
-"""Unix-domain socket client for tracker_bridge stream."""
+"""Unix-domain socket client for the legacy tracker_bridge stream."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import time
 
 
 class TrackerSocketClient:
-    """Simple line-oriented Unix socket client for tracker_bridge."""
+    """Simple line-oriented Unix socket client for the legacy bridge."""
 
     def __init__(self, socket_path: Path) -> None:
         self.socket_path = socket_path

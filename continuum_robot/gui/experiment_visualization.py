@@ -9,7 +9,7 @@ import numpy as np
 
 from continuum_robot.experiments.dataset_tools import extract_tip_or_tool_position_mm
 from continuum_robot.experiments.pretension_validation_outputs import extract_pretension_trace_points
-from continuum_robot.gui.theme import COLORS
+from continuum_robot.gui.theme import COLORS, chart_palette
 from continuum_robot.tracking.timing_benchmark import (
     compute_servo_sync_summary,
     compute_tracker_timing_summary,
@@ -53,16 +53,7 @@ class VisualizationModel:
     summary_lines: list[str] = field(default_factory=list)
 
 
-_PALETTE = [
-    "#7aa49c",
-    "#7ea4c4",
-    "#b56b6d",
-    "#8b7ea5",
-    "#b08b59",
-    "#7d9b8f",
-    "#8a7b8d",
-    "#6f859b",
-]
+_PALETTE = chart_palette()
 
 
 def build_visualization_model(
@@ -402,7 +393,7 @@ def _build_pivot_model(
         x_title="Residual Norm (mm)",
         y_title="Count",
         caption="Distribution of point-to-pivot residuals after outlier rejection.",
-        color_hex="#8b7ea5",
+        color_hex=COLORS.scene_residual,
     )
     inlier_count = int(metrics.get("sample_count_used", 0))
     rejected_count = int(metrics.get("sample_count_rejected", 0))
@@ -747,7 +738,7 @@ def _build_pretension_validation_model(*, samples, metrics: dict[str, Any]) -> V
                 y_title="Displacement (mm)",
                 caption="Tracker-side displacement relative to the run start, when live tracking was available.",
                 points_xy=displacement_points,
-                color_hex="#8b7ea5",
+                color_hex=COLORS.selection_bg,
             )
         )
     return VisualizationModel(charts=charts, summary_lines=summary_lines)
@@ -842,7 +833,7 @@ def _build_tracker_timing_model(*, samples, metrics: dict[str, Any], config_payl
                     (float(index), float(value))
                     for index, value in enumerate(servo_sync.get("servo_to_tracker_offsets_ms", []) or [])
                 ],
-                color_hex="#8b7ea5",
+                color_hex=COLORS.selection_bg,
             )
         )
     summary_lines = [

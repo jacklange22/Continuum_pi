@@ -10,52 +10,52 @@ from PySide6.QtWidgets import QApplication
 
 @dataclass(frozen=True)
 class ThemeColors:
-    workspace_bg: str = "#14181e"
-    surface_bg: str = "#1a2028"
-    surface_alt_bg: str = "#202834"
-    surface_border: str = "#465262"
-    input_bg: str = "#161b22"
-    input_border: str = "#5b6878"
-    button_bg: str = "#26303b"
-    button_border: str = "#5d6979"
-    button_primary_bg: str = "#495f75"
-    button_primary_fg: str = "#f7fafc"
-    button_primary_border: str = "#829ab1"
-    button_danger_bg: str = "#6a3436"
-    button_danger_fg: str = "#fde8e9"
-    button_danger_border: str = "#b97979"
-    text_primary: str = "#f3f6f8"
-    text_secondary: str = "#d7dee6"
-    text_muted: str = "#aab4c0"
-    text_subtle: str = "#7c8794"
-    status_bg: str = "#2a3644"
-    status_fg: str = "#f3f6f8"
-    tab_bg: str = "#293340"
-    tab_selected_bg: str = "#1a2028"
-    tab_selected_fg: str = "#f7fafc"
-    overlay_bg: str = "#141a21"
-    overlay_border: str = "#465262"
-    chart_grid: str = "#4b5868"
-    selection_bg: str = "#597289"
-    selection_fg: str = "#f7fafc"
-    success_bg: str = "#2f4738"
-    success_fg: str = "#e9f6ed"
-    warning_bg: str = "#5f4d27"
-    warning_fg: str = "#fff3cf"
-    error_bg: str = "#633033"
-    error_fg: str = "#fde8e9"
-    info_bg: str = "#304556"
-    info_fg: str = "#eaf2f8"
-    scene_truth: str = "#7ea4c4"
-    scene_measurement: str = "#82a596"
-    scene_live_0a: str = "#7aa49c"
-    scene_live_0b: str = "#b89564"
-    scene_tip: str = "#b56b6d"
-    scene_residual: str = "#c77a72"
-    scene_grid: str = "#495462"
-    scene_axis_x: str = "#7e9fbe"
-    scene_axis_y: str = "#7da088"
-    scene_axis_z: str = "#b6786f"
+    workspace_bg: str = "#0d1217"
+    surface_bg: str = "#141b22"
+    surface_alt_bg: str = "#19222b"
+    surface_border: str = "#384859"
+    input_bg: str = "#10161d"
+    input_border: str = "#506172"
+    button_bg: str = "#1b242d"
+    button_border: str = "#5a6b7c"
+    button_primary_bg: str = "#334759"
+    button_primary_fg: str = "#f4f7fa"
+    button_primary_border: str = "#7f9cb5"
+    button_danger_bg: str = "#5a3136"
+    button_danger_fg: str = "#f9e8ea"
+    button_danger_border: str = "#956569"
+    text_primary: str = "#f5f7fa"
+    text_secondary: str = "#dce4eb"
+    text_muted: str = "#b1bcc7"
+    text_subtle: str = "#8492a0"
+    status_bg: str = "#202b35"
+    status_fg: str = "#f5f7fa"
+    tab_bg: str = "#1a232c"
+    tab_selected_bg: str = "#141b22"
+    tab_selected_fg: str = "#f4f7fa"
+    overlay_bg: str = "#0c1218"
+    overlay_border: str = "#384859"
+    chart_grid: str = "#5d6c7c"
+    selection_bg: str = "#58718a"
+    selection_fg: str = "#f4f7fa"
+    success_bg: str = "#273830"
+    success_fg: str = "#edf6f0"
+    warning_bg: str = "#584924"
+    warning_fg: str = "#fff1c8"
+    error_bg: str = "#552d32"
+    error_fg: str = "#fbe8ea"
+    info_bg: str = "#233847"
+    info_fg: str = "#e8f0f7"
+    scene_truth: str = "#88a8c4"
+    scene_measurement: str = "#93ada0"
+    scene_live_0a: str = "#7faaa3"
+    scene_live_0b: str = "#b99b70"
+    scene_tip: str = "#bb7871"
+    scene_residual: str = "#c9857a"
+    scene_grid: str = "#66727f"
+    scene_axis_x: str = "#7da8cd"
+    scene_axis_y: str = "#85aa90"
+    scene_axis_z: str = "#bb8278"
 
     @property
     def accent(self) -> str:
@@ -98,10 +98,118 @@ def apply_dark_theme(app: QApplication | None) -> None:
     app.setPalette(palette)
     app.setStyleSheet(
         f"""
+        QWidget {{
+            color: {COLORS.text_primary};
+        }}
+        QFrame {{
+            color: {COLORS.text_primary};
+        }}
         QToolTip {{
             background: {COLORS.surface_alt_bg};
             color: {COLORS.text_primary};
             border: 1px solid {COLORS.surface_border};
+        }}
+        QMenu {{
+            background: {COLORS.surface_bg};
+            color: {COLORS.text_primary};
+            border: 1px solid {COLORS.surface_border};
+        }}
+        QMenu::item:selected {{
+            background: {COLORS.selection_bg};
+            color: {COLORS.selection_fg};
+        }}
+        QHeaderView::section {{
+            background: {COLORS.surface_bg};
+            color: {COLORS.text_secondary};
+            border: 1px solid {COLORS.surface_border};
+            padding: 6px 8px;
+            font-weight: 700;
+        }}
+        QGroupBox {{
+            border: 1px solid {COLORS.surface_border};
+            border-radius: 14px;
+            margin-top: 16px;
+            padding-top: 10px;
+            background: {COLORS.surface_alt_bg};
+        }}
+        QGroupBox::title {{
+            subcontrol-origin: margin;
+            left: 12px;
+            padding: 0 6px;
+            color: {COLORS.text_primary};
+            font-weight: 700;
+        }}
+        QTableView, QTableWidget, QListView, QTreeView {{
+            background: {COLORS.input_bg};
+            alternate-background-color: {COLORS.surface_alt_bg};
+            gridline-color: {COLORS.surface_border};
+            color: {COLORS.text_primary};
+            selection-background-color: {COLORS.selection_bg};
+            selection-color: {COLORS.selection_fg};
+            border: 1px solid {COLORS.input_border};
+            border-radius: 10px;
+        }}
+        QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
+            background: {COLORS.input_bg};
+            color: {COLORS.text_primary};
+            border: 1px solid {COLORS.input_border};
+            border-radius: 10px;
+            padding: 4px 8px;
+        }}
+        QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
+            border-color: {COLORS.button_primary_border};
+        }}
+        QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{
+            background: {COLORS.button_bg};
+            border-left: 1px solid {COLORS.input_border};
+            width: 16px;
+        }}
+        QComboBox QAbstractItemView {{
+            background: {COLORS.surface_bg};
+            color: {COLORS.text_primary};
+            selection-background-color: {COLORS.selection_bg};
+            selection-color: {COLORS.selection_fg};
+        }}
+        QTabWidget::pane {{
+            border: 1px solid {COLORS.surface_border};
+            background: {COLORS.surface_bg};
+            border-radius: 12px;
+        }}
+        QTabBar::tab {{
+            background: {COLORS.tab_bg};
+            color: {COLORS.text_secondary};
+            padding: 8px 14px;
+            border: 1px solid {COLORS.surface_border};
+            border-bottom: none;
+            border-top-left-radius: 10px;
+            border-top-right-radius: 10px;
+            margin-right: 4px;
+        }}
+        QTabBar::tab:selected {{
+            background: {COLORS.tab_selected_bg};
+            color: {COLORS.tab_selected_fg};
+        }}
+        QPushButton {{
+            min-height: 34px;
+            padding: 0 12px;
+            border: 1px solid {COLORS.button_border};
+            border-radius: 10px;
+            background: {COLORS.button_bg};
+            color: {COLORS.text_primary};
+            font-weight: 600;
+        }}
+        QPushButton:hover {{
+            border-color: {COLORS.button_primary_border};
+        }}
+        QPushButton:pressed {{
+            background: {COLORS.surface_alt_bg};
+        }}
+        QPushButton:disabled {{
+            color: {COLORS.text_subtle};
+            border-color: {COLORS.surface_border};
+        }}
+        QSplitter::handle {{
+            background: {COLORS.workspace_bg};
         }}
         QScrollBar:vertical {{
             background: {COLORS.surface_bg};
@@ -154,6 +262,19 @@ def semantic_chip_colors(kind: str) -> tuple[str, str]:
         "accent": (COLORS.selection_bg, COLORS.selection_fg),
         "neutral": (COLORS.status_bg, COLORS.text_secondary),
     }.get(kind, (COLORS.status_bg, COLORS.text_secondary))
+
+
+def chart_palette() -> list[str]:
+    return [
+        COLORS.scene_live_0a,
+        COLORS.scene_truth,
+        COLORS.scene_tip,
+        COLORS.scene_live_0b,
+        COLORS.scene_measurement,
+        COLORS.selection_bg,
+        COLORS.info_fg,
+        COLORS.text_muted,
+    ]
 
 
 def grouped_workspace_stylesheet(*, object_name: str, input_selectors: list[str], extra_rules: str = "") -> str:

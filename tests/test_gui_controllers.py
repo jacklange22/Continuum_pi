@@ -35,6 +35,7 @@ from continuum_robot.gui.controllers.system_controller import SystemController, 
 from continuum_robot.gui.controllers.experiment_controller import ExperimentController
 from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpController, TrackerMvpViewState
 from continuum_robot.gui.experiment_visualization import ChartModel, VisualizationModel
+from continuum_robot.gui.theme import COLORS
 from continuum_robot.gui.tabs.experiment_tab import ExperimentTab
 from continuum_robot.gui.tabs.pretension_tab import PretensionTab
 from continuum_robot.gui.tabs.registration_tab import RegistrationTab
@@ -355,6 +356,9 @@ def test_tracker_mvp_tab_wraps_full_workflow_in_scroll_area(tmp_path: Path) -> N
     assert isinstance(tab.scroll_area, QScrollArea)
     assert tab.scroll_area.widget() is not None
     assert tab.scroll_area.widget().findChild(RegistrationTab) is tab.registration_tab
+    assert tab.title_label.text() == "Legacy Tracker Compatibility Workspace"
+    assert COLORS.workspace_bg in tab.styleSheet()
+    assert "#eef3f8" not in tab.styleSheet()
 
 
 def test_tracking_tab_wraps_workspace_in_scroll_area(tmp_path: Path) -> None:

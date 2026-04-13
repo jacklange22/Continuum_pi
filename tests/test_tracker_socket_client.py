@@ -2,7 +2,7 @@ import io
 from pathlib import Path
 from unittest.mock import patch
 
-from continuum_robot.tracking.tracker_socket_client import TrackerSocketClient
+from continuum_robot.tracking.legacy_bridge.tracker_socket_client import TrackerSocketClient
 
 
 class _FakeSocket:

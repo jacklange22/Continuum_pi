@@ -27,7 +27,7 @@ from continuum_robot.registration.repository import RegistrationRecord, Registra
 from continuum_robot.registration.rigid_solver import RigidRegistrationSolver
 from continuum_robot.registration.validation import compute_fre_mm
 from continuum_robot.tracking.transforms import compose_T_A_C, make_transform_A_B
-from continuum_robot.tracking.tracker_service_manager import TrackerServiceManager
+from continuum_robot.tracking.legacy_bridge.tracker_service_manager import TrackerServiceManager
 
 
 @dataclass

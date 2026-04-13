@@ -107,8 +107,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"mock_mode={settings.runtime.mock_mode}")
     print(f"configured_backend={settings.serial.tracker_backend}")
-    print(f"configured_fallback_backend={settings.serial.tracker_fallback_backend}")
-    print(f"fallback_enabled={settings.serial.tracker_fallback_enabled}")
+    print(f"configured_legacy_fallback_backend={settings.serial.tracker_fallback_backend}")
+    print(f"legacy_fallback_enabled={settings.serial.tracker_fallback_enabled}")
     print(f"configured_port={configured_tracker_port or '/dev/mock-aurora'}")
     print(f"required_tool_ids={required_tool_ids}")
     print(

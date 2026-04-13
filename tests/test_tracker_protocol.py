@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from continuum_robot.tracking.tracker_protocol import (
+from continuum_robot.tracking.legacy_bridge.tracker_protocol import (
     TrackerStatusMessage,
     TrackerTransformMessage,
     parse_tracker_json_line,

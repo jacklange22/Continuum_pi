@@ -4,6 +4,7 @@ import pytest
 
 import continuum_robot.tracking.backend_router as backend_router_module
 from continuum_robot.tracking.backend_router import TrackingBackendRouter
+from continuum_robot.tracking.legacy_bridge.tracker_service_manager import TrackerServiceManager
 from continuum_robot.tracking.runtime_models import TrackerRuntimeState
 
 
@@ -134,3 +135,27 @@ def test_backend_router_rejects_missing_serial_port_with_structured_code(tmp_pat
     capability = router.probe_capabilities()["ndi"]
     assert capability["available"] is False
     assert capability["code"] == "serial_port_missing"
+
+
+def test_backend_router_uses_legacy_bridge_manager_only_for_explicit_bridge_selection(tmp_path: Path) -> None:
+    aurora_port = _make_port(tmp_path / "ttyUSB0")
+    bridge_exec = _make_executable(tmp_path / "tracker_bridge")
+    router = TrackingBackendRouter(
+        mock_mode=False,
+        preferred_backend="bridge",
+        fallback_backend=None,
+        fallback_enabled=False,
+        aurora_port=str(aurora_port),
+        tracker_type="aurora",
+        poll_interval_ms=20,
+        reconnect_delay_s=0.1,
+        ports_to_probe=[],
+        settings_overrides={},
+        tool_id_aliases={},
+        bridge_executable=bridge_exec,
+        socket_path=tmp_path / "tracker.sock",
+    )
+
+    backend = router._create_backend("bridge")
+
+    assert isinstance(backend, TrackerServiceManager)

@@ -1,4 +1,4 @@
-"""Message models and parsing for tracker_bridge JSON stream."""
+"""Message models and parsing for the legacy tracker_bridge JSON stream."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import json
 
 @dataclass
 class TrackerStatusMessage:
-    """Structured status event emitted by tracker_bridge."""
+    """Structured status event emitted by the legacy bridge."""
 
     timestamp: str
     level: str
@@ -20,7 +20,7 @@ class TrackerStatusMessage:
 
 @dataclass
 class TrackerTransformMessage:
-    """One tool transform sample emitted by tracker_bridge."""
+    """One tool transform sample emitted by the legacy bridge."""
 
     timestamp: str
     frame_number: int
@@ -33,7 +33,7 @@ class TrackerTransformMessage:
 
 
 def parse_tracker_json_line(line: str) -> TrackerStatusMessage | TrackerTransformMessage:
-    """Parse one line-delimited JSON message from tracker_bridge."""
+    """Parse one line-delimited JSON message from the legacy bridge."""
     raw = json.loads(line)
     if not isinstance(raw, dict):
         raise ValueError("tracker message must be a JSON object")
