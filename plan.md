@@ -48,7 +48,7 @@ What exists now:
 - Manual jog, displacement command dispatch, neutral setpoint capture/load/save, telemetry reads, servo ID scan/assign hooks, and pretension validation hooks all exist at the service/controller level
 - Tendon displacement to goal-position mapping exists in `continuum_robot/servos/displacement_mapper.py`
 - Safety threshold checks exist in `continuum_robot/servos/safety_guard.py`
-- Neutral setpoints persist to `data/calibrations/neutral_setpoints.json` via `continuum_robot/servos/neutral_calibration_service.py`
+- Neutral setpoints persist to `config/neutral_setpoints.json` via `continuum_robot/servos/neutral_calibration_service.py`
 - The config model supports both 4-servo and 8-servo robots via `config/robot_4servo.yaml`, `config/robot_8servo.yaml`, and `RobotConfig`
 - `tendon_to_servo` config and a mapping helper exist in `continuum_robot/servos/tendon_mapping.py`
 - GUI surfaces for servo connect, scan, ID assign, jog, neutral capture, and displacement commands exist
@@ -457,13 +457,13 @@ Recommended durable file ownership:
 
 - `config/system.yaml`: repo defaults
 - `config/system.local.yaml`: machine-local ports and runtime overrides
-- `data/calibrations/neutral_setpoints.json`:
+- `config/neutral_setpoints.json`:
   - should evolve into a richer servo calibration artifact
-- `data/tip_cals/*.csv`:
+- `data/pivot_calibration/*.csv`:
   - pen-probe tip calibrations
 - `data/registrations/latest_registration.json` and timestamped registration records:
   - accepted registration state
-- `data/experiments/<run>/`:
+- `data/experiments/<experiment_name>/<run>/`:
   - canonical experiment outputs
 
 Recommendation:

@@ -10,34 +10,52 @@ from PySide6.QtWidgets import QApplication
 
 @dataclass(frozen=True)
 class ThemeColors:
-    workspace_bg: str = "#0b1220"
-    surface_bg: str = "#111827"
-    surface_alt_bg: str = "#172033"
-    surface_border: str = "#334155"
-    input_bg: str = "#0f172a"
-    input_border: str = "#475569"
-    button_bg: str = "#1f2937"
-    button_border: str = "#475569"
-    button_primary_bg: str = "#1d4ed8"
-    button_primary_fg: str = "#eff6ff"
-    button_primary_border: str = "#3b82f6"
-    button_danger_bg: str = "#7f1d1d"
-    button_danger_fg: str = "#fee2e2"
-    button_danger_border: str = "#ef4444"
-    text_primary: str = "#e5eef9"
-    text_secondary: str = "#cbd5e1"
-    text_muted: str = "#94a3b8"
-    text_subtle: str = "#7f8ea3"
-    status_bg: str = "#22314a"
-    status_fg: str = "#e5eef9"
-    tab_bg: str = "#243244"
-    tab_selected_bg: str = "#111827"
-    tab_selected_fg: str = "#f8fafc"
-    overlay_bg: str = "#0f172a"
-    overlay_border: str = "#334155"
-    chart_grid: str = "#334155"
-    selection_bg: str = "#1d4ed8"
-    selection_fg: str = "#eff6ff"
+    workspace_bg: str = "#14181e"
+    surface_bg: str = "#1a2028"
+    surface_alt_bg: str = "#202834"
+    surface_border: str = "#465262"
+    input_bg: str = "#161b22"
+    input_border: str = "#5b6878"
+    button_bg: str = "#26303b"
+    button_border: str = "#5d6979"
+    button_primary_bg: str = "#495f75"
+    button_primary_fg: str = "#f7fafc"
+    button_primary_border: str = "#829ab1"
+    button_danger_bg: str = "#6a3436"
+    button_danger_fg: str = "#fde8e9"
+    button_danger_border: str = "#b97979"
+    text_primary: str = "#f3f6f8"
+    text_secondary: str = "#d7dee6"
+    text_muted: str = "#aab4c0"
+    text_subtle: str = "#7c8794"
+    status_bg: str = "#2a3644"
+    status_fg: str = "#f3f6f8"
+    tab_bg: str = "#293340"
+    tab_selected_bg: str = "#1a2028"
+    tab_selected_fg: str = "#f7fafc"
+    overlay_bg: str = "#141a21"
+    overlay_border: str = "#465262"
+    chart_grid: str = "#4b5868"
+    selection_bg: str = "#597289"
+    selection_fg: str = "#f7fafc"
+    success_bg: str = "#2f4738"
+    success_fg: str = "#e9f6ed"
+    warning_bg: str = "#5f4d27"
+    warning_fg: str = "#fff3cf"
+    error_bg: str = "#633033"
+    error_fg: str = "#fde8e9"
+    info_bg: str = "#304556"
+    info_fg: str = "#eaf2f8"
+    scene_truth: str = "#7ea4c4"
+    scene_measurement: str = "#82a596"
+    scene_live_0a: str = "#7aa49c"
+    scene_live_0b: str = "#b89564"
+    scene_tip: str = "#b56b6d"
+    scene_residual: str = "#c77a72"
+    scene_grid: str = "#495462"
+    scene_axis_x: str = "#7e9fbe"
+    scene_axis_y: str = "#7da088"
+    scene_axis_z: str = "#b6786f"
 
     @property
     def accent(self) -> str:
@@ -125,6 +143,19 @@ def chip_stylesheet(*, background: str, foreground: str) -> str:
     )
 
 
+def semantic_chip_colors(kind: str) -> tuple[str, str]:
+    return {
+        "ready": (COLORS.success_bg, COLORS.success_fg),
+        "ok": (COLORS.success_bg, COLORS.success_fg),
+        "warning": (COLORS.warning_bg, COLORS.warning_fg),
+        "blocked": (COLORS.error_bg, COLORS.error_fg),
+        "error": (COLORS.error_bg, COLORS.error_fg),
+        "info": (COLORS.info_bg, COLORS.info_fg),
+        "accent": (COLORS.selection_bg, COLORS.selection_fg),
+        "neutral": (COLORS.status_bg, COLORS.text_secondary),
+    }.get(kind, (COLORS.status_bg, COLORS.text_secondary))
+
+
 def grouped_workspace_stylesheet(*, object_name: str, input_selectors: list[str], extra_rules: str = "") -> str:
     inputs = ",\n".join(f"QWidget#{object_name} {selector}" for selector in input_selectors)
     input_block = (
@@ -197,9 +228,9 @@ def grouped_workspace_stylesheet(*, object_name: str, input_selectors: list[str]
             color: {COLORS.text_secondary};
         }}
         QWidget#{object_name} QPushButton:checked {{
-            background: #14532d;
-            border-color: #22c55e;
-            color: #dcfce7;
+            background: {COLORS.success_bg};
+            border-color: {COLORS.button_primary_border};
+            color: {COLORS.success_fg};
         }}
         {input_block}
         {extra_rules}

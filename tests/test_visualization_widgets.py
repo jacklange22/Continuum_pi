@@ -401,6 +401,7 @@ def test_tool_plot_widget_ignores_wheel_zoom_without_control_modifier() -> None:
     widget.wheelEvent(event)
 
     assert widget.view_state() == view
+    assert event.isAccepted() is True
 
 
 def test_tool_plot_widget_allows_control_wheel_zoom() -> None:
@@ -421,6 +422,7 @@ def test_tool_plot_widget_allows_control_wheel_zoom() -> None:
     widget.wheelEvent(event)
 
     assert widget.view_state().zoom > 2.0
+    assert event.isAccepted() is True
 
 
 def test_tool_plot_widget_handles_missing_registration_and_runtime_tip_without_crashing() -> None:

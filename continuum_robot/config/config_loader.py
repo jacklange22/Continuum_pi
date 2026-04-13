@@ -89,7 +89,7 @@ class ConfigLoader:
                 system_data.get("tracker_max_consecutive_missing_frames", 20)
             ),
             tracker_require_valid_transforms=bool(system_data.get("tracker_require_valid_transforms", True)),
-            packet_capture_dir=str(system_data.get("packet_capture_dir", "data/tracker_captures")),
+            packet_capture_dir=str(system_data.get("packet_capture_dir", "")),
             openrb_settings=dict(system_data.get("openrb_settings", {}) or {}),
             dynamixel_settings=dict(system_data.get("dynamixel_settings", {}) or {}),
         )
@@ -202,7 +202,7 @@ class ConfigLoader:
         )
         calibration = CalibrationConfig(
             neutral_setpoints_path=str(
-                system_data.get("neutral_setpoints_path", "data/calibrations/neutral_setpoints.json")
+                system_data.get("neutral_setpoints_path", "config/neutral_setpoints.json")
             ),
             latest_registration_path=str(
                 system_data.get("latest_registration_path", "data/registrations/latest_registration.json")
@@ -210,7 +210,7 @@ class ConfigLoader:
             latest_runtime_tip_calibration_path=str(
                 system_data.get(
                     "latest_runtime_tip_calibration_path",
-                    "data/calibrations/runtime_tip/latest_runtime_tip_calibration.json",
+                    "data/runtime_tip_calibration/latest_runtime_tip_calibration.json",
                 )
             ),
         )

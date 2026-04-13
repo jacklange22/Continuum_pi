@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -112,14 +113,16 @@ class TrackingTab(QWidget):
         self.tools_table = QTableWidget(0, 5)
         self.tools_table.setHorizontalHeaderLabels(["Tool", "Valid", "Status", "Translation mm", "Quality"])
         self.tools_table.verticalHeader().setVisible(False)
-        self.tools_table.setMinimumHeight(180)
+        self.tools_table.setMinimumHeight(150)
+        self.tools_table.setMaximumHeight(210)
         self.plot_widget = ToolPlotWidget()
-        self.plot_widget.setMinimumHeight(260)
+        self.plot_widget.setMinimumHeight(420)
+        self.plot_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         live_box = QGroupBox("Live Tools")
         live_layout = QVBoxLayout(live_box)
-        live_layout.addWidget(self.plot_widget)
-        live_layout.addWidget(self.tools_table)
+        live_layout.addWidget(self.plot_widget, 5)
+        live_layout.addWidget(self.tools_table, 2)
 
         self.tip_file_label = QLabel("none")
         self.tip_file_label.setWordWrap(True)
@@ -187,8 +190,8 @@ class TrackingTab(QWidget):
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(14)
         content_layout.addWidget(readiness_box)
-        content_layout.addWidget(health_box)
         content_layout.addWidget(live_box)
+        content_layout.addWidget(health_box)
         content_layout.addWidget(pivot_box)
         content_layout.addWidget(details_box)
 

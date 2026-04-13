@@ -12,6 +12,7 @@ import time
 import numpy as np
 
 from continuum_robot.config.settings import Settings
+from continuum_robot.experiments.dataset_io import canonical_experiment_output_root
 from continuum_robot.experiments.pivot_utils import write_tip_vector_file
 from continuum_robot.hardware.serial_ports import SerialPortInfo, discover_serial_ports
 from continuum_robot.tracking.benchmarking import TrackerBenchmarkThresholds
@@ -228,10 +229,13 @@ class TrackerMvpController:
                     self.settings.registration.capture_tool_id,
                 ),
             )
-            report_dir = self.project_root / "data" / "tracker_validations"
-            report_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            report_path = report_dir / f"{stamp}_tracker_validation.json"
+            report_dir = canonical_experiment_output_root(
+                self._experiment_runtime_root(),
+                "tracker_validation",
+            ) / f"{stamp}_tracker_validation"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            report_path = report_dir / "tracker_validation_report.json"
             report_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
             self._validation_passed = bool(
                 report.tracker_ready
@@ -346,7 +350,7 @@ class TrackerMvpController:
             )
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         capture_dataset_path = self._write_pivot_capture_dataset(samples=samples, stamp=stamp)
-        pending_tip_path = self.project_root / "data" / "tip_cals" / "staged" / f"{stamp}_generated_penprobe_tip.csv"
+        pending_tip_path = self._pivot_calibration_root() / "staged" / f"{stamp}_generated_penprobe_tip.csv"
         result = self.experiment_runner.run_experiment(
             "pivot_calibration",
             config={
@@ -730,22 +734,30 @@ class TrackerMvpController:
                 return f"Step {step.index}: {step.label}. {step.message}"
         return "Tracker-first MVP workflow is complete. Live robot-frame pose is available."
 
-    def _registration_tip_output_path(self) -> Path:
-        raw = str(self.settings.registration.penprobe_file or "data/tip_cals/generated_penprobe_tip.csv")
+    def _experiment_runtime_root(self) -> Path:
+        raw = str(self.settings.experiment.output_dir or "data/experiments")
         path = Path(raw)
         return path if path.is_absolute() else self.project_root / path
 
-    def _pivot_runtime_root(self) -> Path:
-        raw = str(self.settings.experiment.output_dir or "data/experiments")
+    def _registration_tip_output_path(self) -> Path:
+        raw = str(
+            self.settings.registration.penprobe_file
+            or "data/pivot_calibration/generated_penprobe_tip.csv"
+        )
         path = Path(raw)
-        root = path if path.is_absolute() else self.project_root / path
-        return root / "pivot"
+        return path if path.is_absolute() else self.project_root / path
+
+    def _pivot_calibration_root(self) -> Path:
+        return self.project_root / "data" / "pivot_calibration"
+
+    def _pivot_runtime_root(self) -> Path:
+        return self.project_root / "data"
 
     def _pivot_run_output_root(self) -> Path:
-        return self._pivot_runtime_root() / "runs"
+        return self._pivot_runtime_root()
 
     def _pivot_capture_output_root(self) -> Path:
-        return self._pivot_runtime_root() / "captures"
+        return self._pivot_calibration_root() / "captures"
 
     def _tool_is_visible(self, tool_id: str) -> bool:
         snapshot = self.tracking_service.get_snapshot()

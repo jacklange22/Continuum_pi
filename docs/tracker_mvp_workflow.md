@@ -44,18 +44,18 @@ python scripts/run_lab_workflow.py tracker-mvp
 
 Tracker validation:
 
-- `data/tracker_validations/*_tracker_validation.json`
+- `data/experiments/tracker_validation/<run>/tracker_validation_report.json`
 
 Pivot calibration:
 
-- raw live capture CSV under `data/experiments/pivot/captures/*_pivot_0B_samples.csv`
-- review dataset bundle under `data/experiments/pivot/runs/*_pivot_calibration_review/`
-- older repo-root `runs/` bundles are legacy only and should be migrated into `data/experiments/pivot/runs/`
+- raw live capture CSV under `data/pivot_calibration/captures/*_pivot_0B_samples.csv`
+- review dataset bundle under `data/pivot_calibration/*_pivot_calibration_review/`
+- older repo-root `runs/` bundles are legacy only and should be migrated into the canonical `data/` layout
 - `metadata.json`
 - `samples.jsonl`
 - `summary.json`
-- staged tip file under `data/tip_cals/staged/*_generated_penprobe_tip.csv`
-- accepted tip file at `data/tip_cals/generated_penprobe_tip.csv`
+- staged tip file under `data/pivot_calibration/staged/*_generated_penprobe_tip.csv`
+- accepted tip file at `data/pivot_calibration/generated_penprobe_tip.csv`
 
 Registration:
 
@@ -79,7 +79,7 @@ The accepted pivot calibration feeds registration through the `0B` pen-probe cap
 
 For the current simple tracker MVP:
 
-- `data/tip_cals/generated_penprobe_tip.csv` defines `T_tool0B_tip`
+- `data/pivot_calibration/generated_penprobe_tip.csv` defines `T_tool0B_tip`
 - registration capture applies that offset during each live `0B` sample capture
 - the captured tip points are then averaged and used to solve `T_robot_aurora`
 - the saved registration artifact stores `capture_tip_provenance` so you can prove which accepted tip file was used
@@ -111,7 +111,7 @@ Pivot calibration passes when:
 - RMSE is reported
 - used / rejected sample counts are reported
 - the staged tip file is reviewed and accepted
-- tip file is written to `data/tip_cals/generated_penprobe_tip.csv`
+- tip file is written to `data/pivot_calibration/generated_penprobe_tip.csv`
 
 Registration passes when:
 
@@ -151,7 +151,7 @@ Tracker connect fails:
 
 Tracker validation fails:
 
-- inspect the saved JSON report in `data/tracker_validations/`
+- inspect the saved JSON report in `data/experiments/tracker_validation/`
 - check backend selected, FPS, freshness, and visible tool IDs
 - fix tool visibility before attempting pivot or registration
 

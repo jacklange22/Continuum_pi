@@ -65,8 +65,8 @@ Applies now in `Tracking`.
 
 Success criteria:
 
-- raw capture CSV saved under `data/experiments/pivot/captures/`
-- review run bundle saved under `data/experiments/pivot/runs/`
+- raw capture CSV saved under `data/pivot_calibration/captures/`
+- review run bundle saved under `data/pivot_calibration/`
 - staged tip file reviewed before acceptance
 - accepted tip vector file generated
 
@@ -140,7 +140,7 @@ Applies now as an advanced workflow launched from `Registration`.
 
 Success criteria:
 
-- canonical artifact saved under `data/calibrations/runtime_tip/`
+- canonical artifact saved under `data/runtime_tip_calibration/`
 - artifact records `T_coil_tip`, `T_tip_aurora`, and `T_aurora_coil_avg`
 - tracking reports that the live chain is using the accepted runtime tip calibration
 - live robot-frame tip pose is no longer on identity fallback

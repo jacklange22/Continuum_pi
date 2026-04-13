@@ -70,10 +70,10 @@ tracker_min_effective_fps: 15.0
 tracker_max_stale_interval_s: 0.25
 tracker_max_consecutive_missing_frames: 20
 tracker_require_valid_transforms: true
-packet_capture_dir: "data/tracker_captures"
-neutral_setpoints_path: "data/calibrations/neutral_setpoints.json"
+packet_capture_dir: ""
+neutral_setpoints_path: "config/neutral_setpoints.json"
 latest_registration_path: "data/registrations/latest_registration.json"
-latest_runtime_tip_calibration_path: "data/calibrations/runtime_tip/latest_runtime_tip_calibration.json"
+latest_runtime_tip_calibration_path: "data/runtime_tip_calibration/latest_runtime_tip_calibration.json"
 openrb_settings:
   connect_timeout_s: 0.5
   port_settle_time_s: 0.15

@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from continuum_robot.gui.controllers.experiment_controller import ExperimentViewState
-from continuum_robot.gui.theme import COLORS, chip_stylesheet, experiment_shell_stylesheet
+from continuum_robot.gui.theme import COLORS, chip_stylesheet, experiment_shell_stylesheet, semantic_chip_colors
 from continuum_robot.gui.widgets.experiment_pages import (
     EmptyExperimentWorkspace,
     build_experiment_page,
@@ -110,8 +110,9 @@ class ExperimentTab(QWidget):
             self.selected_badges_label.setText("")
             self.selected_badges_label.hide()
             self.selected_status_chip.setText("No Selection")
+            bg, fg = semantic_chip_colors("neutral")
             self.selected_status_chip.setStyleSheet(
-                chip_stylesheet(background=COLORS.status_bg, foreground=COLORS.text_secondary)
+                chip_stylesheet(background=bg, foreground=fg)
             )
             self.page_stack.setCurrentWidget(self.empty_page)
             self.load_defaults_button.setEnabled(False)
@@ -165,11 +166,14 @@ class ExperimentTab(QWidget):
     def _update_status_chip(self, state: ExperimentViewState) -> None:
         status = state.preflight_report.overall_status
         if status == "blocked":
-            bg, fg, text = "#7f1d1d", "#fee2e2", "Blocked"
+            bg, fg = semantic_chip_colors("blocked")
+            text = "Blocked"
         elif status == "ok_with_warning":
-            bg, fg, text = "#7c2d12", "#fde68a", "Ready With Warning"
+            bg, fg = semantic_chip_colors("warning")
+            text = "Ready With Warning"
         else:
-            bg, fg, text = "#14532d", "#dcfce7", "Ready"
+            bg, fg = semantic_chip_colors("ready")
+            text = "Ready"
         self.selected_status_chip.setText(text)
         self.selected_status_chip.setStyleSheet(chip_stylesheet(background=bg, foreground=fg))
 

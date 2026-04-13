@@ -16,6 +16,16 @@ from continuum_robot.experiments.schemas import (
 )
 
 
+def canonical_experiment_output_root(output_root: Path, experiment_name: str) -> Path:
+    """Return the canonical directory root for one experiment type."""
+
+    root = Path(output_root)
+    safe_name = str(experiment_name or "").strip().replace(" ", "_")
+    if not safe_name:
+        return root
+    return root if root.name == safe_name else root / safe_name
+
+
 class ExperimentDatasetWriter:
     """Write canonical experiment datasets to one run directory."""
 
@@ -33,14 +43,14 @@ class ExperimentDatasetWriter:
         output_dir_name: str | None = None,
     ) -> ExperimentDatasetPaths:
         """Write one dataset bundle and return its paths."""
-        root = Path(output_root) if output_root is not None else self.output_root
+        base_root = Path(output_root) if output_root is not None else self.output_root
+        root = canonical_experiment_output_root(base_root, metadata.experiment_name)
         root.mkdir(parents=True, exist_ok=True)
         if output_dir_name:
             output_dir = root / str(output_dir_name)
         else:
-            safe_name = metadata.experiment_name.replace(" ", "_")
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            output_dir = root / f"{timestamp}_{safe_name}_{metadata.run_id}"
+            output_dir = root / f"{timestamp}_{metadata.run_id}"
         output_dir.mkdir(parents=True, exist_ok=False)
         metadata_path = output_dir / "metadata.json"
         samples_path = output_dir / "samples.jsonl"

@@ -9,7 +9,7 @@ from typing import Iterable
 import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen, QWheelEvent
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from continuum_robot.gui.theme import COLORS, qcolor
 
@@ -103,6 +103,7 @@ class LightweightScene3DWidget(QWidget):
         self._last_mouse_pos = None
         self._drag_mode: str | None = None
         self.setMinimumHeight(240)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMouseTracking(True)
 
     def set_scene(self, scene: SceneModel3D) -> None:
@@ -187,11 +188,11 @@ class LightweightScene3DWidget(QWidget):
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # pragma: no cover - exercised in GUI
         if not bool(event.modifiers() & self.ZOOM_MODIFIER):
-            event.ignore()
+            event.accept()
             return
         delta = event.angleDelta().y()
         if delta == 0:
-            super().wheelEvent(event)
+            event.accept()
             return
         factor = 1.1 if delta > 0 else 1.0 / 1.1
         state = self._view_state
@@ -205,7 +206,7 @@ class LightweightScene3DWidget(QWidget):
         )
         self._auto_fit_pending = False
         self.update()
-        super().wheelEvent(event)
+        event.accept()
 
     def paintEvent(self, event) -> None:  # pragma: no cover - covered indirectly via widget tests
         _ = event
@@ -275,7 +276,7 @@ class LightweightScene3DWidget(QWidget):
         for axis in self._scene.axes:
             origin = np.asarray(axis.origin_xyz, dtype=float)
             basis = np.asarray(axis.rotation_rows, dtype=float)
-            colors = ("#2563eb", "#16a34a", "#dc2626")
+            colors = (COLORS.scene_axis_x, COLORS.scene_axis_y, COLORS.scene_axis_z)
             labels = ("X", "Y", "Z")
             for index in range(3):
                 end = origin + basis[:, index] * float(axis.axis_length_mm)

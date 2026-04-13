@@ -11,7 +11,7 @@ model_points_file: ""
 tip_points_file: ""
 T_sw_2_model_file: ""
 T_sw_2_tip_file: ""
-penprobe_file: "data/tip_cals/generated_penprobe_tip.csv"
+penprobe_file: "data/pivot_calibration/generated_penprobe_tip.csv"
 quaternion_average_method: "sign_aligned_mean"
 model_tre_reference_radius_mm: 5.0
 tip_tre_reference_radius_mm: 3.0

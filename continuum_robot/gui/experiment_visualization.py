@@ -9,6 +9,7 @@ import numpy as np
 
 from continuum_robot.experiments.dataset_tools import extract_tip_or_tool_position_mm
 from continuum_robot.experiments.pretension_validation_outputs import extract_pretension_trace_points
+from continuum_robot.gui.theme import COLORS
 from continuum_robot.tracking.timing_benchmark import (
     compute_servo_sync_summary,
     compute_tracker_timing_summary,
@@ -40,7 +41,7 @@ class ChartModel:
     categories: list[str] = field(default_factory=list)
     values: list[float] = field(default_factory=list)
     points_xy: list[tuple[float, float]] = field(default_factory=list)
-    color_hex: str = "#2563eb"
+    color_hex: str = COLORS.selection_bg
 
 
 @dataclass
@@ -53,14 +54,14 @@ class VisualizationModel:
 
 
 _PALETTE = [
-    "#0f766e",
-    "#2563eb",
-    "#dc2626",
-    "#7c3aed",
-    "#d97706",
-    "#059669",
-    "#db2777",
-    "#1d4ed8",
+    "#7aa49c",
+    "#7ea4c4",
+    "#b56b6d",
+    "#8b7ea5",
+    "#b08b59",
+    "#7d9b8f",
+    "#8a7b8d",
+    "#6f859b",
 ]
 
 
@@ -158,7 +159,7 @@ def _build_repeatability_model(
             series.append(
                 ScatterSeries3D(
                     name="Centroids",
-                    color_hex="#e2e8f0",
+                    color_hex=COLORS.text_secondary,
                     points_xyz=centroid_points,
                     point_size=0.18,
                     mesh="cube",
@@ -174,7 +175,7 @@ def _build_repeatability_model(
         caption="Each bar shows the RMS spread for one revisited target after repeated returns from different prior states.",
         categories=[str(point_metrics.get("label", f"T{index + 1:02d}")) for index, point_metrics in enumerate(ordered_target_metrics)],
         values=[float(point_metrics.get("spread_rms_mm", 0.0) or 0.0) for point_metrics in ordered_target_metrics],
-        color_hex="#2563eb",
+        color_hex=COLORS.scene_truth,
     )
     max_chart = ChartModel(
         kind="bar",
@@ -184,7 +185,7 @@ def _build_repeatability_model(
         caption="Maximum deviation from the target centroid for each revisited target.",
         categories=[str(point_metrics.get("label", f"T{index + 1:02d}")) for index, point_metrics in enumerate(ordered_target_metrics)],
         values=[float(point_metrics.get("max_deviation_mm", 0.0) or 0.0) for point_metrics in ordered_target_metrics],
-        color_hex="#dc2626",
+        color_hex=COLORS.scene_residual,
     )
     charts: list[ChartModel] = [spread_chart, max_chart]
     group_metrics = metrics.get("group_metrics", {}) or {}
@@ -208,7 +209,7 @@ def _build_repeatability_model(
                 caption="Legacy-inspired grouped comparison across on-axis/off-axis and low/high-magnitude target classes when those classes are defined.",
                 categories=group_categories,
                 values=group_values,
-                color_hex="#0f766e",
+                color_hex=COLORS.scene_measurement,
             )
         )
     else:
@@ -219,7 +220,7 @@ def _build_repeatability_model(
                 x_title="Distance To Target Centroid (mm)",
                 y_title="Count",
                 caption="Histogram of sample distances from each target centroid.",
-                color_hex="#0f766e",
+                color_hex=COLORS.scene_measurement,
             )
         )
     acceptance_lines = _acceptance_lines(
@@ -280,7 +281,7 @@ def _build_grid_model(
         series.append(
             ScatterSeries3D(
                 name="Truth Grid",
-                color_hex="#e2e8f0",
+                color_hex=COLORS.text_secondary,
                 points_xyz=truth_points,
                 point_size=0.18,
                 mesh="cube",
@@ -290,7 +291,7 @@ def _build_grid_model(
         series.append(
             ScatterSeries3D(
                 name="Aligned Measured Centroids",
-                color_hex="#2563eb",
+                color_hex=COLORS.scene_truth,
                 points_xyz=aligned_centroids,
                 point_size=0.16,
                 mesh="sphere",
@@ -305,7 +306,7 @@ def _build_grid_model(
         caption="Residual norm for each labeled point after best-fit rigid alignment of the ideal grid to the measured centroids.",
         categories=[str(point) for point in sorted(point_rms, key=_label_sort_key)],
         values=[float(point_rms[point]) for point in sorted(point_rms, key=_label_sort_key)],
-        color_hex="#dc2626",
+        color_hex=COLORS.scene_residual,
     )
     spread_chart = ChartModel(
         kind="bar",
@@ -318,7 +319,7 @@ def _build_grid_model(
             float(per_point[label].get("sample_spread_rms_mm", 0.0) or 0.0)
             for label in ordered_labels
         ],
-        color_hex="#0f766e",
+        color_hex=COLORS.scene_measurement,
     )
     acceptance_lines = _acceptance_lines(
         experiment_name="aurora_grid_accuracy",
@@ -401,7 +402,7 @@ def _build_pivot_model(
         x_title="Residual Norm (mm)",
         y_title="Count",
         caption="Distribution of point-to-pivot residuals after outlier rejection.",
-        color_hex="#7c3aed",
+        color_hex="#8b7ea5",
     )
     inlier_count = int(metrics.get("sample_count_used", 0))
     rejected_count = int(metrics.get("sample_count_rejected", 0))
@@ -413,7 +414,7 @@ def _build_pivot_model(
         caption="Samples used by the final least-squares solve versus rejected outliers.",
         categories=["Inliers", "Rejected"],
         values=[float(inlier_count), float(rejected_count)],
-        color_hex="#0f766e",
+        color_hex=COLORS.scene_measurement,
     )
     acceptance_lines = _acceptance_lines(
         experiment_name="pivot_calibration",
@@ -519,15 +520,15 @@ def _fmt(value: Any) -> str:
 def _semantic_color(key: str, *, fallback_index: int) -> str:
     normalized = str(key).strip().lower()
     if "truth" in normalized:
-        return "#111827"
+        return COLORS.text_primary
     if "centroid" in normalized:
-        return "#1f2937"
+        return COLORS.text_secondary
     if "inlier" in normalized:
-        return "#0f766e"
+        return COLORS.scene_measurement
     if "outlier" in normalized:
-        return "#dc2626"
+        return COLORS.scene_residual
     if "stale" in normalized:
-        return "#d97706"
+        return COLORS.warning_fg
     return _PALETTE[fallback_index % len(_PALETTE)]
 
 
@@ -657,7 +658,7 @@ def _build_generic_model(
                 caption="How many canonical samples were recorded in each experiment phase.",
                 categories=list(phase_counts.keys()),
                 values=[float(value) for value in phase_counts.values()],
-                color_hex="#2563eb",
+                color_hex=COLORS.scene_truth,
             )
         )
     if command_norms:
@@ -669,7 +670,7 @@ def _build_generic_model(
                 y_title="Command Norm",
                 caption="Euclidean norm of commanded cable displacement by sample index.",
                 points_xy=command_norms,
-                color_hex="#0f766e",
+                color_hex=COLORS.scene_measurement,
             )
         )
     return VisualizationModel(
@@ -722,7 +723,7 @@ def _build_pretension_validation_model(*, samples, metrics: dict[str, Any]) -> V
                 y_title="Filtered Current (mA)",
                 caption="Filtered present current across the pretension run, indexed by travel from the untensioned reference.",
                 points_xy=filtered_points,
-                color_hex="#2563eb",
+                color_hex=COLORS.scene_truth,
             )
         )
     if raw_points:
@@ -734,7 +735,7 @@ def _build_pretension_validation_model(*, samples, metrics: dict[str, Any]) -> V
                 y_title="Raw Current (mA)",
                 caption="Raw present current recorded at each pretension trace sample.",
                 points_xy=raw_points,
-                color_hex="#94a3b8",
+                color_hex=COLORS.text_muted,
             )
         )
     if displacement_points:
@@ -746,7 +747,7 @@ def _build_pretension_validation_model(*, samples, metrics: dict[str, Any]) -> V
                 y_title="Displacement (mm)",
                 caption="Tracker-side displacement relative to the run start, when live tracking was available.",
                 points_xy=displacement_points,
-                color_hex="#7c3aed",
+                color_hex="#8b7ea5",
             )
         )
     return VisualizationModel(charts=charts, summary_lines=summary_lines)
@@ -798,7 +799,7 @@ def _build_tracker_timing_model(*, samples, metrics: dict[str, Any], config_payl
             float(metrics.get("mean_state_commit_ms", 0.0) or 0.0),
             float(metrics.get("mean_total_cycle_ms", 0.0) or 0.0),
         ],
-        color_hex="#0f766e",
+        color_hex=COLORS.scene_measurement,
     )
     per_tool_summary = dict(metrics.get("per_tool_summary", {}) or {})
     tool_rate_chart = ChartModel(
@@ -812,7 +813,7 @@ def _build_tracker_timing_model(*, samples, metrics: dict[str, Any], config_payl
             100.0 * float(value.get("valid_transform_rate", 0.0) or 0.0)
             for value in per_tool_summary.values()
         ],
-        color_hex="#2563eb",
+        color_hex=COLORS.scene_truth,
     )
     charts = [
         ChartModel(
@@ -822,7 +823,7 @@ def _build_tracker_timing_model(*, samples, metrics: dict[str, Any], config_payl
             y_title="Total Cycle Time (ms)",
             caption="Total backend sample time over analyzed tracker samples. Duplicate device frames remain visible in the same series and are also reported separately in the summary.",
             points_xy=total_points,
-            color_hex="#2563eb",
+            color_hex=COLORS.scene_truth,
         ),
         stage_chart,
     ]
@@ -841,7 +842,7 @@ def _build_tracker_timing_model(*, samples, metrics: dict[str, Any], config_payl
                     (float(index), float(value))
                     for index, value in enumerate(servo_sync.get("servo_to_tracker_offsets_ms", []) or [])
                 ],
-                color_hex="#7c3aed",
+                color_hex="#8b7ea5",
             )
         )
     summary_lines = [

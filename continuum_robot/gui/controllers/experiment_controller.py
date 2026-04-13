@@ -17,6 +17,7 @@ from continuum_robot.experiments.critical_experiments import (
     build_grid_accuracy_preview,
     build_repeatability_preview,
 )
+from continuum_robot.experiments.dataset_io import canonical_experiment_output_root
 from continuum_robot.tracking.timing_benchmark import (
     compute_servo_sync_summary,
     compute_tracker_timing_summary,
@@ -141,7 +142,7 @@ class ExperimentController:
             config_error = self._current_config_error_locked()
             history_dirty = self._history_dirty
             visualization_dirty = self._visualization_dirty
-            planned_output_dir = output_root / self._planned_output_dir_name
+            planned_output_dir = self._planned_output_dir(output_root, selected_experiment)
             cached_visualization_model = self.state.visualization_model
 
         if not selected_experiment:
@@ -592,6 +593,12 @@ class ExperimentController:
         safe_name = self.state.selected_experiment.replace(" ", "_")
         self._planned_output_dir_name = f"{timestamp}_{safe_name}"
 
+    def _planned_output_dir(self, output_root: Path, experiment_name: str) -> Path:
+        experiment_root = canonical_experiment_output_root(output_root, experiment_name)
+        if not self._planned_output_dir_name:
+            return experiment_root
+        return experiment_root / self._planned_output_dir_name
+
     def _on_progress(self, current: int, total: int, payload: dict[str, Any]) -> None:
         with self._lock:
             self.state.progress_current = int(current)
@@ -607,10 +614,11 @@ class ExperimentController:
 
     def _scan_run_history(self, output_root: Path, experiment_name: str) -> list[RunHistoryEntry]:
         entries: list[RunHistoryEntry] = []
-        if not output_root.exists():
+        experiment_root = canonical_experiment_output_root(output_root, experiment_name)
+        if not experiment_root.exists():
             return entries
         run_dirs = sorted(
-            {metadata_path.parent for metadata_path in output_root.rglob("metadata.json")},
+            {metadata_path.parent for metadata_path in experiment_root.rglob("metadata.json")},
             key=lambda item: item.stat().st_mtime,
             reverse=True,
         )

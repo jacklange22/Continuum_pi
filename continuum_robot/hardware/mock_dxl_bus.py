@@ -77,6 +77,11 @@ class MockDxlBus(DxlBus):
             telemetry.present_temperature_c = min(65, 30 + current // 20)
             telemetry.last_read_monotonic_s = time.monotonic()
 
+    def write_torque_enable(self, servo_id: int, enabled: bool) -> None:
+        telemetry = self._state.setdefault(int(servo_id), ServoTelemetry(servo_id=int(servo_id)))
+        telemetry.torque_enabled = bool(enabled)
+        telemetry.last_read_monotonic_s = time.monotonic()
+
     def write_servo_id(self, current_id: int, new_id: int) -> None:
         if current_id not in self._state:
             raise ValueError(f"Servo {current_id} not found")

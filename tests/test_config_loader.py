@@ -171,3 +171,28 @@ def test_config_loader_defaults_tracker_min_effective_fps_to_15_hz(tmp_path: Pat
     assert settings.serial.tracker_min_effective_fps == 15.0
     assert settings.serial.tracker_fallback_enabled is False
     assert settings.serial.tracker_fallback_backend is None
+
+
+def test_config_loader_defaults_use_canonical_runtime_artifact_paths(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "system.yaml").write_text('robot_config: "robot_1servo.yaml"\n', encoding="utf-8")
+    (config_dir / "robot_1servo.yaml").write_text(
+        "\n".join(
+            [
+                'mode: "1-servo"',
+                "servo_ids: [1]",
+                "tendon_to_servo: [1]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = ConfigLoader(base_dir=config_dir).load_settings()
+
+    assert settings.serial.packet_capture_dir == ""
+    assert settings.calibration.neutral_setpoints_path == "config/neutral_setpoints.json"
+    assert (
+        settings.calibration.latest_runtime_tip_calibration_path
+        == "data/runtime_tip_calibration/latest_runtime_tip_calibration.json"
+    )

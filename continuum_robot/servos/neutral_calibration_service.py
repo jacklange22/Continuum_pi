@@ -117,7 +117,7 @@ class NeutralCalibrationService:
         context: ServoCalibrationContext | None = None,
     ) -> None:
         project_root = Path(__file__).resolve().parents[2]
-        self.path = path or (project_root / "data" / "calibrations" / "neutral_setpoints.json")
+        self.path = path or (project_root / "config" / "neutral_setpoints.json")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.context = context or ServoCalibrationContext()
 

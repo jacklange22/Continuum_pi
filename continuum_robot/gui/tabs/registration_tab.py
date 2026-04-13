@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from continuum_robot.gui.controllers.registration_controller import RegistrationViewState
-from continuum_robot.gui.theme import COLORS, grouped_workspace_stylesheet, chip_stylesheet
+from continuum_robot.gui.theme import COLORS, chip_stylesheet, grouped_workspace_stylesheet, semantic_chip_colors
 from continuum_robot.gui.view_utils import ResponsiveSplitterController, preserve_scroll_position, set_text_document
 from continuum_robot.gui.widgets.registration_landmark_map_widget import RegistrationLandmarkMapWidget
 from continuum_robot.gui.widgets.registration_plot_widget import RegistrationPlotWidget
@@ -518,13 +518,15 @@ class RegistrationTab(QWidget):
             if index < len(state.selected_model_labels):
                 label = state.selected_model_labels[index]
                 label_widget.setText(f"{index + 1}. {_display_name(label, state)}")
+                bg, fg = semantic_chip_colors("accent")
                 label_widget.setStyleSheet(
-                    chip_stylesheet(background="#1d4ed8", foreground="#eff6ff")
+                    chip_stylesheet(background=bg, foreground=fg)
                 )
             else:
                 label_widget.setText(f"{index + 1}. Unselected")
+                bg, fg = semantic_chip_colors("neutral")
                 label_widget.setStyleSheet(
-                    chip_stylesheet(background=COLORS.status_bg, foreground=COLORS.text_secondary)
+                    chip_stylesheet(background=bg, foreground=fg)
                 )
         hint = (
             "Choose four unique enabled model points in capture order."
@@ -550,9 +552,9 @@ class RegistrationTab(QWidget):
                 self.available_points_table.setItem(row, 3, QTableWidgetItem(selection_text))
                 self.available_points_table.setItem(row, 4, QTableWidgetItem(status))
                 background = (
-                    QColor("#1e3a8a")
+                    QColor(COLORS.selection_bg)
                     if label in selected_lookup
-                    else (QColor(COLORS.surface_bg) if enabled else QColor("#1f2937"))
+                    else (QColor(COLORS.surface_bg) if enabled else QColor(COLORS.button_bg))
                 )
                 for column in range(self.available_points_table.columnCount()):
                     item = self.available_points_table.item(row, column)

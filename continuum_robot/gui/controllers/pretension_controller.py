@@ -8,6 +8,7 @@ import time
 
 from continuum_robot.servos.servo_service import (
     PretensionBaselineMeasurement,
+    PretensionOperationError,
     PretensionParameters,
     PretensionRoutineResult,
     ServoBusBusyError,
@@ -45,6 +46,7 @@ class PretensionViewState:
     selected_servo_tightening_rotation: str | None = None
     selected_servo_direction_summary: str = "tighten lowers counts"
     selected_servo_block_reason: str = "Select a servo to begin."
+    selected_servo_arming_required: bool = False
     selected_servo_saved_summary: str = "No pretension result saved yet."
     comparison_rows: list[dict[str, str]] = field(default_factory=list)
     calibration_path: str = ""
@@ -78,6 +80,9 @@ class PretensionViewState:
     elapsed_s: float = 0.0
     final_position_tick: int | None = None
     stop_reason: str = ""
+    failure_phase: str = ""
+    failure_primary_reason: str = ""
+    failure_detail: str = ""
     last_result_status: str = "none"
     last_error: str | None = None
     status_message: str = "Ready."
@@ -252,6 +257,7 @@ class PretensionController:
             self.state.elapsed_s = 0.0
             self.state.final_position_tick = None
             self.state.stop_reason = ""
+            self._clear_failure_details()
         self.state.selected_servo_id = int(servo_id)
         self._selection_changed = True
         return self.refresh()
@@ -266,12 +272,24 @@ class PretensionController:
         filter_window: int,
     ) -> PretensionBaselineMeasurement:
         servo_id = self._require_selected_servo_id()
-        baseline = self.servo_service.measure_pretension_baseline(
-            servo_id=int(servo_id),
-            sample_count=int(sample_count),
-            filter_window=int(filter_window),
-            parameters=self._current_parameters(),
-        )
+        try:
+            baseline = self.servo_service.measure_pretension_baseline(
+                servo_id=int(servo_id),
+                sample_count=int(sample_count),
+                filter_window=int(filter_window),
+                parameters=self._current_parameters(),
+            )
+        except PretensionOperationError as exc:
+            self._apply_failure_details(
+                phase=exc.phase,
+                primary_reason=exc.primary_reason,
+                detail=exc.detail_reason,
+            )
+            raise RuntimeError(self._format_failure_message(
+                phase=exc.phase,
+                primary_reason=exc.primary_reason,
+                detail=exc.detail_reason,
+            )) from exc
         self.state.baseline_current_ma = float(baseline.baseline_current_ma)
         self.state.baseline_filtered_current_ma = float(baseline.filtered_current_ma)
         self.state.baseline_samples_label = (
@@ -283,6 +301,7 @@ class PretensionController:
         self.state.run_state_label = "Ready"
         self.state.run_state_message = baseline.message
         self.state.last_error = None
+        self._clear_failure_details()
         self._append_log(
             f"Baseline refreshed for servo {servo_id}: {baseline.sample_count} samples, "
             f"mean {baseline.baseline_current_ma:.1f} mA, filtered {baseline.filtered_current_ma:.1f} mA."
@@ -298,6 +317,8 @@ class PretensionController:
         )
         self.state.status_message = result.message
         self.state.last_error = None if result.success else result.message
+        if result.success:
+            self._clear_failure_details()
         self._append_log(result.message)
         self.refresh()
         if result.blocked:
@@ -415,7 +436,16 @@ class PretensionController:
         if not readiness.ready:
             self.state.run_state = "blocked"
             self.state.run_state_label = "Blocked"
-            self.state.run_state_message = readiness.reason
+            self._apply_failure_details(
+                phase="precheck",
+                primary_reason=readiness.primary_reason or readiness.reason,
+                detail=readiness.detail_reason,
+            )
+            self.state.run_state_message = self._format_failure_message(
+                phase="precheck",
+                primary_reason=readiness.primary_reason or readiness.reason,
+                detail=readiness.detail_reason,
+            )
             self.state.status_message = self.state.run_state_message
             self.state.last_error = self.state.run_state_message
             self._append_log(f"Pretension blocked for servo {servo_id}: {self.state.run_state_message}")
@@ -434,6 +464,7 @@ class PretensionController:
         self.state.elapsed_s = 0.0
         self.state.final_position_tick = None
         self.state.stop_reason = ""
+        self._clear_failure_details()
         self._append_log(f"Starting pretension for servo {servo_id}.")
 
         def _progress(result: PretensionRoutineResult) -> None:
@@ -458,8 +489,12 @@ class PretensionController:
             self.state.run_state_message = result.message
             self.state.status_message = result.message
             self.state.final_position_tick = result.final_position_tick
-            self.state.stop_reason = str(result.stop_reason or "")
-            if result.status in {"running", "baseline_ready"}:
+            self.state.stop_reason = str(result.primary_reason or result.stop_reason or "")
+            if result.status in {"running", "baseline_ready", "arming"}:
+                self._clear_failure_details()
+            else:
+                self._apply_result_failure_details(result)
+            if result.status in {"running", "baseline_ready", "arming"}:
                 return
             self._append_log(
                 f"Pretension {result.status} for servo {result.servo_id}: "
@@ -484,8 +519,12 @@ class PretensionController:
                 self.state.last_error = None if result.success else result.message
                 self.state.final_position_tick = result.final_position_tick
                 self.state.last_result_status = result.status
-                self.state.stop_reason = str(result.stop_reason or result.status)
+                self.state.stop_reason = str(result.primary_reason or result.stop_reason or result.status)
                 self.state.can_save = bool(result.success)
+                if result.success:
+                    self._clear_failure_details()
+                else:
+                    self._apply_result_failure_details(result)
             except Exception as exc:
                 self.state.run_state = "fault"
                 self.state.run_state_label = "Fault"
@@ -493,6 +532,11 @@ class PretensionController:
                 self.state.status_message = self.state.run_state_message
                 self.state.last_error = str(exc)
                 self.state.can_save = False
+                self._apply_failure_details(
+                    phase="worker",
+                    primary_reason="Pretension worker failed.",
+                    detail=str(exc),
+                )
                 self._append_log(self.state.run_state_message)
             finally:
                 self.state.pretension_running = False
@@ -551,6 +595,7 @@ class PretensionController:
         self.state.selected_servo_safe_min_tick = None
         self.state.selected_servo_safe_max_tick = None
         self.state.selected_servo_block_reason = "OpenRB / DYNAMIXEL bus is disconnected."
+        self.state.selected_servo_arming_required = False
         self.state.selected_servo_saved_summary = self._saved_summary_for_selected_servo()
         self.state.comparison_rows = self._comparison_rows()
         self.state.can_measure_baseline = False
@@ -575,6 +620,9 @@ class PretensionController:
         self.state.selected_servo_motion_ready = bool(motion_assessment.ready if motion_assessment else False)
         self.state.selected_servo_pretension_ready = bool(
             pretension_assessment.ready if pretension_assessment else False
+        )
+        self.state.selected_servo_arming_required = bool(
+            pretension_assessment.torque_arm_required if pretension_assessment else False
         )
         self.state.selected_servo_position_tick = telemetry.present_position
         self.state.selected_servo_current_ma = telemetry.present_current_ma
@@ -627,7 +675,11 @@ class PretensionController:
         self.state.selected_servo_block_reason = (
             (pretension_assessment.reason if pretension_assessment is not None else "Pretension assessment unavailable.")
             if not self.state.selected_servo_pretension_ready
-            else "Ready for selected-servo pretension."
+            else (
+                pretension_assessment.reason
+                if pretension_assessment is not None and pretension_assessment.reason
+                else "Ready for selected-servo pretension."
+            )
         )
         if self._selection_changed and not self.state.pretension_running:
             defaults = self.servo_service.default_pretension_parameters(int(self.state.selected_servo_id))
@@ -735,7 +787,10 @@ class PretensionController:
             "idle": "Idle",
             "ready": "Ready",
             "moving_to_reference": "Moving To Reference",
+            "arming": "Arming",
+            "arming_failed": "Blocked",
             "baseline_ready": "Baseline Ready",
+            "baseline_failed": "Blocked",
             "running": "Running",
             "threshold_reached": "Completed",
             "saved": "Saved",
@@ -756,6 +811,30 @@ class PretensionController:
             if text:
                 return text
         return "ready"
+
+    def _clear_failure_details(self) -> None:
+        self.state.failure_phase = ""
+        self.state.failure_primary_reason = ""
+        self.state.failure_detail = ""
+
+    def _apply_failure_details(self, *, phase: str, primary_reason: str, detail: str | None = None) -> None:
+        self.state.failure_phase = str(phase or "").strip()
+        self.state.failure_primary_reason = str(primary_reason or "").strip()
+        self.state.failure_detail = str(detail or "").strip()
+
+    def _apply_result_failure_details(self, result: PretensionRoutineResult) -> None:
+        self._apply_failure_details(
+            phase=str(result.failure_phase or result.status or ""),
+            primary_reason=str(result.primary_reason or result.stop_reason or result.status or ""),
+            detail=str(result.detail_reason or ""),
+        )
+
+    @staticmethod
+    def _format_failure_message(*, phase: str, primary_reason: str, detail: str | None = None) -> str:
+        message = f"Pretension blocked during {phase}: {primary_reason}".strip()
+        if detail:
+            message += f" Detail: {detail}"
+        return message
 
     @staticmethod
     def _hardware_error_text(code: int | None, error: str | None) -> str:

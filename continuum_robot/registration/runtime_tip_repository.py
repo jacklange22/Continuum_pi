@@ -42,7 +42,7 @@ class RuntimeTipCalibrationRepository:
     def __init__(self, latest_path: Path | None = None) -> None:
         project_root = Path(__file__).resolve().parents[2]
         self.latest_path = latest_path or (
-            project_root / "data" / "calibrations" / "runtime_tip" / "latest_runtime_tip_calibration.json"
+            project_root / "data" / "runtime_tip_calibration" / "latest_runtime_tip_calibration.json"
         )
         self.root_dir = self.latest_path.parent
         self.root_dir.mkdir(parents=True, exist_ok=True)

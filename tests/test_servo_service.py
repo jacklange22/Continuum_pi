@@ -35,6 +35,17 @@ class _PretensionBus(MockDxlBus):
         self._state[1].last_read_monotonic_s = self._state[1].last_read_monotonic_s
 
 
+class _TorqueEnableFailurePretensionBus(_PretensionBus):
+    def __init__(self, *, current_sequence: list[int | None], fail_message: str = "mock torque enable failure") -> None:
+        super().__init__(current_sequence=current_sequence)
+        self.fail_message = fail_message
+        self.torque_enable_calls: list[tuple[int, bool]] = []
+
+    def write_torque_enable(self, servo_id: int, enabled: bool) -> None:
+        self.torque_enable_calls.append((int(servo_id), bool(enabled)))
+        raise RuntimeError(self.fail_message)
+
+
 class _RecordingIdBus(MockDxlBus):
     def __init__(self) -> None:
         super().__init__([1])
@@ -549,6 +560,80 @@ def test_servo_service_pretension_stops_on_threshold_and_can_be_accepted(tmp_pat
     assert accepted.pretension_result_status == "accepted"
 
 
+def test_servo_service_pretension_readiness_allows_safe_torque_arming(tmp_path: Path) -> None:
+    bus = _PretensionBus(current_sequence=[180, 230])
+    bus._state[1].torque_enabled = False
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+
+    assessment = service.assess_pretension_readiness(servo_id=1)
+
+    assert assessment.ready is True
+    assert assessment.torque_arm_required is True
+    assert "Torque will be enabled during arming" in assessment.reason
+
+
+def test_servo_service_pretension_auto_enables_torque_when_safe(tmp_path: Path) -> None:
+    bus = _PretensionBus(current_sequence=[180, 230])
+    bus._state[1].torque_enabled = False
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+
+    result = service.run_pretension_routine(
+        servo_id=1,
+        parameters=PretensionParameters(
+            untensioned_reference_tick=4095,
+            step_ticks=2,
+            settle_time_s=0.0,
+            baseline_sample_count=3,
+            current_filter_window=1,
+            current_delta_threshold_ma=60,
+            absolute_trigger_current_ma=220,
+            hard_current_stop_ma=850,
+            max_travel_ticks=320,
+            timeout_s=2.0,
+        ),
+    )
+
+    assert result.success is True
+    assert result.status == "threshold_reached"
+    assert bus._state[1].torque_enabled is True
+
+
+def test_servo_service_pretension_blocks_when_torque_enable_fails(tmp_path: Path) -> None:
+    bus = _TorqueEnableFailurePretensionBus(current_sequence=[180, 230])
+    bus._state[1].torque_enabled = False
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+
+    result = service.run_pretension_routine(servo_id=1)
+
+    assert result.success is False
+    assert result.status == "arming_failed"
+    assert result.failure_phase == "arming"
+    assert result.primary_reason == "Failed to enable torque for pretension."
+    assert "mock torque enable failure" in (result.detail_reason or "")
+    assert bus.torque_enable_calls == [(1, True)]
+
+
 def test_servo_service_pretension_uses_decreasing_raw_position_for_tightening(tmp_path: Path) -> None:
     bus = _PretensionBus(current_sequence=[180, 230])
     bus.config.positive_tick_rotation = "cw"
@@ -619,8 +704,12 @@ def test_servo_service_pretension_blocks_until_servo_is_in_pretension_window(tmp
     service = _build_service(tmp_path, dxl_bus=bus)
     service.connect("/dev/mock-openrb", 115200)
 
-    with pytest.raises(RuntimeError, match="Move to the untensioned reference"):
-        service.run_pretension_routine(servo_id=1)
+    result = service.run_pretension_routine(servo_id=1)
+
+    assert result.success is False
+    assert result.status == "arming_failed"
+    assert result.failure_phase == "arming"
+    assert result.primary_reason == "Servo is outside the pretension window."
 
 
 def test_servo_service_pretension_fails_on_timeout(tmp_path: Path) -> None:
@@ -650,6 +739,7 @@ def test_servo_service_pretension_fails_on_timeout(tmp_path: Path) -> None:
 def test_servo_service_pretension_fails_when_current_disappears(tmp_path: Path) -> None:
     bus = _PretensionBus(current_sequence=[None])
     bus._state[1].torque_enabled = True
+    bus._state[1].telemetry_error = "[TxRxResult] Incorrect status packet!"
     service = _build_service(tmp_path, dxl_bus=bus)
     service.connect("/dev/mock-openrb", 115200)
     service.save_startup_calibration(
@@ -663,6 +753,9 @@ def test_servo_service_pretension_fails_when_current_disappears(tmp_path: Path) 
 
     assert result.success is False
     assert result.status == "invalid_telemetry"
+    assert result.failure_phase == "stepping"
+    assert result.primary_reason == "Telemetry is incomplete."
+    assert "Incorrect status packet" in (result.detail_reason or "")
 
 
 def test_servo_service_measures_filtered_pretension_baseline(tmp_path: Path) -> None:
@@ -727,8 +820,12 @@ def test_servo_service_pretension_fails_on_stale_telemetry(tmp_path: Path) -> No
     bus._state[1].last_read_monotonic_s = 0.0
     service.safety_guard._time_fn = lambda: 1.0
 
-    with pytest.raises(RuntimeError, match="Telemetry is stale"):
-        service.run_pretension_routine(servo_id=1)
+    result = service.run_pretension_routine(servo_id=1)
+
+    assert result.success is False
+    assert result.status == "arming_failed"
+    assert result.failure_phase == "arming"
+    assert result.primary_reason == "Telemetry is stale."
 
 
 def test_servo_service_pretension_fails_on_unsafe_voltage_temperature_and_fault(tmp_path: Path) -> None:
@@ -743,15 +840,21 @@ def test_servo_service_pretension_fails_on_unsafe_voltage_temperature_and_fault(
     )
 
     bus._state[1].present_voltage_mv = 5000
-    with pytest.raises(RuntimeError, match="Input voltage is below the configured motion minimum"):
-        service.run_pretension_routine(servo_id=1)
+    result = service.run_pretension_routine(servo_id=1)
+    assert result.success is False
+    assert result.status == "arming_failed"
+    assert result.primary_reason == "Input voltage is unsafe."
 
     bus._state[1].present_voltage_mv = 12000
     bus._state[1].present_temperature_c = 71
-    with pytest.raises(RuntimeError, match="Temperature threshold exceeded"):
-        service.run_pretension_routine(servo_id=1)
+    result = service.run_pretension_routine(servo_id=1)
+    assert result.success is False
+    assert result.status == "arming_failed"
+    assert result.primary_reason == "Temperature is unsafe."
 
     bus._state[1].present_temperature_c = 33
     bus._state[1].hardware_error_code = 8
-    with pytest.raises(RuntimeError, match="Hardware Error Status is 0x08"):
-        service.run_pretension_routine(servo_id=1)
+    result = service.run_pretension_routine(servo_id=1)
+    assert result.success is False
+    assert result.status == "arming_failed"
+    assert result.primary_reason == "Servo hardware error is active."

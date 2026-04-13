@@ -381,7 +381,7 @@ Registration validation from a saved Aurora CSV remains available:
 ```bash
 .venv/bin/python scripts/run_registration_validation.py \
   --registration-csv references/RegistrationPoints.csv \
-  --save-report data/logs/registration_validation.json
+  --save-report data/registrations/validation/registration_validation.json
 ```
 
 Saved CSV-to-registration flow remains available:
@@ -703,11 +703,12 @@ Every run writes one directory under `data/experiments/` containing:
 
 Artifact layout:
 
-- canonical experiment bundles live under `data/experiments/`
-- tracker-guided pivot review bundles live under `data/experiments/pivot/runs/`
-- raw pivot capture CSVs live under `data/experiments/pivot/captures/`
-- durable tip files stay under `data/tip_cals/`
-- repo-root `runs/` is retired and kept only as a legacy path that older references may still mention
+- canonical experiment bundles live under `data/experiments/<experiment_name>/`
+- tracker validation reports live under `data/experiments/tracker_validation/`
+- tracker-guided pivot review bundles, staged tip files, and raw pivot captures live under `data/pivot_calibration/`
+- durable startup calibration for servos lives under `config/neutral_setpoints.json`
+- runtime tip calibration artifacts live under `data/runtime_tip_calibration/`
+- repo-root `runs/` is retired and should not be used for new runtime artifacts
 
 ### Project-Critical Experiments
 

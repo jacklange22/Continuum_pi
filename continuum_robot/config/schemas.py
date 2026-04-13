@@ -55,7 +55,7 @@ class SerialConfig:
     tracker_max_stale_interval_s: float = 0.25
     tracker_max_consecutive_missing_frames: int = 20
     tracker_require_valid_transforms: bool = True
-    packet_capture_dir: str = "data/tracker_captures"
+    packet_capture_dir: str = ""
     openrb_settings: dict = field(default_factory=dict)
     dynamixel_settings: dict = field(default_factory=dict)
 
@@ -139,8 +139,8 @@ class ExperimentConfig:
 class CalibrationConfig:
     """Persistent calibration file locations."""
 
-    neutral_setpoints_path: str = "data/calibrations/neutral_setpoints.json"
+    neutral_setpoints_path: str = "config/neutral_setpoints.json"
     latest_registration_path: str = "data/registrations/latest_registration.json"
     latest_runtime_tip_calibration_path: str = (
-        "data/calibrations/runtime_tip/latest_runtime_tip_calibration.json"
+        "data/runtime_tip_calibration/latest_runtime_tip_calibration.json"
     )

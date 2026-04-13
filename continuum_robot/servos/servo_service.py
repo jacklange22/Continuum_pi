@@ -52,6 +52,10 @@ class ServoMotionAssessment:
     blocking_reasons: tuple[str, ...] = ()
     external_power_required: bool = False
     external_power_ready: bool | None = None
+    primary_reason: str | None = None
+    detail_reason: str | None = None
+    torque_arm_required: bool = False
+    torque_arm_possible: bool = False
 
 
 @dataclass
@@ -255,6 +259,11 @@ class PretensionRoutineResult:
     elapsed_s: float = 0.0
     stop_reason: str | None = None
     parameters: dict[str, int | float | None] | None = None
+    failure_phase: str | None = None
+    primary_reason: str | None = None
+    detail_reason: str | None = None
+    torque_enabled: bool | None = None
+    telemetry_age_s: float | None = None
 
 
 @dataclass
@@ -325,6 +334,30 @@ class ServoBusBusyError(RuntimeError):
         self.owner = owner
         self.reason = reason
         self.servo_id = servo_id
+
+
+class PretensionOperationError(RuntimeError):
+    """Structured failure while arming or running selected-servo pretension."""
+
+    def __init__(
+        self,
+        *,
+        phase: str,
+        primary_reason: str,
+        detail_reason: str | None = None,
+        telemetry: ServoTelemetry | None = None,
+        assessment: ServoMotionAssessment | None = None,
+    ) -> None:
+        message = str(primary_reason).strip() or "Pretension operation failed."
+        detail = str(detail_reason).strip() if detail_reason not in (None, "") else None
+        if detail:
+            message = f"{message} Detail: {detail}"
+        super().__init__(message)
+        self.phase = str(phase).strip() or "unknown"
+        self.primary_reason = str(primary_reason).strip() or "Pretension operation failed."
+        self.detail_reason = detail
+        self.telemetry = telemetry
+        self.assessment = assessment
 
 
 class ServoService:
@@ -461,6 +494,12 @@ class ServoService:
         return self._guard_bus_call(
             "read live servo telemetry",
             lambda: self.dxl_bus.read_live_telemetry(servo_ids),
+        )
+
+    def set_servo_torque_enabled(self, servo_id: int, enabled: bool) -> None:
+        self._guard_bus_call(
+            "set servo torque",
+            lambda: self.dxl_bus.write_torque_enable(int(servo_id), bool(enabled)),
         )
 
     def bus_ownership_status(self) -> ServoBusOwnershipStatus:
@@ -1428,10 +1467,13 @@ class ServoService:
         *,
         parameters: PretensionParameters | None = None,
         telemetry: ServoTelemetry | None = None,
+        allow_torque_auto_arm: bool = True,
     ) -> ServoMotionAssessment:
         current = telemetry or self.read_telemetry([int(servo_id)])[int(servo_id)]
         config = parameters or self.default_pretension_parameters(int(servo_id))
         errors: list[str] = []
+        torque_arm_required = False
+        torque_arm_possible = False
         if current.present_position is None:
             errors.append("Present Position is unavailable.")
         if current.present_current_ma is None:
@@ -1467,8 +1509,24 @@ class ServoService:
                 f"Operating Mode {current.operating_mode} is not allowed. "
                 f"Expected one of {self.dxl_bus.config.allowed_operating_modes}."
             )
-        if current.torque_enabled is not True:
+        torque_arm_possible = bool(
+            allow_torque_auto_arm
+            and current.torque_enabled is False
+            and current.present_position is not None
+            and current.present_current_ma is not None
+            and current.hardware_error_code in (None, 0)
+            and not current.hardware_error
+            and current.operating_mode is not None
+            and int(current.operating_mode) in self.dxl_bus.config.allowed_operating_modes
+        )
+        if current.torque_enabled is True:
+            pass
+        elif current.torque_enabled is False and torque_arm_possible:
+            torque_arm_required = True
+        elif current.torque_enabled is False:
             errors.append("Torque must be enabled before pretensioning.")
+        else:
+            errors.append("Torque state is unavailable.")
         try:
             window = self.pretension_window_for_servo(
                 servo_id=int(servo_id),
@@ -1494,9 +1552,18 @@ class ServoService:
                 )
                 ready_message = " | ".join(errors)
             else:
-                ready_message = "Ready for selected-servo pretension."
+                ready_message = (
+                    "Ready for selected-servo pretension. Torque will be enabled during arming."
+                    if torque_arm_required
+                    else "Ready for selected-servo pretension."
+                )
         else:
             ready_message = " | ".join(errors) if errors else "Ready for selected-servo pretension."
+        primary_reason, detail_reason = self._summarize_pretension_assessment(
+            errors=errors,
+            telemetry=current,
+            torque_arm_required=torque_arm_required,
+        )
         return ServoMotionAssessment(
             servo_id=int(servo_id),
             ready=not errors,
@@ -1512,7 +1579,143 @@ class ServoService:
                 if current.present_voltage_mv is None
                 else bool(int(current.present_voltage_mv) >= int(self.safety_guard.min_input_voltage_mv))
             ),
+            primary_reason=primary_reason,
+            detail_reason=detail_reason,
+            torque_arm_required=torque_arm_required,
+            torque_arm_possible=torque_arm_possible,
         )
+
+    def _refresh_pretension_assessment(
+        self,
+        *,
+        servo_id: int,
+        parameters: PretensionParameters,
+        allow_torque_auto_arm: bool,
+        retries: int = 1,
+    ) -> ServoMotionAssessment:
+        attempts = max(1, int(retries) + 1)
+        latest: ServoMotionAssessment | None = None
+        for _ in range(attempts):
+            telemetry = self.read_telemetry([int(servo_id)])[int(servo_id)]
+            latest = self.assess_pretension_readiness(
+                int(servo_id),
+                parameters=parameters,
+                telemetry=telemetry,
+                allow_torque_auto_arm=allow_torque_auto_arm,
+            )
+            if latest.ready:
+                return latest
+            if latest.primary_reason != "Telemetry is incomplete.":
+                return latest
+        return latest if latest is not None else self.assess_pretension_readiness(
+            int(servo_id),
+            parameters=parameters,
+            allow_torque_auto_arm=allow_torque_auto_arm,
+        )
+
+    def _arm_servo_for_pretension(
+        self,
+        *,
+        servo_id: int,
+        parameters: PretensionParameters,
+    ) -> tuple[ServoMotionAssessment, bool]:
+        assessment = self._refresh_pretension_assessment(
+            servo_id=int(servo_id),
+            parameters=parameters,
+            allow_torque_auto_arm=True,
+            retries=1,
+        )
+        if not assessment.ready:
+            raise PretensionOperationError(
+                phase="arming",
+                primary_reason=assessment.primary_reason or "Servo is not ready for pretension.",
+                detail_reason=assessment.detail_reason,
+                telemetry=assessment.telemetry,
+                assessment=assessment,
+            )
+        if not assessment.torque_arm_required:
+            return assessment, False
+        try:
+            self.set_servo_torque_enabled(int(servo_id), True)
+        except Exception as exc:
+            raise PretensionOperationError(
+                phase="arming",
+                primary_reason="Failed to enable torque for pretension.",
+                detail_reason=str(exc),
+                telemetry=assessment.telemetry,
+                assessment=assessment,
+            ) from exc
+        verified = self._refresh_pretension_assessment(
+            servo_id=int(servo_id),
+            parameters=parameters,
+            allow_torque_auto_arm=False,
+            retries=1,
+        )
+        if not verified.ready:
+            raise PretensionOperationError(
+                phase="arming",
+                primary_reason=verified.primary_reason or "Torque did not verify as enabled.",
+                detail_reason=verified.detail_reason,
+                telemetry=verified.telemetry,
+                assessment=verified,
+            )
+        return verified, True
+
+    @staticmethod
+    def _summarize_pretension_assessment(
+        *,
+        errors: list[str],
+        telemetry: ServoTelemetry,
+        torque_arm_required: bool,
+    ) -> tuple[str | None, str | None]:
+        if not errors:
+            if torque_arm_required:
+                return "Torque will be enabled automatically at pretension start.", None
+            return None, None
+        primary = "Servo is not ready for pretension."
+        joined_errors = " | ".join(str(item) for item in errors if str(item).strip())
+        if telemetry.telemetry_error and any(
+            text in joined_errors
+            for text in (
+                "Present Position is unavailable.",
+                "Present Current is unavailable.",
+                "Operating Mode is unavailable.",
+                "Torque state is unavailable.",
+            )
+        ):
+            primary = "Telemetry is incomplete."
+        elif any("telemetry is stale" in str(item).lower() for item in errors):
+            primary = "Telemetry is stale."
+        elif any("hardware error" in str(item).lower() for item in errors):
+            primary = "Servo hardware error is active."
+        elif any("outside the configured pretension window" in str(item).lower() for item in errors):
+            primary = "Servo is outside the pretension window."
+        elif any("hard stop" in str(item).lower() for item in errors):
+            primary = "Current is already at or above the hard stop."
+        elif any("torque must be enabled" in str(item).lower() for item in errors):
+            primary = "Torque is off."
+        elif any("input voltage" in str(item).lower() for item in errors):
+            primary = "Input voltage is unsafe."
+        elif any("temperature" in str(item).lower() for item in errors):
+            primary = "Temperature is unsafe."
+        elif any("operating mode" in str(item).lower() for item in errors):
+            primary = "Operating mode is not valid for pretension."
+
+        detail_parts: list[str] = []
+        if telemetry.telemetry_error:
+            detail_parts.append(str(telemetry.telemetry_error))
+        if telemetry.identity_error:
+            detail_parts.append(str(telemetry.identity_error))
+        if telemetry.hardware_error and str(telemetry.hardware_error) not in detail_parts:
+            detail_parts.append(str(telemetry.hardware_error))
+        for error in errors:
+            text = str(error).strip()
+            if not text or text == primary:
+                continue
+            if text not in detail_parts:
+                detail_parts.append(text)
+        detail = " | ".join(detail_parts) if detail_parts else None
+        return primary, detail
 
     def measure_pretension_baseline(
         self,
@@ -1524,19 +1727,43 @@ class ServoService:
     ) -> PretensionBaselineMeasurement:
         count = max(1, int(sample_count or self.safety_guard.pretension_baseline_sample_count))
         window = max(1, int(filter_window or self.safety_guard.pretension_current_filter_window))
+        config = parameters or self.default_pretension_parameters(int(servo_id))
+        assessment, _armed_torque = self._arm_servo_for_pretension(servo_id=int(servo_id), parameters=config)
         samples: list[int] = []
         position_tick: int | None = None
-        for _ in range(count):
+        initial_telemetry = assessment.telemetry
+        if initial_telemetry.present_current_ma is None:
+            raise PretensionOperationError(
+                phase="baseline",
+                primary_reason="Current telemetry is unavailable during baseline measurement.",
+                telemetry=initial_telemetry,
+                assessment=assessment,
+            )
+        samples.append(int(initial_telemetry.present_current_ma))
+        position_tick = initial_telemetry.present_position
+        for _ in range(max(0, count - 1)):
             telemetry = self.read_telemetry([int(servo_id)])[int(servo_id)]
             assessment = self.assess_pretension_readiness(
                 int(servo_id),
-                parameters=parameters,
+                parameters=config,
                 telemetry=telemetry,
+                allow_torque_auto_arm=False,
             )
             if not assessment.ready:
-                raise RuntimeError(f"Servo {servo_id} is not safe to measure a pretension baseline: {assessment.reason}")
+                raise PretensionOperationError(
+                    phase="baseline",
+                    primary_reason=assessment.primary_reason or "Servo is not safe to measure a pretension baseline.",
+                    detail_reason=assessment.detail_reason,
+                    telemetry=telemetry,
+                    assessment=assessment,
+                )
             if telemetry.present_current_ma is None:
-                raise RuntimeError(f"Servo {servo_id} current telemetry is unavailable.")
+                raise PretensionOperationError(
+                    phase="baseline",
+                    primary_reason="Current telemetry is unavailable during baseline measurement.",
+                    telemetry=telemetry,
+                    assessment=assessment,
+                )
             samples.append(int(telemetry.present_current_ma))
             position_tick = telemetry.present_position
         baseline_current_ma = float(sum(samples) / len(samples))
@@ -2065,51 +2292,6 @@ class ServoService:
         progress_callback: Callable[[PretensionRoutineResult], None] | None,
     ) -> PretensionRoutineResult:
         started_at = float(self._time_fn())
-        assessment = self.assess_pretension_readiness(int(servo_id), parameters=config)
-        if not assessment.ready:
-            if (
-                assessment.telemetry.present_current_ma is not None
-                and int(assessment.telemetry.present_current_ma) >= int(config.hard_current_stop_ma)
-            ):
-                return PretensionRoutineResult(
-                    servo_id=int(servo_id),
-                    status="overcurrent",
-                    success=False,
-                    message=(
-                        f"Pretension stopped for servo {servo_id}: measured current "
-                        f"{assessment.telemetry.present_current_ma} mA reached the hard stop of "
-                        f"{config.hard_current_stop_ma} mA before the routine could start."
-                    ),
-                    threshold_ma=(
-                        int(config.absolute_trigger_current_ma)
-                        if config.absolute_trigger_current_ma is not None
-                        else int(config.current_delta_threshold_ma)
-                    ),
-                    final_position_tick=assessment.telemetry.present_position,
-                    final_current_ma=assessment.telemetry.present_current_ma,
-                    steps_taken=0,
-                    tightening_direction="decreasing_raw_position",
-                    start_position_tick=assessment.telemetry.present_position,
-                    untensioned_reference_tick=int(config.untensioned_reference_tick),
-                    current_position_tick=assessment.telemetry.present_position,
-                    last_commanded_target_tick=None,
-                    baseline_current_ma=None,
-                    filtered_current_ma=float(assessment.telemetry.present_current_ma),
-                    current_delta_ma=None,
-                    absolute_trigger_current_ma=config.absolute_trigger_current_ma,
-                    hard_current_stop_ma=int(config.hard_current_stop_ma),
-                    elapsed_s=max(0.0, float(self._time_fn()) - float(started_at)),
-                    stop_reason="hard_current_stop",
-                    parameters=asdict(config),
-                )
-            raise RuntimeError(f"Servo {servo_id} is not safe to pretension: {assessment.reason}")
-        if assessment.telemetry.present_position is None:
-            raise RuntimeError(f"Servo {servo_id} pretension requires position telemetry.")
-        window = self.pretension_window_for_servo(
-            servo_id=int(servo_id),
-            parameters=config,
-            telemetry=assessment.telemetry,
-        )
         absolute_trigger = (
             int(config.absolute_trigger_current_ma)
             if config.absolute_trigger_current_ma is not None
@@ -2117,19 +2299,20 @@ class ServoService:
         )
         tightening_direction = "decreasing_raw_position"
         step_delta = -abs(int(config.step_ticks))
-        start_position_tick = int(assessment.telemetry.present_position)
-        untensioned_reference = int(window.untensioned_reference_tick)
-        travel_min_tick = int(window.effective_min_target_tick)
-        safe_max = int(window.effective_max_target_tick)
+        start_position_tick: int | None = None
+        untensioned_reference = int(config.untensioned_reference_tick)
+        travel_min_tick = int(config.untensioned_reference_tick) - int(config.max_travel_ticks)
+        safe_max = int(config.untensioned_reference_tick)
         deadline = started_at + float(config.timeout_s)
         steps_taken = 0
-        current_position = start_position_tick
+        current_position: int | None = start_position_tick
         last_commanded_target_tick: int | None = None
         filter_samples: list[int] = []
         baseline: PretensionBaselineMeasurement | None = None
         baseline_current_ma = 0.0
         baseline_delta_trigger = 0.0
         threshold = absolute_trigger if absolute_trigger is not None else int(config.current_delta_threshold_ma)
+        assessment: ServoMotionAssessment | None = None
 
         def _build_result(
             *,
@@ -2141,6 +2324,10 @@ class ServoService:
             filtered_current_ma: float | None,
             current_delta_ma: float | None,
             stop_reason: str,
+            failure_phase: str | None = None,
+            primary_reason: str | None = None,
+            detail_reason: str | None = None,
+            telemetry: ServoTelemetry | None = None,
         ) -> PretensionRoutineResult:
             return PretensionRoutineResult(
                 servo_id=int(servo_id),
@@ -2152,7 +2339,7 @@ class ServoService:
                 final_current_ma=final_current_ma,
                 steps_taken=int(steps_taken),
                 tightening_direction=tightening_direction,
-                start_position_tick=int(start_position_tick),
+                start_position_tick=(int(start_position_tick) if start_position_tick is not None else None),
                 untensioned_reference_tick=int(untensioned_reference),
                 current_position_tick=final_position_tick,
                 last_commanded_target_tick=last_commanded_target_tick,
@@ -2164,6 +2351,11 @@ class ServoService:
                 elapsed_s=max(0.0, float(self._time_fn()) - float(started_at)),
                 stop_reason=str(stop_reason),
                 parameters=asdict(config),
+                failure_phase=failure_phase,
+                primary_reason=primary_reason,
+                detail_reason=detail_reason,
+                torque_enabled=(telemetry.torque_enabled if telemetry is not None else None),
+                telemetry_age_s=self.telemetry_age_s(telemetry),
             )
 
         def _persist_and_emit(result: PretensionRoutineResult) -> PretensionRoutineResult:
@@ -2189,6 +2381,11 @@ class ServoService:
                 "last_commanded_target_tick": result.last_commanded_target_tick,
                 "effective_min_target_tick": int(travel_min_tick),
                 "effective_max_target_tick": int(safe_max),
+                "failure_phase": result.failure_phase,
+                "primary_reason": result.primary_reason,
+                "detail_reason": result.detail_reason,
+                "torque_enabled": result.torque_enabled,
+                "telemetry_age_s": result.telemetry_age_s,
                 "travel_used_ticks": (
                     None
                     if result.final_position_tick is None
@@ -2229,7 +2426,7 @@ class ServoService:
                     final_current_ma=telemetry.present_current_ma,
                     steps_taken=int(steps_taken),
                     tightening_direction=tightening_direction,
-                    start_position_tick=int(start_position_tick),
+                    start_position_tick=(int(start_position_tick) if start_position_tick is not None else None),
                     untensioned_reference_tick=int(untensioned_reference),
                     current_position_tick=telemetry.present_position,
                     last_commanded_target_tick=last_commanded_target_tick,
@@ -2241,15 +2438,124 @@ class ServoService:
                     elapsed_s=max(0.0, float(self._time_fn()) - float(started_at)),
                     stop_reason=None,
                     parameters=asdict(config),
+                    failure_phase=str(status),
+                    torque_enabled=telemetry.torque_enabled,
+                    telemetry_age_s=self.telemetry_age_s(telemetry),
                 )
             )
 
-        baseline = self.measure_pretension_baseline(
+        if progress_callback is not None:
+            initial_telemetry = self.read_telemetry([int(servo_id)])[int(servo_id)]
+            _emit_progress(
+                status="arming",
+                message=f"Arming servo {servo_id} for pretension.",
+                telemetry=initial_telemetry,
+                filtered_current_ma=None,
+                current_delta_ma=None,
+            )
+
+        try:
+            assessment, armed_torque = self._arm_servo_for_pretension(
+                servo_id=int(servo_id),
+                parameters=config,
+            )
+        except PretensionOperationError as exc:
+            telemetry = exc.telemetry
+            present_current = telemetry.present_current_ma if telemetry is not None else None
+            status = (
+                "overcurrent"
+                if present_current is not None and int(present_current) >= int(config.hard_current_stop_ma)
+                else "arming_failed"
+            )
+            primary = exc.primary_reason
+            detail = exc.detail_reason
+            message = (
+                f"Pretension blocked during {exc.phase} for servo {servo_id}: {primary}"
+                + (f" Detail: {detail}" if detail else "")
+            )
+            return _persist_and_emit(
+                _build_result(
+                    status=status,
+                    success=False,
+                    message=message,
+                    final_position_tick=(telemetry.present_position if telemetry is not None else None),
+                    final_current_ma=present_current,
+                    filtered_current_ma=(float(present_current) if present_current is not None else None),
+                    current_delta_ma=None,
+                    stop_reason=primary,
+                    failure_phase=exc.phase,
+                    primary_reason=primary,
+                    detail_reason=detail,
+                    telemetry=telemetry,
+                )
+            )
+
+        if assessment.telemetry.present_position is None:
+            telemetry = assessment.telemetry
+            return _persist_and_emit(
+                _build_result(
+                    status="arming_failed",
+                    success=False,
+                    message=f"Pretension blocked during arming for servo {servo_id}: position telemetry is unavailable.",
+                    final_position_tick=None,
+                    final_current_ma=telemetry.present_current_ma,
+                    filtered_current_ma=None,
+                    current_delta_ma=None,
+                    stop_reason="Position telemetry is unavailable.",
+                    failure_phase="arming",
+                    primary_reason="Position telemetry is unavailable.",
+                    detail_reason=assessment.detail_reason,
+                    telemetry=telemetry,
+                )
+            )
+        window = self.pretension_window_for_servo(
             servo_id=int(servo_id),
-            sample_count=int(config.baseline_sample_count),
-            filter_window=int(config.current_filter_window),
             parameters=config,
+            telemetry=assessment.telemetry,
         )
+        start_position_tick = int(assessment.telemetry.present_position)
+        current_position = int(start_position_tick)
+        untensioned_reference = int(window.untensioned_reference_tick)
+        travel_min_tick = int(window.effective_min_target_tick)
+        safe_max = int(window.effective_max_target_tick)
+        if armed_torque:
+            _emit_progress(
+                status="arming",
+                message=f"Torque enabled and verified for servo {servo_id}; starting baseline measurement.",
+                telemetry=assessment.telemetry,
+                filtered_current_ma=None,
+                current_delta_ma=None,
+            )
+
+        try:
+            baseline = self.measure_pretension_baseline(
+                servo_id=int(servo_id),
+                sample_count=int(config.baseline_sample_count),
+                filter_window=int(config.current_filter_window),
+                parameters=config,
+            )
+        except PretensionOperationError as exc:
+            telemetry = exc.telemetry
+            message = (
+                f"Pretension blocked during {exc.phase} for servo {servo_id}: {exc.primary_reason}"
+                + (f" Detail: {exc.detail_reason}" if exc.detail_reason else "")
+            )
+            return _persist_and_emit(
+                _build_result(
+                    status="baseline_failed",
+                    success=False,
+                    message=message,
+                    final_position_tick=(telemetry.present_position if telemetry is not None else None),
+                    final_current_ma=(telemetry.present_current_ma if telemetry is not None else None),
+                    filtered_current_ma=None,
+                    current_delta_ma=None,
+                    stop_reason=exc.primary_reason,
+                    failure_phase=exc.phase,
+                    primary_reason=exc.primary_reason,
+                    detail_reason=exc.detail_reason,
+                    telemetry=telemetry,
+                )
+            )
         baseline_current_ma = float(baseline.filtered_current_ma)
         baseline_delta_trigger = float(baseline_current_ma + int(config.current_delta_threshold_ma))
         threshold = (
@@ -2286,6 +2592,7 @@ class ServoService:
                         filtered_current_ma=filtered_current,
                         current_delta_ma=current_delta,
                         stop_reason="operator_canceled",
+                        telemetry=final,
                     )
                 )
             if self._time_fn() > deadline:
@@ -2306,6 +2613,7 @@ class ServoService:
                         filtered_current_ma=filtered_current,
                         current_delta_ma=current_delta,
                         stop_reason="timeout",
+                        telemetry=final,
                     )
                 )
 
@@ -2328,24 +2636,40 @@ class ServoService:
                         filtered_current_ma=float(raw_telemetry.present_current_ma),
                         current_delta_ma=float(raw_telemetry.present_current_ma - baseline_current_ma),
                         stop_reason="hard_current_stop",
+                        failure_phase="stepping",
+                        primary_reason="Current reached the hard stop.",
+                        telemetry=raw_telemetry,
                     )
                 )
             current_assessment = self.assess_pretension_readiness(
                 int(servo_id),
                 parameters=config,
                 telemetry=raw_telemetry,
+                allow_torque_auto_arm=False,
             )
             if not current_assessment.ready:
                 return _persist_and_emit(
                     _build_result(
                         status="invalid_telemetry",
                         success=False,
-                        message=f"Pretension stopped for servo {servo_id}: {current_assessment.reason}",
+                        message=(
+                            f"Pretension stopped during stepping for servo {servo_id}: "
+                            f"{current_assessment.primary_reason or current_assessment.reason}"
+                            + (
+                                f" Detail: {current_assessment.detail_reason}"
+                                if current_assessment.detail_reason
+                                else ""
+                            )
+                        ),
                         final_position_tick=current_assessment.telemetry.present_position,
                         final_current_ma=current_assessment.telemetry.present_current_ma,
                         filtered_current_ma=None,
                         current_delta_ma=None,
-                        stop_reason=current_assessment.reason,
+                        stop_reason=current_assessment.primary_reason or current_assessment.reason,
+                        failure_phase="stepping",
+                        primary_reason=current_assessment.primary_reason,
+                        detail_reason=current_assessment.detail_reason,
+                        telemetry=current_assessment.telemetry,
                     )
                 )
             current_ma = current_assessment.telemetry.present_current_ma
@@ -2361,6 +2685,10 @@ class ServoService:
                         filtered_current_ma=None,
                         current_delta_ma=None,
                         stop_reason="missing_current_or_position",
+                        failure_phase="stepping",
+                        primary_reason="Current or position telemetry is unavailable.",
+                        detail_reason=current_assessment.detail_reason,
+                        telemetry=current_assessment.telemetry,
                     )
                 )
             filter_samples.append(int(current_ma))
@@ -2383,6 +2711,9 @@ class ServoService:
                         filtered_current_ma=filtered_current,
                         current_delta_ma=current_delta,
                         stop_reason="hard_current_stop",
+                        failure_phase="stepping",
+                        primary_reason="Filtered current reached the hard stop.",
+                        telemetry=current_assessment.telemetry,
                     )
                 )
 
@@ -2405,6 +2736,7 @@ class ServoService:
                         filtered_current_ma=filtered_current,
                         current_delta_ma=current_delta,
                         stop_reason=threshold_reason,
+                        telemetry=current_assessment.telemetry,
                     )
                 )
 
@@ -2423,6 +2755,9 @@ class ServoService:
                         filtered_current_ma=filtered_current,
                         current_delta_ma=current_delta,
                         stop_reason="travel_limit",
+                        failure_phase="stepping",
+                        primary_reason="Next step would exceed the pretension travel window.",
+                        telemetry=current_assessment.telemetry,
                     )
                 )
 

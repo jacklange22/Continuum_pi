@@ -54,7 +54,7 @@ from continuum_robot.experiments.builtins import (
     TrackerTimingValidationConfig,
 )
 from continuum_robot.gui.controllers.experiment_controller import ExperimentViewState
-from continuum_robot.gui.theme import COLORS, chip_stylesheet
+from continuum_robot.gui.theme import COLORS, chip_stylesheet, semantic_chip_colors
 from continuum_robot.gui.view_utils import preserve_scroll_position, set_line_edit_text, set_text_document
 from continuum_robot.gui.widgets.experiment_3d_widget import Experiment3DWidget
 from continuum_robot.gui.widgets.grid_accuracy_preview_widget import GridAccuracyPreviewWidget
@@ -1272,11 +1272,9 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
     def _style_point_table_item(item: QTableWidgetItem, *, status: str) -> None:
         normalized = status.lower()
         if normalized.startswith("complete") and "rejected" not in normalized:
-            background = "#14532d"
-            foreground = "#dcfce7"
+            background, foreground = semantic_chip_colors("ready")
         elif normalized.startswith("partial") or "rejected" in normalized:
-            background = "#7c2d12"
-            foreground = "#fde68a"
+            background, foreground = semantic_chip_colors("warning")
         else:
             background = COLORS.surface_bg
             foreground = COLORS.text_muted
@@ -2073,15 +2071,15 @@ def _fmt_metric(value) -> str:
 
 def _status_bg(status: str) -> str:
     if status == "success":
-        return "#14532d"
+        return semantic_chip_colors("ready")[0]
     if status == "partial_success":
-        return "#7c2d12"
-    return "#7f1d1d"
+        return semantic_chip_colors("warning")[0]
+    return semantic_chip_colors("blocked")[0]
 
 
 def _status_fg(status: str) -> str:
     if status == "success":
-        return "#dcfce7"
+        return semantic_chip_colors("ready")[1]
     if status == "partial_success":
-        return "#fde68a"
-    return "#fee2e2"
+        return semantic_chip_colors("warning")[1]
+    return semantic_chip_colors("blocked")[1]

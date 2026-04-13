@@ -101,19 +101,17 @@ Runtime config:
 
 Persistent runtime artifacts:
 
-- `data/calibrations/` for durable servo calibration state
-- `data/tip_cals/` for durable accepted and staged tip-calibration artifacts
+- `config/` for durable servo startup calibration state
+- `data/pivot_calibration/` for accepted and staged 0B tip-calibration artifacts plus pivot review data
 - `data/registrations/` for durable accepted/latest registration artifacts
-- `data/tracker_captures/` for raw tracker packet captures
-- `data/tracker_validations/` for saved tracker validation reports
+- `data/experiments/tracker_validation/` for saved tracker validation reports
 - `data/experiments/` for canonical experiment datasets
-- `data/experiments/pivot/captures/` for raw pivot-review capture CSVs
-- `data/experiments/pivot/runs/` for tracker-guided pivot review bundles
-- `data/logs/`
+- `data/experiments/<experiment_name>/` for canonical run bundles grouped by experiment type
+- `data/pivot_calibration/captures/` for raw pivot-review capture CSVs
 
 Current architectural rule:
 
-- configuration defines defaults and candidate geometry; accepted calibrations and experiment outputs live under `data/`
+- configuration defines defaults and machine-local startup state; accepted calibrations and experiment outputs live under their canonical `data/` categories
 - repo-root `runs/` is retired and should not be used as an active runtime artifact location
 
 ## Recommended Next Architecture Boundary Work

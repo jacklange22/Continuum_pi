@@ -1,5 +1,6 @@
 # Canonical root for experiment-style dataset bundles.
-# Tracker pivot review bundles are written under `data/experiments/pivot/runs/`.
+# Experiment runs land under `data/experiments/<experiment_name>/...`.
+# Pivot calibration artifacts are operational and live under `data/pivot_calibration/`.
 # Repo-root `runs/` is retired and should not be used for new runtime outputs.
 default_settle_time_s: 2.0
 sample_count_per_point: 1

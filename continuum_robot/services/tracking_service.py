@@ -1331,8 +1331,7 @@ class TrackingService:
         if registration_path.parent.name == "registrations":
             return (
                 registration_path.parent.parent
-                / "calibrations"
-                / "runtime_tip"
+                / "runtime_tip_calibration"
                 / "latest_runtime_tip_calibration.json"
             )
         return registration_path.parent / "latest_runtime_tip_calibration.json"

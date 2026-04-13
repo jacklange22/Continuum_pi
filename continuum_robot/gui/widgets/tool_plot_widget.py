@@ -7,6 +7,7 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
+from continuum_robot.gui.theme import COLORS
 from continuum_robot.gui.widgets.lightweight_scene_3d_widget import (
     LightweightScene3DWidget,
     SceneAxes3D,
@@ -154,7 +155,7 @@ def build_tracking_scene_model(
                 color_hex=_tool_color(tool_id),
                 label=tool_id,
                 radius_px=6.0,
-                outline_hex="#ffffff",
+                outline_hex=COLORS.text_primary,
                 shape="circle",
             )
         )
@@ -175,10 +176,10 @@ def build_tracking_scene_model(
             ScenePoint3D(
                 key="tip",
                 xyz=tip_xyz,
-                color_hex="#b91c1c",
+                color_hex=COLORS.scene_tip,
                 label="tip",
                 radius_px=6.5,
-                outline_hex="#ffffff",
+                outline_hex=COLORS.text_primary,
                 shape="diamond",
             )
         )
@@ -250,18 +251,18 @@ def _tool_overlay_state(tool: Mapping[str, object]) -> str:
 
 def _tool_color(label: str) -> str:
     return {
-        "0A": "#0f766e",
-        "0B": "#d97706",
-        "tip": "#b91c1c",
-    }.get(label, "#334155")
+        "0A": COLORS.scene_live_0a,
+        "0B": COLORS.scene_live_0b,
+        "tip": COLORS.scene_tip,
+    }.get(label, COLORS.surface_border)
 
 
 def _trail_color(label: str) -> str:
     return {
-        "0A": "#99f6e4",
-        "0B": "#fde68a",
-        "tip": "#fecaca",
-    }.get(label, "#cbd5e1")
+        "0A": COLORS.scene_live_0a,
+        "0B": COLORS.scene_live_0b,
+        "tip": COLORS.scene_tip,
+    }.get(label, COLORS.text_secondary)
 
 
 def _rotation_rows(rotation: np.ndarray) -> tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]:
@@ -278,7 +279,7 @@ def _grid_lines(*, size_mm: float, step_mm: float) -> list[SceneLine3D]:
             SceneLine3D(
                 start_xyz=(-half, coordinate, 0.0),
                 end_xyz=(half, coordinate, 0.0),
-                color_hex="#dbe4ee",
+                color_hex=COLORS.scene_grid,
                 width_px=1.0,
             )
         )
@@ -286,7 +287,7 @@ def _grid_lines(*, size_mm: float, step_mm: float) -> list[SceneLine3D]:
             SceneLine3D(
                 start_xyz=(coordinate, -half, 0.0),
                 end_xyz=(coordinate, half, 0.0),
-                color_hex="#dbe4ee",
+                color_hex=COLORS.scene_grid,
                 width_px=1.0,
             )
         )

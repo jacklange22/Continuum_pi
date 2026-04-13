@@ -47,7 +47,7 @@ def _settings() -> Settings:
         registration=RegistrationWorkflowConfig(capture_tool_id="0B", coil_tool_id="0A", max_fre_mm=None),
         experiment=ExperimentConfig(default_settle_time_s=0.0, sample_count_per_point=1, output_dir="data/experiments"),
         calibration=CalibrationConfig(
-            neutral_setpoints_path="data/calibrations/neutral_setpoints.json",
+            neutral_setpoints_path="config/neutral_setpoints.json",
             latest_registration_path="data/registrations/latest_registration.json",
         ),
     )
@@ -339,6 +339,7 @@ def test_dataset_writer_roundtrip_loads_canonical_bundle(tmp_path: Path) -> None
     bundle = ExperimentDatasetLoader().load_dataset(paths.output_dir)
 
     assert bundle.metadata.experiment_name == "roundtrip_test"
+    assert paths.output_dir.parent == tmp_path / "datasets" / "roundtrip_test"
     assert len(bundle.samples) == 1
     assert bundle.summary.success is True
 

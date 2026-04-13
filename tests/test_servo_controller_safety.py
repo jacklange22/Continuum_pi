@@ -86,7 +86,7 @@ def _settings() -> Settings:
         registration=RegistrationWorkflowConfig(),
         experiment=ExperimentConfig(),
         calibration=CalibrationConfig(
-            neutral_setpoints_path="data/calibrations/neutral_setpoints.json",
+            neutral_setpoints_path="config/neutral_setpoints.json",
             latest_registration_path="data/registrations/latest_registration.json",
         ),
     )
@@ -125,7 +125,7 @@ def _settings_4servo() -> Settings:
         registration=RegistrationWorkflowConfig(),
         experiment=ExperimentConfig(),
         calibration=CalibrationConfig(
-            neutral_setpoints_path="data/calibrations/neutral_setpoints.json",
+            neutral_setpoints_path="config/neutral_setpoints.json",
             latest_registration_path="data/registrations/latest_registration.json",
         ),
     )

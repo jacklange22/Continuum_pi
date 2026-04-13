@@ -137,7 +137,7 @@ def test_registration_service_loads_candidate_landmarks_from_config(tmp_path: Pa
 
 
 def test_registration_service_loads_tip_file_relative_to_local_config_path(tmp_path: Path) -> None:
-    tip_path = tmp_path / "data" / "tip_cals" / "generated_penprobe_tip.csv"
+    tip_path = tmp_path / "data" / "pivot_calibration" / "generated_penprobe_tip.csv"
     tip_path.parent.mkdir(parents=True, exist_ok=True)
     tip_path.write_text("1.0,2.0,3.0", encoding="utf-8")
 
@@ -146,7 +146,7 @@ def test_registration_service_loads_tip_file_relative_to_local_config_path(tmp_p
         config_lines=[
             "captures_per_landmark: 1",
             'capture_tool_id: "0B"',
-            'penprobe_file: "data/tip_cals/generated_penprobe_tip.csv"',
+            'penprobe_file: "data/pivot_calibration/generated_penprobe_tip.csv"',
             "nominal_landmarks_robot_xyz_mm:",
             "  L1: [0.0, 0.0, 0.0]",
             "  L2: [10.0, 0.0, 0.0]",
@@ -163,7 +163,7 @@ def test_registration_service_loads_tip_file_relative_to_local_config_path(tmp_p
 
 
 def test_registration_service_simple_registration_records_tip_provenance_and_applies_tip_offset(tmp_path: Path) -> None:
-    tip_path = tmp_path / "data" / "tip_cals" / "generated_penprobe_tip.csv"
+    tip_path = tmp_path / "data" / "pivot_calibration" / "generated_penprobe_tip.csv"
     tip_path.parent.mkdir(parents=True, exist_ok=True)
     tip_path.write_text("1.0,2.0,3.0", encoding="utf-8")
 
@@ -174,7 +174,7 @@ def test_registration_service_simple_registration_records_tip_provenance_and_app
             "captures_per_landmark: 1",
             'capture_tool_id: "0B"',
             'coil_tool_id: "0A"',
-            'penprobe_file: "data/tip_cals/generated_penprobe_tip.csv"',
+            'penprobe_file: "data/pivot_calibration/generated_penprobe_tip.csv"',
             "nominal_landmarks_robot_xyz_mm:",
             "  L1: [1.0, 2.0, 3.0]",
             "  L2: [11.0, 2.0, 3.0]",

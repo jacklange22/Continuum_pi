@@ -227,7 +227,7 @@ class PivotCalibrationConfig:
     sample_period_s: float = 0.02
     std_dev_threshold: float = 3.0
     min_samples: int = 12
-    output_tip_file: str = "data/tip_cals/generated_penprobe_tip.csv"
+    output_tip_file: str = "data/pivot_calibration/generated_penprobe_tip.csv"
     input_path: str | None = None
     dry_run: bool = False
     seed: int = 0
@@ -246,7 +246,9 @@ class PivotCalibrationConfig:
             sample_period_s=float(payload.get("sample_period_s", 0.02)),
             std_dev_threshold=float(payload.get("std_dev_threshold", 3.0)),
             min_samples=int(payload.get("min_samples", 12)),
-            output_tip_file=str(payload.get("output_tip_file", "data/tip_cals/generated_penprobe_tip.csv")),
+            output_tip_file=str(
+                payload.get("output_tip_file", "data/pivot_calibration/generated_penprobe_tip.csv")
+            ),
             input_path=str(payload["input_path"]) if payload.get("input_path") not in (None, "") else None,
             dry_run=bool(payload.get("dry_run", False)),
             seed=int(payload.get("seed", 0)),

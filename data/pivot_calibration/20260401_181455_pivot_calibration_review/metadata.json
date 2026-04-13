@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "pivot_calibration",
+  "run_id": "e1b138b7c133",
+  "timestamp_utc": "2026-04-01T18:14:55.591270+00:00",
+  "git_commit": "513c925cba5bc3e88e99ba7dbd1601ac69242a91",
+  "backend_info": {
+    "mock_mode": false,
+    "tracking_backend_configured": "ndi",
+    "tracking_backend_selected": "ndi",
+    "tracking_backend_identity": "ndi_tracker_python",
+    "tracking_state": "streaming_healthy",
+    "servo_connected": false
+  },
+  "registration_info": {
+    "path": "data/registrations/latest_registration.json",
+    "exists": false,
+    "tracking_registration_state": "missing_registration",
+    "tip_pose_status": "missing_registration"
+  },
+  "config_used": {
+    "tool_id": "0B",
+    "sample_count": 80,
+    "sample_period_s": 0.02,
+    "std_dev_threshold": 3.0,
+    "min_samples": 12,
+    "output_tip_file": "data/pivot_calibration/staged/20260401_181455_generated_penprobe_tip.csv",
+    "input_path": "data/experiments/pivot/captures/20260401_181455_pivot_0B_samples.csv",
+    "dry_run": false,
+    "seed": 0,
+    "synthetic_tip_vector_mm": [
+      0.0,
+      0.0,
+      125.0
+    ],
+    "synthetic_pivot_point_mm": [
+      25.0,
+      -10.0,
+      40.0
+    ],
+    "synthetic_noise_std_mm": 0.25,
+    "synthetic_outlier_count": 0,
+    "acceptance": {}
+  },
+  "operator_notes": "tracker_mvp_gui_review"
+}

@@ -202,7 +202,7 @@ That workflow:
 - captures hat points with the calibrated `0B` pen probe
 - solves `T_tip_aurora`
 - averages stationary live `0A` coil poses
-- saves `T_coil_tip` as a separate artifact under `data/calibrations/runtime_tip/`
+- saves `T_coil_tip` as a separate artifact under `data/runtime_tip_calibration/`
 
 The older field names `raw_captured_landmarks_robot_xyz` and `averaged_landmarks_robot_xyz`
 are historical. In the current simple workflow they contain the captured measurement-point

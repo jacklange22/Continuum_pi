@@ -278,6 +278,16 @@ class DxlBus:
                 )
             self._write4(servo_id, goal_address, _to_uint32(int(goal)), "goal position")
 
+    def write_torque_enable(self, servo_id: int, enabled: bool) -> None:
+        """Explicitly set the torque enable state for one servo."""
+        self._require_connected()
+        self._write1(
+            int(servo_id),
+            self.config.control_table["torque_enable"],
+            1 if bool(enabled) else 0,
+            "torque enable",
+        )
+
     def write_servo_id(self, current_id: int, new_id: int) -> None:
         """Assign a new servo ID."""
         self._require_connected()

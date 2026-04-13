@@ -186,7 +186,7 @@ The GUI should not talk to `DxlBus` directly.
 The canonical servo calibration artifact lives at the configured
 `neutral_setpoints_path`, currently defaulting to:
 
-- `data/calibrations/neutral_setpoints.json`
+- `config/neutral_setpoints.json`
 
 It is owned by:
 

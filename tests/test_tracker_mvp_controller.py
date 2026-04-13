@@ -219,7 +219,7 @@ class _FakeValidationReport:
 def test_registration_begin_requires_ready_tip_file(tmp_path: Path) -> None:
     _controller, registration_controller, _tracking_service = _build_runtime(
         tmp_path,
-        penprobe_file="data/tip_cals/generated_penprobe_tip.csv",
+        penprobe_file="data/pivot_calibration/generated_penprobe_tip.csv",
     )
 
     with pytest.raises(RuntimeError, match="tip file"):
@@ -232,7 +232,7 @@ def test_tracker_mvp_validation_creates_artifact_and_updates_state(
 ) -> None:
     controller, _registration_controller, tracking_service = _build_runtime(
         tmp_path,
-        penprobe_file="data/tip_cals/generated_penprobe_tip.csv",
+        penprobe_file="data/pivot_calibration/generated_penprobe_tip.csv",
     )
     tracking_service.start()
 
@@ -245,6 +245,8 @@ def test_tracker_mvp_validation_creates_artifact_and_updates_state(
     state = controller.refresh()
 
     assert report_path.exists()
+    assert report_path.parent.parent == tmp_path / "data" / "experiments" / "tracker_validation"
+    assert report_path.name == "tracker_validation_report.json"
     assert json.loads(report_path.read_text(encoding="utf-8"))["tracker_ready"] is True
     assert state.validation_passed is True
     assert state.tool_0b_visible is True
@@ -256,7 +258,7 @@ def test_tracker_mvp_blocks_pivot_without_tool_0b_visibility(
 ) -> None:
     controller, _registration_controller, tracking_service = _build_runtime(
         tmp_path,
-        penprobe_file="data/tip_cals/generated_penprobe_tip.csv",
+        penprobe_file="data/pivot_calibration/generated_penprobe_tip.csv",
     )
     tracking_service.start()
     monkeypatch.setattr(
@@ -282,9 +284,9 @@ def test_tracker_mvp_reports_operational_with_warning_without_marking_tracker_br
 ) -> None:
     controller, _registration_controller, tracking_service = _build_runtime(
         tmp_path,
-        penprobe_file="data/tip_cals/generated_penprobe_tip.csv",
+        penprobe_file="data/pivot_calibration/generated_penprobe_tip.csv",
     )
-    tip_path = tmp_path / "data" / "tip_cals" / "generated_penprobe_tip.csv"
+    tip_path = tmp_path / "data" / "pivot_calibration" / "generated_penprobe_tip.csv"
     tip_path.parent.mkdir(parents=True, exist_ok=True)
     tip_path.write_text("1.0,2.0,3.0", encoding="utf-8")
     tracking_service.start()
@@ -317,7 +319,7 @@ def test_tracker_mvp_pivot_run_updates_tip_geometry_and_status(
 ) -> None:
     controller, registration_controller, tracking_service = _build_runtime(
         tmp_path,
-        penprobe_file="data/tip_cals/generated_penprobe_tip.csv",
+        penprobe_file="data/pivot_calibration/generated_penprobe_tip.csv",
     )
     tracking_service.start()
     monkeypatch.setattr(
@@ -326,12 +328,12 @@ def test_tracker_mvp_pivot_run_updates_tip_geometry_and_status(
     )
     controller.validate_tracker()
 
-    tip_path = tmp_path / "data" / "tip_cals" / "generated_penprobe_tip.csv"
-    run_path = tmp_path / "data" / "experiments" / "pivot" / "runs" / "pivot_run"
+    tip_path = tmp_path / "data" / "pivot_calibration" / "generated_penprobe_tip.csv"
+    run_path = tmp_path / "data" / "pivot_calibration" / "pivot_run"
     run_path.mkdir(parents=True, exist_ok=True)
 
     def _fake_run_experiment(*args, **kwargs):
-        assert kwargs["output_dir"] == tmp_path / "data" / "experiments" / "pivot" / "runs"
+        assert kwargs["output_dir"] == tmp_path / "data"
         tip_path.parent.mkdir(parents=True, exist_ok=True)
         tip_path.write_text("+1.0000,+2.0000,+3.0000", encoding="utf-8")
         return SimpleNamespace(
@@ -368,7 +370,7 @@ def test_tracker_mvp_guided_pivot_collection_requires_accept_before_registration
 ) -> None:
     controller, registration_controller, tracking_service = _build_runtime(
         tmp_path,
-        penprobe_file="data/tip_cals/generated_penprobe_tip.csv",
+        penprobe_file="data/pivot_calibration/generated_penprobe_tip.csv",
     )
     tracking_service.start()
     monkeypatch.setattr(
@@ -385,12 +387,12 @@ def test_tracker_mvp_guided_pivot_collection_requires_accept_before_registration
     assert collecting_state.pivot_live_sample_count >= 2
 
     controller.stop_pivot_collection()
-    run_path = tmp_path / "data" / "experiments" / "pivot" / "runs" / "pivot_review"
+    run_path = tmp_path / "data" / "pivot_calibration" / "pivot_review"
 
     def _fake_run_experiment(*args, **kwargs):
-        assert kwargs["output_dir"] == tmp_path / "data" / "experiments" / "pivot" / "runs"
+        assert kwargs["output_dir"] == tmp_path / "data"
         assert str(kwargs["config"]["input_path"]).startswith(
-            str(tmp_path / "data" / "experiments" / "pivot" / "captures")
+            str(tmp_path / "data" / "pivot_calibration" / "captures")
         )
         pending_tip_path = Path(kwargs["config"]["output_tip_file"])
         pending_tip_path.parent.mkdir(parents=True, exist_ok=True)
@@ -434,7 +436,7 @@ def test_tracker_mvp_pivot_parse_failure_preserves_parse_report_for_operator_rev
 ) -> None:
     controller, _registration_controller, tracking_service = _build_runtime(
         tmp_path,
-        penprobe_file="data/tip_cals/generated_penprobe_tip.csv",
+        penprobe_file="data/pivot_calibration/generated_penprobe_tip.csv",
     )
     tracking_service.start()
     monkeypatch.setattr(
@@ -448,12 +450,12 @@ def test_tracker_mvp_pivot_parse_failure_preserves_parse_report_for_operator_rev
     time.sleep(0.08)
     controller.stop_pivot_collection()
 
-    failed_run_path = tmp_path / "data" / "experiments" / "pivot" / "runs" / "pivot_failed"
+    failed_run_path = tmp_path / "data" / "pivot_calibration" / "pivot_failed"
 
     def _fake_failed_run(*args, **kwargs):
-        assert kwargs["output_dir"] == tmp_path / "data" / "experiments" / "pivot" / "runs"
+        assert kwargs["output_dir"] == tmp_path / "data"
         assert str(kwargs["config"]["input_path"]).startswith(
-            str(tmp_path / "data" / "experiments" / "pivot" / "captures")
+            str(tmp_path / "data" / "pivot_calibration" / "captures")
         )
         failed_run_path.mkdir(parents=True, exist_ok=True)
         return SimpleNamespace(
@@ -487,12 +489,12 @@ def test_tracker_mvp_live_pose_requires_fresh_tracker_data(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    tip_path = tmp_path / "data" / "tip_cals" / "generated_penprobe_tip.csv"
+    tip_path = tmp_path / "data" / "pivot_calibration" / "generated_penprobe_tip.csv"
     tip_path.parent.mkdir(parents=True, exist_ok=True)
     tip_path.write_text("1.0,2.0,3.0", encoding="utf-8")
     controller, _registration_controller, tracking_service = _build_runtime(
         tmp_path,
-        penprobe_file="data/tip_cals/generated_penprobe_tip.csv",
+        penprobe_file="data/pivot_calibration/generated_penprobe_tip.csv",
     )
     tracking_service.start()
 

@@ -192,11 +192,11 @@ class GridAccuracyPreviewWidget(QWidget):
                     _scale(rect, float(aligned[0]), min_x, max_x, horizontal=True),
                     _scale(rect, float(aligned[1]), min_y, max_y, horizontal=False),
                 )
-                painter.setPen(QPen(QColor("#f87171"), 1.4))
+                painter.setPen(QPen(qcolor(COLORS.scene_residual), 1.4))
                 painter.drawLine(aligned_point, truth_point)
-                _draw_arrow_head(painter, start=aligned_point, end=truth_point, color=QColor("#f87171"))
-                painter.setPen(QPen(QColor("#dcfce7"), 1.0))
-                painter.setBrush(QColor("#10b981"))
+                _draw_arrow_head(painter, start=aligned_point, end=truth_point, color=qcolor(COLORS.scene_residual))
+                painter.setPen(QPen(qcolor(COLORS.text_primary), 1.0))
+                painter.setBrush(qcolor(COLORS.scene_measurement))
                 painter.drawEllipse(aligned_point, 4.5, 4.5)
                 residual = point_metrics.get("residual_mm")
                 if residual is not None and len(self._truth_catalog) <= 16:
@@ -211,10 +211,10 @@ class GridAccuracyPreviewWidget(QWidget):
 
     def _draw_legend(self, painter: QPainter, rect: QRectF) -> None:
         legend_items = [
-            ("Truth point", QColor("#60a5fa"), "square"),
-            ("Aligned centroid", QColor("#10b981"), "circle"),
+            ("Truth point", qcolor(COLORS.scene_truth), "square"),
+            ("Aligned centroid", qcolor(COLORS.scene_measurement), "circle"),
             ("Selected point", qcolor(COLORS.accent), "ring"),
-            ("Residual vector", QColor("#f87171"), "line"),
+            ("Residual vector", qcolor(COLORS.scene_residual), "line"),
         ]
         x = rect.left()
         painter.setFont(QFont("", 8))
@@ -278,11 +278,11 @@ def _point_status(*, raw_sample_count: int, expected_samples: int, rejected_coun
 
 def _truth_marker_style(*, status: str) -> tuple[QPen, QBrush, QColor]:
     if status == "complete":
-        return QPen(QColor("#93c5fd"), 1.2), QBrush(QColor("#2563eb")), QColor("#e2e8f0")
+        return QPen(qcolor(COLORS.scene_truth), 1.2), QBrush(qcolor(COLORS.scene_truth)), qcolor(COLORS.text_secondary)
     if status == "complete_rejected":
-        return QPen(QColor("#f59e0b"), 1.2), QBrush(QColor("#92400e")), QColor("#fde68a")
+        return QPen(qcolor(COLORS.warning_fg), 1.2), QBrush(qcolor(COLORS.warning_bg)), qcolor(COLORS.warning_fg)
     if status == "partial":
-        return QPen(QColor("#fbbf24"), 1.2), QBrush(QColor("#78350f")), QColor("#fde68a")
+        return QPen(qcolor(COLORS.warning_fg), 1.2), QBrush(qcolor(COLORS.warning_bg, alpha=220)), qcolor(COLORS.warning_fg)
     return QPen(qcolor(COLORS.surface_border), 1.2), QBrush(qcolor(COLORS.surface_alt_bg)), qcolor(COLORS.text_muted)
 
 

@@ -16,7 +16,7 @@ from continuum_robot.gui.experiment_preflight import (
     RUN_OK,
     RUN_WARNING,
 )
-from continuum_robot.gui.theme import COLORS, chip_stylesheet
+from continuum_robot.gui.theme import COLORS, chip_stylesheet, semantic_chip_colors
 from continuum_robot.gui.view_utils import preserve_scroll_position
 
 
@@ -55,13 +55,14 @@ class ExperimentPreflightWidget(QWidget):
         if self._report_signature == signature:
             return
         self._report_signature = signature
-        color = {
-            RUN_OK: ("#14532d", "#dcfce7", "Ready"),
-            RUN_WARNING: ("#7c2d12", "#fde68a", "Warning"),
-            RUN_BLOCKED: ("#7f1d1d", "#fee2e2", "Blocked"),
-        }.get(report.overall_status, (COLORS.status_bg, COLORS.text_secondary, "Info"))
-        self.status_chip.setText(color[2])
-        self.status_chip.setStyleSheet(chip_stylesheet(background=color[0], foreground=color[1]))
+        chip_kind, chip_text = {
+            RUN_OK: ("ready", "Ready"),
+            RUN_WARNING: ("warning", "Warning"),
+            RUN_BLOCKED: ("blocked", "Blocked"),
+        }.get(report.overall_status, ("neutral", "Info"))
+        bg, fg = semantic_chip_colors(chip_kind)
+        self.status_chip.setText(chip_text)
+        self.status_chip.setStyleSheet(chip_stylesheet(background=bg, foreground=fg))
         self.summary_label.setText(report.summary)
         def _rebuild() -> None:
             self.list.clear()
@@ -106,11 +107,11 @@ class _PreflightRowWidget(QWidget):
 
 def _severity_colors(status: str) -> tuple[str, str]:
     return {
-        PREFLIGHT_OK: ("#14532d", "#dcfce7"),
-        PREFLIGHT_WARNING: ("#7c2d12", "#fde68a"),
-        PREFLIGHT_BLOCKED: ("#7f1d1d", "#fee2e2"),
-        PREFLIGHT_INFO: ("#1e3a8a", "#dbeafe"),
-    }.get(status, (COLORS.status_bg, COLORS.text_secondary))
+        PREFLIGHT_OK: semantic_chip_colors("ready"),
+        PREFLIGHT_WARNING: semantic_chip_colors("warning"),
+        PREFLIGHT_BLOCKED: semantic_chip_colors("blocked"),
+        PREFLIGHT_INFO: semantic_chip_colors("info"),
+    }.get(status, semantic_chip_colors("neutral"))
 
 
 def _severity_label(status: str) -> str:

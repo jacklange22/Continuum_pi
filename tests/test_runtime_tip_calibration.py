@@ -110,7 +110,7 @@ def test_tracking_service_uses_separate_runtime_tip_artifact_in_live_chain(tmp_p
         ),
         encoding="utf-8",
     )
-    runtime_tip_path = tmp_path / "calibrations" / "runtime_tip" / "latest_runtime_tip_calibration.json"
+    runtime_tip_path = tmp_path / "data" / "runtime_tip_calibration" / "latest_runtime_tip_calibration.json"
     runtime_tip_path.parent.mkdir(parents=True, exist_ok=True)
     runtime_tip_path.write_text(
         json.dumps(

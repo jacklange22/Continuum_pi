@@ -12,7 +12,10 @@ from typing import Any
 from uuid import uuid4
 
 from continuum_robot.experiments.builtins import register_builtin_experiments
-from continuum_robot.experiments.dataset_io import ExperimentDatasetLoader, ExperimentDatasetWriter
+from continuum_robot.experiments.dataset_io import (
+    ExperimentDatasetLoader,
+    ExperimentDatasetWriter,
+)
 from continuum_robot.experiments.experiment_models import ExperimentPoint
 from continuum_robot.experiments.framework import ExperimentContext, ExperimentSession
 from continuum_robot.experiments.registry import ExperimentRegistry
@@ -216,7 +219,6 @@ class ExperimentRunner:
         if candidate.exists():
             return candidate
         legacy_root = self.project_root / "runs"
-        new_root = self.project_root / "data" / "experiments" / "pivot" / "runs"
         try:
             relative = candidate.relative_to(legacy_root)
         except ValueError:
@@ -224,8 +226,17 @@ class ExperimentRunner:
                 relative = Path(*candidate.parts[1:])
             else:
                 return candidate
-        migrated = new_root / relative
-        return migrated if migrated.exists() else candidate
+        experiments_root = self.project_root / "data" / "experiments"
+        if not experiments_root.exists():
+            return candidate
+        matches = []
+        for experiment_root in experiments_root.iterdir():
+            if not experiment_root.is_dir():
+                continue
+            migrated = experiment_root / relative
+            if migrated.exists():
+                matches.append(migrated)
+        return matches[0] if len(matches) == 1 else candidate
 
     def _build_metadata(
         self,

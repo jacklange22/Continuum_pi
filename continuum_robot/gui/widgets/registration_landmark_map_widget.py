@@ -6,6 +6,8 @@ from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
+from continuum_robot.gui.theme import COLORS, qcolor
+
 
 class RegistrationLandmarkMapWidget(QWidget):
     """Draw candidate registration landmarks in XY and emit click selections."""
@@ -60,15 +62,15 @@ class RegistrationLandmarkMapWidget(QWidget):
         _ = event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.fillRect(self.rect(), QColor("#f8fbff"))
+        painter.fillRect(self.rect(), qcolor(COLORS.surface_bg))
 
         plot_rect = self._plot_rect()
-        painter.setPen(QPen(QColor("#dbe4ee"), 1))
+        painter.setPen(QPen(qcolor(COLORS.surface_border), 1))
         painter.setBrush(Qt.NoBrush)
         painter.drawRoundedRect(plot_rect, 14.0, 14.0)
 
         if not self._points_by_label:
-            painter.setPen(QColor("#64748b"))
+            painter.setPen(qcolor(COLORS.text_muted))
             painter.drawText(self.rect(), Qt.AlignCenter, "No registration landmarks configured.")
             return
 
@@ -80,17 +82,17 @@ class RegistrationLandmarkMapWidget(QWidget):
             radius = 11.0 if selected_order is not None else 8.0
 
             if not enabled:
-                fill = QColor("#e2e8f0")
-                border = QColor("#94a3b8")
-                text = QColor("#64748b")
+                fill = qcolor(COLORS.surface_alt_bg)
+                border = qcolor(COLORS.text_subtle)
+                text = qcolor(COLORS.text_muted)
             elif selected_order is not None:
-                fill = QColor("#1d4ed8")
-                border = QColor("#1e3a8a")
-                text = QColor("#ffffff")
+                fill = qcolor(COLORS.selection_bg)
+                border = qcolor(COLORS.button_primary_border)
+                text = qcolor(COLORS.selection_fg)
             else:
-                fill = QColor("#ffffff")
-                border = QColor("#2563eb")
-                text = QColor("#1e293b")
+                fill = qcolor(COLORS.surface_alt_bg)
+                border = qcolor(COLORS.scene_truth)
+                text = qcolor(COLORS.text_primary)
 
             painter.setPen(QPen(border, 2))
             painter.setBrush(fill)
@@ -108,7 +110,7 @@ class RegistrationLandmarkMapWidget(QWidget):
                     str(selected_order),
                 )
 
-            painter.setPen(QColor("#0f172a") if enabled else QColor("#94a3b8"))
+            painter.setPen(qcolor(COLORS.text_primary if enabled else COLORS.text_subtle))
             caption = self._display_labels.get(label, label)
             painter.drawText(
                 QPointF(projected.x() + radius + 6.0, projected.y() - 6.0),
@@ -117,10 +119,10 @@ class RegistrationLandmarkMapWidget(QWidget):
 
     def _draw_axes(self, painter: QPainter, plot_rect: QRectF) -> None:
         center = QPointF(plot_rect.center().x(), plot_rect.center().y())
-        painter.setPen(QPen(QColor("#e2e8f0"), 1, Qt.DashLine))
+        painter.setPen(QPen(qcolor(COLORS.chart_grid), 1, Qt.DashLine))
         painter.drawLine(plot_rect.left(), center.y(), plot_rect.right(), center.y())
         painter.drawLine(center.x(), plot_rect.top(), center.x(), plot_rect.bottom())
-        painter.setPen(QColor("#64748b"))
+        painter.setPen(qcolor(COLORS.text_muted))
         painter.drawText(QPointF(plot_rect.left() + 12.0, plot_rect.top() + 18.0), "Top view (X/Y)")
         painter.drawText(QPointF(plot_rect.right() - 36.0, center.y() - 8.0), "+X")
         painter.drawText(QPointF(center.x() + 6.0, plot_rect.top() + 18.0), "+Y")

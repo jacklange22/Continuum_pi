@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QDialog,
 )
 
+from continuum_robot.gui.theme import COLORS
 from continuum_robot.gui.view_utils import set_text_document
 
 
@@ -38,7 +39,9 @@ class RuntimeTipCalibrationDialog(QDialog):
         self._timer.timeout.connect(self.refresh)
 
         self.title_label = QLabel("Runtime Tip Calibration")
-        self.title_label.setStyleSheet("font-size: 22px; font-weight: 700; color: #0f172a;")
+        self.title_label.setStyleSheet(
+            f"font-size: 22px; font-weight: 700; color: {COLORS.text_primary};"
+        )
         self.description_label = QLabel(
             "Advanced 0A hat-based calibration for the live tip chain. "
             "Use the calibrated 0B pen probe to capture the hat points, collect stationary 0A samples, "

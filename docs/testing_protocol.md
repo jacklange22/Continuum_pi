@@ -60,7 +60,7 @@ Pass criteria:
 
 Pass criteria:
 
-- Calibration artifact is saved under `data/calibrations/`
+- Neutral/startup calibration artifact is saved under `config/`
 - Safe bounds and pretension threshold are populated
 - Pretension exits cleanly on threshold, timeout, cancel, or a protected failure mode
 
@@ -90,8 +90,8 @@ Pass criteria:
 Pass criteria:
 
 - Every run writes `metadata.json`, `summary.json`, and samples under `data/experiments/`
-- Tracker-driven pivot review datasets land under `data/experiments/pivot/runs/`
-- Tracker-driven raw pivot capture CSVs land under `data/experiments/pivot/captures/`
+- Tracker-driven pivot review datasets land under `data/pivot_calibration/`
+- Tracker-driven raw pivot capture CSVs land under `data/pivot_calibration/captures/`
 - Preflight shows no blockers
 - Result metrics are readable and reloadable
 

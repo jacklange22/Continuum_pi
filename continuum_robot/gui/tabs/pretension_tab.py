@@ -197,7 +197,7 @@ class PretensionTab(QWidget):
 
         self.refresh_button = QPushButton("Refresh Selected Servo")
         self.refresh_button.setProperty("variant", "ghost")
-        self.measure_baseline_button = QPushButton("Measure / Refresh Baseline")
+        self.measure_baseline_button = QPushButton("Baseline Check")
         self.measure_baseline_button.setProperty("variant", "ghost")
         self.move_reference_button = QPushButton("Move to Untensioned Reference")
         self.move_reference_button.setProperty("variant", "ghost")
@@ -223,13 +223,13 @@ class PretensionTab(QWidget):
         actions_row_one = QHBoxLayout()
         actions_row_one.setSpacing(10)
         actions_row_one.addWidget(self.refresh_button)
-        actions_row_one.addWidget(self.measure_baseline_button)
         actions_row_one.addWidget(self.move_reference_button)
+        actions_row_one.addWidget(self.save_button)
         actions_row_two = QHBoxLayout()
         actions_row_two.setSpacing(10)
         actions_row_two.addWidget(self.pretension_button)
+        actions_row_two.addWidget(self.measure_baseline_button)
         actions_row_two.addWidget(self.stop_button)
-        actions_row_two.addWidget(self.save_button)
         actions_row_three = QHBoxLayout()
         actions_row_three.setSpacing(10)
         actions_row_three.addWidget(self.save_startup_button)
@@ -252,6 +252,11 @@ class PretensionTab(QWidget):
         self.final_position_label = QLabel("—")
         self.stop_reason_label = QLabel("—")
         self.stop_reason_label.setWordWrap(True)
+        self.failure_phase_label = QLabel("—")
+        self.failure_primary_label = QLabel("—")
+        self.failure_primary_label.setWordWrap(True)
+        self.failure_detail_label = QLabel("—")
+        self.failure_detail_label.setWordWrap(True)
 
         progress_box = QGroupBox("Pretension Progress / Result")
         progress_layout = QFormLayout(progress_box)
@@ -265,7 +270,10 @@ class PretensionTab(QWidget):
         progress_layout.addRow("Steps taken", self.steps_label)
         progress_layout.addRow("Elapsed", self.elapsed_label)
         progress_layout.addRow("Final position", self.final_position_label)
-        progress_layout.addRow("Stop reason", self.stop_reason_label)
+        progress_layout.addRow("Stop / block reason", self.stop_reason_label)
+        progress_layout.addRow("Failure phase", self.failure_phase_label)
+        progress_layout.addRow("Primary reason", self.failure_primary_label)
+        progress_layout.addRow("Detail", self.failure_detail_label)
 
         self.log_text = QPlainTextEdit()
         self.log_text.setReadOnly(True)
@@ -392,7 +400,12 @@ class PretensionTab(QWidget):
         preserve_scroll_position(self.servo_table, _rebuild_servo_table)
 
         self.selected_servo_label.setText(self._display(state.selected_servo_id))
-        self.torque_label.setText("On" if state.selected_servo_torque_enabled else ("Off" if state.selected_servo_torque_enabled is False else "—"))
+        torque_text = "—"
+        if state.selected_servo_torque_enabled is True:
+            torque_text = "On"
+        elif state.selected_servo_torque_enabled is False:
+            torque_text = "Auto-enable at start" if state.selected_servo_arming_required else "Off"
+        self.torque_label.setText(torque_text)
         telemetry_text = (
             f"age {state.selected_servo_telemetry_age_s:.3f} s | "
             f"fresh {'Yes' if state.selected_servo_telemetry_fresh else 'No'}"
@@ -451,6 +464,9 @@ class PretensionTab(QWidget):
         self.elapsed_label.setText(f"{state.elapsed_s:.2f} s")
         self.final_position_label.setText(self._display(state.final_position_tick))
         self.stop_reason_label.setText(state.stop_reason or "—")
+        self.failure_phase_label.setText(state.failure_phase or "—")
+        self.failure_primary_label.setText(state.failure_primary_reason or "—")
+        self.failure_detail_label.setText(state.failure_detail or "—")
         self._set_plain_text_preserving_view(self.log_text, state.log_text)
 
         self.servo_table.setEnabled(not state.pretension_running)

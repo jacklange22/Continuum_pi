@@ -120,7 +120,7 @@ def _settings() -> Settings:
         ),
         experiment=ExperimentConfig(default_settle_time_s=0.0, sample_count_per_point=1, output_dir="data/experiments"),
         calibration=CalibrationConfig(
-            neutral_setpoints_path="data/calibrations/neutral_setpoints.json",
+            neutral_setpoints_path="config/neutral_setpoints.json",
             latest_registration_path="data/registrations/latest_registration.json",
         ),
     )
@@ -218,6 +218,17 @@ class _MultiServoPretensionBus(MockDxlBus):
             sequence = self._current_sequences.get(int(servo_id))
             if sequence:
                 self._state[int(servo_id)].present_current_ma = sequence.pop(0)
+
+
+class _TorqueEnableFailureMultiServoPretensionBus(_MultiServoPretensionBus):
+    def __init__(self, *, current_sequences: dict[int, list[int | None]], fail_message: str = "mock torque enable failure") -> None:
+        super().__init__(current_sequences=current_sequences)
+        self.fail_message = fail_message
+        self.torque_enable_calls: list[tuple[int, bool]] = []
+
+    def write_torque_enable(self, servo_id: int, enabled: bool) -> None:
+        self.torque_enable_calls.append((int(servo_id), bool(enabled)))
+        raise RuntimeError(self.fail_message)
 
 
 def _tracking_service(settings: Settings, tmp_path: Path) -> TrackingService:
@@ -382,6 +393,8 @@ def test_tracking_tab_wraps_workspace_in_scroll_area(tmp_path: Path) -> None:
         tab = TrackingTab(tracking_controller, workflow_controller=tracker_mvp_controller)
         assert isinstance(tab.scroll_area, QScrollArea)
         assert tab.scroll_area.widget() is not None
+        assert tab.plot_widget.minimumHeight() >= 420
+        assert tab.plot_widget.minimumHeight() > tab.tools_table.minimumHeight()
     finally:
         if tracking_controller is not None:
             tracking_controller.shutdown()
@@ -453,8 +466,8 @@ def test_registration_tab_uses_workflow_state_to_gate_begin_button(tmp_path: Pat
         tracker_port="/dev/mock-aurora",
         registration_ready=False,
         registration_blockers=["Accept the staged pivot tip file before registration."],
-        pivot_tip_path="data/tip_cals/generated_penprobe_tip.csv",
-        measurement_point_message="Pen-probe tip file loaded from data/tip_cals/generated_penprobe_tip.csv.",
+        pivot_tip_path="data/pivot_calibration/generated_penprobe_tip.csv",
+        measurement_point_message="Pen-probe tip file loaded from data/pivot_calibration/generated_penprobe_tip.csv.",
         latest_registration_status="No accepted registration saved.",
         live_tip_status="missing_registration",
     )
@@ -632,17 +645,154 @@ def test_pretension_controller_runs_only_on_selected_servo_and_persists_result(t
     assert any(row["servo_id"] == "2" and row["status"] == "accepted" for row in controller.state.comparison_rows)
 
 
-def test_pretension_controller_blocks_selected_servo_when_torque_is_off(tmp_path: Path) -> None:
+def test_pretension_controller_auto_enables_selected_servo_torque_when_safe(tmp_path: Path) -> None:
     settings = _settings()
-    service = _pretension_service(tmp_path, dxl_bus=MockDxlBus([1, 2, 3, 4]))
+    service = _pretension_service(tmp_path, dxl_bus=_MultiServoPretensionBus(current_sequences={3: [180, 230]}))
     service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=3,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+    service.dxl_bus._state[3].torque_enabled = False
+    controller = PretensionController(servo_service=service, settings=settings)
+
+    controller.set_selected_servo(3)
+    controller.start_pretension(
+        parameters=PretensionParameters(
+            untensioned_reference_tick=4095,
+            step_ticks=2,
+            settle_time_s=0.0,
+            baseline_sample_count=3,
+            current_filter_window=1,
+            current_delta_threshold_ma=60,
+            absolute_trigger_current_ma=220,
+            hard_current_stop_ma=850,
+            max_travel_ticks=320,
+            timeout_s=2.0,
+        )
+    )
+    controller._pretension_thread.join(timeout=1.0)
+
+    assert controller.state.run_state == "threshold_reached"
+    assert controller.state.selected_servo_torque_enabled is True
+    assert service.dxl_bus._state[3].torque_enabled is True
+
+
+def test_pretension_controller_reports_structured_arming_failure_details(tmp_path: Path) -> None:
+    settings = _settings()
+    service = _pretension_service(
+        tmp_path,
+        dxl_bus=_TorqueEnableFailureMultiServoPretensionBus(current_sequences={3: [180, 230]}),
+    )
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=3,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+    service.dxl_bus._state[3].torque_enabled = False
+    controller = PretensionController(servo_service=service, settings=settings)
+
+    controller.set_selected_servo(3)
+    controller.start_pretension(
+        parameters=PretensionParameters(
+            untensioned_reference_tick=4095,
+            step_ticks=2,
+            settle_time_s=0.0,
+            baseline_sample_count=3,
+            current_filter_window=1,
+            current_delta_threshold_ma=60,
+            absolute_trigger_current_ma=220,
+            hard_current_stop_ma=850,
+            max_travel_ticks=320,
+            timeout_s=2.0,
+        )
+    )
+    controller._pretension_thread.join(timeout=1.0)
+
+    assert controller.state.run_state == "arming_failed"
+    assert controller.state.failure_phase == "arming"
+    assert controller.state.failure_primary_reason == "Failed to enable torque for pretension."
+    assert "mock torque enable failure" in controller.state.failure_detail
+    assert controller.state.selected_servo_position_tick is not None
+    assert controller.state.selected_servo_telemetry_age_s is not None
+
+
+def test_pretension_controller_recovers_to_coherent_ready_state_after_failed_start(tmp_path: Path) -> None:
+    settings = _settings()
+    failing_bus = _TorqueEnableFailureMultiServoPretensionBus(current_sequences={3: [180, 230]})
+    service = _pretension_service(tmp_path, dxl_bus=failing_bus)
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=3,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+    service.dxl_bus._state[3].torque_enabled = False
     controller = PretensionController(servo_service=service, settings=settings)
 
     controller.set_selected_servo(3)
     controller.start_pretension(parameters=service.default_pretension_parameters(3))
+    controller._pretension_thread.join(timeout=1.0)
 
-    assert controller.state.run_state == "blocked"
-    assert "Torque must be enabled" in controller.state.run_state_message
+    service.dxl_bus = _MultiServoPretensionBus(current_sequences={3: [180, 230]})
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=3,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+    service.dxl_bus._state[3].torque_enabled = False
+    state = controller.refresh()
+
+    assert state.selected_servo_pretension_ready is True
+    assert state.selected_servo_arming_required is True
+    assert "Torque will be enabled during arming" in state.selected_servo_block_reason
+
+
+def test_move_to_reference_then_pretension_start_uses_coherent_live_ready_state(tmp_path: Path) -> None:
+    settings = _settings()
+    service = _pretension_service(tmp_path, dxl_bus=_MultiServoPretensionBus(current_sequences={2: [180, 230]}))
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=2,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+    service.dxl_bus._state[2].torque_enabled = False
+    controller = PretensionController(servo_service=service, settings=settings)
+
+    controller.set_selected_servo(2)
+    controller.move_to_untensioned_reference(reference_tick=4095)
+    refreshed = controller.refresh()
+
+    assert refreshed.selected_servo_telemetry_fresh is True
+    assert refreshed.selected_servo_position_tick is not None
+    assert refreshed.can_start is True
+
+    controller.start_pretension(
+        parameters=PretensionParameters(
+            untensioned_reference_tick=4095,
+            step_ticks=2,
+            settle_time_s=0.0,
+            baseline_sample_count=3,
+            current_filter_window=1,
+            current_delta_threshold_ma=60,
+            absolute_trigger_current_ma=220,
+            hard_current_stop_ma=850,
+            max_travel_ticks=320,
+            timeout_s=2.0,
+        )
+    )
+    controller._pretension_thread.join(timeout=1.0)
+
+    assert controller.state.run_state == "threshold_reached"
 
 
 def test_pretension_controller_applies_live_parameters_without_runtime_reload(tmp_path: Path) -> None:
@@ -2031,6 +2181,17 @@ def test_experiment_workspace_loads_prior_run_and_history(tmp_path: Path) -> Non
     assert loaded.selected_experiment == "command_schedule_validation"
     assert loaded.visualization_model.summary_lines
     assert any(label == "Run ID" for label, _value in loaded.result_details)
+
+
+def test_experiment_workspace_plans_output_under_experiment_type_folder(tmp_path: Path) -> None:
+    controller = _experiment_controller(tmp_path)
+    controller.select_experiment("command_schedule_validation")
+
+    state = controller.refresh()
+
+    assert Path(state.planned_output_dir).parent == (
+        tmp_path / "data" / "experiments" / "command_schedule_validation"
+    )
 
 
 def test_experiment_workspace_tab_updates_without_crashing_in_mock_mode(tmp_path: Path) -> None:

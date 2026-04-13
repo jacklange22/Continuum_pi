@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Migrate legacy runtime artifacts into the canonical data/ layout.
 
-This script retires the old repo-root ``runs/`` location and the older flat
-``data/pivot_captures/`` bucket. It preserves existing bundles, moves them into
-the canonical pivot experiment subtrees, and rewrites moved bundle references so
-they still point at the migrated capture or staged-tip artifacts.
+This script retires the old repo-root ``runs/`` location plus older flat pivot
+artifact buckets. It preserves existing bundles, moves them into the canonical
+``data/pivot_calibration/`` and ``data/experiments/<experiment_name>/`` layout,
+and rewrites moved bundle references so they still point at the migrated capture
+or staged-tip artifacts.
 """
 
 from __future__ import annotations
@@ -19,10 +20,11 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OLD_RUN_ROOT = PROJECT_ROOT / "runs"
-NEW_PIVOT_RUN_ROOT = PROJECT_ROOT / "data" / "experiments" / "pivot" / "runs"
+OLD_PIVOT_RUN_ROOT = PROJECT_ROOT / "data" / "experiments" / "pivot" / "runs"
 OLD_PIVOT_CAPTURE_ROOT = PROJECT_ROOT / "data" / "pivot_captures"
-NEW_PIVOT_CAPTURE_ROOT = PROJECT_ROOT / "data" / "experiments" / "pivot" / "captures"
-TIP_ROOT = PROJECT_ROOT / "data" / "tip_cals"
+NEW_PIVOT_RUN_ROOT = PROJECT_ROOT / "data" / "pivot_calibration"
+NEW_PIVOT_CAPTURE_ROOT = NEW_PIVOT_RUN_ROOT / "captures"
+TIP_ROOT = NEW_PIVOT_RUN_ROOT
 STAGED_TIP_ROOT = TIP_ROOT / "staged"
 LEGACY_DATA_RUN_ROOT = PROJECT_ROOT / "data" / "runs"
 
@@ -58,6 +60,10 @@ def _canonical_runtime_path_string(raw: Any) -> Any:
     registration_candidate = PROJECT_ROOT / "data" / "registrations" / candidate_name
     if candidate_name and "data/registrations" in text:
         return _repo_relative(registration_candidate)
+
+    example_candidate = PROJECT_ROOT / "examples" / candidate_name
+    if candidate_name and "data/examples" in text and example_candidate.exists():
+        return _repo_relative(example_candidate)
 
     return raw
 
@@ -146,6 +152,9 @@ def main() -> int:
     for source, destination in _move_children(OLD_RUN_ROOT, NEW_PIVOT_RUN_ROOT):
         moved.append(f"{_repo_relative(source)} -> {_repo_relative(destination)}")
 
+    for source, destination in _move_children(OLD_PIVOT_RUN_ROOT, NEW_PIVOT_RUN_ROOT):
+        moved.append(f"{_repo_relative(source)} -> {_repo_relative(destination)}")
+
     if NEW_PIVOT_RUN_ROOT.exists():
         for run_dir in sorted(path for path in NEW_PIVOT_RUN_ROOT.iterdir() if path.is_dir()):
             if _rewrite_run_bundle(run_dir):
@@ -157,6 +166,7 @@ def main() -> int:
         _cleanup_empty_dir(LEGACY_DATA_RUN_ROOT)
 
     _cleanup_empty_dir(OLD_RUN_ROOT)
+    _cleanup_empty_dir(OLD_PIVOT_RUN_ROOT)
     _cleanup_empty_dir(OLD_PIVOT_CAPTURE_ROOT)
 
     if moved:

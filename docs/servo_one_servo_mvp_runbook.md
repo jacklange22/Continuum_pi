@@ -62,7 +62,7 @@ Out of scope:
 
 1. Put the single servo in a physically safe unloaded state.
 2. Use `Capture Neutral`.
-3. Confirm the artifact is written to `data/calibrations/neutral_setpoints.json`.
+3. Confirm the artifact is written to `config/neutral_setpoints.json`.
 4. Confirm the artifact contains:
    - timestamp
    - robot mode and robot config metadata

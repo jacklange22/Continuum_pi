@@ -7,6 +7,7 @@ from typing import Mapping, Sequence
 
 import numpy as np
 
+from continuum_robot.gui.theme import COLORS
 from continuum_robot.gui.widgets.lightweight_scene_3d_widget import (
     LightweightScene3DWidget,
     SceneAnnotation3D,
@@ -240,7 +241,9 @@ def build_registration_preview_scene(
     truth = {str(label): _as_xyz(point) for label, point in truth_points_by_label.items()}
     capture_centers = {str(label): _as_xyz(point) for label, point in capture_points_by_label.items()}
     completed = set(str(label) for label in completed_labels)
-    points: list[ScenePoint3D] = [ScenePoint3D(key="robot_origin", xyz=(0.0, 0.0, 0.0), color_hex="#cbd5e1", shape="circle", radius_px=3.5)]
+    points: list[ScenePoint3D] = [
+        ScenePoint3D(key="robot_origin", xyz=(0.0, 0.0, 0.0), color_hex=COLORS.text_secondary, shape="circle", radius_px=3.5)
+    ]
     lines: list[SceneLine3D] = []
     annotations: list[SceneAnnotation3D] = []
     axes = [SceneAxes3D(key="robot_frame", origin_xyz=(0.0, 0.0, 0.0), label="Robot")]
@@ -267,13 +270,13 @@ def build_registration_preview_scene(
     for label in ordered_labels:
         if label not in truth:
             continue
-        outline = "#0f766e" if label == selected_label else "#ffffff"
+        outline = COLORS.scene_live_0a if label == selected_label else COLORS.text_primary
         complete = label in completed or label in preview.fitted_labels
         points.append(
             ScenePoint3D(
                 key=f"truth_{label}",
                 xyz=truth[label],
-                color_hex="#2563eb" if complete else "#cbd5e1",
+                color_hex=COLORS.scene_truth if complete else COLORS.text_secondary,
                 label=label,
                 radius_px=6.0 if label == selected_label else 5.0,
                 outline_hex=outline,
@@ -289,7 +292,7 @@ def build_registration_preview_scene(
                     ScenePoint3D(
                         key=f"sample_{label}_{index}",
                         xyz=sample,
-                        color_hex="#fbbf24",
+                        color_hex=COLORS.warning_fg,
                         radius_px=2.3,
                         shape="circle",
                     )
@@ -299,10 +302,10 @@ def build_registration_preview_scene(
                 ScenePoint3D(
                     key=f"aligned_{label}",
                     xyz=point,
-                    color_hex="#16a34a",
+                    color_hex=COLORS.scene_measurement,
                     label=f"{label} aligned",
                     radius_px=5.0,
-                    outline_hex="#ffffff",
+                    outline_hex=COLORS.text_primary,
                     shape="circle",
                 )
             )
@@ -311,7 +314,7 @@ def build_registration_preview_scene(
                     SceneLine3D(
                         start_xyz=point,
                         end_xyz=truth[label],
-                        color_hex="#dc2626",
+                        color_hex=COLORS.scene_residual,
                         width_px=1.4,
                     )
                 )
@@ -321,7 +324,7 @@ def build_registration_preview_scene(
                         SceneAnnotation3D(
                             xyz=point,
                             text=f"{label}: {float(residual_mm):.3f} mm",
-                            color_hex="#7f1d1d",
+                            color_hex=COLORS.error_fg,
                         )
                     )
         if current_point is not None and len(current_point) >= 3:
@@ -330,10 +333,10 @@ def build_registration_preview_scene(
                 ScenePoint3D(
                     key="current_live_point",
                     xyz=current_xyz,
-                    color_hex="#0f766e",
+                    color_hex=COLORS.scene_live_0a,
                     label="live",
                     radius_px=4.6,
-                    outline_hex="#ffffff",
+                    outline_hex=COLORS.text_primary,
                     shape="diamond",
                 )
             )
