@@ -19,6 +19,10 @@ from continuum_robot.experiments.critical_experiments import (
 )
 from continuum_robot.experiments.builtins import ServoTrackerSyncValidationConfig
 from continuum_robot.experiments.dataset_io import canonical_experiment_output_root
+from continuum_robot.experiments.single_segment_repeatability import SingleSegmentRepeatabilityConfig
+from continuum_robot.experiments.single_segment_repeatability_outputs import (
+    build_single_segment_repeatability_summary_pairs,
+)
 from continuum_robot.tracking.timing_benchmark import (
     compute_servo_tracker_sync_summary,
     compute_servo_sync_summary,
@@ -181,6 +185,7 @@ class ExperimentController:
 
         tracking_snapshot = self.tracking_service.get_snapshot()
         neutral_setpoints = self.servo_service.load_neutral_setpoints()
+        servo_calibration_summary = self.servo_service.neutral_calibration.get_calibration_summary()
         preflight = evaluate_preflight(
             experiment_name=selected_experiment,
             config_payload=config_payload,
@@ -193,6 +198,7 @@ class ExperimentController:
             output_root=output_root,
             planned_output_dir=planned_output_dir,
             project_root=self.project_root,
+            servo_calibration_summary=servo_calibration_summary,
         )
 
         preview = None
@@ -526,9 +532,11 @@ class ExperimentController:
                 default_config_path=descriptor.default_config_path,
             )
         preferred_order = [
+            "single_segment_repeatability",
             "repeatability_dataset",
             "aurora_grid_accuracy",
             "tracker_timing_validation",
+            "servo_tracker_sync_validation",
             "pretension_validation",
             "command_schedule_validation",
             "collect_pose_command_dataset",
@@ -612,8 +620,15 @@ class ExperimentController:
             self.state.progress_current = int(current)
             self.state.progress_total = int(total)
             phase = payload.get("phase")
-            phase_text = f" phase={phase}" if phase else ""
-            self.state.status_message = f"Running {self.state.selected_experiment}:{phase_text} {current}/{total}"
+            detail_parts = [f"phase={phase}"] if phase else []
+            if payload.get("current_target") is not None:
+                detail_parts.append(f"target=T{int(payload.get('current_target')):02d}")
+            if payload.get("source_target") is not None:
+                detail_parts.append(f"source=T{int(payload.get('source_target')):02d}")
+            if payload.get("revisit_index") is not None:
+                detail_parts.append(f"revisit={int(payload.get('revisit_index')) + 1}")
+            detail_text = " " + " ".join(detail_parts) if detail_parts else ""
+            self.state.status_message = f"Running {self.state.selected_experiment}:{detail_text} {current}/{total}"
 
     def _on_sample(self, sample) -> None:
         with self._lock:
@@ -686,6 +701,11 @@ class ExperimentController:
 
     @staticmethod
     def _history_metric_label(*, experiment_name: str, metrics: dict[str, Any]) -> str:
+        if experiment_name == "single_segment_repeatability":
+            value = metrics.get("overall_repeatability_rms_mm")
+            if value is not None:
+                return f"repeatability={float(value):.3f} mm"
+            return f"repeat_samples={int(metrics.get('valid_repeat_sample_count', 0) or 0)}"
         if experiment_name == "repeatability_dataset":
             value = metrics.get("overall_repeatability_rms_mm")
             return f"repeatability={float(value):.3f} mm" if value is not None else ""
@@ -991,6 +1011,22 @@ class ExperimentController:
         ]
         if bundle.paths.config_snapshot_path is not None:
             pairs.append(("Config Snapshot", str(bundle.paths.config_snapshot_path)))
+        if bundle_experiment_name == "single_segment_repeatability":
+            metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
+            clusters_path = bundle.paths.output_dir / "repeatability_clusters.png"
+            rmse_path = bundle.paths.output_dir / "repeatability_rmse_summary.png"
+            path_path = bundle.paths.output_dir / "repeatability_path_dependence.png"
+            summary_text_path = bundle.paths.output_dir / "repeatability_summary.txt"
+            pairs.extend(build_single_segment_repeatability_summary_pairs(metrics=metrics))
+            pairs.extend(
+                [
+                    ("Clusters Plot", str(clusters_path) if clusters_path.exists() else "not written"),
+                    ("RMSE Plot", str(rmse_path) if rmse_path.exists() else "not written"),
+                    ("Path Plot", str(path_path) if path_path.exists() else "not written"),
+                    ("Summary Note", str(summary_text_path) if summary_text_path.exists() else "not written"),
+                ]
+            )
+            return pairs
         if bundle_experiment_name == "aurora_grid_accuracy":
             metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
             plot_path = bundle.paths.output_dir / "grid_accuracy_alignment.png"
@@ -1159,6 +1195,8 @@ class ExperimentController:
     def _mode_label(experiment_name: str, config_payload: dict[str, Any]) -> str:
         if experiment_name == "replay_runner":
             return "offline"
+        if experiment_name == "single_segment_repeatability":
+            return "live thesis repeatability"
         if experiment_name == "command_schedule_validation":
             return "software validation"
         if experiment_name == "tracker_timing_validation":
@@ -1171,6 +1209,13 @@ class ExperimentController:
 
     @staticmethod
     def _config_summary_label(experiment_name: str, config_payload: dict[str, Any]) -> str:
+        if experiment_name == "single_segment_repeatability":
+            config = SingleSegmentRepeatabilityConfig.from_dict(config_payload)
+            return (
+                f"legacy 17 targets, 272 visits, 544 captures, "
+                f"settle {float(config.settle_time_s):.2f}s, "
+                f"tool {config.tool_id}"
+            )
         if experiment_name == "repeatability_dataset":
             schedule = RepeatabilityDatasetConfig.from_dict(config_payload).schedule
             try:

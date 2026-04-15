@@ -15,6 +15,7 @@ STATUS_INVALID_INSUFFICIENT_SAMPLES = "invalid_due_to_insufficient_samples"
 STATUS_INVALID_INVALID_TRANSFORMS = "invalid_due_to_invalid_transforms"
 
 REQUIRED_FIELDS_BY_EXPERIMENT: dict[str, tuple[str, ...]] = {
+    "single_segment_repeatability": ("phase", "target_index", "revisit_index", "approach_index", "commanded_cable_deltas_cm", "pose_in_robot_frame"),
     "repeatability_dataset": ("phase", "target_index", "revisit_index", "commanded_cable_deltas_cm", "pose_in_tracker_frame"),
     "aurora_grid_accuracy": ("phase", "target_index", "pose_in_tracker_frame"),
     "pivot_calibration": ("phase", "pose_in_tracker_frame"),

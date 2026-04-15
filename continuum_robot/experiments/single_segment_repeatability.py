@@ -1,0 +1,791 @@
+"""Canonical live single-segment repeatability experiment.
+
+This module recreates the legacy thesis repeatability protocol while using the
+current tracker, servo, registration, runtime-tip, and dataset infrastructure.
+The legacy reference used direct Aurora/Arduino access; this implementation
+does not.
+"""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+import math
+import random
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from continuum_robot.experiments.framework import BaseExperiment, ExperimentHardwareRequirements, ExperimentSession
+from continuum_robot.experiments.sample_builders import sample_from_tracking_snapshot
+from continuum_robot.experiments.schemas import ExperimentTimeseriesSample
+from continuum_robot.experiments.validation import STATUS_INVALID_INSUFFICIENT_SAMPLES, STATUS_SUCCESS
+
+
+LEGACY_TARGET_COUNT = 17
+LEGACY_APPROACHES_PER_TARGET = 16
+LEGACY_VISIT_COUNT = LEGACY_TARGET_COUNT * LEGACY_APPROACHES_PER_TARGET
+LEGACY_CAPTURE_COUNT = LEGACY_VISIT_COUNT * 2
+
+
+@dataclass(frozen=True)
+class LegacyRepeatabilityTarget:
+    """One legacy single-segment target."""
+
+    target_index: int
+    label: str
+    ring: str
+    ring_radius_mm: float
+    angle_rad: float
+    angle_deg: float
+    cable_deltas_mm: list[float]
+    cable_deltas_cm: list[float]
+    group_tags: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class LegacyRepeatabilityVisit:
+    """One legacy revisit pair: approach target, then desired target."""
+
+    sequence_index: int
+    target_index: int
+    approach_index: int
+    revisit_index: int
+    approach_target: LegacyRepeatabilityTarget
+    repeat_target: LegacyRepeatabilityTarget
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["approach_target"] = self.approach_target.to_dict()
+        payload["repeat_target"] = self.repeat_target.to_dict()
+        return payload
+
+
+@dataclass
+class SingleSegmentRepeatabilityConfig:
+    """Config for the live legacy 17-point single-segment repeatability run."""
+
+    tool_id: str = "0A"
+    settle_time_s: float = 4.0
+    capture_timeout_s: float = 1.0
+    capture_poll_interval_s: float = 0.02
+    max_tracker_age_s: float = 0.25
+    random_seed: int = 0
+    run_label: str = ""
+    require_robot_frame_tip: bool = True
+    return_to_center_on_finalize: bool = True
+    fail_on_rejected_capture: bool = False
+    thesis_goal_rms_mm: float = 1.0
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> "SingleSegmentRepeatabilityConfig":
+        payload = dict(payload or {})
+        return cls(
+            tool_id=str(payload.get("tool_id", "0A") or "0A").strip().upper(),
+            settle_time_s=max(0.0, float(payload.get("settle_time_s", 4.0))),
+            capture_timeout_s=max(0.0, float(payload.get("capture_timeout_s", 1.0))),
+            capture_poll_interval_s=max(0.001, float(payload.get("capture_poll_interval_s", 0.02))),
+            max_tracker_age_s=max(0.0, float(payload.get("max_tracker_age_s", 0.25))),
+            random_seed=int(payload.get("random_seed", 0)),
+            run_label=str(payload.get("run_label", "") or ""),
+            require_robot_frame_tip=bool(payload.get("require_robot_frame_tip", True)),
+            return_to_center_on_finalize=bool(payload.get("return_to_center_on_finalize", True)),
+            fail_on_rejected_capture=bool(payload.get("fail_on_rejected_capture", False)),
+            thesis_goal_rms_mm=float(payload.get("thesis_goal_rms_mm", 1.0)),
+        )
+
+
+class SingleSegmentRepeatabilityExperiment(BaseExperiment):
+    """Live repeatability experiment preserving the old 17-target revisit protocol."""
+
+    name = "single_segment_repeatability"
+    description = (
+        "Faithful live recreation of the legacy single-segment 17-target repeatability protocol: "
+        "center, 6 mm ring, 12 mm ring, and every-target revisit from all other targets."
+    )
+    hardware_requirements = ExperimentHardwareRequirements(
+        tracking_required=True,
+        servo_required=True,
+        registration_required=True,
+        mock_compatible=False,
+    )
+
+    def __init__(self, config: SingleSegmentRepeatabilityConfig) -> None:
+        super().__init__(config)
+        self.config: SingleSegmentRepeatabilityConfig
+        self._targets = build_legacy_17_point_targets()
+        self._visits = generate_legacy_revisit_sequence(self._targets, seed=self.config.random_seed)
+        self._neutral_ticks: list[int] = []
+        self._servo_ids: list[int] = []
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None = None) -> "SingleSegmentRepeatabilityExperiment":
+        return cls(SingleSegmentRepeatabilityConfig.from_dict(payload))
+
+    def setup(self, session: ExperimentSession) -> None:
+        self._servo_ids = _configured_single_segment_servo_ids(session)
+        self._neutral_ticks = _load_neutral_ticks(session, self._servo_ids)
+        session.set_metric("target_catalog", [target.to_dict() for target in self._targets])
+        session.set_metric("planned_visit_count", LEGACY_VISIT_COUNT)
+        session.set_metric("planned_capture_count", LEGACY_CAPTURE_COUNT)
+        session.set_metric("protocol", "legacy_17_target_single_segment_all_other_approaches")
+        session.set_metric("run_label", str(self.config.run_label or ""))
+
+    def precheck(self, session: ExperimentSession) -> None:
+        _precheck_single_segment_repeatability(
+            session=session,
+            config=self.config,
+            servo_ids=self._servo_ids,
+            neutral_ticks=self._neutral_ticks,
+        )
+
+    def execute(self, session: ExperimentSession) -> None:
+        total_captures = LEGACY_CAPTURE_COUNT
+        sample_index = 0
+        rejected_count = 0
+        with session.context.servo_service.exclusive_bus_operation(
+            owner=self.name,
+            reason="single-segment repeatability",
+        ):
+            for visit in self._visits:
+                session.raise_if_stop_requested()
+                approach_payload = self._command_target(session, visit.approach_target)
+                session.context.sleep_fn(float(self.config.settle_time_s))
+                approach_sample = self._capture_after_move(
+                    session,
+                    visit=visit,
+                    target=visit.approach_target,
+                    phase="approach",
+                    sample_index=sample_index,
+                    commanded_motor_values=approach_payload,
+                )
+                sample_index += 1
+                if not bool(approach_sample.extra.get("capture_accepted", False)):
+                    rejected_count += 1
+                session.add_sample(approach_sample)
+                session.update_progress(
+                    sample_index,
+                    total_captures,
+                    _progress_payload(visit=visit, phase="approach", sample_index=sample_index),
+                )
+                self._raise_if_rejected_and_fatal(approach_sample)
+
+                session.raise_if_stop_requested()
+                repeat_payload = self._command_target(session, visit.repeat_target)
+                session.context.sleep_fn(float(self.config.settle_time_s))
+                repeat_sample = self._capture_after_move(
+                    session,
+                    visit=visit,
+                    target=visit.repeat_target,
+                    phase="repeat",
+                    sample_index=sample_index,
+                    commanded_motor_values=repeat_payload,
+                )
+                sample_index += 1
+                if not bool(repeat_sample.extra.get("capture_accepted", False)):
+                    rejected_count += 1
+                session.add_sample(repeat_sample)
+                session.update_progress(
+                    sample_index,
+                    total_captures,
+                    _progress_payload(visit=visit, phase="repeat", sample_index=sample_index),
+                )
+                self._raise_if_rejected_and_fatal(repeat_sample)
+
+        if rejected_count:
+            session.add_warning(
+                f"{rejected_count} capture(s) failed tracker freshness/validity gating and were saved as rejected."
+            )
+
+    def finalize(self, session: ExperimentSession) -> None:
+        if not self.config.return_to_center_on_finalize:
+            return
+        if not getattr(session.context.servo_service, "is_connected", False):
+            return
+        if not self._neutral_ticks or not self._servo_ids:
+            return
+        try:
+            self._command_target(session, self._targets[0])
+        except Exception as exc:
+            session.add_warning(f"Could not return robot to center target during finalize: {exc}")
+
+    def summarize(self, session: ExperimentSession) -> dict[str, Any]:
+        metrics = compute_single_segment_repeatability_metrics(
+            session.samples,
+            targets=self._targets,
+            tool_id=self.config.tool_id,
+            thesis_goal_rms_mm=float(self.config.thesis_goal_rms_mm),
+            require_robot_frame_tip=bool(self.config.require_robot_frame_tip),
+        )
+        accepted_repeat_count = int(metrics.get("valid_repeat_sample_count", 0) or 0)
+        force_status = STATUS_SUCCESS if accepted_repeat_count > 0 else STATUS_INVALID_INSUFFICIENT_SAMPLES
+        metrics["summary_requirements"] = {
+            "force_status": force_status,
+            "min_sample_count": 1,
+            "require_registration": True,
+            "registration_available": bool(metrics.get("registration_available", False)),
+            "require_tip_calibration": True,
+            "tip_calibration_available": bool(metrics.get("tip_calibration_available", False)),
+            "invalid_transforms_are_fatal": False,
+        }
+        return metrics
+
+    def write_outputs(self, session: ExperimentSession, paths, summary) -> None:
+        from continuum_robot.experiments.single_segment_repeatability_outputs import (
+            write_single_segment_repeatability_outputs,
+        )
+
+        write_single_segment_repeatability_outputs(
+            output_dir=paths.output_dir,
+            metadata=session.metadata,
+            summary=summary,
+            samples=session.samples,
+        )
+
+    def _command_target(
+        self,
+        session: ExperimentSession,
+        target: LegacyRepeatabilityTarget,
+    ) -> dict[str, int | float | None]:
+        command = session.context.servo_service.command_displacement(
+            tendon_displacements_cm=[float(value) for value in target.cable_deltas_cm],
+            neutral_ticks=list(self._neutral_ticks),
+            servo_ids=list(self._servo_ids),
+        )
+        return {str(servo_id): int(goal) for servo_id, goal in command.positions_by_id.items()}
+
+    def _capture_after_move(
+        self,
+        session: ExperimentSession,
+        *,
+        visit: LegacyRepeatabilityVisit,
+        target: LegacyRepeatabilityTarget,
+        phase: str,
+        sample_index: int,
+        commanded_motor_values: dict[str, int | float | None],
+    ) -> ExperimentTimeseriesSample:
+        snapshot, gate = _wait_for_valid_capture(
+            session=session,
+            tool_id=self.config.tool_id,
+            max_tracker_age_s=float(self.config.max_tracker_age_s),
+            timeout_s=float(self.config.capture_timeout_s),
+            poll_interval_s=float(self.config.capture_poll_interval_s),
+            require_robot_frame_tip=bool(self.config.require_robot_frame_tip),
+        )
+        telemetry_payload = _read_servo_telemetry_payload(session, self._servo_ids)
+        flags = [] if gate["accepted"] else ["capture_rejected", str(gate["reason"])]
+        if getattr(snapshot, "registration_state", "") != "loaded":
+            flags.append("registration_missing")
+        if getattr(snapshot, "T_robot_tip", None) is not None and getattr(snapshot, "tip_pose_status", "") == "ok":
+            flags.append("full_pose_available")
+        extra = {
+            "protocol": "legacy_17_target_single_segment",
+            "capture_role": phase,
+            "capture_accepted": bool(gate["accepted"]),
+            "capture_reject_reason": None if gate["accepted"] else str(gate["reason"]),
+            "tracker_gate": gate,
+            "target_label": target.label,
+            "target_ring": target.ring,
+            "target_ring_radius_mm": float(target.ring_radius_mm),
+            "target_angle_deg": float(target.angle_deg),
+            "target_cable_deltas_mm": [float(value) for value in target.cable_deltas_mm],
+            "target_cable_deltas_cm": [float(value) for value in target.cable_deltas_cm],
+            "source_target_index": int(visit.approach_index),
+            "desired_target_index": int(visit.target_index),
+            "legacy_sequence_index": int(visit.sequence_index),
+            "settle_time_s": float(self.config.settle_time_s),
+            "servo_telemetry": telemetry_payload,
+        }
+        return sample_from_tracking_snapshot(
+            session,
+            snapshot=snapshot,
+            phase=phase,
+            step_index=int(sample_index),
+            sample_index=int(sample_index),
+            commanded_cable_deltas_cm=[float(value) for value in target.cable_deltas_cm],
+            commanded_motor_values=commanded_motor_values,
+            status_flags=flags,
+            extra=extra,
+            target_index=int(target.target_index),
+            revisit_index=int(visit.revisit_index),
+            approach_index=int(visit.approach_index),
+            tracker_tool_id=str(self.config.tool_id),
+        )
+
+    def _raise_if_rejected_and_fatal(self, sample: ExperimentTimeseriesSample) -> None:
+        if self.config.fail_on_rejected_capture and not bool(sample.extra.get("capture_accepted", False)):
+            raise RuntimeError(
+                f"Capture rejected at sample {sample.sample_index}: "
+                f"{sample.extra.get('capture_reject_reason', 'unknown')}"
+            )
+
+
+def register_single_segment_repeatability(registry) -> None:
+    """Register the canonical live single-segment repeatability experiment."""
+    registry.register(
+        name=SingleSegmentRepeatabilityExperiment.name,
+        title="Single-Segment Repeatability",
+        description=SingleSegmentRepeatabilityExperiment.description,
+        category="validation",
+        tags=["Repeatability", "Thesis", "Tracking", "Servo"],
+        default_config_path="config/experiment_single_segment_repeatability.example.yaml",
+        factory=SingleSegmentRepeatabilityExperiment.from_dict,
+    )
+
+
+def build_legacy_17_point_targets() -> list[LegacyRepeatabilityTarget]:
+    """Return the exact legacy 17-target single-segment target catalog.
+
+    The target math mirrors the reference repeatability script:
+    ``[0] + [6 mm] * 8 + [12 mm] * 8`` and 16 angular slots. Tendon commands
+    follow the legacy four-cable delta convention
+    ``-length * [cos(theta), sin(theta), -cos(theta), -sin(theta)]``.
+    """
+    cable_lengths_mm = [0.0] + [6.0] * 8 + [12.0] * 8
+    cable_angles_rad = [0.0] + [float(index) * math.pi / 4.0 for index in range(16)]
+    targets: list[LegacyRepeatabilityTarget] = []
+    for index, (length_mm, angle_rad) in enumerate(zip(cable_lengths_mm, cable_angles_rad)):
+        cos_theta = math.cos(float(angle_rad))
+        sin_theta = math.sin(float(angle_rad))
+        deltas_mm = [
+            -float(length_mm) * cos_theta,
+            -float(length_mm) * sin_theta,
+            float(length_mm) * cos_theta,
+            float(length_mm) * sin_theta,
+        ]
+        if index == 0:
+            ring = "center"
+            angle_deg = 0.0
+            group_tags = ["center"]
+        else:
+            ring = "inner" if index <= 8 else "outer"
+            angle_deg = float(((index - 1) % 8) * 45.0)
+            axis_tag = "on_axis" if int(angle_deg) % 90 == 0 else "off_axis"
+            group_tags = [ring, axis_tag]
+        targets.append(
+            LegacyRepeatabilityTarget(
+                target_index=int(index),
+                label=f"T{index:02d}",
+                ring=ring,
+                ring_radius_mm=float(length_mm),
+                angle_rad=float(angle_rad),
+                angle_deg=float(angle_deg),
+                cable_deltas_mm=[_clean_float(value) for value in deltas_mm],
+                cable_deltas_cm=[_clean_float(value / 10.0) for value in deltas_mm],
+                group_tags=group_tags,
+            )
+        )
+    return targets
+
+
+def generate_legacy_revisit_sequence(
+    targets: list[LegacyRepeatabilityTarget] | None = None,
+    *,
+    seed: int = 0,
+) -> list[LegacyRepeatabilityVisit]:
+    """Generate the legacy all-other-target approach sequence.
+
+    For each desired target, all other 16 targets are randomized once. Each
+    visit is executed as an approach capture at the randomized prior target,
+    followed by a repeat capture at the desired target.
+    """
+    catalog = list(targets or build_legacy_17_point_targets())
+    by_index = {int(target.target_index): target for target in catalog}
+    if sorted(by_index) != list(range(LEGACY_TARGET_COUNT)):
+        raise ValueError("Legacy repeatability sequence requires target indices 0..16.")
+    rng = random.Random(int(seed))
+    visits: list[LegacyRepeatabilityVisit] = []
+    sequence_index = 0
+    for desired_index in range(LEGACY_TARGET_COUNT):
+        approach_indices = [index for index in range(LEGACY_TARGET_COUNT) if index != desired_index]
+        rng.shuffle(approach_indices)
+        for revisit_index, approach_index in enumerate(approach_indices):
+            visits.append(
+                LegacyRepeatabilityVisit(
+                    sequence_index=int(sequence_index),
+                    target_index=int(desired_index),
+                    approach_index=int(approach_index),
+                    revisit_index=int(revisit_index),
+                    approach_target=by_index[int(approach_index)],
+                    repeat_target=by_index[int(desired_index)],
+                )
+            )
+            sequence_index += 1
+    return visits
+
+
+def compute_single_segment_repeatability_metrics(
+    samples: list[ExperimentTimeseriesSample],
+    *,
+    targets: list[LegacyRepeatabilityTarget] | None = None,
+    tool_id: str = "0A",
+    thesis_goal_rms_mm: float = 1.0,
+    require_robot_frame_tip: bool = True,
+) -> dict[str, Any]:
+    """Compute legacy-style repeatability metrics from accepted repeat captures."""
+    catalog = list(targets or build_legacy_17_point_targets())
+    catalog_by_index = {int(target.target_index): target for target in catalog}
+    accepted_repeat: list[tuple[ExperimentTimeseriesSample, np.ndarray, str]] = []
+    accepted_approach_count = 0
+    rejected_count = 0
+    for sample in samples:
+        accepted = bool(sample.extra.get("capture_accepted", True)) and "capture_rejected" not in sample.status_flags
+        if not accepted:
+            rejected_count += 1
+            continue
+        position, frame = _extract_repeatability_position(
+            sample,
+            tool_id=tool_id,
+            require_robot_frame_tip=require_robot_frame_tip,
+        )
+        if position is None:
+            rejected_count += 1
+            continue
+        if sample.phase == "repeat":
+            accepted_repeat.append((sample, np.asarray(position, dtype=float), str(frame)))
+        elif sample.phase == "approach":
+            accepted_approach_count += 1
+
+    per_target: dict[str, Any] = {}
+    all_deviations: list[float] = []
+    all_positions: list[np.ndarray] = []
+    position_frames: set[str] = set()
+    path_entries: list[dict[str, Any]] = []
+    for target in catalog:
+        target_rows = [
+            (sample, position, frame)
+            for sample, position, frame in accepted_repeat
+            if int(sample.target_index if sample.target_index is not None else -1) == int(target.target_index)
+        ]
+        if target_rows:
+            positions = np.vstack([position for _sample, position, _frame in target_rows])
+            centroid = np.mean(positions, axis=0)
+            distances = np.linalg.norm(positions - centroid, axis=1)
+            all_deviations.extend(float(value) for value in distances.tolist())
+            all_positions.extend([np.asarray(row, dtype=float) for row in positions])
+            position_frames.update(str(frame) for _sample, _position, frame in target_rows)
+            for (sample, position, _frame), deviation in zip(target_rows, distances):
+                path_entries.append(
+                    {
+                        "target_index": int(target.target_index),
+                        "approach_index": int(sample.approach_index if sample.approach_index is not None else -1),
+                        "revisit_index": int(sample.revisit_index if sample.revisit_index is not None else -1),
+                        "deviation_mm": float(deviation),
+                    }
+                )
+            rmse = float(np.sqrt(np.mean(np.square(distances)))) if len(distances) else None
+            max_dev = float(np.max(distances)) if len(distances) else None
+            centroid_list = [float(value) for value in centroid.tolist()]
+        else:
+            rmse = None
+            max_dev = None
+            centroid_list = []
+            distances = np.asarray([], dtype=float)
+        per_target[str(target.target_index)] = {
+            "target_index": int(target.target_index),
+            "label": target.label,
+            "ring": target.ring,
+            "ring_radius_mm": float(target.ring_radius_mm),
+            "angle_deg": float(target.angle_deg),
+            "group_tags": list(target.group_tags),
+            "repeat_sample_count": int(len(target_rows)),
+            "centroid_mm": centroid_list,
+            "spread_rms_mm": rmse,
+            "rmse_mm": rmse,
+            "max_deviation_mm": max_dev,
+            "mean_deviation_mm": float(np.mean(distances)) if len(distances) else None,
+        }
+
+    overall_rms = _safe_rms(all_deviations)
+    overall_max = float(max(all_deviations)) if all_deviations else None
+    path_rms = _safe_rms([entry["deviation_mm"] for entry in path_entries])
+    group_metrics = _compute_group_metrics(per_target)
+    return {
+        "protocol": "legacy_17_target_single_segment_all_other_approaches",
+        "target_count": LEGACY_TARGET_COUNT,
+        "planned_visit_count": LEGACY_VISIT_COUNT,
+        "planned_capture_count": LEGACY_CAPTURE_COUNT,
+        "valid_repeat_sample_count": int(len(accepted_repeat)),
+        "valid_approach_sample_count": int(accepted_approach_count),
+        "invalid_sample_count": int(rejected_count),
+        "rejected_capture_count": int(rejected_count),
+        "per_target_metrics": per_target,
+        "overall_repeatability_rms_mm": overall_rms,
+        "overall_max_deviation_mm": overall_max,
+        "path_dependence_rms_mm": path_rms,
+        "path_dependence_by_approach": path_entries,
+        "group_metrics": group_metrics,
+        "target_catalog": [target.to_dict() for target in catalog],
+        "position_frame": _position_frame_label(position_frames, require_robot_frame_tip=require_robot_frame_tip),
+        "registration_available": any("registration_missing" not in sample.status_flags for sample in samples),
+        "tip_calibration_available": any("full_pose_available" in sample.status_flags for sample in samples),
+        "thesis_goal_rms_mm": float(thesis_goal_rms_mm),
+        "thesis_goal_pass": bool(overall_rms is not None and overall_rms <= float(thesis_goal_rms_mm)),
+    }
+
+
+def _precheck_single_segment_repeatability(
+    *,
+    session: ExperimentSession,
+    config: SingleSegmentRepeatabilityConfig,
+    servo_ids: list[int],
+    neutral_ticks: list[int],
+) -> None:
+    settings = session.context.settings
+    snapshot = session.context.tracking_service.get_snapshot()
+    backend_name = str(snapshot.selected_backend_name or snapshot.backend_identity or "").lower()
+    if "bridge" in backend_name:
+        raise RuntimeError("Single-segment repeatability must use the active Python NDI tracker backend, not tracker_bridge.")
+    if bool(settings.runtime.mock_mode):
+        raise RuntimeError("Single-segment repeatability is a live thesis experiment. Disable mock mode before running.")
+    if snapshot.canonical_state != "streaming_healthy":
+        raise RuntimeError(f"Tracker must be connected and healthy; current state is {snapshot.canonical_state}.")
+    if snapshot.registration_state != "loaded":
+        raise RuntimeError("Accepted base registration must be loaded before repeatability.")
+    if snapshot.runtime_tip_calibration_state != "loaded":
+        raise RuntimeError(
+            f"Accepted 0A runtime tip calibration must be loaded; current state is {snapshot.runtime_tip_calibration_state}."
+        )
+    if snapshot.runtime_tip_identity_fallback:
+        raise RuntimeError("Runtime tip calibration is using identity/fallback; repeatability requires calibrated T_coil_tip.")
+    if config.require_robot_frame_tip and (snapshot.tip_pose_status != "ok" or snapshot.T_robot_tip is None):
+        raise RuntimeError(f"Live robot-frame tip pose must be active; tip pose status is {snapshot.tip_pose_status}.")
+    gate = _tracker_gate_status(
+        snapshot=snapshot,
+        tool_id=config.tool_id,
+        max_tracker_age_s=float(config.max_tracker_age_s),
+        require_robot_frame_tip=bool(config.require_robot_frame_tip),
+    )
+    if not gate["accepted"]:
+        raise RuntimeError(f"Tracker capture gate is blocked before run start: {gate['reason']}.")
+    if not getattr(session.context.servo_service, "is_connected", False):
+        raise RuntimeError("OpenRB / DYNAMIXEL servo service must be connected.")
+    if len(servo_ids) != 4:
+        raise RuntimeError(f"Single-segment repeatability requires exactly 4 configured servos; found {servo_ids}.")
+    if len(neutral_ticks) != len(servo_ids):
+        raise RuntimeError("Neutral setpoints are missing for one or more configured servos.")
+    calibration_summary = session.context.servo_service.neutral_calibration.get_calibration_summary()
+    if not calibration_summary.exists or not calibration_summary.compatible:
+        raise RuntimeError(f"Servo calibration artifact is not ready: {calibration_summary.message}")
+    not_pretensioned = [
+        servo_id
+        for servo_id in servo_ids
+        if (
+            (entry := calibration_summary.servo_entries.get(int(servo_id))) is None
+            or entry.pretension_result_status != "accepted"
+        )
+    ]
+    if not_pretensioned:
+        raise RuntimeError(
+            "Accepted pretension state is required for repeatability. Missing accepted pretension for servo(s): "
+            + ", ".join(str(value) for value in not_pretensioned)
+        )
+    for servo_id in servo_ids:
+        assessment = session.context.servo_service.assess_motion(int(servo_id), require_calibrated_bounds=True)
+        if not assessment.ready:
+            raise RuntimeError(f"Servo {servo_id} is not ready for repeatability commands: {assessment.reason}")
+
+
+def _configured_single_segment_servo_ids(session: ExperimentSession) -> list[int]:
+    robot = session.context.settings.robot
+    servo_ids = [int(value) for value in (robot.tendon_to_servo or robot.servo_ids)]
+    if not servo_ids:
+        servo_ids = [int(value) for value in robot.servo_ids]
+    return servo_ids
+
+
+def _load_neutral_ticks(session: ExperimentSession, servo_ids: list[int]) -> list[int]:
+    neutral_map = session.context.servo_service.load_neutral_setpoints()
+    return [int(neutral_map[servo_id]) for servo_id in servo_ids if servo_id in neutral_map]
+
+
+def _wait_for_valid_capture(
+    *,
+    session: ExperimentSession,
+    tool_id: str,
+    max_tracker_age_s: float,
+    timeout_s: float,
+    poll_interval_s: float,
+    require_robot_frame_tip: bool,
+) -> tuple[Any, dict[str, Any]]:
+    deadline = session.context.monotonic_fn() + float(timeout_s)
+    last_snapshot = session.context.tracking_service.get_snapshot()
+    last_gate = _tracker_gate_status(
+        snapshot=last_snapshot,
+        tool_id=tool_id,
+        max_tracker_age_s=max_tracker_age_s,
+        require_robot_frame_tip=require_robot_frame_tip,
+    )
+    if last_gate["accepted"]:
+        return last_snapshot, last_gate
+    while session.context.monotonic_fn() < deadline:
+        session.raise_if_stop_requested()
+        session.context.sleep_fn(float(poll_interval_s))
+        last_snapshot = session.context.tracking_service.get_snapshot()
+        last_gate = _tracker_gate_status(
+            snapshot=last_snapshot,
+            tool_id=tool_id,
+            max_tracker_age_s=max_tracker_age_s,
+            require_robot_frame_tip=require_robot_frame_tip,
+        )
+        if last_gate["accepted"]:
+            return last_snapshot, last_gate
+    return last_snapshot, last_gate
+
+
+def _tracker_gate_status(
+    *,
+    snapshot,
+    tool_id: str,
+    max_tracker_age_s: float,
+    require_robot_frame_tip: bool,
+) -> dict[str, Any]:
+    tool_key = str(tool_id or "0A").upper()
+    tool = snapshot.tools.get(tool_key)
+    reasons: list[str] = []
+    age = snapshot.tracker_data_age_s
+    if snapshot.canonical_state not in {"streaming_healthy", "streaming_degraded"}:
+        reasons.append(f"tracker_state={snapshot.canonical_state}")
+    if snapshot.tracker_data_stale:
+        reasons.append("tracker_data_stale")
+    if age is None:
+        reasons.append("missing_tracker_age")
+    elif float(age) > float(max_tracker_age_s):
+        reasons.append(f"tracker_age_{float(age):.3f}s_exceeds_{float(max_tracker_age_s):.3f}s")
+    if tool is None:
+        reasons.append(f"missing_tool_{tool_key}")
+    else:
+        if not tool.present:
+            reasons.append(f"tool_{tool_key}_not_present")
+        if tool.valid is False:
+            reasons.append(f"tool_{tool_key}_invalid")
+        if tool.translation_mm is None:
+            reasons.append(f"tool_{tool_key}_missing_translation")
+        if str(tool.tracking_state).lower() in {"invalid", "missing", "out_of_volume"}:
+            reasons.append(f"tool_{tool_key}_state_{tool.tracking_state}")
+    if require_robot_frame_tip:
+        if snapshot.runtime_tip_calibration_state != "loaded":
+            reasons.append(f"runtime_tip_state_{snapshot.runtime_tip_calibration_state}")
+        if snapshot.runtime_tip_identity_fallback:
+            reasons.append("runtime_tip_identity_fallback")
+        if snapshot.tip_pose_status != "ok":
+            reasons.append(f"tip_pose_status_{snapshot.tip_pose_status}")
+        if snapshot.T_robot_tip is None:
+            reasons.append("missing_T_robot_tip")
+    return {
+        "accepted": not reasons,
+        "reason": "ok" if not reasons else "; ".join(reasons),
+        "tracker_age_s": None if age is None else float(age),
+        "tracker_frame_id": snapshot.last_frame_number,
+        "tip_pose_status": snapshot.tip_pose_status,
+        "runtime_tip_calibration_state": snapshot.runtime_tip_calibration_state,
+        "tool_id": tool_key,
+        "tool_present": bool(tool.present) if tool is not None else False,
+        "tool_valid": tool.valid if tool is not None else None,
+        "tool_tracking_state": tool.tracking_state if tool is not None else "missing",
+    }
+
+
+def _read_servo_telemetry_payload(session: ExperimentSession, servo_ids: list[int]) -> dict[str, Any]:
+    try:
+        telemetry_by_id = session.context.servo_service.read_live_telemetry([int(value) for value in servo_ids])
+    except Exception as exc:
+        return {"read_error": str(exc)}
+    payload: dict[str, Any] = {}
+    for servo_id, telemetry in sorted(telemetry_by_id.items()):
+        payload[str(servo_id)] = {
+            "present_position_ticks": telemetry.present_position,
+            "present_current_ma": telemetry.present_current_ma,
+            "torque_enabled": telemetry.torque_enabled,
+            "operating_mode": telemetry.operating_mode,
+            "hardware_error": telemetry.hardware_error,
+            "present_voltage_mv": telemetry.present_voltage_mv,
+            "present_temperature_c": telemetry.present_temperature_c,
+        }
+    return payload
+
+
+def _extract_repeatability_position(
+    sample: ExperimentTimeseriesSample,
+    *,
+    tool_id: str,
+    require_robot_frame_tip: bool,
+) -> tuple[list[float] | None, str | None]:
+    tip_payload = sample.pose_in_robot_frame.get("tip", {})
+    tip_position = tip_payload.get("translation_mm")
+    if isinstance(tip_position, list) and len(tip_position) == 3:
+        return [float(value) for value in tip_position], "robot"
+    if require_robot_frame_tip:
+        return None, None
+    tool_payload = sample.pose_in_tracker_frame.get(str(tool_id).upper(), {})
+    tracker_position = tool_payload.get("translation_mm")
+    if isinstance(tracker_position, list) and len(tracker_position) == 3:
+        return [float(value) for value in tracker_position], "tracker"
+    return None, None
+
+
+def _compute_group_metrics(per_target: dict[str, Any]) -> dict[str, Any]:
+    group_values: dict[str, dict[str, list[float]]] = {
+        "ring": {},
+        "axis_class": {},
+        "magnitude_class": {},
+    }
+    for target_metrics in per_target.values():
+        rms = target_metrics.get("spread_rms_mm")
+        if rms is None:
+            continue
+        ring = str(target_metrics.get("ring", "unknown"))
+        group_values["ring"].setdefault(ring, []).append(float(rms))
+        tags = set(str(value) for value in (target_metrics.get("group_tags") or []))
+        if "on_axis" in tags or "off_axis" in tags:
+            axis = "on_axis" if "on_axis" in tags else "off_axis"
+            group_values["axis_class"].setdefault(axis, []).append(float(rms))
+        if ring in {"inner", "outer"}:
+            magnitude = "low" if ring == "inner" else "high"
+            group_values["magnitude_class"].setdefault(magnitude, []).append(float(rms))
+    metrics: dict[str, Any] = {}
+    for group_name, values_by_label in group_values.items():
+        metrics[group_name] = {
+            label: {
+                "target_count": int(len(values)),
+                "mean_target_rms_mm": float(np.mean(values)) if values else None,
+                "max_target_rms_mm": float(np.max(values)) if values else None,
+            }
+            for label, values in sorted(values_by_label.items())
+        }
+    return metrics
+
+
+def _progress_payload(*, visit: LegacyRepeatabilityVisit, phase: str, sample_index: int) -> dict[str, Any]:
+    return {
+        "phase": phase,
+        "sample_index": int(sample_index),
+        "current_target": int(visit.target_index),
+        "source_target": int(visit.approach_index),
+        "revisit_index": int(visit.revisit_index),
+    }
+
+
+def _safe_rms(values: list[float]) -> float | None:
+    if not values:
+        return None
+    array = np.asarray(values, dtype=float)
+    return float(np.sqrt(np.mean(np.square(array))))
+
+
+def _position_frame_label(frames: set[str], *, require_robot_frame_tip: bool) -> str:
+    if not frames:
+        return "robot" if require_robot_frame_tip else "unknown"
+    if frames == {"robot"}:
+        return "robot"
+    if frames == {"tracker"}:
+        return "tracker"
+    return "mixed"
+
+
+def _clean_float(value: float) -> float:
+    numeric = float(value)
+    return 0.0 if abs(numeric) < 1e-12 else numeric

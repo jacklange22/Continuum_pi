@@ -54,6 +54,11 @@ from continuum_robot.experiments.builtins import (
     ServoTrackerSyncValidationConfig,
     TrackerTimingValidationConfig,
 )
+from continuum_robot.experiments.single_segment_repeatability import (
+    SingleSegmentRepeatabilityConfig,
+    build_legacy_17_point_targets,
+    generate_legacy_revisit_sequence,
+)
 from continuum_robot.gui.controllers.experiment_controller import ExperimentViewState
 from continuum_robot.gui.theme import COLORS, chip_stylesheet, semantic_chip_colors
 from continuum_robot.gui.view_utils import preserve_scroll_position, set_line_edit_text, set_text_document
@@ -596,6 +601,178 @@ class RepeatabilityDatasetPage(ExperimentPageBase):
                 ("Thesis Goal", "< 1.0 mm overall repeatability RMS"),
             ]
         )
+
+
+class SingleSegmentRepeatabilityPage(ExperimentPageBase):
+    show_visualization = True
+    page_hint = (
+        "Live thesis repeatability protocol: the legacy 17-target single-segment pattern, "
+        "with each desired target revisited after approaching from every other target. "
+        "This page requires accepted registration, accepted 0A runtime tip calibration, connected servos, "
+        "and accepted pretension state."
+    )
+
+    def __init__(self, controller, experiment_name: str, parent=None) -> None:
+        super().__init__(controller, experiment_name, parent)
+        self.run_button.setText("Run 17-Target Repeatability")
+        self._target_table_signature: tuple[tuple[str, str, str, str, str], ...] | None = None
+
+    def _build_parameter_sections(self) -> None:
+        protocol_card = ExperimentCard(
+            "Protocol",
+            "Fixed legacy protocol: 17 targets, 272 approach/repeat visits, 544 planned captures. "
+            "Repeatability metrics use the repeat captures after returning to the desired target.",
+        )
+        self.protocol_summary_widget = KeyValueSummaryWidget()
+        protocol_card.body_layout.addWidget(self.protocol_summary_widget)
+
+        config_card = ExperimentCard(
+            "Run Parameters",
+            "Only timing and gating parameters are exposed here. Target geometry and sequence structure are intentionally fixed.",
+        )
+        form = QFormLayout()
+        self.tool_id_edit = QLineEdit()
+        self.tool_id_edit.editingFinished.connect(
+            lambda: self.controller.set_config_value("tool_id", self.tool_id_edit.text().strip().upper() or "0A")
+        )
+        self.settle_time_spin = QDoubleSpinBox()
+        self.settle_time_spin.setRange(0.0, 60.0)
+        self.settle_time_spin.setDecimals(3)
+        self.settle_time_spin.setSingleStep(0.25)
+        self.settle_time_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("settle_time_s", float(value))
+        )
+        self.capture_timeout_spin = QDoubleSpinBox()
+        self.capture_timeout_spin.setRange(0.0, 10.0)
+        self.capture_timeout_spin.setDecimals(3)
+        self.capture_timeout_spin.setSingleStep(0.05)
+        self.capture_timeout_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("capture_timeout_s", float(value))
+        )
+        self.capture_poll_spin = QDoubleSpinBox()
+        self.capture_poll_spin.setRange(0.001, 1.0)
+        self.capture_poll_spin.setDecimals(3)
+        self.capture_poll_spin.setSingleStep(0.005)
+        self.capture_poll_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("capture_poll_interval_s", float(value))
+        )
+        self.max_age_spin = QDoubleSpinBox()
+        self.max_age_spin.setRange(0.0, 5.0)
+        self.max_age_spin.setDecimals(3)
+        self.max_age_spin.setSingleStep(0.05)
+        self.max_age_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_tracker_age_s", float(value))
+        )
+        self.seed_spin = QSpinBox()
+        self.seed_spin.setRange(0, 999999)
+        self.seed_spin.valueChanged.connect(lambda value: self.controller.set_config_value("random_seed", int(value)))
+        self.run_label_edit = QLineEdit()
+        self.run_label_edit.editingFinished.connect(
+            lambda: self.controller.set_config_value("run_label", self.run_label_edit.text().strip())
+        )
+        self.return_center_check = QCheckBox("Return to center on finalize")
+        self.return_center_check.toggled.connect(
+            lambda value: self.controller.set_config_value("return_to_center_on_finalize", bool(value))
+        )
+        self.fail_rejected_check = QCheckBox("Abort on first rejected capture")
+        self.fail_rejected_check.toggled.connect(
+            lambda value: self.controller.set_config_value("fail_on_rejected_capture", bool(value))
+        )
+        form.addRow("Runtime Tool", self.tool_id_edit)
+        form.addRow("Settle Time (s)", self.settle_time_spin)
+        form.addRow("Capture Timeout (s)", self.capture_timeout_spin)
+        form.addRow("Capture Poll (s)", self.capture_poll_spin)
+        form.addRow("Max Tracker Age (s)", self.max_age_spin)
+        form.addRow("Random Seed", self.seed_spin)
+        form.addRow("Run Label", self.run_label_edit)
+        form.addRow("Finalize", self.return_center_check)
+        form.addRow("Rejected Captures", self.fail_rejected_check)
+        config_card.body_layout.addLayout(form)
+
+        target_card = ExperimentCard(
+            "Fixed Target Catalog",
+            "Target 0 is center; targets 1-8 are a 6 mm cable-displacement ring; targets 9-16 are a 12 mm ring.",
+        )
+        self.target_table = QTableWidget(0, 5)
+        self.target_table.setHorizontalHeaderLabels(["Target", "Ring", "Angle", "Command (mm)", "Approaches"])
+        self.target_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.target_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.target_table.verticalHeader().setVisible(False)
+        self.target_table.horizontalHeader().setStretchLastSection(True)
+        self.target_table.setMinimumHeight(260)
+        target_card.body_layout.addWidget(self.target_table)
+
+        self.parameter_layout.addWidget(protocol_card)
+        self.parameter_layout.addWidget(config_card)
+        self.parameter_layout.addWidget(target_card)
+
+    def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
+        _ = state
+        config = SingleSegmentRepeatabilityConfig.from_dict(self.controller.config_payload())
+        self._set_line_text(self.tool_id_edit, str(config.tool_id or "0A"))
+        self._set_double(self.settle_time_spin, float(config.settle_time_s))
+        self._set_double(self.capture_timeout_spin, float(config.capture_timeout_s))
+        self._set_double(self.capture_poll_spin, float(config.capture_poll_interval_s))
+        self._set_double(self.max_age_spin, float(config.max_tracker_age_s))
+        self._set_spin(self.seed_spin, int(config.random_seed))
+        self._set_line_text(self.run_label_edit, str(config.run_label or ""))
+        self._set_checkbox(self.return_center_check, bool(config.return_to_center_on_finalize))
+        self._set_checkbox(self.fail_rejected_check, bool(config.fail_on_rejected_capture))
+        self._sync_protocol_summary(config)
+        self._sync_target_table(config)
+
+    def _sync_protocol_summary(self, config: SingleSegmentRepeatabilityConfig) -> None:
+        visits = generate_legacy_revisit_sequence(seed=int(config.random_seed))
+        planned_captures = len(visits) * 2
+        total_time_min = (planned_captures * float(config.settle_time_s)) / 60.0
+        self.protocol_summary_widget.set_pairs(
+            [
+                ("Protocol", "Legacy 17-target single segment"),
+                ("Targets", "17 (center + 8 inner + 8 outer)"),
+                ("Approach Visits", str(len(visits))),
+                ("Planned Captures", str(planned_captures)),
+                ("Repeat Captures Used For RMSE", str(len(visits))),
+                ("Estimated Settle Time", f"{total_time_min:.1f} min"),
+                ("Required Pose Frame", "robot/base frame via 0A runtime tip"),
+                ("Run Trust", "Blocked unless registration, runtime tip calibration, pretension, and servos are ready"),
+            ]
+        )
+
+    def _sync_target_table(self, config: SingleSegmentRepeatabilityConfig) -> None:
+        targets = build_legacy_17_point_targets()
+        visits = generate_legacy_revisit_sequence(targets, seed=int(config.random_seed))
+        approaches_by_target: dict[int, int] = {}
+        for visit in visits:
+            approaches_by_target[int(visit.target_index)] = approaches_by_target.get(int(visit.target_index), 0) + 1
+        signature = tuple(
+            (
+                target.label,
+                target.ring,
+                f"{target.angle_deg:.0f}",
+                _render_inline_list(target.cable_deltas_mm),
+                str(approaches_by_target.get(int(target.target_index), 0)),
+            )
+            for target in targets
+        )
+        if self._target_table_signature == signature:
+            return
+        self._target_table_signature = signature
+
+        def _rebuild() -> None:
+            with QSignalBlocker(self.target_table):
+                self.target_table.setRowCount(len(targets))
+                for row, target in enumerate(targets):
+                    cells = [
+                        target.label,
+                        target.ring,
+                        f"{target.angle_deg:.0f} deg",
+                        _render_inline_list(target.cable_deltas_mm),
+                        str(approaches_by_target.get(int(target.target_index), 0)),
+                    ]
+                    for column, text in enumerate(cells):
+                        self.target_table.setItem(row, column, QTableWidgetItem(text))
+
+        preserve_scroll_position(self.target_table, _rebuild)
 
 
 class AuroraGridAccuracyPage(ExperimentPageBase):
@@ -2167,6 +2344,7 @@ class HistoryItemWidget(QWidget):
 def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBase:
     """Return the custom page widget for one supported experiment."""
     factories: dict[str, Callable[[object], ExperimentPageBase]] = {
+        "single_segment_repeatability": lambda ctrl: SingleSegmentRepeatabilityPage(ctrl, "single_segment_repeatability"),
         "repeatability_dataset": lambda ctrl: RepeatabilityDatasetPage(ctrl, "repeatability_dataset"),
         "aurora_grid_accuracy": lambda ctrl: AuroraGridAccuracyPage(ctrl, "aurora_grid_accuracy"),
         "tracker_timing_validation": lambda ctrl: TrackerTimingValidationPage(ctrl, "tracker_timing_validation"),

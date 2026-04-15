@@ -1,0 +1,15 @@
+# Canonical live thesis repeatability protocol.
+# This recreates the legacy 17-point single-segment sequence:
+# target 0 center, targets 1-8 on a 6 mm ring, targets 9-16 on a 12 mm ring,
+# then every target revisited from every other target.
+tool_id: "0A"
+settle_time_s: 4.0
+capture_timeout_s: 1.0
+capture_poll_interval_s: 0.02
+max_tracker_age_s: 0.25
+random_seed: 0
+run_label: ""
+require_robot_frame_tip: true
+return_to_center_on_finalize: true
+fail_on_rejected_capture: false
+thesis_goal_rms_mm: 1.0

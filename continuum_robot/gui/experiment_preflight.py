@@ -16,6 +16,12 @@ from continuum_robot.experiments.builtins import (
     ServoTrackerSyncValidationConfig,
     TrackerTimingValidationConfig,
 )
+from continuum_robot.experiments.single_segment_repeatability import (
+    LEGACY_CAPTURE_COUNT,
+    LEGACY_TARGET_COUNT,
+    LEGACY_VISIT_COUNT,
+    SingleSegmentRepeatabilityConfig,
+)
 from continuum_robot.experiments.critical_experiments import (
     GridDefinitionConfig,
     PivotCalibrationConfig,
@@ -93,6 +99,7 @@ def evaluate_preflight(
     output_root: Path,
     planned_output_dir: Path,
     project_root: Path,
+    servo_calibration_summary=None,
 ) -> PreflightReport:
     """Evaluate experiment-specific guardrails for the GUI workspace."""
     checks: list[PreflightCheck] = []
@@ -135,7 +142,150 @@ def evaluate_preflight(
             )
         )
 
-    if experiment_name == "repeatability_dataset":
+    if experiment_name == "single_segment_repeatability":
+        config = SingleSegmentRepeatabilityConfig.from_dict(payload)
+        configured_backend = str(settings.serial.tracker_backend or "").strip().lower()
+        selected_backend = str(
+            tracking_snapshot.selected_backend_name or tracking_snapshot.backend_identity or ""
+        ).strip().lower()
+        if bool(settings.runtime.mock_mode):
+            checks.append(
+                _blocked(
+                    "mock_mode",
+                    "Runtime Mode",
+                    "Single-segment repeatability is a live thesis experiment. Disable mock mode before running.",
+                )
+            )
+        else:
+            checks.append(_ok("runtime_mode", "Runtime Mode", "Live runtime mode is enabled."))
+        if configured_backend not in {"ndi", ""}:
+            checks.append(
+                _blocked(
+                    "configured_backend",
+                    "Configured Backend",
+                    f"Configured tracker backend is '{configured_backend}'. Repeatability must use the active Python NDI path.",
+                )
+            )
+        elif "bridge" in selected_backend:
+            checks.append(
+                _blocked(
+                    "selected_backend",
+                    "Selected Backend",
+                    "The active tracker backend appears to be tracker_bridge. Use the Python NDI backend before running repeatability.",
+                )
+            )
+        elif tracking_snapshot.canonical_state == "streaming_healthy":
+            checks.append(
+                _ok(
+                    "tracking_state",
+                    "Tracking",
+                    f"Tracker is healthy via {tracking_snapshot.backend_identity or tracking_snapshot.selected_backend_name or 'ndi'}.",
+                )
+            )
+        else:
+            checks.append(
+                _blocked(
+                    "tracking_state",
+                    "Tracking",
+                    f"Tracker must be streaming healthy. Current state is {tracking_snapshot.canonical_state}.",
+                )
+            )
+        checks.append(
+            _strict_tool_gate_check(
+                tool_id=config.tool_id,
+                snapshot=tracking_snapshot,
+                max_tracker_age_s=float(config.max_tracker_age_s),
+            )
+        )
+        if tracking_snapshot.registration_state == "loaded" and tracking_snapshot.T_robot_aurora is not None:
+            checks.append(
+                _ok(
+                    "registration",
+                    "Base Registration",
+                    "Accepted base registration is loaded and available to the live transform chain.",
+                )
+            )
+        else:
+            checks.append(
+                _blocked(
+                    "registration",
+                    "Base Registration",
+                    f"Accepted base registration must be loaded. Runtime state is {tracking_snapshot.registration_state}.",
+                )
+            )
+        if (
+            tracking_snapshot.runtime_tip_calibration_state == "loaded"
+            and not tracking_snapshot.runtime_tip_identity_fallback
+            and tracking_snapshot.tip_pose_status == "ok"
+            and tracking_snapshot.T_robot_tip is not None
+        ):
+            checks.append(
+                _ok(
+                    "runtime_tip",
+                    "0A Runtime Tip Calibration",
+                    "Runtime T_coil_tip is loaded and live robot-frame tip pose is active.",
+                )
+            )
+        else:
+            checks.append(
+                _blocked(
+                    "runtime_tip",
+                    "0A Runtime Tip Calibration",
+                    "Repeatability requires accepted 0A runtime tip calibration with no identity fallback. "
+                    f"Runtime state={tracking_snapshot.runtime_tip_calibration_state}, "
+                    f"tip pose={tracking_snapshot.tip_pose_status}, "
+                    f"fallback={tracking_snapshot.runtime_tip_identity_fallback}.",
+                )
+            )
+        servo_ids = [int(value) for value in (settings.robot.tendon_to_servo or settings.robot.servo_ids or [])]
+        if len(servo_ids) == 4:
+            checks.append(_ok("single_segment", "Single-Segment Assumption", f"Configured 4-servo single-segment IDs: {servo_ids}."))
+        else:
+            checks.append(
+                _blocked(
+                    "single_segment",
+                    "Single-Segment Assumption",
+                    f"This protocol requires exactly 4 configured servos/tendons. Found {servo_ids}.",
+                )
+            )
+        if not servo_connected:
+            checks.append(
+                _blocked(
+                    "servo_connection",
+                    "Servo Connection",
+                    "OpenRB / DYNAMIXEL service must be connected for live repeatability commands.",
+                )
+            )
+        else:
+            checks.append(_ok("servo_connection", "Servo Connection", "Servo service is connected."))
+        missing_neutral = [servo_id for servo_id in servo_ids if int(servo_id) not in neutral_setpoints]
+        if missing_neutral:
+            checks.append(
+                _blocked(
+                    "neutral_setpoints",
+                    "Neutral Setpoints",
+                    "Neutral setpoints are missing for servo(s): " + ", ".join(str(value) for value in missing_neutral),
+                )
+            )
+        else:
+            checks.append(_ok("neutral_setpoints", "Neutral Setpoints", "Neutral setpoints exist for all configured tendons."))
+        checks.append(_pretension_artifact_check(servo_ids=servo_ids, servo_calibration_summary=servo_calibration_summary))
+        checks.append(
+            _ok(
+                "protocol",
+                "Protocol",
+                f"Fixed legacy protocol: {LEGACY_TARGET_COUNT} targets, {LEGACY_VISIT_COUNT} approach/repeat visits, {LEGACY_CAPTURE_COUNT} planned captures.",
+            )
+        )
+        checks.append(
+            _ok(
+                "scientific_framing",
+                "Scientific Framing",
+                "This experiment measures single-segment repeatability after registration, runtime-tip calibration, and pretension. It does not validate those calibrations by itself.",
+            )
+        )
+
+    elif experiment_name == "repeatability_dataset":
         checks.append(_tracking_state_check(settings=settings, tracker_ready=tracker_ready, backend_name=backend_name, tracking_snapshot=tracking_snapshot))
         config = RepeatabilityDatasetConfig.from_dict(payload)
         expected_dims = len(settings.robot.tendon_to_servo or settings.robot.servo_ids)
@@ -884,6 +1034,74 @@ def _tool_check(*, tool_id: str, snapshot, mock_mode: bool) -> PreflightCheck:
         "tool_ids",
         "Tool IDs",
         f"Required tool {tool_id} is not currently tracked. Confirm the tool is enabled in Aurora and visible in the Tracking tab.",
+    )
+
+
+def _strict_tool_gate_check(*, tool_id: str, snapshot, max_tracker_age_s: float) -> PreflightCheck:
+    tool_key = str(tool_id or "0A").upper()
+    tool = snapshot.tools.get(tool_key)
+    reasons: list[str] = []
+    if snapshot.tracker_data_stale:
+        reasons.append("tracker data is stale")
+    if snapshot.tracker_data_age_s is None:
+        reasons.append("tracker data age is unknown")
+    elif float(snapshot.tracker_data_age_s) > float(max_tracker_age_s):
+        reasons.append(
+            f"tracker data age {float(snapshot.tracker_data_age_s):.3f}s exceeds {float(max_tracker_age_s):.3f}s"
+        )
+    if tool is None:
+        reasons.append(f"tool {tool_key} is missing")
+    else:
+        if not tool.present:
+            reasons.append(f"tool {tool_key} is not present")
+        if tool.valid is False:
+            reasons.append(f"tool {tool_key} is invalid")
+        if tool.translation_mm is None:
+            reasons.append(f"tool {tool_key} has no translation")
+        if str(tool.tracking_state).lower() in {"invalid", "missing", "out_of_volume"}:
+            reasons.append(f"tool {tool_key} state is {tool.tracking_state}")
+    if reasons:
+        return _blocked(
+            "tool_gate",
+            "Tracker Capture Gate",
+            "Capture gate is blocked: " + "; ".join(reasons),
+        )
+    return _ok(
+        "tool_gate",
+        "Tracker Capture Gate",
+        f"Tool {tool_key} is visible and tracker data age is within {float(max_tracker_age_s):.3f}s.",
+    )
+
+
+def _pretension_artifact_check(*, servo_ids: list[int], servo_calibration_summary) -> PreflightCheck:
+    if servo_calibration_summary is None:
+        return _blocked(
+            "pretension",
+            "Pretension State",
+            "Pretension artifact state is unavailable. Refresh servo state before running repeatability.",
+        )
+    if not servo_calibration_summary.exists or not servo_calibration_summary.compatible:
+        return _blocked(
+            "pretension",
+            "Pretension State",
+            f"Servo calibration artifact is not ready: {servo_calibration_summary.message}",
+        )
+    missing = []
+    for servo_id in servo_ids:
+        entry = servo_calibration_summary.servo_entries.get(int(servo_id))
+        if entry is None or entry.pretension_result_status != "accepted":
+            missing.append(int(servo_id))
+    if missing:
+        return _blocked(
+            "pretension",
+            "Pretension State",
+            "Accepted pretension is required for every servo before repeatability. Missing servo(s): "
+            + ", ".join(str(value) for value in missing),
+        )
+    return _ok(
+        "pretension",
+        "Pretension State",
+        "Accepted pretension state is recorded for every configured servo.",
     )
 
 

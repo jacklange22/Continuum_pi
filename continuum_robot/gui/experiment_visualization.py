@@ -71,7 +71,7 @@ def build_visualization_model(
     """Build a visualization payload from canonical samples and summary metrics."""
     metrics = dict(metrics or {})
     config_payload = dict(config_payload or {})
-    if experiment_name == "repeatability_dataset":
+    if experiment_name in {"repeatability_dataset", "single_segment_repeatability"}:
         return _build_repeatability_model(
             samples=samples,
             metrics=metrics,
@@ -121,7 +121,7 @@ def _build_repeatability_model(
     show_centroids: bool,
     acceptance: dict[str, Any],
 ) -> VisualizationModel:
-    measurement_samples = [sample for sample in samples if sample.phase == "sample"]
+    measurement_samples = [sample for sample in samples if sample.phase in {"sample", "repeat"}]
     grouped: dict[str, list[tuple[float, float, float]]] = {}
     distances_mm: list[float] = []
     centroid_map = {
@@ -227,8 +227,8 @@ def _build_repeatability_model(
         f"Run status: {metrics.get('status', 'unknown')}",
         f"Pose frame: {metrics.get('position_frame', 'unknown')}",
         f"Targets summarized: {metrics.get('target_count', len(per_target))}",
-        f"Target revisits: {metrics.get('visit_count', 0)}",
-        f"Valid samples: {metrics.get('valid_sample_count', 0)}",
+        f"Target revisits: {metrics.get('visit_count', metrics.get('planned_visit_count', 0))}",
+        f"Valid samples: {metrics.get('valid_sample_count', metrics.get('valid_repeat_sample_count', 0))}",
         f"Invalid samples: {metrics.get('invalid_sample_count', 0)}",
         f"Overall repeatability RMS: {_fmt(metrics.get('overall_repeatability_rms_mm'))} mm",
         f"Overall max deviation: {_fmt(metrics.get('overall_max_deviation_mm'))} mm",

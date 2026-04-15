@@ -16,6 +16,7 @@ from continuum_robot.experiments.framework import BaseExperiment, ExperimentHard
 from continuum_robot.experiments.critical_experiments import register_critical_experiments
 from continuum_robot.experiments.pretension_validation_outputs import write_pretension_validation_outputs
 from continuum_robot.experiments.servo_tracker_sync_outputs import write_servo_tracker_sync_outputs
+from continuum_robot.experiments.single_segment_repeatability import register_single_segment_repeatability
 from continuum_robot.experiments.tracker_timing_outputs import write_tracker_timing_outputs
 from continuum_robot.experiments.schedules import (
     CommandScheduleConfig,
@@ -2148,6 +2149,7 @@ def register_builtin_experiments(registry) -> None:
         default_config_path="config/experiment_servo_tracker_sync_validation.example.yaml",
         factory=ServoTrackerSyncValidationExperiment.from_dict,
     )
+    register_single_segment_repeatability(registry)
     registry.register(
         name=PretensionValidationExperiment.name,
         title="Pretension Validation",
