@@ -51,6 +51,7 @@ from continuum_robot.experiments.critical_experiments import (
 from continuum_robot.experiments.grid_accuracy_outputs import build_grid_accuracy_summary_pairs
 from continuum_robot.experiments.builtins import (
     PretensionValidationExperimentConfig,
+    ServoTrackerSyncValidationConfig,
     TrackerTimingValidationConfig,
 )
 from continuum_robot.gui.controllers.experiment_controller import ExperimentViewState
@@ -1458,6 +1459,163 @@ class TrackerTimingValidationPage(ExperimentPageBase):
         self.controller.set_config_value("requested_tool_ids", requested_tool_ids)
 
 
+class ServoTrackerSyncValidationPage(ExperimentPageBase):
+    page_hint = (
+        "Validate host-time alignment between tracker frames, servo commands, and servo telemetry during a "
+        "small scripted motion sequence. This page measures logging usability for later motion experiments, "
+        "not closed-loop control quality."
+    )
+
+    def __init__(self, controller, experiment_name: str, parent=None) -> None:
+        super().__init__(controller, experiment_name, parent)
+        self.run_button.setText("Run Sync Validation")
+
+    def _build_parameter_sections(self) -> None:
+        motion_card = ExperimentCard(
+            "Motion Scope",
+            "Use a small alternating step schedule around the current live servo position. Keep the motion bounded and reproducible so the run measures stream alignment rather than ambitious robot behavior.",
+        )
+        motion_form = QFormLayout()
+        self.servo_ids_edit = QLineEdit()
+        self.servo_ids_edit.setPlaceholderText("1 or 1,2")
+        self.servo_ids_edit.editingFinished.connect(self._on_servo_ids_changed)
+        self.tool_mode_combo = QComboBox()
+        self.tool_mode_combo.addItem("0A only", "0A")
+        self.tool_mode_combo.addItem("0B only", "0B")
+        self.tool_mode_combo.addItem("0A and 0B", "both")
+        self.tool_mode_combo.currentIndexChanged.connect(self._on_tool_mode_changed)
+        self.include_tip_pose_check = QCheckBox("Include robot-frame tip pose when the live transform chain supports it")
+        self.include_tip_pose_check.toggled.connect(
+            lambda value: self.controller.set_config_value("include_robot_frame_tip_pose", bool(value))
+        )
+        self.run_label_edit = QLineEdit()
+        self.run_label_edit.editingFinished.connect(
+            lambda: self.controller.set_config_value("run_label", self.run_label_edit.text().strip())
+        )
+        motion_form.addRow("Servo IDs", self.servo_ids_edit)
+        motion_form.addRow("Tracked Tools", self.tool_mode_combo)
+        motion_form.addRow("Robot-Frame Tip", self.include_tip_pose_check)
+        motion_form.addRow("Run Label", self.run_label_edit)
+        motion_card.body_layout.addLayout(motion_form)
+
+        params_card = ExperimentCard(
+            "Timing And Motion Parameters",
+            "These settings bound the motion window and the logging cadence. The experiment uses one host monotonic clock for tracker, servo-command, and servo-telemetry timestamps.",
+        )
+        params_form = QFormLayout()
+        self.duration_spin = QDoubleSpinBox()
+        self.duration_spin.setRange(0.5, 300.0)
+        self.duration_spin.setDecimals(2)
+        self.duration_spin.setSingleStep(0.5)
+        self.duration_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("run_duration_s", float(value))
+        )
+        self.warmup_spin = QDoubleSpinBox()
+        self.warmup_spin.setRange(0.0, 60.0)
+        self.warmup_spin.setDecimals(2)
+        self.warmup_spin.setSingleStep(0.1)
+        self.warmup_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("warmup_duration_s", float(value))
+        )
+        self.amplitude_spin = QSpinBox()
+        self.amplitude_spin.setRange(1, 512)
+        self.amplitude_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("command_amplitude_ticks", int(value))
+        )
+        self.step_period_spin = QDoubleSpinBox()
+        self.step_period_spin.setRange(0.05, 30.0)
+        self.step_period_spin.setDecimals(3)
+        self.step_period_spin.setSingleStep(0.05)
+        self.step_period_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("step_period_s", float(value))
+        )
+        self.telemetry_poll_spin = QDoubleSpinBox()
+        self.telemetry_poll_spin.setRange(0.005, 5.0)
+        self.telemetry_poll_spin.setDecimals(3)
+        self.telemetry_poll_spin.setSingleStep(0.005)
+        self.telemetry_poll_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("telemetry_poll_interval_s", float(value))
+        )
+        self.timeout_spin = QDoubleSpinBox()
+        self.timeout_spin.setRange(0.5, 600.0)
+        self.timeout_spin.setDecimals(2)
+        self.timeout_spin.setSingleStep(0.5)
+        self.timeout_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("timeout_s", float(value))
+        )
+        params_form.addRow("Run Duration (s)", self.duration_spin)
+        params_form.addRow("Warmup Duration (s)", self.warmup_spin)
+        params_form.addRow("Command Amplitude (ticks)", self.amplitude_spin)
+        params_form.addRow("Step Period (s)", self.step_period_spin)
+        params_form.addRow("Telemetry Poll (s)", self.telemetry_poll_spin)
+        params_form.addRow("Timeout (s)", self.timeout_spin)
+        params_card.body_layout.addLayout(params_form)
+
+        summary_card = ExperimentCard(
+            "What This Run Saves",
+            "Each run writes canonical tracker/servo samples, summary JSON, a text note, and static figures for offsets, motion traces, and validity/match-rate summaries.",
+        )
+        self.parameter_summary_widget = KeyValueSummaryWidget()
+        summary_card.body_layout.addWidget(self.parameter_summary_widget)
+
+        self.parameter_layout.addWidget(motion_card)
+        self.parameter_layout.addWidget(params_card)
+        self.parameter_layout.addWidget(summary_card)
+
+    def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
+        _ = state
+        config = ServoTrackerSyncValidationConfig.from_dict(self.controller.config_payload())
+        self._set_line_text(self.servo_ids_edit, ",".join(str(servo_id) for servo_id in config.servo_ids))
+        tool_mode = "both"
+        if config.requested_tool_ids == ["0A"]:
+            tool_mode = "0A"
+        elif config.requested_tool_ids == ["0B"]:
+            tool_mode = "0B"
+        self._set_combo_value(self.tool_mode_combo, tool_mode)
+        self._set_checkbox(self.include_tip_pose_check, bool(config.include_robot_frame_tip_pose))
+        self._set_line_text(self.run_label_edit, str(config.run_label or ""))
+        self._set_double(self.duration_spin, float(config.run_duration_s))
+        self._set_double(self.warmup_spin, float(config.warmup_duration_s))
+        self._set_spin(self.amplitude_spin, int(config.command_amplitude_ticks))
+        self._set_double(self.step_period_spin, float(config.step_period_s))
+        self._set_double(self.telemetry_poll_spin, float(config.telemetry_poll_interval_s))
+        self._set_double(self.timeout_spin, float(config.timeout_s))
+        self.parameter_summary_widget.set_pairs(
+            [
+                (
+                    "Motion Protocol",
+                    (
+                        f"Alternating bounded step on servo IDs {', '.join(str(value) for value in config.servo_ids)} "
+                        f"with amplitude {int(config.command_amplitude_ticks)} ticks and {float(config.step_period_s):.3f} s cadence."
+                    ),
+                ),
+                (
+                    "Benchmark Truth",
+                    "Uses backend timing records plus servo command/telemetry host timestamps. GUI refresh rate is not part of the metric.",
+                ),
+                (
+                    "Pose Metric",
+                    (
+                        "Prefer robot-frame tip pose when the loaded transform chain supports it."
+                        if bool(config.include_robot_frame_tip_pose)
+                        else "Use raw tool pose only for tracker-side motion metrics."
+                    ),
+                ),
+            ]
+        )
+
+    def _on_servo_ids_changed(self) -> None:
+        raw_text = self.servo_ids_edit.text().strip()
+        parsed = ServoTrackerSyncValidationConfig.from_dict({"servo_ids": raw_text}).servo_ids
+        self.controller.set_config_value("servo_ids", parsed)
+        self._set_line_text(self.servo_ids_edit, ",".join(str(servo_id) for servo_id in parsed))
+
+    def _on_tool_mode_changed(self) -> None:
+        mode = str(self.tool_mode_combo.currentData() or "0A")
+        requested_tool_ids = ["0A", "0B"] if mode == "both" else [mode]
+        self.controller.set_config_value("requested_tool_ids", requested_tool_ids)
+
+
 class PretensionValidationPage(ExperimentPageBase):
     page_hint = (
         "Validate pretension response against commanded travel for one selected servo. "
@@ -2012,6 +2170,7 @@ def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBas
         "repeatability_dataset": lambda ctrl: RepeatabilityDatasetPage(ctrl, "repeatability_dataset"),
         "aurora_grid_accuracy": lambda ctrl: AuroraGridAccuracyPage(ctrl, "aurora_grid_accuracy"),
         "tracker_timing_validation": lambda ctrl: TrackerTimingValidationPage(ctrl, "tracker_timing_validation"),
+        "servo_tracker_sync_validation": lambda ctrl: ServoTrackerSyncValidationPage(ctrl, "servo_tracker_sync_validation"),
         "pretension_validation": lambda ctrl: PretensionValidationPage(ctrl, "pretension_validation"),
         "command_schedule_validation": lambda ctrl: CommandScheduleValidationPage(ctrl, "command_schedule_validation"),
         "collect_pose_command_dataset": lambda ctrl: CollectPoseCommandDatasetPage(ctrl, "collect_pose_command_dataset"),

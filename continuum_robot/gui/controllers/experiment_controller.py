@@ -17,9 +17,12 @@ from continuum_robot.experiments.critical_experiments import (
     build_grid_accuracy_preview,
     build_repeatability_preview,
 )
+from continuum_robot.experiments.builtins import ServoTrackerSyncValidationConfig
 from continuum_robot.experiments.dataset_io import canonical_experiment_output_root
 from continuum_robot.tracking.timing_benchmark import (
+    compute_servo_tracker_sync_summary,
     compute_servo_sync_summary,
+    extract_servo_command_records,
     compute_tracker_timing_summary,
     extract_servo_timing_records,
     extract_tracker_timing_records,
@@ -205,6 +208,11 @@ class ExperimentController:
             preview_metrics = preview.metrics if preview is not None else None
         elif selected_experiment == "tracker_timing_validation" and current_bundle is None and live_samples:
             preview_metrics = self._build_tracker_timing_preview_metrics(
+                live_samples=live_samples,
+                config_payload=config_payload,
+            )
+        elif selected_experiment == "servo_tracker_sync_validation" and current_bundle is None and live_samples:
+            preview_metrics = self._build_servo_tracker_sync_preview_metrics(
                 live_samples=live_samples,
                 config_payload=config_payload,
             )
@@ -710,6 +718,13 @@ class ExperimentController:
                 return f"unique={float(value):.2f} Hz"
             value = metrics.get("mean_total_cycle_ms")
             return f"mean={float(value):.2f} ms" if value is not None else ""
+        if experiment_name == "servo_tracker_sync_validation":
+            sync = metrics.get("servo_tracker_sync", {}) or {}
+            value = sync.get("tracker_to_servo_telemetry_p95_offset_ms")
+            if value is not None:
+                return f"p95_offset={float(value):.2f} ms"
+            value = metrics.get("unique_frame_rate_hz")
+            return f"unique={float(value):.2f} Hz" if value is not None else ""
         return ""
 
     def _build_visualization_model(
@@ -786,6 +801,46 @@ class ExperimentController:
             run_label=str(config_payload.get("run_label", "") or ""),
             servo_sync_summary=servo_sync,
         )
+
+    def _build_servo_tracker_sync_preview_metrics(
+        self,
+        *,
+        live_samples,
+        config_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        tracker_records = extract_tracker_timing_records(live_samples)
+        servo_records = extract_servo_timing_records(live_samples)
+        command_records = extract_servo_command_records(live_samples)
+        config = ServoTrackerSyncValidationConfig.from_dict(config_payload)
+        sync_summary = compute_servo_tracker_sync_summary(
+            tracker_records,
+            servo_records,
+            command_records,
+        )
+        backend_identity = next(
+            (str(record.get("backend_identity")) for record in tracker_records if record.get("backend_identity")),
+            "",
+        )
+        tracker_metrics = compute_tracker_timing_summary(
+            tracker_records,
+            requested_tool_ids=config.requested_tool_ids,
+            backend_identity=backend_identity,
+            configured_backend_name="",
+            selected_backend_name="",
+            run_duration_s=config.run_duration_s,
+            run_label=str(config.run_label or ""),
+        )
+        tracker_metrics.update(
+            {
+                "selected_servo_ids": [int(servo_id) for servo_id in config.servo_ids],
+                "motion_protocol": str(config.motion_mode),
+                "servo_telemetry_sample_count": len(servo_records),
+                "servo_command_sample_count": len(command_records),
+                "include_robot_frame_tip_pose": bool(config.include_robot_frame_tip_pose),
+                "servo_tracker_sync": sync_summary,
+            }
+        )
+        return tracker_metrics
 
     def _build_run_checklist(
         self,
@@ -877,6 +932,48 @@ class ExperimentController:
                         ),
                     ),
                     ("Backend Errors", str(int(preview_metrics.get("error_sample_count", 0) or 0))),
+                ]
+            if preview_metrics and experiment_name == "servo_tracker_sync_validation":
+                sync = dict(preview_metrics.get("servo_tracker_sync", {}) or {})
+                return [
+                    ("Backend", str(preview_metrics.get("backend_identity", "n/a") or "n/a")),
+                    ("Servo IDs", ", ".join(str(value) for value in (preview_metrics.get("selected_servo_ids") or []))),
+                    ("Analyzed Tracker Samples", str(int(preview_metrics.get("sample_count_analyzed", 0) or 0))),
+                    ("Servo Telemetry Samples", str(int(preview_metrics.get("servo_telemetry_sample_count", 0) or 0))),
+                    ("Servo Command Samples", str(int(preview_metrics.get("servo_command_sample_count", 0) or 0))),
+                    ("Effective Loop Hz", self._format_metric_value(preview_metrics.get("effective_loop_rate_hz"))),
+                    ("Unique-Frame Hz", self._format_metric_value(preview_metrics.get("unique_frame_rate_hz"))),
+                    (
+                        "Duplicate Frames",
+                        (
+                            f"{int(preview_metrics.get('duplicate_frame_count', 0) or 0)} "
+                            f"({100.0 * float(preview_metrics.get('duplicate_frame_ratio', 0.0) or 0.0):.1f}%)"
+                        ),
+                    ),
+                    (
+                        "Tracker->Servo Telemetry Mean",
+                        self._format_metric_value(sync.get("tracker_to_servo_telemetry_mean_offset_ms")),
+                    ),
+                    (
+                        "Tracker->Servo Telemetry P95",
+                        self._format_metric_value(sync.get("tracker_to_servo_telemetry_p95_offset_ms")),
+                    ),
+                    (
+                        "Tracker->Servo <= 10 ms",
+                        (
+                            f"{100.0 * float(sync.get('tracker_to_servo_telemetry_within_10ms_rate', 0.0) or 0.0):.1f}%"
+                            if sync.get("tracker_to_servo_telemetry_within_10ms_rate") is not None
+                            else "n/a"
+                        ),
+                    ),
+                    (
+                        "Valid Requested Tools",
+                        (
+                            f"{100.0 * float(preview_metrics.get('valid_requested_tool_rate', 0.0) or 0.0):.1f}%"
+                            if preview_metrics.get("valid_requested_tool_rate") is not None
+                            else "n/a"
+                        ),
+                    ),
                 ]
             if preview_metrics:
                 return [
@@ -995,6 +1092,59 @@ class ExperimentController:
                 ]
             )
             return pairs
+        if bundle_experiment_name == "servo_tracker_sync_validation":
+            metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
+            sync = dict(metrics.get("servo_tracker_sync", {}) or {})
+            histogram_path = bundle.paths.output_dir / "servo_tracker_offset_histogram.png"
+            timeseries_path = bundle.paths.output_dir / "servo_tracker_offset_timeseries.png"
+            pose_path = bundle.paths.output_dir / "servo_tracker_pose_command_timeseries.png"
+            validity_path = bundle.paths.output_dir / "servo_tracker_validity_summary.png"
+            summary_text_path = bundle.paths.output_dir / "servo_tracker_sync_summary.txt"
+            pairs.extend(
+                [
+                    ("Backend", str(metrics.get("backend_identity", "n/a") or "n/a")),
+                    ("Tool IDs", ", ".join(metrics.get("requested_tool_ids", []) or [])),
+                    ("Servo IDs", ", ".join(str(value) for value in (metrics.get("selected_servo_ids") or []))),
+                    ("Motion Protocol", str(metrics.get("motion_protocol", "n/a") or "n/a")),
+                    ("Analyzed Tracker Samples", str(int(metrics.get("sample_count_analyzed", 0) or 0))),
+                    ("Servo Telemetry Samples", str(int(metrics.get("servo_telemetry_sample_count", 0) or 0))),
+                    ("Servo Command Samples", str(int(metrics.get("servo_command_sample_count", 0) or 0))),
+                    ("Effective Loop Hz", self._format_metric_value(metrics.get("effective_loop_rate_hz"))),
+                    ("Unique-Frame Hz", self._format_metric_value(metrics.get("unique_frame_rate_hz"))),
+                    ("Mean Total Time", self._format_metric_value(metrics.get("mean_total_cycle_ms"))),
+                    ("P95 Total Time", self._format_metric_value(metrics.get("p95_total_cycle_ms"))),
+                    (
+                        "Tracker->Servo Telemetry Mean",
+                        self._format_metric_value(sync.get("tracker_to_servo_telemetry_mean_offset_ms")),
+                    ),
+                    (
+                        "Tracker->Servo Telemetry P95",
+                        self._format_metric_value(sync.get("tracker_to_servo_telemetry_p95_offset_ms")),
+                    ),
+                    (
+                        "Tracker->Servo Command P95",
+                        self._format_metric_value(sync.get("tracker_to_servo_command_p95_offset_ms")),
+                    ),
+                    (
+                        "Tracker->Servo <= 10 ms",
+                        (
+                            f"{100.0 * float(sync.get('tracker_to_servo_telemetry_within_10ms_rate', 0.0) or 0.0):.1f}%"
+                            if sync.get("tracker_to_servo_telemetry_within_10ms_rate") is not None
+                            else "n/a"
+                        ),
+                    ),
+                    (
+                        "Motion Metric Source",
+                        str((metrics.get("tracker_motion_metric", {}) or {}).get("source", "unavailable") or "unavailable"),
+                    ),
+                    ("Offset Histogram", str(histogram_path) if histogram_path.exists() else "not written"),
+                    ("Offset Timeseries", str(timeseries_path) if timeseries_path.exists() else "not written"),
+                    ("Pose / Command Plot", str(pose_path) if pose_path.exists() else "not written"),
+                    ("Validity Plot", str(validity_path) if validity_path.exists() else "not written"),
+                    ("Summary Note", str(summary_text_path) if summary_text_path.exists() else "not written"),
+                ]
+            )
+            return pairs
         scalar_metrics = [
             (key, value)
             for key, value in bundle.summary.experiment_metrics.items()
@@ -1013,6 +1163,8 @@ class ExperimentController:
             return "software validation"
         if experiment_name == "tracker_timing_validation":
             return "backend diagnostic"
+        if experiment_name == "servo_tracker_sync_validation":
+            return "motion sync validation"
         if experiment_name == "pivot_calibration":
             return "offline" if config_payload.get("input_path") else ("dry-run" if bool(config_payload.get("dry_run", False)) else "live")
         return "dry-run" if bool(config_payload.get("dry_run", False)) else "live"
@@ -1081,6 +1233,14 @@ class ExperimentController:
                 f"warmup {int(config_payload.get('warmup_samples', 10) or 0)}, "
                 f"stop {stop_mode}, "
                 f"servo sync={'on' if bool(config_payload.get('enable_servo_logging', False)) else 'off'}"
+            )
+        if experiment_name == "servo_tracker_sync_validation":
+            config = ServoTrackerSyncValidationConfig.from_dict(config_payload)
+            return (
+                f"servos {','.join(str(value) for value in config.servo_ids)}, "
+                f"tools {','.join(config.requested_tool_ids)}, "
+                f"amplitude {int(config.command_amplitude_ticks)} ticks, "
+                f"{float(config.step_period_s):.3f} s cadence"
             )
         return "See experiment parameters."
 

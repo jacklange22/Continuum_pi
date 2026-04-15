@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections.abc import Iterable, Mapping
 import math
 import statistics
@@ -111,6 +112,16 @@ def extract_tracker_timing_records(samples) -> list[dict[str, Any]]:
             "backend_call_ms": _as_float(extra.get("backend_call_ms")),
             "parse_ms": _as_float(extra.get("parse_ms")),
             "state_commit_ms": _as_float(extra.get("state_commit_ms")),
+            "motion_phase": str(extra.get("motion_phase", "")) or None,
+            "command_step_index": _as_int(extra.get("command_step_index")),
+            "commanded_positions_by_servo": {
+                str(key): _as_int(value)
+                for key, value in dict(extra.get("commanded_positions_by_servo", {}) or {}).items()
+            },
+            "tool_pose_payload": {
+                str(tool_id): dict(payload or {})
+                for tool_id, payload in dict(extra.get("tool_pose_payload", {}) or {}).items()
+            },
             "warmup_discarded": bool(extra.get("warmup_discarded", False)),
         }
         rows.append(row)
@@ -131,9 +142,19 @@ def extract_servo_timing_records(samples) -> list[dict[str, Any]]:
                 "sample_monotonic_ns": _as_int(extra.get("sample_monotonic_ns")),
                 "servo_id": _as_int(extra.get("servo_id")),
                 "commanded_position_ticks": _as_int(extra.get("commanded_position_ticks")),
+                "commanded_position_age_s": _as_float(extra.get("commanded_position_age_s")),
                 "present_position_ticks": _as_int(extra.get("present_position_ticks")),
                 "present_current_ma": _as_int(extra.get("present_current_ma")),
                 "telemetry_age_s": _as_float(extra.get("telemetry_age_s")),
+                "reported_servo_id": _as_int(extra.get("reported_servo_id")),
+                "torque_enabled": (
+                    None
+                    if extra.get("torque_enabled") in (None, "")
+                    else bool(extra.get("torque_enabled"))
+                ),
+                "motion_phase": str(extra.get("motion_phase", "")) or None,
+                "command_step_index": _as_int(extra.get("command_step_index")),
+                "warmup_discarded": bool(extra.get("warmup_discarded", False)),
                 "error_flag": bool(extra.get("error_flag", False)),
                 "error_message": str(extra.get("error_message", "")) or None,
             }
@@ -142,13 +163,135 @@ def extract_servo_timing_records(samples) -> list[dict[str, Any]]:
     return rows
 
 
-def compute_servo_sync_summary(
+def extract_servo_command_records(samples) -> list[dict[str, Any]]:
+    """Return normalized servo command rows from canonical experiment samples."""
+    rows: list[dict[str, Any]] = []
+    for sample in samples:
+        extra = dict(getattr(sample, "extra", {}) or {})
+        if str(extra.get("record_kind", "")).strip().lower() != "servo_command":
+            continue
+        rows.append(
+            {
+                "sample_index": _as_int(extra.get("sample_index")),
+                "command_monotonic_ns": _as_int(extra.get("command_monotonic_ns")),
+                "servo_id": _as_int(extra.get("servo_id")),
+                "commanded_position_ticks": _as_int(extra.get("commanded_position_ticks")),
+                "motion_phase": str(extra.get("motion_phase", "")) or None,
+                "command_step_index": _as_int(extra.get("command_step_index")),
+                "warmup_discarded": bool(extra.get("warmup_discarded", False)),
+                "error_flag": bool(extra.get("error_flag", False)),
+                "error_message": str(extra.get("error_message", "")) or None,
+            }
+        )
+    rows.sort(key=lambda row: (row.get("command_monotonic_ns") or 0, row.get("servo_id") or 0))
+    return rows
+
+
+def _nearest_offsets_ms(source_ns: list[int], target_ns: list[int]) -> list[float]:
+    if not source_ns or not target_ns:
+        return []
+    ordered_targets = sorted(int(value) for value in target_ns)
+    offsets_ms: list[float] = []
+    for source_value in source_ns:
+        index = bisect_left(ordered_targets, int(source_value))
+        candidates: list[int] = []
+        if index < len(ordered_targets):
+            candidates.append(abs(int(source_value) - int(ordered_targets[index])))
+        if index > 0:
+            candidates.append(abs(int(source_value) - int(ordered_targets[index - 1])))
+        if not candidates:
+            continue
+        offsets_ms.append(float(min(candidates)) / 1_000_000.0)
+    return offsets_ms
+
+
+def _threshold_fields(
+    offsets_ms: list[float],
+    *,
+    thresholds_ms: list[float],
+    prefix: str,
+) -> dict[str, Any]:
+    results: dict[str, Any] = {}
+    denominator = len(offsets_ms)
+    for threshold_ms in thresholds_ms:
+        threshold_label = f"{int(float(threshold_ms))}ms"
+        matched_count = sum(float(offset) <= float(threshold_ms) for offset in offsets_ms)
+        results[f"{prefix}_within_{threshold_label}_count"] = int(matched_count)
+        results[f"{prefix}_within_{threshold_label}_rate"] = (
+            float(matched_count) / float(denominator)
+            if denominator > 0
+            else None
+        )
+    return results
+
+
+def _offset_summary(
+    source_times_ns: list[int],
+    target_times_ns: list[int],
+    *,
+    prefix: str,
+    pairing_threshold_ms: float,
+    thresholds_ms: list[float],
+) -> dict[str, Any]:
+    if not source_times_ns or not target_times_ns:
+        result = {
+            f"{prefix}_offsets_ms": [],
+            f"{prefix}_sample_count": len(source_times_ns),
+            f"{prefix}_mean_offset_ms": None,
+            f"{prefix}_median_offset_ms": None,
+            f"{prefix}_p95_offset_ms": None,
+            f"{prefix}_p99_offset_ms": None,
+            f"{prefix}_max_offset_ms": None,
+            f"{prefix}_unmatched_count": len(source_times_ns),
+        }
+        result.update(
+            _threshold_fields(
+                [],
+                thresholds_ms=thresholds_ms,
+                prefix=prefix,
+            )
+        )
+        return result
+    offsets_ms = _nearest_offsets_ms(source_times_ns, target_times_ns)
+    stats = _numeric_stats(offsets_ms)
+    result = {
+        f"{prefix}_offsets_ms": offsets_ms,
+        f"{prefix}_sample_count": len(source_times_ns),
+        f"{prefix}_mean_offset_ms": stats["mean"],
+        f"{prefix}_median_offset_ms": stats["median"],
+        f"{prefix}_p95_offset_ms": stats["p95"],
+        f"{prefix}_p99_offset_ms": stats["p99"],
+        f"{prefix}_max_offset_ms": stats["max"],
+        f"{prefix}_unmatched_count": sum(float(offset) > float(pairing_threshold_ms) for offset in offsets_ms),
+    }
+    result.update(
+        _threshold_fields(
+            offsets_ms,
+            thresholds_ms=thresholds_ms,
+            prefix=prefix,
+        )
+    )
+    return result
+
+
+def compute_servo_tracker_sync_summary(
     tracker_records: list[dict[str, Any]],
-    servo_records: list[dict[str, Any]],
+    servo_telemetry_records: list[dict[str, Any]],
+    servo_command_records: list[dict[str, Any]],
     *,
     pairing_threshold_ms: float = 25.0,
+    match_thresholds_ms: Iterable[float] = (5.0, 10.0, 20.0, 25.0),
 ) -> dict[str, Any]:
-    """Summarize nearest-neighbor tracker/servo time offsets."""
+    """Summarize nearest-neighbor offsets between tracker, servo telemetry, and servo commands."""
+    thresholds_ms = sorted(
+        {
+            float(value)
+            for value in match_thresholds_ms
+            if _as_float(value) is not None and float(value) > 0.0
+        }
+    )
+    if not thresholds_ms:
+        thresholds_ms = [5.0, 10.0, 20.0, 25.0]
     tracker_times_ns = [
         int(value)
         for value in (
@@ -158,61 +301,96 @@ def compute_servo_sync_summary(
         )
         if value is not None
     ]
-    servo_times_ns = [
+    telemetry_times_ns = [
         int(value)
-        for value in (record.get("sample_monotonic_ns") for record in servo_records)
+        for value in (
+            record.get("sample_monotonic_ns")
+            for record in servo_telemetry_records
+            if not bool(record.get("warmup_discarded", False))
+        )
         if value is not None
     ]
-    if not tracker_times_ns or not servo_times_ns:
-        return {
-            "enabled": bool(servo_records),
-            "available": False,
-            "pairing_threshold_ms": float(pairing_threshold_ms),
-            "tracker_sample_count": len(tracker_times_ns),
-            "servo_sample_count": len(servo_times_ns),
-            "servo_to_tracker_offsets_ms": [],
-            "tracker_to_servo_offsets_ms": [],
-            "servo_to_tracker_mean_offset_ms": None,
-            "servo_to_tracker_median_offset_ms": None,
-            "servo_to_tracker_p95_offset_ms": None,
-            "servo_to_tracker_max_offset_ms": None,
-            "tracker_to_servo_mean_offset_ms": None,
-            "tracker_to_servo_median_offset_ms": None,
-            "tracker_to_servo_p95_offset_ms": None,
-            "tracker_to_servo_max_offset_ms": None,
-            "servo_samples_over_threshold_count": None,
-            "tracker_samples_over_threshold_count": None,
-        }
-
-    def _nearest_offsets_ms(source_ns: list[int], target_ns: list[int]) -> list[float]:
-        offsets_ms: list[float] = []
-        for value in source_ns:
-            best = min(abs(int(value) - int(target)) for target in target_ns)
-            offsets_ms.append(float(best) / 1_000_000.0)
-        return offsets_ms
-
-    servo_to_tracker = _nearest_offsets_ms(servo_times_ns, tracker_times_ns)
-    tracker_to_servo = _nearest_offsets_ms(tracker_times_ns, servo_times_ns)
-    servo_stats = _numeric_stats(servo_to_tracker)
-    tracker_stats = _numeric_stats(tracker_to_servo)
-    return {
-        "enabled": True,
-        "available": True,
+    command_times_ns = [
+        int(value)
+        for value in (
+            record.get("command_monotonic_ns")
+            for record in servo_command_records
+            if not bool(record.get("warmup_discarded", False))
+        )
+        if value is not None
+    ]
+    available = bool(tracker_times_ns) and bool(telemetry_times_ns or command_times_ns)
+    summary: dict[str, Any] = {
+        "enabled": bool(servo_telemetry_records or servo_command_records),
+        "available": available,
         "pairing_threshold_ms": float(pairing_threshold_ms),
+        "match_thresholds_ms": [float(value) for value in thresholds_ms],
         "tracker_sample_count": len(tracker_times_ns),
-        "servo_sample_count": len(servo_times_ns),
-        "servo_to_tracker_offsets_ms": servo_to_tracker,
-        "tracker_to_servo_offsets_ms": tracker_to_servo,
-        "servo_to_tracker_mean_offset_ms": servo_stats["mean"],
-        "servo_to_tracker_median_offset_ms": servo_stats["median"],
-        "servo_to_tracker_p95_offset_ms": servo_stats["p95"],
-        "servo_to_tracker_max_offset_ms": servo_stats["max"],
-        "tracker_to_servo_mean_offset_ms": tracker_stats["mean"],
-        "tracker_to_servo_median_offset_ms": tracker_stats["median"],
-        "tracker_to_servo_p95_offset_ms": tracker_stats["p95"],
-        "tracker_to_servo_max_offset_ms": tracker_stats["max"],
-        "servo_samples_over_threshold_count": sum(offset > float(pairing_threshold_ms) for offset in servo_to_tracker),
-        "tracker_samples_over_threshold_count": sum(offset > float(pairing_threshold_ms) for offset in tracker_to_servo),
+        "servo_telemetry_sample_count": len(telemetry_times_ns),
+        "servo_command_sample_count": len(command_times_ns),
+    }
+    summary.update(
+        _offset_summary(
+            telemetry_times_ns,
+            tracker_times_ns,
+            prefix="servo_telemetry_to_tracker",
+            pairing_threshold_ms=pairing_threshold_ms,
+            thresholds_ms=thresholds_ms,
+        )
+    )
+    summary.update(
+        _offset_summary(
+            tracker_times_ns,
+            telemetry_times_ns,
+            prefix="tracker_to_servo_telemetry",
+            pairing_threshold_ms=pairing_threshold_ms,
+            thresholds_ms=thresholds_ms,
+        )
+    )
+    summary.update(
+        _offset_summary(
+            tracker_times_ns,
+            command_times_ns,
+            prefix="tracker_to_servo_command",
+            pairing_threshold_ms=pairing_threshold_ms,
+            thresholds_ms=thresholds_ms,
+        )
+    )
+    return summary
+
+
+def compute_servo_sync_summary(
+    tracker_records: list[dict[str, Any]],
+    servo_records: list[dict[str, Any]],
+    *,
+    pairing_threshold_ms: float = 25.0,
+) -> dict[str, Any]:
+    """Summarize nearest-neighbor tracker/servo time offsets."""
+    detailed = compute_servo_tracker_sync_summary(
+        tracker_records,
+        servo_records,
+        [],
+        pairing_threshold_ms=pairing_threshold_ms,
+        match_thresholds_ms=(pairing_threshold_ms,),
+    )
+    return {
+        "enabled": bool(servo_records),
+        "available": bool(detailed.get("available", False)),
+        "pairing_threshold_ms": float(pairing_threshold_ms),
+        "tracker_sample_count": int(detailed.get("tracker_sample_count", 0) or 0),
+        "servo_sample_count": int(detailed.get("servo_telemetry_sample_count", 0) or 0),
+        "servo_to_tracker_offsets_ms": list(detailed.get("servo_telemetry_to_tracker_offsets_ms", []) or []),
+        "tracker_to_servo_offsets_ms": list(detailed.get("tracker_to_servo_telemetry_offsets_ms", []) or []),
+        "servo_to_tracker_mean_offset_ms": detailed.get("servo_telemetry_to_tracker_mean_offset_ms"),
+        "servo_to_tracker_median_offset_ms": detailed.get("servo_telemetry_to_tracker_median_offset_ms"),
+        "servo_to_tracker_p95_offset_ms": detailed.get("servo_telemetry_to_tracker_p95_offset_ms"),
+        "servo_to_tracker_max_offset_ms": detailed.get("servo_telemetry_to_tracker_max_offset_ms"),
+        "tracker_to_servo_mean_offset_ms": detailed.get("tracker_to_servo_telemetry_mean_offset_ms"),
+        "tracker_to_servo_median_offset_ms": detailed.get("tracker_to_servo_telemetry_median_offset_ms"),
+        "tracker_to_servo_p95_offset_ms": detailed.get("tracker_to_servo_telemetry_p95_offset_ms"),
+        "tracker_to_servo_max_offset_ms": detailed.get("tracker_to_servo_telemetry_max_offset_ms"),
+        "servo_samples_over_threshold_count": detailed.get("servo_telemetry_to_tracker_unmatched_count"),
+        "tracker_samples_over_threshold_count": detailed.get("tracker_to_servo_telemetry_unmatched_count"),
     }
 
 

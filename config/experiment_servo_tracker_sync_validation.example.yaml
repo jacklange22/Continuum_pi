@@ -1,0 +1,11 @@
+servo_ids: [1]
+requested_tool_ids: ["0A"]
+motion_mode: "alternating_step"
+run_duration_s: 8.0
+warmup_duration_s: 1.0
+command_amplitude_ticks: 32
+step_period_s: 0.35
+telemetry_poll_interval_s: 0.02
+timeout_s: 20.0
+include_robot_frame_tip_pose: true
+run_label: ""

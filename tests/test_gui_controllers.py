@@ -1933,6 +1933,7 @@ def test_experiment_workspace_hides_operational_pivot_workflow_from_selector(tmp
     assert "pivot_calibration" not in option_names
     assert "repeatability_dataset" in option_names
     assert "tracker_timing_validation" in option_names
+    assert "servo_tracker_sync_validation" in option_names
     assert "pretension_validation" in option_names
     assert "command_schedule_validation" in option_names
     assert "collect_pose_command_dataset" in option_names
@@ -2405,6 +2406,21 @@ def test_experiment_shell_routes_tracker_timing_validation_to_custom_page(tmp_pa
     assert timing_page.experiment_name == "tracker_timing_validation"
     assert timing_page.run_button.text() == "Run Timing Diagnostic"
     assert timing_page.tool_mode_combo.currentData() == "both"
+
+
+def test_experiment_shell_routes_servo_tracker_sync_validation_to_custom_page(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+
+    controller.select_experiment("servo_tracker_sync_validation")
+    tab.update(controller.refresh())
+    sync_page = tab._page_for("servo_tracker_sync_validation")
+
+    assert tab.page_stack.currentWidget() is sync_page
+    assert sync_page.experiment_name == "servo_tracker_sync_validation"
+    assert sync_page.run_button.text() == "Run Sync Validation"
+    assert sync_page.tool_mode_combo.currentData() == "0A"
 
 
 def test_app_window_status_bar_tracks_active_servo_and_experiment_messages(tmp_path: Path) -> None:

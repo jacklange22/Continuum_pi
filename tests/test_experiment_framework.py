@@ -562,6 +562,248 @@ def test_tracker_timing_validation_experiment_outputs_do_not_crash_when_optional
     assert result.summary.experiment_metrics["error_sample_count"] == 1
 
 
+def test_servo_tracker_sync_validation_experiment_writes_canonical_outputs_and_summary(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    servo_service = _servo_service(tmp_path)
+    servo_service.connect("/dev/mock-openrb", 115200)
+    timing_records = [
+        {
+            "sample_start_monotonic_ns": 1_000_000_000,
+            "backend_call_start_ns": 1_000_000_000,
+            "backend_call_end_ns": 1_010_000_000,
+            "parse_complete_ns": 1_011_000_000,
+            "state_commit_complete_ns": 1_012_000_000,
+            "sample_commit_monotonic_ns": 1_012_000_000,
+            "observed_at_utc": "2026-01-01T00:00:00.000Z",
+            "frame_number": 101,
+            "frame_number_source": "synthetic",
+            "is_new_frame": True,
+            "is_duplicate_frame": False,
+            "raw_payload_available": True,
+            "parsed_payload_available": True,
+            "output_committed": True,
+            "error_flag": False,
+            "tools_visible": ["0A"],
+            "raw_tool_ids": ["10"],
+            "normalized_tool_ids": ["0A"],
+            "runtime_role_mappings": {"0A": "10"},
+            "tool_validity": {"0A": "tracked"},
+            "tool_pose_payload": {
+                "0A": {
+                    "tracking_state": "tracked",
+                    "frame_number": 101,
+                    "translation_mm": [0.0, 0.0, 0.0],
+                    "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                }
+            },
+            "valid_transform_count": 1,
+            "total_cycle_ms": 12.0,
+            "backend_call_ms": 10.0,
+            "parse_ms": 1.0,
+            "state_commit_ms": 1.0,
+        },
+        {
+            "sample_start_monotonic_ns": 1_020_000_000,
+            "backend_call_start_ns": 1_020_000_000,
+            "backend_call_end_ns": 1_030_000_000,
+            "parse_complete_ns": 1_031_000_000,
+            "state_commit_complete_ns": 1_032_000_000,
+            "sample_commit_monotonic_ns": 1_032_000_000,
+            "observed_at_utc": "2026-01-01T00:00:00.020Z",
+            "frame_number": 102,
+            "frame_number_source": "synthetic",
+            "is_new_frame": True,
+            "is_duplicate_frame": False,
+            "raw_payload_available": True,
+            "parsed_payload_available": True,
+            "output_committed": True,
+            "error_flag": False,
+            "tools_visible": ["0A"],
+            "raw_tool_ids": ["10"],
+            "normalized_tool_ids": ["0A"],
+            "runtime_role_mappings": {"0A": "10"},
+            "tool_validity": {"0A": "tracked"},
+            "tool_pose_payload": {
+                "0A": {
+                    "tracking_state": "tracked",
+                    "frame_number": 102,
+                    "translation_mm": [1.0, 0.0, 0.0],
+                    "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                }
+            },
+            "valid_transform_count": 1,
+            "total_cycle_ms": 12.0,
+            "backend_call_ms": 10.0,
+            "parse_ms": 1.0,
+            "state_commit_ms": 1.0,
+        },
+        {
+            "sample_start_monotonic_ns": 1_040_000_000,
+            "backend_call_start_ns": 1_040_000_000,
+            "backend_call_end_ns": 1_050_000_000,
+            "parse_complete_ns": 1_051_000_000,
+            "state_commit_complete_ns": 1_052_000_000,
+            "sample_commit_monotonic_ns": 1_052_000_000,
+            "observed_at_utc": "2026-01-01T00:00:00.040Z",
+            "frame_number": 103,
+            "frame_number_source": "synthetic",
+            "is_new_frame": True,
+            "is_duplicate_frame": False,
+            "raw_payload_available": True,
+            "parsed_payload_available": True,
+            "output_committed": True,
+            "error_flag": False,
+            "tools_visible": ["0A"],
+            "raw_tool_ids": ["10"],
+            "normalized_tool_ids": ["0A"],
+            "runtime_role_mappings": {"0A": "10"},
+            "tool_validity": {"0A": "tracked"},
+            "tool_pose_payload": {
+                "0A": {
+                    "tracking_state": "tracked",
+                    "frame_number": 103,
+                    "translation_mm": [2.0, 0.0, 0.0],
+                    "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                }
+            },
+            "valid_transform_count": 1,
+            "total_cycle_ms": 12.0,
+            "backend_call_ms": 10.0,
+            "parse_ms": 1.0,
+            "state_commit_ms": 1.0,
+        },
+    ]
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        servo_service=servo_service,
+        tracking_service=_TimingDiagnosticTrackingService(timing_records),
+    )
+
+    result = runner.run_experiment(
+        "servo_tracker_sync_validation",
+        config={
+            "servo_ids": [1],
+            "requested_tool_ids": ["0A"],
+            "run_duration_s": 0.12,
+            "warmup_duration_s": 0.0,
+            "command_amplitude_ticks": 8,
+            "step_period_s": 0.04,
+            "telemetry_poll_interval_s": 0.02,
+            "timeout_s": 1.0,
+            "include_robot_frame_tip_pose": True,
+            "run_label": "sync_a",
+        },
+    )
+
+    assert result.success is True
+    assert result.paths.output_dir.parent == tmp_path / "data" / "experiments" / "servo_tracker_sync_validation"
+    assert result.summary.experiment_metrics["backend_identity"] == "ndi_tracker_python"
+    assert result.summary.experiment_metrics["selected_servo_ids"] == [1]
+    assert result.summary.experiment_metrics["servo_telemetry_sample_count"] > 0
+    assert result.summary.experiment_metrics["servo_command_sample_count"] > 0
+    assert result.summary.experiment_metrics["servo_tracker_sync"]["available"] is True
+    assert result.paths.output_dir.joinpath("servo_tracker_offset_histogram.png").exists()
+    assert result.paths.output_dir.joinpath("servo_tracker_offset_timeseries.png").exists()
+    assert result.paths.output_dir.joinpath("servo_tracker_pose_command_timeseries.png").exists()
+    assert result.paths.output_dir.joinpath("servo_tracker_validity_summary.png").exists()
+    assert result.paths.output_dir.joinpath("servo_tracker_sync_summary.txt").exists()
+    bundle = runner.load_dataset(result.paths.output_dir)
+    assert any(sample.extra.get("record_kind") == "servo_command" for sample in bundle.samples)
+    assert any(sample.extra.get("record_kind") == "servo_timing" for sample in bundle.samples)
+    assert any(sample.extra.get("record_kind") == "tracker_timing" for sample in bundle.samples)
+
+
+def test_servo_tracker_sync_validation_outputs_do_not_crash_without_tip_pose(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    servo_service = _servo_service(tmp_path)
+    servo_service.connect("/dev/mock-openrb", 115200)
+    timing_records = [
+        {
+            "sample_start_monotonic_ns": 2_000_000_000,
+            "backend_call_start_ns": 2_000_000_000,
+            "backend_call_end_ns": 2_012_000_000,
+            "parse_complete_ns": 2_013_000_000,
+            "state_commit_complete_ns": 2_014_000_000,
+            "sample_commit_monotonic_ns": 2_014_000_000,
+            "observed_at_utc": "2026-01-01T00:00:01.000Z",
+            "frame_number": None,
+            "frame_number_source": "missing",
+            "is_new_frame": True,
+            "is_duplicate_frame": False,
+            "raw_payload_available": True,
+            "parsed_payload_available": True,
+            "output_committed": True,
+            "error_flag": False,
+            "tools_visible": ["0A"],
+            "raw_tool_ids": ["10"],
+            "normalized_tool_ids": ["0A"],
+            "runtime_role_mappings": {"0A": "10"},
+            "tool_validity": {"0A": "tracked"},
+            "tool_pose_payload": {
+                "0A": {
+                    "tracking_state": "tracked",
+                    "frame_number": None,
+                    "translation_mm": [0.0, 0.0, 0.0],
+                    "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                }
+            },
+            "valid_transform_count": 1,
+            "total_cycle_ms": 14.0,
+            "backend_call_ms": 12.0,
+            "parse_ms": 1.0,
+            "state_commit_ms": 1.0,
+        }
+    ]
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        servo_service=servo_service,
+        tracking_service=_TimingDiagnosticTrackingService(timing_records),
+    )
+
+    result = runner.run_experiment(
+        "servo_tracker_sync_validation",
+        config={
+            "servo_ids": [1],
+            "requested_tool_ids": ["0A"],
+            "run_duration_s": 0.06,
+            "warmup_duration_s": 0.0,
+            "command_amplitude_ticks": 4,
+            "step_period_s": 0.04,
+            "telemetry_poll_interval_s": 0.02,
+            "timeout_s": 1.0,
+            "include_robot_frame_tip_pose": True,
+        },
+    )
+
+    assert result.paths.output_dir.joinpath("servo_tracker_pose_command_timeseries.png").exists()
+    assert result.paths.output_dir.joinpath("servo_tracker_validity_summary.png").exists()
+
+
+def test_servo_tracker_sync_validation_blocks_legacy_bridge_backend(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    servo_service = _servo_service(tmp_path)
+    servo_service.connect("/dev/mock-openrb", 115200)
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        servo_service=servo_service,
+        tracking_service=_TimingDiagnosticTrackingService([], backend_identity="tracker_bridge_json"),
+    )
+
+    result = runner.run_experiment(
+        "servo_tracker_sync_validation",
+        config={"servo_ids": [1], "requested_tool_ids": ["0A"]},
+    )
+
+    assert result.success is False
+    assert "tracker_bridge" in result.message
+
+
 def test_pretension_validation_experiment_records_current_displacement_trace_and_outputs(tmp_path: Path) -> None:
     settings = _settings()
     servo_service = ServoService(

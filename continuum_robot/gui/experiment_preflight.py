@@ -13,6 +13,7 @@ from continuum_robot.experiments.builtins import (
     CommandScheduleValidationConfig,
     PretensionValidationExperimentConfig,
     ReplayRunnerConfig,
+    ServoTrackerSyncValidationConfig,
     TrackerTimingValidationConfig,
 )
 from continuum_robot.experiments.critical_experiments import (
@@ -721,6 +722,119 @@ def evaluate_preflight(
                 "scientific_framing",
                 "Scientific Framing",
                 "This diagnostic measures backend acquisition timing and duplicate/stale frame behavior. It does not use GUI refresh rate as a tracker-performance metric.",
+            )
+        )
+
+    elif experiment_name == "servo_tracker_sync_validation":
+        config = ServoTrackerSyncValidationConfig.from_dict(payload)
+        configured_backend = str(settings.serial.tracker_backend or "").strip().lower()
+        selected_backend = str(
+            tracking_snapshot.selected_backend_name or tracking_snapshot.backend_identity or ""
+        ).strip().lower()
+        if bool(settings.runtime.mock_mode):
+            checks.append(
+                _blocked(
+                    "mock_mode",
+                    "Runtime Mode",
+                    "Servo-tracker sync validation is blocked in mock mode. Use the live Python NDI backend and live servo connection.",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "runtime_mode",
+                    "Runtime Mode",
+                    "Live runtime mode is enabled for a meaningful motion-and-sync validation run.",
+                )
+            )
+        if configured_backend not in {"ndi", ""}:
+            checks.append(
+                _blocked(
+                    "configured_backend",
+                    "Configured Backend",
+                    f"Configured tracker backend is '{configured_backend}'. This validation targets the Python NDI backend path only.",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "configured_backend",
+                    "Configured Backend",
+                    "Configured tracker backend is the Python NDI path.",
+                )
+            )
+        if selected_backend in {"bridge", "tracker_bridge_json"}:
+            checks.append(
+                _blocked(
+                    "selected_backend",
+                    "Selected Backend",
+                    "The active tracker backend is the legacy bridge path. This validation should run against the Python NDI backend instead.",
+                )
+            )
+        elif tracker_ready:
+            checks.append(
+                _ok(
+                    "selected_backend",
+                    "Selected Backend",
+                    f"Live tracking is ready via {tracking_snapshot.backend_identity or tracking_snapshot.selected_backend_name or 'ndi'}.",
+                )
+            )
+        else:
+            checks.append(
+                _warning(
+                    "selected_backend",
+                    "Selected Backend",
+                    "Live tracking is not currently streaming. The experiment can start the backend, but the saved run is only meaningful if the Python NDI backend connects successfully.",
+                )
+            )
+        if not servo_connected:
+            checks.append(
+                _blocked(
+                    "servo_connection",
+                    "Servo Connection",
+                    "Servo-tracker sync validation requires a connected servo service.",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "servo_connection",
+                    "Servo Connection",
+                    "Servo service is connected for command and telemetry logging.",
+                )
+            )
+        if not config.servo_ids:
+            checks.append(
+                _blocked(
+                    "servo_ids",
+                    "Servo IDs",
+                    "At least one servo ID is required.",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "servo_ids",
+                    "Servo IDs",
+                    f"Will run the scripted motion on servo IDs {', '.join(str(value) for value in config.servo_ids)}.",
+                )
+            )
+        checks.append(
+            _info(
+                "motion_scope",
+                "Motion Scope",
+                (
+                    f"Will run {config.motion_mode.replace('_', ' ')} motion for {float(config.run_duration_s):.1f} s "
+                    f"after {float(config.warmup_duration_s):.1f} s warmup, using amplitude {int(config.command_amplitude_ticks)} ticks "
+                    f"and {float(config.step_period_s):.3f} s command cadence."
+                ),
+            )
+        )
+        checks.append(
+            _ok(
+                "scientific_framing",
+                "Scientific Framing",
+                "This experiment validates host-time alignment and logging usability during motion. It does not claim closed-loop control quality or hardware clock synchronization.",
             )
         )
 

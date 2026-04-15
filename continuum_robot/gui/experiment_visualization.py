@@ -11,6 +11,8 @@ from continuum_robot.experiments.dataset_tools import extract_tip_or_tool_positi
 from continuum_robot.experiments.pretension_validation_outputs import extract_pretension_trace_points
 from continuum_robot.gui.theme import COLORS, chart_palette
 from continuum_robot.tracking.timing_benchmark import (
+    compute_servo_tracker_sync_summary,
+    extract_servo_command_records,
     compute_servo_sync_summary,
     compute_tracker_timing_summary,
     extract_servo_timing_records,
@@ -100,6 +102,8 @@ def build_visualization_model(
         return _build_pretension_validation_model(samples=samples, metrics=metrics)
     if experiment_name == "tracker_timing_validation":
         return _build_tracker_timing_model(samples=samples, metrics=metrics, config_payload=config_payload)
+    if experiment_name == "servo_tracker_sync_validation":
+        return _build_servo_tracker_sync_model(samples=samples, metrics=metrics, config_payload=config_payload)
     return _build_generic_model(
         experiment_name=experiment_name,
         samples=samples,
@@ -873,3 +877,217 @@ def _build_tracker_timing_model(*, samples, metrics: dict[str, Any], config_payl
         else:
             summary_lines.append("Servo sync logging was requested, but no valid tracker-servo pairings were available.")
     return VisualizationModel(charts=charts, summary_lines=summary_lines)
+
+
+def _build_servo_tracker_sync_model(*, samples, metrics: dict[str, Any], config_payload: dict[str, Any]) -> VisualizationModel:
+    tracker_records = extract_tracker_timing_records(samples)
+    servo_records = extract_servo_timing_records(samples)
+    command_records = extract_servo_command_records(samples)
+    requested_tool_ids = [
+        str(value).strip().upper()
+        for value in (config_payload.get("requested_tool_ids") or ["0A"])
+        if str(value).strip()
+    ] or ["0A"]
+    if not metrics:
+        sync_summary = compute_servo_tracker_sync_summary(tracker_records, servo_records, command_records)
+        backend_identity = next(
+            (str(record.get("backend_identity")) for record in tracker_records if record.get("backend_identity")),
+            "",
+        )
+        metrics = compute_tracker_timing_summary(
+            tracker_records,
+            requested_tool_ids=requested_tool_ids,
+            backend_identity=backend_identity,
+            configured_backend_name="",
+            selected_backend_name="",
+            run_duration_s=config_payload.get("run_duration_s"),
+            run_label=str(config_payload.get("run_label", "") or ""),
+        )
+        metrics.update(
+            {
+                "selected_servo_ids": list(config_payload.get("servo_ids") or []),
+                "servo_telemetry_sample_count": len(servo_records),
+                "servo_command_sample_count": len(command_records),
+                "include_robot_frame_tip_pose": bool(config_payload.get("include_robot_frame_tip_pose", True)),
+                "servo_tracker_sync": sync_summary,
+            }
+        )
+    sync = dict(metrics.get("servo_tracker_sync", {}) or {})
+    command_points, measured_points = _servo_motion_chart_points(samples)
+    tracker_points, tracker_metric_source = _tracker_motion_chart_points(
+        samples=samples,
+        requested_tool_ids=requested_tool_ids,
+        prefer_robot_frame_tip=bool(metrics.get("include_robot_frame_tip_pose", True)),
+    )
+    per_tool_summary = dict(metrics.get("per_tool_summary", {}) or {})
+    charts = [
+        ChartModel(
+            kind="line",
+            title="Tracker -> Servo Telemetry Offset",
+            x_title="Tracker Sample Index",
+            y_title="Absolute Offset (ms)",
+            caption="Nearest servo-telemetry host-time offset for each analyzed tracker sample during motion.",
+            points_xy=[
+                (float(index), float(value))
+                for index, value in enumerate(sync.get("tracker_to_servo_telemetry_offsets_ms", []) or [])
+            ],
+            color_hex=COLORS.scene_tip,
+        ),
+        ChartModel(
+            kind="line",
+            title="Servo Command / Telemetry Motion Metric",
+            x_title="Monotonic Time (s)",
+            y_title="Aggregate Travel (ticks)",
+            caption="Euclidean travel metric across selected servos for commanded and measured positions.",
+            points_xy=command_points,
+            color_hex=COLORS.scene_live_0a,
+        ),
+    ]
+    if measured_points:
+        charts.append(
+            ChartModel(
+                kind="line",
+                title="Servo Measured Travel Metric",
+                x_title="Monotonic Time (s)",
+                y_title="Aggregate Travel (ticks)",
+                caption="Measured servo travel relative to the run start across the selected servos.",
+                points_xy=measured_points,
+                color_hex=COLORS.scene_live_0b,
+            )
+        )
+    if tracker_points:
+        charts.append(
+            ChartModel(
+                kind="line",
+                title="Tracker Motion Metric",
+                x_title="Monotonic Time (s)",
+                y_title="Displacement (mm)",
+                caption=f"Tracker-side displacement relative to the run start using {tracker_metric_source}.",
+                points_xy=tracker_points,
+                color_hex=COLORS.scene_truth,
+            )
+        )
+    if per_tool_summary:
+        charts.append(
+            ChartModel(
+                kind="bar",
+                title="Per-Tool Valid Transform Rate",
+                x_title="Tool",
+                y_title="Valid Transform Rate (%)",
+                caption="Fraction of analyzed motion samples in which each requested tool produced a tracked transform.",
+                categories=list(per_tool_summary.keys()),
+                values=[
+                    100.0 * float(summary.get("valid_transform_rate", 0.0) or 0.0)
+                    for summary in per_tool_summary.values()
+                ],
+                color_hex=COLORS.scene_measurement,
+            )
+        )
+    summary_lines = [
+        f"Backend: {metrics.get('backend_identity', 'n/a')}",
+        f"Servo IDs: {', '.join(str(value) for value in (metrics.get('selected_servo_ids') or [])) or 'n/a'}",
+        f"Tool IDs: {', '.join(metrics.get('requested_tool_ids', []) or requested_tool_ids)}",
+        f"Analyzed tracker samples: {int(metrics.get('sample_count_analyzed', 0) or 0)}",
+        f"Servo telemetry samples: {int(metrics.get('servo_telemetry_sample_count', 0) or 0)}",
+        f"Servo command samples: {int(metrics.get('servo_command_sample_count', 0) or 0)}",
+        f"Effective loop rate: {_fmt(metrics.get('effective_loop_rate_hz'))} Hz",
+        f"Unique-frame rate: {_fmt(metrics.get('unique_frame_rate_hz'))} Hz",
+        f"Duplicate ratio: {100.0 * float(metrics.get('duplicate_frame_ratio', 0.0) or 0.0):.1f}%",
+        f"Valid requested-tool rate: {100.0 * float(metrics.get('valid_requested_tool_rate', 0.0) or 0.0):.1f}%",
+        f"Tracker->servo telemetry mean/p95: {_fmt(sync.get('tracker_to_servo_telemetry_mean_offset_ms'))} / {_fmt(sync.get('tracker_to_servo_telemetry_p95_offset_ms'))} ms",
+        f"Tracker->servo command mean/p95: {_fmt(sync.get('tracker_to_servo_command_mean_offset_ms'))} / {_fmt(sync.get('tracker_to_servo_command_p95_offset_ms'))} ms",
+        f"Tracker->servo <= 5 / 10 / 20 / 25 ms: {100.0 * float(sync.get('tracker_to_servo_telemetry_within_5ms_rate', 0.0) or 0.0):.1f}% / {100.0 * float(sync.get('tracker_to_servo_telemetry_within_10ms_rate', 0.0) or 0.0):.1f}% / {100.0 * float(sync.get('tracker_to_servo_telemetry_within_20ms_rate', 0.0) or 0.0):.1f}% / {100.0 * float(sync.get('tracker_to_servo_telemetry_within_25ms_rate', 0.0) or 0.0):.1f}%",
+        (
+            f"Tracker motion metric source: {tracker_metric_source}"
+            if tracker_metric_source != "unavailable"
+            else "Tracker motion metric source: unavailable"
+        ),
+        "Interpretation: this run validates host-time alignment and logging usability during motion, not closed-loop control quality.",
+    ]
+    return VisualizationModel(charts=charts, summary_lines=summary_lines)
+
+
+def _servo_motion_chart_points(samples) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    command_reference_by_servo: dict[int, float] = {}
+    measured_reference_by_servo: dict[int, float] = {}
+    command_rows: dict[float, list[float]] = {}
+    measured_rows: dict[float, list[float]] = {}
+    for sample in samples:
+        extra = dict(getattr(sample, "extra", {}) or {})
+        record_kind = str(extra.get("record_kind", "")).strip().lower()
+        if record_kind == "servo_command":
+            servo_id = extra.get("servo_id")
+            commanded = extra.get("commanded_position_ticks")
+            if servo_id is None or commanded is None:
+                continue
+            servo_id = int(servo_id)
+            commanded_value = float(commanded)
+            command_reference_by_servo.setdefault(servo_id, commanded_value)
+            command_rows.setdefault(float(sample.monotonic_time_s), []).append(
+                abs(commanded_value - command_reference_by_servo[servo_id])
+            )
+        elif record_kind == "servo_timing":
+            servo_id = extra.get("servo_id")
+            measured = extra.get("present_position_ticks")
+            if servo_id is None or measured is None:
+                continue
+            servo_id = int(servo_id)
+            measured_value = float(measured)
+            measured_reference_by_servo.setdefault(servo_id, measured_value)
+            measured_rows.setdefault(float(sample.monotonic_time_s), []).append(
+                abs(measured_value - measured_reference_by_servo[servo_id])
+            )
+    command_points = [
+        (time_s, float(np.linalg.norm(np.asarray(values, dtype=float))))
+        for time_s, values in sorted(command_rows.items())
+        if values
+    ]
+    measured_points = [
+        (time_s, float(np.linalg.norm(np.asarray(values, dtype=float))))
+        for time_s, values in sorted(measured_rows.items())
+        if values
+    ]
+    return command_points, measured_points
+
+
+def _tracker_motion_chart_points(
+    *,
+    samples,
+    requested_tool_ids: list[str],
+    prefer_robot_frame_tip: bool,
+) -> tuple[list[tuple[float, float]], str]:
+    reference_position: np.ndarray | None = None
+    points: list[tuple[float, float]] = []
+    source_label = "unavailable"
+    for sample in samples:
+        extra = dict(getattr(sample, "extra", {}) or {})
+        if str(extra.get("record_kind", "")).strip().lower() != "tracker_timing":
+            continue
+        if bool(extra.get("warmup_discarded", False)):
+            continue
+        position_mm = None
+        if prefer_robot_frame_tip:
+            position_mm, frame_name = extract_tip_or_tool_position_mm(
+                sample,
+                tool_id=str(requested_tool_ids[0] if requested_tool_ids else "0A"),
+                prefer_robot_frame=True,
+            )
+            if position_mm is not None and frame_name == "robot":
+                source_label = "robot tip displacement"
+        if position_mm is None:
+            for tool_id in requested_tool_ids:
+                position_mm, _ = extract_tip_or_tool_position_mm(
+                    sample,
+                    tool_id=str(tool_id),
+                    prefer_robot_frame=False,
+                )
+                if position_mm is not None:
+                    source_label = f"{tool_id} tracker displacement"
+                    break
+        if position_mm is None:
+            continue
+        vector = np.asarray(position_mm, dtype=float)
+        if reference_position is None:
+            reference_position = vector
+        points.append((float(sample.monotonic_time_s), float(np.linalg.norm(vector - reference_position))))
+    return points, source_label

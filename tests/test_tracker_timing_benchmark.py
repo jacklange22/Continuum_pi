@@ -1,7 +1,9 @@
 from continuum_robot.experiments.schemas import ExperimentTimeseriesSample
 from continuum_robot.tracking.timing_benchmark import (
+    compute_servo_tracker_sync_summary,
     compute_servo_sync_summary,
     compute_tracker_timing_summary,
+    extract_servo_command_records,
     extract_tracker_timing_records,
 )
 
@@ -159,3 +161,88 @@ def test_compute_servo_sync_summary_handles_absent_servo_records_cleanly() -> No
     assert summary["tracker_sample_count"] == 2
     assert summary["servo_sample_count"] == 0
     assert summary["servo_to_tracker_mean_offset_ms"] is None
+
+
+def test_extract_servo_command_records_reads_canonical_command_samples() -> None:
+    sample = ExperimentTimeseriesSample(
+        monotonic_time_s=0.02,
+        wall_time_utc="2026-01-01T00:00:00Z",
+        phase="servo_command",
+        step_index=1,
+        sample_index=3,
+        extra={
+            "record_kind": "servo_command",
+            "command_monotonic_ns": 20_000_000,
+            "servo_id": 1,
+            "commanded_position_ticks": 2056,
+            "motion_phase": "step_positive",
+            "command_step_index": 1,
+            "warmup_discarded": False,
+        },
+    )
+
+    records = extract_servo_command_records([sample])
+
+    assert len(records) == 1
+    assert records[0]["servo_id"] == 1
+    assert records[0]["commanded_position_ticks"] == 2056
+    assert records[0]["motion_phase"] == "step_positive"
+
+
+def test_compute_servo_tracker_sync_summary_matches_tracker_telemetry_and_command_streams() -> None:
+    tracker_records = [
+        {"sample_commit_monotonic_ns": 1_000_000, "warmup_discarded": False, "frame_number": None},
+        {"sample_commit_monotonic_ns": 11_000_000, "warmup_discarded": False, "frame_number": None},
+        {"sample_commit_monotonic_ns": 21_000_000, "warmup_discarded": False, "frame_number": None},
+    ]
+    servo_telemetry_records = [
+        {"sample_monotonic_ns": 3_000_000, "warmup_discarded": False},
+        {"sample_monotonic_ns": 13_000_000, "warmup_discarded": False},
+        {"sample_monotonic_ns": 24_000_000, "warmup_discarded": False},
+    ]
+    servo_command_records = [
+        {"command_monotonic_ns": 0, "warmup_discarded": False},
+        {"command_monotonic_ns": 10_000_000, "warmup_discarded": False},
+        {"command_monotonic_ns": 20_000_000, "warmup_discarded": False},
+    ]
+
+    summary = compute_servo_tracker_sync_summary(
+        tracker_records,
+        servo_telemetry_records,
+        servo_command_records,
+    )
+
+    assert summary["available"] is True
+    assert summary["tracker_sample_count"] == 3
+    assert summary["servo_telemetry_sample_count"] == 3
+    assert summary["servo_command_sample_count"] == 3
+    assert summary["tracker_to_servo_telemetry_offsets_ms"] == [2.0, 2.0, 3.0]
+    assert summary["tracker_to_servo_command_offsets_ms"] == [1.0, 1.0, 1.0]
+    assert summary["tracker_to_servo_telemetry_within_5ms_count"] == 3
+    assert summary["tracker_to_servo_telemetry_within_10ms_rate"] == 1.0
+    assert summary["tracker_to_servo_command_p95_offset_ms"] == 1.0
+
+
+def test_compute_servo_tracker_sync_summary_ignores_warmup_samples() -> None:
+    tracker_records = [
+        {"sample_commit_monotonic_ns": 1_000_000, "warmup_discarded": True},
+        {"sample_commit_monotonic_ns": 11_000_000, "warmup_discarded": False},
+    ]
+    servo_telemetry_records = [
+        {"sample_monotonic_ns": 2_000_000, "warmup_discarded": True},
+        {"sample_monotonic_ns": 12_000_000, "warmup_discarded": False},
+    ]
+    servo_command_records = [
+        {"command_monotonic_ns": 10_500_000, "warmup_discarded": False},
+    ]
+
+    summary = compute_servo_tracker_sync_summary(
+        tracker_records,
+        servo_telemetry_records,
+        servo_command_records,
+    )
+
+    assert summary["tracker_sample_count"] == 1
+    assert summary["servo_telemetry_sample_count"] == 1
+    assert summary["tracker_to_servo_telemetry_offsets_ms"] == [1.0]
+    assert summary["tracker_to_servo_command_offsets_ms"] == [0.5]

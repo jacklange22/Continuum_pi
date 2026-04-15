@@ -1136,6 +1136,23 @@ class TrackerBackendNDI:
             str(tool_id): _normalize_timing_tool_status(tool)
             for tool_id, tool in sorted(tools.items())
         }
+        tool_pose_payload = {
+            str(tool_id): {
+                "tracking_state": str(tool.status or "unknown"),
+                "frame_number": int(tool.frame_number) if tool.frame_number is not None else None,
+                "translation_mm": (
+                    [float(value) for value in tool.translation_mm]
+                    if tool.translation_mm is not None
+                    else None
+                ),
+                "quaternion_wxyz": (
+                    [float(value) for value in tool.quaternion]
+                    if tool.quaternion is not None
+                    else None
+                ),
+            }
+            for tool_id, tool in sorted(tools.items())
+        }
         valid_transform_count = sum(1 for status in tool_validity.values() if status == "tracked")
         return {
             "sample_start_monotonic_ns": int(sample_start_ns),
@@ -1162,6 +1179,7 @@ class TrackerBackendNDI:
             "runtime_role_mappings": dict(debug.get("runtime_role_mappings", {})),
             "tools_visible": sorted(tool_validity),
             "tool_validity": tool_validity,
+            "tool_pose_payload": tool_pose_payload,
             "valid_transform_count": int(valid_transform_count),
             "total_cycle_ms": float(max(0, state_commit_complete_ns - sample_start_ns)) / 1_000_000.0,
             "backend_call_ms": float(max(0, backend_call_end_ns - sample_start_ns)) / 1_000_000.0,
