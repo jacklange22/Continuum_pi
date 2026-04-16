@@ -21,6 +21,7 @@ from continuum_robot.experiments.single_segment_repeatability import (
     LEGACY_TARGET_COUNT,
     LEGACY_VISIT_COUNT,
     SingleSegmentRepeatabilityConfig,
+    load_repeatability_metrics_from_run,
 )
 from continuum_robot.experiments.critical_experiments import (
     GridDefinitionConfig,
@@ -213,6 +214,33 @@ def evaluate_preflight(
                     f"Accepted base registration must be loaded. Runtime state is {tracking_snapshot.registration_state}.",
                 )
             )
+        pivot_tip_file = getattr(settings.registration, "penprobe_file", None)
+        if pivot_tip_file:
+            pivot_tip_path = _resolve_repo_path(project_root, pivot_tip_file)
+            if pivot_tip_path.exists():
+                checks.append(
+                    _ok(
+                        "pivot_tip",
+                        "0B Pivot Tip Calibration",
+                        f"Pivot-calibrated 0B tip file is present: {pivot_tip_path}",
+                    )
+                )
+            else:
+                checks.append(
+                    _blocked(
+                        "pivot_tip",
+                        "0B Pivot Tip Calibration",
+                        f"Pivot-calibrated 0B tip file is missing: {pivot_tip_path}. Run and accept 0B pivot calibration first.",
+                    )
+                )
+        else:
+            checks.append(
+                _blocked(
+                    "pivot_tip",
+                    "0B Pivot Tip Calibration",
+                    "No penprobe_file is configured for the 0B pivot-calibrated tip.",
+                )
+            )
         if (
             tracking_snapshot.runtime_tip_calibration_state == "loaded"
             and not tracking_snapshot.runtime_tip_identity_fallback
@@ -270,6 +298,37 @@ def evaluate_preflight(
         else:
             checks.append(_ok("neutral_setpoints", "Neutral Setpoints", "Neutral setpoints exist for all configured tendons."))
         checks.append(_pretension_artifact_check(servo_ids=servo_ids, servo_calibration_summary=servo_calibration_summary))
+        if config.baseline_run_path:
+            baseline_path = _resolve_repo_path(project_root, config.baseline_run_path)
+            try:
+                baseline_metrics = load_repeatability_metrics_from_run(baseline_path)
+            except Exception as exc:
+                checks.append(
+                    _blocked(
+                        "baseline_run",
+                        "Baseline Comparison",
+                        f"Selected baseline run cannot be used for comparison: {exc}",
+                    )
+                )
+            else:
+                checks.append(
+                    _ok(
+                        "baseline_run",
+                        "Baseline Comparison",
+                        (
+                            f"Baseline loaded from {baseline_path}; "
+                            f"baseline RMS={float(baseline_metrics.get('overall_repeatability_rms_mm', 0.0) or 0.0):.3f} mm."
+                        ),
+                    )
+                )
+        else:
+            checks.append(
+                _info(
+                    "baseline_run",
+                    "Baseline Comparison",
+                    "No baseline selected. The run will save full metrics, but no improvement delta will be computed.",
+                )
+            )
         checks.append(
             _ok(
                 "protocol",

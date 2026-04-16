@@ -239,6 +239,21 @@ def _build_repeatability_model(
             else "Thesis target (< 1.000 mm): not yet met"
         ),
     ]
+    comparison = dict(metrics.get("baseline_comparison", {}) or {})
+    if comparison.get("available"):
+        overall = dict(comparison.get("overall_rms", {}) or {})
+        max_dev = dict(comparison.get("overall_max_deviation", {}) or {})
+        path = dict(comparison.get("path_dependence_rms", {}) or {})
+        summary_lines.extend(
+            [
+                f"Baseline comparison: {'improved' if comparison.get('improved_overall_rms') else 'not improved'}",
+                f"Delta overall RMS: {_fmt_signed(overall.get('delta'))} mm",
+                f"Delta max deviation: {_fmt_signed(max_dev.get('delta'))} mm",
+                f"Delta path RMS: {_fmt_signed(path.get('delta'))} mm",
+            ]
+        )
+    elif comparison:
+        summary_lines.append(f"Baseline comparison unavailable: {comparison.get('error', 'unknown error')}")
     summary_lines.extend(acceptance_lines)
     return VisualizationModel(
         series_3d=series,
@@ -510,6 +525,12 @@ def _fmt(value: Any) -> str:
     if value is None:
         return "n/a"
     return f"{float(value):.3f}"
+
+
+def _fmt_signed(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):+.3f}"
 
 
 def _semantic_color(key: str, *, fallback_index: int) -> str:

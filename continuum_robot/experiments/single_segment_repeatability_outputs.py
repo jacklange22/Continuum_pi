@@ -25,7 +25,7 @@ from PySide6.QtGui import QColor, QPen, QPainter
 
 def build_single_segment_repeatability_summary_pairs(*, metrics: dict[str, Any]) -> list[tuple[str, str]]:
     """Return compact rows for GUI/report summaries."""
-    return [
+    pairs = [
         ("Protocol", "Legacy 17 target / all-other approaches"),
         ("Targets", str(int(metrics.get("target_count", 0) or 0))),
         ("Planned Captures", str(int(metrics.get("planned_capture_count", 0) or 0))),
@@ -39,6 +39,24 @@ def build_single_segment_repeatability_summary_pairs(*, metrics: dict[str, Any])
         ("Thesis Goal", f"<= {_fmt(metrics.get('thesis_goal_rms_mm'), suffix=' mm')}"),
         ("Goal Result", "PASS" if metrics.get("thesis_goal_pass") else "not met"),
     ]
+    comparison = dict(metrics.get("baseline_comparison", {}) or {})
+    if comparison.get("available"):
+        overall = dict(comparison.get("overall_rms", {}) or {})
+        max_dev = dict(comparison.get("overall_max_deviation", {}) or {})
+        path = dict(comparison.get("path_dependence_rms", {}) or {})
+        rejected = dict(comparison.get("rejected_capture_count", {}) or {})
+        pairs.extend(
+            [
+                ("Baseline Comparison", "available"),
+                ("Delta Overall RMS", _signed_fmt(overall.get("delta"), suffix=" mm")),
+                ("Delta Overall Max", _signed_fmt(max_dev.get("delta"), suffix=" mm")),
+                ("Delta Path RMS", _signed_fmt(path.get("delta"), suffix=" mm")),
+                ("Delta Rejected Captures", _signed_int(rejected.get("delta"))),
+            ]
+        )
+    elif comparison:
+        pairs.append(("Baseline Comparison", f"unavailable: {comparison.get('error', 'unknown error')}"))
+    return pairs
 
 
 def build_single_segment_repeatability_summary_lines(*, metadata, summary, metrics: dict[str, Any]) -> list[str]:
@@ -69,6 +87,37 @@ def build_single_segment_repeatability_summary_lines(*, metadata, summary, metri
             f"RMSE={_fmt(row.get('spread_rms_mm'), suffix=' mm')}, "
             f"max={_fmt(row.get('max_deviation_mm'), suffix=' mm')}"
         )
+    comparison = dict(metrics.get("baseline_comparison", {}) or {})
+    if comparison.get("available"):
+        lines.extend(["", "Baseline comparison:"])
+        lines.append(f"Baseline path: {comparison.get('baseline_path', '')}")
+        for label, key in [
+            ("Overall RMS", "overall_rms"),
+            ("Overall max deviation", "overall_max_deviation"),
+            ("Path-dependence RMS", "path_dependence_rms"),
+        ]:
+            row = dict(comparison.get(key, {}) or {})
+            lines.append(
+                f"- {label}: current={_fmt(row.get('current'), suffix=' mm')}, "
+                f"baseline={_fmt(row.get('baseline'), suffix=' mm')}, "
+                f"delta={_signed_fmt(row.get('delta'), suffix=' mm')}"
+            )
+        rejected = dict(comparison.get("rejected_capture_count", {}) or {})
+        lines.append(
+            f"- Rejected captures: current={rejected.get('current', 'n/a')}, "
+            f"baseline={rejected.get('baseline', 'n/a')}, delta={_signed_int(rejected.get('delta'))}"
+        )
+        ring_groups = ((comparison.get("group_metrics", {}) or {}).get("ring", {}) or {})
+        for ring in ["inner", "outer"]:
+            row = dict(ring_groups.get(ring, {}) or {})
+            if row:
+                lines.append(
+                    f"- {ring.title()} ring mean RMSE: current={_fmt(row.get('current'), suffix=' mm')}, "
+                    f"baseline={_fmt(row.get('baseline'), suffix=' mm')}, "
+                    f"delta={_signed_fmt(row.get('delta'), suffix=' mm')}"
+                )
+    elif comparison:
+        lines.extend(["", f"Baseline comparison unavailable: {comparison.get('error', 'unknown error')}"])
     lines.extend(
         [
             "",
@@ -313,6 +362,19 @@ def _ordered_per_target(metrics: dict[str, Any]) -> list[dict[str, Any]]:
         [dict(value) for value in (metrics.get("per_target_metrics", {}) or {}).values()],
         key=lambda item: int(item.get("target_index", 10**9)),
     )
+
+
+def _signed_fmt(value: Any, *, suffix: str = "") -> str:
+    if value is None:
+        return "n/a"
+    numeric = float(value)
+    return f"{numeric:+.3f}{suffix}"
+
+
+def _signed_int(value: Any) -> str:
+    if value is None:
+        return "n/a"
+    return f"{int(value):+d}"
 
 
 def _expand_range(low: float, high: float, *, minimum_span: float, pad_fraction: float) -> tuple[float, float]:

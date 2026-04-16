@@ -20,9 +20,6 @@ from continuum_robot.experiments.critical_experiments import (
 from continuum_robot.experiments.builtins import ServoTrackerSyncValidationConfig
 from continuum_robot.experiments.dataset_io import canonical_experiment_output_root
 from continuum_robot.experiments.single_segment_repeatability import SingleSegmentRepeatabilityConfig
-from continuum_robot.experiments.single_segment_repeatability_outputs import (
-    build_single_segment_repeatability_summary_pairs,
-)
 from continuum_robot.tracking.timing_benchmark import (
     compute_servo_tracker_sync_summary,
     compute_servo_sync_summary,
@@ -533,7 +530,6 @@ class ExperimentController:
             )
         preferred_order = [
             "single_segment_repeatability",
-            "repeatability_dataset",
             "aurora_grid_accuracy",
             "tracker_timing_validation",
             "servo_tracker_sync_validation",
@@ -1012,6 +1008,10 @@ class ExperimentController:
         if bundle.paths.config_snapshot_path is not None:
             pairs.append(("Config Snapshot", str(bundle.paths.config_snapshot_path)))
         if bundle_experiment_name == "single_segment_repeatability":
+            from continuum_robot.experiments.single_segment_repeatability_outputs import (
+                build_single_segment_repeatability_summary_pairs,
+            )
+
             metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
             clusters_path = bundle.paths.output_dir / "repeatability_clusters.png"
             rmse_path = bundle.paths.output_dir / "repeatability_rmse_summary.png"

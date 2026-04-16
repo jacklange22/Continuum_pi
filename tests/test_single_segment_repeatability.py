@@ -1,8 +1,12 @@
 import os
 from pathlib import Path
 import importlib.util
+import sys
 
 import pytest
+
+if sys.version_info < (3, 10):
+    pytest.skip("Project tests require Python 3.10+ syntax.", allow_module_level=True)
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -25,6 +29,7 @@ from continuum_robot.experiments.single_segment_repeatability import (
     SingleSegmentRepeatabilityConfig,
     SingleSegmentRepeatabilityExperiment,
     build_legacy_17_point_targets,
+    compute_repeatability_baseline_comparison,
     compute_single_segment_repeatability_metrics,
     generate_legacy_revisit_sequence,
 )
@@ -105,6 +110,56 @@ def test_repeatability_metrics_use_repeat_captures_and_robot_frame() -> None:
     assert metrics["overall_repeatability_rms_mm"] == pytest.approx(((1.0**2 + 1.0**2 + 2.5**2 + 2.5**2) / 4) ** 0.5)
 
 
+def test_repeatability_baseline_comparison_reports_improvement_deltas() -> None:
+    current = {
+        "overall_repeatability_rms_mm": 0.8,
+        "overall_max_deviation_mm": 1.6,
+        "path_dependence_rms_mm": 0.7,
+        "rejected_capture_count": 1,
+        "per_target_metrics": {
+            "0": {"target_index": 0, "label": "T00", "spread_rms_mm": 0.5, "max_deviation_mm": 1.0},
+            "1": {"target_index": 1, "label": "T01", "spread_rms_mm": 0.9, "max_deviation_mm": 1.8},
+        },
+        "group_metrics": {
+            "ring": {
+                "inner": {"mean_target_rms_mm": 0.9},
+                "outer": {"mean_target_rms_mm": 1.1},
+            }
+        },
+    }
+    baseline = {
+        "overall_repeatability_rms_mm": 1.2,
+        "overall_max_deviation_mm": 2.0,
+        "path_dependence_rms_mm": 1.0,
+        "rejected_capture_count": 3,
+        "per_target_metrics": {
+            "0": {"target_index": 0, "label": "T00", "spread_rms_mm": 0.8, "max_deviation_mm": 1.2},
+            "1": {"target_index": 1, "label": "T01", "spread_rms_mm": 1.0, "max_deviation_mm": 2.1},
+        },
+        "group_metrics": {
+            "ring": {
+                "inner": {"mean_target_rms_mm": 1.2},
+                "outer": {"mean_target_rms_mm": 1.5},
+            }
+        },
+    }
+
+    comparison = compute_repeatability_baseline_comparison(
+        current_metrics=current,
+        baseline_metrics=baseline,
+        baseline_path="data/experiments/single_segment_repeatability/baseline",
+    )
+
+    assert comparison["available"] is True
+    assert comparison["improved_overall_rms"] is True
+    assert comparison["overall_rms"]["delta"] == pytest.approx(-0.4)
+    assert comparison["overall_max_deviation"]["delta"] == pytest.approx(-0.4)
+    assert comparison["path_dependence_rms"]["delta"] == pytest.approx(-0.3)
+    assert comparison["rejected_capture_count"]["delta"] == -2
+    assert comparison["per_target_rmse"]["0"]["delta_rmse_mm"] == pytest.approx(-0.3)
+    assert comparison["group_metrics"]["ring"]["inner"]["delta"] == pytest.approx(-0.3)
+
+
 def test_preflight_blocks_when_transform_chain_is_not_trusted(tmp_path: Path) -> None:
     pytest.importorskip("PySide6")
     from continuum_robot.gui.experiment_preflight import RUN_BLOCKED, evaluate_preflight
@@ -150,6 +205,9 @@ def test_experiment_registration_and_custom_page_routing(tmp_path: Path) -> None
     )
     names = [descriptor.name for descriptor in runner.available_experiments()]
     assert "single_segment_repeatability" in names
+    visibility = {descriptor.name: descriptor.workspace_visible for descriptor in runner.available_experiments()}
+    assert visibility["single_segment_repeatability"] is True
+    assert visibility["repeatability_dataset"] is False
 
     page = build_experiment_page(_DummyController(tmp_path), "single_segment_repeatability")
     assert isinstance(page, SingleSegmentRepeatabilityPage)
@@ -164,6 +222,9 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     settings = _settings(mock_mode=False)
     service = _servo_service(tmp_path)
     tracking = _TrackingService(_tracking_snapshot(position_mm=[1.0, 2.0, 3.0]))
+    pivot_tip_file = tmp_path / "tools" / "penprobe_08_09_24c"
+    pivot_tip_file.parent.mkdir(parents=True, exist_ok=True)
+    pivot_tip_file.write_text("0,0,0\n", encoding="utf-8")
     registration_path = tmp_path / "data" / "registrations" / "latest_registration.json"
     registration_path.parent.mkdir(parents=True, exist_ok=True)
     registration_path.write_text("{}", encoding="utf-8")

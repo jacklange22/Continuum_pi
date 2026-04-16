@@ -9,6 +9,7 @@ does not.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import json
 import math
 import random
 from pathlib import Path
@@ -79,6 +80,7 @@ class SingleSegmentRepeatabilityConfig:
     return_to_center_on_finalize: bool = True
     fail_on_rejected_capture: bool = False
     thesis_goal_rms_mm: float = 1.0
+    baseline_run_path: str = ""
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "SingleSegmentRepeatabilityConfig":
@@ -95,6 +97,7 @@ class SingleSegmentRepeatabilityConfig:
             return_to_center_on_finalize=bool(payload.get("return_to_center_on_finalize", True)),
             fail_on_rejected_capture=bool(payload.get("fail_on_rejected_capture", False)),
             thesis_goal_rms_mm=float(payload.get("thesis_goal_rms_mm", 1.0)),
+            baseline_run_path=str(payload.get("baseline_run_path", "") or "").strip(),
         )
 
 
@@ -220,6 +223,24 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
             thesis_goal_rms_mm=float(self.config.thesis_goal_rms_mm),
             require_robot_frame_tip=bool(self.config.require_robot_frame_tip),
         )
+        baseline_path = str(self.config.baseline_run_path or "").strip()
+        if baseline_path:
+            try:
+                baseline_metrics = load_repeatability_metrics_from_run(
+                    _resolve_repo_path(session.context.project_root, baseline_path)
+                )
+                metrics["baseline_comparison"] = compute_repeatability_baseline_comparison(
+                    current_metrics=metrics,
+                    baseline_metrics=baseline_metrics,
+                    baseline_path=str(_resolve_repo_path(session.context.project_root, baseline_path)),
+                )
+            except Exception as exc:
+                metrics["baseline_comparison"] = {
+                    "available": False,
+                    "baseline_path": baseline_path,
+                    "error": str(exc),
+                }
+                session.add_warning(f"Baseline comparison failed: {exc}")
         accepted_repeat_count = int(metrics.get("valid_repeat_sample_count", 0) or 0)
         force_status = STATUS_SUCCESS if accepted_repeat_count > 0 else STATUS_INVALID_INSUFFICIENT_SAMPLES
         metrics["summary_requirements"] = {
@@ -527,6 +548,73 @@ def compute_single_segment_repeatability_metrics(
     }
 
 
+def load_repeatability_metrics_from_run(path: Path) -> dict[str, Any]:
+    """Load experiment metrics from a canonical repeatability run directory or summary file."""
+    root = Path(path)
+    summary_path = root if root.is_file() and root.name == "summary.json" else root / "summary.json"
+    if not summary_path.exists():
+        raise FileNotFoundError(f"Repeatability baseline summary not found: {summary_path}")
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    metrics = payload.get("experiment_metrics", {})
+    if not isinstance(metrics, dict):
+        raise ValueError(f"Repeatability baseline summary has no experiment_metrics mapping: {summary_path}")
+    protocol = str(metrics.get("protocol", ""))
+    experiment_name = str(payload.get("experiment_name", ""))
+    if experiment_name not in {"single_segment_repeatability", "repeatability_dataset"}:
+        raise ValueError(f"Baseline run is not a repeatability experiment: {experiment_name}")
+    if experiment_name == "single_segment_repeatability" and protocol != "legacy_17_target_single_segment_all_other_approaches":
+        raise ValueError(f"Baseline run does not use the legacy 17-target protocol: {protocol}")
+    return dict(metrics)
+
+
+def compute_repeatability_baseline_comparison(
+    *,
+    current_metrics: dict[str, Any],
+    baseline_metrics: dict[str, Any],
+    baseline_path: str = "",
+) -> dict[str, Any]:
+    """Compare two repeatability summaries using thesis-facing scalar and per-target deltas."""
+    current = dict(current_metrics or {})
+    baseline = dict(baseline_metrics or {})
+    per_target_current = dict(current.get("per_target_metrics", {}) or {})
+    per_target_baseline = dict(baseline.get("per_target_metrics", {}) or {})
+    per_target_delta: dict[str, Any] = {}
+    for key in sorted(set(per_target_current) | set(per_target_baseline), key=lambda value: int(value) if str(value).isdigit() else 10**9):
+        c_row = dict(per_target_current.get(str(key), {}) or {})
+        b_row = dict(per_target_baseline.get(str(key), {}) or {})
+        per_target_delta[str(key)] = {
+            "target_index": int(c_row.get("target_index", b_row.get("target_index", key))),
+            "label": str(c_row.get("label", b_row.get("label", f"T{int(key):02d}" if str(key).isdigit() else key))),
+            "current_rmse_mm": _as_optional_float(c_row.get("spread_rms_mm", c_row.get("rmse_mm"))),
+            "baseline_rmse_mm": _as_optional_float(b_row.get("spread_rms_mm", b_row.get("rmse_mm"))),
+            "delta_rmse_mm": _delta(c_row.get("spread_rms_mm", c_row.get("rmse_mm")), b_row.get("spread_rms_mm", b_row.get("rmse_mm"))),
+            "current_max_deviation_mm": _as_optional_float(c_row.get("max_deviation_mm")),
+            "baseline_max_deviation_mm": _as_optional_float(b_row.get("max_deviation_mm")),
+            "delta_max_deviation_mm": _delta(c_row.get("max_deviation_mm"), b_row.get("max_deviation_mm")),
+        }
+    group_delta = _compare_group_metrics(
+        dict(current.get("group_metrics", {}) or {}),
+        dict(baseline.get("group_metrics", {}) or {}),
+    )
+    overall_delta = _delta(current.get("overall_repeatability_rms_mm"), baseline.get("overall_repeatability_rms_mm"))
+    return {
+        "available": True,
+        "baseline_path": str(baseline_path or ""),
+        "baseline_status": str(baseline.get("status", "unknown") or "unknown"),
+        "overall_rms": _comparison_row(current.get("overall_repeatability_rms_mm"), baseline.get("overall_repeatability_rms_mm")),
+        "overall_max_deviation": _comparison_row(current.get("overall_max_deviation_mm"), baseline.get("overall_max_deviation_mm")),
+        "path_dependence_rms": _comparison_row(current.get("path_dependence_rms_mm"), baseline.get("path_dependence_rms_mm")),
+        "rejected_capture_count": {
+            "current": int(current.get("rejected_capture_count", 0) or 0),
+            "baseline": int(baseline.get("rejected_capture_count", 0) or 0),
+            "delta": int(current.get("rejected_capture_count", 0) or 0) - int(baseline.get("rejected_capture_count", 0) or 0),
+        },
+        "per_target_rmse": per_target_delta,
+        "group_metrics": group_delta,
+        "improved_overall_rms": bool(overall_delta is not None and overall_delta < 0.0),
+    }
+
+
 def _precheck_single_segment_repeatability(
     *,
     session: ExperimentSession,
@@ -545,6 +633,12 @@ def _precheck_single_segment_repeatability(
         raise RuntimeError(f"Tracker must be connected and healthy; current state is {snapshot.canonical_state}.")
     if snapshot.registration_state != "loaded":
         raise RuntimeError("Accepted base registration must be loaded before repeatability.")
+    pivot_tip_file = getattr(settings.registration, "penprobe_file", None)
+    if not pivot_tip_file:
+        raise RuntimeError("No 0B pen-probe pivot tip file is configured.")
+    pivot_tip_path = _resolve_repo_path(session.context.project_root, pivot_tip_file)
+    if not pivot_tip_path.exists():
+        raise RuntimeError(f"0B pen-probe pivot tip file is missing: {pivot_tip_path}")
     if snapshot.runtime_tip_calibration_state != "loaded":
         raise RuntimeError(
             f"Accepted 0A runtime tip calibration must be loaded; current state is {snapshot.runtime_tip_calibration_state}."
@@ -789,3 +883,55 @@ def _position_frame_label(frames: set[str], *, require_robot_frame_tip: bool) ->
 def _clean_float(value: float) -> float:
     numeric = float(value)
     return 0.0 if abs(numeric) < 1e-12 else numeric
+
+
+def _resolve_repo_path(project_root: Path, raw_path: str | Path) -> Path:
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+    return Path(project_root) / path
+
+
+def _comparison_row(current_value: Any, baseline_value: Any) -> dict[str, float | None]:
+    current = _as_optional_float(current_value)
+    baseline = _as_optional_float(baseline_value)
+    delta = _delta(current, baseline)
+    percent = None
+    if delta is not None and baseline not in (None, 0.0):
+        percent = float((delta / float(baseline)) * 100.0)
+    return {
+        "current": current,
+        "baseline": baseline,
+        "delta": delta,
+        "percent_delta": percent,
+    }
+
+
+def _compare_group_metrics(current_groups: dict[str, Any], baseline_groups: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for group_name in sorted(set(current_groups) | set(baseline_groups)):
+        current_rows = dict(current_groups.get(group_name, {}) or {})
+        baseline_rows = dict(baseline_groups.get(group_name, {}) or {})
+        result[group_name] = {}
+        for label in sorted(set(current_rows) | set(baseline_rows)):
+            c_value = (current_rows.get(label, {}) or {}).get("mean_target_rms_mm")
+            b_value = (baseline_rows.get(label, {}) or {}).get("mean_target_rms_mm")
+            result[group_name][label] = _comparison_row(c_value, b_value)
+    return result
+
+
+def _delta(current_value: Any, baseline_value: Any) -> float | None:
+    current = _as_optional_float(current_value)
+    baseline = _as_optional_float(baseline_value)
+    if current is None or baseline is None:
+        return None
+    return float(current - baseline)
+
+
+def _as_optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

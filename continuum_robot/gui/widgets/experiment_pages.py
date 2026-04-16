@@ -626,6 +626,35 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
         self.protocol_summary_widget = KeyValueSummaryWidget()
         protocol_card.body_layout.addWidget(self.protocol_summary_widget)
 
+        comparison_card = ExperimentCard(
+            "Baseline Comparison",
+            "Optionally compare this run against a prior single-segment repeatability run. "
+            "The saved summary will report deltas for overall RMS, max deviation, path-dependence, ring groups, and per-target RMSE.",
+        )
+        comparison_form = QFormLayout()
+        self.baseline_path_edit = QLineEdit()
+        self.baseline_path_edit.setPlaceholderText("Optional prior run folder or summary.json")
+        self.baseline_path_edit.editingFinished.connect(
+            lambda: self.controller.set_config_value("baseline_run_path", self.baseline_path_edit.text().strip())
+        )
+        browse_button = QPushButton("Browse")
+        browse_button.setProperty("variant", "ghost")
+        browse_button.clicked.connect(self._browse_baseline_run)
+        clear_button = QPushButton("Clear")
+        clear_button.setProperty("variant", "ghost")
+        clear_button.clicked.connect(lambda: self.controller.set_config_value("baseline_run_path", ""))
+        baseline_row = QWidget()
+        baseline_layout = QHBoxLayout(baseline_row)
+        baseline_layout.setContentsMargins(0, 0, 0, 0)
+        baseline_layout.setSpacing(8)
+        baseline_layout.addWidget(self.baseline_path_edit, 1)
+        baseline_layout.addWidget(browse_button)
+        baseline_layout.addWidget(clear_button)
+        comparison_form.addRow("Baseline Run", baseline_row)
+        comparison_card.body_layout.addLayout(comparison_form)
+        self.comparison_summary_widget = KeyValueSummaryWidget()
+        comparison_card.body_layout.addWidget(self.comparison_summary_widget)
+
         config_card = ExperimentCard(
             "Run Parameters",
             "Only timing and gating parameters are exposed here. Target geometry and sequence structure are intentionally fixed.",
@@ -703,6 +732,7 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
         target_card.body_layout.addWidget(self.target_table)
 
         self.parameter_layout.addWidget(protocol_card)
+        self.parameter_layout.addWidget(comparison_card)
         self.parameter_layout.addWidget(config_card)
         self.parameter_layout.addWidget(target_card)
 
@@ -718,7 +748,9 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
         self._set_line_text(self.run_label_edit, str(config.run_label or ""))
         self._set_checkbox(self.return_center_check, bool(config.return_to_center_on_finalize))
         self._set_checkbox(self.fail_rejected_check, bool(config.fail_on_rejected_capture))
+        self._set_line_text(self.baseline_path_edit, str(config.baseline_run_path or ""))
         self._sync_protocol_summary(config)
+        self._sync_comparison_summary(config)
         self._sync_target_table(config)
 
     def _sync_protocol_summary(self, config: SingleSegmentRepeatabilityConfig) -> None:
@@ -737,6 +769,33 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
                 ("Run Trust", "Blocked unless registration, runtime tip calibration, pretension, and servos are ready"),
             ]
         )
+
+    def _sync_comparison_summary(self, config: SingleSegmentRepeatabilityConfig) -> None:
+        baseline = str(config.baseline_run_path or "").strip()
+        if not baseline:
+            self.comparison_summary_widget.set_pairs(
+                [
+                    ("Mode", "No baseline selected"),
+                    ("Comparison Output", "Current run will still save full repeatability metrics and figures."),
+                ]
+            )
+            return
+        self.comparison_summary_widget.set_pairs(
+            [
+                ("Mode", "Compare current run to selected baseline"),
+                ("Baseline", baseline),
+                ("Deltas", "overall RMS, max deviation, path RMS, ring means, rejected captures, per-target RMSE"),
+            ]
+        )
+
+    def _browse_baseline_run(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select Baseline Repeatability Run", "")
+        if path:
+            self.controller.set_config_value("baseline_run_path", path)
+            try:
+                self.set_state(self.controller.refresh())
+            except Exception:
+                return
 
     def _sync_target_table(self, config: SingleSegmentRepeatabilityConfig) -> None:
         targets = build_legacy_17_point_targets()

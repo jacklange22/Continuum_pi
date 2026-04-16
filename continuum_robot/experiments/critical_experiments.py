@@ -781,6 +781,7 @@ def register_critical_experiments(registry) -> None:
         description=RepeatabilityDatasetExperiment.description,
         category="validation",
         tags=["Repeatability", "Tracking", "Servo"],
+        workspace_visible=False,
         default_config_path="config/experiment_repeatability_dataset.example.yaml",
         factory=RepeatabilityDatasetExperiment.from_dict,
     )
