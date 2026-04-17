@@ -558,6 +558,67 @@ def test_servo_service_pretension_stops_on_threshold_and_can_be_accepted(tmp_pat
     assert result.steps_taken >= 1
     accepted = service.accept_pretension_result(1)
     assert accepted.pretension_result_status == "accepted"
+    assert accepted.pretension_source == "algorithmic"
+
+
+def test_servo_service_can_capture_and_accept_manual_pretension_for_single_segment_set(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    for servo_id in [1, 2, 3, 4]:
+        service.set_servo_torque_enabled(servo_id, True)
+        service.save_startup_calibration(
+            servo_id=servo_id,
+            min_offset_ticks=-100,
+            max_offset_ticks=120,
+            pretension_current_threshold_ma=220,
+        )
+        service.dxl_bus._state[servo_id].present_position = 2020 - servo_id
+        service.dxl_bus._state[servo_id].present_current_ma = 225 + servo_id
+
+    saved = service.capture_manual_pretension_state(note="bench manual state")
+    pending_summary = service.get_calibration_summary()
+    accepted = service.accept_manual_pretension_state()
+
+    assert sorted(saved) == [1, 2, 3, 4]
+    assert pending_summary.servo_entries[1].pretension_result_status == "manual_captured"
+    assert pending_summary.servo_entries[1].pretension_source == "manual"
+    assert accepted.accepted is True
+    assert accepted.usable is True
+    assert accepted.source_type == "manual"
+    assert accepted.note == "bench manual state"
+
+
+def test_servo_service_pretension_source_summary_distinguishes_algorithmic_from_manual(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    for servo_id in [1, 2, 3, 4]:
+        service.set_servo_torque_enabled(servo_id, True)
+        service.save_startup_calibration(
+            servo_id=servo_id,
+            min_offset_ticks=-100,
+            max_offset_ticks=120,
+            pretension_current_threshold_ma=220,
+        )
+
+    for servo_id in [1, 2, 3, 4]:
+        service.neutral_calibration.save_pretension_result(
+            servo_id=servo_id,
+            final_position_tick=2020,
+            final_current_ma=230,
+            threshold_ma=220,
+            result_status="completed",
+            pretension_source="algorithmic",
+        )
+        service.neutral_calibration.mark_pretension_accepted(servo_id)
+
+    algorithmic = service.pretension_source_summary([1, 2, 3, 4])
+    assert algorithmic.source_type == "algorithmic"
+    assert algorithmic.usable is True
+
+    service.capture_manual_pretension_state(note="override")
+    pending = service.get_calibration_summary()
+    assert pending.servo_entries[1].pretension_source == "manual"
+    assert pending.servo_entries[1].pretension_result_status == "manual_captured"
 
 
 def test_servo_service_pretension_readiness_allows_safe_torque_arming(tmp_path: Path) -> None:

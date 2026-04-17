@@ -46,19 +46,39 @@ class RuntimeTipCalibrationRepository:
         )
         self.root_dir = self.latest_path.parent
         self.root_dir.mkdir(parents=True, exist_ok=True)
+        self.quick_latest_path = self.root_dir / "latest_quick_4_point_runtime_tip.json"
 
-    def save_record(self, record: RuntimeTipCalibrationRecord) -> Path:
+    def save_record(
+        self,
+        record: RuntimeTipCalibrationRecord,
+        *,
+        mark_as_latest: bool = True,
+        alias_path: Path | None = None,
+    ) -> Path:
         stamp = _timestamp_stamp(record.timestamp_utc)
-        path = self.root_dir / f"runtime_tip_calibration_{stamp}.json"
+        prefix = (
+            "runtime_tip_quick_4_point"
+            if str(record.calibration_kind).strip().lower() == "runtime_tip_calibration_quick_4_point"
+            else "runtime_tip_calibration"
+        )
+        path = self.root_dir / f"{prefix}_{stamp}.json"
         payload = self._to_payload(record)
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        self.latest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        if alias_path is not None:
+            alias_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        elif mark_as_latest:
+            self.latest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return path
 
     def load_latest_payload(self) -> dict[str, Any] | None:
         if not self.latest_path.exists():
             return None
         return self.load_payload(self.latest_path)
+
+    def load_latest_quick_payload(self) -> dict[str, Any] | None:
+        if not self.quick_latest_path.exists():
+            return None
+        return self.load_payload(self.quick_latest_path)
 
     def list_saved_records(self, *, limit: int | None = None) -> list[Path]:
         paths = sorted(self.root_dir.glob("runtime_tip_calibration_*.json"), reverse=True)

@@ -239,8 +239,10 @@ def evaluate_preflight(
                     "No penprobe_file is configured for the 0B pivot-calibrated tip.",
                 )
             )
+        runtime_tip_mode = str(getattr(tracking_snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted")
         if (
-            tracking_snapshot.runtime_tip_calibration_state == "loaded"
+            runtime_tip_mode == "latest_accepted"
+            and tracking_snapshot.runtime_tip_calibration_state == "loaded"
             and not tracking_snapshot.runtime_tip_identity_fallback
             and tracking_snapshot.tip_pose_status == "ok"
             and tracking_snapshot.T_robot_tip is not None
@@ -257,7 +259,8 @@ def evaluate_preflight(
                 _blocked(
                     "runtime_tip",
                     "0A Runtime Tip Calibration",
-                    "Repeatability requires accepted 0A runtime tip calibration with no identity fallback. "
+                    "Repeatability requires latest_accepted 0A runtime tip calibration with no identity fallback. "
+                    f"Mode={runtime_tip_mode}, "
                     f"Runtime state={tracking_snapshot.runtime_tip_calibration_state}, "
                     f"tip pose={tracking_snapshot.tip_pose_status}, "
                     f"fallback={tracking_snapshot.runtime_tip_identity_fallback}.",
@@ -1059,22 +1062,17 @@ def _pretension_artifact_check(*, servo_ids: list[int], servo_calibration_summar
             "Pretension State",
             f"Servo calibration artifact is not ready: {servo_calibration_summary.message}",
         )
-    missing = []
-    for servo_id in servo_ids:
-        entry = servo_calibration_summary.servo_entries.get(int(servo_id))
-        if entry is None or entry.pretension_result_status != "accepted":
-            missing.append(int(servo_id))
-    if missing:
+    source_summary = servo_calibration_summary.pretension_source_summary([int(value) for value in servo_ids])
+    if not source_summary.accepted or not source_summary.usable:
         return _blocked(
             "pretension",
             "Pretension State",
-            "Accepted pretension is required for every servo before repeatability. Missing servo(s): "
-            + ", ".join(str(value) for value in missing),
+            source_summary.message,
         )
     return _ok(
         "pretension",
         "Pretension State",
-        "Accepted pretension state is recorded for every configured servo.",
+        source_summary.message,
     )
 
 

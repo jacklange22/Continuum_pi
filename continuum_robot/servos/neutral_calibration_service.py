@@ -13,7 +13,7 @@ import json
 from typing import Any
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 @dataclass
@@ -50,11 +50,28 @@ class ServoCalibrationEntry:
     last_measured_current_ma: int | None = None
     pretension_final_position_tick: int | None = None
     pretension_result_status: str | None = None
+    pretension_source: str | None = None
+    pretension_note: str | None = None
     pretension_completed_at_utc: str | None = None
     latest_pretension_run: dict[str, Any] | None = None
     calibrated_at_utc: str | None = None
     status: str = "missing"
     valid: bool = False
+
+
+@dataclass
+class PretensionSourceSummary:
+    """Accepted startup-state source summary for one configured servo set."""
+
+    source_type: str
+    accepted: bool
+    usable: bool
+    message: str
+    updated_at_utc: str | None = None
+    note: str | None = None
+    source_by_servo: dict[int, str] = field(default_factory=dict)
+    positions_by_servo: dict[int, int | None] = field(default_factory=dict)
+    currents_by_servo: dict[int, int | None] = field(default_factory=dict)
 
 
 @dataclass
@@ -104,6 +121,80 @@ class ServoCalibrationSummary:
             servo_id
             for servo_id, entry in self.servo_entries.items()
             if entry.pretension_current_threshold_ma is None
+        )
+
+    def pretension_source_summary(self, servo_ids: list[int]) -> PretensionSourceSummary:
+        requested_ids = [int(servo_id) for servo_id in servo_ids]
+        if not self.exists or not self.compatible:
+            return PretensionSourceSummary(
+                source_type="none",
+                accepted=False,
+                usable=False,
+                message=f"Servo calibration artifact is not ready: {self.message}",
+                updated_at_utc=self.updated_at_utc,
+            )
+        missing = [
+            int(servo_id)
+            for servo_id in requested_ids
+            if (
+                (entry := self.servo_entries.get(int(servo_id))) is None
+                or entry.pretension_result_status != "accepted"
+            )
+        ]
+        if missing:
+            return PretensionSourceSummary(
+                source_type="none",
+                accepted=False,
+                usable=False,
+                message=(
+                    "Accepted pretension/startup state is missing for servo(s): "
+                    + ", ".join(str(value) for value in missing)
+                ),
+                updated_at_utc=self.updated_at_utc,
+            )
+
+        source_by_servo: dict[int, str] = {}
+        positions_by_servo: dict[int, int | None] = {}
+        currents_by_servo: dict[int, int | None] = {}
+        notes: list[str] = []
+        for servo_id in requested_ids:
+            entry = self.servo_entries[int(servo_id)]
+            source = _pretension_source_for_entry(entry)
+            source_by_servo[int(servo_id)] = source
+            positions_by_servo[int(servo_id)] = entry.pretension_final_position_tick
+            currents_by_servo[int(servo_id)] = entry.last_measured_current_ma
+            if entry.pretension_note not in (None, ""):
+                notes.append(str(entry.pretension_note))
+        distinct_sources = sorted({value for value in source_by_servo.values() if value})
+        if len(distinct_sources) != 1 or distinct_sources[0] not in {"manual", "algorithmic"}:
+            return PretensionSourceSummary(
+                source_type="mixed",
+                accepted=True,
+                usable=False,
+                message=(
+                    "Accepted pretension exists, but the source is mixed or ambiguous across the configured servos: "
+                    + ", ".join(f"{servo_id}={source_by_servo[servo_id]}" for servo_id in requested_ids)
+                ),
+                updated_at_utc=self.updated_at_utc,
+                note=notes[0] if len(set(notes)) == 1 else None,
+                source_by_servo=source_by_servo,
+                positions_by_servo=positions_by_servo,
+                currents_by_servo=currents_by_servo,
+            )
+        source = distinct_sources[0]
+        return PretensionSourceSummary(
+            source_type=source,
+            accepted=True,
+            usable=True,
+            message=(
+                f"Accepted {source} pretension/startup state is recorded for servo(s): "
+                + ", ".join(str(value) for value in requested_ids)
+            ),
+            updated_at_utc=self.updated_at_utc,
+            note=notes[0] if len(set(notes)) == 1 else None,
+            source_by_servo=source_by_servo,
+            positions_by_servo=positions_by_servo,
+            currents_by_servo=currents_by_servo,
         )
 
 
@@ -175,6 +266,8 @@ class NeutralCalibrationService:
                 last_measured_current_ma=existing.last_measured_current_ma,
                 pretension_final_position_tick=existing.pretension_final_position_tick,
                 pretension_result_status=existing.pretension_result_status,
+                pretension_source=existing.pretension_source,
+                pretension_note=existing.pretension_note,
                 pretension_completed_at_utc=existing.pretension_completed_at_utc,
                 latest_pretension_run=dict(existing.latest_pretension_run or {}) or None,
                 calibrated_at_utc=timestamp,
@@ -246,6 +339,8 @@ class NeutralCalibrationService:
             ),
             pretension_final_position_tick=existing.pretension_final_position_tick,
             pretension_result_status=existing.pretension_result_status,
+            pretension_source=existing.pretension_source,
+            pretension_note=existing.pretension_note,
             pretension_completed_at_utc=existing.pretension_completed_at_utc,
             latest_pretension_run=dict(existing.latest_pretension_run or {}) or None,
             calibrated_at_utc=timestamp,
@@ -267,6 +362,8 @@ class NeutralCalibrationService:
         threshold_ma: int | None,
         result_status: str,
         run_record: dict[str, Any] | None = None,
+        pretension_source: str | None = None,
+        pretension_note: str | None = None,
     ) -> ServoCalibrationEntry:
         artifact = self.load_calibration_artifact()
         existing = artifact.servos.get(int(servo_id), ServoCalibrationEntry(servo_id=int(servo_id)))
@@ -293,6 +390,16 @@ class NeutralCalibrationService:
                 int(final_position_tick) if final_position_tick is not None else existing.pretension_final_position_tick
             ),
             pretension_result_status=str(result_status),
+            pretension_source=(
+                str(pretension_source).strip().lower()
+                if pretension_source not in (None, "")
+                else existing.pretension_source
+            ),
+            pretension_note=(
+                str(pretension_note).strip()
+                if pretension_note not in (None, "")
+                else existing.pretension_note
+            ),
             pretension_completed_at_utc=timestamp,
             latest_pretension_run=latest_pretension_run,
             calibrated_at_utc=existing.calibrated_at_utc,
@@ -304,6 +411,115 @@ class NeutralCalibrationService:
         artifact.robot = self._robot_metadata()
         self.save_calibration_artifact(artifact)
         return entry
+
+    def save_manual_pretension_state(
+        self,
+        *,
+        states_by_servo: dict[int, dict[str, Any]],
+        note: str | None = None,
+        accepted: bool = False,
+    ) -> dict[int, ServoCalibrationEntry]:
+        if not states_by_servo:
+            raise ValueError("At least one servo state is required for manual pretension capture.")
+        artifact = self.load_calibration_artifact()
+        timestamp = _utc_now()
+        saved_entries: dict[int, ServoCalibrationEntry] = {}
+        clean_note = str(note).strip() if note not in (None, "") else None
+        for servo_id, raw_state in sorted(states_by_servo.items()):
+            state = dict(raw_state or {})
+            existing = artifact.servos.get(int(servo_id), ServoCalibrationEntry(servo_id=int(servo_id)))
+            final_position_tick = (
+                int(state["measured_position_tick"])
+                if state.get("measured_position_tick") is not None
+                else existing.pretension_final_position_tick
+            )
+            final_current_ma = (
+                int(state["measured_current_ma"])
+                if state.get("measured_current_ma") is not None
+                else existing.last_measured_current_ma
+            )
+            run_record = self._sanitize_run_record(
+                {
+                    **state,
+                    "source": "manual",
+                    "status": "accepted" if accepted else "manual_captured",
+                    "captured_at_utc": timestamp,
+                    "operator_note": clean_note,
+                }
+            )
+            entry = ServoCalibrationEntry(
+                servo_id=int(servo_id),
+                tendon_index=existing.tendon_index,
+                capture_source=existing.capture_source,
+                neutral_setpoint=existing.neutral_setpoint,
+                safe_min_tick=existing.safe_min_tick,
+                safe_max_tick=existing.safe_max_tick,
+                pretension_current_threshold_ma=existing.pretension_current_threshold_ma,
+                tightening_rotation=existing.tightening_rotation,
+                hardware_min_tick=existing.hardware_min_tick,
+                hardware_max_tick=existing.hardware_max_tick,
+                hardware_current_limit_ma=existing.hardware_current_limit_ma,
+                last_measured_current_ma=final_current_ma,
+                pretension_final_position_tick=final_position_tick,
+                pretension_result_status="accepted" if accepted else "manual_captured",
+                pretension_source="manual",
+                pretension_note=clean_note,
+                pretension_completed_at_utc=timestamp,
+                latest_pretension_run=run_record,
+                calibrated_at_utc=existing.calibrated_at_utc,
+                status="pretension_accepted" if accepted else "manual_pretension_captured",
+                valid=existing.valid,
+            )
+            artifact.servos[int(servo_id)] = entry
+            saved_entries[int(servo_id)] = entry
+        artifact.updated_at_utc = timestamp
+        artifact.robot = self._robot_metadata()
+        self.save_calibration_artifact(artifact)
+        return saved_entries
+
+    def clear_manual_pretension_state(self, servo_ids: list[int]) -> list[int]:
+        artifact = self.load_calibration_artifact()
+        cleared_ids: list[int] = []
+        timestamp = _utc_now()
+        for servo_id in [int(value) for value in servo_ids]:
+            existing = artifact.servos.get(int(servo_id))
+            if existing is None:
+                continue
+            if _pretension_source_for_entry(existing) != "manual":
+                continue
+            artifact.servos[int(servo_id)] = ServoCalibrationEntry(
+                servo_id=existing.servo_id,
+                tendon_index=existing.tendon_index,
+                capture_source=existing.capture_source,
+                neutral_setpoint=existing.neutral_setpoint,
+                safe_min_tick=existing.safe_min_tick,
+                safe_max_tick=existing.safe_max_tick,
+                pretension_current_threshold_ma=existing.pretension_current_threshold_ma,
+                tightening_rotation=existing.tightening_rotation,
+                hardware_min_tick=existing.hardware_min_tick,
+                hardware_max_tick=existing.hardware_max_tick,
+                hardware_current_limit_ma=existing.hardware_current_limit_ma,
+                last_measured_current_ma=None,
+                pretension_final_position_tick=None,
+                pretension_result_status=None,
+                pretension_source=None,
+                pretension_note=None,
+                pretension_completed_at_utc=None,
+                latest_pretension_run=None,
+                calibrated_at_utc=existing.calibrated_at_utc,
+                status=(
+                    "neutral_captured"
+                    if existing.neutral_setpoint is not None
+                    else "missing"
+                ),
+                valid=existing.valid,
+            )
+            cleared_ids.append(int(servo_id))
+        if cleared_ids:
+            artifact.updated_at_utc = timestamp
+            artifact.robot = self._robot_metadata()
+            self.save_calibration_artifact(artifact)
+        return cleared_ids
 
     def load_neutral_setpoints(self) -> dict[int, int]:
         artifact = self.load_calibration_artifact()
@@ -427,6 +643,8 @@ class NeutralCalibrationService:
             last_measured_current_ma=existing.last_measured_current_ma,
             pretension_final_position_tick=existing.pretension_final_position_tick,
             pretension_result_status="accepted",
+            pretension_source=existing.pretension_source,
+            pretension_note=existing.pretension_note,
             pretension_completed_at_utc=timestamp,
             latest_pretension_run=self._mark_run_record_accepted(existing.latest_pretension_run),
             calibrated_at_utc=existing.calibrated_at_utc,
@@ -495,6 +713,16 @@ class NeutralCalibrationService:
                 pretension_result_status=(
                     str(data.get("pretension_result_status"))
                     if data.get("pretension_result_status") not in (None, "")
+                    else None
+                ),
+                pretension_source=(
+                    str(data.get("pretension_source")).strip().lower()
+                    if data.get("pretension_source") not in (None, "")
+                    else None
+                ),
+                pretension_note=(
+                    str(data.get("pretension_note")).strip()
+                    if data.get("pretension_note") not in (None, "")
                     else None
                 ),
                 pretension_completed_at_utc=(
@@ -651,3 +879,14 @@ class NeutralCalibrationService:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _pretension_source_for_entry(entry: ServoCalibrationEntry) -> str:
+    if entry.pretension_source not in (None, ""):
+        return str(entry.pretension_source).strip().lower()
+    run_record = dict(entry.latest_pretension_run or {})
+    if run_record.get("source") not in (None, ""):
+        return str(run_record.get("source")).strip().lower()
+    if entry.pretension_result_status == "accepted" and entry.latest_pretension_run:
+        return "algorithmic"
+    return "unknown"

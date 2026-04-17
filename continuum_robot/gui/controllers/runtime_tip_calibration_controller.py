@@ -18,9 +18,15 @@ class RuntimeTipCalibrationController:
         self.state = self.runtime_tip_calibration_service.get_snapshot()
         return self.state
 
-    def begin_session(self, *, captures_per_landmark: int | None = None) -> None:
+    def begin_session(
+        self,
+        *,
+        captures_per_landmark: int | None = None,
+        session_mode: str | None = None,
+    ) -> None:
         self.state = self.runtime_tip_calibration_service.begin_session(
-            captures_per_landmark=captures_per_landmark
+            captures_per_landmark=captures_per_landmark,
+            session_mode=session_mode,
         )
 
     def capture_current_label_sample(self) -> list[float]:
@@ -48,8 +54,8 @@ class RuntimeTipCalibrationController:
         self.state = self.runtime_tip_calibration_service.get_snapshot()
         return path
 
-    def load_latest_result(self) -> None:
-        self.runtime_tip_calibration_service.load_latest_accepted()
+    def load_latest_result(self, *, session_mode: str | None = None) -> None:
+        self.runtime_tip_calibration_service.load_latest_saved(session_mode=session_mode)
         self.state = self.runtime_tip_calibration_service.get_snapshot()
 
     def retry_session(self, *, captures_per_landmark: int | None = None) -> None:

@@ -28,7 +28,7 @@ def test_neutral_calibration_service_archives_previous_latest(tmp_path: Path) ->
     latest = json.loads((tmp_path / "neutral_setpoints.json").read_text(encoding="utf-8"))
     archives = sorted(tmp_path.glob("neutral_setpoints_*.json"))
 
-    assert latest["schema_version"] == 3
+    assert latest["schema_version"] == 4
     assert latest["servos"]["1"]["neutral_setpoint"] == 200
     assert latest["servos"]["1"]["safe_min_tick"] == -400
     assert latest["servos"]["1"]["safe_max_tick"] == 800
@@ -130,3 +130,78 @@ def test_neutral_calibration_service_marks_pretension_result_as_accepted(tmp_pat
 
     assert accepted.pretension_result_status == "accepted"
     assert accepted.pretension_final_position_tick == 2020
+
+
+def test_neutral_calibration_service_tracks_manual_pretension_source_summary(tmp_path: Path) -> None:
+    service = NeutralCalibrationService(
+        path=tmp_path / "neutral_setpoints.json",
+        context=ServoCalibrationContext(
+            robot_mode="4-servo",
+            servo_ids=[1, 2, 3, 4],
+            tendon_to_servo=[1, 2, 3, 4],
+            position_min_offset_ticks=-200,
+            position_max_offset_ticks=200,
+            default_pretension_current_threshold_ma=220,
+            tightening_rotation_by_servo={1: "cw", 2: "cw", 3: "cw", 4: "cw"},
+        ),
+    )
+    service.save_neutral_setpoints({1: 2048, 2: 2048, 3: 2048, 4: 2048})
+
+    service.save_manual_pretension_state(
+        states_by_servo={
+            servo_id: {
+                "measured_position_tick": 2020 - servo_id,
+                "measured_current_ma": 220 + servo_id,
+            }
+            for servo_id in [1, 2, 3, 4]
+        },
+        note="bench startup state",
+        accepted=False,
+    )
+    pending = service.get_calibration_summary().pretension_source_summary([1, 2, 3, 4])
+    assert pending.accepted is False
+    assert pending.usable is False
+    assert pending.source_type == "none"
+
+    for servo_id in [1, 2, 3, 4]:
+        service.mark_pretension_accepted(servo_id)
+
+    accepted = service.get_calibration_summary().pretension_source_summary([1, 2, 3, 4])
+    assert accepted.accepted is True
+    assert accepted.usable is True
+    assert accepted.source_type == "manual"
+    assert accepted.note == "bench startup state"
+
+
+def test_neutral_calibration_service_clears_manual_pretension_without_touching_neutral(tmp_path: Path) -> None:
+    service = NeutralCalibrationService(
+        path=tmp_path / "neutral_setpoints.json",
+        context=ServoCalibrationContext(
+            robot_mode="4-servo",
+            servo_ids=[1, 2, 3, 4],
+            tendon_to_servo=[1, 2, 3, 4],
+            position_min_offset_ticks=-200,
+            position_max_offset_ticks=200,
+            default_pretension_current_threshold_ma=220,
+            tightening_rotation_by_servo={1: "cw", 2: "cw", 3: "cw", 4: "cw"},
+        ),
+    )
+    service.save_neutral_setpoints({1: 2048, 2: 2048, 3: 2048, 4: 2048})
+    service.save_manual_pretension_state(
+        states_by_servo={
+            servo_id: {
+                "measured_position_tick": 2020,
+                "measured_current_ma": 225,
+            }
+            for servo_id in [1, 2, 3, 4]
+        },
+        accepted=True,
+    )
+
+    cleared = service.clear_manual_pretension_state([1, 2, 3, 4])
+    summary = service.get_calibration_summary()
+
+    assert cleared == [1, 2, 3, 4]
+    assert summary.servo_entries[1].neutral_setpoint == 2048
+    assert summary.servo_entries[1].pretension_result_status is None
+    assert summary.servo_entries[1].pretension_source is None

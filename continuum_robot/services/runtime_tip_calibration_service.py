@@ -43,6 +43,9 @@ from continuum_robot.utils.time_utils import utc_now_iso
 class RuntimeTipCalibrationService:
     """Own the advanced hat-based 0A runtime tip calibration workflow."""
 
+    SESSION_MODE_FULL_HAT = "full_hat"
+    SESSION_MODE_QUICK_4_POINT = "quick_4_point"
+
     def __init__(
         self,
         *,
@@ -67,6 +70,7 @@ class RuntimeTipCalibrationService:
 
         self._lock = threading.Lock()
         self._truth_geometry = self._load_truth_geometry()
+        self._quick_labels = self._choose_quick_labels(self._truth_geometry.truth_points_in_tip_by_label)
         self._pending_record: RuntimeTipCalibrationRecord | None = None
         self._raw_measurement_tool_samples_by_label: dict[str, list[dict[str, Any]]] = {}
         self._raw_coil_samples: list[dict[str, Any]] = []
@@ -81,6 +85,9 @@ class RuntimeTipCalibrationService:
             ),
             measurement_tool_id=registration_config.capture_tool_id,
             coil_tool_id=registration_config.coil_tool_id,
+            session_mode=self.SESSION_MODE_FULL_HAT,
+            session_mode_summary="Full accepted hat calibration",
+            selected_labels=list(self._truth_geometry.labels),
             labels=list(self._truth_geometry.labels),
             captures_per_landmark=int(registration_config.runtime_tip_captures_per_landmark),
             current_label=self._truth_geometry.labels[0] if self._truth_geometry.labels else None,
@@ -96,34 +103,52 @@ class RuntimeTipCalibrationService:
         with self._lock:
             self._recompute_health_locked()
 
-    def begin_session(self, *, captures_per_landmark: int | None = None) -> RuntimeTipCalibrationSnapshot:
+    def begin_session(
+        self,
+        *,
+        captures_per_landmark: int | None = None,
+        session_mode: str | None = None,
+    ) -> RuntimeTipCalibrationSnapshot:
         """Start a new 0A runtime tip calibration capture session."""
         measurement_status = self.registration_service.get_measurement_point_status(refresh=True)
         if not measurement_status["ready"]:
             raise RuntimeError(str(measurement_status["message"]))
 
         with self._lock:
+            normalized_mode = self._normalize_session_mode(session_mode)
+            active_labels = self._labels_for_session_mode(normalized_mode)
             requested_captures = max(
                 1,
                 int(
                     captures_per_landmark
                     if captures_per_landmark is not None
-                    else self.config.runtime_tip_captures_per_landmark
+                    else (
+                        1
+                        if normalized_mode == self.SESSION_MODE_QUICK_4_POINT
+                        else self.config.runtime_tip_captures_per_landmark
+                    )
                 ),
             )
             self._pending_record = None
             self._raw_measurement_tool_samples_by_label = {
-                label: [] for label in self._truth_geometry.labels
+                label: [] for label in active_labels
             }
             self._raw_coil_samples = []
             self._state.active = True
             self._state.pending_accept = False
-            self._state.labels = list(self._truth_geometry.labels)
+            self._state.session_mode = normalized_mode
+            self._state.session_mode_summary = self._session_mode_summary(normalized_mode)
+            self._state.selected_labels = list(active_labels)
+            self._state.labels = list(active_labels)
             self._state.captures_per_landmark = requested_captures
             self._state.current_label_index = 0
-            self._state.current_label = self._truth_geometry.labels[0] if self._truth_geometry.labels else None
-            self._state.raw_points_by_label = {label: [] for label in self._truth_geometry.labels}
-            self._state.captured_counts = {label: 0 for label in self._truth_geometry.labels}
+            self._state.current_label = active_labels[0] if active_labels else None
+            self._state.truth_points_in_tip_by_label = {
+                label: copy.deepcopy(self._truth_geometry.truth_points_in_tip_by_label[label])
+                for label in active_labels
+            }
+            self._state.raw_points_by_label = {label: [] for label in active_labels}
+            self._state.captured_counts = {label: 0 for label in active_labels}
             self._state.averaged_points_by_label = {}
             self._state.fit_residuals_by_label = {}
             self._state.fit_rmse_mm = None
@@ -142,7 +167,12 @@ class RuntimeTipCalibrationService:
             self._state.pending_record = None
             self._state.measurement_point_status = str(measurement_status["message"])
             self._state.status_message = (
-                "Runtime tip calibration started. Capture the configured hat points with the calibrated 0B pen probe."
+                "Runtime tip calibration started. "
+                + (
+                    "Capture the configured four-point quick subset, then collect stationary 0A samples."
+                    if normalized_mode == self.SESSION_MODE_QUICK_4_POINT
+                    else "Capture the configured hat points with the calibrated 0B pen probe."
+                )
             )
             self._state.health.last_error = None
             self._state.health.last_successful_update_utc = utc_now_iso()
@@ -280,10 +310,11 @@ class RuntimeTipCalibrationService:
             raw_points_by_label = copy.deepcopy(self._state.raw_points_by_label)
             truth_points_in_tip_by_label = copy.deepcopy(self._state.truth_points_in_tip_by_label)
             raw_coil_samples = list(self._raw_coil_samples)
+            session_mode = str(self._state.session_mode or self.SESSION_MODE_FULL_HAT)
 
         result = solve_runtime_tip_calibration(
             solver=self.solver,
-            labels=self._truth_geometry.labels,
+            labels=list(raw_points_by_label),
             raw_points_by_label=raw_points_by_label,
             truth_points_in_tip_by_label=truth_points_in_tip_by_label,
             coil_samples=[self._tool_dict_to_pose_sample(sample) for sample in raw_coil_samples],
@@ -299,12 +330,22 @@ class RuntimeTipCalibrationService:
 
         record = RuntimeTipCalibrationRecord(
             timestamp_utc=utc_now_iso(),
-            calibration_kind="runtime_tip_calibration_hat",
+            calibration_kind=(
+                "runtime_tip_calibration_quick_4_point"
+                if session_mode == self.SESSION_MODE_QUICK_4_POINT
+                else "runtime_tip_calibration_hat"
+            ),
             measurement_tool_id=self.config.capture_tool_id,
             coil_tool_id=self.config.coil_tool_id,
             setup_id=self.config.runtime_tip_setup_id,
-            truth_points_in_sw_by_label=copy.deepcopy(self._truth_geometry.truth_points_in_sw_by_label),
-            truth_points_in_tip_by_label=copy.deepcopy(self._truth_geometry.truth_points_in_tip_by_label),
+            truth_points_in_sw_by_label={
+                label: copy.deepcopy(self._truth_geometry.truth_points_in_sw_by_label[label])
+                for label in raw_points_by_label
+            },
+            truth_points_in_tip_by_label={
+                label: copy.deepcopy(self._truth_geometry.truth_points_in_tip_by_label[label])
+                for label in raw_points_by_label
+            },
             raw_captured_hat_points_aurora_xyz_by_label=raw_points_by_label,
             averaged_hat_points_aurora_xyz_by_label=copy.deepcopy(result.averaged_points_by_label),
             raw_coil_samples=raw_coil_samples,
@@ -331,6 +372,8 @@ class RuntimeTipCalibrationService:
                 "runtime_tip_truth_points_file": str(self._truth_geometry.points_file),
                 "runtime_tip_T_sw_2_tip_file": str(self._truth_geometry.transform_file),
                 "runtime_tip_setup_id": self.config.runtime_tip_setup_id,
+                "session_mode": session_mode,
+                "selected_labels": list(raw_points_by_label),
             },
         )
 
@@ -352,7 +395,12 @@ class RuntimeTipCalibrationService:
             self._state.pending_accept = True
             self._state.pending_record = asdict(record)
             self._state.status_message = (
-                "Runtime tip calibration solved. Review hat residuals and 0A spread metrics, then save the accepted artifact."
+                "Runtime tip calibration solved. Review the residuals and 0A spread metrics, then save the "
+                + (
+                    "quick four-point override."
+                    if session_mode == self.SESSION_MODE_QUICK_4_POINT
+                    else "accepted artifact."
+                )
             )
             self._state.health.last_error = None
             self._state.health.last_successful_update_utc = utc_now_iso()
@@ -368,41 +416,76 @@ class RuntimeTipCalibrationService:
                 raise RuntimeError("No solved runtime tip calibration is pending acceptance")
             record = self._pending_record
 
-        output_path = self.repository.save_record(record)
+        is_quick = str(record.calibration_kind).strip().lower() == "runtime_tip_calibration_quick_4_point"
+        output_path = self.repository.save_record(
+            record,
+            mark_as_latest=not is_quick,
+            alias_path=(self.repository.quick_latest_path if is_quick else None),
+        )
         self.tracking_service.refresh_registration()
         runtime_summary = self.get_runtime_tip_trust_summary(
             expected_timestamp_utc=record.timestamp_utc
         )
         with self._lock:
             self._state.accepted_output_path = str(output_path)
-            self._state.latest_accepted_path = str(self.repository.latest_path)
+            self._state.latest_accepted_path = str(
+                self.repository.quick_latest_path if is_quick else self.repository.latest_path
+            )
             self._state.pending_accept = False
             self._state.active = False
             self._pending_record = None
             self._state.pending_record = None
             self._state.runtime_chain_state = str(runtime_summary.get("state", self._state.runtime_chain_state))
             self._state.runtime_chain_message = str(runtime_summary.get("message", self._state.runtime_chain_message))
-            self._state.status_message = f"Saved runtime tip calibration to {output_path.name}."
+            self._state.status_message = (
+                f"Saved {'quick four-point runtime tip override' if is_quick else 'runtime tip calibration'} "
+                f"to {output_path.name}."
+            )
             self._state.health.last_error = None
             self._state.health.last_successful_update_utc = utc_now_iso()
-            self._state.health.state = "accepted"
+            self._state.health.state = "accepted_override" if is_quick else "accepted"
             self._sync_dependency_status_locked()
             self._recompute_health_locked()
         return output_path
 
     def load_latest_accepted(self) -> dict[str, Any] | None:
-        """Load the latest accepted runtime tip calibration artifact if present."""
-        payload = self.repository.load_latest_payload()
+        """Load the latest accepted full runtime tip calibration artifact if present."""
+        return self.load_latest_saved(session_mode=self.SESSION_MODE_FULL_HAT)
+
+    def load_latest_saved(self, *, session_mode: str | None = None) -> dict[str, Any] | None:
+        """Load the latest saved runtime tip artifact for the requested session mode."""
+        normalized_mode = self._normalize_session_mode(session_mode)
+        payload = (
+            self.repository.load_latest_quick_payload()
+            if normalized_mode == self.SESSION_MODE_QUICK_4_POINT
+            else self.repository.load_latest_payload()
+        )
         with self._lock:
-            self._state.latest_accepted_path = str(self.repository.latest_path) if self.repository.latest_path.exists() else None
+            latest_path = (
+                self.repository.quick_latest_path
+                if normalized_mode == self.SESSION_MODE_QUICK_4_POINT
+                else self.repository.latest_path
+            )
+            self._state.latest_accepted_path = str(latest_path) if latest_path.exists() else None
         if payload is None:
             with self._lock:
+                self._state.session_mode = normalized_mode
+                self._state.session_mode_summary = self._session_mode_summary(normalized_mode)
                 self._sync_dependency_status_locked()
                 self._recompute_health_locked()
             return None
 
         with self._lock:
             labels = [str(label) for label in payload.get("truth_points_in_tip_by_label", {}).keys()] or list(self._truth_geometry.labels)
+            calibration_kind = str(payload.get("calibration_kind", "runtime_tip_calibration_hat") or "runtime_tip_calibration_hat")
+            session_mode = (
+                self.SESSION_MODE_QUICK_4_POINT
+                if calibration_kind == "runtime_tip_calibration_quick_4_point"
+                else self.SESSION_MODE_FULL_HAT
+            )
+            self._state.session_mode = session_mode
+            self._state.session_mode_summary = self._session_mode_summary(session_mode)
+            self._state.selected_labels = list(labels)
             self._state.labels = labels
             self._state.truth_points_in_tip_by_label = dict(payload.get("truth_points_in_tip_by_label", {}) or {})
             self._state.raw_points_by_label = dict(payload.get("raw_captured_hat_points_aurora_xyz_by_label", {}) or {})
@@ -429,13 +512,22 @@ class RuntimeTipCalibrationService:
             self._state.rotation_spread_summary_deg = dict(
                 (payload.get("validation_metrics", {}) or {}).get("coil_rotation_spread_deg", {}) or {}
             )
-            self._state.accepted_output_path = str(self.repository.latest_path)
+            latest_path = (
+                self.repository.quick_latest_path
+                if session_mode == self.SESSION_MODE_QUICK_4_POINT
+                else self.repository.latest_path
+            )
+            self._state.accepted_output_path = str(latest_path)
             self._state.pending_accept = False
             self._state.active = False
             self._state.current_label_index = 0
             self._state.current_label = None
             self._state.pending_record = None
-            self._state.status_message = "Loaded the latest accepted runtime tip calibration."
+            self._state.status_message = (
+                "Loaded the latest quick four-point runtime tip override."
+                if session_mode == self.SESSION_MODE_QUICK_4_POINT
+                else "Loaded the latest accepted runtime tip calibration."
+            )
             self._state.health.last_error = None
             self._state.health.last_successful_update_utc = str(payload.get("timestamp_utc") or utc_now_iso())
             self._state.health.state = "accepted"
@@ -468,9 +560,15 @@ class RuntimeTipCalibrationService:
         if runtime_tip_state == "invalid_runtime_tip_calibration":
             state = "invalid_runtime_tip_calibration"
             message = "Tracking rejected the runtime tip calibration artifact."
-        elif runtime_tip_state == "missing_runtime_tip_calibration":
+        elif runtime_tip_state in {"missing_runtime_tip_calibration", "missing_quick_4_point_runtime_tip"}:
             state = "missing_runtime_tip_calibration"
-            message = "Runtime tip calibration is missing; live tip pose is still using the identity fallback."
+            message = "The selected runtime tip mode does not currently have a usable saved artifact."
+        elif runtime_tip_state == "quick_4_point_loaded":
+            state = "quick_4_point_override"
+            message = "Tracking is using the saved quick four-point runtime tip override."
+        elif runtime_tip_state == "coil_as_tip":
+            state = "coil_as_tip_override"
+            message = "Tracking is using the explicit coil-as-tip override."
         elif runtime_tip_state == "identity_tip_fallback":
             state = "identity_tip_fallback"
             message = "Tracking is using the identity 0A-to-tip fallback instead of a saved runtime tip calibration."
@@ -496,6 +594,8 @@ class RuntimeTipCalibrationService:
             "state": state,
             "message": message,
             "runtime_tip_calibration_state": runtime_tip_state,
+            "runtime_tip_mode": getattr(tracking_snapshot, "runtime_tip_mode", None),
+            "runtime_tip_trust_level": getattr(tracking_snapshot, "runtime_tip_trust_level", None),
             "stored_runtime_tip_timestamp_utc": getattr(tracking_snapshot, "stored_runtime_tip_timestamp_utc", None),
             "timestamp_matches_latest": timestamp_matches,
             "role_match": role_match,
@@ -670,9 +770,62 @@ class RuntimeTipCalibrationService:
         }
         if self._state.health.state == "accepted":
             self._state.health.status = "Runtime tip calibration accepted"
+        elif self._state.health.state == "accepted_override":
+            self._state.health.status = "Runtime tip quick override saved"
         elif self._state.pending_accept:
             self._state.health.status = "Runtime tip calibration solved and pending acceptance"
         elif self._state.active:
             self._state.health.status = "Runtime tip calibration capture in progress"
         else:
             self._state.health.status = "Runtime tip calibration idle"
+
+    @classmethod
+    def _normalize_session_mode(cls, session_mode: str | None) -> str:
+        value = str(session_mode or cls.SESSION_MODE_FULL_HAT).strip().lower()
+        if value in {"quick_4_point", "quick4", "quick"}:
+            return cls.SESSION_MODE_QUICK_4_POINT
+        return cls.SESSION_MODE_FULL_HAT
+
+    def _labels_for_session_mode(self, session_mode: str) -> list[str]:
+        if session_mode == self.SESSION_MODE_QUICK_4_POINT:
+            return list(self._quick_labels)
+        return list(self._truth_geometry.labels)
+
+    @classmethod
+    def _session_mode_summary(cls, session_mode: str) -> str:
+        if session_mode == cls.SESSION_MODE_QUICK_4_POINT:
+            return "Quick 4-point runtime tip override"
+        return "Full accepted hat calibration"
+
+    @staticmethod
+    def _choose_quick_labels(truth_points_in_tip_by_label: dict[str, list[float]]) -> list[str]:
+        labels = [str(label) for label in truth_points_in_tip_by_label]
+        if len(labels) <= 4:
+            return list(labels)
+        points = {
+            str(label): np.asarray(point, dtype=float)
+            for label, point in truth_points_in_tip_by_label.items()
+        }
+        best_labels = labels[:4]
+        best_score = (-1.0, -1.0)
+        label_count = len(labels)
+        for index_a in range(label_count - 3):
+            for index_b in range(index_a + 1, label_count - 2):
+                for index_c in range(index_b + 1, label_count - 1):
+                    for index_d in range(index_c + 1, label_count):
+                        subset = [labels[index_a], labels[index_b], labels[index_c], labels[index_d]]
+                        subset_points = [points[label] for label in subset]
+                        pairwise = [
+                            float(np.linalg.norm(first - second))
+                            for first_index, first in enumerate(subset_points[:-1])
+                            for second in subset_points[first_index + 1 :]
+                        ]
+                        min_pairwise = min(pairwise) if pairwise else 0.0
+                        centered = np.stack(subset_points, axis=0) - np.mean(np.stack(subset_points, axis=0), axis=0)
+                        singular_values = np.linalg.svd(centered, compute_uv=False)
+                        conditioning = float(singular_values[-1]) if singular_values.size > 0 else 0.0
+                        score = (min_pairwise, conditioning)
+                        if score > best_score:
+                            best_score = score
+                            best_labels = subset
+        return list(best_labels)

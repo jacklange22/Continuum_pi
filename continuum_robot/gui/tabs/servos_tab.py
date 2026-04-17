@@ -53,9 +53,10 @@ class ServosTab(QWidget):
         self.title_label = QLabel("Servo Workspace")
         self.title_label.setProperty("role", "title")
         self.workflow_hint = QLabel(
-            "Use this workspace for servo bring-up only. Refresh readiness, verify the expected servos, "
-            "select one servo at a time, and jog it across the raw 0..4095 range. "
-            "Use the dedicated Pretension tab for startup calibration and feedback-based pretensioning."
+            "Use this workspace for servo bring-up and practical manual startup-state capture. "
+            "Refresh readiness, verify the expected servos, jog the configured servos to the desired startup pose, "
+            "then capture that 4-servo state as manual pretension if needed. "
+            "Use the Pretension tab for feedback-based algorithm development, tuning, and validation."
         )
         self.workflow_hint.setProperty("role", "hint")
         self.workflow_hint.setWordWrap(True)
@@ -114,6 +115,10 @@ class ServosTab(QWidget):
         self.selected_servo_reason_status_label.setWordWrap(True)
         self.selected_servo_direction_label.setWordWrap(True)
         self.selected_servo_last_motion_label.setWordWrap(True)
+        self.manual_pretension_summary_label = QLabel("No accepted pretension source.")
+        self.manual_pretension_summary_label.setWordWrap(True)
+        self.manual_pretension_note_label = QLabel("No manual pretension note saved.")
+        self.manual_pretension_note_label.setWordWrap(True)
 
         self.scan_button = QPushButton("Discover / Read Servo")
         self.scan_button.setProperty("role", "primary")
@@ -182,6 +187,18 @@ class ServosTab(QWidget):
         )
         self.pretension_hint.setProperty("role", "hint")
         self.pretension_hint.setWordWrap(True)
+
+        self.manual_pretension_note_edit = QPlainTextEdit()
+        self.manual_pretension_note_edit.setPlaceholderText("Optional operator note for this manual startup state.")
+        self.manual_pretension_note_edit.setMaximumHeight(64)
+        self.capture_manual_pretension_button = QPushButton("Capture Current State as Manual Pretension")
+        self.capture_manual_pretension_button.setProperty("role", "primary")
+        self.capture_manual_pretension_button.clicked.connect(self._capture_manual_pretension)
+        self.accept_manual_pretension_button = QPushButton("Accept Manual Pretension")
+        self.accept_manual_pretension_button.clicked.connect(lambda: self._safe_call(self.controller.accept_manual_pretension))
+        self.clear_manual_pretension_button = QPushButton("Clear Manual Pretension")
+        self.clear_manual_pretension_button.setProperty("variant", "ghost")
+        self.clear_manual_pretension_button.clicked.connect(lambda: self._safe_call(self.controller.clear_manual_pretension))
 
         self.apply_displacement_button = QPushButton("Apply Displacement")
         self.apply_displacement_button.clicked.connect(self._apply_displacement)
@@ -295,12 +312,28 @@ class ServosTab(QWidget):
         pretension_layout.addRow(pretension_buttons_widget)
         pretension_layout.addRow(self.pretension_hint)
 
+        self.manual_pretension_box = QGroupBox("Manual Pretension / Startup State")
+        manual_layout = QFormLayout(self.manual_pretension_box)
+        manual_layout.addRow("Active source", self.manual_pretension_summary_label)
+        manual_layout.addRow("Saved note", self.manual_pretension_note_label)
+        manual_layout.addRow("Operator note", self.manual_pretension_note_edit)
+        manual_buttons = QHBoxLayout()
+        manual_buttons.setSpacing(10)
+        manual_buttons.addWidget(self.capture_manual_pretension_button)
+        manual_buttons.addWidget(self.accept_manual_pretension_button)
+        manual_buttons.addWidget(self.clear_manual_pretension_button)
+        manual_buttons.addStretch(1)
+        manual_buttons_widget = QWidget()
+        manual_buttons_widget.setLayout(manual_buttons)
+        manual_layout.addRow(manual_buttons_widget)
+
         left_column = QWidget()
         left_layout = QVBoxLayout(left_column)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(12)
         left_layout.addWidget(jog_box)
         left_layout.addWidget(bringup_actions_box)
+        left_layout.addWidget(self.manual_pretension_box)
         left_layout.addWidget(self.pretension_box)
         left_layout.addWidget(self.startup_box)
 
@@ -425,7 +458,7 @@ class ServosTab(QWidget):
             ", ".join(f"{sid}:{tick}" for sid, tick in sorted(state.neutral_setpoints.items())) or "not saved"
         )
         self.blocking_label.setText(state.blocking_reasons[0] if state.blocking_reasons else "")
-        self.pretension_label.setText(state.pretension_message)
+        self.pretension_label.setText(state.pretension_source_summary)
         self.calibration_status_label.setText(
             "Ready"
             if state.calibration_exists and state.calibration_compatible
@@ -434,6 +467,8 @@ class ServosTab(QWidget):
         self.calibration_path_label.setText(state.calibration_path or "None")
         self.calibration_updated_label.setText(state.calibration_updated_at_utc or "Never")
         self.calibration_message_label.setText(state.calibration_message)
+        self.manual_pretension_summary_label.setText(state.pretension_source_summary)
+        self.manual_pretension_note_label.setText(state.pretension_source_note or "No manual pretension note saved.")
 
         current_position = state.selected_servo_current_position_tick
         target_position = state.selected_servo_last_target_tick
@@ -489,10 +524,11 @@ class ServosTab(QWidget):
         self._set_form_row_visible(
             self.summary_layout,
             self.pretension_label,
-            False,
+            not state.single_servo_mode,
         )
         self.startup_box.setVisible(False)
         self.pretension_box.setVisible(False)
+        self.manual_pretension_box.setVisible((not state.single_servo_mode) and len(state.expected_servo_ids) == 4)
         self.displacement_box.setVisible(False)
         self.scan_button.setEnabled(state.connected)
         self.refresh_readiness_button.setEnabled(state.connected)
@@ -507,6 +543,10 @@ class ServosTab(QWidget):
         self.cancel_pretension_button.setEnabled(show_single_servo_advanced and state.pretension_running)
         self.retry_pretension_button.setEnabled(show_single_servo_advanced and motion_allowed and not state.pretension_running)
         self.accept_pretension_button.setEnabled(show_single_servo_advanced and state.pretension_result_can_accept)
+        manual_mode_available = (not state.single_servo_mode) and len(state.expected_servo_ids) == 4
+        self.capture_manual_pretension_button.setEnabled(state.connected and manual_mode_available and any_servo)
+        self.accept_manual_pretension_button.setEnabled(manual_mode_available and state.manual_pretension_can_accept)
+        self.clear_manual_pretension_button.setEnabled(manual_mode_available and state.manual_pretension_can_clear)
         self.apply_displacement_button.setEnabled(False)
 
         selected_spin_value = selected_servo_id if selected_servo_id is not None else 1
@@ -572,6 +612,8 @@ class ServosTab(QWidget):
             f"Range: {self.selected_servo_bounds_label.text()}",
             f"Last action: {self.selected_servo_action_label.text()} | Result: {self.selected_servo_result_label.text()}",
         ]
+        if not state.single_servo_mode:
+            operator_lines.append(f"Active pretension source: {state.pretension_source_summary}")
         if state.selected_servo_reason_label and state.selected_servo_reason_label != "none":
             operator_lines.append(f"Reason: {state.selected_servo_reason_label}")
         if state.last_error:
@@ -653,6 +695,12 @@ class ServosTab(QWidget):
 
     def _accept_pretension(self) -> None:
         self._safe_call(self.controller.accept_pretension_result, int(self.pretension_servo_spin.value()))
+
+    def _capture_manual_pretension(self) -> None:
+        self._safe_call(
+            self.controller.capture_manual_pretension,
+            self.manual_pretension_note_edit.toPlainText().strip(),
+        )
 
     def _sync_servo_selection(self, servo_id: int) -> None:
         for spin in (self.jog_servo_spin, self.calibration_servo_spin, self.pretension_servo_spin):

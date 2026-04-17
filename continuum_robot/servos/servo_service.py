@@ -12,6 +12,7 @@ from continuum_robot.hardware.dxl_bus import DxlBus, ServoTelemetry
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
 from continuum_robot.servos.neutral_calibration_service import (
     NeutralCalibrationService,
+    PretensionSourceSummary,
     ServoCalibrationArtifact,
     ServoCalibrationSummary,
 )
@@ -667,6 +668,10 @@ class ServoService:
 
     def get_calibration_summary(self) -> ServoCalibrationSummary:
         return self.neutral_calibration.get_calibration_summary()
+
+    def pretension_source_summary(self, servo_ids: list[int] | None = None) -> PretensionSourceSummary:
+        selected_ids = self._manual_pretension_servo_ids(servo_ids)
+        return self.neutral_calibration.get_calibration_summary().pretension_source_summary(selected_ids)
 
     def capture_neutral_setpoints(self, servo_ids: list[int]) -> dict[int, int]:
         result = self.capture_and_save_neutral_setpoints(servo_ids)
@@ -2400,6 +2405,7 @@ class ServoService:
                 threshold_ma=result.threshold_ma,
                 result_status=result.status,
                 run_record=run_record,
+                pretension_source="algorithmic",
             )
             if progress_callback is not None:
                 progress_callback(result)
@@ -2789,11 +2795,91 @@ class ServoService:
     def accept_pretension_result(self, servo_id: int):
         return self.neutral_calibration.mark_pretension_accepted(int(servo_id))
 
+    def capture_manual_pretension_state(
+        self,
+        *,
+        servo_ids: list[int] | None = None,
+        note: str | None = None,
+    ) -> dict[int, object]:
+        selected_ids = self._manual_pretension_servo_ids(servo_ids)
+        telemetry = self.read_live_telemetry(selected_ids)
+        commanded_positions = self.last_goal_positions()
+        states_by_servo: dict[int, dict[str, object]] = {}
+        for servo_id in selected_ids:
+            current = telemetry[int(servo_id)]
+            if current.present_position is None:
+                raise RuntimeError(f"Servo {servo_id} position is unavailable.")
+            if current.present_current_ma is None:
+                raise RuntimeError(f"Servo {servo_id} current is unavailable.")
+            if self.dxl_bus.config.require_fresh_telemetry_for_motion:
+                self.safety_guard.validate_telemetry_freshness(current.last_read_monotonic_s)
+            states_by_servo[int(servo_id)] = {
+                "servo_id": int(servo_id),
+                "commanded_position_tick": (
+                    int(commanded_positions[int(servo_id)])
+                    if int(servo_id) in commanded_positions
+                    else None
+                ),
+                "measured_position_tick": int(current.present_position),
+                "measured_current_ma": int(current.present_current_ma),
+                "torque_enabled": current.torque_enabled,
+                "telemetry_age_s": self.telemetry_age_s(current),
+            }
+        return self.neutral_calibration.save_manual_pretension_state(
+            states_by_servo=states_by_servo,
+            note=note,
+            accepted=False,
+        )
+
+    def accept_manual_pretension_state(self, servo_ids: list[int] | None = None) -> PretensionSourceSummary:
+        selected_ids = self._manual_pretension_servo_ids(servo_ids)
+        summary = self.neutral_calibration.get_calibration_summary()
+        if not summary.exists or not summary.compatible:
+            raise RuntimeError(f"Servo calibration artifact is not ready: {summary.message}")
+        for servo_id in selected_ids:
+            entry = summary.servo_entries.get(int(servo_id))
+            if entry is None or entry.pretension_final_position_tick is None:
+                raise RuntimeError(f"Servo {servo_id} does not have a saved manual pretension capture.")
+            source = (
+                str(entry.pretension_source).strip().lower()
+                if entry.pretension_source not in (None, "")
+                else str((entry.latest_pretension_run or {}).get("source", "")).strip().lower()
+            )
+            if source != "manual" or entry.pretension_result_status not in {"manual_captured", "accepted"}:
+                raise RuntimeError(f"Servo {servo_id} does not have a saved manual pretension capture.")
+        for servo_id in selected_ids:
+            self.neutral_calibration.mark_pretension_accepted(int(servo_id))
+        return self.neutral_calibration.get_calibration_summary().pretension_source_summary(selected_ids)
+
+    def clear_manual_pretension_state(self, servo_ids: list[int] | None = None) -> list[int]:
+        selected_ids = self._manual_pretension_servo_ids(servo_ids)
+        return self.neutral_calibration.clear_manual_pretension_state(selected_ids)
+
     def _pretension_threshold_for_servo(self, servo_id: int) -> int:
         thresholds = self.neutral_calibration.thresholds_by_servo_id([int(servo_id)])
         if thresholds:
             return int(thresholds[int(servo_id)])
         return int(self.safety_guard.default_pretension_current_threshold_ma)
+
+    def _manual_pretension_servo_ids(self, servo_ids: list[int] | None) -> list[int]:
+        configured = [
+            int(value)
+            for value in (
+                self.neutral_calibration.context.tendon_to_servo
+                or self.neutral_calibration.context.servo_ids
+            )
+        ]
+        selected = [int(value) for value in (servo_ids or configured)]
+        if len(configured) != 4:
+            raise RuntimeError(
+                f"Manual pretension capture is single-segment only and requires exactly 4 configured servos; found {configured}."
+            )
+        if sorted(selected) != sorted(configured):
+            raise RuntimeError(
+                "Manual pretension capture must use the full configured 4-servo single-segment set: "
+                + ", ".join(str(value) for value in configured)
+            )
+        return list(configured)
 
     @staticmethod
     def _canonical_delta_for_direction(command_direction: str, step_ticks: int) -> int:

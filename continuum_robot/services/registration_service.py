@@ -1132,11 +1132,26 @@ class RegistrationService:
         elif snapshot.runtime_tip_calibration_state == "invalid_runtime_tip_calibration":
             state = "invalid_runtime_tip_calibration"
             message = "Tracking rejected the runtime 0A hat-based tip calibration artifact."
-        elif snapshot.runtime_tip_calibration_state == "missing_runtime_tip_calibration":
+        elif snapshot.runtime_tip_calibration_state in {
+            "missing_runtime_tip_calibration",
+            "missing_quick_4_point_runtime_tip",
+        }:
             state = "missing_runtime_tip_calibration"
             message = (
-                "Tracking loaded the accepted base registration, but no separate runtime 0A tip calibration artifact "
-                "is available yet."
+                "Tracking loaded the accepted base registration, but the selected runtime tip mode does not currently "
+                "have a usable 0A tip transform artifact."
+            )
+        elif snapshot.runtime_tip_calibration_state == "quick_4_point_loaded":
+            state = "quick_4_point_override"
+            message = (
+                "Tracking is using the quick 4-point runtime tip override. This is explicit and usable, "
+                "but lower trust than the latest accepted full runtime tip calibration."
+            )
+        elif snapshot.runtime_tip_calibration_state == "coil_as_tip":
+            state = "coil_as_tip_override"
+            message = (
+                "Tracking is using the explicit coil-as-tip override. Tip pose is available, but "
+                "T_coil_tip is identity and this mode is lower trust."
             )
         elif snapshot.runtime_tip_calibration_state == "identity_tip_fallback":
             state = "identity_tip_fallback"
@@ -1180,6 +1195,9 @@ class RegistrationService:
             "stored_registration_coil_tool_id": snapshot.stored_registration_coil_tool_id,
             "runtime_tip_calibration_state": snapshot.runtime_tip_calibration_state,
             "runtime_tip_calibration_path": snapshot.runtime_tip_calibration_path,
+            "runtime_tip_mode": getattr(snapshot, "runtime_tip_mode", None),
+            "runtime_tip_trust_level": getattr(snapshot, "runtime_tip_trust_level", None),
+            "runtime_tip_mode_message": getattr(snapshot, "runtime_tip_mode_message", None),
             "stored_runtime_tip_timestamp_utc": snapshot.stored_runtime_tip_timestamp_utc,
             "stored_runtime_tip_measurement_tool_id": snapshot.stored_runtime_tip_measurement_tool_id,
             "stored_runtime_tip_coil_tool_id": snapshot.stored_runtime_tip_coil_tool_id,
@@ -1241,6 +1259,19 @@ class RegistrationService:
                 lines.append(f"Landmark conditioning: {float(condition_number):.3f}")
         lines.append(str(tracking_summary.get("message") or ""))
         runtime_tip_timestamp = tracking_summary.get("stored_runtime_tip_timestamp_utc")
+        runtime_tip_mode = tracking_summary.get("runtime_tip_mode")
+        runtime_tip_trust = tracking_summary.get("runtime_tip_trust_level")
+        runtime_tip_mode_message = tracking_summary.get("runtime_tip_mode_message")
+        if runtime_tip_mode:
+            lines.append(
+                "Runtime tip mode: "
+                f"{str(runtime_tip_mode).replace('_', ' ')}"
+                + (
+                    f" ({str(runtime_tip_trust).replace('_', ' ')})"
+                    if runtime_tip_trust not in (None, "")
+                    else ""
+                )
+            )
         if runtime_tip_timestamp is not None:
             lines.append(f"Loaded runtime tip calibration: {runtime_tip_timestamp}")
         elif tracking_summary.get("runtime_tip_calibration_state"):
@@ -1248,6 +1279,8 @@ class RegistrationService:
                 "Runtime tip calibration state: "
                 f"{tracking_summary.get('runtime_tip_calibration_state')}"
             )
+        if runtime_tip_mode_message:
+            lines.append(str(runtime_tip_mode_message))
         if history_summary:
             lines.append(RegistrationService._comparison_message(history_summary))
             worst_history_label = history_summary.get("worst_landmark_by_mean_residual")

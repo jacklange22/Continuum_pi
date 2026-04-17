@@ -48,6 +48,9 @@ class TrackingService:
     """Owns the app-visible tracking state cache and runtime tip-pose chain."""
 
     SUPPORTED_TOOL_IDS = ("0A", "0B")
+    RUNTIME_TIP_MODE_LATEST_ACCEPTED = "latest_accepted"
+    RUNTIME_TIP_MODE_QUICK_4_POINT = "quick_4_point"
+    RUNTIME_TIP_MODE_COIL_AS_TIP = "coil_as_tip"
     _FAILED_FAULTS = {
         "no_serial_connection",
         "invalid_registration",
@@ -109,6 +112,9 @@ class TrackingService:
             project_root=project_root,
             registration_path=self.registration_path,
         )
+        self.quick_runtime_tip_calibration_path = (
+            self.runtime_tip_calibration_path.parent / "latest_quick_4_point_runtime_tip.json"
+        )
 
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -121,6 +127,7 @@ class TrackingService:
         self._registration_coil_tool_id: str | None = None
         self._runtime_tip_measurement_tool_id: str | None = None
         self._runtime_tip_coil_tool_id: str | None = None
+        self._runtime_tip_mode = self.RUNTIME_TIP_MODE_LATEST_ACCEPTED
         self._backend_started_here = False
         self._started_monotonic: float | None = None
         self._last_frame_monotonic: float | None = None
@@ -145,6 +152,7 @@ class TrackingService:
             baudrate=baudrate,
             runtime_coil_tool_id=runtime_coil_tool_id,
             registration_tool_id=registration_tool_id,
+            runtime_tip_mode=self.RUNTIME_TIP_MODE_LATEST_ACCEPTED,
             backend_running=False if self._uses_live_backend else None,
             backend_connected=False if self._uses_live_backend else None,
             backend_details={},
@@ -161,6 +169,14 @@ class TrackingService:
             self.live_backend.aurora_port = port
         with self._lock:
             self._state.port = port
+
+    def set_runtime_tip_mode(self, mode: str) -> None:
+        """Select which runtime tip source drives the live tip-pose chain."""
+        normalized = self._normalize_runtime_tip_mode(mode)
+        if normalized == self._runtime_tip_mode:
+            return
+        self._runtime_tip_mode = normalized
+        self.refresh_registration()
 
     def configure_live_backend(
         self,
@@ -327,6 +343,11 @@ class TrackingService:
             self._state.stored_registration_fre_mm = None
             self._state.T_robot_aurora = None
             self._state.runtime_tip_calibration_path = str(self.runtime_tip_calibration_path)
+            self._state.runtime_tip_mode = self._runtime_tip_mode
+            self._state.runtime_tip_trust_level = "missing"
+            self._state.runtime_tip_mode_message = "Runtime tip transform is not loaded."
+            self._state.runtime_tip_selected_artifact_kind = None
+            self._state.runtime_tip_selected_artifact_path = None
             self._state.stored_runtime_tip_measurement_tool_id = None
             self._state.stored_runtime_tip_coil_tool_id = None
             self._state.stored_runtime_tip_timestamp_utc = None
@@ -383,8 +404,74 @@ class TrackingService:
         T_coil_tip: np.ndarray | None = None
         runtime_tip_error: str | None = None
         runtime_tip_payload: dict[str, Any] | None = None
+        runtime_tip_mode = self._runtime_tip_mode
+        selected_runtime_tip_path = str(self.runtime_tip_calibration_path)
+        selected_runtime_tip_kind: str | None = None
 
-        if self.runtime_tip_calibration_path.exists():
+        if runtime_tip_mode == self.RUNTIME_TIP_MODE_COIL_AS_TIP:
+            T_coil_tip = np.eye(4, dtype=float)
+            runtime_tip_source = "coil_as_tip"
+            runtime_tip_calibration_state = "coil_as_tip"
+            runtime_tip_identity_fallback = True
+            runtime_tip_measurement_tool_id = str(measurement_tool_id) if measurement_tool_id is not None else None
+            runtime_tip_coil_tool_id = str(coil_tool_id) if coil_tool_id is not None else None
+            runtime_tip_timestamp_utc = None
+            selected_runtime_tip_path = None
+            selected_runtime_tip_kind = "coil_as_tip"
+        elif runtime_tip_mode == self.RUNTIME_TIP_MODE_QUICK_4_POINT:
+            selected_runtime_tip_path = str(self.quick_runtime_tip_calibration_path)
+            if self.quick_runtime_tip_calibration_path.exists():
+                try:
+                    runtime_tip_payload = json.loads(self.quick_runtime_tip_calibration_path.read_text(encoding="utf-8"))
+                    selected_runtime_tip_kind = str(
+                        runtime_tip_payload.get("calibration_kind")
+                        or "runtime_tip_calibration_quick_4_point"
+                    )
+                    if selected_runtime_tip_kind != "runtime_tip_calibration_quick_4_point":
+                        raise ValueError(
+                            "Quick runtime tip mode requires a quick_4_point artifact, "
+                            f"but found calibration_kind={selected_runtime_tip_kind!r}."
+                        )
+                    T_coil_tip = TipPoseService._load_T_coil_tip(
+                        runtime_tip_payload,
+                        self.quick_runtime_tip_calibration_path,
+                    )
+                    runtime_tip_calibration_state = "quick_4_point_loaded"
+                    runtime_tip_source = selected_runtime_tip_kind
+                    runtime_tip_measurement_tool_id = (
+                        runtime_tip_payload.get("measurement_tool_id")
+                        or (runtime_tip_payload.get("config_used", {}) or {}).get("measurement_tool_id")
+                    )
+                    runtime_tip_coil_tool_id = (
+                        runtime_tip_payload.get("coil_tool_id")
+                        or (runtime_tip_payload.get("config_used", {}) or {}).get("coil_tool_id")
+                    )
+                    runtime_tip_timestamp_utc = (
+                        str(runtime_tip_payload.get("timestamp_utc"))
+                        if runtime_tip_payload.get("timestamp_utc") is not None
+                        else None
+                    )
+                    runtime_tip_role_error = self._build_registration_role_error(
+                        measurement_tool_id=(
+                            str(runtime_tip_measurement_tool_id)
+                            if runtime_tip_measurement_tool_id is not None
+                            else None
+                        ),
+                        coil_tool_id=(
+                            str(runtime_tip_coil_tool_id)
+                            if runtime_tip_coil_tool_id is not None
+                            else None
+                        ),
+                    )
+                except Exception as exc:
+                    runtime_tip_calibration_state = "invalid_runtime_tip_calibration"
+                    runtime_tip_error = str(exc)
+            else:
+                runtime_tip_calibration_state = "missing_quick_4_point_runtime_tip"
+                runtime_tip_source = "quick_4_point_missing"
+                runtime_tip_measurement_tool_id = str(measurement_tool_id) if measurement_tool_id is not None else None
+                runtime_tip_coil_tool_id = str(coil_tool_id) if coil_tool_id is not None else None
+        elif self.runtime_tip_calibration_path.exists():
             try:
                 runtime_tip_payload = json.loads(self.runtime_tip_calibration_path.read_text(encoding="utf-8"))
                 T_coil_tip = TipPoseService._load_T_coil_tip(
@@ -392,11 +479,12 @@ class TrackingService:
                     self.runtime_tip_calibration_path,
                 )
                 runtime_tip_calibration_state = "loaded"
-                runtime_tip_source = (
+                selected_runtime_tip_kind = str(
                     runtime_tip_payload.get("calibration_kind")
                     or (runtime_tip_payload.get("validation_metrics", {}) or {}).get("calibration_kind")
                     or "runtime_tip_calibration_artifact"
                 )
+                runtime_tip_source = selected_runtime_tip_kind
                 runtime_tip_measurement_tool_id = (
                     runtime_tip_payload.get("measurement_tool_id")
                     or (runtime_tip_payload.get("config_used", {}) or {}).get("measurement_tool_id")
@@ -442,6 +530,7 @@ class TrackingService:
                 or config_used.get("tip_calibration_source")
                 or "registration_artifact_tip_transform"
             )
+            selected_runtime_tip_kind = str(runtime_tip_source)
             if runtime_tip_source == "identity_assumption_simple_registration":
                 runtime_tip_calibration_state = "identity_tip_fallback"
                 runtime_tip_identity_fallback = True
@@ -451,14 +540,17 @@ class TrackingService:
             runtime_tip_coil_tool_id = str(coil_tool_id) if coil_tool_id is not None else None
             runtime_tip_timestamp_utc = str(stored_timestamp) if stored_timestamp is not None else None
             runtime_tip_role_error = registration_role_error
+            selected_runtime_tip_path = str(self.registration_path)
         else:
             T_coil_tip = np.eye(4, dtype=float)
             runtime_tip_source = "identity_runtime_tip_fallback"
+            selected_runtime_tip_kind = "identity_runtime_tip_fallback"
             runtime_tip_calibration_state = "identity_tip_fallback"
             runtime_tip_identity_fallback = True
             runtime_tip_measurement_tool_id = str(measurement_tool_id) if measurement_tool_id is not None else None
             runtime_tip_coil_tool_id = str(coil_tool_id) if coil_tool_id is not None else None
             runtime_tip_timestamp_utc = None
+            selected_runtime_tip_path = None
 
         role_error = "; ".join(
             issue
@@ -472,14 +564,28 @@ class TrackingService:
                     registration_path=self.registration_path,
                     runtime_tip_calibration_payload=(
                         runtime_tip_payload
-                        if runtime_tip_calibration_state == "loaded"
+                        if runtime_tip_payload is not None
                         else {"T_coil_tip": np.asarray(T_coil_tip, dtype=float).tolist()}
                     ),
-                    runtime_tip_calibration_path=self.runtime_tip_calibration_path,
+                    runtime_tip_calibration_path=(
+                        Path(selected_runtime_tip_path)
+                        if selected_runtime_tip_path not in (None, "")
+                        else self.runtime_tip_calibration_path
+                    ),
                 )
             )
-            if runtime_tip_calibration_state != "invalid_runtime_tip_calibration" and T_coil_tip is not None
+            if runtime_tip_calibration_state not in {
+                "invalid_runtime_tip_calibration",
+                "missing_quick_4_point_runtime_tip",
+            } and T_coil_tip is not None
             else None
+        )
+
+        runtime_tip_trust_level, runtime_tip_mode_message = self._describe_runtime_tip_mode(
+            mode=runtime_tip_mode,
+            state=runtime_tip_calibration_state,
+            source=runtime_tip_source,
+            timestamp_utc=runtime_tip_timestamp_utc,
         )
 
         with self._lock:
@@ -504,7 +610,13 @@ class TrackingService:
             )
             self._state.stored_registration_fre_mm = float(stored_fre) if stored_fre is not None else None
             self._state.T_robot_aurora = T_robot_aurora.tolist()
+            self._state.runtime_tip_mode = runtime_tip_mode
+            self._state.runtime_tip_trust_level = runtime_tip_trust_level
+            self._state.runtime_tip_mode_message = runtime_tip_mode_message
             self._state.runtime_tip_calibration_state = runtime_tip_calibration_state
+            self._state.runtime_tip_calibration_path = selected_runtime_tip_path
+            self._state.runtime_tip_selected_artifact_kind = selected_runtime_tip_kind
+            self._state.runtime_tip_selected_artifact_path = selected_runtime_tip_path
             self._state.stored_runtime_tip_measurement_tool_id = self._runtime_tip_measurement_tool_id
             self._state.stored_runtime_tip_coil_tool_id = self._runtime_tip_coil_tool_id
             self._state.stored_runtime_tip_timestamp_utc = runtime_tip_timestamp_utc
@@ -1085,9 +1197,12 @@ class TrackingService:
             self._state.last_error = str(exc)
             return
 
-        self._state.tip_pose_status = (
-            "identity_tip_fallback" if self._state.runtime_tip_identity_fallback else "ok"
-        )
+        if self._state.runtime_tip_mode == self.RUNTIME_TIP_MODE_COIL_AS_TIP:
+            self._state.tip_pose_status = "coil_as_tip"
+        else:
+            self._state.tip_pose_status = (
+                "identity_tip_fallback" if self._state.runtime_tip_identity_fallback else "ok"
+            )
         self._state.T_robot_tip = T_robot_tip.tolist()
         self._state.tip_pose_timestamp_utc = packet_timestamp
         self._state.last_good_T_robot_tip = T_robot_tip.tolist()
@@ -1171,10 +1286,17 @@ class TrackingService:
             pipeline_faults.append("missing_registration")
         elif self._state.registration_state == "invalid_registration":
             pipeline_faults.append("invalid_registration")
-        elif self._state.runtime_tip_calibration_state == "missing_runtime_tip_calibration":
+        elif self._state.runtime_tip_calibration_state in {
+            "missing_runtime_tip_calibration",
+            "missing_quick_4_point_runtime_tip",
+        }:
             pipeline_faults.append("missing_runtime_tip_calibration")
         elif self._state.runtime_tip_calibration_state == "invalid_runtime_tip_calibration":
             pipeline_faults.append("invalid_runtime_tip_calibration")
+        elif self._state.runtime_tip_calibration_state == "quick_4_point_loaded":
+            pipeline_faults.append("quick_4_point_override")
+        elif self._state.runtime_tip_calibration_state == "coil_as_tip":
+            pipeline_faults.append("coil_as_tip_override")
         elif self._state.runtime_tip_calibration_state == "identity_tip_fallback":
             pipeline_faults.append("identity_tip_fallback")
         if self._registration_role_error is not None:
@@ -1203,6 +1325,11 @@ class TrackingService:
             "stored_registration_fre_mm": self._state.stored_registration_fre_mm,
             "runtime_tip_calibration_state": self._state.runtime_tip_calibration_state,
             "runtime_tip_calibration_path": self._state.runtime_tip_calibration_path,
+            "runtime_tip_mode": self._state.runtime_tip_mode,
+            "runtime_tip_trust_level": self._state.runtime_tip_trust_level,
+            "runtime_tip_mode_message": self._state.runtime_tip_mode_message,
+            "runtime_tip_selected_artifact_kind": self._state.runtime_tip_selected_artifact_kind,
+            "runtime_tip_selected_artifact_path": self._state.runtime_tip_selected_artifact_path,
             "stored_runtime_tip_measurement_tool_id": self._runtime_tip_measurement_tool_id,
             "stored_runtime_tip_coil_tool_id": self._runtime_tip_coil_tool_id,
             "stored_runtime_tip_timestamp_utc": self._state.stored_runtime_tip_timestamp_utc,
@@ -1325,6 +1452,66 @@ class TrackingService:
             if candidate not in (None, ""):
                 return str(candidate)
         return None
+
+    @classmethod
+    def _normalize_runtime_tip_mode(cls, mode: str | None) -> str:
+        value = str(mode or cls.RUNTIME_TIP_MODE_LATEST_ACCEPTED).strip().lower()
+        if value in {cls.RUNTIME_TIP_MODE_COIL_AS_TIP, "coil", "identity"}:
+            return cls.RUNTIME_TIP_MODE_COIL_AS_TIP
+        if value in {cls.RUNTIME_TIP_MODE_QUICK_4_POINT, "quick4", "quick"}:
+            return cls.RUNTIME_TIP_MODE_QUICK_4_POINT
+        return cls.RUNTIME_TIP_MODE_LATEST_ACCEPTED
+
+    @classmethod
+    def _describe_runtime_tip_mode(
+        cls,
+        *,
+        mode: str,
+        state: str,
+        source: str | None,
+        timestamp_utc: str | None,
+    ) -> tuple[str, str]:
+        if mode == cls.RUNTIME_TIP_MODE_COIL_AS_TIP:
+            return (
+                "fallback_debug",
+                "Coil-as-tip override is active. The live chain uses identity T_coil_tip and is lower trust.",
+            )
+        if mode == cls.RUNTIME_TIP_MODE_QUICK_4_POINT:
+            if state == "quick_4_point_loaded":
+                detail = f" ({timestamp_utc})" if timestamp_utc else ""
+                return (
+                    "quick_override",
+                    f"Quick 4-point runtime tip override is active{detail}.",
+                )
+            if state == "invalid_runtime_tip_calibration":
+                return (
+                    "invalid",
+                    "Quick 4-point runtime tip override is selected, but the saved override artifact is invalid.",
+                )
+            return (
+                "missing",
+                "Quick 4-point runtime tip override is selected, but no saved quick artifact is available.",
+            )
+        if state == "loaded":
+            detail = f" ({timestamp_utc})" if timestamp_utc else ""
+            return ("trusted", f"Latest accepted runtime tip artifact is active{detail}.")
+        if state == "loaded_from_registration_artifact":
+            return (
+                "quick_override",
+                "Tracking is using a legacy registration-embedded runtime tip transform instead of a separate accepted artifact.",
+            )
+        if state == "identity_tip_fallback":
+            return (
+                "fallback_debug",
+                "Tracking is using the identity runtime tip fallback because no separate accepted artifact is active.",
+            )
+        if state == "invalid_runtime_tip_calibration":
+            return ("invalid", "The saved runtime tip artifact is invalid and cannot be trusted.")
+        if state == "missing_runtime_tip_calibration":
+            return ("missing", "No accepted runtime tip artifact is available.")
+        if source:
+            return ("warning", f"Runtime tip source is {source} with state {state}.")
+        return ("missing", f"Runtime tip state is {state}.")
 
     @staticmethod
     def _default_runtime_tip_path(*, project_root: Path, registration_path: Path) -> Path:

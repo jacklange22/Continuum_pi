@@ -67,6 +67,12 @@ class ServosViewState:
     pretension_running: bool = False
     pretension_result_can_accept: bool = False
     pretension_message: str = "Pretension not checked."
+    pretension_source_summary: str = "No accepted pretension source."
+    pretension_source_type: str = "none"
+    pretension_source_updated_at_utc: str | None = None
+    pretension_source_note: str | None = None
+    manual_pretension_can_accept: bool = False
+    manual_pretension_can_clear: bool = False
     bench_debug_text: str = ""
     status_message: str = "Servo control idle."
     last_error: str | None = None
@@ -410,6 +416,54 @@ class ServosController:
         finally:
             self.refresh()
 
+    def capture_manual_pretension(self, note: str = "") -> None:
+        try:
+            entries = self.servo_service.capture_manual_pretension_state(note=note)
+            captured_ids = sorted(int(servo_id) for servo_id in entries)
+            self.state.status_message = (
+                "Captured current 4-servo state as pending manual pretension for servo IDs "
+                + ", ".join(str(value) for value in captured_ids)
+                + ". Review and accept it before running experiments."
+            )
+            self.state.last_error = None
+        except Exception as exc:
+            self.state.last_error = str(exc)
+            self.state.status_message = f"Manual pretension capture failed: {exc}"
+            raise
+        finally:
+            self.refresh()
+
+    def accept_manual_pretension(self) -> None:
+        try:
+            summary = self.servo_service.accept_manual_pretension_state()
+            self.state.status_message = summary.message
+            self.state.last_error = None
+        except Exception as exc:
+            self.state.last_error = str(exc)
+            self.state.status_message = f"Accept manual pretension failed: {exc}"
+            raise
+        finally:
+            self.refresh()
+
+    def clear_manual_pretension(self) -> None:
+        try:
+            cleared = self.servo_service.clear_manual_pretension_state()
+            if cleared:
+                self.state.status_message = (
+                    "Cleared saved manual pretension state for servo IDs "
+                    + ", ".join(str(value) for value in sorted(cleared))
+                    + "."
+                )
+            else:
+                self.state.status_message = "No saved manual pretension state was present to clear."
+            self.state.last_error = None
+        except Exception as exc:
+            self.state.last_error = str(exc)
+            self.state.status_message = f"Clear manual pretension failed: {exc}"
+            raise
+        finally:
+            self.refresh()
+
     def shutdown(self) -> None:
         self.cancel_pretension()
         if self._pretension_thread is not None:
@@ -545,6 +599,12 @@ class ServosController:
         self.state.calibration_compatible = summary.compatible
         self.state.calibration_status = summary.status
         self.state.calibration_message = summary.message
+        self.state.pretension_source_summary = "No accepted pretension source."
+        self.state.pretension_source_type = "none"
+        self.state.pretension_source_updated_at_utc = None
+        self.state.pretension_source_note = None
+        self.state.manual_pretension_can_accept = False
+        self.state.manual_pretension_can_clear = False
         if (
             self.state.single_servo_mode
             and summary.exists
@@ -555,11 +615,81 @@ class ServosController:
                 "Warning: a multi-servo calibration artifact is loaded. "
                 "One-servo bench mode is ignoring it until neutral is recaptured."
             )
+        configured_servo_ids = [int(value) for value in self.settings.robot.tendon_to_servo or self.settings.robot.servo_ids]
+        if not self.state.single_servo_mode and len(configured_servo_ids) == 4 and summary.exists and summary.compatible:
+            source_summary = summary.pretension_source_summary(configured_servo_ids)
+            self.state.pretension_source_type = source_summary.source_type
+            self.state.pretension_source_updated_at_utc = source_summary.updated_at_utc
+            self.state.pretension_source_note = source_summary.note
+            manual_entries = [
+                summary.servo_entries.get(int(servo_id))
+                for servo_id in configured_servo_ids
+            ]
+            manual_notes = [
+                str(entry.pretension_note).strip()
+                for entry in manual_entries
+                if entry is not None and entry.pretension_note not in (None, "")
+            ]
+            self.state.manual_pretension_can_accept = bool(
+                manual_entries
+                and all(
+                    entry is not None
+                    and str(entry.pretension_source or "").strip().lower() == "manual"
+                    and entry.pretension_result_status == "manual_captured"
+                    for entry in manual_entries
+                )
+            )
+            self.state.manual_pretension_can_clear = any(
+                entry is not None
+                and str(entry.pretension_source or "").strip().lower() == "manual"
+                for entry in manual_entries
+            )
+            if self.state.pretension_source_note is None and manual_notes and len(set(manual_notes)) == 1:
+                self.state.pretension_source_note = manual_notes[0]
+            summary_text = source_summary.message
+            positions_by_servo = dict(source_summary.positions_by_servo)
+            if not positions_by_servo:
+                positions_by_servo = {
+                    int(servo_id): (
+                        int(entry.pretension_final_position_tick)
+                        if entry is not None and entry.pretension_final_position_tick is not None
+                        else None
+                    )
+                    for servo_id, entry in zip(configured_servo_ids, manual_entries)
+                }
+            positions_text = ", ".join(
+                f"{servo_id}:{position if position is not None else '—'}"
+                for servo_id, position in sorted(positions_by_servo.items())
+            )
+            if self.state.manual_pretension_can_accept:
+                summary_text = "Pending manual pretension capture is saved for the configured 4-servo set."
+                self.state.pretension_source_type = "manual_pending"
+            elif self.state.manual_pretension_can_clear and not source_summary.usable:
+                summary_text = "Manual pretension capture exists, but it is incomplete or not accepted yet."
+            if positions_text:
+                summary_text = f"{summary_text} Positions {positions_text}."
+            updated_at = source_summary.updated_at_utc or summary.updated_at_utc
+            self.state.pretension_source_updated_at_utc = updated_at
+            if updated_at:
+                summary_text = f"{summary_text} Updated {updated_at}."
+            self.state.pretension_source_summary = summary_text.strip()
         self.state.calibration_path = summary.path
         self.state.calibration_updated_at_utc = summary.updated_at_utc
         self.state.calibration_rows = []
         for servo_id in sorted(summary.servo_entries):
             entry = summary.servo_entries[servo_id]
+            pretension_source = (
+                str(entry.pretension_source).strip().lower()
+                if entry.pretension_source not in (None, "")
+                else str((entry.latest_pretension_run or {}).get("source", "")).strip().lower() or None
+            )
+            pretension_text = (
+                f"{entry.pretension_result_status or '—'} @ {entry.pretension_final_position_tick}"
+                if entry.pretension_final_position_tick is not None
+                else (entry.pretension_result_status or "—")
+            )
+            if pretension_source not in (None, ""):
+                pretension_text = f"{pretension_text} [{pretension_source}]"
             self.state.calibration_rows.append(
                 {
                     "servo_id": str(servo_id),
@@ -575,11 +705,7 @@ class ServosController:
                         else "missing"
                     ),
                     "direction": entry.tightening_rotation or "unset",
-                    "pretension": (
-                        f"{entry.pretension_result_status or '—'} @ {entry.pretension_final_position_tick}"
-                        if entry.pretension_final_position_tick is not None
-                        else (entry.pretension_result_status or "—")
-                    ),
+                    "pretension": pretension_text,
                     "status": "valid" if entry.valid else entry.status,
                 }
             )

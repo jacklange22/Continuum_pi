@@ -250,6 +250,61 @@ def test_preflight_blocks_when_transform_chain_is_not_trusted(tmp_path: Path) ->
     assert any(check.key == "runtime_tip" and check.status == "blocked" for check in report.checks)
 
 
+def test_preflight_blocks_repeatability_when_runtime_tip_mode_is_quick_override(tmp_path: Path) -> None:
+    pytest.importorskip("PySide6")
+    from continuum_robot.gui.experiment_preflight import RUN_BLOCKED, evaluate_preflight
+
+    settings = _settings(mock_mode=False)
+    service = _servo_service(tmp_path)
+    snapshot = _tracking_snapshot(runtime_tip_state="quick_4_point_loaded", runtime_tip_mode="quick_4_point")
+    report = evaluate_preflight(
+        experiment_name="single_segment_repeatability",
+        config_payload={},
+        config_error=None,
+        settings=settings,
+        tracking_snapshot=snapshot,
+        servo_connected=True,
+        neutral_setpoints={1: 2048, 2: 2048, 3: 2048, 4: 2048},
+        registration_path=tmp_path / "latest_registration.json",
+        output_root=tmp_path / "data" / "experiments",
+        planned_output_dir=tmp_path / "data" / "experiments" / "single_segment_repeatability" / "run",
+        project_root=tmp_path,
+        servo_calibration_summary=service.neutral_calibration.get_calibration_summary(),
+    )
+
+    assert report.overall_status == RUN_BLOCKED
+    assert any("Mode=quick_4_point" in check.message for check in report.checks if check.key == "runtime_tip")
+
+
+def test_preflight_accepts_manual_pretension_source_for_repeatability(tmp_path: Path) -> None:
+    pytest.importorskip("PySide6")
+    from continuum_robot.gui.experiment_preflight import RUN_READY, evaluate_preflight
+
+    settings = _settings(mock_mode=False)
+    service = _servo_service(tmp_path, pretension_source="manual")
+    snapshot = _tracking_snapshot()
+    report = evaluate_preflight(
+        experiment_name="single_segment_repeatability",
+        config_payload={},
+        config_error=None,
+        settings=settings,
+        tracking_snapshot=snapshot,
+        servo_connected=True,
+        neutral_setpoints={1: 2048, 2: 2048, 3: 2048, 4: 2048},
+        registration_path=tmp_path / "latest_registration.json",
+        output_root=tmp_path / "data" / "experiments",
+        planned_output_dir=tmp_path / "data" / "experiments" / "single_segment_repeatability" / "run",
+        project_root=tmp_path,
+        servo_calibration_summary=service.neutral_calibration.get_calibration_summary(),
+    )
+
+    assert report.overall_status == RUN_READY
+    assert any(
+        check.key == "pretension" and "manual pretension" in check.message.lower()
+        for check in report.checks
+    )
+
+
 def test_experiment_registration_and_custom_page_routing(tmp_path: Path) -> None:
     pytest.importorskip("PySide6")
     from continuum_robot.experiments.experiment_runner import ExperimentRunner
@@ -336,7 +391,11 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     assert metadata_payload["registration_info"]["pivot_tip"]["path"].endswith("penprobe_08_09_24c")
     assert metadata_payload["registration_info"]["base_registration"]["path"] == str(registration_path)
     assert metadata_payload["registration_info"]["runtime_tip_calibration"]["path"] == str(runtime_tip_path)
+    assert metadata_payload["registration_info"]["runtime_tip_mode"] == "latest_accepted"
+    assert metadata_payload["backend_info"]["pretension_source"]["source_type"] == "algorithmic"
     assert summary_payload["experiment_metrics"]["run_provenance"]["pretension_artifact"]["path"].endswith("neutral.json")
+    assert summary_payload["experiment_metrics"]["run_provenance"]["pretension_artifact"]["active_source_type"] == "algorithmic"
+    assert summary_payload["experiment_metrics"]["run_provenance"]["runtime_tip_calibration"]["mode"] == "latest_accepted"
     assert summary_payload["experiment_metrics"]["run_provenance"]["precheck_trust_summary"]["overall_status"] == "ready"
     assert "tracker_bridge" not in (result.paths.output_dir / "config_snapshot.yaml").read_text(encoding="utf-8")
 
@@ -426,7 +485,7 @@ def _settings(*, mock_mode: bool) -> Settings:
     )
 
 
-def _servo_service(tmp_path: Path) -> ServoService:
+def _servo_service(tmp_path: Path, *, pretension_source: str = "algorithmic") -> ServoService:
     context = ServoCalibrationContext(
         robot_mode="4-servo",
         servo_ids=[1, 2, 3, 4],
@@ -462,6 +521,7 @@ def _servo_service(tmp_path: Path) -> ServoService:
             final_current_ma=230,
             threshold_ma=220,
             result_status="completed",
+            pretension_source=pretension_source,
         )
         service.neutral_calibration.mark_pretension_accepted(servo_id)
     return service
@@ -474,6 +534,7 @@ def _tracking_snapshot(
     age_s: float = 0.01,
     runtime_tip_state: str = "loaded",
     tip_pose_status: str = "ok",
+    runtime_tip_mode: str = "latest_accepted",
 ) -> TrackingSnapshot:
     position = position_mm or [0.0, 0.0, 50.0]
     matrix = [
@@ -515,6 +576,13 @@ def _tracking_snapshot(
             [0.0, 0.0, 0.0, 1.0],
         ],
         runtime_tip_calibration_state=runtime_tip_state,
+        runtime_tip_mode=runtime_tip_mode,
+        runtime_tip_trust_level=(
+            "trusted"
+            if runtime_tip_mode == "latest_accepted" and runtime_tip_state == "loaded"
+            else ("quick_override" if runtime_tip_mode == "quick_4_point" else "fallback_debug")
+        ),
+        runtime_tip_mode_message=f"mode={runtime_tip_mode}",
         runtime_tip_identity_fallback=(runtime_tip_state == "identity_tip_fallback"),
         tip_pose_status=tip_pose_status,
         T_robot_tip=None if tip_pose_status != "ok" else matrix,

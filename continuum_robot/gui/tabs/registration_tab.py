@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -56,6 +57,15 @@ class RegistrationTab(QWidget):
 
         self.dependency_status_label = QLabel("Waiting for tracker and accepted tip file.")
         self.dependency_status_label.setProperty("role", "status")
+        self.runtime_tip_mode_combo = QComboBox()
+        self.runtime_tip_mode_combo.addItem("Latest Accepted", "latest_accepted")
+        self.runtime_tip_mode_combo.addItem("Quick 4-Point", "quick_4_point")
+        self.runtime_tip_mode_combo.addItem("Coil as Tip", "coil_as_tip")
+        self.runtime_tip_mode_combo.currentIndexChanged.connect(self._on_runtime_tip_mode_changed)
+        self.runtime_tip_trust_label = QLabel("missing")
+        self.runtime_tip_trust_label.setWordWrap(True)
+        self.runtime_tip_mode_message_label = QLabel("No runtime tip mode selected.")
+        self.runtime_tip_mode_message_label.setWordWrap(True)
         self.tip_file_label = QLabel("none")
         self.tip_file_label.setWordWrap(True)
         self.tip_geometry_label = QLabel("not ready")
@@ -73,6 +83,9 @@ class RegistrationTab(QWidget):
         dependency_layout = QVBoxLayout(dependency_box)
         dependency_form = QFormLayout()
         dependency_form.addRow("Workflow gate", self.dependency_status_label)
+        dependency_form.addRow("Runtime tip mode", self.runtime_tip_mode_combo)
+        dependency_form.addRow("Runtime tip trust", self.runtime_tip_trust_label)
+        dependency_form.addRow("Runtime tip source", self.runtime_tip_mode_message_label)
         dependency_form.addRow("Accepted tip file", self.tip_file_label)
         dependency_form.addRow("Tip geometry", self.tip_geometry_label)
         dependency_form.addRow("Accepted registration", self.accepted_registration_label)
@@ -317,6 +330,12 @@ class RegistrationTab(QWidget):
         self._apply_responsive_layout()
 
     def update(self, state: RegistrationViewState, workflow_state=None) -> None:
+        self.runtime_tip_mode_combo.blockSignals(True)
+        mode_index = max(0, self.runtime_tip_mode_combo.findData(state.runtime_tip_mode))
+        self.runtime_tip_mode_combo.setCurrentIndex(mode_index)
+        self.runtime_tip_mode_combo.blockSignals(False)
+        self.runtime_tip_trust_label.setText(str(state.runtime_tip_trust_level).replace("_", " "))
+        self.runtime_tip_mode_message_label.setText(state.runtime_tip_mode_message)
         session_status = "Solved - ready to save" if state.pending_accept else ("Capturing" if state.active else "Idle")
         self.session_status_label.setText(session_status)
         self._update_dependencies(state, workflow_state)
@@ -593,6 +612,12 @@ class RegistrationTab(QWidget):
     def _open_runtime_tip_calibration(self) -> None:
         if callable(self.open_runtime_tip_calibration):
             self.open_runtime_tip_calibration()
+
+    def _on_runtime_tip_mode_changed(self, _index: int) -> None:
+        mode = self.runtime_tip_mode_combo.currentData()
+        if mode is None:
+            return
+        self._safe_call(lambda: self.controller.set_runtime_tip_mode(str(mode)))
 
     def _safe_call(self, fn) -> None:
         try:

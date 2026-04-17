@@ -512,6 +512,24 @@ def test_registration_tab_launches_runtime_tip_calibration_dialog_from_app_windo
         window.shutdown()
 
 
+def test_registration_tab_runtime_tip_mode_selector_updates_tracking_service(tmp_path: Path) -> None:
+    _app()
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(settings, tmp_path, tracking_service)
+    controller = RegistrationController(
+        registration_service=registration_service,
+        registration_config=settings.registration,
+    )
+    tab = RegistrationTab(controller)
+
+    tab.update(controller.refresh())
+    tab.runtime_tip_mode_combo.setCurrentIndex(tab.runtime_tip_mode_combo.findData("coil_as_tip"))
+
+    assert tracking_service.get_snapshot().runtime_tip_mode == "coil_as_tip"
+    assert controller.state.runtime_tip_mode == "coil_as_tip"
+
+
 def test_tool_plot_widget_accepts_xyz_points() -> None:
     _app()
     widget = ToolPlotWidget()
@@ -1664,6 +1682,30 @@ def test_servos_controller_saves_startup_calibration_and_accepts_pretension(tmp_
     assert controller.state.calibration_rows[0]["threshold"] == "120"
     assert controller.state.pretension_result_can_accept is False
     assert "Accepted pretension result" in controller.state.status_message
+
+
+def test_servos_controller_and_tab_support_manual_pretension_capture_and_accept(tmp_path: Path) -> None:
+    _app()
+    service = _servo_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    for servo_id in [1, 2, 3, 4]:
+        service.set_servo_torque_enabled(servo_id, True)
+    controller = ServosController(service, _settings())
+    tab = ServosTab(controller)
+
+    controller.capture_neutral_setpoints()
+    controller.capture_manual_pretension("bench startup state")
+    tab.update(controller.state)
+
+    assert controller.state.manual_pretension_can_accept is True
+    assert "Pending manual pretension capture" in tab.manual_pretension_summary_label.text()
+    assert "bench startup state" in tab.manual_pretension_note_label.text()
+
+    controller.accept_manual_pretension()
+    tab.update(controller.state)
+
+    assert controller.state.pretension_source_type == "manual"
+    assert "Accepted manual pretension" in tab.manual_pretension_summary_label.text()
 
 
 def test_servos_controller_blocks_displacement_when_calibration_is_incompatible(tmp_path: Path) -> None:

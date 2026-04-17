@@ -111,6 +111,11 @@ class TrackingSnapshot:
     T_robot_aurora: list[list[float]] | None = None
     runtime_tip_calibration_state: str = "missing_runtime_tip_calibration"
     runtime_tip_calibration_path: str | None = None
+    runtime_tip_mode: str = "latest_accepted"
+    runtime_tip_trust_level: str = "missing"
+    runtime_tip_mode_message: str = "No runtime tip mode selected."
+    runtime_tip_selected_artifact_kind: str | None = None
+    runtime_tip_selected_artifact_path: str | None = None
     stored_runtime_tip_measurement_tool_id: str | None = None
     stored_runtime_tip_coil_tool_id: str | None = None
     stored_runtime_tip_timestamp_utc: str | None = None
@@ -164,6 +169,9 @@ class RuntimeTipCalibrationSnapshot:
     active: bool = False
     measurement_tool_id: str = "0B"
     coil_tool_id: str = "0A"
+    session_mode: str = "full_hat"
+    session_mode_summary: str = "Full accepted hat calibration"
+    selected_labels: list[str] = field(default_factory=list)
     labels: list[str] = field(default_factory=list)
     captures_per_landmark: int = 0
     current_label_index: int = 0

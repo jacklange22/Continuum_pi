@@ -716,6 +716,12 @@ def _precheck_single_segment_repeatability(
     pivot_tip_path = _resolve_repo_path(session.context.project_root, pivot_tip_file)
     if not pivot_tip_path.exists():
         raise RuntimeError(f"0B pen-probe pivot tip file is missing: {pivot_tip_path}")
+    runtime_tip_mode = str(getattr(snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted")
+    if runtime_tip_mode != "latest_accepted":
+        raise RuntimeError(
+            "Single-segment repeatability requires the trusted latest_accepted runtime tip mode; "
+            f"current mode is {runtime_tip_mode}."
+        )
     if snapshot.runtime_tip_calibration_state != "loaded":
         raise RuntimeError(
             f"Accepted 0A runtime tip calibration must be loaded; current state is {snapshot.runtime_tip_calibration_state}."
@@ -741,19 +747,9 @@ def _precheck_single_segment_repeatability(
     calibration_summary = session.context.servo_service.neutral_calibration.get_calibration_summary()
     if not calibration_summary.exists or not calibration_summary.compatible:
         raise RuntimeError(f"Servo calibration artifact is not ready: {calibration_summary.message}")
-    not_pretensioned = [
-        servo_id
-        for servo_id in servo_ids
-        if (
-            (entry := calibration_summary.servo_entries.get(int(servo_id))) is None
-            or entry.pretension_result_status != "accepted"
-        )
-    ]
-    if not_pretensioned:
-        raise RuntimeError(
-            "Accepted pretension state is required for repeatability. Missing accepted pretension for servo(s): "
-            + ", ".join(str(value) for value in not_pretensioned)
-        )
+    pretension_source = calibration_summary.pretension_source_summary([int(value) for value in servo_ids])
+    if not pretension_source.accepted or not pretension_source.usable:
+        raise RuntimeError(pretension_source.message)
     for servo_id in servo_ids:
         assessment = session.context.servo_service.assess_motion(int(servo_id), require_calibrated_bounds=True)
         if not assessment.ready:
@@ -787,6 +783,7 @@ def _record_repeatability_run_provenance(
         max_tracker_age_s=float(config.max_tracker_age_s),
         require_robot_frame_tip=bool(config.require_robot_frame_tip),
     )
+    pretension_source = servo_calibration_summary.pretension_source_summary([int(value) for value in servo_ids])
     pretension_entries: dict[str, Any] = {}
     for servo_id in servo_ids:
         entry = servo_calibration_summary.servo_entries.get(int(servo_id))
@@ -801,6 +798,8 @@ def _record_repeatability_run_provenance(
             "pretension_current_threshold_ma": entry.pretension_current_threshold_ma,
             "pretension_final_position_tick": entry.pretension_final_position_tick,
             "pretension_result_status": entry.pretension_result_status,
+            "pretension_source": entry.pretension_source,
+            "pretension_note": entry.pretension_note,
             "pretension_completed_at_utc": entry.pretension_completed_at_utc,
             "latest_pretension_run": dict(entry.latest_pretension_run or {}) or None,
             "capture_source": entry.capture_source,
@@ -838,6 +837,8 @@ def _record_repeatability_run_provenance(
                 "key": "runtime_tip",
                 "status": "ok",
                 "message": (
+                    f"Runtime tip mode={getattr(snapshot, 'runtime_tip_mode', 'latest_accepted')}; "
+                    f"trust={getattr(snapshot, 'runtime_tip_trust_level', 'missing')}; "
                     f"Runtime tip state={snapshot.runtime_tip_calibration_state}; "
                     f"tip pose={snapshot.tip_pose_status}; fallback={snapshot.runtime_tip_identity_fallback}."
                 ),
@@ -850,7 +851,7 @@ def _record_repeatability_run_provenance(
             {
                 "key": "pretension",
                 "status": "ok",
-                "message": "Accepted pretension artifact entries were present for all configured servos.",
+                "message": pretension_source.message,
             },
         ],
     }
@@ -876,6 +877,11 @@ def _record_repeatability_run_provenance(
         "runtime_tip_calibration": {
             **_file_provenance(runtime_tip_path),
             "state": str(snapshot.runtime_tip_calibration_state or ""),
+            "mode": str(getattr(snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted"),
+            "trust_level": str(getattr(snapshot, "runtime_tip_trust_level", "missing") or "missing"),
+            "mode_message": str(getattr(snapshot, "runtime_tip_mode_message", "") or ""),
+            "artifact_kind": getattr(snapshot, "runtime_tip_selected_artifact_kind", None),
+            "selected_artifact_path": getattr(snapshot, "runtime_tip_selected_artifact_path", None),
             "stored_timestamp_utc": getattr(snapshot, "stored_runtime_tip_timestamp_utc", None),
             "measurement_tool_id": getattr(snapshot, "stored_runtime_tip_measurement_tool_id", None),
             "coil_tool_id": getattr(snapshot, "stored_runtime_tip_coil_tool_id", None),
@@ -889,6 +895,16 @@ def _record_repeatability_run_provenance(
             "compatible": bool(servo_calibration_summary.compatible),
             "updated_at_utc": servo_calibration_summary.updated_at_utc,
             "schema_version": int(servo_calibration_summary.schema_version),
+            "active_source_type": pretension_source.source_type,
+            "accepted": bool(pretension_source.accepted),
+            "usable": bool(pretension_source.usable),
+            "active_source_message": pretension_source.message,
+            "active_source_updated_at_utc": pretension_source.updated_at_utc,
+            "active_source_note": pretension_source.note,
+            "active_source_by_servo": {
+                str(servo_id): source
+                for servo_id, source in sorted(pretension_source.source_by_servo.items())
+            },
             "servos": pretension_entries,
         },
         "precheck_trust_summary": precheck_summary,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -60,6 +61,9 @@ class RuntimeTipCalibrationDialog(QDialog):
         dependency_form.addRow("Runtime chain status", self.runtime_chain_label)
         dependency_form.addRow("Latest artifact", self.latest_artifact_label)
 
+        self.session_mode_combo = QComboBox()
+        self.session_mode_combo.addItem("Full Accepted Hat Calibration", "full_hat")
+        self.session_mode_combo.addItem("Quick 4-Point Override", "quick_4_point")
         self.captures_spin = QSpinBox()
         self.captures_spin.setRange(1, 20)
         self.captures_spin.setValue(max(1, int(controller.state.captures_per_landmark or 3)))
@@ -73,6 +77,7 @@ class RuntimeTipCalibrationDialog(QDialog):
         self.coil_interval_spin.setValue(0.02)
         parameter_box = QGroupBox("Session Parameters")
         parameter_form = QFormLayout(parameter_box)
+        parameter_form.addRow("Session mode", self.session_mode_combo)
         parameter_form.addRow("Captures / hat point", self.captures_spin)
         parameter_form.addRow("0A sample count", self.coil_sample_count_spin)
         parameter_form.addRow("0A sample interval (s)", self.coil_interval_spin)
@@ -87,7 +92,10 @@ class RuntimeTipCalibrationDialog(QDialog):
 
         self.begin_button.clicked.connect(
             lambda: self._safe_call(
-                lambda: self.controller.begin_session(captures_per_landmark=self.captures_spin.value())
+                lambda: self.controller.begin_session(
+                    captures_per_landmark=self.captures_spin.value(),
+                    session_mode=str(self.session_mode_combo.currentData()),
+                )
             )
         )
         self.capture_button.clicked.connect(lambda: self._safe_call(self.controller.capture_current_label_sample))
@@ -102,7 +110,13 @@ class RuntimeTipCalibrationDialog(QDialog):
         )
         self.solve_button.clicked.connect(lambda: self._safe_call(self.controller.solve_calibration))
         self.save_button.clicked.connect(lambda: self._safe_call(self.controller.save_calibration))
-        self.load_button.clicked.connect(lambda: self._safe_call(self.controller.load_latest_result))
+        self.load_button.clicked.connect(
+            lambda: self._safe_call(
+                lambda: self.controller.load_latest_result(
+                    session_mode=str(self.session_mode_combo.currentData()),
+                )
+            )
+        )
 
         button_row_primary = QHBoxLayout()
         for button in (
@@ -203,6 +217,10 @@ class RuntimeTipCalibrationDialog(QDialog):
         self.update(self.controller.refresh())
 
     def update(self, state) -> None:
+        self.session_mode_combo.blockSignals(True)
+        selected_index = max(0, self.session_mode_combo.findData(str(state.session_mode or "full_hat")))
+        self.session_mode_combo.setCurrentIndex(selected_index)
+        self.session_mode_combo.blockSignals(False)
         self.measurement_point_label.setText(state.measurement_point_status)
         self.hat_geometry_label.setText(state.hat_geometry_status)
         self.runtime_chain_label.setText(f"{state.runtime_chain_state}: {state.runtime_chain_message}")
@@ -244,8 +262,11 @@ class RuntimeTipCalibrationDialog(QDialog):
             self.points_table.setItem(row, 6, QTableWidgetItem(status))
 
         status_lines = [state.status_message]
+        status_lines.append(f"Session mode: {state.session_mode_summary}")
         if state.pending_accept:
-            status_lines.append("Review the hat residuals and 0A spread metrics, then save the accepted runtime tip artifact.")
+            status_lines.append(
+                "Review the residuals and 0A spread metrics, then save this runtime tip result."
+            )
         elif state.active and state.current_label is None and state.coil_samples_captured <= 0:
             status_lines.append("Collect stationary 0A samples before solving.")
         if state.health.last_error:

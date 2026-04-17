@@ -339,16 +339,24 @@ class SystemController:
     @staticmethod
     def _runtime_tip_summary(tracker_state) -> str:
         state = str(getattr(tracker_state, "runtime_tip_calibration_state", "missing_runtime_tip_calibration"))
+        mode = str(getattr(tracker_state, "runtime_tip_mode", "latest_accepted"))
+        trust = str(getattr(tracker_state, "runtime_tip_trust_level", "missing"))
         timestamp = getattr(tracker_state, "stored_runtime_tip_timestamp_utc", None)
         if state == "loaded":
-            return f"Loaded | {timestamp}" if timestamp else "Loaded"
+            detail = f" | {timestamp}" if timestamp else ""
+            return f"{mode.replace('_', ' ')} | {trust.replace('_', ' ')}{detail}"
+        if state == "quick_4_point_loaded":
+            detail = f" | {timestamp}" if timestamp else ""
+            return f"quick 4 point | {trust.replace('_', ' ')}{detail}"
+        if state == "coil_as_tip":
+            return "coil as tip | fallback debug"
         if state == "identity_tip_fallback":
-            return "Warning | identity fallback"
-        if state == "missing_runtime_tip_calibration":
-            return "Not loaded"
+            return "latest accepted | fallback debug"
+        if state in {"missing_runtime_tip_calibration", "missing_quick_4_point_runtime_tip"}:
+            return f"{mode.replace('_', ' ')} | not loaded"
         if state == "invalid_runtime_tip_calibration":
-            return "Warning | invalid runtime tip artifact"
-        return str(state).replace("_", " ")
+            return f"{mode.replace('_', ' ')} | invalid"
+        return f"{mode.replace('_', ' ')} | {str(state).replace('_', ' ')}"
 
     @staticmethod
     def _live_tip_summary(tracker_state) -> str:

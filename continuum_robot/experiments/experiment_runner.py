@@ -254,6 +254,30 @@ class ExperimentRunner:
                 tracking_snapshot = snapshot_reader()
             else:
                 tracking_snapshot = self.tracking_service.get_snapshot()
+        pretension_source_info: dict[str, Any] = {}
+        if self.servo_service is not None:
+            try:
+                calibration_summary = self.servo_service.get_calibration_summary()
+                configured_servo_ids = [
+                    int(value)
+                    for value in (
+                        self.settings.robot.tendon_to_servo
+                        or self.settings.robot.servo_ids
+                        or []
+                    )
+                ]
+                if configured_servo_ids:
+                    source_summary = calibration_summary.pretension_source_summary(configured_servo_ids)
+                    pretension_source_info = {
+                        "source_type": source_summary.source_type,
+                        "accepted": bool(source_summary.accepted),
+                        "usable": bool(source_summary.usable),
+                        "message": source_summary.message,
+                        "updated_at_utc": source_summary.updated_at_utc,
+                        "note": source_summary.note,
+                    }
+            except Exception as exc:
+                pretension_source_info = {"error": str(exc)}
         backend_info = {
             "mock_mode": bool(self.settings.runtime.mock_mode),
             "tracking_backend_configured": getattr(self.settings.serial, "tracker_backend", ""),
@@ -265,6 +289,7 @@ class ExperimentRunner:
             ),
             "tracking_state": tracking_snapshot.canonical_state if tracking_snapshot is not None else "disabled",
             "servo_connected": bool(getattr(self.servo_service, "is_connected", False)),
+            "pretension_source": pretension_source_info,
         }
         registration_info = {
             "path": str(self.registration_path),
@@ -273,6 +298,26 @@ class ExperimentRunner:
                 tracking_snapshot.registration_state if tracking_snapshot is not None else "missing_registration"
             ),
             "tip_pose_status": tracking_snapshot.tip_pose_status if tracking_snapshot is not None else "missing_registration",
+            "runtime_tip_mode": (
+                tracking_snapshot.runtime_tip_mode if tracking_snapshot is not None else "latest_accepted"
+            ),
+            "runtime_tip_trust_level": (
+                tracking_snapshot.runtime_tip_trust_level if tracking_snapshot is not None else "missing"
+            ),
+            "runtime_tip_mode_message": (
+                tracking_snapshot.runtime_tip_mode_message if tracking_snapshot is not None else ""
+            ),
+            "runtime_tip_calibration_state": (
+                tracking_snapshot.runtime_tip_calibration_state
+                if tracking_snapshot is not None
+                else "missing_runtime_tip_calibration"
+            ),
+            "runtime_tip_selected_artifact_kind": (
+                tracking_snapshot.runtime_tip_selected_artifact_kind if tracking_snapshot is not None else None
+            ),
+            "runtime_tip_selected_artifact_path": (
+                tracking_snapshot.runtime_tip_selected_artifact_path if tracking_snapshot is not None else None
+            ),
         }
         return ExperimentMetadata(
             schema_version=self.SCHEMA_VERSION,

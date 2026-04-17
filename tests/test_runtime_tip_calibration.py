@@ -97,6 +97,61 @@ def test_runtime_tip_calibration_repository_round_trips_latest_payload(tmp_path:
     assert payload["T_tip_2_coil"] == np.eye(4).tolist()
 
 
+def test_runtime_tip_calibration_repository_separates_quick_override_alias(tmp_path: Path) -> None:
+    repository = RuntimeTipCalibrationRepository(
+        latest_path=tmp_path / "runtime_tip" / "latest_runtime_tip_calibration.json"
+    )
+    accepted = RuntimeTipCalibrationRecord(
+        timestamp_utc="2026-04-10T12:00:00Z",
+        calibration_kind="runtime_tip_calibration_hat",
+        measurement_tool_id="0B",
+        coil_tool_id="0A",
+        setup_id=None,
+        truth_points_in_sw_by_label={"T01": [0.0, 0.0, 0.0]},
+        truth_points_in_tip_by_label={"T01": [0.0, 0.0, 0.0]},
+        raw_captured_hat_points_aurora_xyz_by_label={"T01": [[0.0, 0.0, 0.0]]},
+        averaged_hat_points_aurora_xyz_by_label={"T01": [0.0, 0.0, 0.0]},
+        raw_coil_samples=[],
+        residuals_tip_xyz_mm_by_label={"T01": [0.0, 0.0, 0.0]},
+        fit_rmse_mm=0.0,
+        T_tip_aurora=np.eye(4).tolist(),
+        T_aurora_tip=np.eye(4).tolist(),
+        T_aurora_coil_avg=np.eye(4).tolist(),
+        T_coil_tip=np.eye(4).tolist(),
+        config_used={},
+    )
+    quick = RuntimeTipCalibrationRecord(
+        timestamp_utc="2026-04-10T12:10:00Z",
+        calibration_kind="runtime_tip_calibration_quick_4_point",
+        measurement_tool_id="0B",
+        coil_tool_id="0A",
+        setup_id=None,
+        truth_points_in_sw_by_label={"T01": [0.0, 0.0, 0.0]},
+        truth_points_in_tip_by_label={"T01": [0.0, 0.0, 0.0]},
+        raw_captured_hat_points_aurora_xyz_by_label={"T01": [[0.0, 0.0, 0.0]]},
+        averaged_hat_points_aurora_xyz_by_label={"T01": [0.0, 0.0, 0.0]},
+        raw_coil_samples=[],
+        residuals_tip_xyz_mm_by_label={"T01": [0.0, 0.0, 0.0]},
+        fit_rmse_mm=0.0,
+        T_tip_aurora=np.eye(4).tolist(),
+        T_aurora_tip=np.eye(4).tolist(),
+        T_aurora_coil_avg=np.eye(4).tolist(),
+        T_coil_tip=np.eye(4).tolist(),
+        config_used={},
+    )
+
+    repository.save_record(accepted)
+    repository.save_record(quick, mark_as_latest=False, alias_path=repository.quick_latest_path)
+
+    latest = repository.load_latest_payload()
+    quick_latest = repository.load_latest_quick_payload()
+
+    assert latest is not None
+    assert latest["calibration_kind"] == "runtime_tip_calibration_hat"
+    assert quick_latest is not None
+    assert quick_latest["calibration_kind"] == "runtime_tip_calibration_quick_4_point"
+
+
 def test_tracking_service_uses_separate_runtime_tip_artifact_in_live_chain(tmp_path: Path) -> None:
     registration_path = tmp_path / "registrations" / "latest_registration.json"
     registration_path.parent.mkdir(parents=True, exist_ok=True)
@@ -180,3 +235,92 @@ def test_tracking_service_reports_identity_fallback_when_runtime_tip_artifact_mi
     assert snapshot.runtime_tip_identity_fallback is True
     assert snapshot.tip_pose_status == "identity_tip_fallback"
     assert snapshot.T_robot_tip is not None
+
+
+def test_tracking_service_supports_explicit_coil_as_tip_mode(tmp_path: Path) -> None:
+    registration_path = tmp_path / "registrations" / "latest_registration.json"
+    registration_path.parent.mkdir(parents=True, exist_ok=True)
+    registration_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-04-10T12:00:00Z",
+                "T_robot_aurora": np.eye(4).tolist(),
+                "config_used": {"measurement_tool_id": "0B", "coil_tool_id": "0A"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    service = TrackingService(
+        MockAuroraClient(),
+        port="/dev/null",
+        registration_path=registration_path,
+        runtime_tip_calibration_path=tmp_path / "missing_runtime_tip_calibration.json",
+        config_source="test",
+    )
+    service.set_runtime_tip_mode("coil_as_tip")
+    frame = build_transform_frame_from_records(
+        frame_number=1,
+        records=[build_tool_0A_record(translation_xyz=(1.0, 2.0, 3.0))],
+    )
+    service.ingest_frame(frame, source="test")
+    snapshot = service.get_snapshot()
+
+    assert snapshot.runtime_tip_mode == "coil_as_tip"
+    assert snapshot.runtime_tip_calibration_state == "coil_as_tip"
+    assert snapshot.runtime_tip_trust_level == "fallback_debug"
+    assert snapshot.tip_pose_status == "coil_as_tip"
+    assert snapshot.T_robot_tip is not None
+    assert np.allclose([row[3] for row in snapshot.T_robot_tip[:3]], [1.0, 2.0, 3.0])
+
+
+def test_tracking_service_supports_quick_4_point_runtime_tip_override(tmp_path: Path) -> None:
+    registration_path = tmp_path / "registrations" / "latest_registration.json"
+    registration_path.parent.mkdir(parents=True, exist_ok=True)
+    registration_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-04-10T12:00:00Z",
+                "T_robot_aurora": np.eye(4).tolist(),
+                "config_used": {"measurement_tool_id": "0B", "coil_tool_id": "0A"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime_tip_path = tmp_path / "data" / "runtime_tip_calibration" / "latest_runtime_tip_calibration.json"
+    runtime_tip_path.parent.mkdir(parents=True, exist_ok=True)
+    quick_path = runtime_tip_path.parent / "latest_quick_4_point_runtime_tip.json"
+    quick_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-04-10T12:05:00Z",
+                "measurement_tool_id": "0B",
+                "coil_tool_id": "0A",
+                "calibration_kind": "runtime_tip_calibration_quick_4_point",
+                "T_coil_tip": [[1.0, 0.0, 0.0, 0.25], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    service = TrackingService(
+        MockAuroraClient(),
+        port="/dev/null",
+        registration_path=registration_path,
+        runtime_tip_calibration_path=runtime_tip_path,
+        config_source="test",
+    )
+    service.set_runtime_tip_mode("quick_4_point")
+    frame = build_transform_frame_from_records(
+        frame_number=1,
+        records=[build_tool_0A_record(translation_xyz=(10.0, 0.0, 0.0))],
+    )
+    service.ingest_frame(frame, source="test")
+    snapshot = service.get_snapshot()
+
+    assert snapshot.runtime_tip_mode == "quick_4_point"
+    assert snapshot.runtime_tip_calibration_state == "quick_4_point_loaded"
+    assert snapshot.runtime_tip_trust_level == "quick_override"
+    assert snapshot.runtime_tip_selected_artifact_path == str(quick_path)
+    assert snapshot.T_robot_tip is not None
+    assert np.allclose([row[3] for row in snapshot.T_robot_tip[:3]], [10.25, 0.0, 0.0])

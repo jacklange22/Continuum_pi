@@ -121,9 +121,9 @@ def build_tracking_scene_model(
         f"0B raw pose: {_tool_overlay_state(live_state.tools.get('0B', {}))}",
         f"Registration: {str(getattr(live_state, 'registration_state', 'missing_registration')).replace('_', ' ')}",
         (
-            "Runtime tip: identity fallback"
-            if bool(getattr(live_state, "runtime_tip_identity_fallback", False))
-            else f"Runtime tip: {str(getattr(live_state, 'runtime_tip_calibration_state', 'missing_runtime_tip_calibration')).replace('_', ' ')}"
+            "Runtime tip: "
+            f"{str(getattr(live_state, 'runtime_tip_mode', 'latest_accepted')).replace('_', ' ')} | "
+            f"{str(getattr(live_state, 'runtime_tip_trust_level', 'missing')).replace('_', ' ')}"
         ),
         f"Tip pose: {str(getattr(live_state, 'tip_pose_status', 'missing_registration')).replace('_', ' ')}",
     ]

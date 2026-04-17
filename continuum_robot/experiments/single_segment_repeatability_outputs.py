@@ -188,15 +188,23 @@ def build_single_segment_repeatability_summary_lines(*, metadata, summary, metri
                 ),
                 (
                     f"- Runtime tip calibration: {runtime_tip.get('path', 'n/a')} "
-                    f"(state={runtime_tip.get('state', 'unknown')}, "
+                    f"(mode={runtime_tip.get('mode', 'unknown')}, "
+                    f"trust={runtime_tip.get('trust_level', 'unknown')}, "
+                    f"state={runtime_tip.get('state', 'unknown')}, "
                     f"timestamp={runtime_tip.get('stored_timestamp_utc', 'n/a')})"
                 ),
                 (
                     f"- Pretension artifact: {pretension.get('path', 'n/a')} "
-                    f"(status={pretension.get('status', 'unknown')}, updated={pretension.get('updated_at_utc', 'n/a')})"
+                    f"(status={pretension.get('status', 'unknown')}, "
+                    f"source={pretension.get('active_source_type', 'unknown')}, "
+                    f"updated={pretension.get('updated_at_utc', 'n/a')})"
                 ),
             ]
         )
+        if runtime_tip.get("mode_message"):
+            lines.append(f"- Runtime tip detail: {runtime_tip.get('mode_message')}")
+        if pretension.get("active_source_message"):
+            lines.append(f"- Pretension detail: {pretension.get('active_source_message')}")
     lines.extend(
         [
             "",

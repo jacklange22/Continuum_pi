@@ -41,6 +41,12 @@ class RegistrationViewState:
     accepted_registration_valid: bool = False
     trust_state: str = "missing"
     trust_message: str = "No accepted registration saved."
+    runtime_tip_mode: str = "latest_accepted"
+    runtime_tip_trust_level: str = "missing"
+    runtime_tip_mode_message: str = "No runtime tip mode selected."
+    runtime_tip_mode_options: list[str] = field(
+        default_factory=lambda: ["latest_accepted", "quick_4_point", "coil_as_tip"]
+    )
     live_chain_state: str = "missing_registration"
     live_chain_message: str = "Live robot-frame pose is unavailable until registration is saved."
     comparison_message: str = "Repeat registration runs to build comparison data."
@@ -102,6 +108,12 @@ class RegistrationController:
         self.state.current_tracking_status = str(live_point.get("status", "unknown"))
         self.state.trust_state = str(trust_summary.get("trust_state", "missing"))
         self.state.trust_message = str(trust_summary.get("trust_message", "No accepted registration saved."))
+        tracking_snapshot = self.registration_service.tracking_service.get_snapshot()
+        self.state.runtime_tip_mode = str(getattr(tracking_snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted")
+        self.state.runtime_tip_trust_level = str(getattr(tracking_snapshot, "runtime_tip_trust_level", "missing") or "missing")
+        self.state.runtime_tip_mode_message = str(
+            getattr(tracking_snapshot, "runtime_tip_mode_message", "No runtime tip mode selected.") or "No runtime tip mode selected."
+        )
         self.state.live_chain_state = str(trust_summary.get("live_chain_state", "missing_registration"))
         self.state.live_chain_message = str(
             trust_summary.get(
@@ -134,6 +146,19 @@ class RegistrationController:
             and self.state.trust_state != "invalid"
         )
         return self.state
+
+    def set_runtime_tip_mode(self, mode: str) -> None:
+        try:
+            self.registration_service.tracking_service.set_runtime_tip_mode(str(mode))
+            self.state.last_error = None
+            self.state.status_message = (
+                f"Runtime tip mode set to {str(mode).replace('_', ' ')}."
+            )
+            self.refresh()
+        except Exception as exc:
+            self.state.last_error = str(exc)
+            self.state.status_message = f"Runtime tip mode update failed: {exc}"
+            raise
 
     def set_selected_model_point(self, slot_index: int, label: str) -> None:
         if not self.state.selection_editable:

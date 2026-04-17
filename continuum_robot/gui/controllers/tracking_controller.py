@@ -49,6 +49,9 @@ class TrackingViewState:
     registration_path: str = ""
     registration_state: str = "missing_registration"
     runtime_tip_calibration_state: str = "missing_runtime_tip_calibration"
+    runtime_tip_mode: str = "latest_accepted"
+    runtime_tip_trust_level: str = "missing"
+    runtime_tip_mode_message: str = ""
     runtime_tip_identity_fallback: bool = False
     tip_calibration_source: str | None = None
     T_robot_aurora: list[list[float]] | None = None
@@ -140,6 +143,9 @@ class TrackingController:
         self.state.registration_tool_id = snapshot.registration_tool_id
         self.state.registration_state = snapshot.registration_state
         self.state.runtime_tip_calibration_state = snapshot.runtime_tip_calibration_state
+        self.state.runtime_tip_mode = snapshot.runtime_tip_mode
+        self.state.runtime_tip_trust_level = snapshot.runtime_tip_trust_level
+        self.state.runtime_tip_mode_message = snapshot.runtime_tip_mode_message
         self.state.runtime_tip_identity_fallback = bool(snapshot.runtime_tip_identity_fallback)
         self.state.tip_calibration_source = snapshot.tip_calibration_source
         self.state.T_robot_aurora = snapshot.T_robot_aurora
