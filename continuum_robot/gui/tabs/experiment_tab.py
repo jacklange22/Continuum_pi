@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import time
+
 from PySide6.QtCore import QSignalBlocker, Qt
 from PySide6.QtWidgets import (
     QComboBox,
@@ -22,6 +25,9 @@ from continuum_robot.gui.widgets.experiment_pages import (
 )
 
 
+LOG = logging.getLogger(__name__)
+
+
 class ExperimentTab(QWidget):
     """Simple experiment selector shell that routes to custom experiment pages."""
 
@@ -29,6 +35,7 @@ class ExperimentTab(QWidget):
         super().__init__(parent)
         self.controller = controller
         self._pages: dict[str, QWidget] = {}
+        self._last_logged_selection = ""
         self.setObjectName("experimentWorkspace")
         self.setStyleSheet(experiment_shell_stylesheet(object_name="experimentWorkspace"))
 
@@ -123,6 +130,9 @@ class ExperimentTab(QWidget):
         self.selected_experiment_description.setText(state.experiment_description)
         self.selected_badges_label.setText("  •  ".join(state.experiment_badges))
         self.selected_badges_label.setVisible(bool(state.experiment_badges))
+        if state.selected_experiment != self._last_logged_selection:
+            LOG.debug("Activating experiment workspace page: %s", state.selected_experiment)
+            self._last_logged_selection = state.selected_experiment
         self._update_status_chip(state)
         page = self._page_for(state.selected_experiment)
         page.set_state(state)
@@ -158,9 +168,12 @@ class ExperimentTab(QWidget):
 
     def _page_for(self, experiment_name: str) -> QWidget:
         if experiment_name not in self._pages:
+            started = time.monotonic()
             page = build_experiment_page(self.controller, experiment_name)
             self._pages[experiment_name] = page
             self.page_stack.addWidget(page)
+            duration_ms = (time.monotonic() - started) * 1000.0
+            LOG.debug("Built experiment workspace page %s in %.1f ms", experiment_name, duration_ms)
         return self._pages[experiment_name]
 
     def _update_status_chip(self, state: ExperimentViewState) -> None:

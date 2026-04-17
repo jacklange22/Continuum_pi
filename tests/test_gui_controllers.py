@@ -2315,6 +2315,31 @@ def test_repeatability_page_wraps_workspace_in_scroll_area_and_stacks_on_narrow_
     assert page.bottom_row.direction() == QBoxLayout.LeftToRight
 
 
+def test_repeatability_page_defers_3d_viewer_construction_until_data_exists(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("single_segment_repeatability")
+
+    def _fail_viewer_construction(*args, **kwargs):
+        raise AssertionError("repeatability page should not build the 3D viewer during initial page activation")
+
+    monkeypatch.setattr(
+        "continuum_robot.gui.widgets.experiment_pages.Experiment3DWidget",
+        _fail_viewer_construction,
+    )
+
+    tab.update(controller.refresh())
+    page = tab._page_for("single_segment_repeatability")
+
+    assert page.viewer_3d is None
+    assert page.viewer_placeholder is not None
+    assert page.viewer_placeholder.isVisible()
+
+
 def test_repeatability_page_preserves_target_table_scroll_on_benign_refresh(tmp_path: Path) -> None:
     _app()
     controller = _experiment_controller(tmp_path)
@@ -2386,8 +2411,8 @@ def test_registration_and_experiment_tabs_expose_resizable_layout_defaults(tmp_p
     assert registration_tab.landmark_map.minimumHeight() >= 200
     assert experiment_tab.experiment_combo.minimumHeight() >= 36
     assert repeatability_page.parameter_scroll.minimumWidth() >= 300
-    assert repeatability_page.viewer_3d is not None
-    assert repeatability_page.viewer_3d.minimumHeight() >= 280
+    assert repeatability_page.viewer_3d is None
+    assert repeatability_page.viewer_placeholder is not None
     assert servos_tab.telemetry_table.minimumHeight() >= 190
     assert servos_tab.calibration_table.minimumHeight() >= 160
     assert system_tab.config_summary.minimumHeight() >= 170

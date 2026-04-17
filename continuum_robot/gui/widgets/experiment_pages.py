@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
+import time
 from typing import Callable
 
 import numpy as np
@@ -62,10 +64,13 @@ from continuum_robot.experiments.single_segment_repeatability import (
 from continuum_robot.gui.controllers.experiment_controller import ExperimentViewState
 from continuum_robot.gui.theme import COLORS, chip_stylesheet, semantic_chip_colors
 from continuum_robot.gui.view_utils import preserve_scroll_position, set_line_edit_text, set_text_document
-from continuum_robot.gui.widgets.experiment_3d_widget import Experiment3DWidget
+from continuum_robot.gui.widgets.experiment_3d_widget import Experiment3DWidget, VIS_MODE_PROJECTION
 from continuum_robot.gui.widgets.grid_accuracy_preview_widget import GridAccuracyPreviewWidget
 from continuum_robot.gui.widgets.experiment_preflight_widget import ExperimentPreflightWidget
 from continuum_robot.gui.widgets.experiment_results_widget import ExperimentResultsWidget
+
+
+LOG = logging.getLogger(__name__)
 
 
 class ExperimentPageBase(QWidget):
@@ -73,6 +78,8 @@ class ExperimentPageBase(QWidget):
 
     show_visualization = False
     page_hint = ""
+    defer_visualization_until_data = False
+    visualization_mode_override: str | None = None
 
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
         super().__init__(parent)
@@ -181,17 +188,28 @@ class ExperimentPageBase(QWidget):
         self.top_row.addWidget(right_column, 2)
         content_layout.addLayout(self.top_row)
 
+        self.viewer_3d = None
+        self.viewer_placeholder = None
+        self._viewer_requested_mode = (
+            self.visualization_mode_override or self.controller.settings.runtime.visualization_mode
+        )
+        self._viewer_safe_effects = self.controller.settings.runtime.visualization_safe_effects
+        self._visualization_card = None
         if self.show_visualization:
-            self.viewer_3d = Experiment3DWidget(
-                requested_mode=self.controller.settings.runtime.visualization_mode,
-                safe_effects=self.controller.settings.runtime.visualization_safe_effects,
+            self._visualization_card = ExperimentCard(
+                "Visualization",
+                "Experiment-specific spatial context when the selected run includes positional samples.",
             )
-            self.viewer_3d.setMinimumHeight(300)
-            viz_card = ExperimentCard("Visualization", "Experiment-specific spatial context when the selected run includes positional samples.")
-            viz_card.body_layout.addWidget(self.viewer_3d)
-            content_layout.addWidget(viz_card)
-        else:
-            self.viewer_3d = None
+            self.viewer_placeholder = QLabel(
+                "3D visualization is deferred until a run or loaded result provides spatial samples."
+            )
+            self.viewer_placeholder.setWordWrap(True)
+            self.viewer_placeholder.setProperty("role", "muted")
+            self.viewer_placeholder.setMinimumHeight(72)
+            self._visualization_card.body_layout.addWidget(self.viewer_placeholder)
+            content_layout.addWidget(self._visualization_card)
+            if not self.defer_visualization_until_data:
+                self._ensure_viewer_3d()
 
         self.result_details_widget = KeyValueSummaryWidget()
         self.results_widget = ExperimentResultsWidget()
@@ -248,9 +266,15 @@ class ExperimentPageBase(QWidget):
             lines.append(f"Error: {state.last_error}")
         set_text_document(self.status_text, "\n".join(lines), stick_to_bottom_if_at_bottom=True)
         self.results_widget.set_model(state.visualization_model)
+        if self.show_visualization and self.viewer_3d is None:
+            should_create_viewer = (not self.defer_visualization_until_data) or bool(state.visualization_model.series_3d)
+            if should_create_viewer:
+                self._ensure_viewer_3d()
         if self.viewer_3d is not None:
             self.viewer_3d.set_view_options(show_axes=state.show_axes, show_labels=state.show_labels)
             self.viewer_3d.set_series(state.visualization_model.series_3d)
+        elif self.viewer_placeholder is not None:
+            self.viewer_placeholder.setVisible(True)
         self._update_history(state)
         self._sync_parameters_from_state(state)
 
@@ -297,17 +321,22 @@ class ExperimentPageBase(QWidget):
             self.results_widget.save_current_view(path)
 
     def _update_history(self, state: ExperimentViewState) -> None:
-        signature = tuple(
-            (
-                entry.path,
-                entry.experiment_name,
-                entry.timestamp_utc,
-                entry.status,
-                entry.label,
-                entry.metric_summary,
+        signature_entries = list(
+            tuple(
+                (
+                    entry.path,
+                    entry.experiment_name,
+                    entry.timestamp_utc,
+                    entry.status,
+                    entry.label,
+                    entry.metric_summary,
+                )
+                for entry in state.history
             )
-            for entry in state.history
         )
+        if state.history_loading:
+            signature_entries.append(("__loading__", "", "", "", "", ""))
+        signature = tuple(signature_entries)
         if signature == self._history_signature:
             return
         self._history_signature = signature
@@ -318,6 +347,11 @@ class ExperimentPageBase(QWidget):
 
         def _rebuild() -> None:
             self.history_list.clear()
+            if state.history_loading and not state.history:
+                item = QListWidgetItem("Loading recent runs...")
+                item.setFlags(Qt.NoItemFlags)
+                self.history_list.addItem(item)
+                return
             selected_row = None
             for row, entry in enumerate(state.history):
                 item = QListWidgetItem()
@@ -339,6 +373,27 @@ class ExperimentPageBase(QWidget):
                 self.history_list.setCurrentRow(selected_row)
 
         preserve_scroll_position(self.history_list, _rebuild)
+
+    def _ensure_viewer_3d(self) -> None:
+        if not self.show_visualization or self.viewer_3d is not None or self._visualization_card is None:
+            return
+        started = time.monotonic()
+        viewer = Experiment3DWidget(
+            requested_mode=self._viewer_requested_mode,
+            safe_effects=self._viewer_safe_effects,
+        )
+        viewer.setMinimumHeight(300)
+        self.viewer_3d = viewer
+        self._visualization_card.body_layout.insertWidget(0, viewer)
+        if self.viewer_placeholder is not None:
+            self.viewer_placeholder.hide()
+        duration_ms = (time.monotonic() - started) * 1000.0
+        LOG.debug(
+            "Created experiment visualization widget for %s in %.1f ms using backend %s",
+            self.experiment_name,
+            duration_ms,
+            getattr(viewer, "backend_mode", "unknown"),
+        )
 
     def _set_line_text(self, widget: QLineEdit, value: str) -> None:
         set_line_edit_text(widget, value, skip_if_focused=True, block_signals=True)
@@ -605,6 +660,8 @@ class RepeatabilityDatasetPage(ExperimentPageBase):
 
 class SingleSegmentRepeatabilityPage(ExperimentPageBase):
     show_visualization = True
+    defer_visualization_until_data = True
+    visualization_mode_override = VIS_MODE_PROJECTION
     page_hint = (
         "Live thesis repeatability protocol: the legacy 17-target single-segment pattern, "
         "with each desired target revisited after approaching from every other target. "
