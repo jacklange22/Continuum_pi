@@ -5,7 +5,8 @@ The old experiment approach mixed valuable lab concepts with duplicated helper c
 ## Old Concept To New Mapping
 
 - `repeatability`
-  - now represented directly by `repeatability_dataset`
+  - now represented authoritatively by `single_segment_repeatability`
+  - `repeatability_dataset` remains only as hidden compatibility infrastructure where older data handling still depends on it
   - the revisit schedule explicitly revisits the same target from different prior states instead of flattening everything into one generic command list
 - `aurora grid accuracy`
   - now represented directly by `aurora_grid_accuracy`
@@ -16,17 +17,17 @@ The old experiment approach mixed valuable lab concepts with duplicated helper c
 - `sweep`
   - now represented by `command_schedule_validation` and, when needed, by specific experiments using deterministic command schedules
 - `hysteresis`
-  - now represented conceptually by `repeatability_dataset` approach-conditioned metrics and by future schedule-driven experiments
+  - now represented conceptually by `single_segment_repeatability` approach-conditioned metrics and by future schedule-driven experiments
 - `timing`
   - now represented by `tracker_pipeline_mock`, `command_schedule_validation`, and the per-sample timing fields in the canonical schema
 - `transient`
-  - now represented by the phase-aware dataset model in `repeatability_dataset` and other canonical experiments
+  - now represented by the phase-aware dataset model in `single_segment_repeatability` and other canonical experiments
   - the settle/sample phases make transient-vs-steady-state analysis explicit instead of implicit in ad hoc scripts
 - `tensioning`
   - not yet hardware-complete
   - when servo/current workflows are ready, this should become either a dedicated diagnostic experiment or a pretension/calibration service that the main experiments declare as a requirement
 - `dataset collection`
-  - now represented directly by `repeatability_dataset`
+  - now represented directly by `single_segment_repeatability`
   - `collect_pose_command_dataset` remains as a generic compatibility experiment for the GUI and ad hoc command lists
 
 ## Legacy Files To Treat As Reference Inputs

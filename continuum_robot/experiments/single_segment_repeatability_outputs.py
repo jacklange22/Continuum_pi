@@ -25,13 +25,40 @@ from PySide6.QtGui import QColor, QPen, QPainter
 
 def build_single_segment_repeatability_summary_pairs(*, metrics: dict[str, Any]) -> list[tuple[str, str]]:
     """Return compact rows for GUI/report summaries."""
+    run_validity = dict(metrics.get("run_validity", {}) or {})
+    criteria = dict(run_validity.get("criteria", {}) or {})
+    observed = dict(run_validity.get("observed", {}) or {})
+    repeat_valid = int(metrics.get("valid_repeat_sample_count", 0) or 0)
+    repeat_planned = int(
+        criteria.get("planned_repeat_capture_count", metrics.get("planned_visit_count", 0) or 0) or 0
+    )
+    rejected_count = int(metrics.get("rejected_capture_count", 0) or 0)
+    rejected_fraction = observed.get("rejected_capture_fraction")
     pairs = [
         ("Protocol", "Legacy 17 target / all-other approaches"),
         ("Targets", str(int(metrics.get("target_count", 0) or 0))),
         ("Planned Captures", str(int(metrics.get("planned_capture_count", 0) or 0))),
-        ("Valid Repeat Captures", str(int(metrics.get("valid_repeat_sample_count", 0) or 0))),
+        ("Run Validity", "PASS" if run_validity.get("thesis_valid_run") else "FAIL"),
+        (
+            "Repeat Coverage",
+            f"{repeat_valid}/{repeat_planned}" if repeat_planned > 0 else str(repeat_valid),
+        ),
+        (
+            "Per-Target Minimum",
+            (
+                f">= {int(criteria.get('min_repeat_captures_per_target', 0) or 0)} repeats"
+                if criteria
+                else "n/a"
+            ),
+        ),
+        ("Valid Repeat Captures", str(repeat_valid)),
         ("Valid Approach Captures", str(int(metrics.get("valid_approach_sample_count", 0) or 0))),
-        ("Rejected Captures", str(int(metrics.get("rejected_capture_count", 0) or 0))),
+        (
+            "Rejected Captures",
+            f"{rejected_count} ({float(rejected_fraction) * 100.0:.1f}%)"
+            if rejected_fraction is not None
+            else str(rejected_count),
+        ),
         ("Pose Frame", str(metrics.get("position_frame", "unknown") or "unknown")),
         ("Overall RMS", _fmt(metrics.get("overall_repeatability_rms_mm"), suffix=" mm")),
         ("Overall Max", _fmt(metrics.get("overall_max_deviation_mm"), suffix=" mm")),
@@ -75,6 +102,30 @@ def build_single_segment_repeatability_summary_lines(*, metadata, summary, metri
     ]
     for label, value in build_single_segment_repeatability_summary_pairs(metrics=metrics):
         lines.append(f"{label}: {value}")
+    run_validity = dict(metrics.get("run_validity", {}) or {})
+    criteria = dict(run_validity.get("criteria", {}) or {})
+    observed = dict(run_validity.get("observed", {}) or {})
+    lines.extend(["", "Run validity:"])
+    lines.append(
+        f"- Accepted repeat coverage: {int(observed.get('valid_repeat_sample_count', 0) or 0)} / "
+        f"{int(criteria.get('planned_repeat_capture_count', 0) or 0)} "
+        f"({_fmt((observed.get('accepted_repeat_fraction') or 0.0) * 100.0, suffix=' %')})"
+        if observed.get("accepted_repeat_fraction") is not None
+        else "- Accepted repeat coverage: n/a"
+    )
+    lines.append(
+        f"- Per-target minimum: {int(criteria.get('min_repeat_captures_per_target', 0) or 0)} repeats "
+        f"for all {int(metrics.get('target_count', 0) or 0)} targets"
+    )
+    lines.append(
+        f"- Rejected capture rate: {_fmt((observed.get('rejected_capture_fraction') or 0.0) * 100.0, suffix=' %')}"
+        if observed.get("rejected_capture_fraction") is not None
+        else "- Rejected capture rate: n/a"
+    )
+    for reason in list(run_validity.get("failure_reasons", []) or []):
+        lines.append(f"- Invalid reason: {reason}")
+    for reason in list(run_validity.get("warning_reasons", []) or []):
+        lines.append(f"- Coverage note: {reason}")
     per_target = sorted(
         (metrics.get("per_target_metrics", {}) or {}).values(),
         key=lambda item: int(item.get("target_index", 10**9)),
@@ -118,6 +169,34 @@ def build_single_segment_repeatability_summary_lines(*, metadata, summary, metri
                 )
     elif comparison:
         lines.extend(["", f"Baseline comparison unavailable: {comparison.get('error', 'unknown error')}"])
+    provenance = dict(metrics.get("run_provenance", {}) or {})
+    if provenance:
+        base_registration = dict(provenance.get("base_registration", {}) or {})
+        runtime_tip = dict(provenance.get("runtime_tip_calibration", {}) or {})
+        pivot_tip = dict(provenance.get("pivot_tip", {}) or {})
+        pretension = dict(provenance.get("pretension_artifact", {}) or {})
+        lines.extend(
+            [
+                "",
+                "Run provenance:",
+                f"- Tracker backend: {provenance.get('backend_identity', 'unknown')} ({provenance.get('selected_backend_name', 'unknown')})",
+                f"- 0B pivot tip: {pivot_tip.get('path', 'n/a')} @ {pivot_tip.get('modified_at_utc', 'n/a')}",
+                (
+                    f"- Base registration: {base_registration.get('path', 'n/a')} "
+                    f"(state={base_registration.get('state', 'unknown')}, "
+                    f"timestamp={base_registration.get('stored_timestamp_utc', 'n/a')})"
+                ),
+                (
+                    f"- Runtime tip calibration: {runtime_tip.get('path', 'n/a')} "
+                    f"(state={runtime_tip.get('state', 'unknown')}, "
+                    f"timestamp={runtime_tip.get('stored_timestamp_utc', 'n/a')})"
+                ),
+                (
+                    f"- Pretension artifact: {pretension.get('path', 'n/a')} "
+                    f"(status={pretension.get('status', 'unknown')}, updated={pretension.get('updated_at_utc', 'n/a')})"
+                ),
+            ]
+        )
     lines.extend(
         [
             "",

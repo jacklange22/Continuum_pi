@@ -9,6 +9,8 @@ does not.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+import hashlib
 import json
 import math
 import random
@@ -20,7 +22,11 @@ import numpy as np
 from continuum_robot.experiments.framework import BaseExperiment, ExperimentHardwareRequirements, ExperimentSession
 from continuum_robot.experiments.sample_builders import sample_from_tracking_snapshot
 from continuum_robot.experiments.schemas import ExperimentTimeseriesSample
-from continuum_robot.experiments.validation import STATUS_INVALID_INSUFFICIENT_SAMPLES, STATUS_SUCCESS
+from continuum_robot.experiments.validation import (
+    STATUS_INVALID_INSUFFICIENT_SAMPLES,
+    STATUS_INVALID_REPEATABILITY_COVERAGE,
+    STATUS_SUCCESS,
+)
 
 
 LEGACY_TARGET_COUNT = 17
@@ -80,6 +86,9 @@ class SingleSegmentRepeatabilityConfig:
     return_to_center_on_finalize: bool = True
     fail_on_rejected_capture: bool = False
     thesis_goal_rms_mm: float = 1.0
+    min_repeat_captures_per_target: int = 12
+    min_repeat_capture_fraction: float = 0.85
+    max_rejected_capture_fraction: float = 0.10
     baseline_run_path: str = ""
 
     @classmethod
@@ -97,6 +106,9 @@ class SingleSegmentRepeatabilityConfig:
             return_to_center_on_finalize=bool(payload.get("return_to_center_on_finalize", True)),
             fail_on_rejected_capture=bool(payload.get("fail_on_rejected_capture", False)),
             thesis_goal_rms_mm=float(payload.get("thesis_goal_rms_mm", 1.0)),
+            min_repeat_captures_per_target=max(1, int(payload.get("min_repeat_captures_per_target", 12))),
+            min_repeat_capture_fraction=max(0.0, min(1.0, float(payload.get("min_repeat_capture_fraction", 0.85)))),
+            max_rejected_capture_fraction=max(0.0, min(1.0, float(payload.get("max_rejected_capture_fraction", 0.10)))),
             baseline_run_path=str(payload.get("baseline_run_path", "") or "").strip(),
         )
 
@@ -139,6 +151,12 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
 
     def precheck(self, session: ExperimentSession) -> None:
         _precheck_single_segment_repeatability(
+            session=session,
+            config=self.config,
+            servo_ids=self._servo_ids,
+            neutral_ticks=self._neutral_ticks,
+        )
+        _record_repeatability_run_provenance(
             session=session,
             config=self.config,
             servo_ids=self._servo_ids,
@@ -222,6 +240,9 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
             tool_id=self.config.tool_id,
             thesis_goal_rms_mm=float(self.config.thesis_goal_rms_mm),
             require_robot_frame_tip=bool(self.config.require_robot_frame_tip),
+            min_repeat_captures_per_target=int(self.config.min_repeat_captures_per_target),
+            min_repeat_capture_fraction=float(self.config.min_repeat_capture_fraction),
+            max_rejected_capture_fraction=float(self.config.max_rejected_capture_fraction),
         )
         baseline_path = str(self.config.baseline_run_path or "").strip()
         if baseline_path:
@@ -242,7 +263,14 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
                 }
                 session.add_warning(f"Baseline comparison failed: {exc}")
         accepted_repeat_count = int(metrics.get("valid_repeat_sample_count", 0) or 0)
-        force_status = STATUS_SUCCESS if accepted_repeat_count > 0 else STATUS_INVALID_INSUFFICIENT_SAMPLES
+        run_validity = dict(metrics.get("run_validity", {}) or {})
+        if accepted_repeat_count <= 0:
+            force_status = STATUS_INVALID_INSUFFICIENT_SAMPLES
+        elif bool(run_validity.get("thesis_valid_run", False)):
+            force_status = STATUS_SUCCESS
+        else:
+            force_status = STATUS_INVALID_REPEATABILITY_COVERAGE
+        metrics["status"] = force_status
         metrics["summary_requirements"] = {
             "force_status": force_status,
             "min_sample_count": 1,
@@ -445,6 +473,9 @@ def compute_single_segment_repeatability_metrics(
     tool_id: str = "0A",
     thesis_goal_rms_mm: float = 1.0,
     require_robot_frame_tip: bool = True,
+    min_repeat_captures_per_target: int = 12,
+    min_repeat_capture_fraction: float = 0.85,
+    max_rejected_capture_fraction: float = 0.10,
 ) -> dict[str, Any]:
     """Compute legacy-style repeatability metrics from accepted repeat captures."""
     catalog = list(targets or build_legacy_17_point_targets())
@@ -524,6 +555,15 @@ def compute_single_segment_repeatability_metrics(
     overall_max = float(max(all_deviations)) if all_deviations else None
     path_rms = _safe_rms([entry["deviation_mm"] for entry in path_entries])
     group_metrics = _compute_group_metrics(per_target)
+    run_validity = _assess_repeatability_run_validity(
+        per_target=per_target,
+        targets=catalog,
+        valid_repeat_sample_count=int(len(accepted_repeat)),
+        rejected_capture_count=int(rejected_count),
+        min_repeat_captures_per_target=int(min_repeat_captures_per_target),
+        min_repeat_capture_fraction=float(min_repeat_capture_fraction),
+        max_rejected_capture_fraction=float(max_rejected_capture_fraction),
+    )
     return {
         "protocol": "legacy_17_target_single_segment_all_other_approaches",
         "target_count": LEGACY_TARGET_COUNT,
@@ -539,6 +579,7 @@ def compute_single_segment_repeatability_metrics(
         "path_dependence_rms_mm": path_rms,
         "path_dependence_by_approach": path_entries,
         "group_metrics": group_metrics,
+        "run_validity": run_validity,
         "target_catalog": [target.to_dict() for target in catalog],
         "position_frame": _position_frame_label(position_frames, require_robot_frame_tip=require_robot_frame_tip),
         "registration_available": any("registration_missing" not in sample.status_flags for sample in samples),
@@ -558,6 +599,10 @@ def load_repeatability_metrics_from_run(path: Path) -> dict[str, Any]:
     metrics = payload.get("experiment_metrics", {})
     if not isinstance(metrics, dict):
         raise ValueError(f"Repeatability baseline summary has no experiment_metrics mapping: {summary_path}")
+    metrics = dict(metrics)
+    metrics.setdefault("status", payload.get("status"))
+    metrics.setdefault("success", payload.get("success"))
+    metrics.setdefault("run_id", payload.get("run_id"))
     protocol = str(metrics.get("protocol", ""))
     experiment_name = str(payload.get("experiment_name", ""))
     if experiment_name not in {"single_segment_repeatability", "repeatability_dataset"}:
@@ -681,6 +726,153 @@ def _precheck_single_segment_repeatability(
         assessment = session.context.servo_service.assess_motion(int(servo_id), require_calibrated_bounds=True)
         if not assessment.ready:
             raise RuntimeError(f"Servo {servo_id} is not ready for repeatability commands: {assessment.reason}")
+
+
+def _record_repeatability_run_provenance(
+    *,
+    session: ExperimentSession,
+    config: SingleSegmentRepeatabilityConfig,
+    servo_ids: list[int],
+    neutral_ticks: list[int],
+) -> None:
+    settings = session.context.settings
+    snapshot = session.context.tracking_service.get_snapshot()
+    servo_calibration_summary = session.context.servo_service.get_calibration_summary()
+    pivot_tip_file = getattr(settings.registration, "penprobe_file", None)
+    pivot_tip_path = (
+        _resolve_repo_path(session.context.project_root, pivot_tip_file)
+        if pivot_tip_file
+        else None
+    )
+    registration_path = Path(
+        getattr(snapshot, "registration_path", None) or session.context.registration_path
+    )
+    runtime_tip_path_raw = getattr(snapshot, "runtime_tip_calibration_path", None)
+    runtime_tip_path = Path(runtime_tip_path_raw) if runtime_tip_path_raw else None
+    gate = _tracker_gate_status(
+        snapshot=snapshot,
+        tool_id=config.tool_id,
+        max_tracker_age_s=float(config.max_tracker_age_s),
+        require_robot_frame_tip=bool(config.require_robot_frame_tip),
+    )
+    pretension_entries: dict[str, Any] = {}
+    for servo_id in servo_ids:
+        entry = servo_calibration_summary.servo_entries.get(int(servo_id))
+        if entry is None:
+            pretension_entries[str(servo_id)] = {"exists": False}
+            continue
+        pretension_entries[str(servo_id)] = {
+            "exists": True,
+            "neutral_setpoint": entry.neutral_setpoint,
+            "safe_min_tick": entry.safe_min_tick,
+            "safe_max_tick": entry.safe_max_tick,
+            "pretension_current_threshold_ma": entry.pretension_current_threshold_ma,
+            "pretension_final_position_tick": entry.pretension_final_position_tick,
+            "pretension_result_status": entry.pretension_result_status,
+            "pretension_completed_at_utc": entry.pretension_completed_at_utc,
+            "latest_pretension_run": dict(entry.latest_pretension_run or {}) or None,
+            "capture_source": entry.capture_source,
+            "calibrated_at_utc": entry.calibrated_at_utc,
+            "status": entry.status,
+            "valid": bool(entry.valid),
+        }
+    precheck_summary = {
+        "overall_status": "ready",
+        "checks": [
+            {
+                "key": "tracker_backend",
+                "status": "ok",
+                "message": (
+                    f"Backend {snapshot.backend_identity or snapshot.selected_backend_name or 'unknown'} "
+                    f"selected={snapshot.selected_backend_name or 'unknown'}."
+                ),
+            },
+            {
+                "key": "tracking_state",
+                "status": "ok",
+                "message": f"Tracker state {snapshot.canonical_state}; frame age {gate.get('tracker_age_s')}.",
+            },
+            {
+                "key": "tracker_gate",
+                "status": "ok" if gate.get("accepted") else "blocked",
+                "message": str(gate.get("reason", "unknown")),
+            },
+            {
+                "key": "registration",
+                "status": "ok",
+                "message": f"Base registration state={snapshot.registration_state}.",
+            },
+            {
+                "key": "runtime_tip",
+                "status": "ok",
+                "message": (
+                    f"Runtime tip state={snapshot.runtime_tip_calibration_state}; "
+                    f"tip pose={snapshot.tip_pose_status}; fallback={snapshot.runtime_tip_identity_fallback}."
+                ),
+            },
+            {
+                "key": "servos",
+                "status": "ok",
+                "message": f"Configured single-segment servo IDs={servo_ids}; connected={bool(getattr(session.context.servo_service, 'is_connected', False))}.",
+            },
+            {
+                "key": "pretension",
+                "status": "ok",
+                "message": "Accepted pretension artifact entries were present for all configured servos.",
+            },
+        ],
+    }
+    provenance = {
+        "backend_identity": str(snapshot.backend_identity or ""),
+        "selected_backend_name": str(snapshot.selected_backend_name or ""),
+        "configured_backend_name": str(getattr(settings.serial, "tracker_backend", "") or ""),
+        "tracking_state": str(snapshot.canonical_state or ""),
+        "tool_id": str(config.tool_id or "0A"),
+        "require_robot_frame_tip": bool(config.require_robot_frame_tip),
+        "neutral_ticks_by_servo": {
+            str(servo_id): int(neutral_tick)
+            for servo_id, neutral_tick in zip(servo_ids, neutral_ticks)
+        },
+        "pivot_tip": _file_provenance(pivot_tip_path),
+        "base_registration": {
+            **_file_provenance(registration_path),
+            "state": str(snapshot.registration_state or ""),
+            "tracking_path": str(getattr(snapshot, "registration_path", "") or ""),
+            "stored_timestamp_utc": getattr(snapshot, "stored_registration_timestamp_utc", None),
+            "stored_fre_mm": getattr(snapshot, "stored_registration_fre_mm", None),
+        },
+        "runtime_tip_calibration": {
+            **_file_provenance(runtime_tip_path),
+            "state": str(snapshot.runtime_tip_calibration_state or ""),
+            "stored_timestamp_utc": getattr(snapshot, "stored_runtime_tip_timestamp_utc", None),
+            "measurement_tool_id": getattr(snapshot, "stored_runtime_tip_measurement_tool_id", None),
+            "coil_tool_id": getattr(snapshot, "stored_runtime_tip_coil_tool_id", None),
+            "identity_fallback": bool(getattr(snapshot, "runtime_tip_identity_fallback", False)),
+            "tip_pose_status": str(getattr(snapshot, "tip_pose_status", "")),
+        },
+        "pretension_artifact": {
+            **_file_provenance(Path(servo_calibration_summary.path)),
+            "status": servo_calibration_summary.status,
+            "message": servo_calibration_summary.message,
+            "compatible": bool(servo_calibration_summary.compatible),
+            "updated_at_utc": servo_calibration_summary.updated_at_utc,
+            "schema_version": int(servo_calibration_summary.schema_version),
+            "servos": pretension_entries,
+        },
+        "precheck_trust_summary": precheck_summary,
+    }
+    session.metadata.backend_info["run_provenance"] = {
+        "backend_identity": provenance["backend_identity"],
+        "selected_backend_name": provenance["selected_backend_name"],
+        "configured_backend_name": provenance["configured_backend_name"],
+        "tracking_state": provenance["tracking_state"],
+        "pretension_artifact": provenance["pretension_artifact"],
+        "precheck_trust_summary": precheck_summary,
+    }
+    session.metadata.registration_info["pivot_tip"] = provenance["pivot_tip"]
+    session.metadata.registration_info["base_registration"] = provenance["base_registration"]
+    session.metadata.registration_info["runtime_tip_calibration"] = provenance["runtime_tip_calibration"]
+    session.set_metric("run_provenance", provenance)
 
 
 def _configured_single_segment_servo_ids(session: ExperimentSession) -> list[int]:
@@ -853,6 +1045,139 @@ def _compute_group_metrics(per_target: dict[str, Any]) -> dict[str, Any]:
     return metrics
 
 
+def _assess_repeatability_run_validity(
+    *,
+    per_target: dict[str, Any],
+    targets: list[LegacyRepeatabilityTarget],
+    valid_repeat_sample_count: int,
+    rejected_capture_count: int,
+    min_repeat_captures_per_target: int,
+    min_repeat_capture_fraction: float,
+    max_rejected_capture_fraction: float,
+) -> dict[str, Any]:
+    planned_repeat_capture_count = int(LEGACY_VISIT_COUNT)
+    planned_total_capture_count = int(LEGACY_CAPTURE_COUNT)
+    min_repeat_captures_per_target = max(1, int(min_repeat_captures_per_target))
+    min_repeat_capture_fraction = max(0.0, min(1.0, float(min_repeat_capture_fraction)))
+    max_rejected_capture_fraction = max(0.0, min(1.0, float(max_rejected_capture_fraction)))
+    min_required_repeat_capture_count = int(
+        math.ceil(float(planned_repeat_capture_count) * float(min_repeat_capture_fraction))
+    )
+    accepted_repeat_fraction = (
+        float(valid_repeat_sample_count) / float(planned_repeat_capture_count)
+        if planned_repeat_capture_count > 0
+        else 0.0
+    )
+    rejected_capture_fraction = (
+        float(rejected_capture_count) / float(planned_total_capture_count)
+        if planned_total_capture_count > 0
+        else 0.0
+    )
+    targets_below_min_count: list[dict[str, Any]] = []
+    targets_missing_repeat_coverage: list[dict[str, Any]] = []
+    ring_coverage: dict[str, dict[str, Any]] = {}
+    for target in targets:
+        row = dict(per_target.get(str(target.target_index), {}) or {})
+        repeat_count = int(row.get("repeat_sample_count", 0) or 0)
+        if repeat_count < min_repeat_captures_per_target:
+            targets_below_min_count.append(
+                {
+                    "target_index": int(target.target_index),
+                    "label": target.label,
+                    "ring": target.ring,
+                    "repeat_sample_count": repeat_count,
+                }
+            )
+        if repeat_count <= 0:
+            targets_missing_repeat_coverage.append(
+                {
+                    "target_index": int(target.target_index),
+                    "label": target.label,
+                    "ring": target.ring,
+                }
+            )
+        ring_row = ring_coverage.setdefault(
+            str(target.ring),
+            {
+                "expected_target_count": 0,
+                "targets_with_any_repeat": 0,
+                "targets_meeting_min_repeat_count": 0,
+                "accepted_repeat_capture_count": 0,
+            },
+        )
+        ring_row["expected_target_count"] += 1
+        ring_row["accepted_repeat_capture_count"] += repeat_count
+        if repeat_count > 0:
+            ring_row["targets_with_any_repeat"] += 1
+        if repeat_count >= min_repeat_captures_per_target:
+            ring_row["targets_meeting_min_repeat_count"] += 1
+    critical_missing_target_groups = [
+        ring
+        for ring, row in sorted(ring_coverage.items())
+        if int(row.get("targets_with_any_repeat", 0) or 0) <= 0
+    ]
+    failure_reasons: list[str] = []
+    if valid_repeat_sample_count < min_required_repeat_capture_count:
+        failure_reasons.append(
+            f"accepted repeat coverage {valid_repeat_sample_count}/{planned_repeat_capture_count} is below "
+            f"the required minimum {min_required_repeat_capture_count}/{planned_repeat_capture_count}"
+        )
+    if targets_below_min_count:
+        failure_reasons.append(
+            "per-target repeat coverage below minimum on "
+            + ", ".join(
+                f"{row['label']}={int(row['repeat_sample_count'])}"
+                for row in targets_below_min_count
+            )
+        )
+    if rejected_capture_fraction > max_rejected_capture_fraction:
+        failure_reasons.append(
+            f"rejected capture rate {rejected_capture_fraction:.3f} exceeds maximum {max_rejected_capture_fraction:.3f}"
+        )
+    if critical_missing_target_groups:
+        failure_reasons.append(
+            "critical target group coverage missing for " + ", ".join(critical_missing_target_groups)
+        )
+    warning_reasons: list[str] = []
+    if valid_repeat_sample_count < planned_repeat_capture_count:
+        warning_reasons.append(
+            f"accepted repeat coverage is partial at {valid_repeat_sample_count}/{planned_repeat_capture_count}"
+        )
+    if rejected_capture_count > 0:
+        warning_reasons.append(
+            f"{rejected_capture_count} capture(s) were rejected by tracker freshness/validity gating"
+        )
+    if targets_below_min_count and not failure_reasons:
+        warning_reasons.append("some targets met the minimum threshold but did not reach full 16-repeat coverage")
+    return {
+        "thesis_valid_run": not failure_reasons,
+        "criteria": {
+            "planned_repeat_capture_count": planned_repeat_capture_count,
+            "planned_total_capture_count": planned_total_capture_count,
+            "min_repeat_capture_fraction": float(min_repeat_capture_fraction),
+            "min_required_repeat_capture_count": min_required_repeat_capture_count,
+            "min_repeat_captures_per_target": min_repeat_captures_per_target,
+            "max_rejected_capture_fraction": float(max_rejected_capture_fraction),
+            "require_all_target_groups": True,
+        },
+        "observed": {
+            "valid_repeat_sample_count": int(valid_repeat_sample_count),
+            "accepted_repeat_fraction": float(accepted_repeat_fraction),
+            "rejected_capture_count": int(rejected_capture_count),
+            "rejected_capture_fraction": float(rejected_capture_fraction),
+            "targets_below_min_count": int(len(targets_below_min_count)),
+            "targets_missing_repeat_coverage_count": int(len(targets_missing_repeat_coverage)),
+            "critical_missing_target_groups": list(critical_missing_target_groups),
+            "ring_coverage": ring_coverage,
+        },
+        "targets_below_min_repeat_count": targets_below_min_count,
+        "targets_missing_repeat_coverage": targets_missing_repeat_coverage,
+        "critical_missing_target_groups": list(critical_missing_target_groups),
+        "failure_reasons": failure_reasons,
+        "warning_reasons": warning_reasons,
+    }
+
+
 def _progress_payload(*, visit: LegacyRepeatabilityVisit, phase: str, sample_index: int) -> dict[str, Any]:
     return {
         "phase": phase,
@@ -883,6 +1208,34 @@ def _position_frame_label(frames: set[str], *, require_robot_frame_tip: bool) ->
 def _clean_float(value: float) -> float:
     numeric = float(value)
     return 0.0 if abs(numeric) < 1e-12 else numeric
+
+
+def _file_provenance(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {"path": None, "exists": False}
+    file_path = Path(path)
+    info: dict[str, Any] = {
+        "path": str(file_path),
+        "exists": bool(file_path.exists()),
+    }
+    if not file_path.exists():
+        return info
+    stat = file_path.stat()
+    info["size_bytes"] = int(stat.st_size)
+    info["modified_at_utc"] = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+    info["sha256"] = _file_sha256(file_path)
+    return info
+
+
+def _file_sha256(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with Path(path).open("rb") as handle:
+            for chunk in iter(lambda: handle.read(65536), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
 
 
 def _resolve_repo_path(project_root: Path, raw_path: str | Path) -> Path:

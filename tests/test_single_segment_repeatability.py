@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import importlib.util
+import json
 import sys
 
 import pytest
@@ -108,6 +109,29 @@ def test_repeatability_metrics_use_repeat_captures_and_robot_frame() -> None:
     assert metrics["per_target_metrics"]["1"]["spread_rms_mm"] == pytest.approx(1.0)
     assert metrics["per_target_metrics"]["2"]["spread_rms_mm"] == pytest.approx(2.5)
     assert metrics["overall_repeatability_rms_mm"] == pytest.approx(((1.0**2 + 1.0**2 + 2.5**2 + 2.5**2) / 4) ** 0.5)
+
+
+def test_repeatability_metrics_mark_scientifically_weak_partial_run_invalid() -> None:
+    metrics = compute_single_segment_repeatability_metrics(
+        [
+            _sample(
+                phase="repeat",
+                sample_index=index,
+                target_index=1,
+                approach_index=index + 1,
+                position_mm=[float(index), 0.0, 0.0],
+            )
+            for index in range(4)
+        ],
+        tool_id="0A",
+    )
+
+    validity = metrics["run_validity"]
+
+    assert validity["thesis_valid_run"] is False
+    assert validity["observed"]["targets_below_min_count"] >= 1
+    assert validity["observed"]["valid_repeat_sample_count"] == 4
+    assert any("accepted repeat coverage" in reason for reason in validity["failure_reasons"])
 
 
 def test_repeatability_baseline_comparison_reports_improvement_deltas() -> None:
@@ -221,13 +245,22 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
 
     settings = _settings(mock_mode=False)
     service = _servo_service(tmp_path)
-    tracking = _TrackingService(_tracking_snapshot(position_mm=[1.0, 2.0, 3.0]))
-    pivot_tip_file = tmp_path / "tools" / "penprobe_08_09_24c"
-    pivot_tip_file.parent.mkdir(parents=True, exist_ok=True)
-    pivot_tip_file.write_text("0,0,0\n", encoding="utf-8")
     registration_path = tmp_path / "data" / "registrations" / "latest_registration.json"
     registration_path.parent.mkdir(parents=True, exist_ok=True)
     registration_path.write_text("{}", encoding="utf-8")
+    runtime_tip_path = tmp_path / "data" / "runtime_tip_calibration" / "latest_runtime_tip_calibration.json"
+    runtime_tip_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_tip_path.write_text("{}", encoding="utf-8")
+    snapshot = _tracking_snapshot(position_mm=[1.0, 2.0, 3.0])
+    snapshot.registration_path = str(registration_path)
+    snapshot.stored_registration_timestamp_utc = "2026-04-15T00:00:00Z"
+    snapshot.stored_registration_fre_mm = 0.4
+    snapshot.runtime_tip_calibration_path = str(runtime_tip_path)
+    snapshot.stored_runtime_tip_timestamp_utc = "2026-04-15T00:05:00Z"
+    tracking = _TrackingService(snapshot)
+    pivot_tip_file = tmp_path / "tools" / "penprobe_08_09_24c"
+    pivot_tip_file.parent.mkdir(parents=True, exist_ok=True)
+    pivot_tip_file.write_text("0,0,0\n", encoding="utf-8")
     runner = ExperimentRunner(
         project_root=tmp_path,
         settings=settings,
@@ -256,6 +289,15 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     assert (result.paths.output_dir / "repeatability_rmse_summary.png").exists()
     assert (result.paths.output_dir / "repeatability_path_dependence.png").exists()
     assert result.summary.experiment_metrics["valid_repeat_sample_count"] == LEGACY_VISIT_COUNT
+    assert result.summary.status == "success"
+    assert result.summary.experiment_metrics["run_validity"]["thesis_valid_run"] is True
+    metadata_payload = json.loads(result.paths.metadata_path.read_text(encoding="utf-8"))
+    summary_payload = json.loads(result.paths.summary_path.read_text(encoding="utf-8"))
+    assert metadata_payload["registration_info"]["pivot_tip"]["path"].endswith("penprobe_08_09_24c")
+    assert metadata_payload["registration_info"]["base_registration"]["path"] == str(registration_path)
+    assert metadata_payload["registration_info"]["runtime_tip_calibration"]["path"] == str(runtime_tip_path)
+    assert summary_payload["experiment_metrics"]["run_provenance"]["pretension_artifact"]["path"].endswith("neutral.json")
+    assert summary_payload["experiment_metrics"]["run_provenance"]["precheck_trust_summary"]["overall_status"] == "ready"
     assert "tracker_bridge" not in (result.paths.output_dir / "config_snapshot.yaml").read_text(encoding="utf-8")
 
 
@@ -305,6 +347,21 @@ def test_capture_gate_rejects_stale_tracker_data(tmp_path: Path) -> None:
     assert sample.extra["capture_accepted"] is False
     assert "tracker_data_stale" in sample.extra["capture_reject_reason"]
     assert "capture_rejected" in sample.status_flags
+
+
+def test_authoritative_repeatability_docs_and_examples_reference_single_segment() -> None:
+    project_root = Path(__file__).resolve().parents[1]
+
+    for relative_path in [
+        "docs/operator_workflows.md",
+        "docs/system_spec.md",
+        "docs/validation_plan.md",
+        "docs/testing_protocol.md",
+        "config/experiment_replay_runner.example.yaml",
+    ]:
+        text = (project_root / relative_path).read_text(encoding="utf-8")
+        assert "single_segment_repeatability" in text
+        assert "repeatability_dataset" not in text
 
 
 def _settings(*, mock_mode: bool) -> Settings:

@@ -75,8 +75,8 @@ Current repo state:
 ### Experiment Subsystem
 
 - `EXP-001` The canonical experiment runner shall remain the only execution path for experiments.
-- `EXP-002` The critical experiments are `pivot_calibration`, `aurora_grid_accuracy`, and `repeatability_dataset`.
-- `EXP-003` The main scientific outcome is the repeatability dataset, which must log commanded motion plus measured pose.
+- `EXP-002` The critical experiments are `pivot_calibration`, `aurora_grid_accuracy`, and `single_segment_repeatability`.
+- `EXP-003` The main scientific outcome is the single-segment repeatability experiment, which must log commanded motion plus measured pose under the legacy 17-target revisit protocol.
 - `EXP-004` Experiments shall support dry-run or offline execution where logically possible.
 - `EXP-005` Repeatability datasets shall be analyzable against the `< 1 mm` target.
 

@@ -13,9 +13,7 @@ import yaml
 
 from continuum_robot.experiments.critical_experiments import (
     GridDefinitionConfig,
-    RepeatabilityDatasetConfig,
     build_grid_accuracy_preview,
-    build_repeatability_preview,
 )
 from continuum_robot.experiments.builtins import ServoTrackerSyncValidationConfig
 from continuum_robot.experiments.dataset_io import canonical_experiment_output_root
@@ -702,9 +700,6 @@ class ExperimentController:
             if value is not None:
                 return f"repeatability={float(value):.3f} mm"
             return f"repeat_samples={int(metrics.get('valid_repeat_sample_count', 0) or 0)}"
-        if experiment_name == "repeatability_dataset":
-            value = metrics.get("overall_repeatability_rms_mm")
-            return f"repeatability={float(value):.3f} mm" if value is not None else ""
         if experiment_name == "aurora_grid_accuracy":
             value = metrics.get("overall_rms_error_mm")
             return f"grid_rms={float(value):.3f} mm" if value is not None else ""
@@ -1215,22 +1210,6 @@ class ExperimentController:
                 f"legacy 17 targets, 272 visits, 544 captures, "
                 f"settle {float(config.settle_time_s):.2f}s, "
                 f"tool {config.tool_id}"
-            )
-        if experiment_name == "repeatability_dataset":
-            schedule = RepeatabilityDatasetConfig.from_dict(config_payload).schedule
-            try:
-                preview = build_repeatability_preview(
-                    RepeatabilityDatasetConfig.from_dict(config_payload),
-                    tendon_count=None,
-                )
-                target_count = int(preview.summary.get("target_count", 0) or 0)
-            except Exception:
-                target_count = len(schedule.target_points_cm or [])
-            return (
-                f"{str(schedule.target_set).replace('_', ' ')}, "
-                f"{target_count} targets, "
-                f"{int(schedule.revisit_count)} revisits, "
-                f"{int(schedule.samples_per_point)} samples/visit"
             )
         if experiment_name == "aurora_grid_accuracy":
             captured_points = config_payload.get("captured_points", []) or []

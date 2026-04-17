@@ -145,20 +145,20 @@ Success criteria:
 - tracking reports that the live chain is using the accepted runtime tip calibration
 - live robot-frame tip pose is no longer on identity fallback
 
-## Workflow 6: Repeatability Dataset
+## Workflow 6: Single-Segment Repeatability
 
 Applies now in dry-run and later with live hardware.
 
 1. Open the Experiment workspace.
-2. Select `repeatability_dataset`.
-3. Review preflight, output path, and config summary.
-4. Run in dry-run now, then live once neutral calibration and safety flows are complete.
-5. Review repeatability RMS and per-target spread.
+2. Select `single_segment_repeatability`.
+3. Review preflight, output path, run-validity thresholds, and config summary.
+4. Run live only after neutral calibration, accepted pretension, accepted registration, and accepted runtime tip calibration are complete.
+5. Review run-validity, repeatability RMS, per-target spread, and any baseline comparison deltas.
 
 Target acceptance:
 
 - logs commanded motion plus measured pose
-- robot-frame metrics available when registration exists
+- robot-frame metrics available only when the full live transform chain is trusted
 - repeatability summary is comparable to the `< 1 mm` target
 
 ## Recommended Lab Order
@@ -171,7 +171,7 @@ Target acceptance:
 6. confirm live robot-frame pose
 7. one-servo OpenRB bring-up
 8. startup calibration and pretension
-9. repeatability dataset
+9. single-segment repeatability
 
 ## Tracker Verdicts
 

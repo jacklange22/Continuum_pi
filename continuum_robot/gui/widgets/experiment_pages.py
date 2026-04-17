@@ -764,6 +764,15 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
                 ("Approach Visits", str(len(visits))),
                 ("Planned Captures", str(planned_captures)),
                 ("Repeat Captures Used For RMSE", str(len(visits))),
+                (
+                    "Run Validity Threshold",
+                    f">= {int(config.min_repeat_captures_per_target)} repeats/target "
+                    f"and >= {float(config.min_repeat_capture_fraction) * 100.0:.0f}% total repeat coverage",
+                ),
+                (
+                    "Rejected Capture Limit",
+                    f"<= {float(config.max_rejected_capture_fraction) * 100.0:.0f}% of all captures",
+                ),
                 ("Estimated Settle Time", f"{total_time_min:.1f} min"),
                 ("Required Pose Frame", "robot/base frame via 0A runtime tip"),
                 ("Run Trust", "Blocked unless registration, runtime tip calibration, pretension, and servos are ready"),
@@ -2404,7 +2413,6 @@ def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBas
     """Return the custom page widget for one supported experiment."""
     factories: dict[str, Callable[[object], ExperimentPageBase]] = {
         "single_segment_repeatability": lambda ctrl: SingleSegmentRepeatabilityPage(ctrl, "single_segment_repeatability"),
-        "repeatability_dataset": lambda ctrl: RepeatabilityDatasetPage(ctrl, "repeatability_dataset"),
         "aurora_grid_accuracy": lambda ctrl: AuroraGridAccuracyPage(ctrl, "aurora_grid_accuracy"),
         "tracker_timing_validation": lambda ctrl: TrackerTimingValidationPage(ctrl, "tracker_timing_validation"),
         "servo_tracker_sync_validation": lambda ctrl: ServoTrackerSyncValidationPage(ctrl, "servo_tracker_sync_validation"),
@@ -2454,6 +2462,7 @@ def _status_label(status: str) -> str:
         "invalid_due_to_missing_registration": "Needs Registration",
         "invalid_due_to_missing_tip_cal": "Needs Tip Cal",
         "invalid_due_to_insufficient_samples": "Too Few Samples",
+        "invalid_due_to_repeatability_coverage": "Invalid Coverage",
         "invalid_due_to_invalid_transforms": "Invalid",
     }
     return mapping.get(status, status.replace("_", " ").title())

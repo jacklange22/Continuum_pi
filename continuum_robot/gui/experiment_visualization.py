@@ -71,7 +71,7 @@ def build_visualization_model(
     """Build a visualization payload from canonical samples and summary metrics."""
     metrics = dict(metrics or {})
     config_payload = dict(config_payload or {})
-    if experiment_name in {"repeatability_dataset", "single_segment_repeatability"}:
+    if experiment_name == "single_segment_repeatability":
         return _build_repeatability_model(
             samples=samples,
             metrics=metrics,
@@ -219,7 +219,7 @@ def _build_repeatability_model(
             )
         )
     acceptance_lines = _acceptance_lines(
-        experiment_name="repeatability_dataset",
+        experiment_name="single_segment_repeatability",
         metrics=metrics,
         acceptance=acceptance,
     )
@@ -572,19 +572,34 @@ def _acceptance_lines(*, experiment_name: str, metrics: dict[str, Any], acceptan
             status = "warn"
             reasons.append(f"{label} {float(value):.3f} > warn {float(warn_value):.3f}")
 
-    if experiment_name == "repeatability_dataset":
-        _apply_threshold(
-            "overall_repeatability_rms_mm",
-            "repeatability_rms_warn_mm",
-            "repeatability_rms_fail_mm",
-            "repeatability RMS",
+    if experiment_name == "single_segment_repeatability":
+        validity = dict(metrics.get("run_validity", {}) or {})
+        criteria = dict(validity.get("criteria", {}) or {})
+        observed = dict(validity.get("observed", {}) or {})
+        lines.append(
+            "Acceptance check: "
+            + ("PASS" if validity.get("thesis_valid_run") else "FAIL")
         )
-        min_valid = acceptance.get("min_valid_sample_count")
-        valid_count = metrics.get("valid_sample_count")
-        if min_valid is not None and valid_count is not None and int(valid_count) < int(min_valid):
-            status = "fail" if status != "fail" else status
-            reasons.append(f"valid samples {int(valid_count)} < minimum {int(min_valid)}")
-    elif experiment_name == "aurora_grid_accuracy":
+        if criteria and observed:
+            lines.append(
+                "Coverage thresholds: "
+                f"repeat >= {int(criteria.get('min_required_repeat_capture_count', 0) or 0)}, "
+                f"per-target >= {int(criteria.get('min_repeat_captures_per_target', 0) or 0)}, "
+                f"rejected <= {float(criteria.get('max_rejected_capture_fraction', 0.0) or 0.0):.3f}"
+            )
+            lines.append(
+                "Coverage observed: "
+                f"repeat={int(observed.get('valid_repeat_sample_count', 0) or 0)}, "
+                f"targets_below_min={int(observed.get('targets_below_min_count', 0) or 0)}, "
+                f"rejected={float(observed.get('rejected_capture_fraction', 0.0) or 0.0):.3f}"
+            )
+        reasons = list(validity.get("failure_reasons", []) or [])
+        if reasons:
+            lines.append("Coverage reasons: " + "; ".join(reasons))
+        else:
+            lines.append("Coverage reasons: intrinsic thesis-validity checks passed.")
+        return lines
+    if experiment_name == "aurora_grid_accuracy":
         _apply_threshold("overall_rms_error_mm", "grid_rms_warn_mm", "grid_rms_fail_mm", "grid RMS")
         total_points = max(1, int(metrics.get("raw_sample_count", 0) or metrics.get("valid_sample_count", 0) or 0))
         outlier_count = int(metrics.get("outlier_count", 0) or 0)

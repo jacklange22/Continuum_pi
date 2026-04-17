@@ -13,4 +13,7 @@ require_robot_frame_tip: true
 return_to_center_on_finalize: true
 fail_on_rejected_capture: false
 thesis_goal_rms_mm: 1.0
+min_repeat_captures_per_target: 12
+min_repeat_capture_fraction: 0.85
+max_rejected_capture_fraction: 0.10
 baseline_run_path: ""

@@ -12,6 +12,7 @@ STATUS_PARTIAL_SUCCESS = "partial_success"
 STATUS_INVALID_MISSING_TIP_CAL = "invalid_due_to_missing_tip_cal"
 STATUS_INVALID_MISSING_REGISTRATION = "invalid_due_to_missing_registration"
 STATUS_INVALID_INSUFFICIENT_SAMPLES = "invalid_due_to_insufficient_samples"
+STATUS_INVALID_REPEATABILITY_COVERAGE = "invalid_due_to_repeatability_coverage"
 STATUS_INVALID_INVALID_TRANSFORMS = "invalid_due_to_invalid_transforms"
 
 REQUIRED_FIELDS_BY_EXPERIMENT: dict[str, tuple[str, ...]] = {

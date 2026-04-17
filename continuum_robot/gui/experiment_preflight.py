@@ -26,8 +26,6 @@ from continuum_robot.experiments.single_segment_repeatability import (
 from continuum_robot.experiments.critical_experiments import (
     GridDefinitionConfig,
     PivotCalibrationConfig,
-    RepeatabilityDatasetConfig,
-    build_repeatability_preview,
 )
 from continuum_robot.experiments.schedules import generate_command_schedule
 
@@ -311,16 +309,28 @@ def evaluate_preflight(
                     )
                 )
             else:
-                checks.append(
-                    _ok(
-                        "baseline_run",
-                        "Baseline Comparison",
-                        (
-                            f"Baseline loaded from {baseline_path}; "
-                            f"baseline RMS={float(baseline_metrics.get('overall_repeatability_rms_mm', 0.0) or 0.0):.3f} mm."
-                        ),
-                    )
+                baseline_status = str(baseline_metrics.get("status", "unknown") or "unknown")
+                baseline_message = (
+                    f"Baseline loaded from {baseline_path}; "
+                    f"baseline RMS={float(baseline_metrics.get('overall_repeatability_rms_mm', 0.0) or 0.0):.3f} mm; "
+                    f"status={baseline_status}."
                 )
+                if baseline_status != "success":
+                    checks.append(
+                        _warning(
+                            "baseline_run",
+                            "Baseline Comparison",
+                            baseline_message + " Compare carefully because the selected baseline was not a fully valid run.",
+                        )
+                    )
+                else:
+                    checks.append(
+                        _ok(
+                            "baseline_run",
+                            "Baseline Comparison",
+                            baseline_message,
+                        )
+                    )
         else:
             checks.append(
                 _info(
@@ -341,102 +351,6 @@ def evaluate_preflight(
                 "scientific_framing",
                 "Scientific Framing",
                 "This experiment measures single-segment repeatability after registration, runtime-tip calibration, and pretension. It does not validate those calibrations by itself.",
-            )
-        )
-
-    elif experiment_name == "repeatability_dataset":
-        checks.append(_tracking_state_check(settings=settings, tracker_ready=tracker_ready, backend_name=backend_name, tracking_snapshot=tracking_snapshot))
-        config = RepeatabilityDatasetConfig.from_dict(payload)
-        expected_dims = len(settings.robot.tendon_to_servo or settings.robot.servo_ids)
-        try:
-            preview = build_repeatability_preview(config, tendon_count=expected_dims)
-        except ValueError as exc:
-            checks.append(
-                _blocked(
-                    "config_targets",
-                    "Schedule",
-                    str(exc),
-                )
-            )
-        else:
-            if not preview.target_catalog:
-                checks.append(_blocked("config_targets", "Schedule", "Repeatability schedule has no target points."))
-            else:
-                checks.append(
-                    _ok(
-                        "dimensions",
-                        "Dimensionality",
-                        f"Repeatability targets match the configured {expected_dims}-tendon robot.",
-                    )
-                )
-                checks.append(
-                    _info(
-                        "schedule",
-                        "Schedule",
-                        f"{preview.summary['target_count']} targets, "
-                        f"{preview.summary['visit_count']} revisits, "
-                        f"{preview.summary['planned_sample_count']} planned measurement samples "
-                        f"using target set '{config.schedule.target_set}'.",
-                    )
-                )
-
-        checks.append(
-            _tool_check(
-                tool_id=config.tool_id,
-                snapshot=tracking_snapshot,
-                mock_mode=bool(settings.runtime.mock_mode),
-            )
-        )
-
-        if config.dry_run:
-            checks.append(
-                _info(
-                    "mode",
-                    "Run Mode",
-                    "This run is in dry-run mode. Commands will be computed and logged, but not sent to hardware."
-                    if servo_connected
-                    else "This run is in dry-run mode and does not require live servo hardware.",
-                )
-            )
-        elif not servo_connected:
-            checks.append(
-                _blocked(
-                    "mode",
-                    "Run Mode",
-                    "Live repeatability requires a connected servo service. Connect OpenRB and verify servo status first.",
-                )
-            )
-        else:
-            checks.append(_ok("mode", "Run Mode", "Live repeatability will use the connected servo service."))
-
-        neutral_count = len(neutral_setpoints)
-        if config.dry_run:
-            status = PREFLIGHT_OK if neutral_count == expected_dims else PREFLIGHT_WARNING
-            message = (
-                f"Neutral setpoints are available for all {expected_dims} tendons."
-                if neutral_count == expected_dims
-                else (
-                    "Neutral setpoints are missing or incomplete. Dry-run output can still be recorded, "
-                    "but motor values may be incomplete."
-                )
-            )
-            checks.append(PreflightCheck("neutral_setpoints", "Neutral Setpoints", status, message))
-        else:
-            status = PREFLIGHT_OK if neutral_count == expected_dims else PREFLIGHT_BLOCKED
-            message = (
-                f"Neutral setpoints are available for all {expected_dims} tendons."
-                if neutral_count == expected_dims
-                else "Live repeatability needs neutral setpoints for every tendon. Capture and save neutral first."
-            )
-            checks.append(PreflightCheck("neutral_setpoints", "Neutral Setpoints", status, message))
-
-        checks.append(
-            _registration_quality_check(
-                registration_path=registration_path,
-                tracking_snapshot=tracking_snapshot,
-                missing_message=(
-                    "Registration file is missing. The run can continue, but pose will stay in tracker frame only."
-                ),
             )
         )
 

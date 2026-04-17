@@ -184,16 +184,16 @@ Acceptance:
 - review dataset bundle written under `data/pivot_calibration/`
 - RMSE and inlier/outlier counts saved
 
-### `EXP-V002` Repeatability Dataset
+### `EXP-V002` Single-Segment Repeatability
 
 Method:
 
-- run `repeatability_dataset` in dry-run, then live hardware
+- run `single_segment_repeatability` live after preflight is fully ready
 
 Acceptance:
 
 - canonical dataset written
-- summary includes repeatability metrics
+- summary includes repeatability metrics, run-validity coverage, and provenance
 - target comparison possible against `< 1 mm`
 
 ## GUI Validation

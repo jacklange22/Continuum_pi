@@ -1931,7 +1931,8 @@ def test_experiment_workspace_hides_operational_pivot_workflow_from_selector(tmp
     option_names = [option.name for option in controller.refresh().experiment_options]
 
     assert "pivot_calibration" not in option_names
-    assert "repeatability_dataset" in option_names
+    assert "repeatability_dataset" not in option_names
+    assert "single_segment_repeatability" in option_names
     assert "tracker_timing_validation" in option_names
     assert "servo_tracker_sync_validation" in option_names
     assert "pretension_validation" in option_names
@@ -1939,42 +1940,26 @@ def test_experiment_workspace_hides_operational_pivot_workflow_from_selector(tmp
     assert "collect_pose_command_dataset" in option_names
 
 
-def test_experiment_workspace_preflight_warns_for_repeatability_without_registration(tmp_path: Path) -> None:
+def test_experiment_workspace_blocks_single_segment_repeatability_in_mock_mode(tmp_path: Path) -> None:
     controller = _experiment_controller(tmp_path)
-    controller.select_experiment("repeatability_dataset")
+    controller.select_experiment("single_segment_repeatability")
 
     state = controller.refresh()
 
-    assert state.preflight_report.overall_status == "ok_with_warning"
-    assert any("Registration file is missing" in message for message in state.preflight_report.warning_messages)
+    assert state.preflight_report.overall_status == "blocked"
+    assert any("Disable mock mode" in message for message in state.preflight_report.blocking_messages)
 
 
-def test_experiment_workspace_preflight_reads_registration_and_neutral_from_canonical_paths(tmp_path: Path) -> None:
+def test_experiment_workspace_loads_single_segment_repeatability_defaults(tmp_path: Path) -> None:
     controller = _experiment_controller(tmp_path)
-    controller.servo_service.save_neutral_setpoints({1: 2048, 2: 2048, 3: 2048, 4: 2048})
-    controller.registration_path.write_text(
-        json.dumps(
-            {
-                "fre_mm": 0.4,
-                "validation_metrics": {
-                    "overall_fre_mm": 0.4,
-                    "max_residual_mm": 0.6,
-                    "worst_landmark_label": "L2",
-                    "worst_landmark_residual_mm": 0.6,
-                    "configured_max_fre_mm": 1.0,
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    controller.select_experiment("repeatability_dataset")
+    controller.select_experiment("single_segment_repeatability")
 
     state = controller.refresh()
-    checks = {check.key: check for check in state.preflight_report.checks}
 
-    assert checks["neutral_setpoints"].status == "ok"
-    assert checks["registration"].status == "ok"
-    assert "FRE=0.400 mm" in checks["registration"].message
+    assert state.selected_experiment == "single_segment_repeatability"
+    assert "baseline_run_path" in state.config_text
+    assert "min_repeat_captures_per_target" in state.config_text
+    assert "max_rejected_capture_fraction" in state.config_text
 
 
 def test_experiment_workspace_blocks_grid_accuracy_without_tip_calibration(tmp_path: Path) -> None:
@@ -2121,28 +2106,20 @@ def test_grid_accuracy_page_recapture_replaces_existing_batch_without_duplicate_
     assert "recaptured" in page.capture_status_text.toPlainText().lower()
 
 
-def test_repeatability_page_uses_custom_schedule_preview_and_target_catalog(tmp_path: Path) -> None:
+def test_single_segment_repeatability_page_shows_fixed_target_catalog_and_baseline_controls(tmp_path: Path) -> None:
     _app()
     controller = _experiment_controller(tmp_path)
     tab = ExperimentTab(controller)
-    controller.select_experiment("repeatability_dataset")
+    controller.select_experiment("single_segment_repeatability")
     state = controller.refresh()
     tab.update(state)
-    page = tab._page_for("repeatability_dataset")
+    page = tab._page_for("single_segment_repeatability")
 
-    assert page.target_set_combo.currentData() == "single_segment_ring_17"
-    assert page.manual_target_label.isHidden() is True
     assert page.target_table.rowCount() == 17
-    assert page.target_table.item(0, 0).text() == "Home"
-    assert "single_segment_ring_17" in controller.refresh().config_text
-
-    page.target_set_combo.setCurrentIndex(page.target_set_combo.findData("manual"))
-    page.target_points_edit.setPlainText("- [0.0, 0.0, 0.0, 0.0]\n- [0.1, 0.0, 0.0, 0.0]")
-    tab.update(controller.refresh())
-
-    assert page.manual_target_label.isHidden() is False
-    assert controller.get_config_value("schedule.target_set") == "manual"
-    assert page.target_table.rowCount() == 2
+    assert page.target_table.item(0, 0).text() == "T00"
+    assert page.protocol_summary_widget._pairs_signature is not None
+    assert page.comparison_summary_widget._pairs_signature is not None
+    assert "baseline_run_path" in controller.refresh().config_text
 
 
 def test_experiment_workspace_parameter_edit_updates_serialized_config(tmp_path: Path) -> None:
@@ -2220,12 +2197,12 @@ def test_repeatability_page_wraps_workspace_in_scroll_area_and_stacks_on_narrow_
     _app()
     controller = _experiment_controller(tmp_path)
     tab = ExperimentTab(controller)
-    controller.select_experiment("repeatability_dataset")
+    controller.select_experiment("single_segment_repeatability")
     tab.resize(920, 760)
     tab.show()
     tab.update(controller.refresh())
     QTest.qWait(20)
-    page = tab._page_for("repeatability_dataset")
+    page = tab._page_for("single_segment_repeatability")
 
     assert isinstance(page.scroll_area, QScrollArea)
     assert page.scroll_area.widget() is not None
@@ -2243,17 +2220,12 @@ def test_repeatability_page_preserves_target_table_scroll_on_benign_refresh(tmp_
     _app()
     controller = _experiment_controller(tmp_path)
     tab = ExperimentTab(controller)
-    controller.select_experiment("repeatability_dataset")
-    controller.set_config_value("schedule.target_set", "manual")
-    controller.set_parameter_value(
-        "schedule.target_points_cm",
-        "\n".join(f"- [{0.01 * index:.3f}, 0.0, 0.0, 0.0]" for index in range(30)),
-    )
+    controller.select_experiment("single_segment_repeatability")
     tab.resize(1100, 860)
     tab.show()
     tab.update(controller.refresh())
     QTest.qWait(20)
-    page = tab._page_for("repeatability_dataset")
+    page = tab._page_for("single_segment_repeatability")
 
     scroll_bar = page.target_table.verticalScrollBar()
     scroll_bar.setValue(max(1, scroll_bar.maximum() // 2))
@@ -2304,9 +2276,9 @@ def test_registration_and_experiment_tabs_expose_resizable_layout_defaults(tmp_p
     registration_tab = RegistrationTab(registration_controller)
     experiment_controller = _experiment_controller(tmp_path)
     experiment_tab = ExperimentTab(experiment_controller)
-    experiment_controller.select_experiment("repeatability_dataset")
+    experiment_controller.select_experiment("single_segment_repeatability")
     experiment_tab.update(experiment_controller.refresh())
-    repeatability_page = experiment_tab._page_for("repeatability_dataset")
+    repeatability_page = experiment_tab._page_for("single_segment_repeatability")
     servos_tab = ServosTab(servos_controller)
     system_tab = SystemTab(system_controller)
 

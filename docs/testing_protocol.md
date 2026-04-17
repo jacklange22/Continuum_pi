@@ -85,7 +85,7 @@ Pass criteria:
    `python scripts/run_lab_workflow.py experiment -- --help`
 2. Run `pivot_calibration` before live registration when the tip file changes.
 3. Run `aurora_grid_accuracy` before full robot experiments if tracker quality is in doubt.
-4. Run `repeatability_dataset` only after tracker, calibration, and registration are clean.
+4. Run `single_segment_repeatability` only after tracker, pivot tip, registration, runtime tip calibration, and pretension are clean.
 
 Pass criteria:
 
