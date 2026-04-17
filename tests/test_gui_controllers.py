@@ -2122,6 +2122,105 @@ def test_single_segment_repeatability_page_shows_fixed_target_catalog_and_baseli
     assert "baseline_run_path" in controller.refresh().config_text
 
 
+def test_repeatability_page_open_stays_responsive_during_history_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+
+    def _slow_scan(_output_root: Path, _experiment_name: str):
+        time.sleep(0.25)
+        return []
+
+    monkeypatch.setattr(controller, "_scan_run_history", _slow_scan)
+    controller.select_experiment("single_segment_repeatability")
+
+    started = time.monotonic()
+    state = controller.refresh()
+    tab.update(state)
+    elapsed_s = time.monotonic() - started
+
+    assert elapsed_s < 0.20
+    assert tab._page_for("single_segment_repeatability") is not None
+
+
+def test_repeatability_refresh_prerequisites_uses_cached_state_while_history_load_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = _experiment_controller(tmp_path)
+
+    def _slow_scan(_output_root: Path, _experiment_name: str):
+        time.sleep(0.25)
+        return []
+
+    monkeypatch.setattr(controller, "_scan_run_history", _slow_scan)
+    controller.select_experiment("single_segment_repeatability")
+    initial_state = controller.refresh()
+    assert initial_state.selected_experiment == "single_segment_repeatability"
+
+    monkeypatch.setattr(
+        controller,
+        "refresh",
+        lambda: (_ for _ in ()).throw(AssertionError("refresh() should not be called while cached preflight is valid")),
+    )
+
+    cached_state = controller.refresh_prerequisites()
+
+    assert cached_state is controller.state
+    assert cached_state.selected_experiment == "single_segment_repeatability"
+
+
+def test_repeatability_page_baseline_browse_does_not_force_synchronous_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("single_segment_repeatability")
+    tab.update(controller.refresh())
+    page = tab._page_for("single_segment_repeatability")
+
+    monkeypatch.setattr(
+        "continuum_robot.gui.widgets.experiment_pages.QFileDialog.getExistingDirectory",
+        lambda *args, **kwargs: str(tmp_path),
+    )
+    monkeypatch.setattr(
+        controller,
+        "refresh",
+        lambda: (_ for _ in ()).throw(AssertionError("baseline browse should not force a synchronous refresh")),
+    )
+
+    page._browse_baseline_run()
+
+    assert controller.get_config_value("baseline_run_path") == str(tmp_path)
+
+
+def test_experiment_tab_can_switch_away_while_repeatability_history_scan_runs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+
+    def _slow_scan(_output_root: Path, _experiment_name: str):
+        time.sleep(0.25)
+        return []
+
+    monkeypatch.setattr(controller, "_scan_run_history", _slow_scan)
+    controller.select_experiment("single_segment_repeatability")
+    tab.update(controller.refresh())
+
+    controller.select_experiment("aurora_grid_accuracy")
+    started = time.monotonic()
+    tab.update(controller.refresh())
+    elapsed_s = time.monotonic() - started
+
+    assert elapsed_s < 0.20
+    assert tab.page_stack.currentWidget() is tab._page_for("aurora_grid_accuracy")
+
+
 def test_experiment_workspace_parameter_edit_updates_serialized_config(tmp_path: Path) -> None:
     controller = _experiment_controller(tmp_path)
     controller.select_experiment("command_schedule_validation")

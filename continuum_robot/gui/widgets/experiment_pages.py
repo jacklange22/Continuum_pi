@@ -801,10 +801,6 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
         path = QFileDialog.getExistingDirectory(self, "Select Baseline Repeatability Run", "")
         if path:
             self.controller.set_config_value("baseline_run_path", path)
-            try:
-                self.set_state(self.controller.refresh())
-            except Exception:
-                return
 
     def _sync_target_table(self, config: SingleSegmentRepeatabilityConfig) -> None:
         targets = build_legacy_17_point_targets()

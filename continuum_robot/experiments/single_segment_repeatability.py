@@ -15,6 +15,7 @@ import json
 import math
 import random
 from pathlib import Path
+import threading
 from typing import Any
 
 import numpy as np
@@ -33,6 +34,10 @@ LEGACY_TARGET_COUNT = 17
 LEGACY_APPROACHES_PER_TARGET = 16
 LEGACY_VISIT_COUNT = LEGACY_TARGET_COUNT * LEGACY_APPROACHES_PER_TARGET
 LEGACY_CAPTURE_COUNT = LEGACY_VISIT_COUNT * 2
+
+
+_REPEATABILITY_METRICS_CACHE_LOCK = threading.Lock()
+_REPEATABILITY_METRICS_CACHE: dict[tuple[str, int, int], dict[str, Any]] = {}
 
 
 @dataclass(frozen=True)
@@ -595,6 +600,13 @@ def load_repeatability_metrics_from_run(path: Path) -> dict[str, Any]:
     summary_path = root if root.is_file() and root.name == "summary.json" else root / "summary.json"
     if not summary_path.exists():
         raise FileNotFoundError(f"Repeatability baseline summary not found: {summary_path}")
+    summary_stat = summary_path.stat()
+    resolved_summary_path = str(summary_path.resolve())
+    cache_key = (resolved_summary_path, int(summary_stat.st_mtime_ns), int(summary_stat.st_size))
+    with _REPEATABILITY_METRICS_CACHE_LOCK:
+        cached_metrics = _REPEATABILITY_METRICS_CACHE.get(cache_key)
+        if cached_metrics is not None:
+            return dict(cached_metrics)
     payload = json.loads(summary_path.read_text(encoding="utf-8"))
     metrics = payload.get("experiment_metrics", {})
     if not isinstance(metrics, dict):
@@ -609,6 +621,15 @@ def load_repeatability_metrics_from_run(path: Path) -> dict[str, Any]:
         raise ValueError(f"Baseline run is not a repeatability experiment: {experiment_name}")
     if experiment_name == "single_segment_repeatability" and protocol != "legacy_17_target_single_segment_all_other_approaches":
         raise ValueError(f"Baseline run does not use the legacy 17-target protocol: {protocol}")
+    with _REPEATABILITY_METRICS_CACHE_LOCK:
+        stale_keys = [
+            key
+            for key in _REPEATABILITY_METRICS_CACHE
+            if key[0] == resolved_summary_path and key != cache_key
+        ]
+        for stale_key in stale_keys:
+            _REPEATABILITY_METRICS_CACHE.pop(stale_key, None)
+        _REPEATABILITY_METRICS_CACHE[cache_key] = dict(metrics)
     return dict(metrics)
 
 

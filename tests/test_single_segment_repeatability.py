@@ -33,6 +33,7 @@ from continuum_robot.experiments.single_segment_repeatability import (
     compute_repeatability_baseline_comparison,
     compute_single_segment_repeatability_metrics,
     generate_legacy_revisit_sequence,
+    load_repeatability_metrics_from_run,
 )
 from continuum_robot.hardware.mock_dxl_bus import MockDxlBus
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
@@ -182,6 +183,45 @@ def test_repeatability_baseline_comparison_reports_improvement_deltas() -> None:
     assert comparison["rejected_capture_count"]["delta"] == -2
     assert comparison["per_target_rmse"]["0"]["delta_rmse_mm"] == pytest.approx(-0.3)
     assert comparison["group_metrics"]["ring"]["inner"]["delta"] == pytest.approx(-0.3)
+
+
+def test_repeatability_baseline_loader_caches_summary_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir = tmp_path / "data" / "experiments" / "single_segment_repeatability" / "baseline_run"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = run_dir / "summary.json"
+    summary_path.write_text(
+        json.dumps(
+            {
+                "experiment_name": "single_segment_repeatability",
+                "status": "success",
+                "success": True,
+                "run_id": "baseline",
+                "experiment_metrics": {
+                    "protocol": "legacy_17_target_single_segment_all_other_approaches",
+                    "overall_repeatability_rms_mm": 0.82,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    read_count = 0
+    original_read_text = Path.read_text
+
+    def _counted_read_text(self: Path, *args, **kwargs):
+        nonlocal read_count
+        if self == summary_path:
+            read_count += 1
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _counted_read_text)
+
+    first = load_repeatability_metrics_from_run(run_dir)
+    second = load_repeatability_metrics_from_run(run_dir)
+
+    assert first["overall_repeatability_rms_mm"] == pytest.approx(0.82)
+    assert second["overall_repeatability_rms_mm"] == pytest.approx(0.82)
+    assert read_count == 1
 
 
 def test_preflight_blocks_when_transform_chain_is_not_trusted(tmp_path: Path) -> None:

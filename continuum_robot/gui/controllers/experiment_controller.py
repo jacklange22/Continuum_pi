@@ -5,8 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
+import logging
+import os
 from pathlib import Path
 import threading
+import time
 from typing import Any
 
 import yaml
@@ -29,6 +32,9 @@ from continuum_robot.tracking.timing_benchmark import (
 from continuum_robot.gui.experiment_parameters import apply_field_value, dump_payload, parse_field_value
 from continuum_robot.gui.experiment_preflight import PreflightReport, RUN_BLOCKED, evaluate_preflight
 from continuum_robot.gui.experiment_visualization import VisualizationModel, build_visualization_model
+
+
+LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -82,6 +88,7 @@ class ExperimentViewState:
     loaded_run_path: str | None = None
     result_summary_lines: list[str] = field(default_factory=lambda: ["No run loaded."])
     history: list[RunHistoryEntry] = field(default_factory=list)
+    history_loading: bool = False
     color_mode: str = "target_point"
     show_axes: bool = True
     show_labels: bool = False
@@ -94,6 +101,10 @@ class ExperimentViewState:
 
 class ExperimentController:
     """Owns experiment workspace state, execution, and history loading."""
+
+    HISTORY_LIMIT = 25
+    HISTORY_SCAN_CANDIDATE_MULTIPLIER = 4
+    PREREQUISITE_REFRESH_INTERVAL_S = 0.25
 
     def __init__(
         self,
@@ -122,6 +133,11 @@ class ExperimentController:
         self._field_drafts: dict[str, str] = {}
         self._field_errors: dict[str, str] = {}
         self._raw_config_error: str | None = None
+        self._history_cache: dict[tuple[str, str], list[RunHistoryEntry]] = {}
+        self._history_loading_key: tuple[str, str] | None = None
+        self._preflight_cache_key: tuple[Any, ...] | None = None
+        self._preflight_cache_report: PreflightReport | None = None
+        self._last_prerequisite_refresh_s = 0.0
 
         self._options_by_name = self._build_workspace_options()
         self.state = ExperimentViewState(
@@ -146,12 +162,15 @@ class ExperimentController:
             visualization_dirty = self._visualization_dirty
             planned_output_dir = self._planned_output_dir(output_root, selected_experiment)
             cached_visualization_model = self.state.visualization_model
+            cached_history = self._history_cache.get((str(output_root), selected_experiment), [])
+            history_loading = self._history_loading_key == (str(output_root), selected_experiment)
 
         if not selected_experiment:
             with self._lock:
                 if history_dirty:
                     self.state.history = []
                     self._history_dirty = False
+                    self.state.history_loading = False
                 self.state.experiment_title = "Select An Experiment"
                 self.state.experiment_description = (
                     "Choose a structured validation or data-generation run from the dropdown above."
@@ -176,24 +195,22 @@ class ExperimentController:
 
         history = None
         if history_dirty:
-            history = self._scan_run_history(output_root, selected_experiment)
+            history = list(cached_history)
+            self._ensure_history_scan(output_root=output_root, experiment_name=selected_experiment)
+            history_loading = True
 
         tracking_snapshot = self.tracking_service.get_snapshot()
         neutral_setpoints = self.servo_service.load_neutral_setpoints()
         servo_calibration_summary = self.servo_service.neutral_calibration.get_calibration_summary()
-        preflight = evaluate_preflight(
+        preflight = self._get_preflight_report(
             experiment_name=selected_experiment,
             config_payload=config_payload,
             config_error=config_error,
-            settings=self.settings,
             tracking_snapshot=tracking_snapshot,
-            servo_connected=bool(self.servo_service.is_connected),
             neutral_setpoints=neutral_setpoints,
-            registration_path=self.registration_path,
+            servo_calibration_summary=servo_calibration_summary,
             output_root=output_root,
             planned_output_dir=planned_output_dir,
-            project_root=self.project_root,
-            servo_calibration_summary=servo_calibration_summary,
         )
 
         preview = None
@@ -246,7 +263,7 @@ class ExperimentController:
         with self._lock:
             if history is not None:
                 self.state.history = history
-                self._history_dirty = False
+            self.state.history_loading = bool(history_loading)
             option = self._options_by_name[selected_experiment]
             self.state.experiment_title = option.title
             self.state.experiment_description = option.description
@@ -264,6 +281,16 @@ class ExperimentController:
 
     def refresh_prerequisites(self) -> ExperimentViewState:
         """Compatibility alias for the main window refresh loop."""
+        with self._lock:
+            now = time.monotonic()
+            if (
+                self.state.selected_experiment
+                and not self.state.run_active
+                and not self._visualization_dirty
+                and self._preflight_cache_report is not None
+                and (now - self._last_prerequisite_refresh_s) < self.PREREQUISITE_REFRESH_INTERVAL_S
+            ):
+                return self.state
         return self.refresh()
 
     def select_experiment(self, experiment_name: str) -> None:
@@ -280,6 +307,7 @@ class ExperimentController:
             self._live_samples = []
             self._history_dirty = True
             self._visualization_dirty = True
+            self._invalidate_preflight_cache_locked()
             self._apply_payload_locked(payload)
             self._reset_planned_output_dir_locked()
 
@@ -306,6 +334,8 @@ class ExperimentController:
             self._history_dirty = True
             self._planned_output_dir_name = ""
             self.state.config_text = ""
+            self.state.history_loading = False
+            self._invalidate_preflight_cache_locked()
 
     def set_parameter_value(self, key: str, raw_value: str) -> None:
         with self._lock:
@@ -322,6 +352,7 @@ class ExperimentController:
             self._current_bundle = None
             self._live_samples = []
             self._visualization_dirty = True
+            self._invalidate_preflight_cache_locked()
             self._reset_planned_output_dir_locked()
             self._sync_config_text_locked()
 
@@ -334,6 +365,7 @@ class ExperimentController:
             self._current_bundle = None
             self._live_samples = []
             self._visualization_dirty = True
+            self._invalidate_preflight_cache_locked()
             self._reset_planned_output_dir_locked()
             self._sync_config_text_locked()
 
@@ -368,6 +400,7 @@ class ExperimentController:
             self._current_bundle = None
             self._live_samples = []
             self._visualization_dirty = True
+            self._invalidate_preflight_cache_locked()
             self._reset_planned_output_dir_locked()
             self._sync_config_text_locked()
 
@@ -379,6 +412,8 @@ class ExperimentController:
         with self._lock:
             self.state.output_root = str(raw_path).strip() or str(self.experiment_runner.output_dir)
             self._history_dirty = True
+            self.state.history_loading = False
+            self._invalidate_preflight_cache_locked()
             self._reset_planned_output_dir_locked()
 
     def set_color_mode(self, color_mode: str) -> None:
@@ -464,6 +499,7 @@ class ExperimentController:
                         self.state.last_error = None if result.success else result.message
                     self._history_dirty = True
                     self._visualization_dirty = True
+                    self._invalidate_preflight_cache_locked()
                     self._reset_planned_output_dir_locked()
             except Exception as exc:
                 with self._lock:
@@ -499,6 +535,7 @@ class ExperimentController:
             self._live_samples = []
             self._history_dirty = True
             self._visualization_dirty = True
+            self._invalidate_preflight_cache_locked()
             self._selected_payload = dict(bundle.metadata.config_used)
             self._field_errors.clear()
             self._field_drafts.clear()
@@ -634,15 +671,26 @@ class ExperimentController:
         experiment_root = canonical_experiment_output_root(output_root, experiment_name)
         if not experiment_root.exists():
             return entries
-        run_dirs = sorted(
-            {metadata_path.parent for metadata_path in experiment_root.rglob("metadata.json")},
-            key=lambda item: item.stat().st_mtime,
-            reverse=True,
-        )
+        candidate_limit = max(self.HISTORY_LIMIT, self.HISTORY_LIMIT * self.HISTORY_SCAN_CANDIDATE_MULTIPLIER)
+        run_dirs: list[Path] = []
+        try:
+            with os.scandir(experiment_root) as iterator:
+                run_dirs = [
+                    Path(entry.path)
+                    for entry in iterator
+                    if entry.is_dir()
+                ]
+        except Exception:
+            LOG.exception("Could not scan experiment history root %s", experiment_root)
+            return entries
+        # Canonical run folders are timestamp-prefixed, so lexical ordering gives
+        # a cheap and stable recency approximation without stat()-ing every run dir.
+        run_dirs.sort(key=lambda item: item.name, reverse=True)
+        run_dirs = run_dirs[:candidate_limit]
         for run_dir in run_dirs:
             summary_path = run_dir / "summary.json"
             metadata_path = run_dir / "metadata.json"
-            if not summary_path.exists():
+            if not summary_path.exists() or not metadata_path.exists():
                 continue
             try:
                 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -674,9 +722,175 @@ class ExperimentController:
                     ),
                 )
             )
-            if len(entries) >= 25:
+            if len(entries) >= self.HISTORY_LIMIT:
                 break
         return entries
+
+    def _ensure_history_scan(self, *, output_root: Path, experiment_name: str) -> None:
+        key = (str(output_root), str(experiment_name))
+        with self._lock:
+            if self._history_loading_key == key:
+                return
+            self._history_loading_key = key
+        LOG.debug("Scheduling experiment history scan for %s", key)
+
+        def _worker() -> None:
+            started = time.monotonic()
+            try:
+                entries = self._scan_run_history(output_root, experiment_name)
+            except Exception:
+                LOG.exception("Experiment history scan failed for %s", key)
+                entries = []
+            duration_ms = (time.monotonic() - started) * 1000.0
+            with self._lock:
+                self._history_cache[key] = entries
+                if self.state.selected_experiment == experiment_name and str(self._resolve_repo_path(self.state.output_root)) == str(output_root):
+                    self.state.history = list(entries)
+                    self.state.history_loading = False
+                    self._history_dirty = False
+                if self._history_loading_key == key:
+                    self._history_loading_key = None
+            LOG.debug(
+                "Experiment history scan finished for %s in %.1f ms with %d entries",
+                key,
+                duration_ms,
+                len(entries),
+            )
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _get_preflight_report(
+        self,
+        *,
+        experiment_name: str,
+        config_payload: dict[str, Any],
+        config_error: str | None,
+        tracking_snapshot,
+        neutral_setpoints: dict[int, int],
+        servo_calibration_summary,
+        output_root: Path,
+        planned_output_dir: Path,
+    ) -> PreflightReport:
+        key = self._build_preflight_cache_key(
+            experiment_name=experiment_name,
+            config_payload=config_payload,
+            config_error=config_error,
+            tracking_snapshot=tracking_snapshot,
+            neutral_setpoints=neutral_setpoints,
+            servo_calibration_summary=servo_calibration_summary,
+            output_root=output_root,
+            planned_output_dir=planned_output_dir,
+        )
+        with self._lock:
+            if key == self._preflight_cache_key and self._preflight_cache_report is not None:
+                return self._preflight_cache_report
+        started = time.monotonic()
+        report = evaluate_preflight(
+            experiment_name=experiment_name,
+            config_payload=config_payload,
+            config_error=config_error,
+            settings=self.settings,
+            tracking_snapshot=tracking_snapshot,
+            servo_connected=bool(self.servo_service.is_connected),
+            neutral_setpoints=neutral_setpoints,
+            registration_path=self.registration_path,
+            output_root=output_root,
+            planned_output_dir=planned_output_dir,
+            project_root=self.project_root,
+            servo_calibration_summary=servo_calibration_summary,
+        )
+        duration_ms = (time.monotonic() - started) * 1000.0
+        with self._lock:
+            self._preflight_cache_key = key
+            self._preflight_cache_report = report
+            self._last_prerequisite_refresh_s = time.monotonic()
+        LOG.debug("Experiment preflight refreshed for %s in %.1f ms", experiment_name, duration_ms)
+        return report
+
+    def _build_preflight_cache_key(
+        self,
+        *,
+        experiment_name: str,
+        config_payload: dict[str, Any],
+        config_error: str | None,
+        tracking_snapshot,
+        neutral_setpoints: dict[int, int],
+        servo_calibration_summary,
+        output_root: Path,
+        planned_output_dir: Path,
+    ) -> tuple[Any, ...]:
+        tools_signature = tuple(
+            (
+                str(tool_id),
+                bool(getattr(tool, "present", False)),
+                getattr(tool, "valid", None),
+                str(getattr(tool, "tracking_state", "")),
+            )
+            for tool_id, tool in sorted(getattr(tracking_snapshot, "tools", {}).items())
+        )
+        servo_summary_signature = tuple(
+            (
+                int(servo_id),
+                str(entry.pretension_result_status or ""),
+                entry.neutral_setpoint,
+                entry.pretension_final_position_tick,
+                str(entry.pretension_completed_at_utc or ""),
+            )
+            for servo_id, entry in sorted(getattr(servo_calibration_summary, "servo_entries", {}).items())
+        )
+        baseline_signature = None
+        if experiment_name == "single_segment_repeatability":
+            baseline_path = str(config_payload.get("baseline_run_path", "") or "").strip()
+            baseline_signature = self._path_signature(
+                self._resolve_repo_path(baseline_path) if baseline_path else None
+            )
+        return (
+            experiment_name,
+            json.dumps(config_payload, sort_keys=True, default=str),
+            str(config_error or ""),
+            str(output_root),
+            str(planned_output_dir),
+            bool(self.servo_service.is_connected),
+            tuple(sorted((int(key), int(value)) for key, value in neutral_setpoints.items())),
+            str(getattr(tracking_snapshot, "canonical_state", "")),
+            str(getattr(tracking_snapshot, "backend_identity", "")),
+            str(getattr(tracking_snapshot, "selected_backend_name", "")),
+            bool(getattr(tracking_snapshot, "tracker_data_stale", False)),
+            round(float(getattr(tracking_snapshot, "tracker_data_age_s", 0.0) or 0.0), 1),
+            str(getattr(tracking_snapshot, "registration_state", "")),
+            str(getattr(tracking_snapshot, "runtime_tip_calibration_state", "")),
+            bool(getattr(tracking_snapshot, "runtime_tip_identity_fallback", False)),
+            str(getattr(tracking_snapshot, "tip_pose_status", "")),
+            tools_signature,
+            self._path_signature(self.registration_path),
+            self._path_signature(self._configured_pivot_tip_path()),
+            str(getattr(servo_calibration_summary, "status", "")),
+            str(getattr(servo_calibration_summary, "updated_at_utc", "")),
+            bool(getattr(servo_calibration_summary, "compatible", False)),
+            str(getattr(servo_calibration_summary, "message", "")),
+            servo_summary_signature,
+            baseline_signature,
+        )
+
+    def _configured_pivot_tip_path(self) -> Path | None:
+        raw_path = getattr(self.settings.registration, "penprobe_file", None)
+        if not raw_path:
+            return None
+        return self._resolve_repo_path(raw_path)
+
+    @staticmethod
+    def _path_signature(path: Path | None) -> tuple[str, bool, int | None, int | None] | None:
+        if path is None:
+            return None
+        candidate = Path(path)
+        if not candidate.exists():
+            return (str(candidate), False, None, None)
+        stat = candidate.stat()
+        return (str(candidate), True, int(stat.st_mtime_ns), int(stat.st_size))
+
+    def _invalidate_preflight_cache_locked(self) -> None:
+        self._preflight_cache_key = None
+        self._preflight_cache_report = None
 
     def _format_history_label(
         self,
