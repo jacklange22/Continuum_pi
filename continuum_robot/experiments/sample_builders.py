@@ -5,8 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+import numpy as np
+
 from continuum_robot.experiments.framework import ExperimentSession
 from continuum_robot.experiments.schemas import ExperimentTimeseriesSample
+from continuum_robot.tracking.transforms import rotmat_to_quat_wxyz
 
 
 def sample_from_tracking_snapshot(
@@ -39,28 +42,35 @@ def sample_from_tracking_snapshot(
     for tool_id, tool in snapshot.tools.items():
         translation = list(tool.translation_mm) if tool.translation_mm is not None else None
         quaternion = list(tool.quaternion_wxyz) if tool.quaternion_wxyz is not None else None
+        tangent_xyz = None
         if tool_id == tracker_tool_id and override_tracker_position_mm is not None:
             translation = [float(value) for value in override_tracker_position_mm]
         if tool_id == tracker_tool_id and override_tracker_quaternion_wxyz is not None:
             quaternion = [float(value) for value in override_tracker_quaternion_wxyz]
+        if isinstance(quaternion, list) and len(quaternion) == 4:
+            tangent_xyz = _quat_to_tangent_xyz(quaternion)
         pose_in_tracker_frame[tool_id] = {
             "tracking_state": tool.tracking_state,
             "translation_mm": translation,
             "quaternion_wxyz": quaternion,
+            "tangent_xyz": tangent_xyz,
             "frame_number": tool.frame_number,
         }
     pose_in_robot_frame: dict[str, Any] = {}
     if snapshot.T_robot_tip is not None:
+        matrix = np.asarray(snapshot.T_robot_tip, dtype=float)
         translation_mm = [
-            float(snapshot.T_robot_tip[0][3]),
-            float(snapshot.T_robot_tip[1][3]),
-            float(snapshot.T_robot_tip[2][3]),
+            float(matrix[0][3]),
+            float(matrix[1][3]),
+            float(matrix[2][3]),
         ]
         if override_robot_position_mm is not None:
             translation_mm = [float(value) for value in override_robot_position_mm]
         pose_in_robot_frame["tip"] = {
             "matrix": snapshot.T_robot_tip,
             "translation_mm": translation_mm,
+            "quaternion_wxyz": list(rotmat_to_quat_wxyz(matrix[0:3, 0:3])),
+            "tangent_xyz": [float(matrix[0][2]), float(matrix[1][2]), float(matrix[2][2])],
         }
     elif override_robot_position_mm is not None:
         pose_in_robot_frame["tip"] = {
@@ -101,3 +111,22 @@ def sample_from_tracking_snapshot(
         },
         extra=dict(extra or {}),
     )
+
+
+def _quat_to_tangent_xyz(quaternion_wxyz: list[float]) -> list[float] | None:
+    if len(quaternion_wxyz) != 4:
+        return None
+    quat = np.asarray(quaternion_wxyz, dtype=float)
+    norm = float(np.linalg.norm(quat))
+    if norm <= 1e-12:
+        return None
+    w, x, y, z = quat / norm
+    tangent = np.asarray(
+        [
+            2.0 * (x * z + y * w),
+            2.0 * (y * z - x * w),
+            1.0 - 2.0 * (x * x + y * y),
+        ],
+        dtype=float,
+    )
+    return [float(value) for value in tangent]

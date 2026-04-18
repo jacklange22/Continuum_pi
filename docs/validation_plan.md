@@ -196,6 +196,21 @@ Acceptance:
 - summary includes repeatability metrics, run-validity coverage, and provenance
 - target comparison possible against `< 1 mm`
 
+### `EXP-V003` Motor Babble Modeling Dataset
+
+Method:
+
+- run `collect_pose_command_dataset` in the canonical Motor Babble workspace
+- collect `workspace_coverage`, `hysteresis_path_dependence`, and later `repeatability_linked` datasets under trusted preflight
+
+Acceptance:
+
+- canonical run bundle written under `data/experiments/collect_pose_command_dataset/`
+- summary records registration/runtime-tip/pretension provenance
+- accepted vs rejected captures are explicit
+- ordered export rows are preserved for later offline ANN / state-aware training
+- robot-frame tip tangent/orientation are present when the transform chain is trusted
+
 ## GUI Validation
 
 ### `GUI-V001` Registration Usability

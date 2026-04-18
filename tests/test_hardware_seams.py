@@ -18,7 +18,7 @@ from continuum_robot.config.schemas import (
 from continuum_robot.config.settings import Settings
 from continuum_robot.gui.controllers.servos_controller import ServosController
 from continuum_robot.gui.controllers.system_controller import SystemController
-from continuum_robot.hardware.dxl_bus import DxlBus, ServoTelemetry
+from continuum_robot.hardware.dxl_bus import DxlBus, DxlBusConfig, ServoTelemetry
 from continuum_robot.hardware.openrb_client import OpenRbClient
 from continuum_robot.services.tracking_service import TrackingService
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
@@ -191,6 +191,13 @@ def _make_fake_sdk() -> SimpleNamespace:
             state[servo_id][address] = int(value)
             return 0, 0
 
+        def write2ByteTxRx(self, _port_handler, servo_id: int, address: int, value: int):
+            if servo_id not in state:
+                return 1, 0
+            writes.append((servo_id, address, int(value)))
+            state[servo_id][address] = int(value)
+            return 0, 0
+
         def write4ByteTxRx(self, _port_handler, servo_id: int, address: int, value: int):
             if servo_id not in state:
                 return 1, 0
@@ -280,6 +287,30 @@ def test_real_dxl_bus_requires_sdk_for_hardware_access() -> None:
         bus.connect("/dev/ttyUSB0", 115200)
 
 
+def test_dxl_bus_config_preserves_single_segment_defaults_when_payload_is_partial() -> None:
+    config = DxlBusConfig.from_dict({"protocol_version": 2.0})
+
+    assert config.single_segment_preferred_operating_mode == 5
+    assert config.single_segment_allowed_operating_modes == [3, 5]
+    assert config.single_segment_default_goal_current_ma == 850
+    assert config.single_segment_default_profile_velocity == 80
+    assert config.single_segment_default_profile_acceleration == 20
+
+
+def test_dxl_bus_config_allows_explicit_null_single_segment_motion_defaults() -> None:
+    config = DxlBusConfig.from_dict(
+        {
+            "single_segment_default_goal_current_ma": None,
+            "single_segment_default_profile_velocity": None,
+            "single_segment_default_profile_acceleration": None,
+        }
+    )
+
+    assert config.single_segment_default_goal_current_ma is None
+    assert config.single_segment_default_profile_velocity is None
+    assert config.single_segment_default_profile_acceleration is None
+
+
 def test_openrb_client_validates_port_and_reports_status() -> None:
     client = OpenRbClient(
         config={"connect_timeout_s": 0.01, "port_settle_time_s": 0.0},
@@ -320,10 +351,20 @@ def test_dxl_bus_fake_sdk_scans_reads_and_writes() -> None:
     bus.write_goal_positions({1: 2100})
     assert bus.read_telemetry([1])[1].present_position == 2100
 
+    bus.write_operating_mode(1, 5)
+    bus.write_goal_current_ma(1, 850)
+    bus.write_profile_velocity(1, 80)
+    bus.write_profile_acceleration(1, 20)
+    assert bus.read_telemetry([1])[1].operating_mode == 5
+
     bus.write_servo_id(2, 5)
     assert bus.scan_ids(1, 6) == [1, 5]
     assert (2, 64, 0) in sdk._writes
     assert (2, 7, 5) in sdk._writes
+    assert (1, 11, 5) in sdk._writes
+    assert (1, 102, 850) in sdk._writes
+    assert (1, 112, 80) in sdk._writes
+    assert (1, 108, 20) in sdk._writes
 
 
 def test_system_and_servo_controllers_use_hardware_seams(tmp_path: Path) -> None:

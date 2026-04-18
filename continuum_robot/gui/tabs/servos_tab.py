@@ -614,6 +614,14 @@ class ServosTab(QWidget):
         ]
         if not state.single_servo_mode:
             operator_lines.append(f"Active pretension source: {state.pretension_source_summary}")
+            if state.single_segment_motion_config_summary:
+                operator_lines.append(f"Single-segment motion config: {state.single_segment_motion_config_summary}")
+            if state.single_segment_characterization_summary:
+                operator_lines.append(f"Practical pair travel: {state.single_segment_characterization_summary}")
+            if state.last_displacement_summary:
+                operator_lines.append(f"Last displacement: {state.last_displacement_summary}")
+            for line in state.last_displacement_debug_lines:
+                operator_lines.append(line)
         if state.selected_servo_reason_label and state.selected_servo_reason_label != "none":
             operator_lines.append(f"Reason: {state.selected_servo_reason_label}")
         if state.last_error:

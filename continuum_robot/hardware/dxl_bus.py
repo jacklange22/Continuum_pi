@@ -72,6 +72,12 @@ class DxlBusConfig:
     require_fresh_telemetry_for_motion: bool = True
     default_profile_velocity: int | None = None
     default_profile_acceleration: int | None = None
+    single_segment_auto_configure_motion_defaults: bool = True
+    single_segment_preferred_operating_mode: int = 5
+    single_segment_allowed_operating_modes: list[int] = field(default_factory=lambda: [3, 5])
+    single_segment_default_goal_current_ma: int | None = 850
+    single_segment_default_profile_velocity: int | None = 80
+    single_segment_default_profile_acceleration: int | None = 20
     auto_torque_enable_on_write: bool = True
     torque_disable_for_eeprom_write: bool = True
     discovery_min_id: int = 1
@@ -92,6 +98,7 @@ class DxlBusConfig:
             "bus_watchdog": 98,
             "profile_acceleration": 108,
             "profile_velocity": 112,
+            "goal_current": 102,
             "goal_position": 116,
             "present_current": 126,
             "present_position": 132,
@@ -102,25 +109,61 @@ class DxlBusConfig:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None = None) -> "DxlBusConfig":
+        defaults = cls()
         payload = dict(payload or {})
-        control_table = dict(cls().control_table)
+        control_table = dict(defaults.control_table)
         control_table.update(
             {
                 str(key): int(value)
                 for key, value in dict(payload.get("control_table", {}) or {}).items()
             }
         )
+        single_segment_goal_current = (
+            defaults.single_segment_default_goal_current_ma
+            if "single_segment_default_goal_current_ma" not in payload
+            else (
+                int(payload["single_segment_default_goal_current_ma"])
+                if payload.get("single_segment_default_goal_current_ma") not in (None, "")
+                else None
+            )
+        )
+        single_segment_profile_velocity = (
+            defaults.single_segment_default_profile_velocity
+            if "single_segment_default_profile_velocity" not in payload
+            else (
+                int(payload["single_segment_default_profile_velocity"])
+                if payload.get("single_segment_default_profile_velocity") not in (None, "")
+                else None
+            )
+        )
+        single_segment_profile_acceleration = (
+            defaults.single_segment_default_profile_acceleration
+            if "single_segment_default_profile_acceleration" not in payload
+            else (
+                int(payload["single_segment_default_profile_acceleration"])
+                if payload.get("single_segment_default_profile_acceleration") not in (None, "")
+                else None
+            )
+        )
         return cls(
-            protocol_version=float(payload.get("protocol_version", 2.0)),
-            positive_tick_rotation=str(payload.get("positive_tick_rotation", "ccw")).strip().lower(),
-            expected_operating_mode=int(payload.get("expected_operating_mode", 3)),
+            protocol_version=float(payload.get("protocol_version", defaults.protocol_version)),
+            positive_tick_rotation=str(payload.get("positive_tick_rotation", defaults.positive_tick_rotation)).strip().lower(),
+            expected_operating_mode=int(payload.get("expected_operating_mode", defaults.expected_operating_mode)),
             allowed_operating_modes=[
-                int(value) for value in list(payload.get("allowed_operating_modes", [payload.get("expected_operating_mode", 3)]))
+                int(value)
+                for value in list(
+                    payload.get(
+                        "allowed_operating_modes",
+                        [payload.get("expected_operating_mode", defaults.expected_operating_mode)],
+                    )
+                )
             ],
-            require_current_for_motion=bool(payload.get("require_current_for_motion", True)),
-            require_voltage_for_motion=bool(payload.get("require_voltage_for_motion", True)),
-            require_temperature_for_motion=bool(payload.get("require_temperature_for_motion", True)),
-            require_fresh_telemetry_for_motion=bool(payload.get("require_fresh_telemetry_for_motion", True)),
+            require_current_for_motion=bool(payload.get("require_current_for_motion", defaults.require_current_for_motion)),
+            require_voltage_for_motion=bool(payload.get("require_voltage_for_motion", defaults.require_voltage_for_motion)),
+            require_temperature_for_motion=bool(payload.get("require_temperature_for_motion", defaults.require_temperature_for_motion)),
+            require_fresh_telemetry_for_motion=bool(
+                payload.get("require_fresh_telemetry_for_motion", defaults.require_fresh_telemetry_for_motion)
+            ),
             default_profile_velocity=(
                 int(payload["default_profile_velocity"]) if payload.get("default_profile_velocity") not in (None, "") else None
             ),
@@ -129,12 +172,38 @@ class DxlBusConfig:
                 if payload.get("default_profile_acceleration") not in (None, "")
                 else None
             ),
-            auto_torque_enable_on_write=bool(payload.get("auto_torque_enable_on_write", True)),
-            torque_disable_for_eeprom_write=bool(payload.get("torque_disable_for_eeprom_write", True)),
-            discovery_min_id=int(payload.get("discovery_min_id", 1)),
-            discovery_max_id=int(payload.get("discovery_max_id", 20)),
-            voltage_scale_mv_per_unit=float(payload.get("voltage_scale_mv_per_unit", 100.0)),
-            current_scale_ma_per_unit=float(payload.get("current_scale_ma_per_unit", 1.0)),
+            single_segment_auto_configure_motion_defaults=bool(
+                payload.get(
+                    "single_segment_auto_configure_motion_defaults",
+                    defaults.single_segment_auto_configure_motion_defaults,
+                )
+            ),
+            single_segment_preferred_operating_mode=int(
+                payload.get(
+                    "single_segment_preferred_operating_mode",
+                    defaults.single_segment_preferred_operating_mode,
+                )
+            ),
+            single_segment_allowed_operating_modes=[
+                int(value)
+                for value in list(
+                    payload.get(
+                        "single_segment_allowed_operating_modes",
+                        list(defaults.single_segment_allowed_operating_modes),
+                    )
+                )
+            ],
+            single_segment_default_goal_current_ma=single_segment_goal_current,
+            single_segment_default_profile_velocity=single_segment_profile_velocity,
+            single_segment_default_profile_acceleration=single_segment_profile_acceleration,
+            auto_torque_enable_on_write=bool(payload.get("auto_torque_enable_on_write", defaults.auto_torque_enable_on_write)),
+            torque_disable_for_eeprom_write=bool(
+                payload.get("torque_disable_for_eeprom_write", defaults.torque_disable_for_eeprom_write)
+            ),
+            discovery_min_id=int(payload.get("discovery_min_id", defaults.discovery_min_id)),
+            discovery_max_id=int(payload.get("discovery_max_id", defaults.discovery_max_id)),
+            voltage_scale_mv_per_unit=float(payload.get("voltage_scale_mv_per_unit", defaults.voltage_scale_mv_per_unit)),
+            current_scale_ma_per_unit=float(payload.get("current_scale_ma_per_unit", defaults.current_scale_ma_per_unit)),
             control_table=control_table,
         )
 
@@ -277,6 +346,66 @@ class DxlBus:
                     "profile velocity",
                 )
             self._write4(servo_id, goal_address, _to_uint32(int(goal)), "goal position")
+
+    def write_operating_mode(self, servo_id: int, operating_mode: int) -> None:
+        """Safely change the operating mode, temporarily disabling torque if needed."""
+        self._require_connected()
+        torque_address = self.config.control_table["torque_enable"]
+        torque_enabled_raw, torque_error = self._read1(int(servo_id), torque_address)
+        if torque_error is not None:
+            raise RuntimeError(
+                f"Failed to read Torque Enable for servo {servo_id} before operating-mode write: {torque_error}"
+            )
+        restore_torque = bool(torque_enabled_raw)
+        if restore_torque:
+            self._write1(int(servo_id), torque_address, 0, "torque disable")
+        self._write1(
+            int(servo_id),
+            self.config.control_table["operating_mode"],
+            int(operating_mode),
+            "operating mode",
+        )
+        readback_mode, readback_error = self._read1(int(servo_id), self.config.control_table["operating_mode"])
+        if readback_error is not None:
+            raise RuntimeError(
+                f"Failed to verify operating mode for servo {servo_id}: {readback_error}"
+            )
+        if readback_mode != int(operating_mode):
+            raise RuntimeError(
+                f"Operating mode readback mismatch for servo {servo_id}: expected {operating_mode}, got {readback_mode}."
+            )
+        if restore_torque:
+            self._write1(int(servo_id), torque_address, 1, "torque enable")
+
+    def write_goal_current_ma(self, servo_id: int, current_ma: int) -> None:
+        """Write Goal Current in milliamps."""
+        self._require_connected()
+        self._write2(
+            int(servo_id),
+            self.config.control_table["goal_current"],
+            _to_uint16(int(current_ma)),
+            "goal current",
+        )
+
+    def write_profile_velocity(self, servo_id: int, profile_velocity: int) -> None:
+        """Write Profile Velocity."""
+        self._require_connected()
+        self._write4(
+            int(servo_id),
+            self.config.control_table["profile_velocity"],
+            _to_uint32(int(profile_velocity)),
+            "profile velocity",
+        )
+
+    def write_profile_acceleration(self, servo_id: int, profile_acceleration: int) -> None:
+        """Write Profile Acceleration."""
+        self._require_connected()
+        self._write4(
+            int(servo_id),
+            self.config.control_table["profile_acceleration"],
+            _to_uint32(int(profile_acceleration)),
+            "profile acceleration",
+        )
 
     def write_torque_enable(self, servo_id: int, enabled: bool) -> None:
         """Explicitly set the torque enable state for one servo."""
@@ -488,6 +617,9 @@ class DxlBus:
     def _write1(self, servo_id: int, address: int, value: int, label: str) -> None:
         self._write("write1ByteTxRx", servo_id, address, int(value) & 0xFF, label)
 
+    def _write2(self, servo_id: int, address: int, value: int, label: str) -> None:
+        self._write("write2ByteTxRx", servo_id, address, int(value) & 0xFFFF, label)
+
     def _write4(self, servo_id: int, address: int, value: int, label: str) -> None:
         self._write("write4ByteTxRx", servo_id, address, int(value) & 0xFFFFFFFF, label)
 
@@ -525,3 +657,7 @@ def _signed32(value: int) -> int:
 
 def _to_uint32(value: int) -> int:
     return int(value) & 0xFFFFFFFF
+
+
+def _to_uint16(value: int) -> int:
+    return int(value) & 0xFFFF

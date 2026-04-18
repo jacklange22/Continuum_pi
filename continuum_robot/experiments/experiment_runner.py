@@ -394,8 +394,14 @@ class ExperimentRunner:
     def _config_from_points(self, points: list[ExperimentPoint]) -> dict[str, Any]:
         if not points:
             raise RuntimeError("No experiment points are loaded.")
+        dry_run = bool(self.settings.runtime.mock_mode or not self.servo_service.is_connected)
         return {
-            "dry_run": bool(self.settings.runtime.mock_mode or not self.servo_service.is_connected),
+            "dry_run": dry_run,
+            # Legacy CSV/schedule replay is retained as a lower-trust compatibility path that routes
+            # through the canonical Motor Babble dataset collector without demanding thesis-grade state.
+            "require_robot_frame_tip": False,
+            "allow_lower_trust_runtime_tip": True,
+            "allow_lower_trust_pretension": True,
             "sample_count_per_point": 1,
             "settle_time_s": self.default_settle_time_s,
             "command_points": [

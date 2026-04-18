@@ -161,6 +161,37 @@ Target acceptance:
 - robot-frame metrics available only when the full live transform chain is trusted
 - repeatability summary is comparable to the `< 1 mm` target
 
+## Workflow 7: Motor Babble Modeling Dataset
+
+Applies now in `Experiment`.
+
+1. Open the Experiment workspace.
+2. Select `collect_pose_command_dataset`.
+3. Choose the dataset mode:
+   - `Workspace Coverage` for first-pass forward-model data
+   - `Hysteresis / Path Dependence` for ordered state-history datasets
+   - `Repeatability Linked` for trusted startup-state comparison blocks
+4. Review the collection summary:
+   - runtime tip mode
+   - pretension source
+   - preflight trust summary
+   - planned commands/captures
+   - output destination
+5. Run live only after accepted registration, accepted runtime tip, accepted pretension, and healthy tracker/servo state are confirmed.
+6. After the run, review:
+   - accepted vs rejected captures
+   - workspace coverage plot
+   - command distribution plot
+   - export JSONL / optional legacy DAT
+   - saved provenance in `summary.json` and `modeling_dataset_summary.txt`
+
+Target acceptance:
+
+- ordered command history is preserved
+- accepted samples use fresh valid tracker data only
+- robot-frame tip pose includes tangent/orientation when trusted
+- saved output is ready for later offline ANN / state-aware model training
+
 ## Recommended Lab Order
 
 1. tracker doctor / smoke
@@ -172,6 +203,7 @@ Target acceptance:
 7. one-servo OpenRB bring-up
 8. startup calibration and pretension
 9. single-segment repeatability
+10. Motor Babble modeling dataset collection
 
 ## Tracker Verdicts
 

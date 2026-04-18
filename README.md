@@ -848,7 +848,7 @@ What the repeatability and grid datasets record:
 - pose in robot/model frame when registration exists
 - explicit status flags when registration is missing versus when full pose is available
 
-The older `collect_pose_command_dataset` experiment remains available as a generic compatibility path for the current GUI and for ad hoc command schedules, but the three experiments above are now the canonical project-facing workflow.
+`collect_pose_command_dataset` is now the canonical single-segment Motor Babble modeling dataset workspace. It preserves legacy schedule/CSV replay only as an internal compatibility seam while the primary operator workflow now uses the purpose-built modeling dataset page in `Experiments`.
 
 ### Hardware-Backed Fit Later
 

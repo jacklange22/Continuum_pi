@@ -28,7 +28,7 @@ The old experiment approach mixed valuable lab concepts with duplicated helper c
   - when servo/current workflows are ready, this should become either a dedicated diagnostic experiment or a pretension/calibration service that the main experiments declare as a requirement
 - `dataset collection`
   - now represented directly by `single_segment_repeatability`
-  - `collect_pose_command_dataset` remains as a generic compatibility experiment for the GUI and ad hoc command lists
+  - `collect_pose_command_dataset` is the canonical single-segment Motor Babble modeling dataset workspace, with legacy schedule overrides retained only as an internal compatibility seam
 
 ## Legacy Files To Treat As Reference Inputs
 

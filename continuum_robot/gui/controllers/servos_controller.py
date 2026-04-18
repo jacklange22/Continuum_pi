@@ -73,6 +73,10 @@ class ServosViewState:
     pretension_source_note: str | None = None
     manual_pretension_can_accept: bool = False
     manual_pretension_can_clear: bool = False
+    last_displacement_summary: str = ""
+    last_displacement_debug_lines: list[str] = field(default_factory=list)
+    single_segment_motion_config_summary: str = ""
+    single_segment_characterization_summary: str = ""
     bench_debug_text: str = ""
     status_message: str = "Servo control idle."
     last_error: str | None = None
@@ -121,6 +125,7 @@ class ServosController:
         self.state.single_servo_mode = (
             self.settings.robot.mode == "1-servo" or len(self.state.expected_servo_ids) == 1
         )
+        self._refresh_single_segment_motion_diagnostics()
         self._refresh_calibration_summary()
         self._sync_active_neutral_setpoints()
         if not self.state.connected:
@@ -167,6 +172,7 @@ class ServosController:
                 self.state.blocking_reasons = list(selected.blocking_reasons)
                 self.state.selected_servo_external_power_ready = selected.external_power_ready
             self.state.last_error = None
+            self._refresh_single_segment_motion_diagnostics()
             self.state.bench_debug_text = self._build_multi_servo_bench_debug_text()
             self._sync_selected_servo_motion_state()
         return self.state
@@ -268,13 +274,53 @@ class ServosController:
                 servo_ids=self.state.servo_ids,
             )
             self.state.status_message = result.message
+            self.state.last_displacement_summary = result.message
+            self.state.last_displacement_debug_lines = self._format_displacement_debug_lines(result)
             self.state.last_error = None
         except Exception as exc:
             self.state.last_error = str(exc)
             self.state.status_message = f"Displacement rejected: {exc}"
+            self.state.last_displacement_summary = self.state.status_message
+            self.state.last_displacement_debug_lines = []
             raise
         finally:
             self.refresh()
+
+    def _format_displacement_debug_lines(self, result) -> list[str]:
+        requested = list(getattr(result, "requested_displacements_cm", []) or [])
+        resolved = list(getattr(result, "resolved_displacements_cm", []) or [])
+        debug_entries = dict(getattr(result, "debug_entries_by_id", {}) or {})
+        lines: list[str] = []
+        if requested:
+            lines.append("Requested displacement (cm): " + ", ".join(f"{value:.3f}" for value in requested))
+        if resolved:
+            lines.append("Resolved displacement (cm): " + ", ".join(f"{value:.3f}" for value in resolved))
+        for servo_id in sorted(debug_entries):
+            entry = debug_entries[int(servo_id)]
+            mode_text = (
+                self.servo_service.operating_mode_label(entry.operating_mode)
+                if entry.operating_mode is not None
+                else "—"
+            )
+            preferred_text = (
+                self.servo_service.operating_mode_label(entry.preferred_operating_mode)
+                if entry.preferred_operating_mode is not None
+                else "—"
+            )
+            lines.append(
+                "Servo "
+                f"{int(servo_id)}: pos {entry.present_position_tick if entry.present_position_tick is not None else '—'}, "
+                f"current {entry.present_current_ma if entry.present_current_ma is not None else '—'} mA, "
+                f"goal {entry.raw_goal_tick if entry.raw_goal_tick is not None else '—'}, "
+                f"bounds [{entry.safe_min_tick if entry.safe_min_tick is not None else '—'}, "
+                f"{entry.safe_max_tick if entry.safe_max_tick is not None else '—'}], "
+                f"mode {mode_text}->{preferred_text}, "
+                f"goal current {entry.goal_current_ma if entry.goal_current_ma is not None else '—'} mA, "
+                f"profile {entry.profile_velocity if entry.profile_velocity is not None else '—'}/"
+                f"{entry.profile_acceleration if entry.profile_acceleration is not None else '—'}, "
+                f"limit {entry.limit_source}"
+            )
+        return lines
 
     def capture_neutral_setpoints(self) -> dict[int, int]:
         try:
@@ -1048,6 +1094,7 @@ class ServosController:
                 f"selected_current={selected.get('current_ma')}",
                 f"selected_voltage={selected.get('voltage_mv')}",
                 f"selected_temperature={selected.get('temperature_c')}",
+                f"selected_operating_mode={selected.get('operating_mode')}",
                 f"selected_torque={selected.get('torque_label')}",
                 f"selected_telemetry_age_s={selected.get('telemetry_age_s')}",
                 f"freshness_threshold_s={self.servo_service.telemetry_freshness_threshold_s():.3f}",
@@ -1055,6 +1102,8 @@ class ServosController:
                 f"selected_motion_ready={selected.get('motion_ready')}",
                 f"selected_error={selected.get('error') or 'none'}",
                 f"active_range={self.servo_service.raw_position_range()[0]}..{self.servo_service.raw_position_range()[1]}",
+                f"single_segment_motion_config={self.state.single_segment_motion_config_summary or 'unavailable'}",
+                f"single_segment_characterization={self.state.single_segment_characterization_summary or 'unavailable'}",
                 "position_convention=tighten->smaller_counts; loosen->larger_counts",
             ]
         )
@@ -1167,6 +1216,26 @@ class ServosController:
             ):
                 active_setpoints[int(servo_id)] = int(entry.neutral_setpoint)
         self.state.neutral_setpoints = active_setpoints
+
+    def _refresh_single_segment_motion_diagnostics(self) -> None:
+        if self.state.single_servo_mode or len(self.state.expected_servo_ids) != 4:
+            self.state.single_segment_motion_config_summary = ""
+            self.state.single_segment_characterization_summary = ""
+            return
+        servo_ids = list(self.state.servo_ids or self.state.expected_servo_ids)
+        config_summary = self.servo_service.single_segment_motion_configuration_summary(servo_ids)
+        self.state.single_segment_motion_config_summary = config_summary.message
+        telemetry_by_id = {}
+        snapshot = self.latest_runtime_snapshot
+        if snapshot is not None:
+            for servo_id, entry in dict(getattr(snapshot, "entries", {}) or {}).items():
+                if entry is not None and getattr(entry, "telemetry", None) is not None:
+                    telemetry_by_id[int(servo_id)] = entry.telemetry
+        characterization = self.servo_service.characterize_single_segment_motion(
+            servo_ids=servo_ids,
+            telemetry_by_id=telemetry_by_id or None,
+        )
+        self.state.single_segment_characterization_summary = characterization.message
 
     @staticmethod
     def _format_action_label(action: str) -> str:

@@ -57,6 +57,8 @@ dynamixel_settings:
   # Retained as low-level metadata for the bus seam. The one-servo MVP uses the
   # raw-position convention directly: tighten lowers counts, loosen raises counts.
   positive_tick_rotation: "ccw"
+  # Keep single-servo bring-up compatible with plain Position Control, but prefer
+  # Current-based Position Control for coordinated 4-servo single-segment motion.
   expected_operating_mode: 3
   allowed_operating_modes: [3]
   require_current_for_motion: true
@@ -65,6 +67,12 @@ dynamixel_settings:
   require_fresh_telemetry_for_motion: true
   default_profile_velocity: null
   default_profile_acceleration: null
+  single_segment_auto_configure_motion_defaults: true
+  single_segment_preferred_operating_mode: 5
+  single_segment_allowed_operating_modes: [3, 5]
+  single_segment_default_goal_current_ma: 850
+  single_segment_default_profile_velocity: 80
+  single_segment_default_profile_acceleration: 20
   auto_torque_enable_on_write: true
   torque_disable_for_eeprom_write: true
   discovery_min_id: 1
@@ -82,6 +90,7 @@ dynamixel_settings:
     torque_enable: 64
     hardware_error_status: 70
     bus_watchdog: 98
+    goal_current: 102
     profile_acceleration: 108
     profile_velocity: 112
     goal_position: 116

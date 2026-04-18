@@ -77,6 +77,26 @@ class MockDxlBus(DxlBus):
             telemetry.present_temperature_c = min(65, 30 + current // 20)
             telemetry.last_read_monotonic_s = time.monotonic()
 
+    def write_operating_mode(self, servo_id: int, operating_mode: int) -> None:
+        telemetry = self._state.setdefault(int(servo_id), ServoTelemetry(servo_id=int(servo_id)))
+        telemetry.operating_mode = int(operating_mode)
+        telemetry.last_read_monotonic_s = time.monotonic()
+
+    def write_goal_current_ma(self, servo_id: int, current_ma: int) -> None:
+        telemetry = self._state.setdefault(int(servo_id), ServoTelemetry(servo_id=int(servo_id)))
+        telemetry.goal_current_ma = int(current_ma)
+        telemetry.last_read_monotonic_s = time.monotonic()
+
+    def write_profile_velocity(self, servo_id: int, profile_velocity: int) -> None:
+        telemetry = self._state.setdefault(int(servo_id), ServoTelemetry(servo_id=int(servo_id)))
+        telemetry.profile_velocity = int(profile_velocity)
+        telemetry.last_read_monotonic_s = time.monotonic()
+
+    def write_profile_acceleration(self, servo_id: int, profile_acceleration: int) -> None:
+        telemetry = self._state.setdefault(int(servo_id), ServoTelemetry(servo_id=int(servo_id)))
+        telemetry.profile_acceleration = int(profile_acceleration)
+        telemetry.last_read_monotonic_s = time.monotonic()
+
     def write_torque_enable(self, servo_id: int, enabled: bool) -> None:
         telemetry = self._state.setdefault(int(servo_id), ServoTelemetry(servo_id=int(servo_id)))
         telemetry.torque_enabled = bool(enabled)

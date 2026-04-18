@@ -209,6 +209,81 @@ def _tracking_snapshot(*, translation_mm: list[float]) -> TrackingSnapshot:
     )
 
 
+def _trusted_modeling_snapshot(
+    *,
+    translation_mm: list[float],
+    registration_path: Path,
+    frame_number: int = 1,
+    tracker_age_s: float = 0.01,
+    tracker_stale: bool = False,
+    runtime_tip_mode: str = "latest_accepted",
+    registration_state: str = "loaded",
+    tip_pose_status: str = "ok",
+    include_robot_tip: bool = True,
+) -> TrackingSnapshot:
+    T_robot_tip = np.eye(4).tolist() if include_robot_tip else None
+    if T_robot_tip is not None:
+        T_robot_tip[0][3] = float(translation_mm[0])
+        T_robot_tip[1][3] = float(translation_mm[1])
+        T_robot_tip[2][3] = float(translation_mm[2])
+    return TrackingSnapshot(
+        health=ServiceHealthSnapshot(
+            name="tracking_service",
+            health=HEALTH_HEALTHY,
+            state="tracking",
+            status="ok",
+        ),
+        connection_state="tracking",
+        canonical_state="streaming_healthy",
+        backend_identity="ndi_tracker_python",
+        configured_backend_name="ndi",
+        selected_backend_name="ndi",
+        runtime_coil_tool_id="0A",
+        registration_tool_id="0B",
+        tracker_data_age_s=float(tracker_age_s),
+        tracker_data_stale=bool(tracker_stale),
+        last_frame_number=int(frame_number),
+        registration_state=str(registration_state),
+        registration_path=str(registration_path),
+        T_robot_aurora=np.eye(4).tolist() if registration_state == "loaded" else None,
+        runtime_tip_calibration_state="loaded" if include_robot_tip else "missing_runtime_tip_calibration",
+        runtime_tip_calibration_path=str(registration_path.parent / "latest_runtime_tip_calibration.json"),
+        runtime_tip_mode=str(runtime_tip_mode),
+        runtime_tip_trust_level="trusted" if runtime_tip_mode == "latest_accepted" else "override",
+        runtime_tip_mode_message="Test runtime tip mode",
+        runtime_tip_selected_artifact_kind="latest_runtime_tip_calibration",
+        runtime_tip_selected_artifact_path=str(registration_path.parent / "latest_runtime_tip_calibration.json"),
+        runtime_tip_identity_fallback=False,
+        tip_pose_status=str(tip_pose_status),
+        T_robot_tip=T_robot_tip,
+        normalized_live_tool_ids=["0A", "0B"],
+        tools={
+            "0A": ToolTrackingSnapshot(
+                tool_id="0A",
+                present=True,
+                valid=True,
+                validity_known=True,
+                tracking_state="valid",
+                status="ok",
+                frame_number=int(frame_number),
+                translation_mm=tuple(float(value) for value in translation_mm),
+                quaternion_wxyz=(1.0, 0.0, 0.0, 0.0),
+            ),
+            "0B": ToolTrackingSnapshot(
+                tool_id="0B",
+                present=True,
+                valid=True,
+                validity_known=True,
+                tracking_state="valid",
+                status="ok",
+                frame_number=int(frame_number),
+                translation_mm=(0.0, 0.0, 0.0),
+                quaternion_wxyz=(1.0, 0.0, 0.0, 0.0),
+            ),
+        },
+    )
+
+
 def _tracking_service(settings: Settings, tmp_path: Path, registration_path: Path | None = None) -> TrackingService:
     return TrackingService(
         live_backend=MockTrackerManager(poll_hz=30),
@@ -218,6 +293,16 @@ def _tracking_service(settings: Settings, tmp_path: Path, registration_path: Pat
         runtime_coil_tool_id=settings.registration.coil_tool_id,
         registration_tool_id=settings.registration.capture_tool_id,
     )
+
+
+def _ready_modeling_servo_service(tmp_path: Path) -> ServoService:
+    service = _servo_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    for servo_id in [1, 2, 3, 4]:
+        service.save_startup_calibration(servo_id=servo_id)
+    service.capture_manual_pretension_state(note="test modeling startup")
+    service.accept_manual_pretension_state()
+    return service
 
 
 def _runner(
@@ -934,49 +1019,168 @@ def test_pretension_validation_experiment_writes_outputs_without_tracker_data(tm
 
 
 def test_collect_pose_command_dataset_marks_registration_missing(tmp_path: Path) -> None:
-    runner = _runner(tmp_path)
+    registration_path = tmp_path / "latest_registration.json"
+    snapshot = _trusted_modeling_snapshot(
+        translation_mm=[0.0, 0.0, 0.0],
+        registration_path=registration_path,
+        frame_number=1,
+        registration_state="missing_registration",
+        tip_pose_status="missing_runtime_tip",
+        include_robot_tip=False,
+    )
+    runner = _runner(
+        tmp_path,
+        tracking_service=_SequencedTrackingService([snapshot, snapshot, snapshot]),
+        registration_path=registration_path,
+    )
     result = runner.run_experiment(
         "collect_pose_command_dataset",
         config={
+            "dataset_mode": "workspace_coverage",
             "dry_run": True,
-            "sample_count_per_point": 2,
-            "command_schedule": {
-                "kind": "trajectory",
-                "dimensions": 4,
-                "trajectory_points_cm": [[0.0, 0.0, 0.0, 0.0], [0.1, 0.0, 0.0, 0.0]],
-            },
+            "sample_count_target": 3,
+            "samples_per_command": 1,
+            "require_robot_frame_tip": False,
+            "allow_lower_trust_runtime_tip": True,
         },
     )
 
     assert result.success is True
     bundle = runner.load_dataset(result.paths.output_dir)
     assert any("registration_missing" in sample.status_flags for sample in bundle.samples)
-    assert not any("full_pose_available" in sample.status_flags for sample in bundle.samples)
+    assert bundle.summary.status == "partial_success"
+    assert not any("full_pose_available" in sample.status_flags for sample in bundle.samples if sample.phase != "initial_neutral")
 
 
 def test_collect_pose_command_dataset_records_full_pose_when_registration_exists(tmp_path: Path) -> None:
-    registration_path = tmp_path / "latest_registration.json"
-    registration_path.write_text(
-        json.dumps({"T_robot_aurora": np.eye(4).tolist(), "T_coil_tip": np.eye(4).tolist()}),
-        encoding="utf-8",
-    )
     settings = _settings()
-    tracking_service = _tracking_service(settings, tmp_path, registration_path=registration_path)
-    runner = _runner(tmp_path, settings=settings, tracking_service=tracking_service, registration_path=registration_path)
+    settings.runtime.mock_mode = False
+    registration_path = tmp_path / "latest_registration.json"
+    registration_path.write_text(json.dumps({"T_robot_aurora": np.eye(4).tolist()}), encoding="utf-8")
+    servo_service = _ready_modeling_servo_service(tmp_path)
+    snapshots = [
+        _trusted_modeling_snapshot(translation_mm=[0.0, 0.0, 0.0], registration_path=registration_path, frame_number=1),
+        _trusted_modeling_snapshot(translation_mm=[0.0, 0.0, 0.0], registration_path=registration_path, frame_number=2),
+        _trusted_modeling_snapshot(translation_mm=[1.0, 0.5, 0.2], registration_path=registration_path, frame_number=3),
+        _trusted_modeling_snapshot(translation_mm=[2.0, 1.0, 0.3], registration_path=registration_path, frame_number=4),
+    ]
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_SequencedTrackingService(snapshots),
+        registration_path=registration_path,
+        servo_service=servo_service,
+    )
 
     result = runner.run_experiment(
         "collect_pose_command_dataset",
         config={
-            "dry_run": True,
-            "sample_count_per_point": 1,
-            "command_schedule": {
-                "kind": "trajectory",
-                "dimensions": 4,
-                "trajectory_points_cm": [[0.0, 0.0, 0.0, 0.0]],
-            },
+            "dataset_mode": "workspace_coverage",
+            "dry_run": False,
+            "sample_count_target": 1,
+            "samples_per_command": 1,
         },
     )
 
     assert result.success is True
     bundle = runner.load_dataset(result.paths.output_dir)
     assert any("full_pose_available" in sample.status_flags for sample in bundle.samples)
+    accepted_samples = [sample for sample in bundle.samples if sample.extra.get("capture_accepted")]
+    assert accepted_samples
+    assert accepted_samples[0].pose_in_robot_frame["tip"]["tangent_xyz"] == [0.0, 0.0, 1.0]
+    assert accepted_samples[0].pose_in_robot_frame["tip"]["quaternion_wxyz"] == [1.0, 0.0, 0.0, 0.0]
+    assert bundle.paths.output_dir.joinpath("modeling_dataset_summary.txt").exists()
+    assert bundle.paths.output_dir.joinpath("modeling_dataset_export.jsonl").exists()
+    assert bundle.paths.output_dir.joinpath("modeling_workspace_coverage.png").exists()
+    assert bundle.paths.output_dir.joinpath("modeling_command_distribution.png").exists()
+    assert bundle.paths.output_dir.joinpath("modeling_dataset_legacy_compat.dat").exists()
+    metrics = bundle.summary.experiment_metrics
+    assert metrics["run_provenance"]["runtime_tip_calibration"]["mode"] == "latest_accepted"
+    assert metrics["run_provenance"]["pretension_artifact"]["active_source_type"] == "manual"
+    export_rows = [
+        json.loads(line)
+        for line in bundle.paths.output_dir.joinpath("modeling_dataset_export.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert export_rows
+    assert [row["sequence_index"] for row in export_rows] == list(range(len(export_rows)))
+    assert any(row["accepted"] for row in export_rows)
+    assert any(row["tip_tangent_xyz"] == [0.0, 0.0, 1.0] for row in export_rows if row["accepted"])
+
+
+def test_collect_pose_command_dataset_rejects_stale_tracker_samples(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    registration_path = tmp_path / "latest_registration.json"
+    registration_path.write_text(json.dumps({"T_robot_aurora": np.eye(4).tolist()}), encoding="utf-8")
+    servo_service = _ready_modeling_servo_service(tmp_path)
+    stale_snapshot = _trusted_modeling_snapshot(
+        translation_mm=[0.0, 0.0, 0.0],
+        registration_path=registration_path,
+        frame_number=1,
+        tracker_age_s=0.6,
+        tracker_stale=True,
+    )
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_SequencedTrackingService([stale_snapshot, stale_snapshot, stale_snapshot]),
+        registration_path=registration_path,
+        servo_service=servo_service,
+    )
+
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dataset_mode": "workspace_coverage",
+            "dry_run": False,
+            "sample_count_target": 1,
+            "samples_per_command": 1,
+            "capture_timeout_s": 0.001,
+            "capture_poll_interval_s": 0.0,
+            "max_tracker_age_s": 0.05,
+        },
+    )
+
+    assert result.success is False
+    bundle = runner.load_dataset(result.paths.output_dir)
+    assert bundle.summary.status == "invalid_due_to_insufficient_samples"
+    rejected = [sample for sample in bundle.samples if sample.extra.get("capture_accepted") is False]
+    assert rejected
+    assert any("tracker_data_stale" in sample.extra.get("capture_rejection_reason", "") for sample in rejected)
+
+
+def test_collect_pose_command_dataset_blocks_lower_trust_runtime_tip_by_default(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    registration_path = tmp_path / "latest_registration.json"
+    registration_path.write_text(json.dumps({"T_robot_aurora": np.eye(4).tolist()}), encoding="utf-8")
+    servo_service = _ready_modeling_servo_service(tmp_path)
+    snapshot = _trusted_modeling_snapshot(
+        translation_mm=[0.0, 0.0, 0.0],
+        registration_path=registration_path,
+        frame_number=1,
+        runtime_tip_mode="coil_as_tip",
+    )
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_SequencedTrackingService([snapshot]),
+        registration_path=registration_path,
+        servo_service=servo_service,
+    )
+
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dataset_mode": "workspace_coverage",
+            "dry_run": False,
+            "sample_count_target": 1,
+            "samples_per_command": 1,
+        },
+    )
+
+    assert result.success is False
+    assert "latest_accepted runtime tip mode" in result.message
+    bundle = runner.load_dataset(result.paths.output_dir)
+    assert bundle.summary.status == "invalid_due_to_insufficient_samples"

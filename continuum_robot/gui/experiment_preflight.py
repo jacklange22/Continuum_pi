@@ -582,13 +582,13 @@ def evaluate_preflight(
         checks.append(_info("registration", "Registration", "Registration is not required for schedule validation."))
 
     elif experiment_name == "collect_pose_command_dataset":
-        checks.append(_tracking_state_check(settings=settings, tracker_ready=tracker_ready, backend_name=backend_name, tracking_snapshot=tracking_snapshot))
         config = CollectPoseCommandDatasetConfig.from_dict(payload)
+        checks.append(_tracking_state_check(settings=settings, tracker_ready=tracker_ready, backend_name=backend_name, tracking_snapshot=tracking_snapshot))
         try:
-            points = (
-                list(config.command_points)
-                if config.command_points
-                else generate_command_schedule(config.command_schedule)
+            points = list(config.command_points) if config.command_points else (
+                generate_command_schedule(config.command_schedule)
+                if bool(config.legacy_schedule_override)
+                else []
             )
         except Exception as exc:
             checks.append(
@@ -603,23 +603,52 @@ def evaluate_preflight(
             checks.append(
                 _ok(
                     "schedule",
-                    "Command Schedule",
-                    f"{len(points)} command point(s) will be sampled with {max(1, int(config.sample_count_per_point))} sample(s) per point.",
+                    "Command Protocol",
+                    f"Legacy schedule override will run {len(points)} explicit command point(s) with {max(1, int(config.samples_per_command))} sample(s) per command.",
                 )
             )
+            planned_command_count = len(points)
+        else:
+            if config.dataset_mode == "workspace_coverage":
+                planned_command_count = max(1, int((int(config.sample_count_target) + max(1, int(config.samples_per_command)) - 1) / max(1, int(config.samples_per_command))))
+                mode_message = (
+                    f"Workspace coverage will target about {int(config.sample_count_target)} accepted samples "
+                    f"using bounded {'quasi-random' if config.quasi_random else 'random'} pair commands."
+                )
+            elif config.dataset_mode == "hysteresis_path_dependence":
+                planned_command_count = max(1, int(config.hysteresis_target_count)) * max(1, int(config.hysteresis_cycle_count)) * max(2, int(config.hysteresis_prior_family_count)) * 2
+                mode_message = (
+                    f"Hysteresis path-dependence will run {int(config.hysteresis_cycle_count)} cycle(s), "
+                    f"{int(config.hysteresis_target_count)} target family points, and "
+                    f"{int(config.hysteresis_prior_family_count)} prior-state families."
+                )
+            else:
+                planned_command_count = max(1, int(config.repeatability_block_count)) * max(1, int((int(config.sample_count_target) + max(1, int(config.samples_per_command)) - 1) / max(1, int(config.samples_per_command))))
+                mode_message = (
+                    f"Repeatability-linked collection will run {int(config.repeatability_block_count)} trusted startup block(s) "
+                    f"with about {int(config.sample_count_target)} accepted samples per block."
+                )
+            checks.append(_ok("schedule", "Command Protocol", mode_message))
+        checks.append(
+            _ok(
+                "capture_plan",
+                "Capture Plan",
+                f"Planned commands={int(planned_command_count)}, samples/command={max(1, int(config.samples_per_command))}, planned captures={int(planned_command_count * max(1, int(config.samples_per_command)) + 2)}.",
+            )
+        )
         expected_dims = len(settings.robot.tendon_to_servo or settings.robot.servo_ids)
         neutral_count = len(neutral_setpoints)
         if config.dry_run:
-            checks.append(_info("mode", "Run Mode", "Dataset collection will run in dry-run mode."))
+            checks.append(_warning("mode", "Run Mode", "Dry-run is enabled. This is useful for protocol rehearsal, but the run is not thesis-grade modeling data."))
             checks.append(
                 PreflightCheck(
                     "neutral_setpoints",
                     "Neutral Setpoints",
-                    PREFLIGHT_OK if neutral_count == expected_dims else PREFLIGHT_WARNING,
+                    PREFLIGHT_OK if neutral_count == expected_dims else PREFLIGHT_INFO,
                     (
                         f"Neutral setpoints are available for all {expected_dims} tendons."
                         if neutral_count == expected_dims
-                        else "Neutral setpoints are incomplete. Dry-run output can still be recorded, but live command replay would be partial."
+                        else "Neutral setpoints are incomplete. Dry-run output can still be recorded, but live replay would not be ready."
                     ),
                 )
             )
@@ -632,7 +661,7 @@ def evaluate_preflight(
                 )
             )
         else:
-            checks.append(_ok("mode", "Run Mode", "Live dataset collection will use the connected servo service."))
+            checks.append(_ok("mode", "Run Mode", "Live Motor Babble collection will use the connected servo service."))
             checks.append(
                 PreflightCheck(
                     "neutral_setpoints",
@@ -645,15 +674,82 @@ def evaluate_preflight(
                     ),
                 )
             )
-        checks.append(
-            _registration_quality_check(
-                registration_path=registration_path,
-                tracking_snapshot=tracking_snapshot,
-                missing_message=(
-                    "Registration file is missing. Samples will still be saved, but robot-frame pose will be unavailable."
-                ),
+        if expected_dims != 4:
+            checks.append(_blocked("single_segment", "Single Segment", f"Motor Babble currently supports exactly 4 configured servos; found {expected_dims}."))
+        else:
+            checks.append(_ok("single_segment", "Single Segment", "Configured robot matches the current 4-servo single-segment modeling workspace."))
+        checks.append(_strict_tool_gate_check(tool_id=config.tool_id, snapshot=tracking_snapshot, max_tracker_age_s=float(config.max_tracker_age_s)))
+        if tracking_snapshot.registration_state == "loaded" and tracking_snapshot.T_robot_aurora is not None:
+            checks.append(_ok("registration", "Base Registration", "Accepted base registration is loaded and active."))
+        elif not bool(config.require_robot_frame_tip) and bool(config.allow_lower_trust_runtime_tip):
+            checks.append(
+                _warning(
+                    "registration",
+                    "Base Registration",
+                    f"Base registration is not loaded (state={tracking_snapshot.registration_state}). This lower-trust run will fall back to tracker-frame-only outputs.",
+                )
             )
+        else:
+            checks.append(_blocked("registration", "Base Registration", f"Accepted base registration must be loaded. Runtime state is {tracking_snapshot.registration_state}."))
+        runtime_tip_mode = str(getattr(tracking_snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted")
+        runtime_tip_ready = (
+            tracking_snapshot.runtime_tip_calibration_state == "loaded"
+            and tracking_snapshot.tip_pose_status == "ok"
+            and tracking_snapshot.T_robot_tip is not None
         )
+        if runtime_tip_ready and runtime_tip_mode == "latest_accepted":
+            checks.append(_ok("runtime_tip", "Runtime Tip", "Trusted latest_accepted runtime tip is loaded and live robot-frame tip pose is active."))
+        elif runtime_tip_ready and config.allow_lower_trust_runtime_tip:
+            checks.append(
+                _warning(
+                    "runtime_tip",
+                    "Runtime Tip",
+                    f"Runtime tip mode {runtime_tip_mode} is active with a live robot-frame tip pose. This run is explicitly lower trust.",
+                )
+            )
+        elif not bool(config.require_robot_frame_tip) and bool(config.allow_lower_trust_runtime_tip):
+            checks.append(
+                _warning(
+                    "runtime_tip",
+                    "Runtime Tip",
+                    f"Live robot-frame tip pose is not required for this explicitly lower-trust run. Current mode={runtime_tip_mode}, state={tracking_snapshot.runtime_tip_calibration_state}, tip pose={tracking_snapshot.tip_pose_status}.",
+                )
+            )
+        else:
+            checks.append(
+                _blocked(
+                    "runtime_tip",
+                    "Runtime Tip",
+                    (
+                        f"Runtime tip must be loaded and active for modeling data. "
+                        f"Mode={runtime_tip_mode}, state={tracking_snapshot.runtime_tip_calibration_state}, tip pose={tracking_snapshot.tip_pose_status}."
+                    ),
+                )
+            )
+        if servo_calibration_summary is None:
+            checks.append(
+                _warning("pretension", "Pretension Source", "Pretension/startup artifact state is unavailable for this dry-run.")
+                if config.dry_run
+                else _blocked("pretension", "Pretension Source", "Pretension/startup artifact state is unavailable.")
+            )
+        else:
+            source_summary = servo_calibration_summary.pretension_source_summary(
+                [int(value) for value in (settings.robot.tendon_to_servo or settings.robot.servo_ids or [])]
+            )
+            if source_summary.accepted and source_summary.usable:
+                checks.append(_ok("pretension", "Pretension Source", source_summary.message))
+            elif config.dry_run:
+                checks.append(
+                    _warning(
+                        "pretension",
+                        "Pretension Source",
+                        source_summary.message + " Dry-run remains available for protocol rehearsal only.",
+                    )
+                )
+            elif config.allow_lower_trust_pretension:
+                checks.append(_warning("pretension", "Pretension Source", source_summary.message + " Lower-trust override is enabled for this run."))
+            else:
+                checks.append(_blocked("pretension", "Pretension Source", source_summary.message))
 
     elif experiment_name == "replay_runner":
         config = ReplayRunnerConfig.from_dict(payload)

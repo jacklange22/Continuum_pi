@@ -88,6 +88,11 @@ class _BaselineSequenceBus(MockDxlBus):
         return result
 
 
+class _GoalWriteFailureBus(MockDxlBus):
+    def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
+        raise RuntimeError("mock write timeout")
+
+
 def _build_service(
     tmp_path: Path,
     *,
@@ -181,6 +186,141 @@ def test_servo_service_startup_calibration_persists_bounds_and_threshold(tmp_pat
     assert summary.servo_entries[1].tightening_rotation == "cw"
 
 
+def test_servo_service_single_segment_displacement_uses_hardware_informed_range(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([1, 2, 3, 4])
+    loaded = service.load_neutral_setpoints()
+
+    result = service.command_displacement(
+        tendon_displacements_cm=[1.0, 0.0, -1.0, 0.0],
+        neutral_ticks=[loaded[1], loaded[2], loaded[3], loaded[4]],
+        servo_ids=[1, 2, 3, 4],
+    )
+
+    assert result.positions_by_id[1] > neutral[1] + 600
+    assert result.positions_by_id[3] < neutral[3] - 600
+    assert "hardware-informed bounds" in result.message
+    assert "Current-based Position Control" in result.message
+    assert result.debug_entries_by_id[1].limit_source == "single_segment_hardware_envelope"
+
+
+def test_servo_service_single_segment_displacement_projects_antagonistic_pairs(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([1, 2, 3, 4])
+    loaded = service.load_neutral_setpoints()
+
+    result = service.command_displacement(
+        tendon_displacements_cm=[1.0, 0.0, 0.0, 0.0],
+        neutral_ticks=[loaded[1], loaded[2], loaded[3], loaded[4]],
+        servo_ids=[1, 2, 3, 4],
+    )
+
+    projected_ticks = service.mapper.displacement_cm_to_ticks(0.5)
+    assert result.resolved_displacements_cm == pytest.approx([0.5, 0.0, -0.5, 0.0])
+    assert result.positions_by_id[1] == neutral[1] + projected_ticks
+    assert result.positions_by_id[3] == neutral[3] - projected_ticks
+    assert "Antagonistic-pair projection applied" in result.message
+
+
+def test_servo_service_single_segment_displacement_auto_configures_motion_defaults(tmp_path: Path) -> None:
+    bus = MockDxlBus([1, 2, 3, 4])
+    for telemetry in bus._state.values():
+        telemetry.operating_mode = 3
+    service = _build_service(tmp_path, dxl_bus=bus)
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([1, 2, 3, 4])
+
+    result = service.command_displacement(
+        tendon_displacements_cm=[1.0, 0.0, -1.0, 0.0],
+        neutral_ticks=[neutral[1], neutral[2], neutral[3], neutral[4]],
+        servo_ids=[1, 2, 3, 4],
+    )
+
+    assert all(bus._state[servo_id].operating_mode == 5 for servo_id in [1, 2, 3, 4])
+    assert all(getattr(bus._state[servo_id], "goal_current_ma", None) == 850 for servo_id in [1, 2, 3, 4])
+    assert all(getattr(bus._state[servo_id], "profile_velocity", None) == 80 for servo_id in [1, 2, 3, 4])
+    assert all(getattr(bus._state[servo_id], "profile_acceleration", None) == 20 for servo_id in [1, 2, 3, 4])
+    assert "Applied motion settings" in result.message
+    assert result.debug_entries_by_id[1].operating_mode == 5
+    assert result.debug_entries_by_id[1].preferred_operating_mode == 5
+    assert result.debug_entries_by_id[1].goal_current_ma == 850
+    assert result.debug_entries_by_id[1].profile_velocity == 80
+    assert result.debug_entries_by_id[1].profile_acceleration == 20
+
+
+def test_servo_service_single_segment_characterization_reports_pairwise_travel(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    service.capture_neutral_setpoints([1, 2, 3, 4])
+
+    characterization = service.characterize_single_segment_motion()
+
+    assert characterization.available is True
+    assert "pair 1/3" in characterization.message
+    assert "pair 2/4" in characterization.message
+    assert characterization.pair_limits["1/3"]["positive_cm"] is not None
+    assert characterization.pair_limits["1/3"]["positive_cm"] > 1.5
+    assert characterization.pair_limits["1/3"]["negative_cm"] > 1.5
+
+
+def test_servo_service_single_segment_displacement_rejects_hard_raw_bounds(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([1, 2, 3, 4])
+
+    with pytest.raises(RuntimeError, match="raw hardware range"):
+        service.command_displacement(
+            tendon_displacements_cm=[3.0, 0.0, -3.0, 0.0],
+            neutral_ticks=[neutral[1], neutral[2], neutral[3], neutral[4]],
+            servo_ids=[1, 2, 3, 4],
+        )
+
+
+def test_servo_service_single_segment_displacement_rejects_narrow_hardware_soft_limit(tmp_path: Path) -> None:
+    bus = MockDxlBus([1, 2, 3, 4])
+    bus._state[1].max_position_limit = 2600
+    service = _build_service(tmp_path, dxl_bus=bus)
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([1, 2, 3, 4])
+
+    with pytest.raises(RuntimeError, match="hardware-informed single-segment envelope"):
+        service.command_displacement(
+            tendon_displacements_cm=[1.0, 0.0, -1.0, 0.0],
+            neutral_ticks=[neutral[1], neutral[2], neutral[3], neutral[4]],
+            servo_ids=[1, 2, 3, 4],
+        )
+
+
+def test_servo_service_single_segment_displacement_blocks_on_overcurrent(tmp_path: Path) -> None:
+    bus = MockDxlBus([1, 2, 3, 4])
+    bus._state[1].present_current_ma = 900
+    service = _build_service(tmp_path, dxl_bus=bus)
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([1, 2, 3, 4])
+
+    with pytest.raises(RuntimeError, match="current/jam protection blocked motion"):
+        service.command_displacement(
+            tendon_displacements_cm=[1.0, 0.0, -1.0, 0.0],
+            neutral_ticks=[neutral[1], neutral[2], neutral[3], neutral[4]],
+            servo_ids=[1, 2, 3, 4],
+        )
+
+
+def test_servo_service_single_segment_displacement_reports_goal_write_failures_separately(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, dxl_bus=_GoalWriteFailureBus([1, 2, 3, 4]))
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([1, 2, 3, 4])
+
+    with pytest.raises(RuntimeError, match="failed during goal write: mock write timeout"):
+        service.command_displacement(
+            tendon_displacements_cm=[1.0, 0.0, -1.0, 0.0],
+            neutral_ticks=[neutral[1], neutral[2], neutral[3], neutral[4]],
+            servo_ids=[1, 2, 3, 4],
+        )
+
+
 def test_servo_service_build_runtime_snapshot_reports_consistent_counts(tmp_path: Path) -> None:
     bus = MockDxlBus([1, 2, 3, 4])
     for telemetry in bus._state.values():
@@ -239,9 +379,9 @@ def test_servo_service_blocks_jog_when_operating_mode_is_wrong(tmp_path: Path) -
         max_offset_ticks=20,
         pretension_current_threshold_ma=220,
     )
-    bus._state[1].operating_mode = 5
+    bus._state[1].operating_mode = 1
 
-    with pytest.raises(RuntimeError, match="Operating Mode 5 is not allowed"):
+    with pytest.raises(RuntimeError, match="Operating Mode 1 is not allowed"):
         service.jog_servo(1, 5)
 
 

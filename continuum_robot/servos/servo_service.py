@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
+import logging
 import threading
 import time
 from typing import Callable
@@ -28,6 +29,33 @@ CANONICAL_POSITION_CONVENTION = (
     "Raw XC330 position uses 0..4095 ticks: 0 is more tensioned, 4095 is untensioned, "
     "tighten lowers counts, loosen raises counts."
 )
+SINGLE_SEGMENT_PAIR_INDEXES = ((0, 2), (1, 3))
+
+
+LOG = logging.getLogger(__name__)
+
+
+@dataclass
+class ServoDisplacementDebugEntry:
+    """Per-servo debug details for one coordinated displacement command."""
+
+    servo_id: int
+    requested_displacement_cm: float
+    resolved_displacement_cm: float
+    present_position_tick: int | None
+    present_current_ma: int | None
+    raw_goal_tick: int | None
+    final_goal_tick: int | None
+    safe_min_tick: int | None
+    safe_max_tick: int | None
+    telemetry_fresh: bool | None
+    operating_mode: int | None = None
+    preferred_operating_mode: int | None = None
+    goal_current_ma: int | None = None
+    profile_velocity: int | None = None
+    profile_acceleration: int | None = None
+    clamp_reason: str | None = None
+    limit_source: str = "calibrated_bounds"
 
 
 @dataclass
@@ -37,6 +65,11 @@ class ServoCommandResult:
     positions_by_id: dict[int, int]
     telemetry_by_id: dict[int, ServoTelemetry]
     message: str
+    requested_displacements_cm: list[float] = field(default_factory=list)
+    resolved_displacements_cm: list[float] = field(default_factory=list)
+    raw_positions_by_id: dict[int, int] = field(default_factory=dict)
+    clamp_reasons_by_id: dict[int, str] = field(default_factory=dict)
+    debug_entries_by_id: dict[int, ServoDisplacementDebugEntry] = field(default_factory=dict)
 
 
 @dataclass
@@ -236,6 +269,29 @@ class ServoRuntimeStateSnapshot:
 
 
 @dataclass
+class SingleSegmentMotionConfigurationSummary:
+    """Resolved coordinated-motion configuration for the current 4-servo segment."""
+
+    auto_configure: bool
+    preferred_operating_mode: int | None
+    allowed_operating_modes: list[int]
+    default_goal_current_ma: int | None
+    default_profile_velocity: int | None
+    default_profile_acceleration: int | None
+    applied_servo_ids: list[int]
+    message: str
+
+
+@dataclass
+class SingleSegmentMotionCharacterization:
+    """Practical pairwise travel summary for the current neutral placement."""
+
+    available: bool
+    message: str
+    pair_limits: dict[str, dict[str, float | int | None]] = field(default_factory=dict)
+
+
+@dataclass
 class PretensionRoutineResult:
     """Outcome of the cautious startup pretension routine."""
 
@@ -392,6 +448,7 @@ class ServoService:
         self._exclusive_bus_depth: int = 0
         self._last_goal_positions_by_id: dict[int, int] = {}
         self._last_goal_command_monotonic_s: dict[int, float] = {}
+        self._last_single_segment_motion_configuration_by_servo: dict[int, dict[str, int | None]] = {}
 
     @property
     def is_connected(self) -> bool:
@@ -410,6 +467,7 @@ class ServoService:
         )
         self._last_goal_positions_by_id.clear()
         self._last_goal_command_monotonic_s.clear()
+        self._last_single_segment_motion_configuration_by_servo.clear()
 
     @staticmethod
     def position_convention_summary() -> str:
@@ -418,6 +476,20 @@ class ServoService:
     @staticmethod
     def raw_position_range() -> tuple[int, int]:
         return (RAW_POSITION_MIN_TICK, RAW_POSITION_MAX_TICK)
+
+    @staticmethod
+    def operating_mode_label(mode: int | None) -> str:
+        labels = {
+            0: "Current Control",
+            1: "Velocity Control",
+            3: "Position Control",
+            4: "Extended Position Control",
+            5: "Current-based Position Control",
+            16: "PWM Control",
+        }
+        if mode is None:
+            return "unknown"
+        return labels.get(int(mode), f"Mode {int(mode)}")
 
     def is_single_servo_bench_mode(self) -> bool:
         return (
@@ -428,6 +500,239 @@ class ServoService:
     @staticmethod
     def require_calibrated_bounds_for_individual_motion() -> bool:
         return False
+
+    def _configured_single_segment_servo_ids(self) -> list[int]:
+        configured = [
+            int(value)
+            for value in (
+                self.neutral_calibration.context.tendon_to_servo
+                or self.neutral_calibration.context.servo_ids
+            )
+        ]
+        return list(configured)
+
+    def _resolved_single_segment_preferred_operating_mode(self) -> int | None:
+        mode = getattr(self.dxl_bus.config, "single_segment_preferred_operating_mode", None)
+        if mode in (None, ""):
+            return None
+        return int(mode)
+
+    def _resolved_single_segment_allowed_operating_modes(self) -> list[int]:
+        configured = list(getattr(self.dxl_bus.config, "single_segment_allowed_operating_modes", []) or [])
+        if not configured:
+            configured = list(getattr(self.dxl_bus.config, "allowed_operating_modes", []) or [])
+        resolved = sorted({int(value) for value in configured}) if configured else []
+        preferred = self._resolved_single_segment_preferred_operating_mode()
+        if preferred is not None and preferred not in resolved:
+            resolved.append(int(preferred))
+            resolved.sort()
+        return resolved
+
+    def _default_allowed_operating_modes(self) -> list[int]:
+        resolved = {int(value) for value in list(self.dxl_bus.config.allowed_operating_modes or [])}
+        configured_ids = self._configured_single_segment_servo_ids()
+        if len(configured_ids) == 4 and str(self.neutral_calibration.context.robot_mode or "").strip().lower() == "4-servo":
+            resolved.update(self._resolved_single_segment_allowed_operating_modes())
+        return sorted(resolved)
+
+    def _resolved_single_segment_default_goal_current_ma(self) -> int | None:
+        configured = getattr(self.dxl_bus.config, "single_segment_default_goal_current_ma", None)
+        if configured in (None, ""):
+            return None
+        return max(0, min(int(configured), int(self.safety_guard.max_current_ma)))
+
+    def _resolved_single_segment_default_profile_velocity(self) -> int | None:
+        configured = getattr(self.dxl_bus.config, "single_segment_default_profile_velocity", None)
+        if configured in (None, ""):
+            return None
+        return max(0, int(configured))
+
+    def _resolved_single_segment_default_profile_acceleration(self) -> int | None:
+        configured = getattr(self.dxl_bus.config, "single_segment_default_profile_acceleration", None)
+        if configured in (None, ""):
+            return None
+        return max(0, int(configured))
+
+    def single_segment_motion_configuration_summary(
+        self,
+        servo_ids: list[int] | None = None,
+    ) -> SingleSegmentMotionConfigurationSummary:
+        configured_ids = self._configured_single_segment_servo_ids()
+        selected = [int(value) for value in (servo_ids or configured_ids)]
+        preferred_mode = self._resolved_single_segment_preferred_operating_mode()
+        allowed_modes = self._resolved_single_segment_allowed_operating_modes()
+        goal_current_ma = self._resolved_single_segment_default_goal_current_ma()
+        profile_velocity = self._resolved_single_segment_default_profile_velocity()
+        profile_acceleration = self._resolved_single_segment_default_profile_acceleration()
+        auto_configure = bool(getattr(self.dxl_bus.config, "single_segment_auto_configure_motion_defaults", True))
+        applied_servo_ids = sorted(
+            int(servo_id)
+            for servo_id in selected
+            if int(servo_id) in self._last_single_segment_motion_configuration_by_servo
+        )
+        allowed_labels = ", ".join(
+            self.operating_mode_label(int(value))
+            for value in allowed_modes
+        ) or "none"
+        parts = [
+            f"preferred mode {self.operating_mode_label(preferred_mode)}",
+            f"allowed {allowed_labels}",
+            f"goal current {goal_current_ma if goal_current_ma is not None else 'unset'} mA",
+            f"profile vel {profile_velocity if profile_velocity is not None else 'unset'}",
+            f"profile acc {profile_acceleration if profile_acceleration is not None else 'unset'}",
+            f"auto-configure {'on' if auto_configure else 'off'}",
+        ]
+        if applied_servo_ids:
+            parts.append("applied to " + ", ".join(str(value) for value in applied_servo_ids))
+        return SingleSegmentMotionConfigurationSummary(
+            auto_configure=auto_configure,
+            preferred_operating_mode=preferred_mode,
+            allowed_operating_modes=list(allowed_modes),
+            default_goal_current_ma=goal_current_ma,
+            default_profile_velocity=profile_velocity,
+            default_profile_acceleration=profile_acceleration,
+            applied_servo_ids=applied_servo_ids,
+            message=" | ".join(parts),
+        )
+
+    def characterize_single_segment_motion(
+        self,
+        *,
+        servo_ids: list[int] | None = None,
+        telemetry_by_id: dict[int, ServoTelemetry] | None = None,
+        neutral_ticks_by_id: dict[int, int] | None = None,
+    ) -> SingleSegmentMotionCharacterization:
+        configured = self._configured_single_segment_servo_ids()
+        selected = [int(value) for value in (servo_ids or configured)]
+        if len(configured) != 4 or len(selected) != 4 or sorted(selected) != sorted(configured):
+            return SingleSegmentMotionCharacterization(
+                available=False,
+                message="Single-segment characterization requires the configured 4-servo set.",
+            )
+        neutral_map = dict(neutral_ticks_by_id or self.load_neutral_setpoints() or {})
+        if any(int(servo_id) not in neutral_map for servo_id in selected):
+            return SingleSegmentMotionCharacterization(
+                available=False,
+                message="Neutral setpoints are missing for one or more single-segment servos.",
+            )
+        live_telemetry = dict(telemetry_by_id or self.read_telemetry(selected))
+        bounds_by_servo: dict[int, tuple[int, int]] = {}
+        for servo_id in selected:
+            telemetry = live_telemetry.get(int(servo_id))
+            if telemetry is None:
+                return SingleSegmentMotionCharacterization(
+                    available=False,
+                    message=f"Telemetry is unavailable for servo {servo_id}.",
+                )
+            try:
+                bounds_by_servo[int(servo_id)] = self._hardware_safe_bounds_for_servo(
+                    servo_id=int(servo_id),
+                    telemetry=telemetry,
+                )
+            except Exception as exc:
+                return SingleSegmentMotionCharacterization(
+                    available=False,
+                    message=f"Could not determine hardware envelope for servo {servo_id}: {exc}",
+                )
+        pair_limits: dict[str, dict[str, float | int | None]] = {}
+        tendon_order = list(configured)
+        lines: list[str] = []
+        for first_index, second_index in SINGLE_SEGMENT_PAIR_INDEXES:
+            first_servo = int(tendon_order[first_index])
+            second_servo = int(tendon_order[second_index])
+            first_neutral = int(neutral_map[first_servo])
+            second_neutral = int(neutral_map[second_servo])
+            first_bounds = bounds_by_servo[first_servo]
+            second_bounds = bounds_by_servo[second_servo]
+            first_tighten_ticks = max(0, first_neutral - int(first_bounds[0]))
+            first_loosen_ticks = max(0, int(first_bounds[1]) - first_neutral)
+            second_tighten_ticks = max(0, second_neutral - int(second_bounds[0]))
+            second_loosen_ticks = max(0, int(second_bounds[1]) - second_neutral)
+            positive_ticks = min(first_loosen_ticks, second_tighten_ticks)
+            negative_ticks = min(first_tighten_ticks, second_loosen_ticks)
+            positive_cm = self.mapper.ticks_to_displacement_mm(int(positive_ticks)) / 10.0
+            negative_cm = self.mapper.ticks_to_displacement_mm(int(negative_ticks)) / 10.0
+            pair_key = f"{first_servo}/{second_servo}"
+            pair_limits[pair_key] = {
+                "positive_ticks": int(positive_ticks),
+                "negative_ticks": int(negative_ticks),
+                "positive_cm": float(positive_cm),
+                "negative_cm": float(negative_cm),
+                "first_servo_neutral_tick": int(first_neutral),
+                "second_servo_neutral_tick": int(second_neutral),
+            }
+            lines.append(f"pair {pair_key}: +{positive_cm:.2f} cm / -{negative_cm:.2f} cm")
+        return SingleSegmentMotionCharacterization(
+            available=True,
+            message=" | ".join(lines),
+            pair_limits=pair_limits,
+        )
+
+    def _ensure_single_segment_motion_configuration(
+        self,
+        servo_ids: list[int],
+        *,
+        telemetry_by_id: dict[int, ServoTelemetry] | None = None,
+    ) -> list[str]:
+        if not bool(getattr(self.dxl_bus.config, "single_segment_auto_configure_motion_defaults", True)):
+            return []
+        preferred_mode = self._resolved_single_segment_preferred_operating_mode()
+        goal_current_ma = self._resolved_single_segment_default_goal_current_ma()
+        profile_velocity = self._resolved_single_segment_default_profile_velocity()
+        profile_acceleration = self._resolved_single_segment_default_profile_acceleration()
+        signature = {
+            "preferred_operating_mode": preferred_mode,
+            "goal_current_ma": goal_current_ma,
+            "profile_velocity": profile_velocity,
+            "profile_acceleration": profile_acceleration,
+        }
+        live_telemetry = dict(telemetry_by_id or self.read_telemetry(servo_ids))
+        notes: list[str] = []
+        for servo_id in [int(value) for value in servo_ids]:
+            telemetry = live_telemetry.get(int(servo_id))
+            if telemetry is None:
+                raise RuntimeError(f"Servo {servo_id} telemetry is unavailable before motion configuration.")
+            applied = self._last_single_segment_motion_configuration_by_servo.get(int(servo_id))
+            if applied == signature and (
+                preferred_mode is None
+                or telemetry.operating_mode is None
+                or int(telemetry.operating_mode) == int(preferred_mode)
+            ):
+                continue
+            try:
+                if preferred_mode is not None and telemetry.operating_mode != int(preferred_mode):
+                    self._guard_bus_call(
+                        "configure servo operating mode",
+                        lambda sid=int(servo_id), mode=int(preferred_mode): self.dxl_bus.write_operating_mode(sid, mode),
+                    )
+                    notes.append(
+                        f"servo {servo_id} mode {self.operating_mode_label(telemetry.operating_mode)}"
+                        f"->{self.operating_mode_label(preferred_mode)}"
+                    )
+                if profile_acceleration is not None:
+                    self._guard_bus_call(
+                        "configure servo profile acceleration",
+                        lambda sid=int(servo_id), value=int(profile_acceleration): self.dxl_bus.write_profile_acceleration(sid, value),
+                    )
+                    notes.append(f"servo {servo_id} profile acc->{profile_acceleration}")
+                if profile_velocity is not None:
+                    self._guard_bus_call(
+                        "configure servo profile velocity",
+                        lambda sid=int(servo_id), value=int(profile_velocity): self.dxl_bus.write_profile_velocity(sid, value),
+                    )
+                    notes.append(f"servo {servo_id} profile vel->{profile_velocity}")
+                if goal_current_ma is not None:
+                    self._guard_bus_call(
+                        "configure servo goal current",
+                        lambda sid=int(servo_id), value=int(goal_current_ma): self.dxl_bus.write_goal_current_ma(sid, value),
+                    )
+                    notes.append(f"servo {servo_id} goal current->{goal_current_ma} mA")
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to configure single-segment motion settings for servo {servo_id}: {exc}"
+                ) from exc
+            self._last_single_segment_motion_configuration_by_servo[int(servo_id)] = dict(signature)
+        return notes
 
     def scan_ids(self, min_id: int = 1, max_id: int = 20) -> list[int]:
         return self._guard_bus_call(
@@ -1476,6 +1781,7 @@ class ServoService:
     ) -> ServoMotionAssessment:
         current = telemetry or self.read_telemetry([int(servo_id)])[int(servo_id)]
         config = parameters or self.default_pretension_parameters(int(servo_id))
+        allowed_operating_modes = self._default_allowed_operating_modes()
         errors: list[str] = []
         torque_arm_required = False
         torque_arm_possible = False
@@ -1509,10 +1815,10 @@ class ServoService:
                 errors.append(str(exc))
         if current.operating_mode is None:
             errors.append("Operating Mode is unavailable.")
-        elif int(current.operating_mode) not in self.dxl_bus.config.allowed_operating_modes:
+        elif int(current.operating_mode) not in allowed_operating_modes:
             errors.append(
                 f"Operating Mode {current.operating_mode} is not allowed. "
-                f"Expected one of {self.dxl_bus.config.allowed_operating_modes}."
+                f"Expected one of {allowed_operating_modes}."
             )
         torque_arm_possible = bool(
             allow_torque_auto_arm
@@ -1522,7 +1828,7 @@ class ServoService:
             and current.hardware_error_code in (None, 0)
             and not current.hardware_error
             and current.operating_mode is not None
-            and int(current.operating_mode) in self.dxl_bus.config.allowed_operating_modes
+            and int(current.operating_mode) in allowed_operating_modes
         )
         if current.torque_enabled is True:
             pass
@@ -1973,6 +2279,7 @@ class ServoService:
         *,
         require_calibrated_bounds: bool,
         telemetry: ServoTelemetry | None = None,
+        allowed_operating_modes: list[int] | None = None,
     ) -> ServoMotionAssessment:
         if telemetry is not None:
             current = telemetry
@@ -1985,6 +2292,14 @@ class ServoService:
         safe_max: int | None = None
         external_power_ready: bool | None = None
 
+        resolved_allowed_operating_modes = [
+            int(value)
+            for value in (
+                allowed_operating_modes
+                if allowed_operating_modes is not None
+                else self._default_allowed_operating_modes()
+            )
+        ]
         if current.present_position is None:
             errors.append("Present Position is unavailable.")
         if current.hardware_error_code not in (None, 0):
@@ -2015,10 +2330,10 @@ class ServoService:
                 errors.append(str(exc))
         if current.operating_mode is None:
             errors.append("Operating Mode is unavailable.")
-        elif int(current.operating_mode) not in self.dxl_bus.config.allowed_operating_modes:
+        elif int(current.operating_mode) not in resolved_allowed_operating_modes:
             errors.append(
                 f"Operating Mode {current.operating_mode} is not allowed. "
-                f"Expected one of {self.dxl_bus.config.allowed_operating_modes}."
+                f"Expected one of {resolved_allowed_operating_modes}."
             )
         if current.torque_enabled is False and not self.dxl_bus.config.auto_torque_enable_on_write:
             errors.append("Torque Enable is 0 and auto torque enable is disabled.")
@@ -2129,6 +2444,107 @@ class ServoService:
         direction = "tighten" if str(action).strip().lower().startswith("tighten") else "loosen"
         return self._execute_motion_plan(plan, command_direction=direction)
 
+    def _uses_single_segment_displacement_envelope(
+        self,
+        *,
+        tendon_displacements_cm: list[float],
+        neutral_ticks: list[int],
+        servo_ids: list[int],
+    ) -> bool:
+        robot_mode = str(self.neutral_calibration.context.robot_mode or "").strip().lower()
+        if robot_mode != "4-servo":
+            return False
+        if len(tendon_displacements_cm) != 4 or len(neutral_ticks) != 4 or len(servo_ids) != 4:
+            return False
+        return True
+
+    @staticmethod
+    def _project_single_segment_antagonistic_pairs(
+        tendon_displacements_cm: list[float],
+    ) -> tuple[list[float], list[str]]:
+        if len(tendon_displacements_cm) != 4:
+            return [float(value) for value in tendon_displacements_cm], []
+        requested = [float(value) for value in tendon_displacements_cm]
+        resolved = list(requested)
+        notes: list[str] = []
+        for first_index, second_index in SINGLE_SEGMENT_PAIR_INDEXES:
+            pair_common_mode = 0.5 * (float(requested[first_index]) + float(requested[second_index]))
+            pair_differential = 0.5 * (float(requested[first_index]) - float(requested[second_index]))
+            resolved[first_index] = float(pair_differential)
+            resolved[second_index] = float(-pair_differential)
+            if abs(pair_common_mode) > 1e-6:
+                notes.append(
+                    f"pair {first_index + 1}/{second_index + 1} common-mode {pair_common_mode:.3f} cm removed"
+                )
+        return resolved, notes
+
+    @staticmethod
+    def _format_servo_positions_by_id(positions_by_id: dict[int, int]) -> str:
+        return ", ".join(f"{int(servo_id)}:{int(goal)}" for servo_id, goal in sorted(positions_by_id.items()))
+
+    def _displacement_rejection_reason(
+        self,
+        *,
+        servo_id: int,
+        requested_goal_tick: int,
+        safe_min_tick: int | None,
+        safe_max_tick: int | None,
+        using_single_segment_envelope: bool,
+    ) -> str | None:
+        raw_min_tick, raw_max_tick = self.raw_position_range()
+        if int(requested_goal_tick) < int(raw_min_tick) or int(requested_goal_tick) > int(raw_max_tick):
+            return (
+                f"servo {servo_id} target {requested_goal_tick} exceeds the raw hardware range "
+                f"[{raw_min_tick}, {raw_max_tick}]"
+            )
+        if safe_min_tick is None or safe_max_tick is None:
+            return f"servo {servo_id} active motion range is unavailable"
+        if int(requested_goal_tick) < int(safe_min_tick) or int(requested_goal_tick) > int(safe_max_tick):
+            limit_name = "hardware-informed single-segment envelope" if using_single_segment_envelope else "active motion range"
+            return (
+                f"servo {servo_id} target {requested_goal_tick} exceeds the {limit_name} "
+                f"[{safe_min_tick}, {safe_max_tick}]"
+            )
+        return None
+
+    def _summarize_displacement_assessment_block(self, assessment: ServoMotionAssessment, *, servo_id: int) -> str:
+        joined = " | ".join(
+            str(reason).strip()
+            for reason in assessment.blocking_reasons
+            if str(reason).strip()
+        )
+        detail = joined or str(assessment.reason).strip() or "unknown motion block"
+        lowered = detail.lower()
+        if "current threshold exceeded" in lowered:
+            return (
+                f"servo {servo_id} current/jam protection blocked motion: {detail}"
+            )
+        if "telemetry is stale" in lowered or "telemetry freshness" in lowered:
+            return f"servo {servo_id} telemetry is stale or incomplete: {detail}"
+        if "torque enable" in lowered or "torque state" in lowered:
+            return f"servo {servo_id} torque state blocked motion: {detail}"
+        if "operating mode" in lowered:
+            return f"servo {servo_id} operating mode blocked motion: {detail}"
+        if "input voltage" in lowered:
+            return f"servo {servo_id} voltage blocked motion: {detail}"
+        if "temperature" in lowered:
+            return f"servo {servo_id} temperature blocked motion: {detail}"
+        if "hardware error" in lowered:
+            return f"servo {servo_id} hardware error blocked motion: {detail}"
+        return f"servo {servo_id} telemetry/safety checks blocked motion: {detail}"
+
+    @staticmethod
+    def _non_mode_blocking_reasons(assessment: ServoMotionAssessment) -> list[str]:
+        reasons: list[str] = []
+        for reason in assessment.blocking_reasons:
+            text = str(reason).strip()
+            if not text:
+                continue
+            if "operating mode" in text.lower():
+                continue
+            reasons.append(text)
+        return reasons
+
     def command_displacement(
         self,
         tendon_displacements_cm: list[float],
@@ -2142,26 +2558,215 @@ class ServoService:
         """
         if len(servo_ids) != len(neutral_ticks):
             raise ValueError("Servo ID list and neutral setpoint list length mismatch")
-        goals = self.mapper.to_goal_positions(tendon_displacements_cm, neutral_ticks)
-        payload = {sid: goal for sid, goal in zip(servo_ids, goals)}
-        assessments = {
-            int(servo_id): self.assess_motion(int(servo_id), require_calibrated_bounds=True)
-            for servo_id in servo_ids
-        }
-        for servo_id, assessment in assessments.items():
-            if not assessment.ready:
-                raise RuntimeError(
-                    f"Servo {servo_id} is not safe for displacement control: {assessment.reason}"
+        requested_displacements = [float(value) for value in tendon_displacements_cm]
+        using_single_segment_envelope = self._uses_single_segment_displacement_envelope(
+            tendon_displacements_cm=requested_displacements,
+            neutral_ticks=neutral_ticks,
+            servo_ids=servo_ids,
+        )
+        if using_single_segment_envelope:
+            resolved_displacements, pair_notes = self._project_single_segment_antagonistic_pairs(requested_displacements)
+        else:
+            resolved_displacements = list(requested_displacements)
+            pair_notes = []
+        raw_goals = self.mapper.to_goal_positions(resolved_displacements, neutral_ticks)
+        configuration_notes: list[str] = []
+        configuration_summary: SingleSegmentMotionConfigurationSummary | None = None
+        telemetry_by_id: dict[int, ServoTelemetry] | None = None
+        if using_single_segment_envelope:
+            telemetry_by_id = self.read_telemetry(servo_ids)
+            preconfiguration_assessments = {
+                int(servo_id): self.assess_motion(
+                    int(servo_id),
+                    require_calibrated_bounds=False,
+                    telemetry=telemetry_by_id[int(servo_id)],
+                    allowed_operating_modes=self._resolved_single_segment_allowed_operating_modes(),
                 )
-            self._validate_goal_against_assessment(assessment, int(payload[servo_id]))
-        self._write_goal_positions(payload)
-        telemetry = self.read_telemetry(servo_ids)
+                for servo_id in servo_ids
+            }
+            preconfiguration_blocks = [
+                self._summarize_displacement_assessment_block(assessment, servo_id=int(servo_id))
+                for servo_id, assessment in preconfiguration_assessments.items()
+                if self._non_mode_blocking_reasons(assessment)
+            ]
+            if preconfiguration_blocks:
+                lead = "Single-segment displacement rejected before motion configuration"
+                if pair_notes:
+                    lead = f"{lead} after antagonistic-pair projection ({'; '.join(pair_notes)})"
+                raise RuntimeError(f"{lead}: {'; '.join(preconfiguration_blocks)}.")
+            configuration_notes = self._ensure_single_segment_motion_configuration(
+                list(servo_ids),
+                telemetry_by_id=telemetry_by_id,
+            )
+            telemetry_by_id = self.read_telemetry(servo_ids)
+            configuration_summary = self.single_segment_motion_configuration_summary(list(servo_ids))
+            allowed_modes = self._resolved_single_segment_allowed_operating_modes()
+            assessments = {
+                int(servo_id): self.assess_motion(
+                    int(servo_id),
+                    require_calibrated_bounds=False,
+                    telemetry=telemetry_by_id[int(servo_id)],
+                    allowed_operating_modes=allowed_modes,
+                )
+                for servo_id in servo_ids
+            }
+        else:
+            assessments = {
+                int(servo_id): self.assess_motion(
+                    int(servo_id),
+                    require_calibrated_bounds=True,
+                )
+                for servo_id in servo_ids
+            }
+
+        payload: dict[int, int] = {}
+        clamp_reasons: dict[int, str] = {}
+        debug_entries: dict[int, ServoDisplacementDebugEntry] = {}
+        rejection_reasons: list[str] = []
+        limit_source = "single_segment_hardware_envelope" if using_single_segment_envelope else "calibrated_bounds"
+        for index, servo_id in enumerate(servo_ids):
+            assessment = assessments[int(servo_id)]
+            current_position = assessment.telemetry.present_position
+            current_ma = assessment.telemetry.present_current_ma
+            raw_goal_tick = int(raw_goals[index])
+            clamp_reason: str | None = None
+            effective_min_tick = assessment.safe_min_tick
+            effective_max_tick = assessment.safe_max_tick
+            if using_single_segment_envelope:
+                try:
+                    effective_min_tick, effective_max_tick = self._hardware_safe_bounds_for_servo(
+                        servo_id=int(servo_id),
+                        telemetry=assessment.telemetry,
+                    )
+                except ValueError as exc:
+                    clamp_reason = (
+                        f"servo {servo_id} hardware-informed single-segment envelope is unavailable: {exc}"
+                    )
+                else:
+                    if (
+                        current_position is not None
+                        and not (int(effective_min_tick) <= int(current_position) <= int(effective_max_tick))
+                    ):
+                        clamp_reason = (
+                            f"servo {servo_id} present position {current_position} is outside the hardware-informed "
+                            f"single-segment envelope [{effective_min_tick}, {effective_max_tick}]"
+                        )
+            if not assessment.ready:
+                if clamp_reason is None:
+                    clamp_reason = self._summarize_displacement_assessment_block(assessment, servo_id=int(servo_id))
+                rejection_reasons.append(clamp_reason)
+            else:
+                if clamp_reason is None:
+                    clamp_reason = self._displacement_rejection_reason(
+                        servo_id=int(servo_id),
+                        requested_goal_tick=int(raw_goal_tick),
+                        safe_min_tick=effective_min_tick,
+                        safe_max_tick=effective_max_tick,
+                        using_single_segment_envelope=using_single_segment_envelope,
+                    )
+                if clamp_reason is not None:
+                    rejection_reasons.append(clamp_reason)
+                else:
+                    payload[int(servo_id)] = int(raw_goal_tick)
+            debug_entries[int(servo_id)] = ServoDisplacementDebugEntry(
+                servo_id=int(servo_id),
+                requested_displacement_cm=float(requested_displacements[index]),
+                resolved_displacement_cm=float(resolved_displacements[index]),
+                present_position_tick=int(current_position) if current_position is not None else None,
+                present_current_ma=int(current_ma) if current_ma is not None else None,
+                raw_goal_tick=int(raw_goal_tick),
+                final_goal_tick=int(raw_goal_tick) if clamp_reason is None else None,
+                safe_min_tick=effective_min_tick,
+                safe_max_tick=effective_max_tick,
+                telemetry_fresh=self.telemetry_is_fresh(assessment.telemetry),
+                operating_mode=(
+                    int(assessment.telemetry.operating_mode)
+                    if assessment.telemetry.operating_mode is not None
+                    else None
+                ),
+                preferred_operating_mode=(
+                    configuration_summary.preferred_operating_mode
+                    if configuration_summary is not None
+                    else None
+                ),
+                goal_current_ma=(
+                    configuration_summary.default_goal_current_ma
+                    if configuration_summary is not None
+                    else None
+                ),
+                profile_velocity=(
+                    configuration_summary.default_profile_velocity
+                    if configuration_summary is not None
+                    else None
+                ),
+                profile_acceleration=(
+                    configuration_summary.default_profile_acceleration
+                    if configuration_summary is not None
+                    else None
+                ),
+                clamp_reason=clamp_reason,
+                limit_source=limit_source,
+            )
+            if clamp_reason is not None:
+                clamp_reasons[int(servo_id)] = str(clamp_reason)
+
+        if rejection_reasons:
+            lead = "Single-segment displacement rejected" if using_single_segment_envelope else "Displacement rejected"
+            if pair_notes:
+                lead = f"{lead} after antagonistic-pair projection ({'; '.join(pair_notes)})"
+            raise RuntimeError(f"{lead}: {'; '.join(rejection_reasons)}.")
+        try:
+            self._write_goal_positions(payload)
+        except Exception as exc:
+            raise RuntimeError(f"Displacement command failed during goal write: {exc}") from exc
+        try:
+            telemetry = self.read_telemetry(servo_ids)
+        except Exception as exc:
+            raise RuntimeError(f"Displacement command failed during post-command telemetry read: {exc}") from exc
         for servo_id in servo_ids:
-            self._validate_post_motion(telemetry[int(servo_id)])
+            try:
+                self._validate_post_motion(telemetry[int(servo_id)])
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Displacement command triggered current/jam or telemetry protection on servo {servo_id}: {exc}"
+                ) from exc
+        message_parts = []
+        if using_single_segment_envelope:
+            message_parts.append("Commanded 4-servo single-segment displacement with hardware-informed bounds.")
+        else:
+            message_parts.append(f"Commanded {len(payload)} servo(s) from tendon displacement input.")
+        if pair_notes:
+            message_parts.append(f"Antagonistic-pair projection applied: {'; '.join(pair_notes)}.")
+        if configuration_summary is not None:
+            message_parts.append(
+                "Single-segment motion config: "
+                f"{self.operating_mode_label(configuration_summary.preferred_operating_mode)}, "
+                f"goal current {configuration_summary.default_goal_current_ma if configuration_summary.default_goal_current_ma is not None else 'unset'} mA, "
+                f"profile {configuration_summary.default_profile_velocity if configuration_summary.default_profile_velocity is not None else 'unset'}/"
+                f"{configuration_summary.default_profile_acceleration if configuration_summary.default_profile_acceleration is not None else 'unset'}."
+            )
+        if configuration_notes:
+            applied_ids = ", ".join(str(value) for value in sorted(payload))
+            message_parts.append(f"Applied motion settings to servos {applied_ids}.")
+        message_parts.append(f"Goals {self._format_servo_positions_by_id(payload)}.")
+        LOG.info(
+            "Servo displacement command | requested_cm=%s | resolved_cm=%s | goals=%s | notes=%s | config=%s | applied_settings=%s",
+            requested_displacements,
+            resolved_displacements,
+            payload,
+            pair_notes,
+            configuration_summary.message if configuration_summary is not None else None,
+            configuration_notes,
+        )
         return ServoCommandResult(
             positions_by_id=payload,
             telemetry_by_id=telemetry,
-            message=f"Commanded {len(payload)} servo(s) from tendon displacement input.",
+            message=" ".join(message_parts),
+            requested_displacements_cm=list(requested_displacements),
+            resolved_displacements_cm=list(resolved_displacements),
+            raw_positions_by_id={int(servo_id): int(goal) for servo_id, goal in zip(servo_ids, raw_goals)},
+            clamp_reasons_by_id=clamp_reasons,
+            debug_entries_by_id=debug_entries,
         )
 
     def save_startup_calibration(
@@ -2916,17 +3521,10 @@ class ServoService:
         telemetry: ServoTelemetry,
         require_calibrated_bounds: bool,
     ) -> tuple[int, int]:
-        telemetry_with_limits = self._telemetry_with_position_limits(
+        safe_min, safe_max = self._hardware_safe_bounds_for_servo(
             servo_id=int(servo_id),
             telemetry=telemetry,
         )
-        safe_min = int(telemetry_with_limits.min_position_limit) + int(self.safety_guard.software_position_margin_ticks)
-        safe_max = int(telemetry_with_limits.max_position_limit) - int(self.safety_guard.software_position_margin_ticks)
-        safe_min = max(int(RAW_POSITION_MIN_TICK), int(safe_min))
-        safe_max = min(int(RAW_POSITION_MAX_TICK), int(safe_max))
-        if safe_min > safe_max:
-            raise ValueError("Software safety margin exceeds the servo hardware position range.")
-
         summary = self.neutral_calibration.get_calibration_summary()
         if summary.exists and not summary.compatible and require_calibrated_bounds:
             raise ValueError(
@@ -2946,6 +3544,24 @@ class ServoService:
             raise ValueError(
                 f"Servo {servo_id} safe bounds are invalid after applying hardware and software limits."
             )
+        return int(safe_min), int(safe_max)
+
+    def _hardware_safe_bounds_for_servo(
+        self,
+        *,
+        servo_id: int,
+        telemetry: ServoTelemetry,
+    ) -> tuple[int, int]:
+        telemetry_with_limits = self._telemetry_with_position_limits(
+            servo_id=int(servo_id),
+            telemetry=telemetry,
+        )
+        safe_min = int(telemetry_with_limits.min_position_limit) + int(self.safety_guard.software_position_margin_ticks)
+        safe_max = int(telemetry_with_limits.max_position_limit) - int(self.safety_guard.software_position_margin_ticks)
+        safe_min = max(int(RAW_POSITION_MIN_TICK), int(safe_min))
+        safe_max = min(int(RAW_POSITION_MAX_TICK), int(safe_max))
+        if safe_min > safe_max:
+            raise ValueError("Software safety margin exceeds the servo hardware position range.")
         return int(safe_min), int(safe_max)
 
     def _telemetry_with_position_limits(

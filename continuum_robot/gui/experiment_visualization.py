@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 
 from continuum_robot.experiments.dataset_tools import extract_tip_or_tool_position_mm
+from continuum_robot.experiments.modeling_dataset_outputs import build_modeling_dataset_summary_pairs
 from continuum_robot.experiments.pretension_validation_outputs import extract_pretension_trace_points
 from continuum_robot.gui.theme import COLORS, chart_palette
 from continuum_robot.tracking.timing_benchmark import (
@@ -104,6 +105,8 @@ def build_visualization_model(
         return _build_tracker_timing_model(samples=samples, metrics=metrics, config_payload=config_payload)
     if experiment_name == "servo_tracker_sync_validation":
         return _build_servo_tracker_sync_model(samples=samples, metrics=metrics, config_payload=config_payload)
+    if experiment_name == "collect_pose_command_dataset":
+        return _build_modeling_dataset_model(samples=samples, metrics=metrics, config_payload=config_payload)
     return _build_generic_model(
         experiment_name=experiment_name,
         samples=samples,
@@ -445,6 +448,94 @@ def _build_pivot_model(
         charts=[residual_hist, inlier_chart],
         summary_lines=summary_lines,
     )
+
+
+def _build_modeling_dataset_model(*, samples, metrics: dict[str, Any], config_payload: dict[str, Any]) -> VisualizationModel:
+    tool_id = str(config_payload.get("tool_id", "0A") or "0A")
+    accepted_points: list[tuple[float, float, float]] = []
+    rejected_points: list[tuple[float, float, float]] = []
+    command_series: list[tuple[float, float]] = []
+    for index, sample in enumerate(samples):
+        position, _ = extract_tip_or_tool_position_mm(sample, tool_id=tool_id, prefer_robot_frame=True)
+        if position is not None:
+            point = tuple(float(value) for value in position)
+            if bool(sample.extra.get("capture_accepted")):
+                accepted_points.append(point)
+            elif sample.extra.get("capture_accepted") is False:
+                rejected_points.append(point)
+        pair = sample.extra.get("resolved_pair_command_cm")
+        if isinstance(pair, list) and len(pair) == 2:
+            command_series.append((float(index), float(np.linalg.norm(np.asarray(pair, dtype=float)))))
+    series: list[ScatterSeries3D] = []
+    if accepted_points:
+        series.append(
+            ScatterSeries3D(
+                name="Accepted Tip Samples",
+                color_hex=COLORS.scene_measurement,
+                points_xyz=accepted_points,
+                point_size=0.13,
+                mesh="sphere",
+            )
+        )
+    if rejected_points:
+        series.append(
+            ScatterSeries3D(
+                name="Rejected Captures",
+                color_hex=COLORS.scene_residual,
+                points_xyz=rejected_points,
+                point_size=0.1,
+                mesh="sphere",
+            )
+        )
+    phase_counts = dict(metrics.get("phase_counts", {}) or {})
+    charts = [
+        ChartModel(
+            kind="bar",
+            title="Capture Acceptance",
+            x_title="Class",
+            y_title="Samples",
+            caption="Accepted captures are fresh valid tracker-aligned samples. Rejected captures preserve sequence order and explicit gate reasons.",
+            categories=["Accepted", "Rejected"],
+            values=[
+                float(metrics.get("accepted_sample_count", 0) or 0),
+                float(metrics.get("rejected_sample_count", 0) or 0),
+            ],
+            color_hex=COLORS.scene_measurement,
+        ),
+        ChartModel(
+            kind="bar",
+            title="Phase Counts",
+            x_title="Phase",
+            y_title="Samples",
+            caption="Ordered phase counts help distinguish workspace coverage, hysteresis prior/target visits, and repeatability-linked blocks.",
+            categories=[str(key) for key in phase_counts],
+            values=[float(value) for value in phase_counts.values()],
+            color_hex=COLORS.scene_truth,
+        ),
+    ]
+    if command_series:
+        charts.append(
+            ChartModel(
+                kind="line",
+                title="Command Norm Timeseries",
+                x_title="Sequence Index",
+                y_title="Pair Command Norm (cm)",
+                caption="Resolved antagonistic-pair command magnitude across the ordered dataset sequence.",
+                points_xy=command_series,
+                color_hex=COLORS.selection_bg,
+            )
+        )
+    summary_lines = [
+        f"{label}: {value}"
+        for label, value in build_modeling_dataset_summary_pairs(metrics=metrics)
+    ]
+    rejection_reasons = dict(metrics.get("rejection_reasons", {}) or {})
+    if rejection_reasons:
+        summary_lines.append(
+            "Rejected capture reasons: "
+            + ", ".join(f"{reason}={int(count)}" for reason, count in sorted(rejection_reasons.items()))
+        )
+    return VisualizationModel(series_3d=series, charts=charts, summary_lines=summary_lines or ["No modeling dataset loaded."])
 
 
 def _repeatability_group_key(*, sample, color_mode: str) -> str:

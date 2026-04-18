@@ -2203,85 +2203,216 @@ class CommandScheduleValidationPage(ExperimentPageBase):
 
 class CollectPoseCommandDatasetPage(ExperimentPageBase):
     show_visualization = True
-    page_hint = "Use this page to collect pose-command datasets from a generated command schedule. This stays separate from routine servo tuning or pretension."
+    defer_visualization_until_data = True
+    visualization_mode_override = VIS_MODE_PROJECTION
+    page_hint = (
+        "Use this workspace to collect single-segment Motor Babble modeling datasets with trusted registration, runtime tip, "
+        "pretension provenance, and ordered command/pose samples for later offline training."
+    )
+
+    def __init__(self, controller, experiment_name: str, parent=None) -> None:
+        super().__init__(controller, experiment_name, parent)
+        self.run_button.setText("Run Motor Babble Dataset")
 
     def _build_parameter_sections(self) -> None:
-        collection_card = ExperimentCard("Collection", "Configure the data-collection mode and per-point sampling behavior.")
+        collection_card = ExperimentCard("Dataset Mode", "Choose the dataset family you want to collect. All modes preserve ordered command history and explicit accepted/rejected capture state.")
         collection_form = QFormLayout()
+        self.dataset_mode_combo = QComboBox()
+        for label, value in (
+            ("Workspace Coverage", "workspace_coverage"),
+            ("Hysteresis / Path Dependence", "hysteresis_path_dependence"),
+            ("Repeatability Linked", "repeatability_linked"),
+        ):
+            self.dataset_mode_combo.addItem(label, value)
+        self.dataset_mode_combo.currentIndexChanged.connect(
+            lambda _index: self.controller.set_config_value("dataset_mode", str(self.dataset_mode_combo.currentData()))
+        )
         self.dry_run_check = QCheckBox("Dry Run")
         self.dry_run_check.toggled.connect(lambda value: self.controller.set_config_value("dry_run", bool(value)))
-        self.samples_spin = QSpinBox()
-        self.samples_spin.setRange(1, 100)
-        self.samples_spin.valueChanged.connect(lambda value: self.controller.set_config_value("sample_count_per_point", int(value)))
+        self.run_label_edit = QLineEdit()
+        self.run_label_edit.editingFinished.connect(lambda: self.controller.set_config_value("run_label", self.run_label_edit.text().strip()))
+        self.dataset_tag_edit = QLineEdit()
+        self.dataset_tag_edit.editingFinished.connect(lambda: self.controller.set_config_value("dataset_tag", self.dataset_tag_edit.text().strip()))
+        self.sample_target_spin = QSpinBox()
+        self.sample_target_spin.setRange(1, 50000)
+        self.sample_target_spin.valueChanged.connect(lambda value: self.controller.set_config_value("sample_count_target", int(value)))
+        self.samples_per_command_spin = QSpinBox()
+        self.samples_per_command_spin.setRange(1, 20)
+        self.samples_per_command_spin.valueChanged.connect(lambda value: self.controller.set_config_value("samples_per_command", int(value)))
         self.settle_time_spin = QDoubleSpinBox()
         self.settle_time_spin.setRange(0.0, 60.0)
         self.settle_time_spin.setDecimals(3)
         self.settle_time_spin.setSingleStep(0.05)
         self.settle_time_spin.valueChanged.connect(lambda value: self.controller.set_config_value("settle_time_s", float(value)))
-        collection_form.addRow("Mode", self.dry_run_check)
-        collection_form.addRow("Samples / Point", self.samples_spin)
+        self.capture_timeout_spin = QDoubleSpinBox()
+        self.capture_timeout_spin.setRange(0.05, 30.0)
+        self.capture_timeout_spin.setDecimals(3)
+        self.capture_timeout_spin.setSingleStep(0.05)
+        self.capture_timeout_spin.valueChanged.connect(lambda value: self.controller.set_config_value("capture_timeout_s", float(value)))
+        self.tracker_age_spin = QDoubleSpinBox()
+        self.tracker_age_spin.setRange(0.01, 5.0)
+        self.tracker_age_spin.setDecimals(3)
+        self.tracker_age_spin.setSingleStep(0.01)
+        self.tracker_age_spin.valueChanged.connect(lambda value: self.controller.set_config_value("max_tracker_age_s", float(value)))
+        collection_form.addRow("Dataset Mode", self.dataset_mode_combo)
+        collection_form.addRow("Dry Run", self.dry_run_check)
+        collection_form.addRow("Run Label", self.run_label_edit)
+        collection_form.addRow("Dataset Tag", self.dataset_tag_edit)
+        collection_form.addRow("Target Accepted Samples", self.sample_target_spin)
+        collection_form.addRow("Samples / Command", self.samples_per_command_spin)
         collection_form.addRow("Settle Time (s)", self.settle_time_spin)
+        collection_form.addRow("Capture Timeout (s)", self.capture_timeout_spin)
+        collection_form.addRow("Max Tracker Age (s)", self.tracker_age_spin)
         collection_card.body_layout.addLayout(collection_form)
 
-        schedule_card = ExperimentCard("Command Schedule", "Configure the generated command schedule used for dataset collection.")
-        schedule_form = QFormLayout()
-        self.kind_combo = QComboBox()
-        for label, value in (
-            ("Sweep", "sweep"),
-            ("Grid", "grid"),
-            ("Trajectory", "trajectory"),
-            ("Babble", "babble"),
-        ):
-            self.kind_combo.addItem(label, value)
-        self.kind_combo.currentIndexChanged.connect(
-            lambda _index: self.controller.set_config_value("command_schedule.kind", str(self.kind_combo.currentData()))
-        )
-        self.dimensions_spin = QSpinBox()
-        self.dimensions_spin.setRange(1, 16)
-        self.dimensions_spin.valueChanged.connect(lambda value: self.controller.set_config_value("command_schedule.dimensions", int(value)))
-        self.amplitude_spin = QDoubleSpinBox()
-        self.amplitude_spin.setRange(0.0, 10.0)
-        self.amplitude_spin.setDecimals(3)
-        self.amplitude_spin.setSingleStep(0.05)
-        self.amplitude_spin.valueChanged.connect(lambda value: self.controller.set_config_value("command_schedule.amplitude_cm", float(value)))
-        self.steps_spin = QSpinBox()
-        self.steps_spin.setRange(1, 100)
-        self.steps_spin.valueChanged.connect(lambda value: self.controller.set_config_value("command_schedule.steps_per_axis", int(value)))
-        self.repeats_spin = QSpinBox()
-        self.repeats_spin.setRange(1, 100)
-        self.repeats_spin.valueChanged.connect(lambda value: self.controller.set_config_value("command_schedule.repeats", int(value)))
-        schedule_form.addRow("Kind", self.kind_combo)
-        schedule_form.addRow("Dimensions", self.dimensions_spin)
-        schedule_form.addRow("Amplitude (cm)", self.amplitude_spin)
-        schedule_form.addRow("Steps / Axis", self.steps_spin)
-        schedule_form.addRow("Repeats", self.repeats_spin)
-        schedule_card.body_layout.addLayout(schedule_form)
-        trajectory_label = QLabel("Trajectory Points (YAML list)")
-        trajectory_label.setProperty("role", "muted")
-        self.trajectory_edit = QPlainTextEdit()
-        self.trajectory_edit.setMinimumHeight(140)
-        self.trajectory_edit.textChanged.connect(
-            lambda: self.controller.set_parameter_value("command_schedule.trajectory_points_cm", self.trajectory_edit.toPlainText())
-        )
-        schedule_card.body_layout.addWidget(trajectory_label)
-        schedule_card.body_layout.addWidget(self.trajectory_edit)
+        protocol_card = ExperimentCard("Command Protocol", "Tune the safe pair-command envelope and the mode-specific sequence size without editing raw YAML.")
+        protocol_form = QFormLayout()
+        self.workspace_amplitude_spin = QDoubleSpinBox()
+        self.workspace_amplitude_spin.setRange(0.05, 5.0)
+        self.workspace_amplitude_spin.setDecimals(3)
+        self.workspace_amplitude_spin.setSingleStep(0.05)
+        self.workspace_amplitude_spin.valueChanged.connect(lambda value: self.controller.set_config_value("workspace_amplitude_cm", float(value)))
+        self.envelope_utilization_spin = QDoubleSpinBox()
+        self.envelope_utilization_spin.setRange(0.05, 1.0)
+        self.envelope_utilization_spin.setDecimals(2)
+        self.envelope_utilization_spin.setSingleStep(0.05)
+        self.envelope_utilization_spin.valueChanged.connect(lambda value: self.controller.set_config_value("envelope_utilization", float(value)))
+        self.quasi_random_check = QCheckBox("Use quasi-random coverage")
+        self.quasi_random_check.toggled.connect(lambda value: self.controller.set_config_value("quasi_random", bool(value)))
+        self.seed_spin = QSpinBox()
+        self.seed_spin.setRange(0, 999999)
+        self.seed_spin.valueChanged.connect(lambda value: self.controller.set_config_value("random_seed", int(value)))
+        self.hysteresis_targets_spin = QSpinBox()
+        self.hysteresis_targets_spin.setRange(1, 1000)
+        self.hysteresis_targets_spin.valueChanged.connect(lambda value: self.controller.set_config_value("hysteresis_target_count", int(value)))
+        self.hysteresis_cycles_spin = QSpinBox()
+        self.hysteresis_cycles_spin.setRange(1, 100)
+        self.hysteresis_cycles_spin.valueChanged.connect(lambda value: self.controller.set_config_value("hysteresis_cycle_count", int(value)))
+        self.hysteresis_prior_spin = QSpinBox()
+        self.hysteresis_prior_spin.setRange(2, 8)
+        self.hysteresis_prior_spin.valueChanged.connect(lambda value: self.controller.set_config_value("hysteresis_prior_family_count", int(value)))
+        self.repeatability_blocks_spin = QSpinBox()
+        self.repeatability_blocks_spin.setRange(1, 100)
+        self.repeatability_blocks_spin.valueChanged.connect(lambda value: self.controller.set_config_value("repeatability_block_count", int(value)))
+        protocol_form.addRow("Workspace Amplitude (cm)", self.workspace_amplitude_spin)
+        protocol_form.addRow("Envelope Utilization", self.envelope_utilization_spin)
+        protocol_form.addRow("Coverage Sampling", self.quasi_random_check)
+        protocol_form.addRow("Random Seed", self.seed_spin)
+        protocol_form.addRow("Hysteresis Targets", self.hysteresis_targets_spin)
+        protocol_form.addRow("Hysteresis Cycles", self.hysteresis_cycles_spin)
+        protocol_form.addRow("Prior-State Families", self.hysteresis_prior_spin)
+        protocol_form.addRow("Repeatability Blocks", self.repeatability_blocks_spin)
+        protocol_card.body_layout.addLayout(protocol_form)
+
+        trust_card = ExperimentCard("Trust Policy", "Default behavior blocks low-trust modeling runs. Only enable overrides deliberately, and the saved summary will record them as lower-trust data.")
+        trust_form = QFormLayout()
+        self.allow_lower_trust_runtime_tip_check = QCheckBox("Allow quick runtime-tip override / coil-as-tip")
+        self.allow_lower_trust_runtime_tip_check.toggled.connect(lambda value: self.controller.set_config_value("allow_lower_trust_runtime_tip", bool(value)))
+        self.allow_lower_trust_pretension_check = QCheckBox("Allow missing or lower-trust pretension source")
+        self.allow_lower_trust_pretension_check.toggled.connect(lambda value: self.controller.set_config_value("allow_lower_trust_pretension", bool(value)))
+        self.export_legacy_dat_check = QCheckBox("Write legacy-compatible .dat export")
+        self.export_legacy_dat_check.toggled.connect(lambda value: self.controller.set_config_value("export_legacy_dat", bool(value)))
+        trust_form.addRow("Runtime Tip Override", self.allow_lower_trust_runtime_tip_check)
+        trust_form.addRow("Pretension Override", self.allow_lower_trust_pretension_check)
+        trust_form.addRow("Legacy Export", self.export_legacy_dat_check)
+        trust_card.body_layout.addLayout(trust_form)
+
+        summary_card = ExperimentCard("Collection Summary", "Review the current trust state, planned sample volume, and active runtime dependencies before running.")
+        self.collection_summary_widget = KeyValueSummaryWidget()
+        summary_card.body_layout.addWidget(self.collection_summary_widget)
+
         self.parameter_layout.addWidget(collection_card)
-        self.parameter_layout.addWidget(schedule_card)
+        self.parameter_layout.addWidget(protocol_card)
+        self.parameter_layout.addWidget(trust_card)
+        self.parameter_layout.addWidget(summary_card)
 
     def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
         _ = state
-        self._set_checkbox(self.dry_run_check, bool(self.controller.get_config_value("dry_run", True)))
-        self._set_spin(self.samples_spin, int(self.controller.get_config_value("sample_count_per_point", 1)))
-        self._set_double(self.settle_time_spin, float(self.controller.get_config_value("settle_time_s", 0.0)))
-        self._set_combo_value(self.kind_combo, str(self.controller.get_config_value("command_schedule.kind", "sweep")))
-        self._set_spin(self.dimensions_spin, int(self.controller.get_config_value("command_schedule.dimensions", 4)))
-        self._set_double(self.amplitude_spin, float(self.controller.get_config_value("command_schedule.amplitude_cm", 0.2)))
-        self._set_spin(self.steps_spin, int(self.controller.get_config_value("command_schedule.steps_per_axis", 5)))
-        self._set_spin(self.repeats_spin, int(self.controller.get_config_value("command_schedule.repeats", 1)))
-        self._set_plain_text(
-            self.trajectory_edit,
-            _yaml_block(self.controller.get_config_value("command_schedule.trajectory_points_cm", [])),
+        mode = str(self.controller.get_config_value("dataset_mode", "workspace_coverage") or "workspace_coverage")
+        self._set_combo_value(self.dataset_mode_combo, mode)
+        self._set_checkbox(self.dry_run_check, bool(self.controller.get_config_value("dry_run", False)))
+        self._set_line_text(self.run_label_edit, str(self.controller.get_config_value("run_label", "")))
+        self._set_line_text(self.dataset_tag_edit, str(self.controller.get_config_value("dataset_tag", "")))
+        self._set_spin(self.sample_target_spin, int(self.controller.get_config_value("sample_count_target", 120)))
+        self._set_spin(
+            self.samples_per_command_spin,
+            int(self.controller.get_config_value("samples_per_command", self.controller.get_config_value("sample_count_per_point", 1))),
         )
+        self._set_double(self.settle_time_spin, float(self.controller.get_config_value("settle_time_s", 0.15)))
+        self._set_double(self.capture_timeout_spin, float(self.controller.get_config_value("capture_timeout_s", 1.0)))
+        self._set_double(self.tracker_age_spin, float(self.controller.get_config_value("max_tracker_age_s", 0.15)))
+        self._set_double(self.workspace_amplitude_spin, float(self.controller.get_config_value("workspace_amplitude_cm", 1.0)))
+        self._set_double(self.envelope_utilization_spin, float(self.controller.get_config_value("envelope_utilization", 0.75)))
+        self._set_checkbox(self.quasi_random_check, bool(self.controller.get_config_value("quasi_random", True)))
+        self._set_spin(self.seed_spin, int(self.controller.get_config_value("random_seed", 0)))
+        self._set_spin(self.hysteresis_targets_spin, int(self.controller.get_config_value("hysteresis_target_count", 8)))
+        self._set_spin(self.hysteresis_cycles_spin, int(self.controller.get_config_value("hysteresis_cycle_count", 2)))
+        self._set_spin(self.hysteresis_prior_spin, int(self.controller.get_config_value("hysteresis_prior_family_count", 4)))
+        self._set_spin(self.repeatability_blocks_spin, int(self.controller.get_config_value("repeatability_block_count", 3)))
+        self._set_checkbox(self.allow_lower_trust_runtime_tip_check, bool(self.controller.get_config_value("allow_lower_trust_runtime_tip", False)))
+        self._set_checkbox(self.allow_lower_trust_pretension_check, bool(self.controller.get_config_value("allow_lower_trust_pretension", False)))
+        self._set_checkbox(self.export_legacy_dat_check, bool(self.controller.get_config_value("export_legacy_dat", True)))
+
+        is_hysteresis = mode == "hysteresis_path_dependence"
+        is_repeatability_linked = mode == "repeatability_linked"
+        self.hysteresis_targets_spin.setEnabled(is_hysteresis)
+        self.hysteresis_cycles_spin.setEnabled(is_hysteresis)
+        self.hysteresis_prior_spin.setEnabled(is_hysteresis)
+        self.repeatability_blocks_spin.setEnabled(is_repeatability_linked)
+        self.sample_target_spin.setEnabled(not is_hysteresis)
+
+        self._sync_collection_summary(state=state, mode=mode)
+
+    def _sync_collection_summary(self, *, state: ExperimentViewState, mode: str) -> None:
+        tracking_snapshot = self.controller.tracking_service.get_snapshot()
+        try:
+            pretension_source = self.controller.servo_service.pretension_source_summary(list(self.controller.settings.robot.servo_ids))
+            pretension_label = f"{pretension_source.source_type} ({'accepted' if pretension_source.accepted else 'not accepted'})"
+        except Exception:
+            pretension_label = "unavailable"
+        planned_commands, planned_captures, duration_label = self._plan_preview(mode=mode)
+        self.collection_summary_widget.set_pairs(
+            [
+                ("Mode Summary", self._mode_blurb(mode)),
+                ("Runtime Tip", f"{tracking_snapshot.runtime_tip_mode} ({tracking_snapshot.runtime_tip_trust_level})"),
+                ("Pretension Source", pretension_label),
+                ("Preflight", state.preflight_report.summary),
+                ("Planned Commands", str(planned_commands)),
+                ("Planned Captures", str(planned_captures)),
+                ("Estimated Duration", duration_label),
+                ("Output Root", state.planned_output_dir or "n/a"),
+            ]
+        )
+
+    def _plan_preview(self, *, mode: str) -> tuple[int, int, str]:
+        samples_per_command = max(1, int(self.controller.get_config_value("samples_per_command", 1)))
+        settle_time_s = float(self.controller.get_config_value("settle_time_s", 0.15))
+        capture_timeout_s = float(self.controller.get_config_value("capture_timeout_s", 1.0))
+        if mode == "hysteresis_path_dependence":
+            planned_commands = (
+                max(1, int(self.controller.get_config_value("hysteresis_target_count", 8)))
+                * max(1, int(self.controller.get_config_value("hysteresis_cycle_count", 2)))
+                * max(2, int(self.controller.get_config_value("hysteresis_prior_family_count", 4)))
+                * 2
+            )
+        elif mode == "repeatability_linked":
+            planned_commands = (
+                max(1, int(self.controller.get_config_value("repeatability_block_count", 3)))
+                * max(1, int((int(self.controller.get_config_value("sample_count_target", 120)) + samples_per_command - 1) / samples_per_command))
+            )
+        else:
+            planned_commands = max(1, int((int(self.controller.get_config_value("sample_count_target", 120)) + samples_per_command - 1) / samples_per_command))
+        planned_captures = int(planned_commands * samples_per_command + 2)
+        estimated_s = float(planned_commands) * (settle_time_s + min(capture_timeout_s, 0.25)) + (2.0 * min(capture_timeout_s, 0.25))
+        return planned_commands, planned_captures, f"{estimated_s:.1f} s"
+
+    @staticmethod
+    def _mode_blurb(mode: str) -> str:
+        if mode == "hysteresis_path_dependence":
+            return "Revisits similar commands from different prior states for future state-aware modeling."
+        if mode == "repeatability_linked":
+            return "Collects repeated trusted startup blocks for robot/system revision comparison."
+        return "Bounded workspace exploration for first-pass forward-model training."
 
 
 class ReplayRunnerPage(ExperimentPageBase):

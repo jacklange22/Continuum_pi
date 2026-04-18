@@ -77,12 +77,14 @@ def test_experiment_runner_routes_csv_points_through_canonical_dataset(tmp_path:
         ]
     )
 
-    assert summary.rows_written == 12
+    assert summary.rows_written == 5
     assert summary.output_path.exists()
     assert summary.output_path.parent == tmp_path / "data" / "experiments" / "collect_pose_command_dataset"
     assert (summary.output_path / "metadata.json").exists()
     assert (summary.output_path / "samples.jsonl").exists()
     assert (summary.output_path / "summary.json").exists()
+    assert (summary.output_path / "modeling_dataset_summary.txt").exists()
+    assert (summary.output_path / "modeling_dataset_export.jsonl").exists()
 
 
 def test_experiment_runner_writes_runs_under_experiment_type_folder(tmp_path: Path) -> None:

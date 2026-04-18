@@ -565,12 +565,12 @@ class ExperimentController:
             )
         preferred_order = [
             "single_segment_repeatability",
+            "collect_pose_command_dataset",
             "aurora_grid_accuracy",
             "tracker_timing_validation",
             "servo_tracker_sync_validation",
             "pretension_validation",
             "command_schedule_validation",
-            "collect_pose_command_dataset",
             "replay_runner",
         ]
         ordered_names = [name for name in preferred_order if name in options]
@@ -921,8 +921,11 @@ class ExperimentController:
             value = metrics.get("point_count")
             return f"points={int(value)}" if value is not None else ""
         if experiment_name == "collect_pose_command_dataset":
-            value = metrics.get("schedule_point_count")
-            return f"schedule_points={int(value)}" if value is not None else ""
+            value = metrics.get("accepted_sample_count")
+            if value is not None:
+                return f"accepted={int(value)}"
+            mode = metrics.get("dataset_mode")
+            return str(mode).replace("_", " ") if mode else ""
         if experiment_name == "replay_runner":
             source = metrics.get("source_experiment_name")
             count = metrics.get("source_sample_count")
@@ -1292,6 +1295,26 @@ class ExperimentController:
                 ]
             )
             return pairs
+        if bundle_experiment_name == "collect_pose_command_dataset":
+            from continuum_robot.experiments.modeling_dataset_outputs import build_modeling_dataset_summary_pairs
+
+            metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
+            workspace_plot_path = bundle.paths.output_dir / "modeling_workspace_coverage.png"
+            command_plot_path = bundle.paths.output_dir / "modeling_command_distribution.png"
+            export_jsonl_path = bundle.paths.output_dir / "modeling_dataset_export.jsonl"
+            summary_text_path = bundle.paths.output_dir / "modeling_dataset_summary.txt"
+            legacy_dat_path = bundle.paths.output_dir / "modeling_dataset_legacy_compat.dat"
+            pairs.extend(build_modeling_dataset_summary_pairs(metrics=metrics))
+            pairs.extend(
+                [
+                    ("Workspace Plot", str(workspace_plot_path) if workspace_plot_path.exists() else "not written"),
+                    ("Command Plot", str(command_plot_path) if command_plot_path.exists() else "not written"),
+                    ("Export JSONL", str(export_jsonl_path) if export_jsonl_path.exists() else "not written"),
+                    ("Legacy DAT", str(legacy_dat_path) if legacy_dat_path.exists() else "not written"),
+                    ("Summary Note", str(summary_text_path) if summary_text_path.exists() else "not written"),
+                ]
+            )
+            return pairs
         if bundle_experiment_name == "tracker_timing_validation":
             metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
             histogram_path = bundle.paths.output_dir / "aurora_timing_histogram.png"
@@ -1441,13 +1464,26 @@ class ExperimentController:
                 f"{int(schedule.get('repeats', 0) or 0)} repeat(s)"
             )
         if experiment_name == "collect_pose_command_dataset":
+            mode = str(config_payload.get("dataset_mode", "workspace_coverage") or "workspace_coverage")
+            samples_per_command = int(config_payload.get("samples_per_command", config_payload.get("sample_count_per_point", 1)) or 1)
             if config_payload.get("command_points"):
-                return f"{len(config_payload.get('command_points', []) or [])} explicit command points"
-            schedule = config_payload.get("command_schedule", {}) or {}
+                return f"{len(config_payload.get('command_points', []) or [])} explicit command points, {samples_per_command} samples/command"
+            if mode == "hysteresis_path_dependence":
+                return (
+                    f"hysteresis, "
+                    f"{int(config_payload.get('hysteresis_target_count', 0) or 0)} targets, "
+                    f"{int(config_payload.get('hysteresis_cycle_count', 0) or 0)} cycle(s)"
+                )
+            if mode == "repeatability_linked":
+                return (
+                    f"repeatability-linked, "
+                    f"{int(config_payload.get('repeatability_block_count', 0) or 0)} block(s), "
+                    f"{int(config_payload.get('sample_count_target', 0) or 0)} target samples"
+                )
             return (
-                f"{schedule.get('kind', 'unknown')} schedule, "
-                f"{int(schedule.get('dimensions', 0) or 0)} dimensions, "
-                f"{int(config_payload.get('sample_count_per_point', 0) or 0)} samples/point"
+                f"workspace coverage, "
+                f"target {int(config_payload.get('sample_count_target', 0) or 0)} samples, "
+                f"{samples_per_command} samples/command"
             )
         if experiment_name == "replay_runner":
             return str(config_payload.get("dataset_path", "select an existing run"))

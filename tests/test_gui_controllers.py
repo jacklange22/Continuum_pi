@@ -1591,6 +1591,17 @@ def test_servos_controller_captures_neutral_and_applies_displacement(tmp_path: P
     assert controller.state.calibration_rows[0]["bounds"] != "missing"
 
 
+def test_servos_controller_surfaces_single_segment_motion_diagnostics(tmp_path: Path) -> None:
+    controller = ServosController(_servo_service(tmp_path), _settings())
+    controller.servo_service.connect("/dev/mock-openrb", 115200)
+
+    controller.capture_neutral_setpoints()
+    controller.refresh()
+
+    assert "Current-based Position Control" in controller.state.single_segment_motion_config_summary
+    assert "pair 1/3" in controller.state.single_segment_characterization_summary
+
+
 def test_servos_controller_supports_fine_and_coarse_jog_steps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = _servo_service(tmp_path)
     service.connect("/dev/mock-openrb", 115200)
@@ -2002,6 +2013,57 @@ def test_experiment_workspace_loads_single_segment_repeatability_defaults(tmp_pa
     assert "baseline_run_path" in state.config_text
     assert "min_repeat_captures_per_target" in state.config_text
     assert "max_rejected_capture_fraction" in state.config_text
+
+
+def test_experiment_workspace_loads_motor_babble_page_and_summary(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("collect_pose_command_dataset")
+
+    state = controller.refresh()
+    tab.update(state)
+    page = tab._page_for("collect_pose_command_dataset")
+
+    assert state.selected_experiment == "collect_pose_command_dataset"
+    assert state.experiment_title == "Motor Babble Modeling Dataset"
+    assert page.dataset_mode_combo.count() == 3
+    assert page.dataset_mode_combo.currentData() == "workspace_coverage"
+    assert page.run_button.text() == "Run Motor Babble Dataset"
+    assert page.collection_summary_widget._pairs_signature is not None
+    assert page.viewer_3d is None
+
+
+def test_experiment_workspace_loads_motor_babble_run_result_details(tmp_path: Path) -> None:
+    controller = _experiment_controller(tmp_path)
+    result = controller.experiment_runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dataset_mode": "workspace_coverage",
+            "dry_run": True,
+            "sample_count_target": 3,
+            "samples_per_command": 1,
+            "require_robot_frame_tip": False,
+            "allow_lower_trust_runtime_tip": True,
+            "allow_lower_trust_pretension": True,
+            "export_legacy_dat": True,
+        },
+        output_dir=tmp_path / "data" / "experiments",
+        output_dir_name="motor_babble_run",
+    )
+
+    assert result.paths.output_dir.joinpath("modeling_dataset_summary.txt").exists()
+    assert result.paths.output_dir.joinpath("modeling_dataset_export.jsonl").exists()
+
+    controller.load_run(result.paths.output_dir)
+    loaded = controller.refresh()
+    labels = {label for label, _value in loaded.result_details}
+
+    assert loaded.selected_experiment == "collect_pose_command_dataset"
+    assert "Workspace Plot" in labels
+    assert "Command Plot" in labels
+    assert "Export JSONL" in labels
+    assert "Summary Note" in labels
 
 
 def test_experiment_workspace_blocks_grid_accuracy_without_tip_calibration(tmp_path: Path) -> None:
