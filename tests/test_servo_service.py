@@ -362,12 +362,75 @@ def test_servo_service_single_segment_displacement_blocks_on_overcurrent(tmp_pat
         )
 
 
+def test_servo_service_simple_experiment_motion_does_not_require_current_voltage_or_temperature(tmp_path: Path) -> None:
+    bus = MockDxlBus([1, 2, 3, 4])
+    for telemetry in bus._state.values():
+        telemetry.present_position = 2048
+        telemetry.present_current_ma = None
+        telemetry.present_voltage_mv = None
+        telemetry.present_temperature_c = None
+    service = _build_service(tmp_path, dxl_bus=bus)
+    service.connect("/dev/mock-openrb", 115200)
+
+    result = service.command_displacement(
+        tendon_displacements_cm=[1.0, 0.0, -1.0, 0.0],
+        neutral_ticks=[2048, 2048, 2048, 2048],
+        servo_ids=[1, 2, 3, 4],
+    )
+
+    assert result.positions_by_id[1] > 2048
+    assert result.positions_by_id[3] < 2048
+    assert "simple Position-control path" in result.message
+    assert result.debug_entries_by_id[1].present_current_ma is None
+
+
+def test_servo_service_simple_experiment_motion_reports_stale_telemetry_explicitly(tmp_path: Path) -> None:
+    bus = _StaleTelemetryBus([1, 2, 3, 4])
+    for telemetry in bus._state.values():
+        telemetry.present_position = 2048
+        telemetry.last_read_monotonic_s = 0.0
+    service = _build_service(
+        tmp_path,
+        dxl_bus=bus,
+        time_fn=lambda: 1.0,
+        telemetry_stale_after_s=0.25,
+    )
+    service.connect("/dev/mock-openrb", 115200)
+    service.safety_guard._time_fn = lambda: 1.0
+
+    with pytest.raises(RuntimeError, match="stale/missing telemetry blocked motion"):
+        service.command_displacement(
+            tendon_displacements_cm=[1.0, 0.0, -1.0, 0.0],
+            neutral_ticks=[2048, 2048, 2048, 2048],
+            servo_ids=[1, 2, 3, 4],
+        )
+
+
+def test_servo_service_simple_experiment_motion_reports_position_mode_issue_when_auto_config_is_off(tmp_path: Path) -> None:
+    bus = _RecordingMotionConfigBus([1, 2, 3, 4])
+    bus.config.single_segment_auto_configure_motion_defaults = False
+    for telemetry in bus._state.values():
+        telemetry.operating_mode = 5
+        telemetry.present_position = 2048
+    service = _build_service(tmp_path, dxl_bus=bus)
+    service.connect("/dev/mock-openrb", 115200)
+
+    with pytest.raises(RuntimeError, match="is not in Position Control Mode"):
+        service.command_displacement(
+            tendon_displacements_cm=[1.0, 0.0, -1.0, 0.0],
+            neutral_ticks=[2048, 2048, 2048, 2048],
+            servo_ids=[1, 2, 3, 4],
+        )
+
+    assert bus.operating_mode_writes == []
+
+
 def test_servo_service_single_segment_displacement_reports_goal_write_failures_separately(tmp_path: Path) -> None:
     service = _build_service(tmp_path, dxl_bus=_GoalWriteFailureBus([1, 2, 3, 4]))
     service.connect("/dev/mock-openrb", 115200)
     neutral = service.capture_neutral_setpoints([1, 2, 3, 4])
 
-    with pytest.raises(RuntimeError, match="failed during goal write: mock write timeout"):
+    with pytest.raises(RuntimeError, match="Simple single-segment experiment motion failed during goal write: mock write timeout"):
         service.command_displacement(
             tendon_displacements_cm=[1.0, 0.0, -1.0, 0.0],
             neutral_ticks=[neutral[1], neutral[2], neutral[3], neutral[4]],
