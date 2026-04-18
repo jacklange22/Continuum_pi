@@ -290,25 +290,49 @@ def test_real_dxl_bus_requires_sdk_for_hardware_access() -> None:
 def test_dxl_bus_config_preserves_single_segment_defaults_when_payload_is_partial() -> None:
     config = DxlBusConfig.from_dict({"protocol_version": 2.0})
 
-    assert config.single_segment_preferred_operating_mode == 5
-    assert config.single_segment_allowed_operating_modes == [3, 5]
-    assert config.single_segment_default_goal_current_ma == 850
-    assert config.single_segment_default_profile_velocity == 80
-    assert config.single_segment_default_profile_acceleration == 20
+    assert config.single_segment_experiment_preferred_operating_mode == 3
+    assert config.single_segment_experiment_allowed_operating_modes == [3]
+    assert config.single_segment_experiment_default_goal_current_ma is None
+    assert config.single_segment_experiment_default_profile_velocity == 80
+    assert config.single_segment_experiment_default_profile_acceleration == 20
+    assert config.single_segment_current_aware_preferred_operating_mode == 5
+    assert config.single_segment_current_aware_allowed_operating_modes == [3, 5]
+    assert config.single_segment_current_aware_default_goal_current_ma == 850
+    assert config.single_segment_current_aware_default_profile_velocity == 80
+    assert config.single_segment_current_aware_default_profile_acceleration == 20
 
 
 def test_dxl_bus_config_allows_explicit_null_single_segment_motion_defaults() -> None:
     config = DxlBusConfig.from_dict(
         {
-            "single_segment_default_goal_current_ma": None,
-            "single_segment_default_profile_velocity": None,
-            "single_segment_default_profile_acceleration": None,
+            "single_segment_current_aware_default_goal_current_ma": None,
+            "single_segment_current_aware_default_profile_velocity": None,
+            "single_segment_current_aware_default_profile_acceleration": None,
         }
     )
 
-    assert config.single_segment_default_goal_current_ma is None
-    assert config.single_segment_default_profile_velocity is None
-    assert config.single_segment_default_profile_acceleration is None
+    assert config.single_segment_current_aware_default_goal_current_ma is None
+    assert config.single_segment_current_aware_default_profile_velocity is None
+    assert config.single_segment_current_aware_default_profile_acceleration is None
+
+
+def test_dxl_bus_config_preserves_legacy_single_segment_aliases_for_current_aware_profile() -> None:
+    config = DxlBusConfig.from_dict(
+        {
+            "single_segment_preferred_operating_mode": 5,
+            "single_segment_allowed_operating_modes": [3, 5],
+            "single_segment_default_goal_current_ma": 700,
+            "single_segment_default_profile_velocity": 90,
+            "single_segment_default_profile_acceleration": 30,
+        }
+    )
+
+    assert config.single_segment_current_aware_preferred_operating_mode == 5
+    assert config.single_segment_current_aware_allowed_operating_modes == [3, 5]
+    assert config.single_segment_current_aware_default_goal_current_ma == 700
+    assert config.single_segment_current_aware_default_profile_velocity == 90
+    assert config.single_segment_current_aware_default_profile_acceleration == 30
+    assert config.single_segment_experiment_preferred_operating_mode == 3
 
 
 def test_openrb_client_validates_port_and_reports_status() -> None:

@@ -73,11 +73,16 @@ class DxlBusConfig:
     default_profile_velocity: int | None = None
     default_profile_acceleration: int | None = None
     single_segment_auto_configure_motion_defaults: bool = True
-    single_segment_preferred_operating_mode: int = 5
-    single_segment_allowed_operating_modes: list[int] = field(default_factory=lambda: [3, 5])
-    single_segment_default_goal_current_ma: int | None = 850
-    single_segment_default_profile_velocity: int | None = 80
-    single_segment_default_profile_acceleration: int | None = 20
+    single_segment_experiment_preferred_operating_mode: int = 3
+    single_segment_experiment_allowed_operating_modes: list[int] = field(default_factory=lambda: [3])
+    single_segment_experiment_default_goal_current_ma: int | None = None
+    single_segment_experiment_default_profile_velocity: int | None = 80
+    single_segment_experiment_default_profile_acceleration: int | None = 20
+    single_segment_current_aware_preferred_operating_mode: int = 5
+    single_segment_current_aware_allowed_operating_modes: list[int] = field(default_factory=lambda: [3, 5])
+    single_segment_current_aware_default_goal_current_ma: int | None = 850
+    single_segment_current_aware_default_profile_velocity: int | None = 80
+    single_segment_current_aware_default_profile_acceleration: int | None = 20
     auto_torque_enable_on_write: bool = True
     torque_disable_for_eeprom_write: bool = True
     discovery_min_id: int = 1
@@ -118,32 +123,53 @@ class DxlBusConfig:
                 for key, value in dict(payload.get("control_table", {}) or {}).items()
             }
         )
-        single_segment_goal_current = (
-            defaults.single_segment_default_goal_current_ma
-            if "single_segment_default_goal_current_ma" not in payload
-            else (
-                int(payload["single_segment_default_goal_current_ma"])
-                if payload.get("single_segment_default_goal_current_ma") not in (None, "")
-                else None
-            )
+        def _optional_int(key: str, default: int | None) -> int | None:
+            if key not in payload:
+                return default
+            if payload.get(key) in (None, ""):
+                return None
+            return int(payload[key])
+
+        def _int_list(key: str, default: list[int]) -> list[int]:
+            raw = payload.get(key, default)
+            return [int(value) for value in list(raw or [])]
+
+        current_aware_goal_current = _optional_int(
+            "single_segment_current_aware_default_goal_current_ma",
+            (
+                _optional_int(
+                    "single_segment_default_goal_current_ma",
+                    defaults.single_segment_current_aware_default_goal_current_ma,
+                )
+            ),
         )
-        single_segment_profile_velocity = (
-            defaults.single_segment_default_profile_velocity
-            if "single_segment_default_profile_velocity" not in payload
-            else (
-                int(payload["single_segment_default_profile_velocity"])
-                if payload.get("single_segment_default_profile_velocity") not in (None, "")
-                else None
-            )
+        current_aware_profile_velocity = _optional_int(
+            "single_segment_current_aware_default_profile_velocity",
+            _optional_int(
+                "single_segment_default_profile_velocity",
+                defaults.single_segment_current_aware_default_profile_velocity,
+            ),
         )
-        single_segment_profile_acceleration = (
-            defaults.single_segment_default_profile_acceleration
-            if "single_segment_default_profile_acceleration" not in payload
-            else (
-                int(payload["single_segment_default_profile_acceleration"])
-                if payload.get("single_segment_default_profile_acceleration") not in (None, "")
-                else None
-            )
+        current_aware_profile_acceleration = _optional_int(
+            "single_segment_current_aware_default_profile_acceleration",
+            _optional_int(
+                "single_segment_default_profile_acceleration",
+                defaults.single_segment_current_aware_default_profile_acceleration,
+            ),
+        )
+        experiment_profile_velocity = _optional_int(
+            "single_segment_experiment_default_profile_velocity",
+            _optional_int(
+                "single_segment_default_profile_velocity",
+                defaults.single_segment_experiment_default_profile_velocity,
+            ),
+        )
+        experiment_profile_acceleration = _optional_int(
+            "single_segment_experiment_default_profile_acceleration",
+            _optional_int(
+                "single_segment_default_profile_acceleration",
+                defaults.single_segment_experiment_default_profile_acceleration,
+            ),
         )
         return cls(
             protocol_version=float(payload.get("protocol_version", defaults.protocol_version)),
@@ -178,24 +204,41 @@ class DxlBusConfig:
                     defaults.single_segment_auto_configure_motion_defaults,
                 )
             ),
-            single_segment_preferred_operating_mode=int(
+            single_segment_experiment_preferred_operating_mode=int(
                 payload.get(
-                    "single_segment_preferred_operating_mode",
-                    defaults.single_segment_preferred_operating_mode,
+                    "single_segment_experiment_preferred_operating_mode",
+                    defaults.single_segment_experiment_preferred_operating_mode,
                 )
             ),
-            single_segment_allowed_operating_modes=[
-                int(value)
-                for value in list(
+            single_segment_experiment_allowed_operating_modes=_int_list(
+                "single_segment_experiment_allowed_operating_modes",
+                list(defaults.single_segment_experiment_allowed_operating_modes),
+            ),
+            single_segment_experiment_default_goal_current_ma=_optional_int(
+                "single_segment_experiment_default_goal_current_ma",
+                defaults.single_segment_experiment_default_goal_current_ma,
+            ),
+            single_segment_experiment_default_profile_velocity=experiment_profile_velocity,
+            single_segment_experiment_default_profile_acceleration=experiment_profile_acceleration,
+            single_segment_current_aware_preferred_operating_mode=int(
+                payload.get(
+                    "single_segment_current_aware_preferred_operating_mode",
                     payload.get(
-                        "single_segment_allowed_operating_modes",
-                        list(defaults.single_segment_allowed_operating_modes),
-                    )
+                        "single_segment_preferred_operating_mode",
+                        defaults.single_segment_current_aware_preferred_operating_mode,
+                    ),
                 )
-            ],
-            single_segment_default_goal_current_ma=single_segment_goal_current,
-            single_segment_default_profile_velocity=single_segment_profile_velocity,
-            single_segment_default_profile_acceleration=single_segment_profile_acceleration,
+            ),
+            single_segment_current_aware_allowed_operating_modes=_int_list(
+                "single_segment_current_aware_allowed_operating_modes",
+                _int_list(
+                    "single_segment_allowed_operating_modes",
+                    list(defaults.single_segment_current_aware_allowed_operating_modes),
+                ),
+            ),
+            single_segment_current_aware_default_goal_current_ma=current_aware_goal_current,
+            single_segment_current_aware_default_profile_velocity=current_aware_profile_velocity,
+            single_segment_current_aware_default_profile_acceleration=current_aware_profile_acceleration,
             auto_torque_enable_on_write=bool(payload.get("auto_torque_enable_on_write", defaults.auto_torque_enable_on_write)),
             torque_disable_for_eeprom_write=bool(
                 payload.get("torque_disable_for_eeprom_write", defaults.torque_disable_for_eeprom_write)

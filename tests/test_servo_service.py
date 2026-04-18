@@ -93,6 +93,36 @@ class _GoalWriteFailureBus(MockDxlBus):
         raise RuntimeError("mock write timeout")
 
 
+class _RecordingMotionConfigBus(MockDxlBus):
+    def __init__(self, servo_ids: list[int] | None = None) -> None:
+        super().__init__(servo_ids or [1, 2, 3, 4])
+        self.operating_mode_writes: list[tuple[int, int]] = []
+        self.goal_current_writes: list[tuple[int, int]] = []
+        self.profile_velocity_writes: list[tuple[int, int]] = []
+        self.profile_acceleration_writes: list[tuple[int, int]] = []
+
+    def write_operating_mode(self, servo_id: int, operating_mode: int) -> None:
+        self.operating_mode_writes.append((int(servo_id), int(operating_mode)))
+        super().write_operating_mode(servo_id, operating_mode)
+
+    def write_goal_current_ma(self, servo_id: int, current_ma: int) -> None:
+        self.goal_current_writes.append((int(servo_id), int(current_ma)))
+        super().write_goal_current_ma(servo_id, current_ma)
+
+    def write_profile_velocity(self, servo_id: int, profile_velocity: int) -> None:
+        self.profile_velocity_writes.append((int(servo_id), int(profile_velocity)))
+        super().write_profile_velocity(servo_id, profile_velocity)
+
+    def write_profile_acceleration(self, servo_id: int, profile_acceleration: int) -> None:
+        self.profile_acceleration_writes.append((int(servo_id), int(profile_acceleration)))
+        super().write_profile_acceleration(servo_id, profile_acceleration)
+
+
+class _GoalCurrentFailureBus(_RecordingMotionConfigBus):
+    def write_goal_current_ma(self, servo_id: int, current_ma: int) -> None:
+        raise RuntimeError("[RxPacketError] The data value exceeds the limit value!")
+
+
 def _build_service(
     tmp_path: Path,
     *,
@@ -201,7 +231,7 @@ def test_servo_service_single_segment_displacement_uses_hardware_informed_range(
     assert result.positions_by_id[1] > neutral[1] + 600
     assert result.positions_by_id[3] < neutral[3] - 600
     assert "hardware-informed bounds" in result.message
-    assert "Current-based Position Control" in result.message
+    assert "Position Control" in result.message
     assert result.debug_entries_by_id[1].limit_source == "single_segment_hardware_envelope"
 
 
@@ -224,10 +254,10 @@ def test_servo_service_single_segment_displacement_projects_antagonistic_pairs(t
     assert "Antagonistic-pair projection applied" in result.message
 
 
-def test_servo_service_single_segment_displacement_auto_configures_motion_defaults(tmp_path: Path) -> None:
-    bus = MockDxlBus([1, 2, 3, 4])
+def test_servo_service_single_segment_displacement_uses_position_mode_for_experiment_motion(tmp_path: Path) -> None:
+    bus = _RecordingMotionConfigBus([1, 2, 3, 4])
     for telemetry in bus._state.values():
-        telemetry.operating_mode = 3
+        telemetry.operating_mode = 5
     service = _build_service(tmp_path, dxl_bus=bus)
     service.connect("/dev/mock-openrb", 115200)
     neutral = service.capture_neutral_setpoints([1, 2, 3, 4])
@@ -238,16 +268,40 @@ def test_servo_service_single_segment_displacement_auto_configures_motion_defaul
         servo_ids=[1, 2, 3, 4],
     )
 
-    assert all(bus._state[servo_id].operating_mode == 5 for servo_id in [1, 2, 3, 4])
-    assert all(getattr(bus._state[servo_id], "goal_current_ma", None) == 850 for servo_id in [1, 2, 3, 4])
+    assert all(bus._state[servo_id].operating_mode == 3 for servo_id in [1, 2, 3, 4])
+    assert bus.goal_current_writes == []
     assert all(getattr(bus._state[servo_id], "profile_velocity", None) == 80 for servo_id in [1, 2, 3, 4])
     assert all(getattr(bus._state[servo_id], "profile_acceleration", None) == 20 for servo_id in [1, 2, 3, 4])
     assert "Applied motion settings" in result.message
-    assert result.debug_entries_by_id[1].operating_mode == 5
-    assert result.debug_entries_by_id[1].preferred_operating_mode == 5
-    assert result.debug_entries_by_id[1].goal_current_ma == 850
+    assert "experiment motion config: Position Control" in result.message
+    assert result.debug_entries_by_id[1].operating_mode == 3
+    assert result.debug_entries_by_id[1].preferred_operating_mode == 3
+    assert result.debug_entries_by_id[1].goal_current_ma is None
     assert result.debug_entries_by_id[1].profile_velocity == 80
     assert result.debug_entries_by_id[1].profile_acceleration == 20
+
+
+def test_servo_service_current_aware_single_segment_motion_can_still_write_goal_current(tmp_path: Path) -> None:
+    bus = _RecordingMotionConfigBus([1, 2, 3, 4])
+    for telemetry in bus._state.values():
+        telemetry.operating_mode = 3
+        telemetry.current_limit_ma = 2352
+    service = _build_service(tmp_path, dxl_bus=bus)
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([1, 2, 3, 4])
+
+    result = service.command_displacement(
+        tendon_displacements_cm=[1.0, 0.0, -1.0, 0.0],
+        neutral_ticks=[neutral[1], neutral[2], neutral[3], neutral[4]],
+        servo_ids=[1, 2, 3, 4],
+        motion_workflow="current_aware_validation",
+    )
+
+    assert all(bus._state[servo_id].operating_mode == 5 for servo_id in [1, 2, 3, 4])
+    assert all(getattr(bus._state[servo_id], "goal_current_ma", None) == 850 for servo_id in [1, 2, 3, 4])
+    assert "current aware validation config: Current-based Position Control" in result.message
+    assert result.debug_entries_by_id[1].preferred_operating_mode == 5
+    assert result.debug_entries_by_id[1].goal_current_ma == 850
 
 
 def test_servo_service_single_segment_characterization_reports_pairwise_travel(tmp_path: Path) -> None:
@@ -318,6 +372,20 @@ def test_servo_service_single_segment_displacement_reports_goal_write_failures_s
             tendon_displacements_cm=[1.0, 0.0, -1.0, 0.0],
             neutral_ticks=[neutral[1], neutral[2], neutral[3], neutral[4]],
             servo_ids=[1, 2, 3, 4],
+        )
+
+
+def test_servo_service_current_aware_profile_reports_goal_current_failure_explicitly(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, dxl_bus=_GoalCurrentFailureBus([1, 2, 3, 4]))
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([1, 2, 3, 4])
+
+    with pytest.raises(RuntimeError, match="Failed to write goal current for servo 1"):
+        service.command_displacement(
+            tendon_displacements_cm=[1.0, 0.0, -1.0, 0.0],
+            neutral_ticks=[neutral[1], neutral[2], neutral[3], neutral[4]],
+            servo_ids=[1, 2, 3, 4],
+            motion_workflow="current_aware_validation",
         )
 
 

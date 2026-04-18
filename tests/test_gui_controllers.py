@@ -1598,7 +1598,8 @@ def test_servos_controller_surfaces_single_segment_motion_diagnostics(tmp_path: 
     controller.capture_neutral_setpoints()
     controller.refresh()
 
-    assert "Current-based Position Control" in controller.state.single_segment_motion_config_summary
+    assert "experiment motion" in controller.state.single_segment_motion_config_summary
+    assert "Position Control" in controller.state.single_segment_motion_config_summary
     assert "pair 1/3" in controller.state.single_segment_characterization_summary
 
 

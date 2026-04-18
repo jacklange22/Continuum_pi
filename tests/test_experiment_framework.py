@@ -1089,6 +1089,8 @@ def test_collect_pose_command_dataset_records_full_pose_when_registration_exists
     assert accepted_samples
     assert accepted_samples[0].pose_in_robot_frame["tip"]["tangent_xyz"] == [0.0, 0.0, 1.0]
     assert accepted_samples[0].pose_in_robot_frame["tip"]["quaternion_wxyz"] == [1.0, 0.0, 0.0, 0.0]
+    assert accepted_samples[0].extra["motion_profile"]["operating_mode_label"] == "Position Control"
+    assert accepted_samples[0].extra["motion_profile"]["goal_current_ma"] is None
     assert bundle.paths.output_dir.joinpath("modeling_dataset_summary.txt").exists()
     assert bundle.paths.output_dir.joinpath("modeling_dataset_export.jsonl").exists()
     assert bundle.paths.output_dir.joinpath("modeling_workspace_coverage.png").exists()

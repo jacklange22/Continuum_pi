@@ -272,6 +272,7 @@ class ServosController:
                 tendon_displacements_cm=self.state.tendon_displacements_cm,
                 neutral_ticks=neutral,
                 servo_ids=self.state.servo_ids,
+                motion_workflow="experiment_motion",
             )
             self.state.status_message = result.message
             self.state.last_displacement_summary = result.message

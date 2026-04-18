@@ -30,6 +30,8 @@ CANONICAL_POSITION_CONVENTION = (
     "tighten lowers counts, loosen raises counts."
 )
 SINGLE_SEGMENT_PAIR_INDEXES = ((0, 2), (1, 3))
+SINGLE_SEGMENT_WORKFLOW_EXPERIMENT = "experiment_motion"
+SINGLE_SEGMENT_WORKFLOW_CURRENT_AWARE = "current_aware_validation"
 
 
 LOG = logging.getLogger(__name__)
@@ -272,6 +274,7 @@ class ServoRuntimeStateSnapshot:
 class SingleSegmentMotionConfigurationSummary:
     """Resolved coordinated-motion configuration for the current 4-servo segment."""
 
+    workflow: str
     auto_configure: bool
     preferred_operating_mode: int | None
     allowed_operating_modes: list[int]
@@ -280,6 +283,20 @@ class SingleSegmentMotionConfigurationSummary:
     default_profile_acceleration: int | None
     applied_servo_ids: list[int]
     message: str
+
+
+@dataclass
+class SingleSegmentMotionProfile:
+    """Workflow-specific coordinated-motion policy for the current 4-servo segment."""
+
+    workflow: str
+    preferred_operating_mode: int | None
+    allowed_operating_modes: list[int]
+    goal_current_ma: int | None
+    profile_velocity: int | None
+    profile_acceleration: int | None
+    auto_configure: bool
+    current_aware: bool
 
 
 @dataclass
@@ -511,86 +528,118 @@ class ServoService:
         ]
         return list(configured)
 
-    def _resolved_single_segment_preferred_operating_mode(self) -> int | None:
-        mode = getattr(self.dxl_bus.config, "single_segment_preferred_operating_mode", None)
-        if mode in (None, ""):
-            return None
-        return int(mode)
-
-    def _resolved_single_segment_allowed_operating_modes(self) -> list[int]:
-        configured = list(getattr(self.dxl_bus.config, "single_segment_allowed_operating_modes", []) or [])
-        if not configured:
-            configured = list(getattr(self.dxl_bus.config, "allowed_operating_modes", []) or [])
-        resolved = sorted({int(value) for value in configured}) if configured else []
-        preferred = self._resolved_single_segment_preferred_operating_mode()
-        if preferred is not None and preferred not in resolved:
-            resolved.append(int(preferred))
-            resolved.sort()
-        return resolved
+    def _resolved_single_segment_motion_profile(
+        self,
+        *,
+        workflow: str = SINGLE_SEGMENT_WORKFLOW_EXPERIMENT,
+    ) -> SingleSegmentMotionProfile:
+        workflow_name = str(workflow or SINGLE_SEGMENT_WORKFLOW_EXPERIMENT).strip().lower()
+        auto_configure = bool(getattr(self.dxl_bus.config, "single_segment_auto_configure_motion_defaults", True))
+        if workflow_name == SINGLE_SEGMENT_WORKFLOW_CURRENT_AWARE:
+            preferred_mode = getattr(self.dxl_bus.config, "single_segment_current_aware_preferred_operating_mode", None)
+            allowed_modes = list(getattr(self.dxl_bus.config, "single_segment_current_aware_allowed_operating_modes", []) or [])
+            goal_current_ma = getattr(self.dxl_bus.config, "single_segment_current_aware_default_goal_current_ma", None)
+            profile_velocity = getattr(self.dxl_bus.config, "single_segment_current_aware_default_profile_velocity", None)
+            profile_acceleration = getattr(self.dxl_bus.config, "single_segment_current_aware_default_profile_acceleration", None)
+            current_aware = True
+        else:
+            workflow_name = SINGLE_SEGMENT_WORKFLOW_EXPERIMENT
+            preferred_mode = getattr(self.dxl_bus.config, "single_segment_experiment_preferred_operating_mode", None)
+            allowed_modes = list(getattr(self.dxl_bus.config, "single_segment_experiment_allowed_operating_modes", []) or [])
+            goal_current_ma = getattr(self.dxl_bus.config, "single_segment_experiment_default_goal_current_ma", None)
+            profile_velocity = getattr(self.dxl_bus.config, "single_segment_experiment_default_profile_velocity", None)
+            profile_acceleration = getattr(self.dxl_bus.config, "single_segment_experiment_default_profile_acceleration", None)
+            current_aware = False
+        resolved_allowed = sorted({int(value) for value in allowed_modes}) if allowed_modes else []
+        if preferred_mode not in (None, ""):
+            preferred_mode = int(preferred_mode)
+            if preferred_mode not in resolved_allowed:
+                resolved_allowed.append(int(preferred_mode))
+                resolved_allowed.sort()
+        else:
+            preferred_mode = None
+        return SingleSegmentMotionProfile(
+            workflow=workflow_name,
+            preferred_operating_mode=preferred_mode,
+            allowed_operating_modes=list(resolved_allowed),
+            goal_current_ma=(
+                None
+                if goal_current_ma in (None, "")
+                else max(0, min(int(goal_current_ma), int(self.safety_guard.max_current_ma)))
+            ),
+            profile_velocity=(
+                None
+                if profile_velocity in (None, "")
+                else max(0, int(profile_velocity))
+            ),
+            profile_acceleration=(
+                None
+                if profile_acceleration in (None, "")
+                else max(0, int(profile_acceleration))
+            ),
+            auto_configure=auto_configure,
+            current_aware=current_aware,
+        )
 
     def _default_allowed_operating_modes(self) -> list[int]:
         resolved = {int(value) for value in list(self.dxl_bus.config.allowed_operating_modes or [])}
         configured_ids = self._configured_single_segment_servo_ids()
         if len(configured_ids) == 4 and str(self.neutral_calibration.context.robot_mode or "").strip().lower() == "4-servo":
-            resolved.update(self._resolved_single_segment_allowed_operating_modes())
+            resolved.update(
+                self._resolved_single_segment_motion_profile(
+                    workflow=SINGLE_SEGMENT_WORKFLOW_EXPERIMENT,
+                ).allowed_operating_modes
+            )
+            resolved.update(
+                self._resolved_single_segment_motion_profile(
+                    workflow=SINGLE_SEGMENT_WORKFLOW_CURRENT_AWARE,
+                ).allowed_operating_modes
+            )
         return sorted(resolved)
-
-    def _resolved_single_segment_default_goal_current_ma(self) -> int | None:
-        configured = getattr(self.dxl_bus.config, "single_segment_default_goal_current_ma", None)
-        if configured in (None, ""):
-            return None
-        return max(0, min(int(configured), int(self.safety_guard.max_current_ma)))
-
-    def _resolved_single_segment_default_profile_velocity(self) -> int | None:
-        configured = getattr(self.dxl_bus.config, "single_segment_default_profile_velocity", None)
-        if configured in (None, ""):
-            return None
-        return max(0, int(configured))
-
-    def _resolved_single_segment_default_profile_acceleration(self) -> int | None:
-        configured = getattr(self.dxl_bus.config, "single_segment_default_profile_acceleration", None)
-        if configured in (None, ""):
-            return None
-        return max(0, int(configured))
 
     def single_segment_motion_configuration_summary(
         self,
         servo_ids: list[int] | None = None,
+        *,
+        workflow: str = SINGLE_SEGMENT_WORKFLOW_EXPERIMENT,
     ) -> SingleSegmentMotionConfigurationSummary:
         configured_ids = self._configured_single_segment_servo_ids()
         selected = [int(value) for value in (servo_ids or configured_ids)]
-        preferred_mode = self._resolved_single_segment_preferred_operating_mode()
-        allowed_modes = self._resolved_single_segment_allowed_operating_modes()
-        goal_current_ma = self._resolved_single_segment_default_goal_current_ma()
-        profile_velocity = self._resolved_single_segment_default_profile_velocity()
-        profile_acceleration = self._resolved_single_segment_default_profile_acceleration()
-        auto_configure = bool(getattr(self.dxl_bus.config, "single_segment_auto_configure_motion_defaults", True))
+        profile = self._resolved_single_segment_motion_profile(workflow=workflow)
         applied_servo_ids = sorted(
             int(servo_id)
             for servo_id in selected
-            if int(servo_id) in self._last_single_segment_motion_configuration_by_servo
+            if (
+                int(servo_id) in self._last_single_segment_motion_configuration_by_servo
+                and str(
+                    self._last_single_segment_motion_configuration_by_servo[int(servo_id)].get("workflow", "")
+                )
+                == str(profile.workflow)
+            )
         )
         allowed_labels = ", ".join(
             self.operating_mode_label(int(value))
-            for value in allowed_modes
+            for value in profile.allowed_operating_modes
         ) or "none"
         parts = [
-            f"preferred mode {self.operating_mode_label(preferred_mode)}",
+            f"{profile.workflow.replace('_', ' ')}",
+            f"preferred mode {self.operating_mode_label(profile.preferred_operating_mode)}",
             f"allowed {allowed_labels}",
-            f"goal current {goal_current_ma if goal_current_ma is not None else 'unset'} mA",
-            f"profile vel {profile_velocity if profile_velocity is not None else 'unset'}",
-            f"profile acc {profile_acceleration if profile_acceleration is not None else 'unset'}",
-            f"auto-configure {'on' if auto_configure else 'off'}",
+            f"goal current {profile.goal_current_ma if profile.goal_current_ma is not None else 'off'}",
+            f"profile vel {profile.profile_velocity if profile.profile_velocity is not None else 'unset'}",
+            f"profile acc {profile.profile_acceleration if profile.profile_acceleration is not None else 'unset'}",
+            f"auto-configure {'on' if profile.auto_configure else 'off'}",
         ]
         if applied_servo_ids:
             parts.append("applied to " + ", ".join(str(value) for value in applied_servo_ids))
         return SingleSegmentMotionConfigurationSummary(
-            auto_configure=auto_configure,
-            preferred_operating_mode=preferred_mode,
-            allowed_operating_modes=list(allowed_modes),
-            default_goal_current_ma=goal_current_ma,
-            default_profile_velocity=profile_velocity,
-            default_profile_acceleration=profile_acceleration,
+            workflow=str(profile.workflow),
+            auto_configure=profile.auto_configure,
+            preferred_operating_mode=profile.preferred_operating_mode,
+            allowed_operating_modes=list(profile.allowed_operating_modes),
+            default_goal_current_ma=profile.goal_current_ma,
+            default_profile_velocity=profile.profile_velocity,
+            default_profile_acceleration=profile.profile_acceleration,
             applied_servo_ids=applied_servo_ids,
             message=" | ".join(parts),
         )
@@ -673,66 +722,107 @@ class ServoService:
         servo_ids: list[int],
         *,
         telemetry_by_id: dict[int, ServoTelemetry] | None = None,
+        workflow: str = SINGLE_SEGMENT_WORKFLOW_EXPERIMENT,
     ) -> list[str]:
-        if not bool(getattr(self.dxl_bus.config, "single_segment_auto_configure_motion_defaults", True)):
+        profile = self._resolved_single_segment_motion_profile(workflow=workflow)
+        if not bool(profile.auto_configure):
             return []
-        preferred_mode = self._resolved_single_segment_preferred_operating_mode()
-        goal_current_ma = self._resolved_single_segment_default_goal_current_ma()
-        profile_velocity = self._resolved_single_segment_default_profile_velocity()
-        profile_acceleration = self._resolved_single_segment_default_profile_acceleration()
-        signature = {
-            "preferred_operating_mode": preferred_mode,
-            "goal_current_ma": goal_current_ma,
-            "profile_velocity": profile_velocity,
-            "profile_acceleration": profile_acceleration,
-        }
         live_telemetry = dict(telemetry_by_id or self.read_telemetry(servo_ids))
         notes: list[str] = []
         for servo_id in [int(value) for value in servo_ids]:
             telemetry = live_telemetry.get(int(servo_id))
             if telemetry is None:
                 raise RuntimeError(f"Servo {servo_id} telemetry is unavailable before motion configuration.")
+            goal_current_ma, goal_current_note = self._resolved_goal_current_for_profile(
+                servo_id=int(servo_id),
+                telemetry=telemetry,
+                profile=profile,
+            )
+            signature = {
+                "workflow": str(profile.workflow),
+                "preferred_operating_mode": profile.preferred_operating_mode,
+                "goal_current_ma": goal_current_ma,
+                "profile_velocity": profile.profile_velocity,
+                "profile_acceleration": profile.profile_acceleration,
+            }
             applied = self._last_single_segment_motion_configuration_by_servo.get(int(servo_id))
             if applied == signature and (
-                preferred_mode is None
+                profile.preferred_operating_mode is None
                 or telemetry.operating_mode is None
-                or int(telemetry.operating_mode) == int(preferred_mode)
+                or int(telemetry.operating_mode) == int(profile.preferred_operating_mode)
             ):
                 continue
-            try:
-                if preferred_mode is not None and telemetry.operating_mode != int(preferred_mode):
+            if goal_current_note:
+                notes.append(goal_current_note)
+            if profile.preferred_operating_mode is not None and telemetry.operating_mode != int(profile.preferred_operating_mode):
+                try:
                     self._guard_bus_call(
                         "configure servo operating mode",
-                        lambda sid=int(servo_id), mode=int(preferred_mode): self.dxl_bus.write_operating_mode(sid, mode),
+                        lambda sid=int(servo_id), mode=int(profile.preferred_operating_mode): self.dxl_bus.write_operating_mode(sid, mode),
                     )
-                    notes.append(
-                        f"servo {servo_id} mode {self.operating_mode_label(telemetry.operating_mode)}"
-                        f"->{self.operating_mode_label(preferred_mode)}"
-                    )
-                if profile_acceleration is not None:
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Failed to configure operating mode for servo {servo_id}: {exc}"
+                    ) from exc
+                notes.append(
+                    f"servo {servo_id} mode {self.operating_mode_label(telemetry.operating_mode)}"
+                    f"->{self.operating_mode_label(profile.preferred_operating_mode)}"
+                )
+            if profile.profile_acceleration is not None:
+                try:
                     self._guard_bus_call(
                         "configure servo profile acceleration",
-                        lambda sid=int(servo_id), value=int(profile_acceleration): self.dxl_bus.write_profile_acceleration(sid, value),
+                        lambda sid=int(servo_id), value=int(profile.profile_acceleration): self.dxl_bus.write_profile_acceleration(sid, value),
                     )
-                    notes.append(f"servo {servo_id} profile acc->{profile_acceleration}")
-                if profile_velocity is not None:
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Failed to configure profile acceleration for servo {servo_id}: {exc}"
+                    ) from exc
+                notes.append(f"servo {servo_id} profile acc->{profile.profile_acceleration}")
+            if profile.profile_velocity is not None:
+                try:
                     self._guard_bus_call(
                         "configure servo profile velocity",
-                        lambda sid=int(servo_id), value=int(profile_velocity): self.dxl_bus.write_profile_velocity(sid, value),
+                        lambda sid=int(servo_id), value=int(profile.profile_velocity): self.dxl_bus.write_profile_velocity(sid, value),
                     )
-                    notes.append(f"servo {servo_id} profile vel->{profile_velocity}")
-                if goal_current_ma is not None:
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Failed to configure profile velocity for servo {servo_id}: {exc}"
+                    ) from exc
+                notes.append(f"servo {servo_id} profile vel->{profile.profile_velocity}")
+            if goal_current_ma is not None:
+                try:
                     self._guard_bus_call(
                         "configure servo goal current",
                         lambda sid=int(servo_id), value=int(goal_current_ma): self.dxl_bus.write_goal_current_ma(sid, value),
                     )
-                    notes.append(f"servo {servo_id} goal current->{goal_current_ma} mA")
-            except Exception as exc:
-                raise RuntimeError(
-                    f"Failed to configure single-segment motion settings for servo {servo_id}: {exc}"
-                ) from exc
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Failed to write goal current for servo {servo_id}: {exc}"
+                    ) from exc
+                notes.append(f"servo {servo_id} goal current->{goal_current_ma} mA")
             self._last_single_segment_motion_configuration_by_servo[int(servo_id)] = dict(signature)
         return notes
+
+    def _resolved_goal_current_for_profile(
+        self,
+        *,
+        servo_id: int,
+        telemetry: ServoTelemetry,
+        profile: SingleSegmentMotionProfile,
+    ) -> tuple[int | None, str | None]:
+        desired = profile.goal_current_ma
+        if desired in (None, ""):
+            return None, None
+        desired_ma = max(0, int(desired))
+        current_limit = telemetry.current_limit_ma
+        if current_limit not in (None, ""):
+            limit_ma = max(0, int(current_limit))
+            if desired_ma > limit_ma:
+                return limit_ma, (
+                    f"servo {servo_id} goal current {desired_ma} mA clamped to live Current Limit {limit_ma} mA"
+                )
+        return desired_ma, None
 
     def scan_ids(self, min_id: int = 1, max_id: int = 20) -> list[int]:
         return self._guard_bus_call(
@@ -2550,6 +2640,8 @@ class ServoService:
         tendon_displacements_cm: list[float],
         neutral_ticks: list[int],
         servo_ids: list[int],
+        *,
+        motion_workflow: str = SINGLE_SEGMENT_WORKFLOW_EXPERIMENT,
     ) -> ServoCommandResult:
         """Compute and send safe goal position ticks.
 
@@ -2564,6 +2656,7 @@ class ServoService:
             neutral_ticks=neutral_ticks,
             servo_ids=servo_ids,
         )
+        motion_profile = self._resolved_single_segment_motion_profile(workflow=motion_workflow)
         if using_single_segment_envelope:
             resolved_displacements, pair_notes = self._project_single_segment_antagonistic_pairs(requested_displacements)
         else:
@@ -2580,7 +2673,7 @@ class ServoService:
                     int(servo_id),
                     require_calibrated_bounds=False,
                     telemetry=telemetry_by_id[int(servo_id)],
-                    allowed_operating_modes=self._resolved_single_segment_allowed_operating_modes(),
+                    allowed_operating_modes=motion_profile.allowed_operating_modes,
                 )
                 for servo_id in servo_ids
             }
@@ -2597,10 +2690,14 @@ class ServoService:
             configuration_notes = self._ensure_single_segment_motion_configuration(
                 list(servo_ids),
                 telemetry_by_id=telemetry_by_id,
+                workflow=motion_profile.workflow,
             )
             telemetry_by_id = self.read_telemetry(servo_ids)
-            configuration_summary = self.single_segment_motion_configuration_summary(list(servo_ids))
-            allowed_modes = self._resolved_single_segment_allowed_operating_modes()
+            configuration_summary = self.single_segment_motion_configuration_summary(
+                list(servo_ids),
+                workflow=motion_profile.workflow,
+            )
+            allowed_modes = list(motion_profile.allowed_operating_modes)
             assessments = {
                 int(servo_id): self.assess_motion(
                     int(servo_id),
@@ -2739,9 +2836,9 @@ class ServoService:
             message_parts.append(f"Antagonistic-pair projection applied: {'; '.join(pair_notes)}.")
         if configuration_summary is not None:
             message_parts.append(
-                "Single-segment motion config: "
+                f"Single-segment {configuration_summary.workflow.replace('_', ' ')} config: "
                 f"{self.operating_mode_label(configuration_summary.preferred_operating_mode)}, "
-                f"goal current {configuration_summary.default_goal_current_ma if configuration_summary.default_goal_current_ma is not None else 'unset'} mA, "
+                f"goal current {configuration_summary.default_goal_current_ma if configuration_summary.default_goal_current_ma is not None else 'off'}, "
                 f"profile {configuration_summary.default_profile_velocity if configuration_summary.default_profile_velocity is not None else 'unset'}/"
                 f"{configuration_summary.default_profile_acceleration if configuration_summary.default_profile_acceleration is not None else 'unset'}."
             )

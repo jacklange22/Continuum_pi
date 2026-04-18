@@ -1899,6 +1899,7 @@ def _issue_command_payload(
         tendon_displacements_cm=[float(value) for value in tendon_displacement_cm],
         neutral_ticks=neutral,
         servo_ids=servo_ids,
+        motion_workflow="experiment_motion",
     )
     return {str(servo_id): int(goal) for servo_id, goal in command.positions_by_id.items()}
 

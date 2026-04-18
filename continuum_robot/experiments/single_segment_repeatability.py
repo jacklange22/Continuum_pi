@@ -191,7 +191,7 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
                     target=visit.approach_target,
                     phase="approach",
                     sample_index=sample_index,
-                    commanded_motor_values=approach_payload,
+                    command_payload=approach_payload,
                 )
                 sample_index += 1
                 if not bool(approach_sample.extra.get("capture_accepted", False)):
@@ -213,7 +213,7 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
                     target=visit.repeat_target,
                     phase="repeat",
                     sample_index=sample_index,
-                    commanded_motor_values=repeat_payload,
+                    command_payload=repeat_payload,
                 )
                 sample_index += 1
                 if not bool(repeat_sample.extra.get("capture_accepted", False)):
@@ -308,13 +308,29 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
         self,
         session: ExperimentSession,
         target: LegacyRepeatabilityTarget,
-    ) -> dict[str, int | float | None]:
+    ) -> dict[str, Any]:
         command = session.context.servo_service.command_displacement(
             tendon_displacements_cm=[float(value) for value in target.cable_deltas_cm],
             neutral_ticks=list(self._neutral_ticks),
             servo_ids=list(self._servo_ids),
+            motion_workflow="experiment_motion",
         )
-        return {str(servo_id): int(goal) for servo_id, goal in command.positions_by_id.items()}
+        debug_entry = next(iter((command.debug_entries_by_id or {}).values()), None)
+        return {
+            "commanded_motor_values": {str(servo_id): int(goal) for servo_id, goal in command.positions_by_id.items()},
+            "motion_profile": {
+                "operating_mode_label": (
+                    session.context.servo_service.operating_mode_label(debug_entry.operating_mode)
+                    if debug_entry is not None and debug_entry.operating_mode is not None
+                    else "unknown"
+                ),
+                "operating_mode": debug_entry.operating_mode if debug_entry is not None else None,
+                "goal_current_ma": debug_entry.goal_current_ma if debug_entry is not None else None,
+                "profile_velocity": debug_entry.profile_velocity if debug_entry is not None else None,
+                "profile_acceleration": debug_entry.profile_acceleration if debug_entry is not None else None,
+            },
+            "message": str(command.message or ""),
+        }
 
     def _capture_after_move(
         self,
@@ -324,7 +340,7 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
         target: LegacyRepeatabilityTarget,
         phase: str,
         sample_index: int,
-        commanded_motor_values: dict[str, int | float | None],
+        command_payload: dict[str, Any],
     ) -> ExperimentTimeseriesSample:
         snapshot, gate = _wait_for_valid_capture(
             session=session,
@@ -357,6 +373,8 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
             "legacy_sequence_index": int(visit.sequence_index),
             "settle_time_s": float(self.config.settle_time_s),
             "servo_telemetry": telemetry_payload,
+            "servo_motion_profile": dict(command_payload.get("motion_profile", {}) or {}),
+            "servo_command_message": str(command_payload.get("message", "") or ""),
         }
         return sample_from_tracking_snapshot(
             session,
@@ -365,7 +383,7 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
             step_index=int(sample_index),
             sample_index=int(sample_index),
             commanded_cable_deltas_cm=[float(value) for value in target.cable_deltas_cm],
-            commanded_motor_values=commanded_motor_values,
+            commanded_motor_values=dict(command_payload.get("commanded_motor_values", {}) or {}),
             status_flags=flags,
             extra=extra,
             target_index=int(target.target_index),

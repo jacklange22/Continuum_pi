@@ -386,6 +386,8 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     assert result.summary.experiment_metrics["valid_repeat_sample_count"] == LEGACY_VISIT_COUNT
     assert result.summary.status == "success"
     assert result.summary.experiment_metrics["run_validity"]["thesis_valid_run"] is True
+    accepted_samples = [sample for sample in result.paths.samples_path.read_text(encoding="utf-8").splitlines() if sample.strip()]
+    assert accepted_samples
     metadata_payload = json.loads(result.paths.metadata_path.read_text(encoding="utf-8"))
     summary_payload = json.loads(result.paths.summary_path.read_text(encoding="utf-8"))
     assert metadata_payload["registration_info"]["pivot_tip"]["path"].endswith("penprobe_08_09_24c")
@@ -398,6 +400,14 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     assert summary_payload["experiment_metrics"]["run_provenance"]["runtime_tip_calibration"]["mode"] == "latest_accepted"
     assert summary_payload["experiment_metrics"]["run_provenance"]["precheck_trust_summary"]["overall_status"] == "ready"
     assert "tracker_bridge" not in (result.paths.output_dir / "config_snapshot.yaml").read_text(encoding="utf-8")
+    samples_payload = [
+        json.loads(line)
+        for line in result.paths.samples_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    accepted_capture = next(sample for sample in samples_payload if sample.get("extra", {}).get("capture_accepted"))
+    assert accepted_capture["extra"]["servo_motion_profile"]["operating_mode_label"] == "Position Control"
+    assert accepted_capture["extra"]["servo_motion_profile"]["goal_current_ma"] is None
 
 
 def test_capture_gate_rejects_stale_tracker_data(tmp_path: Path) -> None:

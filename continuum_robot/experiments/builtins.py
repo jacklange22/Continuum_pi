@@ -2177,6 +2177,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             tendon_displacements_cm=list(requested_cable_command_cm),
             neutral_ticks=neutral_ticks,
             servo_ids=servo_ids,
+            motion_workflow="experiment_motion",
         )
         motion_profile = _servo_motion_profile_from_result(command)
         return {
