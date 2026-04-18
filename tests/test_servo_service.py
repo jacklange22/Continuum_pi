@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import threading
 
@@ -270,15 +271,15 @@ def test_servo_service_single_segment_displacement_uses_position_mode_for_experi
 
     assert all(bus._state[servo_id].operating_mode == 3 for servo_id in [1, 2, 3, 4])
     assert bus.goal_current_writes == []
-    assert all(getattr(bus._state[servo_id], "profile_velocity", None) == 80 for servo_id in [1, 2, 3, 4])
-    assert all(getattr(bus._state[servo_id], "profile_acceleration", None) == 20 for servo_id in [1, 2, 3, 4])
-    assert "Applied motion settings" in result.message
+    assert bus.profile_velocity_writes == []
+    assert bus.profile_acceleration_writes == []
+    assert "Applied Position Control mode" in result.message
     assert "experiment motion config: Position Control" in result.message
     assert result.debug_entries_by_id[1].operating_mode == 3
     assert result.debug_entries_by_id[1].preferred_operating_mode == 3
     assert result.debug_entries_by_id[1].goal_current_ma is None
-    assert result.debug_entries_by_id[1].profile_velocity == 80
-    assert result.debug_entries_by_id[1].profile_acceleration == 20
+    assert result.debug_entries_by_id[1].profile_velocity is None
+    assert result.debug_entries_by_id[1].profile_acceleration is None
 
 
 def test_servo_service_current_aware_single_segment_motion_can_still_write_goal_current(tmp_path: Path) -> None:
@@ -354,7 +355,7 @@ def test_servo_service_single_segment_displacement_blocks_on_overcurrent(tmp_pat
     service.connect("/dev/mock-openrb", 115200)
     neutral = service.capture_neutral_setpoints([1, 2, 3, 4])
 
-    with pytest.raises(RuntimeError, match="current/jam protection blocked motion"):
+    with pytest.raises(RuntimeError, match="overcurrent/jam protection"):
         service.command_displacement(
             tendon_displacements_cm=[1.0, 0.0, -1.0, 0.0],
             neutral_ticks=[neutral[1], neutral[2], neutral[3], neutral[4]],
@@ -412,8 +413,9 @@ def test_servo_service_simple_experiment_motion_is_not_limited_by_startup_artifa
         servo_ids=[1, 2, 3, 4],
     )
 
-    assert result.positions_by_id[1] < 3400
-    assert result.positions_by_id[3] > 2600
+    expected_delta = service.mapper.displacement_cm_to_ticks(0.5)
+    assert result.positions_by_id[1] == resolution.ticks_by_servo[1] + expected_delta
+    assert result.positions_by_id[3] == resolution.ticks_by_servo[3] - expected_delta
     assert result.debug_entries_by_id[1].safe_min_tick == 64
     assert result.debug_entries_by_id[1].safe_max_tick == 4031
     assert result.debug_entries_by_id[1].limit_source == "single_segment_hardware_envelope"
@@ -433,7 +435,7 @@ def test_servo_service_simple_experiment_motion_reports_stale_telemetry_explicit
     service.connect("/dev/mock-openrb", 115200)
     service.safety_guard._time_fn = lambda: 1.0
 
-    with pytest.raises(RuntimeError, match="stale/missing telemetry blocked motion"):
+    with pytest.raises(RuntimeError, match="stale/missing telemetry"):
         service.command_displacement(
             tendon_displacements_cm=[1.0, 0.0, -1.0, 0.0],
             neutral_ticks=[2048, 2048, 2048, 2048],
@@ -460,12 +462,36 @@ def test_servo_service_simple_experiment_motion_reports_position_mode_issue_when
     assert bus.operating_mode_writes == []
 
 
+def test_servo_service_simple_experiment_motion_emits_diagnostic_logs(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service = _build_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([1, 2, 3, 4])
+    caplog.set_level(logging.INFO)
+
+    service.command_displacement(
+        tendon_displacements_cm=[0.4, 0.0, -0.4, 0.0],
+        neutral_ticks=[neutral[1], neutral[2], neutral[3], neutral[4]],
+        servo_ids=[1, 2, 3, 4],
+        motion_workflow="experiment_motion",
+    )
+
+    joined = "\n".join(record.getMessage() for record in caplog.records)
+    assert "Simple experiment motion start" in joined
+    assert "Simple experiment motion success" in joined
+    assert "workflow=experiment_motion" in joined
+    assert "raw_goals" in joined
+    assert "telemetry" in joined
+
+
 def test_servo_service_single_segment_displacement_reports_goal_write_failures_separately(tmp_path: Path) -> None:
     service = _build_service(tmp_path, dxl_bus=_GoalWriteFailureBus([1, 2, 3, 4]))
     service.connect("/dev/mock-openrb", 115200)
     neutral = service.capture_neutral_setpoints([1, 2, 3, 4])
 
-    with pytest.raises(RuntimeError, match="Simple single-segment experiment motion failed during goal write: mock write timeout"):
+    with pytest.raises(RuntimeError, match="communication failure during write goal positions for simple experiment motion: mock write timeout"):
         service.command_displacement(
             tendon_displacements_cm=[1.0, 0.0, -1.0, 0.0],
             neutral_ticks=[neutral[1], neutral[2], neutral[3], neutral[4]],

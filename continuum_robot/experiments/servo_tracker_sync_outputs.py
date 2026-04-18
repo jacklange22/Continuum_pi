@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -21,14 +22,33 @@ from continuum_robot.experiments.tracker_timing_outputs import (
     _fmt_number,
     _new_image,
 )
-from continuum_robot.gui.theme import COLORS
+try:
+    from continuum_robot.gui.theme import COLORS
+except Exception:
+    class _FallbackColors:
+        scene_truth = "#2563eb"
+        scene_tip = "#f59e0b"
+        scene_residual = "#dc2626"
+        scene_live_0a = "#0f766e"
+        scene_live_0b = "#0891b2"
+        scene_measurement = "#7c3aed"
+
+    COLORS = _FallbackColors()
 from continuum_robot.tracking.timing_benchmark import (
     extract_servo_command_records,
     extract_servo_timing_records,
     extract_tracker_timing_records,
 )
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QPainter
+try:
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtGui import QColor, QPainter
+
+    _QT_AVAILABLE = True
+except ModuleNotFoundError:
+    _QT_AVAILABLE = False
+
+
+LOG = logging.getLogger(__name__)
 
 
 def build_servo_tracker_sync_summary_pairs(*, metrics: dict[str, Any]) -> list[tuple[str, str]]:
@@ -114,7 +134,6 @@ def build_servo_tracker_sync_summary_lines(*, metadata, summary, metrics: dict[s
 
 def write_servo_tracker_sync_outputs(*, output_dir: Path, metadata, summary, samples) -> dict[str, Path]:
     """Write stable artifacts for one servo-tracker sync validation run."""
-    _ensure_plot_qt_app()
     output_dir = Path(output_dir)
     histogram_path = output_dir / "servo_tracker_offset_histogram.png"
     timeseries_path = output_dir / "servo_tracker_offset_timeseries.png"
@@ -136,20 +155,28 @@ def write_servo_tracker_sync_outputs(*, output_dir: Path, metadata, summary, sam
         + "\n",
         encoding="utf-8",
     )
-    _write_offset_histogram(histogram_path=histogram_path, metrics=metrics)
-    _write_offset_timeseries(timeseries_path=timeseries_path, metrics=metrics)
-    _write_pose_command_timeseries(
-        pose_command_path=pose_command_path,
-        samples=samples,
-        metrics=metrics,
-    )
-    _write_validity_summary(
-        validity_path=validity_path,
-        metrics=metrics,
-        tracker_records=tracker_records,
-        servo_telemetry_records=servo_telemetry_records,
-        servo_command_records=servo_command_records,
-    )
+    if _QT_AVAILABLE:
+        _ensure_plot_qt_app()
+        _write_offset_histogram(histogram_path=histogram_path, metrics=metrics)
+        _write_offset_timeseries(timeseries_path=timeseries_path, metrics=metrics)
+        _write_pose_command_timeseries(
+            pose_command_path=pose_command_path,
+            samples=samples,
+            metrics=metrics,
+        )
+        _write_validity_summary(
+            validity_path=validity_path,
+            metrics=metrics,
+            tracker_records=tracker_records,
+            servo_telemetry_records=servo_telemetry_records,
+            servo_command_records=servo_command_records,
+        )
+    else:
+        _write_plot_placeholder(histogram_path)
+        _write_plot_placeholder(timeseries_path)
+        _write_plot_placeholder(pose_command_path)
+        _write_plot_placeholder(validity_path)
+        LOG.warning("Qt plotting backend unavailable; wrote placeholder servo-tracker sync plots under %s", output_dir)
     return {
         "offset_histogram_path": histogram_path,
         "offset_timeseries_path": timeseries_path,
@@ -157,6 +184,82 @@ def write_servo_tracker_sync_outputs(*, output_dir: Path, metadata, summary, sam
         "validity_summary_path": validity_path,
         "summary_text_path": summary_text_path,
     }
+
+
+def _write_plot_placeholder(path: Path) -> None:
+    path.write_bytes(
+        bytes(
+            (
+                137,
+                80,
+                78,
+                71,
+                13,
+                10,
+                26,
+                10,
+                0,
+                0,
+                0,
+                13,
+                73,
+                72,
+                68,
+                82,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1,
+                8,
+                6,
+                0,
+                0,
+                0,
+                31,
+                21,
+                196,
+                137,
+                0,
+                0,
+                0,
+                13,
+                73,
+                68,
+                65,
+                84,
+                120,
+                156,
+                99,
+                96,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                226,
+                33,
+                188,
+                51,
+                0,
+                0,
+                0,
+                0,
+                73,
+                69,
+                78,
+                68,
+                174,
+                66,
+                96,
+                130,
+            )
+        )
+    )
 
 
 def _primary_offset_series(metrics: dict[str, Any]) -> tuple[list[float], str]:

@@ -38,7 +38,9 @@ class ServoTelemetry:
     max_position_limit: int | None = None
     bus_watchdog_value: int | None = None
     present_position: int | None = None
+    present_current_raw_unit: int | None = None
     present_current_ma: int | None = None
+    present_voltage_raw_unit: int | None = None
     present_voltage_mv: int | None = None
     present_temperature_c: int | None = None
     hardware_error_code: int | None = None
@@ -76,8 +78,8 @@ class DxlBusConfig:
     single_segment_experiment_preferred_operating_mode: int = 3
     single_segment_experiment_allowed_operating_modes: list[int] = field(default_factory=lambda: [3])
     single_segment_experiment_default_goal_current_ma: int | None = None
-    single_segment_experiment_default_profile_velocity: int | None = 80
-    single_segment_experiment_default_profile_acceleration: int | None = 20
+    single_segment_experiment_default_profile_velocity: int | None = None
+    single_segment_experiment_default_profile_acceleration: int | None = None
     single_segment_current_aware_preferred_operating_mode: int = 5
     single_segment_current_aware_allowed_operating_modes: list[int] = field(default_factory=lambda: [3, 5])
     single_segment_current_aware_default_goal_current_ma: int | None = 850
@@ -610,11 +612,17 @@ class DxlBus:
                 max_position_limit=_signed32(max_limit_raw) if max_limit_raw is not None else None,
                 bus_watchdog_value=int(watchdog_raw) if watchdog_raw is not None else None,
                 present_position=_signed32(position_raw) if position_raw is not None else None,
+                present_current_raw_unit=(
+                    _signed16(current_raw)
+                    if current_raw is not None
+                    else None
+                ),
                 present_current_ma=(
                     int(round(_signed16(current_raw) * self.config.current_scale_ma_per_unit))
                     if current_raw is not None
                     else None
                 ),
+                present_voltage_raw_unit=(int(voltage_raw) if voltage_raw is not None else None),
                 present_voltage_mv=(
                     int(round(int(voltage_raw) * self.config.voltage_scale_mv_per_unit))
                     if voltage_raw is not None

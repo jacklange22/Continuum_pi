@@ -26,7 +26,9 @@ class MockDxlBus(DxlBus):
                 max_position_limit=4095,
                 bus_watchdog_value=0,
                 present_position=2048 + 25 * idx,
+                present_current_raw_unit=140 + 10 * idx,
                 present_current_ma=140 + 10 * idx,
+                present_voltage_raw_unit=120,
                 present_voltage_mv=12000,
                 present_temperature_c=33 + idx,
                 hardware_error_code=0,
@@ -73,7 +75,9 @@ class MockDxlBus(DxlBus):
             telemetry.torque_enabled = True
             telemetry.present_position = int(goal)
             telemetry.present_current_ma = current
+            telemetry.present_current_raw_unit = int(current)
             telemetry.present_voltage_mv = 12000 - min(500, current // 10)
+            telemetry.present_voltage_raw_unit = int(round(float(telemetry.present_voltage_mv) / 100.0))
             telemetry.present_temperature_c = min(65, 30 + current // 20)
             telemetry.last_read_monotonic_s = time.monotonic()
 
@@ -165,7 +169,9 @@ class MockDxlBus(DxlBus):
                     max_position_limit=telemetry.max_position_limit if include_limits else None,
                     bus_watchdog_value=telemetry.bus_watchdog_value if include_limits else None,
                     present_position=telemetry.present_position,
+                    present_current_raw_unit=telemetry.present_current_raw_unit,
                     present_current_ma=telemetry.present_current_ma,
+                    present_voltage_raw_unit=telemetry.present_voltage_raw_unit,
                     present_voltage_mv=telemetry.present_voltage_mv,
                     present_temperature_c=telemetry.present_temperature_c,
                     hardware_error=telemetry.hardware_error,

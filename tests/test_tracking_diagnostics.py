@@ -1,3 +1,4 @@
+from __future__ import annotations
 from continuum_robot.services.models import (
     ServiceHealthSnapshot,
     ToolTrackingSnapshot,

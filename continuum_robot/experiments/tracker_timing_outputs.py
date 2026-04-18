@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
-from PySide6.QtWidgets import QApplication
+try:
+    from PySide6.QtCore import QPointF, QRectF, Qt
+    from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+    from PySide6.QtWidgets import QApplication
+
+    _QT_AVAILABLE = True
+except ModuleNotFoundError:
+    _QT_AVAILABLE = False
 
 from continuum_robot.tracking.timing_benchmark import (
     extract_servo_timing_records,
@@ -16,6 +22,7 @@ from continuum_robot.tracking.timing_benchmark import (
 
 
 _PLOT_QT_APP: QApplication | None = None
+LOG = logging.getLogger(__name__)
 
 
 def build_tracker_timing_summary_pairs(*, metrics: dict[str, Any]) -> list[tuple[str, str]]:
@@ -154,7 +161,6 @@ def build_tracker_timing_summary_lines(*, metadata, summary, metrics: dict[str, 
 
 def write_tracker_timing_outputs(*, output_dir: Path, metadata, summary, samples) -> dict[str, Path]:
     """Write stable figure/text artifacts for one timing-diagnostic run."""
-    _ensure_plot_qt_app()
     output_dir = Path(output_dir)
     histogram_path = output_dir / "aurora_timing_histogram.png"
     breakdown_path = output_dir / "aurora_timing_breakdown.png"
@@ -165,9 +171,16 @@ def write_tracker_timing_outputs(*, output_dir: Path, metadata, summary, samples
     tracker_records = extract_tracker_timing_records(samples)
     servo_records = extract_servo_timing_records(samples)
     _write_summary_text(summary_text_path=summary_text_path, metadata=metadata, summary=summary, metrics=metrics)
-    _write_histogram_plot(histogram_path=histogram_path, tracker_records=tracker_records, metrics=metrics)
-    _write_breakdown_plot(breakdown_path=breakdown_path, metrics=metrics)
-    _write_timeseries_plot(timeseries_path=timeseries_path, tracker_records=tracker_records, metrics=metrics)
+    if _QT_AVAILABLE:
+        _ensure_plot_qt_app()
+        _write_histogram_plot(histogram_path=histogram_path, tracker_records=tracker_records, metrics=metrics)
+        _write_breakdown_plot(breakdown_path=breakdown_path, metrics=metrics)
+        _write_timeseries_plot(timeseries_path=timeseries_path, tracker_records=tracker_records, metrics=metrics)
+    else:
+        _write_plot_placeholder(histogram_path)
+        _write_plot_placeholder(breakdown_path)
+        _write_plot_placeholder(timeseries_path)
+        LOG.warning("Qt plotting backend unavailable; wrote placeholder timing plots under %s", output_dir)
     written = {
         "histogram_path": histogram_path,
         "breakdown_path": breakdown_path,
@@ -175,12 +188,17 @@ def write_tracker_timing_outputs(*, output_dir: Path, metadata, summary, samples
         "summary_text_path": summary_text_path,
     }
     if metrics.get("servo_sync", {}).get("enabled"):
-        _write_sync_plot(sync_plot_path=sync_plot_path, metrics=metrics, servo_records=servo_records)
+        if _QT_AVAILABLE:
+            _write_sync_plot(sync_plot_path=sync_plot_path, metrics=metrics, servo_records=servo_records)
+        else:
+            _write_plot_placeholder(sync_plot_path)
         written["sync_plot_path"] = sync_plot_path
     return written
 
 
 def _ensure_plot_qt_app() -> QApplication:
+    if not _QT_AVAILABLE:
+        raise RuntimeError("PySide6 is not installed; tracker timing plotting is unavailable")
     app = QApplication.instance()
     if app is not None:
         return app
@@ -193,6 +211,82 @@ def _ensure_plot_qt_app() -> QApplication:
 def _write_summary_text(*, summary_text_path: Path, metadata, summary, metrics: dict[str, Any]) -> None:
     lines = build_tracker_timing_summary_lines(metadata=metadata, summary=summary, metrics=metrics)
     summary_text_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+
+
+def _write_plot_placeholder(path: Path) -> None:
+    path.write_bytes(
+        bytes(
+            (
+                137,
+                80,
+                78,
+                71,
+                13,
+                10,
+                26,
+                10,
+                0,
+                0,
+                0,
+                13,
+                73,
+                72,
+                68,
+                82,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1,
+                8,
+                6,
+                0,
+                0,
+                0,
+                31,
+                21,
+                196,
+                137,
+                0,
+                0,
+                0,
+                13,
+                73,
+                68,
+                65,
+                84,
+                120,
+                156,
+                99,
+                96,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                226,
+                33,
+                188,
+                51,
+                0,
+                0,
+                0,
+                0,
+                73,
+                69,
+                78,
+                68,
+                174,
+                66,
+                96,
+                130,
+            )
+        )
+    )
 
 
 def _write_histogram_plot(*, histogram_path: Path, tracker_records: list[dict[str, Any]], metrics: dict[str, Any]) -> None:

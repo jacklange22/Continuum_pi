@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 import logging
 import threading
 import time
-from typing import Callable
+from typing import Any, Callable
 
 from continuum_robot.hardware.dxl_bus import DxlBus, ServoTelemetry
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
@@ -555,9 +555,11 @@ class ServoService:
             workflow_name = SINGLE_SEGMENT_WORKFLOW_EXPERIMENT
             preferred_mode = getattr(self.dxl_bus.config, "single_segment_experiment_preferred_operating_mode", None)
             allowed_modes = list(getattr(self.dxl_bus.config, "single_segment_experiment_allowed_operating_modes", []) or [])
-            goal_current_ma = getattr(self.dxl_bus.config, "single_segment_experiment_default_goal_current_ma", None)
-            profile_velocity = getattr(self.dxl_bus.config, "single_segment_experiment_default_profile_velocity", None)
-            profile_acceleration = getattr(self.dxl_bus.config, "single_segment_experiment_default_profile_acceleration", None)
+            # Ordinary 4-servo experiment motion is always position-only. Keep
+            # current/profile writes out of this path to reduce setup fragility.
+            goal_current_ma = None
+            profile_velocity = None
+            profile_acceleration = None
             current_aware = False
         resolved_allowed = sorted({int(value) for value in allowed_modes}) if allowed_modes else []
         if preferred_mode not in (None, ""):
@@ -812,6 +814,84 @@ class ServoService:
                 notes.append(f"servo {servo_id} goal current->{goal_current_ma} mA")
             self._last_single_segment_motion_configuration_by_servo[int(servo_id)] = dict(signature)
         return notes
+
+    def _ensure_simple_single_segment_experiment_configuration(
+        self,
+        servo_ids: list[int],
+        *,
+        telemetry_by_id: dict[int, ServoTelemetry] | None = None,
+    ) -> list[str]:
+        """Keep ordinary 4-servo experiment motion in Position Control mode only."""
+        profile = self._resolved_single_segment_motion_profile(workflow=SINGLE_SEGMENT_WORKFLOW_EXPERIMENT)
+        if not bool(profile.auto_configure):
+            return []
+        preferred_mode = profile.preferred_operating_mode
+        if preferred_mode is None:
+            return []
+        live_telemetry = dict(telemetry_by_id or self.read_telemetry(servo_ids))
+        notes: list[str] = []
+        for servo_id in [int(value) for value in servo_ids]:
+            telemetry = live_telemetry.get(int(servo_id))
+            if telemetry is None:
+                raise RuntimeError(
+                    f"Servo {servo_id} telemetry is unavailable before simple experiment motion configuration."
+                )
+            signature = {
+                "workflow": str(profile.workflow),
+                "preferred_operating_mode": int(preferred_mode),
+                "position_only": True,
+            }
+            applied = self._last_single_segment_motion_configuration_by_servo.get(int(servo_id))
+            if applied == signature and (
+                telemetry.operating_mode is None or int(telemetry.operating_mode) == int(preferred_mode)
+            ):
+                continue
+            if telemetry.operating_mode is None or int(telemetry.operating_mode) != int(preferred_mode):
+                self._run_with_retry(
+                    action=f"set operating mode on servo {servo_id}",
+                    fn=lambda sid=int(servo_id), mode=int(preferred_mode): self._guard_bus_call(
+                        "configure servo operating mode",
+                        lambda: self.dxl_bus.write_operating_mode(sid, mode),
+                    ),
+                    attempts=2,
+                )
+                notes.append(
+                    f"servo {servo_id} mode {self.operating_mode_label(telemetry.operating_mode)}"
+                    f"->{self.operating_mode_label(preferred_mode)}"
+                )
+            self._last_single_segment_motion_configuration_by_servo[int(servo_id)] = dict(signature)
+        return notes
+
+    def _run_with_retry(
+        self,
+        *,
+        action: str,
+        fn: Callable[[], Any],
+        attempts: int = 2,
+        retry_delay_s: float = 0.02,
+    ) -> Any:
+        """Retry transient bus communication failures for critical motion steps."""
+        total_attempts = max(1, int(attempts))
+        last_error: Exception | None = None
+        for attempt_index in range(1, total_attempts + 1):
+            try:
+                return fn()
+            except ServoBusBusyError:
+                raise
+            except Exception as exc:  # pragma: no cover - branch depends on live bus behavior
+                last_error = exc
+                if attempt_index >= total_attempts:
+                    break
+                LOG.warning(
+                    "Retrying after communication failure during %s (%d/%d): %s",
+                    action,
+                    attempt_index,
+                    total_attempts,
+                    exc,
+                )
+                if float(retry_delay_s) > 0.0:
+                    self._sleep_fn(float(retry_delay_s))
+        raise RuntimeError(f"communication failure during {action}: {last_error}") from last_error
 
     def _resolved_goal_current_for_profile(
         self,
@@ -1597,14 +1677,6 @@ class ServoService:
         telemetry_ready_count = 0
         motion_ready_count = 0
         pretension_ready_count = 0
-        use_simple_single_segment_assessment = (
-            str(self.neutral_calibration.context.robot_mode or "").strip().lower() == "4-servo"
-            and len(expected_ids) == 4
-            and sorted(expected_ids) == sorted(self._configured_single_segment_servo_ids())
-        )
-        experiment_profile = self._resolved_single_segment_motion_profile(
-            workflow=SINGLE_SEGMENT_WORKFLOW_EXPERIMENT,
-        )
 
         for servo_id in expected_ids:
             telemetry = telemetry_by_id.get(int(servo_id))
@@ -1617,19 +1689,11 @@ class ServoService:
                 and telemetry.telemetry_error is None
             )
             motion_assessment = (
-                self._assess_simple_single_segment_experiment_motion(
-                    servo_id=int(servo_id),
-                    telemetry=telemetry,
-                    expected_operating_mode=experiment_profile.preferred_operating_mode,
-                )
-                if telemetry is not None and use_simple_single_segment_assessment
-                else self.assess_motion(
+                self.assess_experiment_motion(
                     int(servo_id),
-                    require_calibrated_bounds=self.require_calibrated_bounds_for_individual_motion(),
                     telemetry=telemetry,
                 )
-                if telemetry is not None
-                else None
+                if telemetry is not None else None
             )
             pretension_parameters = (
                 selected_pretension_parameters
@@ -2531,6 +2595,35 @@ class ServoService:
             external_power_ready=external_power_ready,
         )
 
+    def assess_experiment_motion(
+        self,
+        servo_id: int,
+        *,
+        telemetry: ServoTelemetry | None = None,
+    ) -> ServoMotionAssessment:
+        """Return readiness for ordinary experiment-motion commands."""
+        current = telemetry or self.read_telemetry([int(servo_id)])[int(servo_id)]
+        configured_ids = self._configured_single_segment_servo_ids()
+        use_simple_single_segment_assessment = (
+            str(self.neutral_calibration.context.robot_mode or "").strip().lower() == "4-servo"
+            and len(configured_ids) == 4
+            and int(servo_id) in configured_ids
+        )
+        if use_simple_single_segment_assessment:
+            profile = self._resolved_single_segment_motion_profile(
+                workflow=SINGLE_SEGMENT_WORKFLOW_EXPERIMENT,
+            )
+            return self._assess_simple_single_segment_experiment_motion(
+                servo_id=int(servo_id),
+                telemetry=current,
+                expected_operating_mode=profile.preferred_operating_mode,
+            )
+        return self.assess_motion(
+            int(servo_id),
+            require_calibrated_bounds=False,
+            telemetry=current,
+        )
+
     def plan_jog_action(self, *, servo_id: int, action: str) -> ServoMotionPlan:
         action_name = str(action).strip().lower()
         if action_name not in {
@@ -2645,6 +2738,25 @@ class ServoService:
     def _format_servo_positions_by_id(positions_by_id: dict[int, int]) -> str:
         return ", ".join(f"{int(servo_id)}:{int(goal)}" for servo_id, goal in sorted(positions_by_id.items()))
 
+    @staticmethod
+    def _telemetry_payload_by_servo(telemetry_by_id: dict[int, ServoTelemetry]) -> dict[int, dict[str, Any]]:
+        payload: dict[int, dict[str, Any]] = {}
+        for servo_id, telemetry in sorted(dict(telemetry_by_id or {}).items()):
+            payload[int(servo_id)] = {
+                "position_tick": telemetry.present_position,
+                "current_ma": telemetry.present_current_ma,
+                "current_raw_unit": telemetry.present_current_raw_unit,
+                "voltage_mv": telemetry.present_voltage_mv,
+                "voltage_raw_unit": telemetry.present_voltage_raw_unit,
+                "temperature_c": telemetry.present_temperature_c,
+                "operating_mode": telemetry.operating_mode,
+                "torque_enabled": telemetry.torque_enabled,
+                "hardware_error_code": telemetry.hardware_error_code,
+                "hardware_error": telemetry.hardware_error,
+                "telemetry_error": telemetry.telemetry_error,
+            }
+        return payload
+
     def _displacement_rejection_reason(
         self,
         *,
@@ -2657,15 +2769,17 @@ class ServoService:
         raw_min_tick, raw_max_tick = self.raw_position_range()
         if int(requested_goal_tick) < int(raw_min_tick) or int(requested_goal_tick) > int(raw_max_tick):
             return (
-                f"servo {servo_id} target {requested_goal_tick} exceeds the raw hardware range "
+                f"hard bound rejection: servo {servo_id} target {requested_goal_tick} exceeds the raw hardware range "
                 f"[{raw_min_tick}, {raw_max_tick}]"
             )
         if safe_min_tick is None or safe_max_tick is None:
-            return f"servo {servo_id} active motion range is unavailable"
+            return (
+                f"internal software/config inconsistency: servo {servo_id} active motion range is unavailable"
+            )
         if int(requested_goal_tick) < int(safe_min_tick) or int(requested_goal_tick) > int(safe_max_tick):
             limit_name = "hardware-informed single-segment envelope" if using_single_segment_envelope else "active motion range"
             return (
-                f"servo {servo_id} target {requested_goal_tick} exceeds the {limit_name} "
+                f"hardware-limit rejection: servo {servo_id} target {requested_goal_tick} exceeds the {limit_name} "
                 f"[{safe_min_tick}, {safe_max_tick}]"
             )
         return None
@@ -2714,20 +2828,20 @@ class ServoService:
             or "present position is unavailable" in lowered
             or "position limits are unavailable" in lowered
         ):
-            return f"servo {servo_id} stale/missing telemetry blocked motion: {detail}"
+            return f"stale/missing telemetry: servo {servo_id} blocked motion: {detail}"
         if "operating mode" in lowered:
-            return f"servo {servo_id} is not in Position Control Mode: {detail}"
+            return f"wrong operating mode: servo {servo_id} is not in Position Control Mode: {detail}"
         if "torque enable" in lowered or "torque state" in lowered:
-            return f"servo {servo_id} torque is off or unavailable: {detail}"
+            return f"torque off/unavailable: servo {servo_id} blocked motion: {detail}"
         if "current threshold exceeded" in lowered:
-            return f"servo {servo_id} overcurrent/jam protection blocked motion: {detail}"
+            return f"overcurrent/jam protection: servo {servo_id} blocked motion: {detail}"
         if "input voltage" in lowered:
-            return f"servo {servo_id} voltage protection blocked motion: {detail}"
+            return f"unsafe voltage: servo {servo_id} blocked motion: {detail}"
         if "temperature threshold exceeded" in lowered:
-            return f"servo {servo_id} temperature protection blocked motion: {detail}"
+            return f"unsafe temperature: servo {servo_id} blocked motion: {detail}"
         if "hardware error" in lowered:
-            return f"servo {servo_id} hardware fault blocked motion: {detail}"
-        return f"servo {servo_id} simple experiment motion blocked: {detail}"
+            return f"hardware fault: servo {servo_id} blocked motion: {detail}"
+        return f"internal software/config inconsistency: servo {servo_id} blocked motion: {detail}"
 
     @staticmethod
     def _non_mode_blocking_reasons(assessment: ServoMotionAssessment) -> list[str]:
@@ -2818,7 +2932,7 @@ class ServoService:
     def _validate_post_simple_single_segment_motion(self, telemetry: ServoTelemetry) -> None:
         if telemetry.hardware_error_code not in (None, 0) or telemetry.hardware_error:
             raise RuntimeError(
-                f"Servo {telemetry.servo_id} reported a hardware/status error after motion: "
+                f"post-move hardware fault: servo {telemetry.servo_id} reported a hardware/status error after motion: "
                 f"{telemetry.hardware_error or f'0x{telemetry.hardware_error_code:02X}'}"
             )
         try:
@@ -2828,7 +2942,7 @@ class ServoService:
             )
         except ValueError as exc:
             raise RuntimeError(
-                f"Servo {telemetry.servo_id} overcurrent/jam protection triggered after motion: {exc}"
+                f"post-move overcurrent/jam protection: servo {telemetry.servo_id}: {exc}"
             ) from exc
         try:
             self.safety_guard.validate_voltage(
@@ -2837,7 +2951,7 @@ class ServoService:
             )
         except ValueError as exc:
             raise RuntimeError(
-                f"Servo {telemetry.servo_id} voltage protection triggered after motion: {exc}"
+                f"post-move unsafe voltage: servo {telemetry.servo_id}: {exc}"
             ) from exc
         try:
             self.safety_guard.validate_temperature(
@@ -2846,7 +2960,7 @@ class ServoService:
             )
         except ValueError as exc:
             raise RuntimeError(
-                f"Servo {telemetry.servo_id} temperature protection triggered after motion: {exc}"
+                f"post-move unsafe temperature: servo {telemetry.servo_id}: {exc}"
             ) from exc
 
     def _command_simple_single_segment_experiment_motion(
@@ -2859,23 +2973,33 @@ class ServoService:
         pair_notes: list[str],
         motion_profile: SingleSegmentMotionProfile,
     ) -> ServoCommandResult:
-        try:
-            telemetry_by_id = self.read_telemetry(servo_ids)
-        except Exception as exc:
-            raise RuntimeError(
-                f"Simple single-segment experiment motion failed during telemetry read: {exc}"
-            ) from exc
-        configuration_notes = self._ensure_single_segment_motion_configuration(
+        raw_goals_by_servo = {
+            int(servo_id): int(goal_tick)
+            for servo_id, goal_tick in zip(servo_ids, raw_goals)
+        }
+        LOG.info(
+            "Simple experiment motion start | workflow=%s | servo_ids=%s | requested_cm=%s | resolved_cm=%s | raw_goals=%s | pair_notes=%s",
+            motion_profile.workflow,
+            list(servo_ids),
+            list(requested_displacements),
+            list(resolved_displacements),
+            raw_goals_by_servo,
+            list(pair_notes),
+        )
+        telemetry_by_id = self._run_with_retry(
+            action="read telemetry before simple experiment motion",
+            fn=lambda: self.read_telemetry(servo_ids),
+            attempts=2,
+        )
+        configuration_notes = self._ensure_simple_single_segment_experiment_configuration(
             list(servo_ids),
             telemetry_by_id=telemetry_by_id,
-            workflow=motion_profile.workflow,
         )
-        try:
-            telemetry_by_id = self.read_telemetry(servo_ids)
-        except Exception as exc:
-            raise RuntimeError(
-                f"Simple single-segment experiment motion failed during post-configuration telemetry read: {exc}"
-            ) from exc
+        telemetry_by_id = self._run_with_retry(
+            action="read telemetry after simple experiment mode configuration",
+            fn=lambda: self.read_telemetry(servo_ids),
+            attempts=2,
+        )
         configuration_summary = self.single_segment_motion_configuration_summary(
             list(servo_ids),
             workflow=motion_profile.workflow,
@@ -2936,9 +3060,9 @@ class ServoService:
                     else None
                 ),
                 preferred_operating_mode=configuration_summary.preferred_operating_mode,
-                goal_current_ma=configuration_summary.default_goal_current_ma,
-                profile_velocity=configuration_summary.default_profile_velocity,
-                profile_acceleration=configuration_summary.default_profile_acceleration,
+                goal_current_ma=None,
+                profile_velocity=None,
+                profile_acceleration=None,
                 clamp_reason=clamp_reason,
                 limit_source="single_segment_hardware_envelope",
             )
@@ -2949,49 +3073,60 @@ class ServoService:
             lead = "Simple single-segment experiment motion rejected"
             if pair_notes:
                 lead = f"{lead} after antagonistic-pair projection ({'; '.join(pair_notes)})"
+            LOG.warning(
+                "Simple experiment motion rejected | workflow=%s | reasons=%s | raw_goals=%s",
+                motion_profile.workflow,
+                rejection_reasons,
+                raw_goals_by_servo,
+            )
             raise RuntimeError(f"{lead}: {'; '.join(rejection_reasons)}.")
-        try:
-            self._write_goal_positions(payload)
-        except Exception as exc:
-            raise RuntimeError(
-                f"Simple single-segment experiment motion failed during goal write: {exc}"
-            ) from exc
-        try:
-            telemetry = self.read_telemetry(servo_ids)
-        except Exception as exc:
-            raise RuntimeError(
-                f"Simple single-segment experiment motion failed during post-command telemetry read: {exc}"
-            ) from exc
+        self._run_with_retry(
+            action="write goal positions for simple experiment motion",
+            fn=lambda: self._write_goal_positions(payload),
+            attempts=2,
+        )
+        telemetry = self._run_with_retry(
+            action="read telemetry after simple experiment motion",
+            fn=lambda: self.read_telemetry(servo_ids),
+            attempts=2,
+        )
         for servo_id in servo_ids:
             try:
                 self._validate_post_simple_single_segment_motion(telemetry[int(servo_id)])
             except Exception as exc:
+                LOG.error(
+                    "Simple experiment motion post-move validation failed | servo_id=%s | error=%s",
+                    int(servo_id),
+                    exc,
+                )
                 raise RuntimeError(str(exc)) from exc
 
         message_parts = [
             "Commanded 4-servo single-segment experiment displacement with the simple Position-control path.",
+            "Position Control Mode only; no Goal Current writes in ordinary experiment motion.",
+            "Simple experiment motion enforces hardware-informed bounds only.",
         ]
         if pair_notes:
             message_parts.append(f"Antagonistic-pair projection applied: {'; '.join(pair_notes)}.")
         message_parts.append(
             f"Single-segment {configuration_summary.workflow.replace('_', ' ')} config: "
-            f"{self.operating_mode_label(configuration_summary.preferred_operating_mode)}, "
-            f"goal current {configuration_summary.default_goal_current_ma if configuration_summary.default_goal_current_ma is not None else 'off'}, "
-            f"profile {configuration_summary.default_profile_velocity if configuration_summary.default_profile_velocity is not None else 'unset'}/"
-            f"{configuration_summary.default_profile_acceleration if configuration_summary.default_profile_acceleration is not None else 'unset'}."
+            f"{self.operating_mode_label(configuration_summary.preferred_operating_mode)}."
         )
         if configuration_notes:
             applied_ids = ", ".join(str(value) for value in sorted(payload))
-            message_parts.append(f"Applied simple experiment motion settings to servos {applied_ids}.")
+            message_parts.append(f"Applied Position Control mode to servos {applied_ids}.")
         message_parts.append(f"Goals {self._format_servo_positions_by_id(payload)}.")
         LOG.info(
-            "Simple single-segment experiment motion | requested_cm=%s | resolved_cm=%s | goals=%s | notes=%s | config=%s | applied_settings=%s",
+            "Simple experiment motion success | workflow=%s | requested_cm=%s | resolved_cm=%s | raw_goals=%s | final_goals=%s | pair_notes=%s | config=%s | mode_updates=%s | telemetry=%s",
+            motion_profile.workflow,
             requested_displacements,
             resolved_displacements,
+            raw_goals_by_servo,
             payload,
-            pair_notes,
+            list(pair_notes),
             configuration_summary.message,
-            configuration_notes,
+            list(configuration_notes),
+            self._telemetry_payload_by_servo(telemetry),
         )
         return ServoCommandResult(
             positions_by_id=payload,
@@ -2999,7 +3134,7 @@ class ServoService:
             message=" ".join(message_parts),
             requested_displacements_cm=list(requested_displacements),
             resolved_displacements_cm=list(resolved_displacements),
-            raw_positions_by_id={int(servo_id): int(goal) for servo_id, goal in zip(servo_ids, raw_goals)},
+            raw_positions_by_id=dict(raw_goals_by_servo),
             clamp_reasons_by_id=clamp_reasons,
             debug_entries_by_id=debug_entries,
         )
@@ -3949,7 +4084,15 @@ class ServoService:
                 or self.neutral_calibration.context.servo_ids
             )
         ]
-        selected = [int(value) for value in (servo_ids or configured)]
+        selected = [int(value) for value in (servo_ids or [])]
+        if not configured and selected:
+            configured = list(dict.fromkeys(selected))
+        if not configured:
+            scan_min = int(getattr(self.dxl_bus.config, "discovery_min_id", 1))
+            scan_max = int(getattr(self.dxl_bus.config, "discovery_max_id", 20))
+            configured = [int(value) for value in self.dxl_bus.scan_ids(min_id=scan_min, max_id=scan_max)]
+        if not selected:
+            selected = list(configured)
         if len(configured) != 4:
             raise RuntimeError(
                 f"Manual pretension capture is single-segment only and requires exactly 4 configured servos; found {configured}."
@@ -4394,9 +4537,6 @@ class ServoService:
             and telemetry.min_position_limit is not None
             and telemetry.max_position_limit is not None
             and telemetry.present_position is not None
-            and telemetry.present_current_ma is not None
-            and telemetry.present_voltage_mv is not None
-            and telemetry.present_temperature_c is not None
             and telemetry.hardware_error_code is not None
         )
 
@@ -4430,12 +4570,6 @@ class ServoService:
             missing.append("max_position_limit")
         if telemetry.present_position is None:
             missing.append("present_position")
-        if telemetry.present_current_ma is None:
-            missing.append("present_current")
-        if telemetry.present_voltage_mv is None:
-            missing.append("present_voltage")
-        if telemetry.present_temperature_c is None:
-            missing.append("present_temperature")
         if telemetry.hardware_error_code is None:
             missing.append("hardware_error_status")
         return ", ".join(missing) if missing else "unknown telemetry read error"

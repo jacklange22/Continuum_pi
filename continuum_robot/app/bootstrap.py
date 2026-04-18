@@ -1,6 +1,8 @@
 """Application bootstrap helpers."""
+from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from pathlib import Path
 import time
 
@@ -32,6 +34,10 @@ from continuum_robot.servos.pretension_validation_service import PretensionValid
 from continuum_robot.servos.safety_guard import SafetyGuard
 from continuum_robot.servos.servo_service import ServoService
 from continuum_robot.tracking.backend_router import TrackingBackendRouter
+from continuum_robot.utils.logging_setup import current_session_log_path
+
+
+LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -42,6 +48,7 @@ class AppContext:
     settings: Settings
     config_loader: ConfigLoader
     services: ServiceRegistry
+    session_log_path: Path | None = None
 
 
 def _resolve_repo_path(project_root: Path, raw_path: str) -> Path:
@@ -51,11 +58,12 @@ def _resolve_repo_path(project_root: Path, raw_path: str) -> Path:
     return project_root / path
 
 
-def build_app_context() -> AppContext:
+def build_app_context(*, session_log_path: Path | None = None) -> AppContext:
     """Build and return application context for GUI and scripts."""
     config_loader = ConfigLoader()
     services = ServiceRegistry()
     settings = config_loader.load_settings()
+    resolved_session_log_path = session_log_path or current_session_log_path()
 
     project_root = Path(__file__).resolve().parents[2]
     registration_path = _resolve_repo_path(project_root, settings.calibration.latest_registration_path)
@@ -248,9 +256,21 @@ def build_app_context() -> AppContext:
     services.register("experiment_dataset_writer", experiment_dataset_writer)
     services.register("experiment_dataset_loader", experiment_dataset_loader)
 
+    LOG.info(
+        "App context ready | mock_mode=%s | robot_mode=%s | servo_ids=%s | tracker_backend=%s | openrb_port=%s | baud=%s | session_log=%s",
+        settings.runtime.mock_mode,
+        settings.robot.mode,
+        settings.robot.servo_ids,
+        settings.serial.tracker_backend,
+        settings.serial.openrb_port,
+        settings.serial.baudrate,
+        str(resolved_session_log_path) if resolved_session_log_path is not None else "unset",
+    )
+
     return AppContext(
         project_root=project_root,
         settings=settings,
         config_loader=config_loader,
         services=services,
+        session_log_path=resolved_session_log_path,
     )

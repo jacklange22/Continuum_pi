@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
-from PySide6.QtWidgets import QApplication
+try:
+    from PySide6.QtCore import QPointF, QRectF, Qt
+    from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen
+    from PySide6.QtWidgets import QApplication
+
+    _QT_AVAILABLE = True
+except ModuleNotFoundError:
+    _QT_AVAILABLE = False
 
 
 _PLOT_QT_APP: QApplication | None = None
+LOG = logging.getLogger(__name__)
 
 
 def build_grid_accuracy_summary_pairs(
@@ -119,7 +126,6 @@ def write_grid_accuracy_outputs(
     summary,
 ) -> dict[str, Path]:
     """Write stable figure/text artifacts for one aligned-grid validation run."""
-    _ensure_plot_qt_app()
     output_dir = Path(output_dir)
     plot_path = output_dir / "grid_accuracy_alignment.png"
     summary_text_path = output_dir / "grid_accuracy_summary.txt"
@@ -132,11 +138,19 @@ def write_grid_accuracy_outputs(
         metrics=metrics,
         config_used=config_used,
     )
-    _write_alignment_plot(
-        plot_path=plot_path,
-        metrics=metrics,
-        config_used=config_used,
-    )
+    if _QT_AVAILABLE:
+        _ensure_plot_qt_app()
+        _write_alignment_plot(
+            plot_path=plot_path,
+            metrics=metrics,
+            config_used=config_used,
+        )
+    else:
+        _write_alignment_plot_placeholder(plot_path=plot_path)
+        LOG.warning(
+            "Qt plotting backend unavailable; wrote placeholder grid accuracy plot at %s",
+            plot_path,
+        )
     return {
         "plot_path": plot_path,
         "summary_text_path": summary_text_path,
@@ -144,6 +158,8 @@ def write_grid_accuracy_outputs(
 
 
 def _ensure_plot_qt_app() -> QApplication:
+    if not _QT_AVAILABLE:
+        raise RuntimeError("PySide6 is not installed; grid accuracy plotting is unavailable")
     app = QApplication.instance()
     if app is not None:
         return app
@@ -219,6 +235,83 @@ def _write_alignment_plot(
 
     painter.end()
     image.save(str(plot_path))
+
+
+def _write_alignment_plot_placeholder(*, plot_path: Path) -> None:
+    # 1x1 transparent PNG fallback for headless/unit-test environments without Qt.
+    plot_path.write_bytes(
+        bytes(
+            (
+                137,
+                80,
+                78,
+                71,
+                13,
+                10,
+                26,
+                10,
+                0,
+                0,
+                0,
+                13,
+                73,
+                72,
+                68,
+                82,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1,
+                8,
+                6,
+                0,
+                0,
+                0,
+                31,
+                21,
+                196,
+                137,
+                0,
+                0,
+                0,
+                13,
+                73,
+                68,
+                65,
+                84,
+                120,
+                156,
+                99,
+                96,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                226,
+                33,
+                188,
+                51,
+                0,
+                0,
+                0,
+                0,
+                73,
+                69,
+                78,
+                68,
+                174,
+                66,
+                96,
+                130,
+            )
+        )
+    )
 
 
 def _draw_title_block(painter: QPainter, rect: QRectF) -> None:

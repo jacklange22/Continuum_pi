@@ -309,13 +309,38 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
         session: ExperimentSession,
         target: LegacyRepeatabilityTarget,
     ) -> dict[str, Any]:
-        command = session.context.servo_service.command_displacement(
-            tendon_displacements_cm=[float(value) for value in target.cable_deltas_cm],
-            neutral_ticks=list(self._neutral_ticks),
-            servo_ids=list(self._servo_ids),
-            motion_workflow="experiment_motion",
+        requested = [float(value) for value in target.cable_deltas_cm]
+        LOG.info(
+            "Repeatability command dispatch | target=%s | target_index=%s | requested_cable_cm=%s",
+            target.label,
+            int(target.target_index),
+            requested,
         )
+        try:
+            command = session.context.servo_service.command_displacement(
+                tendon_displacements_cm=list(requested),
+                neutral_ticks=list(self._neutral_ticks),
+                servo_ids=list(self._servo_ids),
+                motion_workflow="experiment_motion",
+            )
+        except Exception as exc:
+            LOG.exception(
+                "Repeatability command failed | target=%s | target_index=%s | requested_cable_cm=%s | error=%s",
+                target.label,
+                int(target.target_index),
+                requested,
+                exc,
+            )
+            raise
         debug_entry = next(iter((command.debug_entries_by_id or {}).values()), None)
+        LOG.info(
+            "Repeatability command success | target=%s | target_index=%s | resolved_cable_cm=%s | final_goals=%s | clamp_reasons=%s",
+            target.label,
+            int(target.target_index),
+            list(command.resolved_displacements_cm or requested),
+            {str(servo_id): int(goal) for servo_id, goal in command.positions_by_id.items()},
+            {str(servo_id): str(reason) for servo_id, reason in command.clamp_reasons_by_id.items()},
+        )
         return {
             "commanded_motor_values": {str(servo_id): int(goal) for servo_id, goal in command.positions_by_id.items()},
             "motion_profile": {
@@ -769,7 +794,7 @@ def _precheck_single_segment_repeatability(
     if not pretension_source.accepted or not pretension_source.usable:
         raise RuntimeError(pretension_source.message)
     for servo_id in servo_ids:
-        assessment = session.context.servo_service.assess_motion(int(servo_id), require_calibrated_bounds=True)
+        assessment = session.context.servo_service.assess_experiment_motion(int(servo_id))
         if not assessment.ready:
             raise RuntimeError(f"Servo {servo_id} is not ready for repeatability commands: {assessment.reason}")
 

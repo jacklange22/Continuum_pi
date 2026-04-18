@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 import subprocess
 import time
@@ -25,6 +26,9 @@ from continuum_robot.experiments.schemas import (
     ExperimentSummary,
 )
 from continuum_robot.experiments.validation import STATUS_PARTIAL_SUCCESS, STATUS_SUCCESS, classify_summary_status
+
+
+LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -95,6 +99,11 @@ class ExperimentRunner:
     ) -> ExperimentRunResult:
         """Run one registered experiment and write a canonical dataset."""
         experiment = self.registry.create(experiment_name, config or {})
+        LOG.info(
+            "Experiment run start | name=%s | output_root=%s",
+            experiment_name,
+            str(output_dir) if output_dir is not None else str(self.output_dir),
+        )
         run_id = uuid4().hex[:12]
         metadata = self._build_metadata(
             experiment_name=experiment.name,
@@ -133,6 +142,13 @@ class ExperimentRunner:
             success = True
             message = f"Completed experiment {experiment.name}."
         except Exception as exc:
+            LOG.exception(
+                "Experiment stage failed | name=%s | run_id=%s | stage=%s | error=%s",
+                experiment.name,
+                run_id,
+                stage_name,
+                exc,
+            )
             session.add_error(str(exc))
             session.set_stage(stage_name, "failed", str(exc))
             if stage_name == "setup":
@@ -147,6 +163,12 @@ class ExperimentRunner:
                 if session.stage_pass_fail.get("finalize") != "failed":
                     session.set_stage("finalize", "passed")
             except Exception as exc:
+                LOG.exception(
+                    "Experiment finalize failed | name=%s | run_id=%s | error=%s",
+                    experiment.name,
+                    run_id,
+                    exc,
+                )
                 session.add_error(f"Finalize failed: {exc}")
                 session.set_stage("finalize", "failed", str(exc))
                 message = f"{message} Finalize failed: {exc}".strip()
@@ -174,6 +196,13 @@ class ExperimentRunner:
         try:
             experiment.write_outputs(session, paths, summary)
         except Exception as exc:
+            LOG.exception(
+                "Experiment write_outputs failed | name=%s | run_id=%s | output_dir=%s | error=%s",
+                experiment.name,
+                run_id,
+                paths.output_dir,
+                exc,
+            )
             if message:
                 message = f"{message} Additional outputs failed: {exc}"
             else:
@@ -182,6 +211,15 @@ class ExperimentRunner:
             message = message or f"Completed experiment {experiment.name}."
         elif not message:
             message = f"Experiment {experiment.name} failed."
+        LOG.info(
+            "Experiment run finish | name=%s | run_id=%s | success=%s | sample_count=%s | output_dir=%s | message=%s",
+            experiment.name,
+            run_id,
+            final_success,
+            len(session.samples),
+            paths.output_dir,
+            message,
+        )
         return ExperimentRunResult(
             experiment_name=experiment.name,
             run_id=run_id,
@@ -291,6 +329,18 @@ class ExperimentRunner:
             "servo_connected": bool(getattr(self.servo_service, "is_connected", False)),
             "pretension_source": pretension_source_info,
         }
+        LOG.info(
+            "Experiment metadata context | name=%s | run_id=%s | tracking_backend=%s | runtime_tip_mode=%s | pretension_source=%s",
+            experiment_name,
+            run_id,
+            backend_info.get("tracking_backend_selected", ""),
+            (
+                tracking_snapshot.runtime_tip_mode
+                if tracking_snapshot is not None
+                else "latest_accepted"
+            ),
+            pretension_source_info.get("source_type", "unknown"),
+        )
         registration_info = {
             "path": str(self.registration_path),
             "exists": self.registration_path.exists(),

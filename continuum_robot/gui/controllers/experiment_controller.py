@@ -502,6 +502,11 @@ class ExperimentController:
                     self._invalidate_preflight_cache_locked()
                     self._reset_planned_output_dir_locked()
             except Exception as exc:
+                LOG.exception(
+                    "Experiment workspace run failed | experiment=%s | error=%s",
+                    experiment_name,
+                    exc,
+                )
                 with self._lock:
                     self.state.last_error = str(exc)
                     self.state.status_message = f"Experiment failed: {exc}"

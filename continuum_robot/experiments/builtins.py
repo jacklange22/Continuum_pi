@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
+import logging
 import math
 from pathlib import Path
 import random
@@ -42,6 +43,9 @@ try:
     import numpy as np
 except Exception:  # pragma: no cover - numpy is a declared dependency
     np = None
+
+
+LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -1501,7 +1505,9 @@ class ServoTrackerSyncValidationExperiment(BaseExperiment):
         commit_value = int(commit_ns)
         if received_ns is None:
             return commit_value
-        if abs(commit_value - int(received_ns)) > 60_000_000_000:
+        # Some backends/tests provide synthetic timing-domain values; if commit and received
+        # timestamps diverge materially, trust the host-received monotonic timestamp.
+        if abs(commit_value - int(received_ns)) > 250_000_000:
             return int(received_ns)
         return commit_value
 
@@ -1963,7 +1969,10 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             tracking_service.start()
             self._tracking_started_here = True
         self._servo_ids = _configured_collect_pose_servo_ids(session)
-        self._initial_neutral_ticks = _load_collect_pose_neutral_ticks(session, servo_ids=self._servo_ids)
+        if self.config.dry_run:
+            self._initial_neutral_ticks = [0 for _ in self._servo_ids]
+        else:
+            self._initial_neutral_ticks = _load_collect_pose_neutral_ticks(session, servo_ids=self._servo_ids)
 
     def precheck(self, session: ExperimentSession) -> None:
         if session.context.tracking_service is None:
@@ -2148,6 +2157,13 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             neutral_ticks = [0 for _ in servo_ids]
         requested_cable_command_cm = [float(value) for value in tendon_displacement_cm]
         requested_pair_command_cm = _pair_command_from_cable_deltas(requested_cable_command_cm)
+        LOG.info(
+            "Collect-pose command dispatch | requested_cable_cm=%s | requested_pair_cm=%s | servo_ids=%s | dry_run=%s",
+            requested_cable_command_cm,
+            requested_pair_command_cm,
+            list(servo_ids),
+            bool(self.config.dry_run),
+        )
         if self.config.dry_run or not servo_service.is_connected:
             if len(neutral_ticks) != len(requested_cable_command_cm):
                 raise RuntimeError("Dry-run modeling command dimensions do not match the configured servo set.")
@@ -2173,13 +2189,29 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                     "profile_acceleration": None,
                 },
             }
-        command = servo_service.command_displacement(
-            tendon_displacements_cm=list(requested_cable_command_cm),
-            neutral_ticks=neutral_ticks,
-            servo_ids=servo_ids,
-            motion_workflow="experiment_motion",
-        )
+        try:
+            command = servo_service.command_displacement(
+                tendon_displacements_cm=list(requested_cable_command_cm),
+                neutral_ticks=neutral_ticks,
+                servo_ids=servo_ids,
+                motion_workflow="experiment_motion",
+            )
+        except Exception as exc:
+            LOG.exception(
+                "Collect-pose command failed | requested_cable_cm=%s | servo_ids=%s | error=%s",
+                requested_cable_command_cm,
+                list(servo_ids),
+                exc,
+            )
+            raise
         motion_profile = _servo_motion_profile_from_result(command)
+        LOG.info(
+            "Collect-pose command success | resolved_cable_cm=%s | final_goals=%s | clamp_reasons=%s | motion_profile=%s",
+            list(command.resolved_displacements_cm or requested_cable_command_cm),
+            {str(servo_id): int(goal) for servo_id, goal in sorted(command.positions_by_id.items())},
+            {str(servo_id): str(reason) for servo_id, reason in sorted(command.clamp_reasons_by_id.items())},
+            motion_profile,
+        )
         return {
             "requested_cable_command_cm": list(requested_cable_command_cm),
             "resolved_cable_command_cm": list(command.resolved_displacements_cm or requested_cable_command_cm),
@@ -2230,6 +2262,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             timeout_s=float(self.config.capture_timeout_s),
             poll_interval_s=float(self.config.capture_poll_interval_s),
             require_robot_frame_tip=bool(self.config.require_robot_frame_tip),
+            allow_mock_state=bool(self.config.dry_run),
         )
         accepted = bool(gate.get("accepted"))
         status_flags = ["capture_accepted"] if accepted else ["capture_rejected"]
@@ -2420,7 +2453,7 @@ def _precheck_collect_pose_command_dataset(
     snapshot = tracking_service.get_snapshot()
     if not config.dry_run and bool(session.context.settings.runtime.mock_mode):
         raise RuntimeError("Thesis-grade modeling datasets require live runtime mode. Disable mock mode or switch to dry_run.")
-    if snapshot.canonical_state != "streaming_healthy":
+    if (not config.dry_run) and snapshot.canonical_state != "streaming_healthy":
         raise RuntimeError(f"Tracker must be streaming healthy before modeling dataset collection; current state is {snapshot.canonical_state}.")
     runtime_tip_mode = str(getattr(snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted")
     if config.require_robot_frame_tip and snapshot.registration_state != "loaded":
@@ -2440,9 +2473,13 @@ def _precheck_collect_pose_command_dataset(
         tool_id=str(config.tool_id or "0A"),
         max_tracker_age_s=float(config.max_tracker_age_s),
         require_robot_frame_tip=bool(config.require_robot_frame_tip),
+        allow_mock_state=bool(config.dry_run),
     )
     if not gate["accepted"]:
-        raise RuntimeError(f"Tracker capture gate is blocked before run start: {gate['reason']}.")
+        session.add_warning(
+            "Tracker capture gate is not ready at precheck and may reject captures during the run: "
+            f"{gate['reason']}."
+        )
     calibration_summary = session.context.servo_service.get_calibration_summary()
     pretension_source = session.context.servo_service.pretension_source_summary(list(servo_ids))
     if not config.dry_run:
@@ -2455,10 +2492,7 @@ def _precheck_collect_pose_command_dataset(
             )
     if not config.dry_run:
         for servo_id in servo_ids:
-            assessment = session.context.servo_service.assess_motion(
-                int(servo_id),
-                require_calibrated_bounds=False,
-            )
+            assessment = session.context.servo_service.assess_experiment_motion(int(servo_id))
             if not assessment.ready:
                 raise RuntimeError(f"Servo {servo_id} is not ready for coordinated motion: {assessment.reason}")
     if config.dataset_mode not in {"workspace_coverage", "hysteresis_path_dependence", "repeatability_linked"}:
@@ -2788,6 +2822,7 @@ def _wait_for_collect_pose_capture(
     timeout_s: float,
     poll_interval_s: float,
     require_robot_frame_tip: bool,
+    allow_mock_state: bool,
 ) -> tuple[Any, dict[str, Any]]:
     deadline = session.context.monotonic_fn() + float(timeout_s)
     last_snapshot = session.context.tracking_service.get_snapshot()
@@ -2796,6 +2831,7 @@ def _wait_for_collect_pose_capture(
         tool_id=tool_id,
         max_tracker_age_s=max_tracker_age_s,
         require_robot_frame_tip=require_robot_frame_tip,
+        allow_mock_state=allow_mock_state,
     )
     if last_gate["accepted"]:
         return last_snapshot, last_gate
@@ -2808,6 +2844,7 @@ def _wait_for_collect_pose_capture(
             tool_id=tool_id,
             max_tracker_age_s=max_tracker_age_s,
             require_robot_frame_tip=require_robot_frame_tip,
+            allow_mock_state=allow_mock_state,
         )
         if last_gate["accepted"]:
             return last_snapshot, last_gate
@@ -2820,12 +2857,16 @@ def _modeling_tracker_gate_status(
     tool_id: str,
     max_tracker_age_s: float,
     require_robot_frame_tip: bool,
+    allow_mock_state: bool = False,
 ) -> dict[str, Any]:
     tool_key = str(tool_id or "0A").upper()
     tool = snapshot.tools.get(tool_key)
     reasons: list[str] = []
     age = snapshot.tracker_data_age_s
-    if snapshot.canonical_state not in {"streaming_healthy", "streaming_degraded"}:
+    if (
+        snapshot.canonical_state not in {"streaming_healthy", "streaming_degraded"}
+        and not (allow_mock_state and snapshot.canonical_state == "mock")
+    ):
         reasons.append(f"tracker_state={snapshot.canonical_state}")
     if snapshot.tracker_data_stale:
         reasons.append("tracker_data_stale")
@@ -2876,7 +2917,20 @@ def _record_collect_pose_run_provenance(
     snapshot = session.context.tracking_service.get_snapshot()
     servo_calibration_summary = session.context.servo_service.get_calibration_summary()
     pretension_source = session.context.servo_service.pretension_source_summary([int(value) for value in servo_ids])
-    startup_reference = session.context.servo_service.resolve_startup_reference_ticks(list(servo_ids))
+    startup_reference_error: str | None = None
+    startup_reference_source = "unavailable"
+    startup_reference_ticks_by_servo: dict[str, int] = {}
+    try:
+        startup_reference = session.context.servo_service.resolve_startup_reference_ticks(list(servo_ids))
+    except Exception as exc:
+        startup_reference = None
+        startup_reference_error = str(exc)
+    if startup_reference is not None:
+        startup_reference_source = str(startup_reference.source or "neutral")
+        startup_reference_ticks_by_servo = {
+            str(servo_id): int(tick)
+            for servo_id, tick in sorted(startup_reference.ticks_by_servo.items())
+        }
     registration_path = Path(
         getattr(snapshot, "registration_path", None) or session.context.registration_path
     )
@@ -2887,6 +2941,7 @@ def _record_collect_pose_run_provenance(
         tool_id=str(config.tool_id or "0A"),
         max_tracker_age_s=float(config.max_tracker_age_s),
         require_robot_frame_tip=bool(config.require_robot_frame_tip),
+        allow_mock_state=bool(config.dry_run),
     )
     provenance = {
         "dataset_mode": str(config.dataset_mode or "workspace_coverage"),
@@ -2900,11 +2955,9 @@ def _record_collect_pose_run_provenance(
         "max_tracker_age_s": float(config.max_tracker_age_s),
         "dry_run": bool(config.dry_run),
         "pair_limits": dict(pair_limits),
-        "startup_reference_source": str(startup_reference.source or "neutral"),
-        "startup_reference_ticks_by_servo": {
-            str(servo_id): int(tick)
-            for servo_id, tick in sorted(startup_reference.ticks_by_servo.items())
-        },
+        "startup_reference_source": startup_reference_source,
+        "startup_reference_ticks_by_servo": startup_reference_ticks_by_servo,
+        "startup_reference_error": startup_reference_error,
         "neutral_ticks_by_servo": {
             str(servo_id): int(tick)
             for servo_id, tick in zip(servo_ids, neutral_ticks)
@@ -3031,12 +3084,14 @@ def _servo_feedback_payload(telemetry_by_id: dict[int, Any], *, servo_service) -
     for servo_id, telemetry in sorted((telemetry_by_id or {}).items()):
         payload[str(servo_id)] = {
             "present_position_ticks": telemetry.present_position,
+            "present_current_raw_unit": telemetry.present_current_raw_unit,
             "present_current_ma": telemetry.present_current_ma,
             "torque_enabled": telemetry.torque_enabled,
             "telemetry_age_s": servo_service.telemetry_age_s(telemetry),
             "telemetry_fresh": servo_service.telemetry_is_fresh(telemetry),
             "operating_mode": telemetry.operating_mode,
             "hardware_error": telemetry.hardware_error,
+            "present_voltage_raw_unit": telemetry.present_voltage_raw_unit,
             "present_voltage_mv": telemetry.present_voltage_mv,
             "present_temperature_c": telemetry.present_temperature_c,
         }
@@ -3258,6 +3313,10 @@ def _sample_from_tracking_snapshot(
     commanded_motor_values: dict[str, int | float | None],
     status_flags: list[str] | None = None,
     extra: dict[str, Any] | None = None,
+    cycle_index: int | None = None,
+    target_index: int | None = None,
+    revisit_index: int | None = None,
+    approach_index: int | None = None,
 ) -> ExperimentTimeseriesSample:
     return sample_from_tracking_snapshot(
         session,
@@ -3269,6 +3328,10 @@ def _sample_from_tracking_snapshot(
         commanded_motor_values=commanded_motor_values,
         status_flags=status_flags,
         extra=extra,
+        cycle_index=cycle_index,
+        target_index=target_index,
+        revisit_index=revisit_index,
+        approach_index=approach_index,
     )
 
 

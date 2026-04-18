@@ -1,3 +1,4 @@
+from __future__ import annotations
 import math
 
 from continuum_robot.services.models import (

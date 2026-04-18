@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -18,9 +19,27 @@ from continuum_robot.experiments.tracker_timing_outputs import (
     _fmt,
     _new_image,
 )
-from continuum_robot.gui.theme import COLORS
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+try:
+    from continuum_robot.gui.theme import COLORS
+except Exception:
+    class _FallbackColors:
+        scene_measurement = "#0f766e"
+        scene_residual = "#dc2626"
+        text_muted = "#64748b"
+        surface_border = "#dbe4ee"
+        chart_grid = "#e2e8f0"
+
+    COLORS = _FallbackColors()
+try:
+    from PySide6.QtCore import QPointF, QRectF, Qt
+    from PySide6.QtGui import QColor, QPainter, QPen
+
+    _QT_AVAILABLE = True
+except ModuleNotFoundError:
+    _QT_AVAILABLE = False
+
+
+LOG = logging.getLogger(__name__)
 
 
 def build_modeling_dataset_summary_pairs(*, metrics: dict[str, Any]) -> list[tuple[str, str]]:
@@ -131,7 +150,6 @@ def build_modeling_dataset_summary_lines(*, metadata, summary, metrics: dict[str
 
 
 def write_modeling_dataset_outputs(*, output_dir: Path, metadata, summary, samples) -> dict[str, Path]:
-    _ensure_plot_qt_app()
     output_dir = Path(output_dir)
     metrics = summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else {}
     summary_text_path = output_dir / "modeling_dataset_summary.txt"
@@ -165,8 +183,14 @@ def write_modeling_dataset_outputs(*, output_dir: Path, metadata, summary, sampl
                 rows=rows,
                 filename_stem="modeling_dataset_legacy_compat",
             )
-    _write_workspace_plot(workspace_plot_path=workspace_plot_path, export_rows=export_rows, metrics=metrics)
-    _write_command_plot(command_plot_path=command_plot_path, export_rows=export_rows, metrics=metrics)
+    if _QT_AVAILABLE:
+        _ensure_plot_qt_app()
+        _write_workspace_plot(workspace_plot_path=workspace_plot_path, export_rows=export_rows, metrics=metrics)
+        _write_command_plot(command_plot_path=command_plot_path, export_rows=export_rows, metrics=metrics)
+    else:
+        _write_plot_placeholder(workspace_plot_path)
+        _write_plot_placeholder(command_plot_path)
+        LOG.warning("Qt plotting backend unavailable; wrote placeholder modeling plots under %s", output_dir)
     outputs: dict[str, Path] = {
         "summary_text_path": summary_text_path,
         "export_jsonl_path": export_jsonl_path,
@@ -178,6 +202,82 @@ def write_modeling_dataset_outputs(*, output_dir: Path, metadata, summary, sampl
     elif legacy_dat_path.exists():
         outputs["legacy_dat_path"] = legacy_dat_path
     return outputs
+
+
+def _write_plot_placeholder(path: Path) -> None:
+    path.write_bytes(
+        bytes(
+            (
+                137,
+                80,
+                78,
+                71,
+                13,
+                10,
+                26,
+                10,
+                0,
+                0,
+                0,
+                13,
+                73,
+                72,
+                68,
+                82,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1,
+                8,
+                6,
+                0,
+                0,
+                0,
+                31,
+                21,
+                196,
+                137,
+                0,
+                0,
+                0,
+                13,
+                73,
+                68,
+                65,
+                84,
+                120,
+                156,
+                99,
+                96,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                226,
+                33,
+                188,
+                51,
+                0,
+                0,
+                0,
+                0,
+                73,
+                69,
+                78,
+                68,
+                174,
+                66,
+                96,
+                130,
+            )
+        )
+    )
 
 
 def _build_export_rows(*, samples) -> list[dict[str, Any]]:

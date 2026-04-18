@@ -1,4 +1,5 @@
 """Map tendon displacement to servo position ticks."""
+from __future__ import annotations
 
 import math
 

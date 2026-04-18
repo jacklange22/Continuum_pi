@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 from pathlib import Path
 
 from continuum_robot.config.config_loader import ConfigLoader
 from continuum_robot.config.settings import Settings
 from continuum_robot.hardware.serial_ports import SerialPortInfo, discover_serial_ports
 from continuum_robot.servos.servo_service import ServoBusBusyError
+
+
+LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -56,6 +60,7 @@ class SystemViewState:
     bench_debug_text: str = ""
     saved_overrides_path: str = ""
     config_summary: str = ""
+    session_log_path: str = ""
 
 
 class SystemController:
@@ -69,6 +74,7 @@ class SystemController:
         settings: Settings,
         *,
         config_loader: ConfigLoader | None = None,
+        session_log_path: str | None = None,
     ) -> None:
         self.tracking_service = tracking_service
         self.openrb_client = openrb_client
@@ -98,6 +104,7 @@ class SystemController:
             config_summary=self._build_config_summary(settings),
             status_message=self._initial_status_message(settings),
             saved_overrides_path=self._existing_overrides_path(config_loader),
+            session_log_path=str(session_log_path or ""),
         )
         self.rescan_ports()
 
@@ -126,9 +133,11 @@ class SystemController:
             if not self.settings.runtime.mock_mode and not self.state.aurora_port:
                 raise RuntimeError("Aurora port is empty. Set the tracker port before connecting.")
             self.tracking_service.start(self.state.aurora_port)
+            LOG.info("Tracker connect requested | port=%s", self.state.aurora_port)
             self.state.status_message = "Tracker connection requested."
             self.state.last_error = None
         except Exception as exc:
+            LOG.exception("Tracker connect failed | port=%s | error=%s", self.state.aurora_port, exc)
             self.state.last_error = str(exc)
             self.state.status_message = f"Tracker connect failed: {exc}"
         self.refresh()
@@ -136,9 +145,11 @@ class SystemController:
     def disconnect_tracker(self) -> None:
         try:
             self.tracking_service.stop()
+            LOG.info("Tracker disconnected.")
             self.state.status_message = "Tracker disconnected."
             self.state.last_error = None
         except Exception as exc:
+            LOG.exception("Tracker disconnect failed | error=%s", exc)
             self.state.last_error = str(exc)
             self.state.status_message = f"Tracker disconnect failed: {exc}"
         self.refresh()
@@ -156,12 +167,24 @@ class SystemController:
             except Exception:
                 self.openrb_client.disconnect()
                 raise
+            LOG.info(
+                "OpenRB connected | port=%s | baud=%s | expected_servo_ids=%s",
+                self.state.openrb_port,
+                self.state.baudrate,
+                self.settings.robot.servo_ids,
+            )
             self.state.status_message = (
                 "OpenRB validated and prepared; DYNAMIXEL bus connected. "
                 "Use configured-servo bring-up next and jog one selected servo at a time."
             )
             self.state.last_error = None
         except Exception as exc:
+            LOG.exception(
+                "OpenRB connect failed | port=%s | baud=%s | error=%s",
+                self.state.openrb_port,
+                self.state.baudrate,
+                exc,
+            )
             self.state.last_error = str(exc)
             self.state.status_message = f"OpenRB connect failed: {exc}"
         self.refresh_readiness()
@@ -170,6 +193,7 @@ class SystemController:
         try:
             self.servo_service.disconnect()
             self.openrb_client.disconnect()
+            LOG.info("OpenRB and DYNAMIXEL disconnected.")
             self.state.status_message = "OpenRB and DYNAMIXEL bus disconnected."
             self.state.last_error = None
         except Exception as exc:
@@ -177,6 +201,7 @@ class SystemController:
                 self.openrb_client.disconnect()
             except Exception:
                 pass
+            LOG.exception("OpenRB disconnect failed | error=%s", exc)
             self.state.last_error = str(exc)
             self.state.status_message = f"OpenRB disconnect failed: {exc}"
         self.refresh()
@@ -184,9 +209,11 @@ class SystemController:
     def prepare_openrb(self) -> None:
         try:
             self.openrb_client.prepare_for_dynamixel_use()
+            LOG.info("OpenRB prepare-for-dynamixel requested.")
             self.state.status_message = "OpenRB prepared for DYNAMIXEL use."
             self.state.last_error = None
         except Exception as exc:
+            LOG.exception("OpenRB prepare failed | error=%s", exc)
             self.state.last_error = str(exc)
             self.state.status_message = f"OpenRB prepare failed: {exc}"
         self.refresh_readiness()
@@ -605,6 +632,7 @@ class SystemController:
             f"Bus reachable: {self.state.bus_reachable}\n"
             f"Motion ready: {self.state.motion_ready}\n"
             f"Saved overrides: {self.state.saved_overrides_path or 'none'}"
+            f"\nSession log: {self.state.session_log_path or 'unset'}"
         )
 
     @staticmethod
@@ -656,6 +684,7 @@ class SystemController:
                 f"one_servo_mode_ok={snapshot.one_servo_mode_ok}",
                 f"active_range={self.servo_service.raw_position_range()[0]}..{self.servo_service.raw_position_range()[1]}",
                 f"motion_ready={snapshot.motion_ready}",
+                f"session_log={self.state.session_log_path or 'unset'}",
                 "position_convention=tighten->smaller_counts; loosen->larger_counts",
                 f"motion_block_reason={snapshot.motion_block_reason or 'none'}",
             ]
@@ -688,6 +717,7 @@ class SystemController:
                 f"all_expected_telemetry_ok={snapshot.all_expected_telemetry_ok}",
                 f"all_motion_ready={snapshot.all_motion_ready}",
                 f"active_range={self.servo_service.raw_position_range()[0]}..{self.servo_service.raw_position_range()[1]}",
+                f"session_log={self.state.session_log_path or 'unset'}",
                 "position_convention=tighten->smaller_counts; loosen->larger_counts",
             ]
         )
@@ -720,6 +750,7 @@ class SystemController:
                 f"freshness_threshold_s={self.state.telemetry_freshness_timeout_s:.3f}",
                 f"all_motion_ready={getattr(snapshot, 'all_motion_ready', False)}",
                 f"active_range={self.servo_service.raw_position_range()[0]}..{self.servo_service.raw_position_range()[1]}",
+                f"session_log={self.state.session_log_path or 'unset'}",
                 "position_convention=tighten->smaller_counts; loosen->larger_counts",
             ]
         )
@@ -745,6 +776,7 @@ class SystemController:
             f"one_servo_mode_ok={self.settings.robot.mode == '1-servo' and len(self.settings.robot.servo_ids) == 1}",
             f"freshness_threshold_s={self.state.telemetry_freshness_timeout_s:.3f}",
             f"active_range={self.servo_service.raw_position_range()[0]}..{self.servo_service.raw_position_range()[1]}",
+            f"session_log={self.state.session_log_path or 'unset'}",
             "motion_ready=False",
             "position_convention=tighten->smaller_counts; loosen->larger_counts",
             f"motion_block_reason={extra_error or 'OpenRB/DYNAMIXEL not ready'}",

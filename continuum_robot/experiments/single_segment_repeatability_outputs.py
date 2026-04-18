@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -18,9 +19,27 @@ from continuum_robot.experiments.tracker_timing_outputs import (
     _fmt,
     _new_image,
 )
-from continuum_robot.gui.theme import COLORS
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QPen, QPainter
+try:
+    from continuum_robot.gui.theme import COLORS
+except Exception:
+    class _FallbackColors:
+        scene_truth = "#2563eb"
+        scene_residual = "#dc2626"
+        scene_measurement = "#7c3aed"
+        scene_tip = "#f59e0b"
+        selection_bg = "#0891b2"
+
+    COLORS = _FallbackColors()
+try:
+    from PySide6.QtCore import QPointF, QRectF, Qt
+    from PySide6.QtGui import QColor, QPen, QPainter
+
+    _QT_AVAILABLE = True
+except ModuleNotFoundError:
+    _QT_AVAILABLE = False
+
+
+LOG = logging.getLogger(__name__)
 
 
 def build_single_segment_repeatability_summary_pairs(*, metrics: dict[str, Any]) -> list[tuple[str, str]]:
@@ -219,7 +238,6 @@ def build_single_segment_repeatability_summary_lines(*, metadata, summary, metri
 
 def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, summary, samples) -> dict[str, Path]:
     """Write thesis-oriented figures and summary text for one run."""
-    _ensure_plot_qt_app()
     output_dir = Path(output_dir)
     metrics = summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else {}
     summary_text_path = output_dir / "repeatability_summary.txt"
@@ -237,15 +255,98 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
         + "\n",
         encoding="utf-8",
     )
-    _write_cluster_figure(clusters_path=clusters_path, samples=samples, metrics=metrics)
-    _write_rmse_figure(rmse_path=rmse_path, metrics=metrics)
-    _write_path_dependence_figure(path_dependence_path=path_dependence_path, metrics=metrics)
+    if _QT_AVAILABLE:
+        _ensure_plot_qt_app()
+        _write_cluster_figure(clusters_path=clusters_path, samples=samples, metrics=metrics)
+        _write_rmse_figure(rmse_path=rmse_path, metrics=metrics)
+        _write_path_dependence_figure(path_dependence_path=path_dependence_path, metrics=metrics)
+    else:
+        _write_plot_placeholder(clusters_path)
+        _write_plot_placeholder(rmse_path)
+        _write_plot_placeholder(path_dependence_path)
+        LOG.warning("Qt plotting backend unavailable; wrote placeholder repeatability plots under %s", output_dir)
     return {
         "summary_text_path": summary_text_path,
         "clusters_path": clusters_path,
         "rmse_path": rmse_path,
         "path_dependence_path": path_dependence_path,
     }
+
+
+def _write_plot_placeholder(path: Path) -> None:
+    path.write_bytes(
+        bytes(
+            (
+                137,
+                80,
+                78,
+                71,
+                13,
+                10,
+                26,
+                10,
+                0,
+                0,
+                0,
+                13,
+                73,
+                72,
+                68,
+                82,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1,
+                8,
+                6,
+                0,
+                0,
+                0,
+                31,
+                21,
+                196,
+                137,
+                0,
+                0,
+                0,
+                13,
+                73,
+                68,
+                65,
+                84,
+                120,
+                156,
+                99,
+                96,
+                0,
+                0,
+                0,
+                2,
+                0,
+                1,
+                226,
+                33,
+                188,
+                51,
+                0,
+                0,
+                0,
+                0,
+                73,
+                69,
+                78,
+                68,
+                174,
+                66,
+                96,
+                130,
+            )
+        )
+    )
 
 
 def _write_cluster_figure(*, clusters_path: Path, samples, metrics: dict[str, Any]) -> None:

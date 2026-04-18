@@ -126,6 +126,7 @@ class AppWindow(QMainWindow):
             servo_service=servo_service,
             settings=settings,
             config_loader=context.config_loader,
+            session_log_path=(str(context.session_log_path) if context.session_log_path is not None else None),
         )
         self.servos_controller = ServosController(servo_service=servo_service, settings=settings)
         self.pretension_controller = PretensionController(
