@@ -76,6 +76,8 @@ class ServosViewState:
     last_displacement_summary: str = ""
     last_displacement_debug_lines: list[str] = field(default_factory=list)
     single_segment_motion_config_summary: str = ""
+    single_segment_reference_summary: str = ""
+    single_segment_enforced_bounds_summary: str = ""
     single_segment_characterization_summary: str = ""
     bench_debug_text: str = ""
     status_message: str = "Servo control idle."
@@ -586,12 +588,11 @@ class ServosController:
                 "Saved servo calibration does not match the current robot configuration. "
                 "Review the calibration summary and recapture neutral before commanding motion."
             )
-        if not self.state.neutral_setpoints:
-            raise RuntimeError("Neutral setpoints are missing. Capture or load them first.")
-        missing = [sid for sid in self.state.servo_ids if sid not in self.state.neutral_setpoints]
+        reference = self.servo_service.resolve_startup_reference_ticks(list(self.state.servo_ids))
+        missing = [sid for sid in self.state.servo_ids if sid not in reference.ticks_by_servo]
         if missing:
-            raise RuntimeError(f"Neutral setpoints missing for servo IDs: {missing}")
-        return [self.state.neutral_setpoints[sid] for sid in self.state.servo_ids]
+            raise RuntimeError(f"Startup reference ticks missing for servo IDs: {missing}")
+        return [reference.ticks_by_servo[sid] for sid in self.state.servo_ids]
 
     def _apply_discovery_snapshot(self, discovery) -> None:
         self.state.discovery_status = discovery.status
@@ -742,7 +743,7 @@ class ServosController:
                     "servo_id": str(servo_id),
                     "neutral": str(entry.neutral_setpoint) if entry.neutral_setpoint is not None else "—",
                     "bounds": (
-                        f"{entry.safe_min_tick} .. {entry.safe_max_tick}"
+                        f"{entry.safe_min_tick} .. {entry.safe_max_tick} (artifact only)"
                         if entry.safe_min_tick is not None and entry.safe_max_tick is not None
                         else "missing"
                     ),
@@ -1221,11 +1222,28 @@ class ServosController:
     def _refresh_single_segment_motion_diagnostics(self) -> None:
         if self.state.single_servo_mode or len(self.state.expected_servo_ids) != 4:
             self.state.single_segment_motion_config_summary = ""
+            self.state.single_segment_reference_summary = ""
+            self.state.single_segment_enforced_bounds_summary = ""
             self.state.single_segment_characterization_summary = ""
             return
         servo_ids = list(self.state.servo_ids or self.state.expected_servo_ids)
         config_summary = self.servo_service.single_segment_motion_configuration_summary(servo_ids)
         self.state.single_segment_motion_config_summary = config_summary.message
+        try:
+            reference = self.servo_service.resolve_startup_reference_ticks(servo_ids)
+        except Exception as exc:
+            reference = None
+            self.state.single_segment_reference_summary = (
+                f"Startup/pretension reference is unavailable: {exc}"
+            )
+        else:
+            self.state.single_segment_reference_summary = reference.message
+        raw_min, raw_max = self.servo_service.raw_position_range()
+        margin = int(self.settings.safety.software_position_margin_ticks)
+        self.state.single_segment_enforced_bounds_summary = (
+            f"Experiment motion enforces raw {raw_min}..{raw_max} plus live servo position limits with a "
+            f"{margin}-tick software margin. Saved startup artifact bounds are display-only metadata."
+        )
         telemetry_by_id = {}
         snapshot = self.latest_runtime_snapshot
         if snapshot is not None:
@@ -1235,8 +1253,15 @@ class ServosController:
         characterization = self.servo_service.characterize_single_segment_motion(
             servo_ids=servo_ids,
             telemetry_by_id=telemetry_by_id or None,
+            neutral_ticks_by_id=(reference.ticks_by_servo if reference is not None else None),
         )
-        self.state.single_segment_characterization_summary = characterization.message
+        if characterization.available:
+            self.state.single_segment_characterization_summary = (
+                "Display-only diagnostic pair travel around the current startup reference: "
+                + characterization.message
+            )
+        else:
+            self.state.single_segment_characterization_summary = characterization.message
 
     @staticmethod
     def _format_action_label(action: str) -> str:
@@ -1262,10 +1287,7 @@ class ServosController:
         for reason in row.get("blocking_reasons", []):
             if "telemetry is stale" in str(reason).lower():
                 return "Stale"
-        if any(
-            row.get(field) is None
-            for field in ("position", "current_ma", "voltage_mv", "temperature_c")
-        ):
+        if row.get("position") is None:
             return "Unreadable"
         return "Live"
 

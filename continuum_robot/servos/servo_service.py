@@ -309,6 +309,15 @@ class SingleSegmentMotionCharacterization:
 
 
 @dataclass
+class StartupReferenceResolution:
+    """Resolved startup/reference ticks for coordinated single-segment motion."""
+
+    source: str
+    ticks_by_servo: dict[int, int]
+    message: str
+
+
+@dataclass
 class PretensionRoutineResult:
     """Outcome of the cautious startup pretension routine."""
 
@@ -1068,6 +1077,50 @@ class ServoService:
         selected_ids = self._manual_pretension_servo_ids(servo_ids)
         return self.neutral_calibration.get_calibration_summary().pretension_source_summary(selected_ids)
 
+    def resolve_startup_reference_ticks(
+        self,
+        servo_ids: list[int],
+        *,
+        prefer_pretension: bool = True,
+    ) -> StartupReferenceResolution:
+        selected_ids = [int(value) for value in servo_ids]
+        calibration_summary = self.get_calibration_summary()
+        if prefer_pretension:
+            source_summary = calibration_summary.pretension_source_summary(selected_ids)
+            pretension_ticks = {
+                int(servo_id): int(position)
+                for servo_id, position in dict(source_summary.positions_by_servo or {}).items()
+                if position is not None and int(servo_id) in selected_ids
+            }
+            if source_summary.accepted and source_summary.usable and len(pretension_ticks) == len(selected_ids):
+                positions_text = ", ".join(
+                    f"{servo_id}:{pretension_ticks[int(servo_id)]}"
+                    for servo_id in selected_ids
+                )
+                return StartupReferenceResolution(
+                    source=str(source_summary.source_type or "pretension"),
+                    ticks_by_servo=pretension_ticks,
+                    message=(
+                        f"Using accepted {source_summary.source_type} pretension/startup reference positions: "
+                        f"{positions_text}."
+                    ),
+                )
+        neutral_ticks = self.load_neutral_setpoints()
+        if all(int(servo_id) in neutral_ticks for servo_id in selected_ids):
+            resolved = {int(servo_id): int(neutral_ticks[int(servo_id)]) for servo_id in selected_ids}
+            positions_text = ", ".join(f"{servo_id}:{resolved[int(servo_id)]}" for servo_id in selected_ids)
+            return StartupReferenceResolution(
+                source="neutral",
+                ticks_by_servo=resolved,
+                message=f"Using saved neutral reference positions: {positions_text}.",
+            )
+        missing = [int(servo_id) for servo_id in selected_ids if int(servo_id) not in neutral_ticks]
+        raise RuntimeError(
+            "Startup reference ticks are unavailable. "
+            "Accepted pretension/startup positions were not usable and neutral setpoints are missing for servo(s): "
+            + ", ".join(str(value) for value in missing)
+        )
+
     def capture_neutral_setpoints(self, servo_ids: list[int]) -> dict[int, int]:
         result = self.capture_and_save_neutral_setpoints(servo_ids)
         return dict(result.setpoints_by_id)
@@ -1544,13 +1597,33 @@ class ServoService:
         telemetry_ready_count = 0
         motion_ready_count = 0
         pretension_ready_count = 0
+        use_simple_single_segment_assessment = (
+            str(self.neutral_calibration.context.robot_mode or "").strip().lower() == "4-servo"
+            and len(expected_ids) == 4
+            and sorted(expected_ids) == sorted(self._configured_single_segment_servo_ids())
+        )
+        experiment_profile = self._resolved_single_segment_motion_profile(
+            workflow=SINGLE_SEGMENT_WORKFLOW_EXPERIMENT,
+        )
 
         for servo_id in expected_ids:
             telemetry = telemetry_by_id.get(int(servo_id))
             identity_read_ok = bool(telemetry is not None and self._identity_read_ok(telemetry))
-            telemetry_read_ok = bool(telemetry is not None and self._telemetry_read_ok(telemetry))
+            telemetry_read_ok = bool(
+                telemetry is not None
+                and telemetry.present_position is not None
+                and telemetry.min_position_limit is not None
+                and telemetry.max_position_limit is not None
+                and telemetry.telemetry_error is None
+            )
             motion_assessment = (
-                self.assess_motion(
+                self._assess_simple_single_segment_experiment_motion(
+                    servo_id=int(servo_id),
+                    telemetry=telemetry,
+                    expected_operating_mode=experiment_profile.preferred_operating_mode,
+                )
+                if telemetry is not None and use_simple_single_segment_assessment
+                else self.assess_motion(
                     int(servo_id),
                     require_calibrated_bounds=self.require_calibrated_bounds_for_individual_motion(),
                     telemetry=telemetry,
@@ -4342,15 +4415,7 @@ class ServoService:
             for reason in motion_assessment.blocking_reasons:
                 if "telemetry is stale" in str(reason).lower():
                     return "Stale"
-        if any(
-            value is None
-            for value in (
-                telemetry.present_position,
-                telemetry.present_current_ma,
-                telemetry.present_voltage_mv,
-                telemetry.present_temperature_c,
-            )
-        ):
+        if telemetry.present_position is None:
             return "Unreadable"
         return "Live"
 

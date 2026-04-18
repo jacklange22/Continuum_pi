@@ -384,6 +384,41 @@ def test_servo_service_simple_experiment_motion_does_not_require_current_voltage
     assert result.debug_entries_by_id[1].present_current_ma is None
 
 
+def test_servo_service_simple_experiment_motion_is_not_limited_by_startup_artifact_bounds(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    for servo_id in [1, 2, 3, 4]:
+        service.set_servo_torque_enabled(servo_id, True)
+        service.save_startup_calibration(
+            servo_id=servo_id,
+            neutral_setpoint=3600,
+            min_offset_ticks=-200,
+            max_offset_ticks=200,
+            pretension_current_threshold_ma=220,
+        )
+        service.dxl_bus._state[servo_id].present_position = 3010 + servo_id
+    service.capture_manual_pretension_state(note="manual startup")
+    service.accept_manual_pretension_state()
+
+    resolution = service.resolve_startup_reference_ticks([1, 2, 3, 4])
+    result = service.command_displacement(
+        tendon_displacements_cm=[0.5, 0.0, -0.5, 0.0],
+        neutral_ticks=[
+            resolution.ticks_by_servo[1],
+            resolution.ticks_by_servo[2],
+            resolution.ticks_by_servo[3],
+            resolution.ticks_by_servo[4],
+        ],
+        servo_ids=[1, 2, 3, 4],
+    )
+
+    assert result.positions_by_id[1] < 3400
+    assert result.positions_by_id[3] > 2600
+    assert result.debug_entries_by_id[1].safe_min_tick == 64
+    assert result.debug_entries_by_id[1].safe_max_tick == 4031
+    assert result.debug_entries_by_id[1].limit_source == "single_segment_hardware_envelope"
+
+
 def test_servo_service_simple_experiment_motion_reports_stale_telemetry_explicitly(tmp_path: Path) -> None:
     bus = _StaleTelemetryBus([1, 2, 3, 4])
     for telemetry in bus._state.values():
@@ -857,6 +892,33 @@ def test_servo_service_can_capture_and_accept_manual_pretension_for_single_segme
     assert accepted.usable is True
     assert accepted.source_type == "manual"
     assert accepted.note == "bench manual state"
+
+
+def test_servo_service_resolve_startup_reference_ticks_prefers_accepted_manual_pretension(tmp_path: Path) -> None:
+    service = _build_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    for servo_id in [1, 2, 3, 4]:
+        service.set_servo_torque_enabled(servo_id, True)
+        service.save_startup_calibration(
+            servo_id=servo_id,
+            min_offset_ticks=-100,
+            max_offset_ticks=120,
+            pretension_current_threshold_ma=220,
+        )
+        service.dxl_bus._state[servo_id].present_position = 3010 + servo_id
+        service.dxl_bus._state[servo_id].present_current_ma = 220 + servo_id
+
+    service.capture_manual_pretension_state(note="startup reference")
+    pending = service.resolve_startup_reference_ticks([1, 2, 3, 4])
+    assert pending.source == "neutral"
+
+    accepted = service.accept_manual_pretension_state()
+    resolution = service.resolve_startup_reference_ticks([1, 2, 3, 4])
+
+    assert accepted.source_type == "manual"
+    assert resolution.source == "manual"
+    assert resolution.ticks_by_servo == {1: 3011, 2: 3012, 3: 3013, 4: 3014}
+    assert "accepted manual pretension/startup reference positions" in resolution.message
 
 
 def test_servo_service_pretension_source_summary_distinguishes_algorithmic_from_manual(tmp_path: Path) -> None:

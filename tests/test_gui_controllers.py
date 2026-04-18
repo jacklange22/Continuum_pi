@@ -1591,6 +1591,24 @@ def test_servos_controller_captures_neutral_and_applies_displacement(tmp_path: P
     assert controller.state.calibration_rows[0]["bounds"] != "missing"
 
 
+def test_servos_controller_uses_manual_pretension_as_experiment_reference(tmp_path: Path) -> None:
+    controller = ServosController(_servo_service(tmp_path), _settings())
+    controller.servo_service.connect("/dev/mock-openrb", 115200)
+
+    controller.capture_neutral_setpoints()
+    for servo_id in [1, 2, 3, 4]:
+        controller.servo_service.dxl_bus._state[servo_id].present_position = 3010 + servo_id
+        controller.servo_service.dxl_bus._state[servo_id].present_current_ma = 220 + servo_id
+    controller.servo_service.capture_manual_pretension_state(note="manual experiment reference")
+    controller.servo_service.accept_manual_pretension_state()
+    controller.set_tendon_displacements([0.0, 0.0, 0.0, 0.0])
+    controller.apply_displacement()
+
+    assert "accepted manual pretension/startup reference positions" in controller.state.single_segment_reference_summary
+    assert controller.state.telemetry[1]["position"] == 3011
+    assert "3011" in controller.state.last_displacement_summary or "3011" in "\n".join(controller.state.last_displacement_debug_lines)
+
+
 def test_servos_controller_surfaces_single_segment_motion_diagnostics(tmp_path: Path) -> None:
     controller = ServosController(_servo_service(tmp_path), _settings())
     controller.servo_service.connect("/dev/mock-openrb", 115200)
@@ -1600,7 +1618,10 @@ def test_servos_controller_surfaces_single_segment_motion_diagnostics(tmp_path: 
 
     assert "experiment motion" in controller.state.single_segment_motion_config_summary
     assert "Position Control" in controller.state.single_segment_motion_config_summary
-    assert "pair 1/3" in controller.state.single_segment_characterization_summary
+    assert "raw 0..4095" in controller.state.single_segment_enforced_bounds_summary
+    assert "saved neutral reference positions" in controller.state.single_segment_reference_summary
+    assert "Display-only diagnostic pair travel" in controller.state.single_segment_characterization_summary
+    assert "artifact only" in controller.state.calibration_rows[0]["bounds"]
 
 
 def test_servos_controller_supports_fine_and_coarse_jog_steps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -228,7 +228,7 @@ class ServosTab(QWidget):
 
         self.calibration_table = QTableWidget(0, 7)
         self.calibration_table.setHorizontalHeaderLabels(
-            ["Servo", "Neutral", "Bounds", "Threshold", "Tighten", "Pretension", "Status"]
+            ["Servo", "Neutral", "Startup Bounds", "Threshold", "Tighten", "Pretension", "Status"]
         )
         self.calibration_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.calibration_table.setSelectionMode(QAbstractItemView.NoSelection)
@@ -609,15 +609,19 @@ class ServosTab(QWidget):
             f"Torque: {self.selected_servo_torque_label.text()}",
             f"Telemetry: {self.selected_servo_telemetry_label.text()} | age {self.selected_servo_age_label.text()} | fresh {self.selected_servo_fresh_label.text()}",
             f"Position: {self.selected_servo_position_label.text()} | Target: {self.selected_servo_target_label.text()}",
-            f"Range: {self.selected_servo_bounds_label.text()}",
+            f"Raw hard bounds: {self.selected_servo_bounds_label.text()}",
             f"Last action: {self.selected_servo_action_label.text()} | Result: {self.selected_servo_result_label.text()}",
         ]
         if not state.single_servo_mode:
             operator_lines.append(f"Active pretension source: {state.pretension_source_summary}")
+            if state.single_segment_reference_summary:
+                operator_lines.append(f"Experiment reference: {state.single_segment_reference_summary}")
             if state.single_segment_motion_config_summary:
                 operator_lines.append(f"Single-segment motion config: {state.single_segment_motion_config_summary}")
+            if state.single_segment_enforced_bounds_summary:
+                operator_lines.append(f"Enforced experiment bounds: {state.single_segment_enforced_bounds_summary}")
             if state.single_segment_characterization_summary:
-                operator_lines.append(f"Practical pair travel: {state.single_segment_characterization_summary}")
+                operator_lines.append(f"Diagnostic pair travel: {state.single_segment_characterization_summary}")
             if state.last_displacement_summary:
                 operator_lines.append(f"Last displacement: {state.last_displacement_summary}")
             for line in state.last_displacement_debug_lines:

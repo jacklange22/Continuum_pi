@@ -398,6 +398,7 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     assert summary_payload["experiment_metrics"]["run_provenance"]["pretension_artifact"]["path"].endswith("neutral.json")
     assert summary_payload["experiment_metrics"]["run_provenance"]["pretension_artifact"]["active_source_type"] == "algorithmic"
     assert summary_payload["experiment_metrics"]["run_provenance"]["runtime_tip_calibration"]["mode"] == "latest_accepted"
+    assert summary_payload["experiment_metrics"]["run_provenance"]["startup_reference_source"] == "algorithmic"
     assert summary_payload["experiment_metrics"]["run_provenance"]["precheck_trust_summary"]["overall_status"] == "ready"
     assert "tracker_bridge" not in (result.paths.output_dir / "config_snapshot.yaml").read_text(encoding="utf-8")
     samples_payload = [

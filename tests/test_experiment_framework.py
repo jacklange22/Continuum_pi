@@ -1099,6 +1099,7 @@ def test_collect_pose_command_dataset_records_full_pose_when_registration_exists
     metrics = bundle.summary.experiment_metrics
     assert metrics["run_provenance"]["runtime_tip_calibration"]["mode"] == "latest_accepted"
     assert metrics["run_provenance"]["pretension_artifact"]["active_source_type"] == "manual"
+    assert metrics["run_provenance"]["startup_reference_source"] == "manual"
     export_rows = [
         json.loads(line)
         for line in bundle.paths.output_dir.joinpath("modeling_dataset_export.jsonl").read_text(encoding="utf-8").splitlines()

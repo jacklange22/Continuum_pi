@@ -784,6 +784,7 @@ def _record_repeatability_run_provenance(
     settings = session.context.settings
     snapshot = session.context.tracking_service.get_snapshot()
     servo_calibration_summary = session.context.servo_service.get_calibration_summary()
+    startup_reference = session.context.servo_service.resolve_startup_reference_ticks(list(servo_ids))
     pivot_tip_file = getattr(settings.registration, "penprobe_file", None)
     pivot_tip_path = (
         _resolve_repo_path(session.context.project_root, pivot_tip_file)
@@ -880,6 +881,11 @@ def _record_repeatability_run_provenance(
         "tracking_state": str(snapshot.canonical_state or ""),
         "tool_id": str(config.tool_id or "0A"),
         "require_robot_frame_tip": bool(config.require_robot_frame_tip),
+        "startup_reference_source": str(startup_reference.source or "neutral"),
+        "startup_reference_ticks_by_servo": {
+            str(servo_id): int(tick)
+            for servo_id, tick in sorted(startup_reference.ticks_by_servo.items())
+        },
         "neutral_ticks_by_servo": {
             str(servo_id): int(neutral_tick)
             for servo_id, neutral_tick in zip(servo_ids, neutral_ticks)
@@ -950,8 +956,8 @@ def _configured_single_segment_servo_ids(session: ExperimentSession) -> list[int
 
 
 def _load_neutral_ticks(session: ExperimentSession, servo_ids: list[int]) -> list[int]:
-    neutral_map = session.context.servo_service.load_neutral_setpoints()
-    return [int(neutral_map[servo_id]) for servo_id in servo_ids if servo_id in neutral_map]
+    reference = session.context.servo_service.resolve_startup_reference_ticks(list(servo_ids))
+    return [int(reference.ticks_by_servo[servo_id]) for servo_id in servo_ids if servo_id in reference.ticks_by_servo]
 
 
 def _wait_for_valid_capture(

@@ -2397,8 +2397,8 @@ def _configured_collect_pose_servo_ids(session: ExperimentSession) -> list[int]:
 
 
 def _load_collect_pose_neutral_ticks(session: ExperimentSession, *, servo_ids: list[int]) -> list[int]:
-    neutral_map = session.context.servo_service.load_neutral_setpoints()
-    return [int(neutral_map[servo_id]) for servo_id in servo_ids if servo_id in neutral_map]
+    reference = session.context.servo_service.resolve_startup_reference_ticks(list(servo_ids))
+    return [int(reference.ticks_by_servo[servo_id]) for servo_id in servo_ids if servo_id in reference.ticks_by_servo]
 
 
 def _precheck_collect_pose_command_dataset(
@@ -2876,6 +2876,7 @@ def _record_collect_pose_run_provenance(
     snapshot = session.context.tracking_service.get_snapshot()
     servo_calibration_summary = session.context.servo_service.get_calibration_summary()
     pretension_source = session.context.servo_service.pretension_source_summary([int(value) for value in servo_ids])
+    startup_reference = session.context.servo_service.resolve_startup_reference_ticks(list(servo_ids))
     registration_path = Path(
         getattr(snapshot, "registration_path", None) or session.context.registration_path
     )
@@ -2899,6 +2900,11 @@ def _record_collect_pose_run_provenance(
         "max_tracker_age_s": float(config.max_tracker_age_s),
         "dry_run": bool(config.dry_run),
         "pair_limits": dict(pair_limits),
+        "startup_reference_source": str(startup_reference.source or "neutral"),
+        "startup_reference_ticks_by_servo": {
+            str(servo_id): int(tick)
+            for servo_id, tick in sorted(startup_reference.ticks_by_servo.items())
+        },
         "neutral_ticks_by_servo": {
             str(servo_id): int(tick)
             for servo_id, tick in zip(servo_ids, neutral_ticks)
