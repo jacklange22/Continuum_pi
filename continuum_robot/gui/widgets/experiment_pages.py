@@ -2213,6 +2213,7 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
         super().__init__(controller, experiment_name, parent)
         self.run_button.setText("Run Motor Babble Dataset")
+        self._training_window = None
 
     def _build_parameter_sections(self) -> None:
         collection_card = ExperimentCard("Dataset Mode", "Choose the dataset family you want to collect. All modes preserve ordered command history and explicit accepted/rejected capture state.")
@@ -2320,6 +2321,10 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         summary_card = ExperimentCard("Collection Summary", "Review the current trust state, planned sample volume, and active runtime dependencies before running.")
         self.collection_summary_widget = KeyValueSummaryWidget()
         summary_card.body_layout.addWidget(self.collection_summary_widget)
+        self.open_training_button = QPushButton("Open ANN Training Popout")
+        self.open_training_button.setProperty("variant", "ghost")
+        self.open_training_button.clicked.connect(self._open_training_window)
+        summary_card.body_layout.addWidget(self.open_training_button, 0, Qt.AlignLeft)
 
         self.parameter_layout.addWidget(collection_card)
         self.parameter_layout.addWidget(protocol_card)
@@ -2383,6 +2388,26 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
                 ("Output Root", state.planned_output_dir or "n/a"),
             ]
         )
+
+    def _open_training_window(self) -> None:
+        from continuum_robot.gui.controllers.ann_training_controller import AnnTrainingController
+        from continuum_robot.gui.widgets.ann_training_window import AnnTrainingWindow
+
+        output_root = self.controller._resolve_repo_path(self.controller.state.output_root)
+        if self._training_window is None:
+            training_controller = AnnTrainingController(
+                project_root=self.controller.project_root,
+                dataset_output_root=output_root,
+            )
+            self._training_window = AnnTrainingWindow(training_controller, parent=self.window())
+        else:
+            self._training_window.controller.set_dataset_output_root(output_root)
+        preferred_dataset = self.controller.state.loaded_run_path or self.controller.state.last_output_path
+        if preferred_dataset:
+            self._training_window.controller.select_dataset(str(preferred_dataset))
+        self._training_window.show()
+        self._training_window.raise_()
+        self._training_window.activateWindow()
 
     def _plan_preview(self, *, mode: str) -> tuple[int, int, str]:
         samples_per_command = max(1, int(self.controller.get_config_value("samples_per_command", 1)))
