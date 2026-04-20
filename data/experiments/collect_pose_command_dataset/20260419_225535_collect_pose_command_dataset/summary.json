@@ -1,0 +1,250 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "collect_pose_command_dataset",
+  "run_id": "a511bc343882",
+  "success": false,
+  "sample_counts": {
+    "total": 139,
+    "phase::initial_neutral": 1,
+    "phase::workspace_capture": 138
+  },
+  "dropped_frames": 0,
+  "invalid_transforms": 0,
+  "stage_pass_fail": {
+    "setup": "passed",
+    "precheck": "passed",
+    "execute": "failed",
+    "finalize": "passed"
+  },
+  "status": "success",
+  "experiment_metrics": {
+    "dataset_mode": "workspace_coverage",
+    "dry_run": false,
+    "run_label": "upgraded_robot_modeling",
+    "dataset_tag": "baseline_v1",
+    "command_step_count": 180,
+    "samples_per_command": 1,
+    "pair_limits_cm": {
+      "available": true,
+      "mode": "hardware_characterized",
+      "pair_bounds_cm": [
+        [
+          -0.1875,
+          0.1875
+        ],
+        [
+          -0.1875,
+          0.1875
+        ]
+      ],
+      "envelope_utilization": 0.75,
+      "message": "pair 1/3: +1.15 cm / -1.40 cm | pair 2/4: +1.83 cm / -1.46 cm",
+      "characterization": {
+        "1/3": {
+          "positive_ticks": 1250,
+          "negative_ticks": 1525,
+          "positive_cm": 1.1504855909142309,
+          "negative_cm": 1.4035924209153616,
+          "first_servo_neutral_tick": 2781,
+          "second_servo_neutral_tick": 2506
+        },
+        "2/4": {
+          "positive_ticks": 1985,
+          "negative_ticks": 1581,
+          "positive_cm": 1.8269711183717987,
+          "negative_cm": 1.4551341753883191,
+          "first_servo_neutral_tick": 2046,
+          "second_servo_neutral_tick": 2450
+        }
+      }
+    },
+    "dataset_mode_summary": "Bounded workspace-coverage collection for first-pass forward-model training.",
+    "schedule_checksum": "[{\"dl_cm\":[0.0,0.0,-0.0,-0.0],\"index\":0,\"label\":\"workspace_0000\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.0,-0.0625,-0.0,0.0625],\"index\":1,\"label\":\"workspace_0001\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.09375,0.0625,0.09375,-0.0625],\"index\":2,\"label\":\"workspace_0002\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.09375,-0.14583333,-0.09375,0.14583333],\"index\":3,\"label\":\"workspace_0003\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.140625,-0.02083333,0.140625,0.02083333],\"index\":4,\"label\":\"workspace_0004\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.046875,0.10416667,-0.046875,-0.10416667],\"index\":5,\"label\":\"workspace_0005\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.046875,-0.10416667,0.046875,0.10416667],\"index\":6,\"label\":\"workspace_0006\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.140625,0.02083333,-0.140625,-0.02083333],\"index\":7,\"label\":\"workspace_0007\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.1640625,0.14583333,0.1640625,-0.14583333],\"index\":8,\"label\":\"workspace_0008\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.0234375,-0.17361111,-0.0234375,0.17361111],\"index\":9,\"label\":\"workspace_0009\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.0703125,-0.04861111,0.0703125,0.04861111],\"index\":10,\"label\":\"workspace_0010\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.1171875,0.07638889,-0.1171875,-0.07638889],\"index\":11,\"label\":\"workspace_0011\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.1171875,-0.13194444,0.1171875,0.13194444],\"index\":12,\"label\":\"workspace_0012\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.0703125,-0.00694444,-0.0703125,0.00694444],\"index\":13,\"label\":\"workspace_0013\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.0234375,0.11805556,0.0234375,-0.11805556],\"index\":14,\"label\":\"workspace_0014\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.1640625,-0.09027778,-0.1640625,0.09027778],\"index\":15,\"label\":\"workspace_0015\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.17578125,0.03472222,0.17578125,-0.03472222],\"index\":16,\"label\":\"workspace_0016\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.01171875,0.15972222,-0.01171875,-0.15972222],\"index\":17,\"label\":\"workspace_0017\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.08203125,-0.15972222,0.08203125,0.15972222],\"index\":18,\"label\":\"workspace_0018\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.10546875,-0.03472222,-0.10546875,0.03472222],\"index\":19,\"label\":\"workspace_0019\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.12890625,0.09027778,0.12890625,-0.09027778],\"index\":20,\"label\":\"workspace_0020\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.05859375,-0.11805556,-0.05859375,0.11805556],\"index\":21,\"label\":\"workspace_0021\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.03515625,0.00694444,0.03515625,-0.00694444],\"index\":22,\"label\":\"workspace_0022\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.15234375,0.13194444,-0.15234375,-0.13194444],\"index\":23,\"label\":\"workspace_0023\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.15234375,-0.07638889,0.15234375,0.07638889],\"index\":24,\"label\":\"workspace_0024\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.03515625,0.04861111,-0.03515625,-0.04861111],\"index\":25,\"label\":\"workspace_0025\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.05859375,0.17361111,0.05859375,-0.17361111],\"index\":26,\"label\":\"workspace_0026\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.12890625,-0.18287037,-0.12890625,0.18287037],\"index\":27,\"label\":\"workspace_0027\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.10546875,-0.05787037,0.10546875,0.05787037],\"index\":28,\"label\":\"workspace_0028\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.08203125,0.06712963,-0.08203125,-0.06712963],\"index\":29,\"label\":\"workspace_0029\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.01171875,-0.1412037,0.01171875,0.1412037],\"index\":30,\"label\":\"workspace_0030\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.17578125,-0.0162037,-0.17578125,0.0162037],\"index\":31,\"label\":\"workspace_0031\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.18164062,0.1087963,0.18164062,-0.1087963],\"index\":32,\"label\":\"workspace_0032\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.00585938,-0.09953704,-0.00585938,0.09953704],\"index\":33,\"label\":\"workspace_0033\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.08789062,0.02546296,0.08789062,-0.02546296],\"index\":34,\"label\":\"workspace_0034\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.09960938,0.15046296,-0.09960938,-0.15046296],\"index\":35,\"label\":\"workspace_0035\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.13476562,-0.16898148,0.13476562,0.16898148],\"index\":36,\"label\":\"workspace_0036\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.05273438,-0.04398148,-0.05273438,0.04398148],\"index\":37,\"label\":\"workspace_0037\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.04101562,0.08101852,0.04101562,-0.08101852],\"index\":38,\"label\":\"workspace_0038\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.14648438,-0.12731481,-0.14648438,0.12731481],\"index\":39,\"label\":\"workspace_0039\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.15820312,-0.00231481,0.15820312,0.00231481],\"index\":40,\"label\":\"workspace_0040\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.02929688,0.12268519,-0.02929688,-0.12268519],\"index\":41,\"label\":\"workspace_0041\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.06445312,-0.08564815,0.06445312,0.08564815],\"index\":42,\"label\":\"workspace_0042\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.12304688,0.03935185,-0.12304688,-0.03935185],\"index\":43,\"label\":\"workspace_0043\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.11132812,0.16435185,0.11132812,-0.16435185],\"index\":44,\"label\":\"workspace_0044\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.07617188,-0.15509259,-0.07617188,0.15509259],\"index\":45,\"label\":\"workspace_0045\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.01757812,-0.03009259,0.01757812,0.03009259],\"index\":46,\"label\":\"workspace_0046\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.16992188,0.09490741,-0.16992188,-0.09490741],\"index\":47,\"label\":\"workspace_0047\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.16992188,-0.11342593,0.16992188,0.11342593],\"index\":48,\"label\":\"workspace_0048\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.01757812,0.01157407,-0.01757812,-0.01157407],\"index\":49,\"label\":\"workspace_0049\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.07617188,0.13657407,0.07617188,-0.13657407],\"index\":50,\"label\":\"workspace_0050\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.11132812,-0.07175926,-0.11132812,0.07175926],\"index\":51,\"label\":\"workspace_0051\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.12304688,0.05324074,0.12304688,-0.05324074],\"index\":52,\"label\":\"workspace_0052\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.06445312,0.17824074,-0.06445312,-0.17824074],\"index\":53,\"label\":\"workspace_0053\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.02929688,-0.17824074,0.02929688,0.17824074],\"index\":54,\"label\":\"workspace_0054\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.15820312,-0.05324074,-0.15820312,0.05324074],\"index\":55,\"label\":\"workspace_0055\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.14648438,0.07175926,0.14648438,-0.07175926],\"index\":56,\"label\":\"workspace_0056\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.04101562,-0.13657407,-0.04101562,0.13657407],\"index\":57,\"label\":\"workspace_0057\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.05273438,-0.01157407,0.05273438,0.01157407],\"index\":58,\"label\":\"workspace_0058\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.13476562,0.11342593,-0.13476562,-0.11342593],\"index\":59,\"label\":\"workspace_0059\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.09960938,-0.09490741,0.09960938,0.09490741],\"index\":60,\"label\":\"workspace_0060\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.08789062,0.03009259,-0.08789062,-0.03009259],\"index\":61,\"label\":\"workspace_0061\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.00585938,0.15509259,0.00585938,-0.15509259],\"index\":62,\"label\":\"workspace_0062\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.18164062,-0.16435185,-0.18164062,0.16435185],\"index\":63,\"label\":\"workspace_0063\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.18457031,-0.03935185,0.18457031,0.03935185],\"index\":64,\"label\":\"workspace_0064\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.00292969,0.08564815,-0.00292969,-0.08564815],\"index\":65,\"label\":\"workspace_0065\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.09082031,-0.12268519,0.09082031,0.12268519],\"index\":66,\"label\":\"workspace_0066\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.09667969,0.00231481,-0.09667969,-0.00231481],\"index\":67,\"label\":\"workspace_0067\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.13769531,0.12731481,0.13769531,-0.12731481],\"index\":68,\"label\":\"workspace_0068\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.04980469,-0.08101852,-0.04980469,0.08101852],\"index\":69,\"label\":\"workspace_0069\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.04394531,0.04398148,0.04394531,-0.04398148],\"index\":70,\"label\":\"workspace_0070\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.14355469,0.16898148,-0.14355469,-0.16898148],\"index\":71,\"label\":\"workspace_0071\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.16113281,-0.15046296,0.16113281,0.15046296],\"index\":72,\"label\":\"workspace_0072\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.02636719,-0.02546296,-0.02636719,0.02546296],\"index\":73,\"label\":\"workspace_0073\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.06738281,0.09953704,0.06738281,-0.09953704],\"index\":74,\"label\":\"workspace_0074\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.12011719,-0.1087963,-0.12011719,0.1087963],\"index\":75,\"label\":\"workspace_0075\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.11425781,0.0162037,0.11425781,-0.0162037],\"index\":76,\"label\":\"workspace_0076\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.07324219,0.1412037,-0.07324219,-0.1412037],\"index\":77,\"label\":\"workspace_0077\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.02050781,-0.06712963,0.02050781,0.06712963],\"index\":78,\"label\":\"workspace_0078\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.16699219,0.05787037,-0.16699219,-0.05787037],\"index\":79,\"label\":\"workspace_0079\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.17285156,0.18287037,0.17285156,-0.18287037],\"index\":80,\"label\":\"workspace_0080\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.01464844,-0.18595679,-0.01464844,0.18595679],\"index\":81,\"label\":\"workspace_0081\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.07910156,-0.06095679,0.07910156,0.06095679],\"index\":82,\"label\":\"workspace_0082\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.10839844,0.06404321,-0.10839844,-0.06404321],\"index\":83,\"label\":\"workspace_0083\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.12597656,-0.14429012,0.12597656,0.14429012],\"index\":84,\"label\":\"workspace_0084\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.06152344,-0.01929012,-0.06152344,0.01929012],\"index\":85,\"label\":\"workspace_0085\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.03222656,0.10570988,0.03222656,-0.10570988],\"index\":86,\"label\":\"workspace_0086\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.15527344,-0.10262346,-0.15527344,0.10262346],\"index\":87,\"label\":\"workspace_0087\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.14941406,0.02237654,0.14941406,-0.02237654],\"index\":88,\"label\":\"workspace_0088\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.03808594,0.14737654,-0.03808594,-0.14737654],\"index\":89,\"label\":\"workspace_0089\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.05566406,-0.1720679,0.05566406,0.1720679],\"index\":90,\"label\":\"workspace_0090\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.13183594,-0.0470679,-0.13183594,0.0470679],\"index\":91,\"label\":\"workspace_0091\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.10253906,0.0779321,0.10253906,-0.0779321],\"index\":92,\"label\":\"workspace_0092\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.08496094,-0.13040123,-0.08496094,0.13040123],\"index\":93,\"label\":\"workspace_0093\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.00878906,-0.00540123,0.00878906,0.00540123],\"index\":94,\"label\":\"workspace_0094\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.17871094,0.11959877,-0.17871094,-0.11959877],\"index\":95,\"label\":\"workspace_0095\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.17871094,-0.08873457,0.17871094,0.08873457],\"index\":96,\"label\":\"workspace_0096\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.00878906,0.03626543,-0.00878906,-0.03626543],\"index\":97,\"label\":\"workspace_0097\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.08496094,0.16126543,0.08496094,-0.16126543],\"index\":98,\"label\":\"workspace_0098\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.10253906,-0.15817901,-0.10253906,0.15817901],\"index\":99,\"label\":\"workspace_0099\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.13183594,-0.03317901,0.13183594,0.03317901],\"index\":100,\"label\":\"workspace_0100\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.05566406,0.09182099,-0.05566406,-0.09182099],\"index\":101,\"label\":\"workspace_0101\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.03808594,-0.11651235,0.03808594,0.11651235],\"index\":102,\"label\":\"workspace_0102\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.14941406,0.00848765,-0.14941406,-0.00848765],\"index\":103,\"label\":\"workspace_0103\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.15527344,0.13348765,0.15527344,-0.13348765],\"index\":104,\"label\":\"workspace_0104\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.03222656,-0.07484568,-0.03222656,0.07484568],\"index\":105,\"label\":\"workspace_0105\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.06152344,0.05015432,0.06152344,-0.05015432],\"index\":106,\"label\":\"workspace_0106\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.12597656,0.17515432,-0.12597656,-0.17515432],\"index\":107,\"label\":\"workspace_0107\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.10839844,-0.18132716,0.10839844,0.18132716],\"index\":108,\"label\":\"workspace_0108\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.07910156,-0.05632716,-0.07910156,0.05632716],\"index\":109,\"label\":\"workspace_0109\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.01464844,0.06867284,0.01464844,-0.06867284],\"index\":110,\"label\":\"workspace_0110\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.17285156,-0.13966049,-0.17285156,0.13966049],\"index\":111,\"label\":\"workspace_0111\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.16699219,-0.01466049,0.16699219,0.01466049],\"index\":112,\"label\":\"workspace_0112\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.02050781,0.11033951,-0.02050781,-0.11033951],\"index\":113,\"label\":\"workspace_0113\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.07324219,-0.09799383,0.07324219,0.09799383],\"index\":114,\"label\":\"workspace_0114\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.11425781,0.02700617,-0.11425781,-0.02700617],\"index\":115,\"label\":\"workspace_0115\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.12011719,0.15200617,0.12011719,-0.15200617],\"index\":116,\"label\":\"workspace_0116\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.06738281,-0.16743827,-0.06738281,0.16743827],\"index\":117,\"label\":\"workspace_0117\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.02636719,-0.04243827,0.02636719,0.04243827],\"index\":118,\"label\":\"workspace_0118\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.16113281,0.08256173,-0.16113281,-0.08256173],\"index\":119,\"label\":\"workspace_0119\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.14355469,-0.1257716,0.14355469,0.1257716],\"index\":120,\"label\":\"workspace_0120\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.04394531,-0.0007716,-0.04394531,0.0007716],\"index\":121,\"label\":\"workspace_0121\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.04980469,0.1242284,0.04980469,-0.1242284],\"index\":122,\"label\":\"workspace_0122\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.13769531,-0.08410494,-0.13769531,0.08410494],\"index\":123,\"label\":\"workspace_0123\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.09667969,0.04089506,0.09667969,-0.04089506],\"index\":124,\"label\":\"workspace_0124\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.09082031,0.16589506,-0.09082031,-0.16589506],\"index\":125,\"label\":\"workspace_0125\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.00292969,-0.15354938,0.00292969,0.15354938],\"index\":126,\"label\":\"workspace_0126\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.18457031,-0.02854938,-0.18457031,0.02854938],\"index\":127,\"label\":\"workspace_0127\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.18603516,0.09645062,0.18603516,-0.09645062],\"index\":128,\"label\":\"workspace_0128\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.00146484,-0.11188272,-0.00146484,0.11188272],\"index\":129,\"label\":\"workspace_0129\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.09228516,0.01311728,0.09228516,-0.01311728],\"index\":130,\"label\":\"workspace_0130\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.09521484,0.13811728,-0.09521484,-0.13811728],\"index\":131,\"label\":\"workspace_0131\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.13916016,-0.07021605,0.13916016,0.07021605],\"index\":132,\"label\":\"workspace_0132\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.04833984,0.05478395,-0.04833984,-0.05478395],\"index\":133,\"label\":\"workspace_0133\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.04541016,0.17978395,0.04541016,-0.17978395],\"index\":134,\"label\":\"workspace_0134\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.14208984,-0.17669753,-0.14208984,0.17669753],\"index\":135,\"label\":\"workspace_0135\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.16259766,-0.05169753,0.16259766,0.05169753],\"index\":136,\"label\":\"workspace_0136\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.02490234,0.07330247,-0.02490234,-0.07330247],\"index\":137,\"label\":\"workspace_0137\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.06884766,-0.13503086,0.06884766,0.13503086],\"index\":138,\"label\":\"workspace_0138\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.11865234,-0.01003086,-0.11865234,0.01003086],\"index\":139,\"label\":\"workspace_0139\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.11572266,0.11496914,0.11572266,-0.11496914],\"index\":140,\"label\":\"workspace_0140\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.07177734,-0.0933642,-0.07177734,0.0933642],\"index\":141,\"label\":\"workspace_0141\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.02197266,0.0316358,0.02197266,-0.0316358],\"index\":142,\"label\":\"workspace_0142\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.16552734,0.1566358,-0.16552734,-0.1566358],\"index\":143,\"label\":\"workspace_0143\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.17431641,-0.16280864,0.17431641,0.16280864],\"index\":144,\"label\":\"workspace_0144\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.01318359,-0.03780864,-0.01318359,0.03780864],\"index\":145,\"label\":\"workspace_0145\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.08056641,0.08719136,0.08056641,-0.08719136],\"index\":146,\"label\":\"workspace_0146\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.10693359,-0.12114198,-0.10693359,0.12114198],\"index\":147,\"label\":\"workspace_0147\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.12744141,0.00385802,0.12744141,-0.00385802],\"index\":148,\"label\":\"workspace_0148\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.06005859,0.12885802,-0.06005859,-0.12885802],\"index\":149,\"label\":\"workspace_0149\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.03369141,-0.07947531,0.03369141,0.07947531],\"index\":150,\"label\":\"workspace_0150\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.15380859,0.04552469,-0.15380859,-0.04552469],\"index\":151,\"label\":\"workspace_0151\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.15087891,0.17052469,0.15087891,-0.17052469],\"index\":152,\"label\":\"workspace_0152\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.03662109,-0.14891975,-0.03662109,0.14891975],\"index\":153,\"label\":\"workspace_0153\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.05712891,-0.02391975,0.05712891,0.02391975],\"index\":154,\"label\":\"workspace_0154\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.13037109,0.10108025,-0.13037109,-0.10108025],\"index\":155,\"label\":\"workspace_0155\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.10400391,-0.10725309,0.10400391,0.10725309],\"index\":156,\"label\":\"workspace_0156\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.08349609,0.01774691,-0.08349609,-0.01774691],\"index\":157,\"label\":\"workspace_0157\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.01025391,0.14274691,0.01025391,-0.14274691],\"index\":158,\"label\":\"workspace_0158\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.17724609,-0.06558642,-0.17724609,0.06558642],\"index\":159,\"label\":\"workspace_0159\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.18017578,0.05941358,0.18017578,-0.05941358],\"index\":160,\"label\":\"workspace_0160\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.00732422,0.18441358,-0.00732422,-0.18441358],\"index\":161,\"label\":\"workspace_0161\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.08642578,-0.18441358,0.08642578,0.18441358],\"index\":162,\"label\":\"workspace_0162\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.10107422,-0.05941358,-0.10107422,0.05941358],\"index\":163,\"label\":\"workspace_0163\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.13330078,0.06558642,0.13330078,-0.06558642],\"index\":164,\"label\":\"workspace_0164\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.05419922,-0.14274691,-0.05419922,0.14274691],\"index\":165,\"label\":\"workspace_0165\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.03955078,-0.01774691,0.03955078,0.01774691],\"index\":166,\"label\":\"workspace_0166\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.14794922,0.10725309,-0.14794922,-0.10725309],\"index\":167,\"label\":\"workspace_0167\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.15673828,-0.10108025,0.15673828,0.10108025],\"index\":168,\"label\":\"workspace_0168\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.03076172,0.02391975,-0.03076172,-0.02391975],\"index\":169,\"label\":\"workspace_0169\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.06298828,0.14891975,0.06298828,-0.14891975],\"index\":170,\"label\":\"workspace_0170\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.12451172,-0.17052469,-0.12451172,0.17052469],\"index\":171,\"label\":\"workspace_0171\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.10986328,-0.04552469,0.10986328,0.04552469],\"index\":172,\"label\":\"workspace_0172\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.07763672,0.07947531,-0.07763672,-0.07947531],\"index\":173,\"label\":\"workspace_0173\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.01611328,-0.12885802,0.01611328,0.12885802],\"index\":174,\"label\":\"workspace_0174\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.17138672,-0.00385802,-0.17138672,0.00385802],\"index\":175,\"label\":\"workspace_0175\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.16845703,0.12114198,0.16845703,-0.12114198],\"index\":176,\"label\":\"workspace_0176\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.01904297,-0.08719136,-0.01904297,0.08719136],\"index\":177,\"label\":\"workspace_0177\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[-0.07470703,0.03780864,0.07470703,-0.03780864],\"index\":178,\"label\":\"workspace_0178\",\"repeat\":1,\"settle_time_s\":0.15},{\"dl_cm\":[0.11279297,0.16280864,-0.11279297,-0.16280864],\"index\":179,\"label\":\"workspace_0179\",\"repeat\":1,\"settle_time_s\":0.15}]",
+    "run_provenance": {
+      "dataset_mode": "workspace_coverage",
+      "run_label": "upgraded_robot_modeling",
+      "dataset_tag": "baseline_v1",
+      "backend_identity": "ndi_tracker_python",
+      "selected_backend_name": "ndi",
+      "configured_backend_name": "ndi",
+      "tool_id": "0A",
+      "require_robot_frame_tip": true,
+      "max_tracker_age_s": 0.15,
+      "dry_run": false,
+      "pair_limits": {
+        "available": true,
+        "mode": "hardware_characterized",
+        "pair_bounds_cm": [
+          [
+            -0.1875,
+            0.1875
+          ],
+          [
+            -0.1875,
+            0.1875
+          ]
+        ],
+        "envelope_utilization": 0.75,
+        "message": "pair 1/3: +1.15 cm / -1.40 cm | pair 2/4: +1.83 cm / -1.46 cm",
+        "characterization": {
+          "1/3": {
+            "positive_ticks": 1250,
+            "negative_ticks": 1525,
+            "positive_cm": 1.1504855909142309,
+            "negative_cm": 1.4035924209153616,
+            "first_servo_neutral_tick": 2781,
+            "second_servo_neutral_tick": 2506
+          },
+          "2/4": {
+            "positive_ticks": 1985,
+            "negative_ticks": 1581,
+            "positive_cm": 1.8269711183717987,
+            "negative_cm": 1.4551341753883191,
+            "first_servo_neutral_tick": 2046,
+            "second_servo_neutral_tick": 2450
+          }
+        }
+      },
+      "startup_reference_source": "manual",
+      "startup_reference_ticks_by_servo": {
+        "1": 2781,
+        "2": 2046,
+        "3": 2506,
+        "4": 2450
+      },
+      "startup_reference_error": null,
+      "neutral_ticks_by_servo": {
+        "1": 2781,
+        "2": 2046,
+        "3": 2506,
+        "4": 2450
+      },
+      "base_registration": {
+        "path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+        "exists": true,
+        "size_bytes": 23066,
+        "modified_at_utc": "2026-04-19T22:53:01.996920+00:00",
+        "sha256": "41b37557dbffb961ec81629bf010efba0e657b98f2024e5b9042890e939b3b51",
+        "state": "loaded",
+        "stored_timestamp_utc": "2026-04-19T22:52:43.513Z",
+        "stored_fre_mm": 1.4871893089498147
+      },
+      "runtime_tip_calibration": {
+        "path": "/home/continuum-pi/Continuum_pi/data/runtime_tip_calibration/latest_runtime_tip_calibration.json",
+        "exists": true,
+        "size_bytes": 39237,
+        "modified_at_utc": "2026-04-17T22:56:30.072669+00:00",
+        "sha256": "9449e6da6e31beaf6c1ca0d9170dcd003fa7d5fba80d444a161926f2fa8b1d0e",
+        "state": "loaded",
+        "mode": "latest_accepted",
+        "trust_level": "trusted",
+        "mode_message": "Latest accepted runtime tip artifact is active (2026-04-17T22:55:56.544Z).",
+        "selected_artifact_kind": "runtime_tip_calibration_hat",
+        "selected_artifact_path": "/home/continuum-pi/Continuum_pi/data/runtime_tip_calibration/latest_runtime_tip_calibration.json",
+        "stored_timestamp_utc": "2026-04-17T22:55:56.544Z",
+        "identity_fallback": false,
+        "tip_pose_status": "ok"
+      },
+      "pretension_artifact": {
+        "path": "/home/continuum-pi/Continuum_pi/config/neutral_setpoints.json",
+        "exists": true,
+        "size_bytes": 5641,
+        "modified_at_utc": "2026-04-19T22:49:00.281949+00:00",
+        "sha256": "7171b282e1f527751c25c81735b1c271b981adf73a58ea061e8ec9f9525f122f",
+        "status": "ready",
+        "compatible": true,
+        "updated_at_utc": "2026-04-19T22:49:00Z",
+        "schema_version": 2,
+        "active_source_type": "manual",
+        "accepted": true,
+        "usable": true,
+        "active_source_message": "Accepted manual pretension/startup state is recorded for servo(s): 1, 2, 3, 4",
+        "active_source_updated_at_utc": "2026-04-19T22:49:00Z",
+        "active_source_note": null,
+        "active_source_by_servo": {
+          "1": "manual",
+          "2": "manual",
+          "3": "manual",
+          "4": "manual"
+        }
+      },
+      "run_start_preflight": {
+        "overall_status": "ready",
+        "tracker_gate": {
+          "accepted": true,
+          "reason": "ok",
+          "tracker_age_s": 0.04005142400274053,
+          "tracker_frame_id": 122552,
+          "tool_id": "0A",
+          "tool_present": true,
+          "tool_valid": null,
+          "tip_pose_status": "ok",
+          "registration_state": "loaded",
+          "runtime_tip_mode": "latest_accepted"
+        },
+        "tracking_state": "streaming_healthy",
+        "runtime_tip_mode": "latest_accepted",
+        "pretension_source_type": "manual",
+        "pretension_message": "Accepted manual pretension/startup state is recorded for servo(s): 1, 2, 3, 4"
+      }
+    },
+    "planned_capture_count": 182,
+    "accepted_sample_count": 139,
+    "rejected_sample_count": 0,
+    "accepted_capture_rate": 1.0,
+    "robot_frame_tip_sample_count": 139,
+    "orientation_sample_count": 139,
+    "runtime_tip_mode_used": "latest_accepted",
+    "pretension_source_used": "manual",
+    "pretension_source_message": "Accepted manual pretension/startup state is recorded for servo(s): 1, 2, 3, 4",
+    "requires_robot_frame_tip": true,
+    "lower_trust_active": false,
+    "sample_order_preserved": true,
+    "legacy_export_enabled": true,
+    "position_frame": "robot",
+    "command_pair_range_cm": {
+      "pair_13_min_cm": -0.18603515625,
+      "pair_13_max_cm": 0.1845703125,
+      "pair_24_min_cm": -0.18595679012345678,
+      "pair_24_max_cm": 0.18287037037037035
+    },
+    "workspace_span_mm": {
+      "x_min_mm": -18.520113335835877,
+      "x_max_mm": 9.550651098240452,
+      "y_min_mm": -26.131738407018926,
+      "y_max_mm": -3.0787169543100017,
+      "z_min_mm": 55.39871620384164,
+      "z_max_mm": 65.62517863833966,
+      "x_span_mm": 28.07076443407633,
+      "y_span_mm": 23.053021452708926,
+      "z_span_mm": 10.226462434498025
+    },
+    "command_norm_stats_cm": {
+      "min_cm": 0.0,
+      "mean_cm": 0.14180242201388024,
+      "max_cm": 0.2516331357712808
+    },
+    "rejection_reasons": {},
+    "phase_counts": {
+      "initial_neutral": 1,
+      "workspace_capture": 138
+    },
+    "summary_requirements": {
+      "min_sample_count": 1,
+      "require_registration": true,
+      "registration_available": true,
+      "require_tip_calibration": true,
+      "tip_calibration_available": true,
+      "allow_partial_missing_registration": false,
+      "allow_partial_missing_tip_cal": false,
+      "invalid_transforms_are_fatal": false
+    },
+    "stage_messages": {
+      "execute": "Simple single-segment experiment motion rejected: stale/missing telemetry: servo 1 blocked motion: Present Position is unavailable. | Operating Mode is unavailable. | Software safety margin exceeds the servo hardware position range.."
+    }
+  },
+  "warning_messages": [],
+  "error_messages": [
+    "Simple single-segment experiment motion rejected: stale/missing telemetry: servo 1 blocked motion: Present Position is unavailable. | Operating Mode is unavailable. | Software safety margin exceeds the servo hardware position range.."
+  ]
+}

@@ -1,0 +1,63 @@
+Single-Segment Repeatability Summary
+This run recreates the legacy 17-point single-segment protocol using the current tracker, servo, registration, and runtime-tip chain. Repeatability metrics are computed from repeat captures after returning to the desired target from every other target.
+
+Run ID: cc6a89eb9153
+Timestamp: 2026-04-17T23:37:51.996215+00:00
+Status: invalid_due_to_insufficient_samples
+Protocol: Legacy 17 target / all-other approaches
+Targets: 17
+Planned Captures: 544
+Run Validity: FAIL
+Repeat Coverage: 0/272
+Per-Target Minimum: >= 12 repeats
+Valid Repeat Captures: 0
+Valid Approach Captures: 0
+Rejected Captures: 0 (0.0%)
+Pose Frame: robot
+Overall RMS: n/a
+Overall Max: n/a
+Path Dependence RMS: n/a
+Thesis Goal: <= 1.000 mm
+Goal Result: not met
+
+Run validity:
+- Accepted repeat coverage: 0 / 272 (0.000 %)
+- Per-target minimum: 12 repeats for all 17 targets
+- Rejected capture rate: 0.000 %
+- Invalid reason: accepted repeat coverage 0/272 is below the required minimum 232/272
+- Invalid reason: per-target repeat coverage below minimum on T00=0, T01=0, T02=0, T03=0, T04=0, T05=0, T06=0, T07=0, T08=0, T09=0, T10=0, T11=0, T12=0, T13=0, T14=0, T15=0, T16=0
+- Invalid reason: critical target group coverage missing for center, inner, outer
+- Coverage note: accepted repeat coverage is partial at 0/272
+
+Per-target repeat captures:
+- T00 (center): n=0, RMSE=n/a, max=n/a
+- T01 (inner): n=0, RMSE=n/a, max=n/a
+- T02 (inner): n=0, RMSE=n/a, max=n/a
+- T03 (inner): n=0, RMSE=n/a, max=n/a
+- T04 (inner): n=0, RMSE=n/a, max=n/a
+- T05 (inner): n=0, RMSE=n/a, max=n/a
+- T06 (inner): n=0, RMSE=n/a, max=n/a
+- T07 (inner): n=0, RMSE=n/a, max=n/a
+- T08 (inner): n=0, RMSE=n/a, max=n/a
+- T09 (outer): n=0, RMSE=n/a, max=n/a
+- T10 (outer): n=0, RMSE=n/a, max=n/a
+- T11 (outer): n=0, RMSE=n/a, max=n/a
+- T12 (outer): n=0, RMSE=n/a, max=n/a
+- T13 (outer): n=0, RMSE=n/a, max=n/a
+- T14 (outer): n=0, RMSE=n/a, max=n/a
+- T15 (outer): n=0, RMSE=n/a, max=n/a
+- T16 (outer): n=0, RMSE=n/a, max=n/a
+
+Run provenance:
+- Tracker backend: ndi_tracker_python (ndi)
+- 0B pivot tip: /home/continuum-pi/Continuum_pi/data/pivot_calibration/generated_penprobe_tip.csv @ 2026-04-13T14:59:45.227708+00:00
+- Base registration: /home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json (state=loaded, timestamp=2026-04-01T19:37:30.115Z)
+- Runtime tip calibration: /home/continuum-pi/Continuum_pi/data/runtime_tip_calibration/latest_runtime_tip_calibration.json (mode=latest_accepted, trust=trusted, state=loaded, timestamp=2026-04-17T22:55:56.544Z)
+- Pretension artifact: /home/continuum-pi/Continuum_pi/config/neutral_setpoints.json (status=ready, source=manual, updated=2026-04-17T23:37:39Z)
+- Runtime tip detail: Latest accepted runtime tip artifact is active (2026-04-17T22:55:56.544Z).
+- Pretension detail: Accepted manual pretension/startup state is recorded for servo(s): 1, 2, 3, 4
+
+Interpretation:
+- This validates repeatability after startup calibration and pretension, not spatial accuracy by itself.
+- Use robot-frame metrics only when registration and 0A runtime tip calibration are accepted and active.
+- Path-dependence values summarize approach-conditioned deviations from each target centroid.

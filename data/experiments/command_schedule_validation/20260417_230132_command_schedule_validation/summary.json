@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "command_schedule_validation",
+  "run_id": "bd3fbe8c342b",
+  "success": true,
+  "sample_counts": {
+    "total": 16,
+    "phase::schedule_point": 16
+  },
+  "dropped_frames": 16,
+  "invalid_transforms": 0,
+  "stage_pass_fail": {
+    "setup": "passed",
+    "precheck": "passed",
+    "execute": "passed",
+    "finalize": "passed"
+  },
+  "status": "success",
+  "experiment_metrics": {
+    "schedule_checksum": "[{\"dl_cm\":[-0.07046689,-0.13966033,0.06037379,-0.17102549],\"index\":0,\"label\":\"babble_0000\",\"repeat\":1,\"settle_time_s\":null},{\"dl_cm\":[0.0143528,-0.05372443,-0.17680043,0.00297429],\"index\":1,\"label\":\"babble_0001\",\"repeat\":1,\"settle_time_s\":null},{\"dl_cm\":[-0.18500174,-0.02654173,-0.17205783,-0.16371479],\"index\":2,\"label\":\"babble_0002\",\"repeat\":1,\"settle_time_s\":null},{\"dl_cm\":[-0.03019232,0.13074085,-0.15047922,-0.11070441],\"index\":3,\"label\":\"babble_0003\",\"repeat\":1,\"settle_time_s\":null},{\"dl_cm\":[0.05097329,0.17908358,0.03084118,-0.04132781],\"index\":4,\"label\":\"babble_0004\",\"repeat\":1,\"settle_time_s\":null},{\"dl_cm\":[0.19050204,-0.18136693,0.14338738,-0.08415629],\"index\":5,\"label\":\"babble_0005\",\"repeat\":1,\"settle_time_s\":null},{\"dl_cm\":[-0.14229797,-0.1528831,-0.07660727,0.12645054],\"index\":6,\"label\":\"babble_0006\",\"repeat\":1,\"settle_time_s\":null},{\"dl_cm\":[-0.12770945,0.03264007,0.05556539,-0.05104098],\"index\":7,\"label\":\"babble_0007\",\"repeat\":1,\"settle_time_s\":null},{\"dl_cm\":[0.01909779,-0.17488441,-0.17615953,-0.11761651],\"index\":8,\"label\":\"babble_0008\",\"repeat\":1,\"settle_time_s\":null},{\"dl_cm\":[0.07215999,-0.02896308,-0.07434113,0.03422475],\"index\":9,\"label\":\"babble_0009\",\"repeat\":1,\"settle_time_s\":null},{\"dl_cm\":[-0.01872625,-0.0800932,0.11775179,0.07959777],\"index\":10,\"label\":\"babble_0010\",\"repeat\":1,\"settle_time_s\":null},{\"dl_cm\":[-0.1023614,0.02976948,0.0100786,0.150055],\"index\":11,\"label\":\"babble_0011\",\"repeat\":1,\"settle_time_s\":null},{\"dl_cm\":[0.09177812,-0.08482489,0.19206994,-0.15277369],\"index\":12,\"label\":\"babble_0012\",\"repeat\":1,\"settle_time_s\":null},{\"dl_cm\":[-0.03275087,0.10285637,-0.13920619,-0.00441476],\"index\":13,\"label\":\"babble_0013\",\"repeat\":1,\"settle_time_s\":null},{\"dl_cm\":[-0.1843171,0.06728634,0.10582835,0.02921038],\"index\":14,\"label\":\"babble_0014\",\"repeat\":1,\"settle_time_s\":null},{\"dl_cm\":[0.15019112,-0.07450099,0.07811815,0.03774795],\"index\":15,\"label\":\"babble_0015\",\"repeat\":1,\"settle_time_s\":null}]",
+    "point_count": 16,
+    "max_abs_cable_delta_cm": 0.19206993899703284
+  },
+  "warning_messages": [],
+  "error_messages": []
+}

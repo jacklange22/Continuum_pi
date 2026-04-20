@@ -1,0 +1,35 @@
+Servo-Tracker Synchronization Validation Summary
+This run measures host-time alignment between tracker samples, servo commands, and servo telemetry during scripted motion. It does not claim hardware clock synchronization, closed-loop control quality, or spatial-calibration accuracy.
+
+Run ID: 424a6165f932
+Timestamp: 2026-04-17T23:00:00.338273+00:00
+Status: success
+Backend: ndi_tracker_python
+Tool IDs: 0A
+Servo IDs: 1
+Motion Protocol: alternating_step
+Analyzed Tracker Samples: 201
+Servo Telemetry Samples: 31
+Servo Command Samples: 19
+Effective Loop Hz: 24.165 Hz
+Unique-Frame Hz: 24.165 Hz
+Duplicate Ratio: 0.0%
+Valid Transform Rate: 100.0%
+Tracker->Servo Telemetry Mean: 106.793 ms
+Tracker->Servo Telemetry P95: 206.658 ms
+Tracker->Servo Command Mean: 110.471 ms
+Tracker->Servo Command P95: 209.178 ms
+Motion Metric Source: tracker_tool_0A_translation_mm
+Max Motion Metric: 333.181 mm
+
+Tracker total-cycle timing (ms): min=18.454, median=20.278, mean=20.563, p95=23.086, p99=25.125, max=27.290
+Tracker matching thresholds:
+- <= 5 ms: 4.0%
+- <= 10 ms: 7.0%
+- <= 20 ms: 10.0%
+- <= 25 ms: 11.9%
+
+Interpretation:
+- Use unique-frame Hz, not loop Hz alone, to judge fresh-frame availability during motion.
+- Offsets are nearest-neighbor host-time offsets only.
+- Duplicate frames and invalid transforms remain visible so the run cannot hide stale backend behavior inside a single average.
