@@ -277,8 +277,14 @@ def chart_palette() -> list[str]:
     ]
 
 
-def grouped_workspace_stylesheet(*, object_name: str, input_selectors: list[str], extra_rules: str = "") -> str:
-    inputs = ",\n".join(f"QWidget#{object_name} {selector}" for selector in input_selectors)
+def grouped_workspace_stylesheet(
+    *,
+    object_name: str,
+    input_selectors: list[str] | None = None,
+    extra_rules: str = "",
+) -> str:
+    selectors = list(input_selectors or [])
+    inputs = ",\n".join(f"QWidget#{object_name} {selector}" for selector in selectors)
     input_block = (
         f"""
         {inputs} {{

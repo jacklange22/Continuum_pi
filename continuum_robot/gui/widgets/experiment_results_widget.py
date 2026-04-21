@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from PySide6.QtCharts import QBarCategoryAxis, QBarSeries, QBarSet, QChart, QChartView, QLineSeries, QValueAxis
+from PySide6.QtCharts import (
+    QBarCategoryAxis,
+    QBarSeries,
+    QBarSet,
+    QChart,
+    QChartView,
+    QLineSeries,
+    QScatterSeries,
+    QValueAxis,
+)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import QLabel, QTabWidget, QTextEdit, QVBoxLayout, QWidget
@@ -98,21 +107,61 @@ class ExperimentResultsWidget(QWidget):
             return _chart_panel(chart, model.caption)
         if model.kind == "line":
             chart = QChart()
-            series = QLineSeries()
-            series.setColor(QColor(model.color_hex))
-            for x_value, y_value in model.points_xy:
-                series.append(float(x_value), float(y_value))
-            chart.addSeries(series)
+            series_models = model.series_xy or []
+            if series_models:
+                for series_model in series_models:
+                    series = QLineSeries()
+                    series.setName(series_model.name)
+                    series.setColor(QColor(series_model.color_hex))
+                    for x_value, y_value in series_model.points_xy:
+                        series.append(float(x_value), float(y_value))
+                    chart.addSeries(series)
+            else:
+                series = QLineSeries()
+                series.setColor(QColor(model.color_hex))
+                for x_value, y_value in model.points_xy:
+                    series.append(float(x_value), float(y_value))
+                chart.addSeries(series)
             axis_x = QValueAxis()
             axis_y = QValueAxis()
             axis_x.setTitleText(model.x_title)
             axis_y.setTitleText(model.y_title)
             chart.addAxis(axis_x, Qt.AlignBottom)
             chart.addAxis(axis_y, Qt.AlignLeft)
-            series.attachAxis(axis_x)
-            series.attachAxis(axis_y)
+            for series in chart.series():
+                series.attachAxis(axis_x)
+                series.attachAxis(axis_y)
             _style_chart(chart, model.title)
-            chart.legend().setVisible(False)
+            chart.legend().setVisible(bool(series_models))
+            return _chart_panel(chart, model.caption)
+        if model.kind == "scatter":
+            chart = QChart()
+            series_models = model.series_xy or []
+            if not series_models:
+                series_models = []
+                if model.points_xy:
+                    series_models.append(
+                        type("_Series", (), {"name": model.title, "points_xy": model.points_xy, "color_hex": model.color_hex})()
+                    )
+            for series_model in series_models:
+                series = QScatterSeries()
+                series.setName(series_model.name)
+                series.setColor(QColor(series_model.color_hex))
+                series.setMarkerSize(8.0)
+                for x_value, y_value in series_model.points_xy:
+                    series.append(float(x_value), float(y_value))
+                chart.addSeries(series)
+            axis_x = QValueAxis()
+            axis_y = QValueAxis()
+            axis_x.setTitleText(model.x_title)
+            axis_y.setTitleText(model.y_title)
+            chart.addAxis(axis_x, Qt.AlignBottom)
+            chart.addAxis(axis_y, Qt.AlignLeft)
+            for series in chart.series():
+                series.attachAxis(axis_x)
+                series.attachAxis(axis_y)
+            _style_chart(chart, model.title)
+            chart.legend().setVisible(bool(series_models))
             return _chart_panel(chart, model.caption)
         widget = QWidget()
         layout = QVBoxLayout(widget)

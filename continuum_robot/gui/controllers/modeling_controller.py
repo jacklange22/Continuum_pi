@@ -1,0 +1,250 @@
+"""Controller for the Modeling analysis tab."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+import threading
+
+from continuum_robot.gui.experiment_visualization import VisualizationModel
+from continuum_robot.modeling import (
+    ArtifactDetails,
+    ModelingDatasetSummary,
+    ModelingEvaluationConfig,
+    ModelingEvaluationResult,
+    TorchUnavailableError,
+    TrainedArtifactSummary,
+    build_artifact_summary_pairs,
+    build_dataset_summary_pairs,
+    build_evaluation_summary_pairs,
+    default_artifact_root,
+    default_results_root,
+    discover_modeling_datasets,
+    discover_trained_artifacts,
+    evaluate_models,
+    load_trained_artifact_details,
+)
+
+
+@dataclass
+class ModelingViewState:
+    """UI-facing modeling tab snapshot."""
+
+    datasets: list[ModelingDatasetSummary] = field(default_factory=list)
+    selected_dataset_path: str = ""
+    dataset_summary_pairs: list[tuple[str, str]] = field(default_factory=list)
+    artifacts: list[TrainedArtifactSummary] = field(default_factory=list)
+    selected_artifact_path: str = ""
+    artifact_summary_pairs: list[tuple[str, str]] = field(default_factory=list)
+    evaluation_summary_pairs: list[tuple[str, str]] = field(default_factory=list)
+    include_mike: bool = True
+    include_camarillo: bool = True
+    include_ann: bool = True
+    evaluation_scope: str = "artifact_test_split"
+    evaluation_active: bool = False
+    status_message: str = "Select a dataset, choose models, then run a comparison."
+    last_output_path: str | None = None
+    can_evaluate: bool = False
+    artifact_details: ArtifactDetails | None = None
+    visualization_model: VisualizationModel = field(
+        default_factory=lambda: VisualizationModel(summary_lines=["No modeling results loaded."])
+    )
+
+
+class ModelingController:
+    """Owns Modeling tab state and runs evaluations asynchronously."""
+
+    def __init__(
+        self,
+        *,
+        project_root: Path,
+        dataset_output_root: Path,
+        artifact_root: Path | None = None,
+        results_root: Path | None = None,
+    ) -> None:
+        self.project_root = Path(project_root)
+        self.dataset_output_root = Path(dataset_output_root)
+        self.artifact_root = Path(artifact_root) if artifact_root is not None else default_artifact_root(self.project_root)
+        self.results_root = Path(results_root) if results_root is not None else default_results_root(self.project_root)
+        self._lock = threading.Lock()
+        self._worker_thread: threading.Thread | None = None
+        self._catalog_dirty = True
+        self._selected_dataset_summary: ModelingDatasetSummary | None = None
+        self._selected_artifact_details: ArtifactDetails | None = None
+        self._last_result: ModelingEvaluationResult | None = None
+        self.config = ModelingEvaluationConfig(results_root=str(self.results_root))
+        self.state = ModelingViewState()
+
+    def refresh(self) -> ModelingViewState:
+        with self._lock:
+            catalog_dirty = self._catalog_dirty
+            selected_dataset_path = self.state.selected_dataset_path
+            selected_artifact_path = self.state.selected_artifact_path
+            selected_dataset_summary = self._selected_dataset_summary
+            selected_artifact_details = self._selected_artifact_details
+            evaluation_active = self.state.evaluation_active
+
+        datasets = self.state.datasets
+        artifacts = self.state.artifacts
+        if catalog_dirty:
+            datasets = discover_modeling_datasets(output_root=self.dataset_output_root)
+            artifacts = discover_trained_artifacts(artifact_root=self.artifact_root)
+            if not selected_dataset_path and datasets:
+                selected_dataset_path = str(datasets[0].path)
+            if artifacts and selected_artifact_path == "":
+                selected_artifact_path = str(artifacts[0].path)
+            selected_dataset_summary = self._resolve_dataset_summary(selected_dataset_path, datasets)
+            selected_artifact_details = self._resolve_artifact_details(selected_artifact_path, artifacts)
+        elif selected_dataset_summary is None and selected_dataset_path:
+            selected_dataset_summary = self._resolve_dataset_summary(selected_dataset_path, datasets)
+        elif selected_artifact_details is None and selected_artifact_path:
+            selected_artifact_details = self._resolve_artifact_details(selected_artifact_path, artifacts)
+
+        can_evaluate = bool(selected_dataset_summary) and (
+            bool(self.config.include_mike)
+            or bool(self.config.include_camarillo)
+            or (bool(self.config.include_ann) and bool(selected_artifact_details))
+        ) and not evaluation_active
+
+        with self._lock:
+            self._catalog_dirty = False
+            self._selected_dataset_summary = selected_dataset_summary
+            self._selected_artifact_details = selected_artifact_details
+            self.state.datasets = datasets
+            self.state.selected_dataset_path = selected_dataset_path
+            self.state.dataset_summary_pairs = build_dataset_summary_pairs(selected_dataset_summary) if selected_dataset_summary is not None else []
+            self.state.artifacts = artifacts
+            self.state.selected_artifact_path = selected_artifact_path
+            self.state.artifact_details = selected_artifact_details
+            self.state.artifact_summary_pairs = build_artifact_summary_pairs(selected_artifact_details)
+            self.state.evaluation_summary_pairs = build_evaluation_summary_pairs(self._last_result)
+            self.state.include_mike = bool(self.config.include_mike)
+            self.state.include_camarillo = bool(self.config.include_camarillo)
+            self.state.include_ann = bool(self.config.include_ann)
+            self.state.evaluation_scope = str(self.config.evaluation_scope)
+            self.state.can_evaluate = can_evaluate
+            return self.state
+
+    def select_dataset(self, path: str) -> None:
+        with self._lock:
+            self.state.selected_dataset_path = str(path)
+            self._selected_dataset_summary = None
+
+    def select_artifact(self, path: str) -> None:
+        with self._lock:
+            self.state.selected_artifact_path = str(path)
+            self._selected_artifact_details = None
+
+    def set_include_mike(self, value: bool) -> None:
+        with self._lock:
+            self.config.include_mike = bool(value)
+
+    def set_include_camarillo(self, value: bool) -> None:
+        with self._lock:
+            self.config.include_camarillo = bool(value)
+
+    def set_include_ann(self, value: bool) -> None:
+        with self._lock:
+            self.config.include_ann = bool(value)
+
+    def set_evaluation_scope(self, value: str) -> None:
+        with self._lock:
+            self.config.evaluation_scope = str(value)
+
+    def set_dataset_output_root(self, path: Path) -> None:
+        with self._lock:
+            self.dataset_output_root = Path(path)
+            self._catalog_dirty = True
+
+    def set_artifact_root(self, path: Path) -> None:
+        with self._lock:
+            self.artifact_root = Path(path)
+            self._catalog_dirty = True
+
+    def evaluate(self) -> None:
+        with self._lock:
+            if self.state.evaluation_active:
+                return
+            dataset_summary = self._selected_dataset_summary
+            artifact_details = self._selected_artifact_details
+            config = ModelingEvaluationConfig(
+                include_mike=bool(self.config.include_mike),
+                include_camarillo=bool(self.config.include_camarillo),
+                include_ann=bool(self.config.include_ann),
+                evaluation_scope=str(self.config.evaluation_scope),
+                results_root=str(self.results_root),
+                geometry=self.config.geometry,
+            )
+            self.state.evaluation_active = True
+            self.state.status_message = "Running modeling comparison..."
+        if dataset_summary is None:
+            with self._lock:
+                self.state.evaluation_active = False
+                self.state.status_message = "Select a modeling dataset first."
+            return
+        self._worker_thread = threading.Thread(
+            target=self._evaluate_worker,
+            kwargs={
+                "dataset_path": dataset_summary.path,
+                "artifact_path": (artifact_details.summary.path if artifact_details is not None else None),
+                "config": config,
+            },
+            daemon=True,
+        )
+        self._worker_thread.start()
+
+    def shutdown(self) -> None:
+        thread = self._worker_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
+
+    def _evaluate_worker(self, *, dataset_path: Path, artifact_path: Path | None, config: ModelingEvaluationConfig) -> None:
+        try:
+            result = evaluate_models(
+                project_root=self.project_root,
+                dataset_path=dataset_path,
+                artifact_path=artifact_path,
+                config=config,
+            )
+        except (RuntimeError, ValueError, TorchUnavailableError) as exc:
+            with self._lock:
+                self.state.evaluation_active = False
+                self.state.status_message = str(exc)
+            return
+        with self._lock:
+            self._last_result = result
+            self.state.visualization_model = result.visualization_model
+            self.state.evaluation_active = False
+            self.state.last_output_path = str(result.output_dir)
+            self.state.status_message = (
+                f"Modeling comparison saved to {result.output_dir.name} "
+                f"using {result.selected_sample_count} samples."
+            )
+
+    @staticmethod
+    def _resolve_dataset_summary(
+        selected_path: str,
+        datasets: list[ModelingDatasetSummary],
+    ) -> ModelingDatasetSummary | None:
+        for dataset in datasets:
+            if str(dataset.path) == str(selected_path):
+                return dataset
+        return datasets[0] if datasets else None
+
+    @staticmethod
+    def _resolve_artifact_details(
+        selected_path: str,
+        artifacts: list[TrainedArtifactSummary],
+    ) -> ArtifactDetails | None:
+        for artifact in artifacts:
+            if str(artifact.path) == str(selected_path):
+                try:
+                    return load_trained_artifact_details(artifact.path)
+                except Exception:
+                    return None
+        if artifacts:
+            try:
+                return load_trained_artifact_details(artifacts[0].path)
+            except Exception:
+                return None
+        return None

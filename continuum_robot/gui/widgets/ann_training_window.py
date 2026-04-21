@@ -52,6 +52,17 @@ class AnnTrainingWindow(QWidget):
         root.setContentsMargins(14, 14, 14, 14)
         root.setSpacing(12)
 
+        self.main_scroll_area = QScrollArea()
+        self.main_scroll_area.setWidgetResizable(True)
+        self.main_scroll_area.setFrameShape(QFrame.NoFrame)
+        root.addWidget(self.main_scroll_area)
+
+        content_widget = QWidget()
+        self.main_scroll_area.setWidget(content_widget)
+        content_root = QVBoxLayout(content_widget)
+        content_root.setContentsMargins(0, 0, 0, 0)
+        content_root.setSpacing(12)
+
         hint = QLabel(
             "Train the legacy full-pose ANN directly from canonical modeling datasets. "
             "V1 keeps the scope to dataset selection, backend/device inspection, warmup runtime estimate, "
@@ -59,27 +70,23 @@ class AnnTrainingWindow(QWidget):
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {COLORS.text_secondary};")
-        root.addWidget(hint)
+        content_root.addWidget(hint)
 
         content = QHBoxLayout()
         content.setContentsMargins(0, 0, 0, 0)
         content.setSpacing(12)
-        root.addLayout(content, 1)
+        content_root.addLayout(content, 1)
 
         left_column = QVBoxLayout()
         left_column.setContentsMargins(0, 0, 0, 0)
         left_column.setSpacing(12)
         content.addLayout(left_column, 3)
 
-        right_scroll = QScrollArea()
-        right_scroll.setWidgetResizable(True)
-        right_scroll.setFrameShape(QFrame.NoFrame)
         right_panel = QWidget()
         self.right_layout = QVBoxLayout(right_panel)
         self.right_layout.setContentsMargins(0, 0, 0, 0)
         self.right_layout.setSpacing(12)
-        right_scroll.setWidget(right_panel)
-        content.addWidget(right_scroll, 4)
+        content.addWidget(right_panel, 4)
 
         dataset_card = _Card("Modeling Datasets", "Select a canonical `collect_pose_command_dataset` run.")
         dataset_toolbar = QHBoxLayout()

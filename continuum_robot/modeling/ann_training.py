@@ -19,8 +19,14 @@ import numpy as np
 from continuum_robot.experiments.dataset_io import canonical_experiment_output_root
 
 try:
-    from continuum_robot.gui.experiment_visualization import ChartModel, VisualizationModel
+    from continuum_robot.gui.experiment_visualization import ChartModel, ChartSeriesModel, VisualizationModel
 except Exception:
+    @dataclass
+    class ChartSeriesModel:
+        name: str
+        points_xy: list[tuple[float, float]] = field(default_factory=list)
+        color_hex: str = "#58718a"
+
     @dataclass
     class ChartModel:
         kind: str
@@ -31,6 +37,7 @@ except Exception:
         categories: list[str] = field(default_factory=list)
         values: list[float] = field(default_factory=list)
         points_xy: list[tuple[float, float]] = field(default_factory=list)
+        series_xy: list[ChartSeriesModel] = field(default_factory=list)
         color_hex: str = "#58718a"
 
     @dataclass

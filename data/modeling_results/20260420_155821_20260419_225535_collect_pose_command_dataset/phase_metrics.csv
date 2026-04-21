@@ -1,0 +1,4 @@
+model_key,label,phase,sample_count,position_rmse_mm,mean_position_error_mm,tangent_mean_error_deg
+mike,Mike,workspace_capture,21.0,16.79536000179854,16.42791902741208,151.93003450123965
+camarillo,Camarillo,workspace_capture,21.0,16.798338317460306,16.42991831138356,151.92684993458926
+ann,ANN,workspace_capture,21.0,7.212968062649556,6.458184555057857,7.470348826079847

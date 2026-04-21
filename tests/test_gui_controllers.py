@@ -10,6 +10,9 @@ import time
 
 import numpy as np
 import pytest
+
+pytest.importorskip("PySide6")
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPalette
 from PySide6.QtTest import QTest
@@ -546,7 +549,7 @@ def test_app_window_promotes_tracking_and_registration_before_legacy(tmp_path: P
     window = AppWindow(_app_context(tmp_path))
     try:
         labels = [window.tab_widget.tabText(index) for index in range(window.tab_widget.count())]
-        assert labels == ["System", "Tracking", "Registration", "Servos", "Pretension", "Experiment"]
+        assert labels == ["System", "Tracking", "Registration", "Servos", "Pretension", "Experiment", "Modeling"]
     finally:
         window.shutdown()
 

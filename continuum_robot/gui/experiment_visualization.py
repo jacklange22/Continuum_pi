@@ -33,6 +33,15 @@ class ScatterSeries3D:
 
 
 @dataclass
+class ChartSeriesModel:
+    """One named 2D chart series."""
+
+    name: str
+    points_xy: list[tuple[float, float]] = field(default_factory=list)
+    color_hex: str = COLORS.selection_bg
+
+
+@dataclass
 class ChartModel:
     """Simple chart payload for QtCharts rendering."""
 
@@ -44,6 +53,7 @@ class ChartModel:
     categories: list[str] = field(default_factory=list)
     values: list[float] = field(default_factory=list)
     points_xy: list[tuple[float, float]] = field(default_factory=list)
+    series_xy: list[ChartSeriesModel] = field(default_factory=list)
     color_hex: str = COLORS.selection_bg
 
 

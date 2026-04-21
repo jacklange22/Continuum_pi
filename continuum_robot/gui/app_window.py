@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget
 
 from continuum_robot.app.bootstrap import AppContext, build_app_context
 from continuum_robot.gui.controllers.experiment_controller import ExperimentController
+from continuum_robot.gui.controllers.modeling_controller import ModelingController
 from continuum_robot.gui.controllers.pretension_controller import PretensionController
 from continuum_robot.gui.controllers.registration_controller import RegistrationController
 from continuum_robot.gui.controllers.runtime_tip_calibration_controller import RuntimeTipCalibrationController
@@ -17,6 +18,7 @@ from continuum_robot.gui.controllers.system_controller import SystemController
 from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpController
 from continuum_robot.gui.controllers.tracking_controller import TrackingController
 from continuum_robot.gui.tabs.experiment_tab import ExperimentTab
+from continuum_robot.gui.tabs.modeling_tab import ModelingTab
 from continuum_robot.gui.tabs.pretension_tab import PretensionTab
 from continuum_robot.gui.tabs.registration_tab import RegistrationTab
 from continuum_robot.gui.tabs.servos_tab import ServosTab
@@ -87,6 +89,11 @@ class AppWindow(QMainWindow):
             self.experiment_tab.update(experiment_state)
             self.statusBar().showMessage(experiment_state.status_message)
             return
+        elif current_widget is self.modeling_tab:
+            modeling_state = self.modeling_controller.refresh()
+            self.modeling_tab.update(modeling_state)
+            self.statusBar().showMessage(modeling_state.status_message)
+            return
         self.statusBar().showMessage(system_state.status_message)
 
     def _refresh_servo_state(self):
@@ -119,6 +126,7 @@ class AppWindow(QMainWindow):
         openrb_client = context.services.get("openrb_client")
         experiment_loader = context.services.get("experiment_loader")
         experiment_runner = context.services.get("experiment_runner")
+        experiment_dataset_writer = context.services.get("experiment_dataset_writer")
 
         self.system_controller = SystemController(
             tracking_service=tracking_service,
@@ -158,6 +166,12 @@ class AppWindow(QMainWindow):
             servo_service=servo_service,
             tracking_service=tracking_service,
         )
+        self.modeling_controller = ModelingController(
+            project_root=context.project_root,
+            dataset_output_root=getattr(experiment_dataset_writer, "output_root", context.project_root / "data" / "experiments"),
+            artifact_root=context.project_root / "data" / "models" / "ann",
+            results_root=context.project_root / "data" / "modeling_results",
+        )
         self.tracker_mvp_controller = TrackerMvpController(
             tracking_service=tracking_service,
             registration_service=registration_service,
@@ -181,6 +195,7 @@ class AppWindow(QMainWindow):
         self.servos_tab = ServosTab(self.servos_controller)
         self.pretension_tab = PretensionTab(self.pretension_controller)
         self.experiment_tab = ExperimentTab(self.experiment_controller)
+        self.modeling_tab = ModelingTab(self.modeling_controller)
         for widget, label in (
             (self.system_tab, "System"),
             (self.tracking_tab, "Tracking"),
@@ -188,6 +203,7 @@ class AppWindow(QMainWindow):
             (self.servos_tab, "Servos"),
             (self.pretension_tab, "Pretension"),
             (self.experiment_tab, "Experiment"),
+            (self.modeling_tab, "Modeling"),
         ):
             new_tab_widget.addTab(widget, label)
         new_tab_widget.currentChanged.connect(self._handle_tab_changed)
@@ -241,7 +257,7 @@ class AppWindow(QMainWindow):
                 dialog.close()
             except Exception:
                 pass
-        for attribute in ("servos_controller", "pretension_controller", "experiment_controller", "tracking_controller"):
+        for attribute in ("servos_controller", "pretension_controller", "experiment_controller", "modeling_controller", "tracking_controller"):
             controller = getattr(self, attribute, None)
             if controller is None:
                 continue
