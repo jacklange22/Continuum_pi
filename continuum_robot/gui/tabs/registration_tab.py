@@ -60,7 +60,7 @@ class RegistrationTab(QWidget):
         self.runtime_tip_mode_combo = QComboBox()
         self.runtime_tip_mode_combo.addItem("Latest Accepted", "latest_accepted")
         self.runtime_tip_mode_combo.addItem("Quick 4-Point", "quick_4_point")
-        self.runtime_tip_mode_combo.addItem("Coil as Tip", "coil_as_tip")
+        self.runtime_tip_mode_combo.addItem("Coil as Tip (0A Direct)", "coil_as_tip")
         self.runtime_tip_mode_combo.currentIndexChanged.connect(self._on_runtime_tip_mode_changed)
         self.runtime_tip_trust_label = QLabel("missing")
         self.runtime_tip_trust_label.setWordWrap(True)

@@ -26,13 +26,18 @@ from continuum_robot.gui.tabs.system_tab import SystemTab
 from continuum_robot.gui.tabs.tracking_tab import TrackingTab
 from continuum_robot.gui.theme import apply_dark_theme
 from continuum_robot.gui.widgets.runtime_tip_calibration_dialog import RuntimeTipCalibrationDialog
+from continuum_robot.servos.telemetry_diagnostics import (
+    DEFAULT_SERVO_FULL_REFRESH_DIVISOR,
+    DEFAULT_SYSTEM_SUMMARY_REFRESH_DIVISOR,
+)
 
 
 class AppWindow(QMainWindow):
     """Main operator window with all platform tabs."""
 
     MIN_REFRESH_INTERVAL_MS = 50
-    SERVO_FULL_REFRESH_DIVISOR = 4
+    SERVO_FULL_REFRESH_DIVISOR = DEFAULT_SERVO_FULL_REFRESH_DIVISOR
+    SYSTEM_SUMMARY_REFRESH_DIVISOR = DEFAULT_SYSTEM_SUMMARY_REFRESH_DIVISOR
 
     def __init__(self, context: AppContext) -> None:
         super().__init__()
@@ -42,6 +47,8 @@ class AppWindow(QMainWindow):
         self._refresh_timer.timeout.connect(self.refresh)
         self._servo_full_refresh_due = True
         self._servo_refresh_cycle = 0
+        self._system_summary_refresh_due = True
+        self._system_summary_refresh_cycle = 0
 
         self._build_workspace(context, selected_tab_label="System")
         self.setWindowTitle("Continuum Robot Operator Console")
@@ -66,7 +73,18 @@ class AppWindow(QMainWindow):
             return
         if current_widget is self.system_tab:
             if self.system_controller.state.dynamixel_connected:
-                system_state = self.system_controller.refresh_readiness()
+                if self._system_summary_refresh_due:
+                    system_state = self.system_controller.refresh_readiness(include_scan=False)
+                    self._system_summary_refresh_due = False
+                    self._system_summary_refresh_cycle = 0
+                else:
+                    self._system_summary_refresh_cycle = (
+                        self._system_summary_refresh_cycle + 1
+                    ) % self.SYSTEM_SUMMARY_REFRESH_DIVISOR
+                    if self._system_summary_refresh_cycle == 0:
+                        system_state = self.system_controller.refresh_readiness(include_scan=False)
+                    else:
+                        system_state = self.system_controller.refresh()
             self.system_tab.update(system_state)
         elif current_widget is self.servos_tab:
             servo_state = self._refresh_servo_state()
@@ -110,6 +128,8 @@ class AppWindow(QMainWindow):
     def _handle_tab_changed(self, _index: int) -> None:
         if self.tab_widget.currentWidget() in {self.system_tab, self.servos_tab, self.pretension_tab}:
             self._servo_full_refresh_due = True
+        if self.tab_widget.currentWidget() is self.system_tab:
+            self._system_summary_refresh_due = True
         self.refresh()
 
     def shutdown(self) -> None:
@@ -222,6 +242,8 @@ class AppWindow(QMainWindow):
         self.tab_widget.setCurrentIndex(selected_index)
         self._servo_full_refresh_due = True
         self._servo_refresh_cycle = 0
+        self._system_summary_refresh_due = True
+        self._system_summary_refresh_cycle = 0
         self._refresh_timer.start(self._refresh_interval_ms(settings.runtime.poll_rate_hz))
 
     def _save_and_apply_runtime_parameters(self, **parameters) -> None:

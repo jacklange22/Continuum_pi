@@ -99,6 +99,11 @@ class TrackingTab(QWidget):
         self.fps_label = QLabel("unknown")
         self.freshness_label = QLabel("unknown")
         self.ids_label = QLabel("none")
+        self.runtime_tip_mode_label = QLabel("unknown")
+        self.runtime_tip_mode_label.setWordWrap(True)
+        self.runtime_tip_source_label = QLabel("unknown")
+        self.runtime_tip_source_label.setWordWrap(True)
+        self.tip_glyph_label = QLabel("hidden")
 
         health_box = QGroupBox("Operational Summary")
         health_layout = QVBoxLayout(health_box)
@@ -108,6 +113,9 @@ class TrackingTab(QWidget):
         health_form.addRow("Effective FPS", self.fps_label)
         health_form.addRow("Freshness", self.freshness_label)
         health_form.addRow("Tool IDs", self.ids_label)
+        health_form.addRow("Runtime tip mode", self.runtime_tip_mode_label)
+        health_form.addRow("Runtime tip source", self.runtime_tip_source_label)
+        health_form.addRow("Tip glyph", self.tip_glyph_label)
         health_layout.addLayout(health_form)
 
         self.tools_table = QTableWidget(0, 5)
@@ -253,6 +261,15 @@ class TrackingTab(QWidget):
         )
         self.ids_label.setText(
             f"raw={workflow_state.raw_live_tool_ids} | normalized={workflow_state.normalized_live_tool_ids}"
+        )
+        self.runtime_tip_mode_label.setText(
+            f"{str(live_state.runtime_tip_mode).replace('_', ' ')} | {str(live_state.runtime_tip_trust_level).replace('_', ' ')}"
+        )
+        self.runtime_tip_source_label.setText(live_state.runtime_tip_mode_message or "none")
+        self.tip_glyph_label.setText(
+            "shown"
+            if live_state.registration_state == "loaded" and live_state.T_robot_tip_matrix is not None
+            else "hidden"
         )
 
         self.tools_table.setRowCount(len(live_state.tools))

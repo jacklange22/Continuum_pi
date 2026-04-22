@@ -10,6 +10,11 @@ from continuum_robot.config.config_loader import ConfigLoader
 from continuum_robot.config.settings import Settings
 from continuum_robot.hardware.serial_ports import SerialPortInfo, discover_serial_ports
 from continuum_robot.servos.servo_service import ServoBusBusyError
+from continuum_robot.servos.telemetry_diagnostics import (
+    DEFAULT_SERVO_FULL_REFRESH_DIVISOR,
+    DEFAULT_SYSTEM_SUMMARY_REFRESH_DIVISOR,
+    build_telemetry_gui_policy,
+)
 
 
 LOG = logging.getLogger(__name__)
@@ -49,6 +54,9 @@ class SystemViewState:
     telemetry_ready_count: int = 0
     motion_ready_count: int = 0
     poll_rate_hz: int = 10
+    servo_telemetry_cadence_summary: str = ""
+    servo_telemetry_field_summary: str = ""
+    servo_telemetry_bottleneck_summary: str = ""
     fine_jog_step_ticks: int = 5
     coarse_jog_step_ticks: int = 25
     position_min_offset_ticks: int = -600
@@ -93,6 +101,9 @@ class SystemController:
             robot_mode=settings.robot.mode,
             expected_servo_ids=list(settings.robot.servo_ids),
             poll_rate_hz=settings.runtime.poll_rate_hz,
+            servo_telemetry_cadence_summary="",
+            servo_telemetry_field_summary="",
+            servo_telemetry_bottleneck_summary="",
             fine_jog_step_ticks=settings.safety.fine_jog_step_ticks,
             coarse_jog_step_ticks=settings.safety.coarse_jog_step_ticks,
             position_min_offset_ticks=settings.safety.position_min_offset_ticks,
@@ -106,6 +117,7 @@ class SystemController:
             saved_overrides_path=self._existing_overrides_path(config_loader),
             session_log_path=str(session_log_path or ""),
         )
+        self._refresh_telemetry_policy()
         self.rescan_ports()
 
     def rescan_ports(self) -> SystemViewState:
@@ -218,7 +230,7 @@ class SystemController:
             self.state.status_message = f"OpenRB prepare failed: {exc}"
         self.refresh_readiness()
 
-    def refresh_readiness(self) -> SystemViewState:
+    def refresh_readiness(self, *, include_scan: bool = True) -> SystemViewState:
         if not self.servo_service.is_connected:
             self.state.readiness_message = "DYNAMIXEL bus disconnected."
             self.state.bench_debug_text = self._build_disconnected_bench_debug_text()
@@ -252,6 +264,7 @@ class SystemController:
             else:
                 snapshot = self.servo_service.build_runtime_servo_snapshot(
                     list(self.settings.robot.servo_ids),
+                    include_scan=bool(include_scan),
                 )
                 self.state.detected_servo_ids = list(snapshot.detected_servo_ids)
                 self.state.telemetry_ready_count = int(snapshot.telemetry_ready_count)
@@ -342,8 +355,21 @@ class SystemController:
             self.state.bench_debug_text = self._build_disconnected_bench_debug_text()
         if tracker_state.last_error:
             self.state.last_error = tracker_state.last_error
+        self._refresh_telemetry_policy()
         self.state.config_summary = self._build_live_config_summary()
         return self.state
+
+    def _refresh_telemetry_policy(self) -> None:
+        policy = build_telemetry_gui_policy(
+            baudrate=self.state.baudrate,
+            poll_rate_hz=self.state.poll_rate_hz,
+            telemetry_stale_after_s=self.state.telemetry_freshness_timeout_s,
+            servo_full_refresh_divisor=DEFAULT_SERVO_FULL_REFRESH_DIVISOR,
+            system_summary_refresh_divisor=DEFAULT_SYSTEM_SUMMARY_REFRESH_DIVISOR,
+        )
+        self.state.servo_telemetry_cadence_summary = policy.cadence_summary
+        self.state.servo_telemetry_field_summary = policy.field_summary
+        self.state.servo_telemetry_bottleneck_summary = policy.bottleneck_summary
 
     @staticmethod
     def _registration_summary(tracker_state) -> str:
@@ -369,6 +395,7 @@ class SystemController:
         mode = str(getattr(tracker_state, "runtime_tip_mode", "latest_accepted"))
         trust = str(getattr(tracker_state, "runtime_tip_trust_level", "missing"))
         timestamp = getattr(tracker_state, "stored_runtime_tip_timestamp_utc", None)
+        mode_message = str(getattr(tracker_state, "runtime_tip_mode_message", "") or "")
         if state == "loaded":
             detail = f" | {timestamp}" if timestamp else ""
             return f"{mode.replace('_', ' ')} | {trust.replace('_', ' ')}{detail}"
@@ -376,13 +403,15 @@ class SystemController:
             detail = f" | {timestamp}" if timestamp else ""
             return f"quick 4 point | {trust.replace('_', ' ')}{detail}"
         if state == "coil_as_tip":
-            return "coil as tip | fallback debug"
+            return "coil as tip | lower trust | 0A coil pose is shown directly as tip"
         if state == "identity_tip_fallback":
-            return "latest accepted | fallback debug"
+            return "identity fallback | lower trust | accepted runtime tip is not active"
         if state in {"missing_runtime_tip_calibration", "missing_quick_4_point_runtime_tip"}:
             return f"{mode.replace('_', ' ')} | not loaded"
         if state == "invalid_runtime_tip_calibration":
             return f"{mode.replace('_', ' ')} | invalid"
+        if mode_message:
+            return mode_message
         return f"{mode.replace('_', ' ')} | {str(state).replace('_', ' ')}"
 
     @staticmethod
@@ -397,6 +426,8 @@ class SystemController:
             return "Blocked | registration not loaded"
         if tip_pose_status == "identity_tip_fallback":
             return "Warning | runtime tip fallback"
+        if tip_pose_status == "coil_as_tip":
+            return "Ready | 0A coil pose is shown directly as tip"
         if tip_pose_status == "invalid_runtime_tip_calibration":
             return "Blocked | invalid runtime tip artifact"
         return str(tip_pose_status).replace("_", " ")
@@ -588,6 +619,7 @@ class SystemController:
             f"Tracker type: {settings.serial.tracker_type}\n"
             f"Tracker freshness timeout: {settings.serial.tracker_freshness_timeout_s}s\n"
             f"GUI refresh rate: {settings.runtime.poll_rate_hz} Hz\n"
+            f"Servo telemetry cadence: {build_telemetry_gui_policy(baudrate=settings.serial.baudrate, poll_rate_hz=settings.runtime.poll_rate_hz, telemetry_stale_after_s=settings.safety.telemetry_stale_after_s, servo_full_refresh_divisor=DEFAULT_SERVO_FULL_REFRESH_DIVISOR, system_summary_refresh_divisor=DEFAULT_SYSTEM_SUMMARY_REFRESH_DIVISOR).cadence_summary}\n"
             f"Runtime coil tool: {settings.registration.coil_tool_id}\n"
             f"Registration tool: {settings.registration.capture_tool_id}\n"
             f"Robot config: {settings.runtime.robot_config}\n"
@@ -596,6 +628,8 @@ class SystemController:
             f"Application bounds metadata: {settings.safety.position_min_offset_ticks}..{settings.safety.position_max_offset_ticks} ticks\n"
             f"Software margin: {settings.safety.software_position_margin_ticks} ticks\n"
             f"Telemetry freshness timeout: {settings.safety.telemetry_stale_after_s}s\n"
+            "Servo telemetry fields: Live = operating mode, torque enable, present position/current/voltage/temperature, hardware error. "
+            "Full = live plus ID, model, firmware, current limit, min/max limits, bus watchdog.\n"
             f"Minimum motion voltage: {settings.safety.min_input_voltage_mv} mV\n"
             f"Default pretension threshold: {settings.safety.default_pretension_current_threshold_ma} mA\n"
             f"DYNAMIXEL protocol version: {settings.serial.dynamixel_settings.get('protocol_version', 2.0)}\n"
@@ -621,10 +655,13 @@ class SystemController:
             f"OpenRB port: {self.state.openrb_port}\n"
             f"Baudrate: {self.state.baudrate}\n"
             f"GUI refresh rate: {self.state.poll_rate_hz} Hz\n"
+            f"Servo telemetry cadence: {self.state.servo_telemetry_cadence_summary}\n"
             f"Fine/coarse jog: {self.state.fine_jog_step_ticks}/{self.state.coarse_jog_step_ticks} ticks\n"
             f"Application bounds metadata: {self.state.position_min_offset_ticks}/{self.state.position_max_offset_ticks} ticks\n"
             f"Software margin: {self.state.software_position_margin_ticks} ticks\n"
             f"Telemetry freshness timeout: {self.state.telemetry_freshness_timeout_s}s\n"
+            f"Servo telemetry fields: {self.state.servo_telemetry_field_summary}\n"
+            f"Servo telemetry bottleneck: {self.state.servo_telemetry_bottleneck_summary}\n"
             f"Default pretension threshold: {self.state.pretension_threshold_ma} mA\n"
             f"Wrap direction metadata: {self.state.tightening_direction_default}\n"
             "Bring-up raw position convention: tighten -> smaller counts, loosen -> larger counts\n"
@@ -740,6 +777,9 @@ class SystemController:
                 f"openrb_connected={openrb_connected}",
                 f"selected_port={self.state.openrb_port or 'unset'}",
                 f"selected_baud={self.state.baudrate}",
+                f"telemetry_cadence={self.state.servo_telemetry_cadence_summary}",
+                f"telemetry_fields={self.state.servo_telemetry_field_summary}",
+                f"telemetry_bottleneck={self.state.servo_telemetry_bottleneck_summary}",
                 f"expected_servo_ids={getattr(snapshot, 'expected_servo_ids', [])}",
                 f"discovered_ids={getattr(snapshot, 'detected_servo_ids', [])}",
                 f"detected_servo_ids={getattr(snapshot, 'detected_servo_ids', [])}",
@@ -763,6 +803,9 @@ class SystemController:
             f"openrb_connected={openrb_connected}",
             f"selected_port={self.state.openrb_port or 'unset'}",
             f"selected_baud={self.state.baudrate}",
+            f"telemetry_cadence={self.state.servo_telemetry_cadence_summary}",
+            f"telemetry_fields={self.state.servo_telemetry_field_summary}",
+            f"telemetry_bottleneck={self.state.servo_telemetry_bottleneck_summary}",
             f"expected_servo_ids={self.state.expected_servo_ids}",
             "ping_ok=None",
             "identity_read_ok=None",

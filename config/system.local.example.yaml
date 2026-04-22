@@ -14,6 +14,10 @@ tracker_backend: "ndi"
 tracker_fallback_backend:
 tracker_fallback_enabled: false
 tracker_type: "aurora"
+# 57600 is the conservative default currently used by the app. OpenRB-150 and
+# XC330 support 1 Mbps when the whole chain is configured for it; raise this
+# only after bench validation, then rerun the telemetry diagnostic to confirm
+# the real gain on your rig.
 baudrate: 57600
 mock_mode: false
 # This drives the GUI refresh timer. For Pi bring-up, 20 Hz is a practical

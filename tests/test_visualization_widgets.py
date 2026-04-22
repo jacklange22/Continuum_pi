@@ -31,7 +31,10 @@ def _app() -> QApplication:
 def _tracking_state(
     *,
     registration_state: str = "missing_registration",
+    runtime_tip_mode: str = "latest_accepted",
+    runtime_tip_trust_level: str = "missing",
     runtime_tip_calibration_state: str = "missing_runtime_tip_calibration",
+    runtime_tip_mode_message: str = "missing",
     runtime_tip_identity_fallback: bool = False,
     tip_pose_status: str = "missing_registration",
     T_robot_aurora=None,
@@ -42,7 +45,10 @@ def _tracking_state(
     tools = tools or {}
     return SimpleNamespace(
         registration_state=registration_state,
+        runtime_tip_mode=runtime_tip_mode,
+        runtime_tip_trust_level=runtime_tip_trust_level,
         runtime_tip_calibration_state=runtime_tip_calibration_state,
+        runtime_tip_mode_message=runtime_tip_mode_message,
         runtime_tip_identity_fallback=runtime_tip_identity_fallback,
         tip_pose_status=tip_pose_status,
         T_robot_aurora=T_robot_aurora,
@@ -189,7 +195,10 @@ def test_tracking_scene_only_shows_tip_and_robot_frame_when_registration_chain_i
     robot_scene, _, robot_frame = build_tracking_scene_model(
         live_state=_tracking_state(
             registration_state="loaded",
+            runtime_tip_mode="latest_accepted",
+            runtime_tip_trust_level="trusted",
             runtime_tip_calibration_state="loaded",
+            runtime_tip_mode_message="Latest accepted runtime tip artifact is active.",
             tip_pose_status="ok",
             T_robot_aurora=np.eye(4).tolist(),
             T_robot_tip_matrix=np.array(
@@ -208,7 +217,9 @@ def test_tracking_scene_only_shows_tip_and_robot_frame_when_registration_chain_i
 
     assert robot_frame == "robot"
     assert any(point.key == "tip" for point in robot_scene.points)
-    assert any("Runtime tip: loaded" == line for line in robot_scene.overlay_lines)
+    assert any("Runtime tip mode: latest accepted | trusted" == line for line in robot_scene.overlay_lines)
+    assert any("Runtime tip source: Latest accepted runtime tip artifact is active." == line for line in robot_scene.overlay_lines)
+    assert any("Tip glyph: shown" == line for line in robot_scene.overlay_lines)
     assert any(axis.label == "Robot" for axis in robot_scene.axes)
 
 
@@ -216,6 +227,7 @@ def test_tracking_scene_reports_identity_fallback_without_tip_overlay() -> None:
     scene, _, frame = build_tracking_scene_model(
         live_state=_tracking_state(
             registration_state="loaded",
+            runtime_tip_mode_message="Tracking is using the identity runtime tip fallback.",
             runtime_tip_identity_fallback=True,
             tip_pose_status="identity_tip_fallback",
             T_robot_aurora=np.eye(4).tolist(),
@@ -234,8 +246,46 @@ def test_tracking_scene_reports_identity_fallback_without_tip_overlay() -> None:
 
     assert frame == "robot"
     assert not any(point.key == "tip" for point in scene.points)
-    assert any("Runtime tip: identity fallback" == line for line in scene.overlay_lines)
+    assert any("Runtime tip source: Tracking is using the identity runtime tip fallback." == line for line in scene.overlay_lines)
     assert any("Tip pose: identity tip fallback" == line for line in scene.overlay_lines)
+    assert any("Tip glyph: hidden" == line for line in scene.overlay_lines)
+
+
+def test_tracking_scene_reports_explicit_coil_as_tip_mode_with_visible_tip_glyph() -> None:
+    scene, _, frame = build_tracking_scene_model(
+        live_state=_tracking_state(
+            registration_state="loaded",
+            runtime_tip_mode="coil_as_tip",
+            runtime_tip_trust_level="fallback_debug",
+            runtime_tip_calibration_state="coil_as_tip",
+            runtime_tip_mode_message="Coil-as-tip override is active. The 0A coil pose is shown directly as the tip.",
+            tip_pose_status="coil_as_tip",
+            T_robot_aurora=np.eye(4).tolist(),
+            T_robot_tip_matrix=np.array(
+                [
+                    [1.0, 0.0, 0.0, 1.0],
+                    [0.0, 1.0, 0.0, 2.0],
+                    [0.0, 0.0, 1.0, 3.0],
+                    [0.0, 0.0, 0.0, 1.0],
+                ]
+            ).tolist(),
+            tools={
+                "0A": {
+                    "translation_mm": (1.0, 2.0, 3.0),
+                    "quaternion_wxyz": (1.0, 0.0, 0.0, 0.0),
+                    "tracking_state": "tracked",
+                    "status": "tracked",
+                    "frame_number": 4,
+                }
+            },
+        ),
+    )
+
+    assert frame == "robot"
+    assert any(point.key == "tip" for point in scene.points)
+    assert any("Runtime tip mode: coil as tip | fallback debug" == line for line in scene.overlay_lines)
+    assert any("Tip pose: coil as tip" == line for line in scene.overlay_lines)
+    assert any("Tip glyph: shown" == line for line in scene.overlay_lines)
 
 
 def test_tool_plot_widget_preserves_camera_state_across_benign_refresh() -> None:

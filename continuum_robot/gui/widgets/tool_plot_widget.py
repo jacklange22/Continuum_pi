@@ -121,11 +121,16 @@ def build_tracking_scene_model(
         f"0B raw pose: {_tool_overlay_state(live_state.tools.get('0B', {}))}",
         f"Registration: {str(getattr(live_state, 'registration_state', 'missing_registration')).replace('_', ' ')}",
         (
-            "Runtime tip: "
+            "Runtime tip mode: "
             f"{str(getattr(live_state, 'runtime_tip_mode', 'latest_accepted')).replace('_', ' ')} | "
             f"{str(getattr(live_state, 'runtime_tip_trust_level', 'missing')).replace('_', ' ')}"
         ),
+        (
+            "Runtime tip source: "
+            f"{str(getattr(live_state, 'runtime_tip_mode_message', 'missing')).strip() or 'missing'}"
+        ),
         f"Tip pose: {str(getattr(live_state, 'tip_pose_status', 'missing_registration')).replace('_', ' ')}",
+        "Tip glyph: shown" if registration_loaded and T_robot_tip is not None else "Tip glyph: hidden",
     ]
 
     if registration_loaded:

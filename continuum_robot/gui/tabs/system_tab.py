@@ -69,6 +69,12 @@ class SystemTab(QWidget):
         self.refresh_rate_label.setWordWrap(True)
         self.freshness_label = QLabel()
         self.freshness_label.setWordWrap(True)
+        self.telemetry_cadence_label = QLabel()
+        self.telemetry_cadence_label.setWordWrap(True)
+        self.telemetry_fields_label = QLabel()
+        self.telemetry_fields_label.setWordWrap(True)
+        self.telemetry_bottleneck_label = QLabel()
+        self.telemetry_bottleneck_label.setWordWrap(True)
         self.tracker_status_label = QLabel()
         self.tracker_status_label.setWordWrap(True)
         self.registration_status_label = QLabel()
@@ -126,6 +132,9 @@ class SystemTab(QWidget):
         summary_form.addRow("Expected servo IDs", self.expected_servo_ids_label)
         summary_form.addRow("GUI refresh", self.refresh_rate_label)
         summary_form.addRow("Freshness limit", self.freshness_label)
+        summary_form.addRow("Servo telemetry cadence", self.telemetry_cadence_label)
+        summary_form.addRow("Servo telemetry fields", self.telemetry_fields_label)
+        summary_form.addRow("Throughput note", self.telemetry_bottleneck_label)
         summary_form.addRow("Aurora port", self.aurora_port_combo)
         summary_form.addRow("OpenRB port", self.openrb_port_combo)
         summary_form.addRow("Tracker state", self.tracker_status_label)
@@ -264,6 +273,9 @@ class SystemTab(QWidget):
         self.expected_servo_ids_label.setText(", ".join(str(servo_id) for servo_id in state.expected_servo_ids) or "none")
         self.refresh_rate_label.setText(f"{int(state.poll_rate_hz)} Hz")
         self.freshness_label.setText(f"{float(state.telemetry_freshness_timeout_s):.3f} s")
+        self.telemetry_cadence_label.setText(state.servo_telemetry_cadence_summary)
+        self.telemetry_fields_label.setText(state.servo_telemetry_field_summary)
+        self.telemetry_bottleneck_label.setText(state.servo_telemetry_bottleneck_summary)
         self.tracker_status_label.setText(
             f"{state.tracker_connection_state} | backend={state.tracker_backend_identity or 'unknown'} "
             f"| stream={'connected' if state.tracker_backend_connected else 'disconnected'}"

@@ -269,6 +269,7 @@ def test_tracking_service_supports_explicit_coil_as_tip_mode(tmp_path: Path) -> 
     assert snapshot.runtime_tip_mode == "coil_as_tip"
     assert snapshot.runtime_tip_calibration_state == "coil_as_tip"
     assert snapshot.runtime_tip_trust_level == "fallback_debug"
+    assert "0A coil pose is shown directly as the tip" in snapshot.runtime_tip_mode_message
     assert snapshot.tip_pose_status == "coil_as_tip"
     assert snapshot.T_robot_tip is not None
     assert np.allclose([row[3] for row in snapshot.T_robot_tip[:3]], [1.0, 2.0, 3.0])

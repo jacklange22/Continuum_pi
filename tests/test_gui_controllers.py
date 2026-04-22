@@ -1276,6 +1276,9 @@ def test_system_tab_surfaces_registration_runtime_tip_and_live_tip_summaries() -
     controller.state.registration_summary = "loaded | latest_registration.json | FRE=0.400 mm"
     controller.state.runtime_tip_summary = "accepted | latest_runtime_tip_calibration.json"
     controller.state.live_tip_summary = "ready | tip_pose_status=ok"
+    controller.state.servo_telemetry_cadence_summary = "GUI 20.0 Hz | System auto servo summary 5.0 Hz"
+    controller.state.servo_telemetry_field_summary = "Live reads position/current/voltage/temperature."
+    controller.state.servo_telemetry_bottleneck_summary = "Current telemetry is limited by baudrate."
     tab = SystemTab(controller)
 
     tab.update(controller.state)
@@ -1283,6 +1286,9 @@ def test_system_tab_surfaces_registration_runtime_tip_and_live_tip_summaries() -
     assert "FRE=0.400 mm" in tab.registration_status_label.text()
     assert "latest_runtime_tip_calibration.json" in tab.runtime_tip_status_label.text()
     assert "tip_pose_status=ok" in tab.live_tip_status_label.text()
+    assert "System auto servo summary 5.0 Hz" in tab.telemetry_cadence_label.text()
+    assert "position/current/voltage/temperature" in tab.telemetry_fields_label.text()
+    assert "baudrate" in tab.telemetry_bottleneck_label.text()
 
 
 def test_system_tab_save_apply_prefers_callback_when_available() -> None:

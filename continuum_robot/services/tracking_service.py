@@ -1474,7 +1474,7 @@ class TrackingService:
         if mode == cls.RUNTIME_TIP_MODE_COIL_AS_TIP:
             return (
                 "fallback_debug",
-                "Coil-as-tip override is active. The live chain uses identity T_coil_tip and is lower trust.",
+                "Coil-as-tip override is active. The live chain uses identity T_coil_tip, so the 0A coil pose is shown directly as the tip without an extra runtime transform.",
             )
         if mode == cls.RUNTIME_TIP_MODE_QUICK_4_POINT:
             if state == "quick_4_point_loaded":
@@ -1503,7 +1503,7 @@ class TrackingService:
         if state == "identity_tip_fallback":
             return (
                 "fallback_debug",
-                "Tracking is using the identity runtime tip fallback because no separate accepted artifact is active.",
+                "Tracking is using the identity runtime tip fallback because no separate accepted runtime tip artifact is active.",
             )
         if state == "invalid_runtime_tip_calibration":
             return ("invalid", "The saved runtime tip artifact is invalid and cannot be trusted.")

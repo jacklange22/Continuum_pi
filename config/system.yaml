@@ -9,7 +9,9 @@ tracker_fallback_backend:
 tracker_fallback_enabled: false
 tracker_type: "aurora"
 # The current OpenRB / XC330 bring-up path has been confirmed at 57600.
-# Keep machine-specific overrides in system.local.yaml when the local bench setup differs.
+# OpenRB-150 and XC330 also support 1 Mbps, but only raise this after the
+# whole servo chain is configured for that baud and you have remeasured the
+# live telemetry path on the actual rig.
 baudrate: 57600
 mock_mode: true
 visualization_mode: "auto"
