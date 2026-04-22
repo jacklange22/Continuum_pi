@@ -325,3 +325,64 @@ def test_tracking_service_supports_quick_4_point_runtime_tip_override(tmp_path: 
     assert snapshot.runtime_tip_selected_artifact_path == str(quick_path)
     assert snapshot.T_robot_tip is not None
     assert np.allclose([row[3] for row in snapshot.T_robot_tip[:3]], [10.25, 0.0, 0.0])
+
+
+def test_tracking_service_runtime_tip_messages_make_direct_0a_and_quick_override_explicit(tmp_path: Path) -> None:
+    registration_path = tmp_path / "registrations" / "latest_registration.json"
+    registration_path.parent.mkdir(parents=True, exist_ok=True)
+    registration_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-04-10T12:00:00Z",
+                "T_robot_aurora": np.eye(4).tolist(),
+                "config_used": {"measurement_tool_id": "0B", "coil_tool_id": "0A"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime_tip_path = tmp_path / "data" / "runtime_tip_calibration" / "latest_runtime_tip_calibration.json"
+    runtime_tip_path.parent.mkdir(parents=True, exist_ok=True)
+    quick_path = runtime_tip_path.parent / "latest_quick_4_point_runtime_tip.json"
+    quick_path.write_text(
+        json.dumps(
+            {
+                "timestamp_utc": "2026-04-10T12:05:00Z",
+                "measurement_tool_id": "0B",
+                "coil_tool_id": "0A",
+                "calibration_kind": "runtime_tip_calibration_quick_4_point",
+                "T_coil_tip": [[1.0, 0.0, 0.0, 0.25], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    service = TrackingService(
+        MockAuroraClient(),
+        port="/dev/null",
+        registration_path=registration_path,
+        runtime_tip_calibration_path=runtime_tip_path,
+        config_source="test",
+    )
+
+    service.set_runtime_tip_mode("coil_as_tip")
+    service.ingest_frame(
+        build_transform_frame_from_records(
+            frame_number=1,
+            records=[build_tool_0A_record(translation_xyz=(1.0, 2.0, 3.0))],
+        ),
+        source="test",
+    )
+    coil_snapshot = service.get_snapshot()
+    assert "0A coil pose is shown directly as the tip" in coil_snapshot.runtime_tip_mode_message
+
+    service.set_runtime_tip_mode("quick_4_point")
+    service.ingest_frame(
+        build_transform_frame_from_records(
+            frame_number=2,
+            records=[build_tool_0A_record(translation_xyz=(1.0, 2.0, 3.0))],
+        ),
+        source="test",
+    )
+    quick_snapshot = service.get_snapshot()
+    assert quick_snapshot.runtime_tip_calibration_state == "quick_4_point_loaded"
+    assert "Quick 4-point runtime tip override is active" in quick_snapshot.runtime_tip_mode_message

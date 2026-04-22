@@ -726,6 +726,24 @@ class RuntimeTipCalibrationService:
     def _sync_dependency_status_locked(self) -> None:
         measurement_status = self.registration_service.get_measurement_point_status(refresh=True)
         self._state.measurement_point_status = str(measurement_status.get("message", "unknown"))
+        tracking_snapshot = self.tracking_service.get_snapshot()
+        active_runtime_tip_mode = str(
+            getattr(tracking_snapshot, "runtime_tip_mode", TrackingService.RUNTIME_TIP_MODE_LATEST_ACCEPTED)
+            or TrackingService.RUNTIME_TIP_MODE_LATEST_ACCEPTED
+        )
+        active_runtime_tip_trust = str(
+            getattr(tracking_snapshot, "runtime_tip_trust_level", "missing") or "missing"
+        )
+        active_runtime_tip_message = str(
+            getattr(tracking_snapshot, "runtime_tip_mode_message", "No runtime tip mode selected.")
+            or "No runtime tip mode selected."
+        )
+        self._state.active_runtime_tip_mode = active_runtime_tip_mode
+        self._state.active_runtime_tip_trust_level = active_runtime_tip_trust
+        self._state.active_runtime_tip_mode_message = active_runtime_tip_message
+        self._state.active_runtime_tip_guidance = self._runtime_tip_mode_guidance(
+            mode=active_runtime_tip_mode,
+        )
         runtime_summary = self.get_runtime_tip_trust_summary()
         self._state.runtime_chain_state = str(runtime_summary.get("state", self._state.runtime_chain_state))
         self._state.runtime_chain_message = str(
@@ -796,6 +814,23 @@ class RuntimeTipCalibrationService:
         if session_mode == cls.SESSION_MODE_QUICK_4_POINT:
             return "Quick 4-point runtime tip override"
         return "Full accepted hat calibration"
+
+    @classmethod
+    def _runtime_tip_mode_guidance(cls, *, mode: str) -> str:
+        if mode == TrackingService.RUNTIME_TIP_MODE_COIL_AS_TIP:
+            return (
+                "Direct 0A / no-transform mode is active. The live tip is the 0A coil pose itself; "
+                "you only need this calibration dialog if you want to save a new full or quick runtime-tip artifact."
+            )
+        if mode == TrackingService.RUNTIME_TIP_MODE_QUICK_4_POINT:
+            return (
+                "Quick 4-point live mode is selected. Use Session mode = Quick 4-Point Override below "
+                "to capture or update the saved quick runtime-tip artifact."
+            )
+        return (
+            "Latest accepted live mode is selected. Use Session mode = Full Accepted Hat Calibration below "
+            "to capture or update the trusted full runtime-tip artifact."
+        )
 
     @staticmethod
     def _choose_quick_labels(truth_points_in_tip_by_label: dict[str, list[float]]) -> list[str]:

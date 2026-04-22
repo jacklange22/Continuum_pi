@@ -203,6 +203,10 @@ class RuntimeTipCalibrationSnapshot:
     measurement_point_status: str = "unknown"
     runtime_chain_state: str = "missing_runtime_tip_calibration"
     runtime_chain_message: str = "Runtime tip calibration is not loaded."
+    active_runtime_tip_mode: str = "latest_accepted"
+    active_runtime_tip_trust_level: str = "missing"
+    active_runtime_tip_mode_message: str = "No runtime tip mode selected."
+    active_runtime_tip_guidance: str = ""
     status_message: str = "Runtime tip calibration idle."
 
 

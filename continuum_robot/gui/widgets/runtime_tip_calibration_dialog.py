@@ -46,24 +46,37 @@ class RuntimeTipCalibrationDialog(QDialog):
         self.description_label = QLabel(
             "Advanced 0A hat-based calibration for the live tip chain. "
             "Use the calibrated 0B pen probe to capture the hat points, collect stationary 0A samples, "
-            "then solve T_coil_tip for T_robot_tip = T_robot_aurora @ T_aurora_coil @ T_coil_tip."
+            "then solve T_coil_tip for T_robot_tip = T_robot_aurora @ T_aurora_coil @ T_coil_tip. "
+            "If you want direct 0A / no-transform behavior, select Coil as Tip (0A Direct) in Registration; "
+            "that mode does not require running this calibration dialog."
         )
         self.description_label.setWordWrap(True)
 
         self.measurement_point_label = QLabel("unknown")
         self.hat_geometry_label = QLabel("unknown")
         self.runtime_chain_label = QLabel("unknown")
+        self.live_runtime_tip_mode_label = QLabel("unknown")
+        self.live_runtime_tip_mode_label.setWordWrap(True)
+        self.live_runtime_tip_source_label = QLabel("unknown")
+        self.live_runtime_tip_source_label.setWordWrap(True)
+        self.live_runtime_tip_guidance_label = QLabel("Select a runtime tip mode from Registration.")
+        self.live_runtime_tip_guidance_label.setWordWrap(True)
         self.latest_artifact_label = QLabel("none")
         dependency_box = QGroupBox("Dependencies & Runtime Chain")
         dependency_form = QFormLayout(dependency_box)
         dependency_form.addRow("0B measurement point", self.measurement_point_label)
         dependency_form.addRow("Hat truth geometry", self.hat_geometry_label)
+        dependency_form.addRow("Active live tip mode", self.live_runtime_tip_mode_label)
+        dependency_form.addRow("Active live tip source", self.live_runtime_tip_source_label)
+        dependency_form.addRow("Operator note", self.live_runtime_tip_guidance_label)
         dependency_form.addRow("Runtime chain status", self.runtime_chain_label)
         dependency_form.addRow("Latest artifact", self.latest_artifact_label)
 
         self.session_mode_combo = QComboBox()
         self.session_mode_combo.addItem("Full Accepted Hat Calibration", "full_hat")
         self.session_mode_combo.addItem("Quick 4-Point Override", "quick_4_point")
+        self.session_mode_combo.currentIndexChanged.connect(self._on_session_mode_changed)
+        self._pending_session_mode = str(controller.state.session_mode or "full_hat")
         self.captures_spin = QSpinBox()
         self.captures_spin.setRange(1, 20)
         self.captures_spin.setValue(max(1, int(controller.state.captures_per_landmark or 3)))
@@ -94,7 +107,7 @@ class RuntimeTipCalibrationDialog(QDialog):
             lambda: self._safe_call(
                 lambda: self.controller.begin_session(
                     captures_per_landmark=self.captures_spin.value(),
-                    session_mode=str(self.session_mode_combo.currentData()),
+                    session_mode=self._selected_session_mode(),
                 )
             )
         )
@@ -113,7 +126,7 @@ class RuntimeTipCalibrationDialog(QDialog):
         self.load_button.clicked.connect(
             lambda: self._safe_call(
                 lambda: self.controller.load_latest_result(
-                    session_mode=str(self.session_mode_combo.currentData()),
+                    session_mode=self._selected_session_mode(),
                 )
             )
         )
@@ -217,12 +230,21 @@ class RuntimeTipCalibrationDialog(QDialog):
         self.update(self.controller.refresh())
 
     def update(self, state) -> None:
+        if state.active or state.pending_accept:
+            self._pending_session_mode = str(state.session_mode or "full_hat")
+        selected_mode = self._pending_session_mode if not (state.active or state.pending_accept) else str(state.session_mode or "full_hat")
         self.session_mode_combo.blockSignals(True)
-        selected_index = max(0, self.session_mode_combo.findData(str(state.session_mode or "full_hat")))
+        selected_index = max(0, self.session_mode_combo.findData(selected_mode))
         self.session_mode_combo.setCurrentIndex(selected_index)
         self.session_mode_combo.blockSignals(False)
         self.measurement_point_label.setText(state.measurement_point_status)
         self.hat_geometry_label.setText(state.hat_geometry_status)
+        self.live_runtime_tip_mode_label.setText(
+            f"{str(state.active_runtime_tip_mode).replace('_', ' ')} | "
+            f"{str(state.active_runtime_tip_trust_level).replace('_', ' ')}"
+        )
+        self.live_runtime_tip_source_label.setText(state.active_runtime_tip_mode_message)
+        self.live_runtime_tip_guidance_label.setText(state.active_runtime_tip_guidance)
         self.runtime_chain_label.setText(f"{state.runtime_chain_state}: {state.runtime_chain_message}")
         self.latest_artifact_label.setText(state.latest_accepted_path or "none")
         self.current_label_value.setText(state.current_label or "All hat points complete")
@@ -290,6 +312,23 @@ class RuntimeTipCalibrationDialog(QDialog):
                 "0A rotation spread: " + _summary_text(state.rotation_spread_summary_deg, "deg")
             )
         set_text_document(self.validation_text, "\n".join(validation_lines), stick_to_bottom_if_at_bottom=True)
+
+    def set_preferred_session_mode(self, session_mode: str | None) -> None:
+        if session_mode in {"full_hat", "quick_4_point"}:
+            self._pending_session_mode = str(session_mode)
+        else:
+            self._pending_session_mode = "full_hat"
+        if not (self.controller.state.active or self.controller.state.pending_accept):
+            self.update(self.controller.refresh())
+
+    def _selected_session_mode(self) -> str:
+        current = self.session_mode_combo.currentData()
+        if current in {"full_hat", "quick_4_point"}:
+            return str(current)
+        return str(self._pending_session_mode or "full_hat")
+
+    def _on_session_mode_changed(self, _index: int) -> None:
+        self._pending_session_mode = self._selected_session_mode()
 
     def _safe_call(self, fn) -> None:
         try:

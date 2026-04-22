@@ -48,6 +48,7 @@ from continuum_robot.gui.tabs.system_tab import SystemTab
 from continuum_robot.gui.tabs.tracker_mvp_tab import TrackerMvpTab
 from continuum_robot.gui.tabs.tracking_tab import TrackingTab
 from continuum_robot.gui.widgets.experiment_results_widget import ExperimentResultsWidget
+from continuum_robot.gui.widgets.runtime_tip_calibration_dialog import RuntimeTipCalibrationDialog
 from continuum_robot.gui.widgets.tool_plot_widget import ToolPlotWidget
 from continuum_robot.experiments.experiment_loader import ExperimentLoader
 from continuum_robot.experiments.experiment_runner import ExperimentRunner
@@ -60,6 +61,7 @@ from continuum_robot.registration.runtime_tip_repository import RuntimeTipCalibr
 from continuum_robot.services.registration_service import RegistrationService
 from continuum_robot.services.runtime_tip_calibration_service import RuntimeTipCalibrationService
 from continuum_robot.services.tracking_service import TrackingService
+from continuum_robot.gui.controllers.runtime_tip_calibration_controller import RuntimeTipCalibrationController
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
 from continuum_robot.servos.neutral_calibration_service import (
     NeutralCalibrationService,
@@ -529,9 +531,72 @@ def test_registration_tab_runtime_tip_mode_selector_updates_tracking_service(tmp
 
     tab.update(controller.refresh())
     tab.runtime_tip_mode_combo.setCurrentIndex(tab.runtime_tip_mode_combo.findData("coil_as_tip"))
+    tab.update(controller.refresh())
 
     assert tracking_service.get_snapshot().runtime_tip_mode == "coil_as_tip"
     assert controller.state.runtime_tip_mode == "coil_as_tip"
+    assert tab.runtime_tip_mode_combo.currentData() == "coil_as_tip"
+
+
+def test_runtime_tip_calibration_dialog_preserves_manual_quick_mode_selection_across_refresh(tmp_path: Path) -> None:
+    _app()
+    settings = _settings()
+    tracking_service = _tracking_service(settings, tmp_path)
+    registration_service = _registration_service(settings, tmp_path, tracking_service)
+    runtime_tip_service = _runtime_tip_calibration_service(
+        settings,
+        tmp_path,
+        tracking_service,
+        registration_service,
+    )
+    controller = RuntimeTipCalibrationController(runtime_tip_service)
+    dialog = RuntimeTipCalibrationDialog(controller)
+    try:
+        dialog.update(controller.refresh())
+        dialog.session_mode_combo.setCurrentIndex(dialog.session_mode_combo.findData("quick_4_point"))
+        dialog.refresh()
+
+        assert dialog.session_mode_combo.currentData() == "quick_4_point"
+    finally:
+        dialog.close()
+
+
+def test_runtime_tip_calibration_dialog_prefers_quick_mode_from_registration_selection(tmp_path: Path) -> None:
+    _app()
+    window = AppWindow(_app_context(tmp_path))
+    try:
+        window._refresh_timer.stop()
+        window.registration_tab.update(window.registration_controller.refresh())
+        window.registration_tab.runtime_tip_mode_combo.setCurrentIndex(
+            window.registration_tab.runtime_tip_mode_combo.findData("quick_4_point")
+        )
+
+        window._open_runtime_tip_calibration()
+
+        assert window.runtime_tip_calibration_dialog.session_mode_combo.currentData() == "quick_4_point"
+        assert "quick 4 point" in window.runtime_tip_calibration_dialog.live_runtime_tip_mode_label.text().lower()
+        assert "quick 4-point live mode is selected" in window.runtime_tip_calibration_dialog.live_runtime_tip_guidance_label.text().lower()
+    finally:
+        window.shutdown()
+
+
+def test_runtime_tip_calibration_dialog_surfaces_explicit_coil_as_tip_truth(tmp_path: Path) -> None:
+    _app()
+    window = AppWindow(_app_context(tmp_path))
+    try:
+        window._refresh_timer.stop()
+        window.registration_tab.update(window.registration_controller.refresh())
+        window.registration_tab.runtime_tip_mode_combo.setCurrentIndex(
+            window.registration_tab.runtime_tip_mode_combo.findData("coil_as_tip")
+        )
+
+        window._open_runtime_tip_calibration()
+
+        assert "coil as tip" in window.runtime_tip_calibration_dialog.live_runtime_tip_mode_label.text().lower()
+        assert "0a coil pose is shown directly as the tip" in window.runtime_tip_calibration_dialog.live_runtime_tip_source_label.text().lower()
+        assert "direct 0a / no-transform mode is active" in window.runtime_tip_calibration_dialog.live_runtime_tip_guidance_label.text().lower()
+    finally:
+        window.shutdown()
 
 
 def test_tool_plot_widget_accepts_xyz_points() -> None:

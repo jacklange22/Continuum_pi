@@ -302,6 +302,13 @@ class AppWindow(QMainWindow):
         dialog = getattr(self, "runtime_tip_calibration_dialog", None)
         if dialog is None:
             return
+        registration_controller = getattr(self, "registration_controller", None)
+        registration_state = getattr(registration_controller, "state", None)
+        runtime_tip_mode = str(getattr(registration_state, "runtime_tip_mode", "latest_accepted") or "latest_accepted")
+        if runtime_tip_mode == "quick_4_point":
+            dialog.set_preferred_session_mode("quick_4_point")
+        elif runtime_tip_mode == "latest_accepted":
+            dialog.set_preferred_session_mode("full_hat")
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
