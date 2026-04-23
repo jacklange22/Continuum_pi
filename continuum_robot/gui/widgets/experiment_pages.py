@@ -84,6 +84,7 @@ class ExperimentPageBase(QWidget):
 
     show_visualization = False
     refresh_policy = "live"
+    parameter_panel_scrollable = True
     page_hint = ""
     defer_visualization_until_data = False
     visualization_mode_override: str | None = None
@@ -121,18 +122,26 @@ class ExperimentPageBase(QWidget):
         self.top_row.setContentsMargins(0, 0, 0, 0)
         self.top_row.setSpacing(14)
 
-        self.parameter_scroll = QScrollArea()
-        self.parameter_scroll.setWidgetResizable(True)
-        self.parameter_scroll.setFrameShape(QFrame.NoFrame)
-        self.parameter_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.parameter_scroll.setMinimumWidth(300)
         parameter_container = QWidget()
+        parameter_container.setMinimumWidth(300)
         self.parameter_layout = QVBoxLayout(parameter_container)
         self.parameter_layout.setContentsMargins(0, 0, 0, 0)
         self.parameter_layout.setSpacing(12)
         self._build_parameter_sections()
         self.parameter_layout.addStretch(1)
-        self.parameter_scroll.setWidget(parameter_container)
+        self.parameter_container = parameter_container
+        if self.parameter_panel_scrollable:
+            self.parameter_scroll = QScrollArea()
+            self.parameter_scroll.setWidgetResizable(True)
+            self.parameter_scroll.setFrameShape(QFrame.NoFrame)
+            self.parameter_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.parameter_scroll.setMinimumWidth(300)
+            self.parameter_scroll.setWidget(parameter_container)
+            parameter_panel = self.parameter_scroll
+        else:
+            self.parameter_scroll = None
+            parameter_panel = self.parameter_container
+        self.parameter_panel = parameter_panel
 
         self.preflight_widget = ExperimentPreflightWidget()
         preflight_card = ExperimentCard("Preflight", "Review the experiment-specific blockers and warnings before running.")
@@ -191,7 +200,7 @@ class ExperimentPageBase(QWidget):
         right_layout.addWidget(run_card)
         right_layout.addStretch(1)
 
-        self.top_row.addWidget(self.parameter_scroll, 3)
+        self.top_row.addWidget(self.parameter_panel, 3)
         self.top_row.addWidget(right_column, 2)
         content_layout.addLayout(self.top_row)
 
@@ -2538,6 +2547,7 @@ class _ValidationSelectionPage(ExperimentPageBase):
 
     show_visualization = True
     refresh_policy = "manual"
+    parameter_panel_scrollable = False
 
     selection_title = "Source Runs"
     selection_subtitle = "Choose the saved runs to analyze."
@@ -2558,6 +2568,7 @@ class _ValidationSelectionPage(ExperimentPageBase):
         self._table_apply_row = 0
         self._table_apply_complete = True
         self._table_apply_started_s = 0.0
+        self._table_apply_token = 0
         super().__init__(controller, experiment_name, parent)
         self.run_button.setText(self.run_button_text)
         self.candidates_loaded.connect(self._apply_loaded_candidates)
@@ -2686,9 +2697,13 @@ class _ValidationSelectionPage(ExperimentPageBase):
 
     def _sync_table(self, candidates, selected: set[str]) -> None:
         signature = tuple(self._row_signature(candidate, selected) for candidate in candidates)
+        if not candidates and self.run_table.rowCount() == 0 and self._table_signature in {None, ()}:
+            self._table_signature = signature
+            self._table_apply_complete = True
+            return
         if signature == self._table_signature:
             if not self._table_apply_complete and self.controller.state.selected_experiment == self.experiment_name:
-                QTimer.singleShot(0, lambda generation=self._table_apply_generation: self._apply_table_batch(generation))
+                self._schedule_table_apply(self._table_apply_generation)
             return
         self._table_signature = signature
         self._table_apply_generation += 1
@@ -2710,7 +2725,7 @@ class _ValidationSelectionPage(ExperimentPageBase):
                 self.run_table.setRowCount(len(candidates))
 
         preserve_scroll_position(self.run_table, _initialize_table)
-        QTimer.singleShot(0, lambda generation=self._table_apply_generation: self._apply_table_batch(generation))
+        self._schedule_table_apply(self._table_apply_generation)
 
     def _row_signature(self, candidate, selected: set[str]) -> tuple[str, ...]:
         return (*self._row_values(candidate), "1" if candidate.path in selected else "0")
@@ -2844,18 +2859,29 @@ class _ValidationSelectionPage(ExperimentPageBase):
             self.loading_label.setText("Loading saved runs..." if not candidates else "Refreshing saved runs...")
             self.loading_label.show()
             self.run_table.setEnabled(bool(candidates))
+            self.run_table.setVisible(bool(candidates))
             return
         if self._candidate_error:
             self.loading_label.setText(f"Could not load saved runs: {self._candidate_error}")
             self.loading_label.show()
             self.run_table.setEnabled(bool(candidates))
+            self.run_table.setVisible(bool(candidates))
             return
         self.loading_label.setVisible(not bool(candidates))
         if not candidates:
             self.loading_label.setText("No saved runs found yet.")
+        self.run_table.setVisible(bool(candidates))
         self.run_table.setEnabled(True)
 
-    def _apply_table_batch(self, generation: int) -> None:
+    def _schedule_table_apply(self, generation: int) -> None:
+        self._table_apply_token += 1
+        token = self._table_apply_token
+        QTimer.singleShot(0, lambda current_generation=generation, current_token=token: self._apply_table_batch(current_generation, current_token))
+
+    def _apply_table_batch(self, generation: int, token: int) -> None:
+        if int(token) != int(self._table_apply_token):
+            self._log_stage("table_rebuild", "skip", reason="stale_callback", generation=generation, token=token)
+            return
         if int(generation) != int(self._table_apply_generation):
             self._log_stage("table_rebuild", "skip", reason="stale_generation", generation=generation)
             return
@@ -2893,7 +2919,7 @@ class _ValidationSelectionPage(ExperimentPageBase):
                     self.run_table.setItem(row, column, item)
         self._table_apply_row = end_row
         if end_row < len(self._pending_candidates):
-            QTimer.singleShot(0, lambda current_generation=generation: self._apply_table_batch(current_generation))
+            self._schedule_table_apply(generation)
             return
         self._table_apply_complete = True
         self._log_stage(

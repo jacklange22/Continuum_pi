@@ -2424,6 +2424,17 @@ def test_registration_validation_table_apply_is_batched(tmp_path: Path) -> None:
     assert page.run_table.item(79, 0) is not None
 
 
+def test_registration_validation_page_uses_single_scroll_shell(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("registration_validation")
+    page = tab._page_for("registration_validation")
+
+    assert page.parameter_scroll is None
+    assert page.parameter_panel is page.parameter_container
+
+
 def test_registration_validation_page_slow_row_formatting_stays_responsive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2460,6 +2471,110 @@ def test_registration_validation_page_slow_row_formatting_stays_responsive(
 
     assert page._table_apply_complete is True
     assert page.run_table.item(47, 0) is not None
+
+
+def test_registration_validation_placeholder_hides_after_candidates_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("registration_validation")
+    monkeypatch.setattr(
+        experiment_pages_module,
+        "list_registration_validation_candidates",
+        lambda _project_root: [
+            ValidationRunCandidate(
+                path="data/registrations/registration_a.json",
+                timestamp_utc="2026-01-01T00:00:00+00:00",
+                label="registration_a.json",
+            )
+        ],
+    )
+
+    tab.update(controller.refresh())
+    page = tab._page_for("registration_validation")
+    QTest.qWait(60)
+
+    assert page.loading_label.isVisible() is False
+    assert page.run_table.isVisible() is True
+    assert page.run_table.rowCount() == 1
+
+
+def test_registration_validation_candidate_reload_replaces_old_rows_cleanly(
+    tmp_path: Path,
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("registration_validation")
+    page = tab._page_for("registration_validation")
+
+    first_candidates = [
+        ValidationRunCandidate(
+            path="data/registrations/registration_a.json",
+            timestamp_utc="2026-01-01T00:00:00+00:00",
+            label="registration_a.json",
+        ),
+        ValidationRunCandidate(
+            path="data/registrations/registration_b.json",
+            timestamp_utc="2026-01-02T00:00:00+00:00",
+            label="registration_b.json",
+        ),
+    ]
+    second_candidates = [
+        ValidationRunCandidate(
+            path="data/registrations/registration_c.json",
+            timestamp_utc="2026-01-03T00:00:00+00:00",
+            label="registration_c.json",
+        )
+    ]
+
+    page._candidate_load_generation = 1
+    page._apply_loaded_candidates(1, first_candidates, None)
+    QTest.qWait(80)
+    assert page.run_table.rowCount() == 2
+
+    page._candidate_load_generation = 2
+    page._apply_loaded_candidates(2, second_candidates, None)
+    QTest.qWait(80)
+
+    assert page.run_table.rowCount() == 1
+    item = page.run_table.item(0, 5)
+    assert item is not None
+    assert item.text() == "data/registrations/registration_c.json"
+
+
+def test_registration_validation_stale_table_callbacks_do_not_duplicate_end_logs(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("registration_validation")
+    page = tab._page_for("registration_validation")
+    candidates = [
+        ValidationRunCandidate(
+            path=f"data/registrations/run_{index}.json",
+            timestamp_utc="2026-01-01T00:00:00+00:00",
+            label=f"run_{index}.json",
+        )
+        for index in range(6)
+    ]
+
+    caplog.set_level(logging.INFO)
+    page._sync_table(candidates, set())
+    page._schedule_table_apply(page._table_apply_generation)
+    QTest.qWait(80)
+
+    end_messages = [
+        record.getMessage()
+        for record in caplog.records
+        if "ValidationPage[table_rebuild] end" in record.getMessage()
+        and "generation=1" in record.getMessage()
+    ]
+    assert len(end_messages) == 1
 
 
 def test_registration_validation_page_emits_timing_stage_logs(
