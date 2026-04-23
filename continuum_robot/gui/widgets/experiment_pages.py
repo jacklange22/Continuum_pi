@@ -5,12 +5,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
+import threading
 import time
 from typing import Callable
 
 import numpy as np
 import yaml
-from PySide6.QtCore import QSignalBlocker, Qt, QUrl
+from PySide6.QtCore import QSignalBlocker, Qt, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -2482,6 +2483,8 @@ class ReplayRunnerPage(ExperimentPageBase):
 class _ValidationSelectionPage(ExperimentPageBase):
     """Shared offline multi-run selection page for thesis validation analyses."""
 
+    candidates_loaded = Signal(int, object, object)
+
     show_visualization = True
 
     selection_title = "Source Runs"
@@ -2491,8 +2494,15 @@ class _ValidationSelectionPage(ExperimentPageBase):
 
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
         self._table_signature: tuple[tuple[str, ...], ...] | None = None
+        self._candidate_cache: list[object] = []
+        self._candidate_load_generation = 0
+        self._candidate_loading = False
+        self._candidate_cache_loaded = False
+        self._candidate_error: str | None = None
+        self._candidate_cache_key: tuple[str, str] | None = None
         super().__init__(controller, experiment_name, parent)
         self.run_button.setText(self.run_button_text)
+        self.candidates_loaded.connect(self._apply_loaded_candidates)
 
     def _build_parameter_sections(self) -> None:
         selection_card = ExperimentCard(self.selection_title, self.selection_subtitle)
@@ -2517,6 +2527,12 @@ class _ValidationSelectionPage(ExperimentPageBase):
         self.selection_summary_widget = KeyValueSummaryWidget()
         selection_card.body_layout.addWidget(self.selection_summary_widget)
 
+        self.loading_label = QLabel("Loading saved runs...")
+        self.loading_label.setProperty("role", "muted")
+        self.loading_label.setWordWrap(True)
+        self.loading_label.hide()
+        selection_card.body_layout.addWidget(self.loading_label)
+
         self.run_table = QTableWidget(0, len(self.table_headers))
         self.run_table.setHorizontalHeaderLabels(list(self.table_headers))
         self.run_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -2537,27 +2553,30 @@ class _ValidationSelectionPage(ExperimentPageBase):
 
     def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
         _ = state
-        candidates = self._candidates()
+        self._ensure_candidates_loaded()
+        candidates = list(self._candidate_cache)
         selected = {str(value) for value in (self.controller.get_config_value("run_paths", []) or [])}
         self._sync_table(candidates, selected)
         self.selection_summary_widget.set_pairs(self._summary_pairs(candidates, selected))
+        self._sync_loading_state(candidates)
 
     def _refresh_sources(self) -> None:
-        try:
-            self.set_state(self.controller.refresh())
-        except Exception:
-            return
+        self._ensure_candidates_loaded(force=True)
+        selected = {str(value) for value in (self.controller.get_config_value("run_paths", []) or [])}
+        self._sync_loading_state(list(self._candidate_cache))
+        self.selection_summary_widget.set_pairs(self._summary_pairs(list(self._candidate_cache), selected))
 
     def _set_all_selected(self, selected: bool) -> None:
-        candidates = self._candidates()
+        candidates = list(self._candidate_cache)
         run_paths = [candidate.path for candidate in candidates] if selected else []
         self.controller.set_config_value("run_paths", run_paths)
-        self._refresh_sources()
+        selected_paths = {str(value) for value in run_paths}
+        self._sync_table(candidates, selected_paths)
+        self.selection_summary_widget.set_pairs(self._summary_pairs(candidates, selected_paths))
 
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if item.column() != 0:
             return
-        candidates = self._candidates()
         selected_paths: list[str] = []
         for row in range(self.run_table.rowCount()):
             path_item = self.run_table.item(row, 0)
@@ -2567,7 +2586,7 @@ class _ValidationSelectionPage(ExperimentPageBase):
                 raw_path = path_item.data(Qt.UserRole)
                 if raw_path:
                     selected_paths.append(str(raw_path))
-        known = {candidate.path for candidate in candidates}
+        known = {candidate.path for candidate in self._candidate_cache}
         selected_paths = [path for path in selected_paths if path in known]
         self.controller.set_config_value("run_paths", selected_paths)
 
@@ -2607,11 +2626,76 @@ class _ValidationSelectionPage(ExperimentPageBase):
             return "Select at least 2 saved runs."
         return f"{len(included)} run(s) selected."
 
-    def _candidates(self):
+    def _discover_candidates(self):
         raise NotImplementedError
 
     def _row_values(self, candidate) -> tuple[str, ...]:
         raise NotImplementedError
+
+    def _ensure_candidates_loaded(self, *, force: bool = False) -> None:
+        key = (str(self.controller.project_root), self.experiment_name)
+        if force or self._candidate_cache_key != key:
+            self._candidate_cache_key = key
+            self._candidate_cache = []
+            self._candidate_cache_loaded = False
+            self._table_signature = None
+        if self._candidate_loading:
+            return
+        if self._candidate_cache_loaded and not force:
+            return
+        self._candidate_loading = True
+        self._candidate_error = None
+        self._candidate_load_generation += 1
+        generation = self._candidate_load_generation
+
+        def _worker() -> None:
+            try:
+                candidates = list(self._discover_candidates())
+                error = None
+            except Exception as exc:
+                LOG.exception(
+                    "Validation source discovery failed | experiment=%s | error=%s",
+                    self.experiment_name,
+                    exc,
+                )
+                candidates = []
+                error = str(exc)
+            self.candidates_loaded.emit(generation, candidates, error)
+
+        threading.Thread(
+            target=_worker,
+            name=f"{self.experiment_name}-source-scan",
+            daemon=True,
+        ).start()
+
+    def _apply_loaded_candidates(self, generation: int, candidates, error: object) -> None:
+        if int(generation) != int(self._candidate_load_generation):
+            return
+        self._candidate_loading = False
+        self._candidate_error = str(error) if error else None
+        self._candidate_cache = list(candidates or [])
+        self._candidate_cache_loaded = True
+        self._table_signature = None
+        selected = {str(value) for value in (self.controller.get_config_value("run_paths", []) or [])}
+        self._sync_table(self._candidate_cache, selected)
+        self.selection_summary_widget.set_pairs(self._summary_pairs(self._candidate_cache, selected))
+        self._sync_loading_state(self._candidate_cache)
+
+    def _sync_loading_state(self, candidates) -> None:
+        if self._candidate_loading:
+            self.loading_label.setText("Loading saved runs..." if not candidates else "Refreshing saved runs...")
+            self.loading_label.show()
+            self.run_table.setEnabled(bool(candidates))
+            return
+        if self._candidate_error:
+            self.loading_label.setText(f"Could not load saved runs: {self._candidate_error}")
+            self.loading_label.show()
+            self.run_table.setEnabled(bool(candidates))
+            return
+        self.loading_label.setVisible(not bool(candidates))
+        if not candidates:
+            self.loading_label.setText("No saved runs found yet.")
+        self.run_table.setEnabled(True)
 
 
 class RegistrationValidationPage(_ValidationSelectionPage):
@@ -2624,7 +2708,7 @@ class RegistrationValidationPage(_ValidationSelectionPage):
     run_button_text = "Run Registration Validation"
     table_headers = ("Use", "Saved", "FRE (mm)", "Landmarks", "Tool", "Run")
 
-    def _candidates(self):
+    def _discover_candidates(self):
         return list_registration_validation_candidates(self.controller.project_root)
 
     def _row_values(self, candidate) -> tuple[str, ...]:
@@ -2661,7 +2745,7 @@ class PivotValidationPage(_ValidationSelectionPage):
     run_button_text = "Run Pivot Validation"
     table_headers = ("Use", "Saved", "RMSE (mm)", "Used / Rejected", "Tool", "Run")
 
-    def _candidates(self):
+    def _discover_candidates(self):
         return list_pivot_validation_candidates(self.controller.project_root)
 
     def _row_values(self, candidate) -> tuple[str, ...]:

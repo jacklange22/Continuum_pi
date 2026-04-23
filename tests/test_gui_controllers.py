@@ -48,10 +48,12 @@ from continuum_robot.gui.tabs.system_tab import SystemTab
 from continuum_robot.gui.tabs.tracker_mvp_tab import TrackerMvpTab
 from continuum_robot.gui.tabs.tracking_tab import TrackingTab
 from continuum_robot.gui.widgets.experiment_results_widget import ExperimentResultsWidget
+from continuum_robot.gui.widgets import experiment_pages as experiment_pages_module
 from continuum_robot.gui.widgets.runtime_tip_calibration_dialog import RuntimeTipCalibrationDialog
 from continuum_robot.gui.widgets.tool_plot_widget import ToolPlotWidget
 from continuum_robot.experiments.experiment_loader import ExperimentLoader
 from continuum_robot.experiments.experiment_runner import ExperimentRunner
+from continuum_robot.experiments.calibration_validation import ValidationRunCandidate
 from continuum_robot.hardware.mock_dxl_bus import MockDxlBus
 from continuum_robot.hardware.mock_openrb_client import MockOpenRbClient
 from continuum_robot.hardware.serial_ports import SerialPortInfo
@@ -2221,6 +2223,117 @@ def test_experiment_workspace_loads_registration_validation_page(tmp_path: Path)
     assert state.experiment_title == "Registration Validation"
     assert page.run_button.text() == "Run Registration Validation"
     assert page.run_table.columnCount() == 6
+
+
+def test_registration_validation_page_deferred_loads_candidates_without_blocking_ui(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    release = threading.Event()
+
+    def _slow_candidates(_project_root):
+        release.wait(timeout=1.0)
+        return []
+
+    monkeypatch.setattr(experiment_pages_module, "list_registration_validation_candidates", _slow_candidates)
+    controller.select_experiment("registration_validation")
+
+    state = controller.refresh()
+    started = time.monotonic()
+    tab.update(state)
+    elapsed = time.monotonic() - started
+    page = tab._page_for("registration_validation")
+
+    assert elapsed < 0.1
+    assert page.loading_label.isVisible()
+    assert "Loading saved runs" in page.loading_label.text()
+    assert page.run_table.isEnabled() is False
+
+    release.set()
+    QTest.qWait(50)
+
+
+def test_registration_validation_page_does_not_recurse_during_table_rebuild(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("registration_validation")
+    page = tab._page_for("registration_validation")
+    calls: list[tuple[str, object]] = []
+    controller.set_config_value = lambda key, value: calls.append((key, value))
+    page._candidate_load_generation = 1
+
+    page._apply_loaded_candidates(
+        1,
+        [
+            ValidationRunCandidate(
+                path="data/registrations/registration_a.json",
+                timestamp_utc="2026-01-01T00:00:00+00:00",
+                label="registration_a.json",
+            )
+        ],
+        None,
+    )
+
+    assert calls == []
+
+
+def test_registration_validation_page_caches_empty_discovery_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    calls = {"count": 0}
+
+    def _empty_candidates(_project_root):
+        calls["count"] += 1
+        return []
+
+    monkeypatch.setattr(experiment_pages_module, "list_registration_validation_candidates", _empty_candidates)
+    controller.select_experiment("registration_validation")
+    state = controller.refresh()
+    tab.update(state)
+    page = tab._page_for("registration_validation")
+    QTest.qWait(50)
+
+    tab.update(state)
+
+    assert calls["count"] == 1
+    assert page.loading_label.text() == "No saved runs found yet."
+
+
+def test_experiment_workspace_can_switch_away_from_registration_validation_while_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    release = threading.Event()
+
+    def _slow_registration_candidates(_project_root):
+        release.wait(timeout=1.0)
+        return []
+
+    monkeypatch.setattr(experiment_pages_module, "list_registration_validation_candidates", _slow_registration_candidates)
+    monkeypatch.setattr(experiment_pages_module, "list_pivot_validation_candidates", lambda _project_root: [])
+
+    controller.select_experiment("registration_validation")
+    tab.update(controller.refresh())
+
+    started = time.monotonic()
+    controller.select_experiment("pivot_validation")
+    pivot_state = controller.refresh()
+    tab.update(pivot_state)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.1
+    assert tab.page_stack.currentWidget() is tab._page_for("pivot_validation")
+
+    release.set()
+    QTest.qWait(50)
 
 
 def test_experiment_workspace_loads_pivot_validation_page(tmp_path: Path) -> None:
