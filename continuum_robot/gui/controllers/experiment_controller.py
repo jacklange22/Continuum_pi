@@ -105,6 +105,7 @@ class ExperimentController:
     HISTORY_LIMIT = 25
     HISTORY_SCAN_CANDIDATE_MULTIPLIER = 4
     PREREQUISITE_REFRESH_INTERVAL_S = 0.25
+    MANUAL_REFRESH_EXPERIMENTS = {"registration_validation", "pivot_validation"}
 
     def __init__(
         self,
@@ -278,14 +279,6 @@ class ExperimentController:
             self.state.result_summary_lines = list(visualization_model.summary_lines)
             self.state.result_details = result_details
             self._visualization_dirty = False
-            if selected_experiment in {"registration_validation", "pivot_validation"}:
-                LOG.info(
-                    "ExperimentController refresh | experiment=%s elapsed_ms=%.1f history_loading=%s history_count=%s",
-                    selected_experiment,
-                    (time.monotonic() - started) * 1000.0,
-                    self.state.history_loading,
-                    len(self.state.history),
-                )
             return self.state
 
     def refresh_prerequisites(self) -> ExperimentViewState:
@@ -299,18 +292,27 @@ class ExperimentController:
                 and self._preflight_cache_report is not None
                 and (now - self._last_prerequisite_refresh_s) < self.PREREQUISITE_REFRESH_INTERVAL_S
             ):
-                if self.state.selected_experiment in {"registration_validation", "pivot_validation"}:
-                    LOG.info(
-                        "ExperimentController refresh_prerequisites | experiment=%s mode=cached",
-                        self.state.selected_experiment,
-                    )
                 return self.state
-        if self.state.selected_experiment in {"registration_validation", "pivot_validation"}:
-            LOG.info(
-                "ExperimentController refresh_prerequisites | experiment=%s mode=full",
-                self.state.selected_experiment,
-            )
         return self.refresh()
+
+    def refresh_policy_for(self, experiment_name: str | None = None) -> str:
+        name = str(experiment_name or self.state.selected_experiment or "")
+        if name in self.MANUAL_REFRESH_EXPERIMENTS:
+            return "manual"
+        return "live"
+
+    def should_periodically_refresh_selected_experiment(self) -> bool:
+        with self._lock:
+            selected_experiment = str(self.state.selected_experiment or "")
+            if not selected_experiment:
+                return True
+            if self.refresh_policy_for(selected_experiment) != "manual":
+                return True
+            if self.state.run_active or self.state.history_loading:
+                return True
+            if self._history_dirty or self._visualization_dirty or self._preflight_cache_report is None:
+                return True
+            return False
 
     def select_experiment(self, experiment_name: str) -> None:
         if experiment_name not in self._options_by_name:

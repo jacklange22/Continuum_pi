@@ -35,6 +35,7 @@ class ExperimentTab(QWidget):
         super().__init__(parent)
         self.controller = controller
         self._pages: dict[str, QWidget] = {}
+        self._page_state_fingerprints: dict[str, tuple[object, ...]] = {}
         self._last_logged_selection = ""
         self.setObjectName("experimentWorkspace")
         self.setStyleSheet(experiment_shell_stylesheet(object_name="experimentWorkspace"))
@@ -107,7 +108,7 @@ class ExperimentTab(QWidget):
         layout.addWidget(header_card)
         layout.addWidget(self.page_stack, 1)
 
-    def update(self, state: ExperimentViewState) -> None:
+    def update(self, state: ExperimentViewState) -> bool:
         started = time.monotonic()
         self._update_selector(state)
         if not state.selected_experiment:
@@ -124,7 +125,17 @@ class ExperimentTab(QWidget):
             )
             self.page_stack.setCurrentWidget(self.empty_page)
             self.load_defaults_button.setEnabled(False)
-            return
+            return True
+
+        page = self._page_for(state.selected_experiment)
+        fingerprint = page.state_fingerprint(state)
+        if (
+            getattr(page, "refresh_policy", "live") == "manual"
+            and self._page_state_fingerprints.get(state.selected_experiment) == fingerprint
+        ):
+            if self.page_stack.currentWidget() is not page:
+                self.page_stack.setCurrentWidget(page)
+            return False
 
         self.load_defaults_button.setEnabled(True)
         self.selected_experiment_title.setText(state.experiment_title)
@@ -136,9 +147,9 @@ class ExperimentTab(QWidget):
             self._last_logged_selection = state.selected_experiment
             self._log_event("page_activation", experiment=state.selected_experiment)
         self._update_status_chip(state)
-        page = self._page_for(state.selected_experiment)
         set_state_started = time.monotonic()
         page.set_state(state)
+        self._page_state_fingerprints[state.selected_experiment] = fingerprint
         self._log_event(
             "set_state_applied",
             experiment=state.selected_experiment,
@@ -150,6 +161,7 @@ class ExperimentTab(QWidget):
             experiment=state.selected_experiment,
             elapsed_ms=(time.monotonic() - started) * 1000.0,
         )
+        return True
 
     def _update_selector(self, state: ExperimentViewState) -> None:
         target_keys = ["", *[option.name for option in state.experiment_options]]
@@ -189,6 +201,13 @@ class ExperimentTab(QWidget):
             duration_ms = (time.monotonic() - started) * 1000.0
             LOG.debug("Built experiment workspace page %s in %.1f ms", experiment_name, duration_ms)
         return self._pages[experiment_name]
+
+    def needs_state_update(self, state: ExperimentViewState) -> bool:
+        if not state.selected_experiment:
+            return self.page_stack.currentWidget() is not self.empty_page
+        page = self._page_for(state.selected_experiment)
+        fingerprint = page.state_fingerprint(state)
+        return self._page_state_fingerprints.get(state.selected_experiment) != fingerprint
 
     @staticmethod
     def _is_gui_thread() -> bool:

@@ -105,8 +105,13 @@ class AppWindow(QMainWindow):
             self.statusBar().showMessage(pretension_state.status_message)
             return
         elif current_widget is self.experiment_tab:
-            experiment_state = self.experiment_controller.refresh_prerequisites()
-            self.experiment_tab.update(experiment_state)
+            if self.experiment_controller.should_periodically_refresh_selected_experiment():
+                experiment_state = self.experiment_controller.refresh_prerequisites()
+                self.experiment_tab.update(experiment_state)
+            else:
+                experiment_state = self.experiment_controller.state
+                if self.experiment_tab.needs_state_update(experiment_state):
+                    self.experiment_tab.update(experiment_state)
             self.statusBar().showMessage(experiment_state.status_message)
             return
         elif current_widget is self.modeling_tab:

@@ -2482,6 +2482,99 @@ def test_registration_validation_page_emits_timing_stage_logs(
     assert any("ValidationPage[candidate_apply] end" in message for message in messages)
 
 
+def test_registration_validation_manual_page_skips_unchanged_set_state_updates(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("registration_validation")
+    page = tab._page_for("registration_validation")
+    calls = {"count": 0}
+    original_set_state = page.set_state
+
+    def _counting_set_state(state):
+        calls["count"] += 1
+        return original_set_state(state)
+
+    page.set_state = _counting_set_state
+    state = controller.refresh()
+
+    assert tab.update(state) is True
+    assert tab.update(state) is False
+    assert calls["count"] == 1
+
+
+def test_pivot_validation_manual_page_skips_unchanged_set_state_updates(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("pivot_validation")
+    page = tab._page_for("pivot_validation")
+    calls = {"count": 0}
+    original_set_state = page.set_state
+
+    def _counting_set_state(state):
+        calls["count"] += 1
+        return original_set_state(state)
+
+    page.set_state = _counting_set_state
+    state = controller.refresh()
+
+    assert tab.update(state) is True
+    assert tab.update(state) is False
+    assert calls["count"] == 1
+
+
+def test_manual_validation_pages_disable_idle_periodic_refresh(tmp_path: Path) -> None:
+    controller = _experiment_controller(tmp_path)
+    controller.select_experiment("registration_validation")
+    controller.refresh()
+    controller.state.history_loading = False
+    controller._history_dirty = False
+    controller._visualization_dirty = False
+    controller._preflight_cache_report = controller.state.preflight_report
+
+    assert controller.refresh_policy_for() == "manual"
+    assert controller.should_periodically_refresh_selected_experiment() is False
+
+
+def test_live_experiment_pages_keep_periodic_refresh_enabled(tmp_path: Path) -> None:
+    controller = _experiment_controller(tmp_path)
+    controller.select_experiment("single_segment_repeatability")
+    controller.refresh()
+    controller.state.history_loading = False
+    controller._history_dirty = False
+    controller._visualization_dirty = False
+    controller._preflight_cache_report = controller.state.preflight_report
+
+    assert controller.refresh_policy_for() == "live"
+    assert controller.should_periodically_refresh_selected_experiment() is True
+
+
+def test_registration_validation_explicit_refresh_still_forces_candidate_reload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    calls = {"count": 0}
+
+    def _candidates(_project_root):
+        calls["count"] += 1
+        return []
+
+    monkeypatch.setattr(experiment_pages_module, "list_registration_validation_candidates", _candidates)
+    controller.select_experiment("registration_validation")
+    state = controller.refresh()
+    tab.update(state)
+    page = tab._page_for("registration_validation")
+    QTest.qWait(40)
+
+    page._refresh_sources()
+    QTest.qWait(40)
+
+    assert calls["count"] >= 2
+
+
 def test_experiment_workspace_can_switch_away_from_registration_validation_while_loading(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2527,6 +2620,73 @@ def test_experiment_workspace_loads_pivot_validation_page(tmp_path: Path) -> Non
     assert state.experiment_title == "Pivot Validation"
     assert page.run_button.text() == "Run Pivot Validation"
     assert page.run_table.columnCount() == 6
+
+
+def test_app_window_skips_periodic_controller_refresh_for_stable_manual_experiment_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _app()
+    window = AppWindow(_app_context(tmp_path))
+    try:
+        window._refresh_timer.stop()
+        controller = window.experiment_controller
+        controller.select_experiment("registration_validation")
+        state = controller.refresh()
+        window.experiment_tab.update(state)
+        controller.state.history_loading = False
+        controller._history_dirty = False
+        controller._visualization_dirty = False
+        controller._preflight_cache_report = controller.state.preflight_report
+        window.tab_widget.setCurrentWidget(window.experiment_tab)
+
+        counts = {"refresh_prerequisites": 0, "update": 0}
+        original_update = window.experiment_tab.update
+
+        def _count_refresh_prerequisites():
+            counts["refresh_prerequisites"] += 1
+            return controller.state
+
+        def _count_update(state):
+            counts["update"] += 1
+            return original_update(state)
+
+        monkeypatch.setattr(controller, "refresh_prerequisites", _count_refresh_prerequisites)
+        monkeypatch.setattr(window.experiment_tab, "update", _count_update)
+
+        window.refresh()
+        window.refresh()
+
+        assert counts == {"refresh_prerequisites": 0, "update": 0}
+    finally:
+        window.shutdown()
+
+
+def test_app_window_keeps_periodic_refresh_for_live_experiment_pages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _app()
+    window = AppWindow(_app_context(tmp_path))
+    try:
+        window._refresh_timer.stop()
+        controller = window.experiment_controller
+        controller.select_experiment("single_segment_repeatability")
+        controller.refresh()
+        window.tab_widget.setCurrentWidget(window.experiment_tab)
+
+        counts = {"refresh_prerequisites": 0}
+
+        def _count_refresh_prerequisites():
+            counts["refresh_prerequisites"] += 1
+            return controller.state
+
+        monkeypatch.setattr(controller, "refresh_prerequisites", _count_refresh_prerequisites)
+
+        window.refresh()
+        window.refresh()
+
+        assert counts["refresh_prerequisites"] == 2
+    finally:
+        window.shutdown()
 
 
 def test_experiment_workspace_loads_motor_babble_run_result_details(tmp_path: Path) -> None:

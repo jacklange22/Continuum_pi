@@ -83,6 +83,7 @@ class ExperimentPageBase(QWidget):
     """Base class for one custom experiment workspace page."""
 
     show_visualization = False
+    refresh_policy = "live"
     page_hint = ""
     defer_visualization_until_data = False
     visualization_mode_override: str | None = None
@@ -284,11 +285,60 @@ class ExperimentPageBase(QWidget):
         self._update_history(state)
         self._sync_parameters_from_state(state)
 
+    def state_fingerprint(self, state: ExperimentViewState) -> tuple[object, ...]:
+        preflight_signature = (
+            state.preflight_report.overall_status,
+            tuple(
+                (check.key, check.status, check.message)
+                for check in state.preflight_report.checks
+            ),
+            tuple(state.preflight_report.overwrite_targets),
+            state.preflight_report.planned_output_dir,
+        )
+        history_signature = tuple(
+            (
+                entry.path,
+                entry.experiment_name,
+                entry.timestamp_utc,
+                entry.status,
+                entry.label,
+                entry.metric_summary,
+            )
+            for entry in state.history
+        )
+        return (
+            state.selected_experiment,
+            state.experiment_title,
+            state.experiment_description,
+            tuple(state.experiment_badges),
+            state.output_root,
+            state.operator_notes,
+            state.config_error or "",
+            state.status_message,
+            state.last_error or "",
+            state.last_output_path or "",
+            state.loaded_run_path or "",
+            state.run_active,
+            state.progress_current,
+            state.progress_total,
+            state.planned_output_dir,
+            preflight_signature,
+            tuple(state.result_details),
+            tuple(state.result_summary_lines),
+            history_signature,
+            state.history_loading,
+            self._parameter_state_fingerprint(state),
+        )
+
     def _build_parameter_sections(self) -> None:
         raise NotImplementedError
 
     def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
         raise NotImplementedError
+
+    def _parameter_state_fingerprint(self, state: ExperimentViewState) -> tuple[object, ...]:
+        _ = state
+        return ()
 
     def _run(self) -> None:
         try:
@@ -2487,6 +2537,7 @@ class _ValidationSelectionPage(ExperimentPageBase):
     TABLE_APPLY_BATCH_SIZE = 16
 
     show_visualization = True
+    refresh_policy = "manual"
 
     selection_title = "Source Runs"
     selection_subtitle = "Choose the saved runs to analyze."
@@ -2676,6 +2727,19 @@ class _ValidationSelectionPage(ExperimentPageBase):
         if not included:
             return "Select at least 2 saved runs."
         return f"{len(included)} run(s) selected."
+
+    def _parameter_state_fingerprint(self, state: ExperimentViewState) -> tuple[object, ...]:
+        _ = state
+        selected = tuple(str(value) for value in (self.controller.get_config_value("run_paths", []) or []))
+        return (
+            selected,
+            len(self._candidate_cache),
+            self._candidate_loading,
+            self._candidate_error or "",
+            self._candidate_cache_loaded,
+            self._table_apply_complete,
+            self.run_table.rowCount(),
+        )
 
     def _discover_candidates(self):
         raise NotImplementedError
