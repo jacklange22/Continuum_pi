@@ -75,6 +75,8 @@ tracker_max_stale_interval_s: 0.25
 tracker_max_consecutive_missing_frames: 20
 tracker_require_valid_transforms: true
 packet_capture_dir: ""
+# Active servo startup calibration singleton. Historical archives are written under
+# `data/calibration/servo_calibration/`.
 neutral_setpoints_path: "config/neutral_setpoints.json"
 latest_registration_path: "data/registrations/latest_registration.json"
 latest_runtime_tip_calibration_path: "data/runtime_tip_calibration/latest_runtime_tip_calibration.json"

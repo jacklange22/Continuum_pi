@@ -51,7 +51,7 @@ Legacy registration compatibility is preserved:
 - `scripts/`: bootstrap, diagnostics, benchmark, validation, launch helpers
 - `scripts/legacy/`: retired bridge-only helpers kept for comparison/debugging
 - `tests/`: unit and mock-backed integration coverage
-- `data/`: canonical runtime outputs for `pivot_calibration/`, `registrations/`, `runtime_tip_calibration/`, and `experiments/<experiment_name>/...`
+- `data/`: canonical runtime outputs for `pivot_calibration/`, `registrations/`, `runtime_tip_calibration/`, `calibration/servo_calibration/`, `diagnostics/`, and `experiments/<experiment_name>/...`
 - `legacy/tracker_bridge/`: retired C++ Aurora bridge source, retained for comparison only
 - `references/`: read-only legacy reference material
 - `tools/`: read-only registration assets and lab inputs
@@ -185,7 +185,7 @@ That launcher now opens the permanent `Tracking` tab. The permanent GUI split is
 
 - `Tracking`: Aurora connect, validation, live tool state, staged `0B` pivot calibration, and accepted tip review
 - `Registration`: 4-point landmark capture, solve/review/save, and live robot-frame pose summary
-- `Tracker Legacy`: compatibility/diagnostic copy of the old combined workspace
+- `System`, `Servos`, `Pretension`, `Experiment`, `Modeling`, and `Data`: supporting operator workflows around bring-up, experiments, artifact review, and cleanup
 
 Current tracker-first MVP operator sequence:
 
@@ -705,9 +705,10 @@ Every run writes one directory under `data/experiments/` containing:
 Artifact layout:
 
 - canonical experiment bundles live under `data/experiments/<experiment_name>/`
-- tracker validation reports live under `data/experiments/tracker_validation/`
+- tracker validation reports live under `data/diagnostics/tracker_validation/`
 - tracker-guided pivot review bundles, staged tip files, and raw pivot captures live under `data/pivot_calibration/`
-- durable startup calibration for servos lives under `config/neutral_setpoints.json`
+- the active servo startup calibration singleton lives at `config/neutral_setpoints.json`
+- servo calibration history archives live under `data/calibration/servo_calibration/`
 - runtime tip calibration artifacts live under `data/runtime_tip_calibration/`
 - repo-root `runs/` is retired and should not be used for new runtime artifacts
 

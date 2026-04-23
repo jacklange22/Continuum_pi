@@ -101,10 +101,11 @@ def test_neutral_calibration_archives_use_canonical_timestamp_names(tmp_path: Pa
     service.save_neutral_setpoints({1: 100})
     service.save_neutral_setpoints({1: 200})
 
-    archives = sorted((tmp_path / "config").glob("*.json"))
-    archive_names = [path.name for path in archives if path.name != "neutral_setpoints.json"]
+    archives = sorted((tmp_path / "data" / "calibration" / "servo_calibration").glob("*.json"))
+    archive_names = [path.name for path in archives]
     assert len(archive_names) == 1
     assert archive_names[0].endswith("_neutral_setpoints.json")
+    assert list((tmp_path / "config").glob("*_neutral_setpoints.json")) == []
 
 
 def test_discover_managed_data_covers_all_categories_and_protects_active_aliases(tmp_path: Path) -> None:
@@ -160,6 +161,44 @@ def test_discover_managed_data_covers_all_categories_and_protects_active_aliases
         ),
     )
     neutral.save_neutral_setpoints({1: 150})
+
+    pivot_run_dir = tmp_path / "data" / "pivot_calibration" / "20260422_160900_pivot_calibration_review"
+    pivot_run_dir.mkdir(parents=True)
+    (pivot_run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "experiment_name": "pivot_calibration",
+                "run_id": "pivot-review-1",
+                "timestamp_utc": "2026-04-22T16:09:00Z",
+                "git_commit": "deadbeef",
+                "backend_info": {},
+                "registration_info": {},
+                "config_used": {"tool_id": "0B"},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (pivot_run_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "experiment_name": "pivot_calibration",
+                "run_id": "pivot-review-1",
+                "success": True,
+                "sample_counts": {"total": 0},
+                "dropped_frames": 0,
+                "invalid_transforms": 0,
+                "stage_pass_fail": {"execute": "passed"},
+                "status": "success",
+                "experiment_metrics": {"rmse_mm": 0.31, "sample_count_used": 24, "sample_count_rejected": 2},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "data" / "pivot_calibration" / "generated_penprobe_tip.csv").write_text("1,2,3", encoding="utf-8")
 
     writer = ExperimentDatasetWriter(output_root=tmp_path / "data" / "experiments")
     writer.write_dataset(
@@ -243,11 +282,13 @@ def test_discover_managed_data_covers_all_categories_and_protects_active_aliases
     neutral_active = next(item for item in items if item.readable_name == "Active Servo Calibration")
     ann_artifact = next(item for item in items if item.item_type == "ann_artifact")
     diagnostics_item = next(item for item in items if item.item_type == "servo_telemetry")
+    pivot_item = next(item for item in items if item.item_type == "pivot_calibration_run")
 
     assert latest_registration.deletable is False
     assert neutral_active.deletable is False
     assert ann_artifact.details.startswith("collect_pose_command_dataset")
     assert "1000000 baud" in diagnostics_item.details
+    assert "RMSE 0.310 mm" in pivot_item.details
 
 
 def test_discover_managed_data_normalizes_legacy_display_and_paths(tmp_path: Path) -> None:
@@ -382,6 +423,97 @@ def test_apply_migration_moves_legacy_artifact_and_post_migration_discovery_is_c
     assert legacy_path.exists() is False
     migrated_item = next(entry for entry in discover_managed_data(tmp_path) if entry.path == migrated_path)
     assert migrated_item.is_legacy is False
+
+
+def test_discover_managed_data_flags_top_level_experiment_run_dirs_for_migration(tmp_path: Path) -> None:
+    legacy_path = tmp_path / "data" / "experiments" / "20260412_221655_pretension_validation"
+    legacy_path.mkdir(parents=True)
+    (legacy_path / "metadata.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "experiment_name": "pretension_validation",
+                "run_id": "pretension-validation-1",
+                "timestamp_utc": "2026-04-12T22:16:55Z",
+                "git_commit": "deadbeef",
+                "backend_info": {},
+                "registration_info": {},
+                "config_used": {},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    (legacy_path / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "experiment_name": "pretension_validation",
+                "run_id": "pretension-validation-1",
+                "success": True,
+                "status": "success",
+                "sample_counts": {"total": 1},
+                "dropped_frames": 0,
+                "invalid_transforms": 0,
+                "stage_pass_fail": {"execute": "passed"},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    item = next(entry for entry in discover_managed_data(tmp_path) if entry.path == legacy_path)
+
+    assert item.category_key == "experiments"
+    assert item.is_legacy is True
+    assert item.canonical_path == (
+        tmp_path / "data" / "experiments" / "pretension_validation" / "20260412_221655_pretension_validation"
+    )
+
+
+def test_discover_managed_data_flags_legacy_tracker_validation_shadow_root(tmp_path: Path) -> None:
+    legacy_report = tmp_path / "data" / "tracker_validations" / "20260412_222019_tracker_validation.json"
+    legacy_report.parent.mkdir(parents=True)
+    legacy_report.write_text(
+        json.dumps({"generated_at_utc": "2026-04-12T22:20:19Z", "tracker_ready": True, "effective_frame_rate_hz": 23.4}),
+        encoding="utf-8",
+    )
+
+    item = next(entry for entry in discover_managed_data(tmp_path) if entry.path == legacy_report)
+
+    assert item.category_key == "diagnostics"
+    assert item.is_legacy is True
+    assert item.canonical_path == (
+        tmp_path
+        / "data"
+        / "diagnostics"
+        / "tracker_validation"
+        / "20260412_222019_tracker_validation"
+        / "tracker_validation_report.json"
+    )
+
+
+def test_apply_migration_moves_legacy_tracker_validation_json_into_canonical_bundle(tmp_path: Path) -> None:
+    legacy_report = tmp_path / "data" / "tracker_validations" / "20260412_222019_tracker_validation.json"
+    legacy_report.parent.mkdir(parents=True)
+    legacy_report.write_text(
+        json.dumps({"generated_at_utc": "2026-04-12T22:20:19Z", "tracker_ready": True, "effective_frame_rate_hz": 23.4}),
+        encoding="utf-8",
+    )
+
+    report = apply_migration(tmp_path, discover_managed_data(tmp_path))
+    migrated = (
+        tmp_path
+        / "data"
+        / "diagnostics"
+        / "tracker_validation"
+        / "20260412_222019_tracker_validation"
+        / "tracker_validation_report.json"
+    )
+
+    assert report.applied_count == 1
+    assert migrated.exists() is True
+    assert legacy_report.exists() is False
 
 
 def test_preview_migration_skips_protected_aliases(tmp_path: Path) -> None:

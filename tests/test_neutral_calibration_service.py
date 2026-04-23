@@ -26,7 +26,7 @@ def test_neutral_calibration_service_archives_previous_latest(tmp_path: Path) ->
     service.save_neutral_setpoints({1: 200}, capture_source="bench_neutral_capture")
 
     latest = json.loads((tmp_path / "neutral_setpoints.json").read_text(encoding="utf-8"))
-    archives = sorted(path for path in tmp_path.glob("*.json") if path.name != "neutral_setpoints.json")
+    archives = sorted((tmp_path / "history").glob("*.json"))
 
     assert latest["schema_version"] == 4
     assert latest["servos"]["1"]["neutral_setpoint"] == 200

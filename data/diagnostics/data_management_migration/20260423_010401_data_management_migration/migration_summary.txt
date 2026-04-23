@@ -1,0 +1,12 @@
+mode=preview
+generated_at_utc=2026-04-23T01:04:01Z
+scanned_count=77
+candidate_count=2
+applied_count=0
+skipped_count=2
+protected_count=2
+error_count=0
+candidate: /Users/jacklange/Continuum/pi_code/data/diagnostics/data_management_migration/20260423_003757_data_management_migration_apply -> /Users/jacklange/Continuum/pi_code/data/diagnostics/data_management_migration/20260423_003757_data_management_migration (legacy name)
+candidate: /Users/jacklange/Continuum/pi_code/data/diagnostics/data_management_migration/20260423_003749_data_management_migration_preview -> /Users/jacklange/Continuum/pi_code/data/diagnostics/data_management_migration/20260423_003749_data_management_migration (legacy name)
+skipped: /Users/jacklange/Continuum/pi_code/config/neutral_setpoints.json (Protected: Active servo calibration file)
+skipped: /Users/jacklange/Continuum/pi_code/data/runtime_tip_calibration/latest_runtime_tip_calibration.json (Protected: Active runtime-tip alias)

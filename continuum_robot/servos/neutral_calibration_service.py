@@ -207,11 +207,14 @@ class NeutralCalibrationService:
         self,
         path: Path | None = None,
         *,
+        archive_root: Path | None = None,
         context: ServoCalibrationContext | None = None,
     ) -> None:
         project_root = Path(__file__).resolve().parents[2]
         self.path = path or (project_root / "config" / "neutral_setpoints.json")
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.archive_root = archive_root or self._default_archive_root(self.path)
+        self.archive_root.mkdir(parents=True, exist_ok=True)
         self.context = context or ServoCalibrationContext()
 
     def save_neutral_setpoints(
@@ -867,11 +870,18 @@ class NeutralCalibrationService:
     def _archive_latest_if_present(self) -> None:
         if self.path.exists():
             archive_path = canonical_timestamped_path(
-                self.path.parent,
+                self.archive_root,
                 self.path.stem,
                 extension=self.path.suffix,
             )
             archive_path.write_text(self.path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    @staticmethod
+    def _default_archive_root(path: Path) -> Path:
+        resolved = Path(path)
+        if resolved.name == "neutral_setpoints.json" and resolved.parent.name == "config":
+            return resolved.parent.parent / "data" / "calibration" / "servo_calibration"
+        return resolved.parent / "history"
 
     @staticmethod
     def _is_legacy_neutral_payload(payload: dict[str, Any]) -> bool:

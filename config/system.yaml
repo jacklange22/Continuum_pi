@@ -44,6 +44,8 @@ poll_rate_hz: 20
 # The GUI refresh timer is not a substitute for honest servo freshness checks;
 # stale telemetry is still blocked using `telemetry_stale_after_s`.
 packet_capture_dir: ""
+# Active servo startup calibration singleton. Historical archives are written under
+# `data/calibration/servo_calibration/`.
 neutral_setpoints_path: "config/neutral_setpoints.json"
 latest_registration_path: "data/registrations/latest_registration.json"
 latest_runtime_tip_calibration_path: "data/runtime_tip_calibration/latest_runtime_tip_calibration.json"

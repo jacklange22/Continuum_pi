@@ -1,0 +1,28 @@
+mode=apply
+generated_at_utc=2026-04-23T01:48:39Z
+scanned_count=31
+candidate_count=31
+applied_count=31
+skipped_count=0
+protected_count=0
+error_count=0
+applied: config/20260419_224900_neutral_setpoints.json -> data/calibration/servo_calibration/20260419_224900_neutral_setpoints.json (legacy root)
+applied: config/20260419_224856_neutral_setpoints.json -> data/calibration/servo_calibration/20260419_224856_neutral_setpoints.json (legacy root)
+applied: config/20260419_224854_neutral_setpoints.json -> data/calibration/servo_calibration/20260419_224854_neutral_setpoints.json (legacy root)
+applied: config/20260418_165134_neutral_setpoints.json -> data/calibration/servo_calibration/20260418_165134_neutral_setpoints.json (legacy root)
+applied: config/20260418_155642_neutral_setpoints.json -> data/calibration/servo_calibration/20260418_155642_neutral_setpoints.json (legacy root)
+applied: config/20260418_153608_neutral_setpoints.json -> data/calibration/servo_calibration/20260418_153608_neutral_setpoints.json (legacy root)
+applied: config/20260418_153152_neutral_setpoints.json -> data/calibration/servo_calibration/20260418_153152_neutral_setpoints.json (legacy root)
+applied: config/20260418_150714_neutral_setpoints.json -> data/calibration/servo_calibration/20260418_150714_neutral_setpoints.json (legacy root)
+applied: config/20260418_150629_neutral_setpoints.json -> data/calibration/servo_calibration/20260418_150629_neutral_setpoints.json (legacy root)
+applied: config/20260418_143829_neutral_setpoints.json -> data/calibration/servo_calibration/20260418_143829_neutral_setpoints.json (legacy root)
+applied: config/20260417_233739_neutral_setpoints.json -> data/calibration/servo_calibration/20260417_233739_neutral_setpoints.json (legacy root)
+applied: config/20260417_232921_neutral_setpoints.json -> data/calibration/servo_calibration/20260417_232921_neutral_setpoints.json (legacy root)
+applied: config/20260417_232139_neutral_setpoints.json -> data/calibration/servo_calibration/20260417_232139_neutral_setpoints.json (legacy root)
+applied: config/20260417_232050_neutral_setpoints.json -> data/calibration/servo_calibration/20260417_232050_neutral_setpoints.json (legacy root)
+applied: config/20260417_231851_neutral_setpoints.json -> data/calibration/servo_calibration/20260417_231851_neutral_setpoints.json (legacy root)
+applied: config/20260417_231823_neutral_setpoints.json -> data/calibration/servo_calibration/20260417_231823_neutral_setpoints.json (legacy root)
+applied: config/20260417_225812_neutral_setpoints.json -> data/calibration/servo_calibration/20260417_225812_neutral_setpoints.json (legacy root)
+applied: config/20260417_225808_neutral_setpoints.json -> data/calibration/servo_calibration/20260417_225808_neutral_setpoints.json (legacy root)
+applied: config/20260417_225802_neutral_setpoints.json -> data/calibration/servo_calibration/20260417_225802_neutral_setpoints.json (legacy root)
+applied: config/20260417_225754_neutral_setpoints.json -> data/calibration/servo_calibration/20260417_225754_neutral_setpoints.json (legacy root)

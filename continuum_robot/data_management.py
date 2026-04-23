@@ -236,12 +236,19 @@ def build_root_summary(project_root: Path) -> list[tuple[str, str]]:
     """Return the canonical active roots surfaced by the Data Management tab."""
     _ = Path(project_root)
     return [
-        ("Calibration", "data/registrations | data/runtime_tip_calibration | config/neutral_setpoints.json"),
+        (
+            "Calibration",
+            "data/registrations | data/runtime_tip_calibration | data/pivot_calibration | "
+            "config/neutral_setpoints.json | data/calibration/servo_calibration",
+        ),
         ("Experiments", "data/experiments/*"),
         ("Modeling / Training", "data/models/ann | data/modeling_results"),
-        ("Diagnostics", "data/diagnostics | data/experiments/tracker_timing_validation | data/experiments/servo_tracker_sync_validation"),
+        (
+            "Diagnostics",
+            "data/diagnostics/* | data/experiments/tracker_timing_validation | "
+            "data/experiments/servo_tracker_sync_validation",
+        ),
         ("Migration Ledgers", "data/diagnostics/data_management_migration"),
-        ("Legacy Tracker Validation", "new reports: data/diagnostics/tracker_validation | old reports still discovered from data/experiments/tracker_validation"),
     ]
 
 
@@ -363,8 +370,9 @@ def _discover_calibration_items(project_root: Path) -> list[ManagedDataItem]:
         )
 
     neutral_path = project_root / "config" / "neutral_setpoints.json"
+    service = NeutralCalibrationService(path=neutral_path)
+    neutral_archive_root = service.archive_root
     if neutral_path.exists():
-        service = NeutralCalibrationService(path=neutral_path)
         summary = service.get_calibration_summary()
         calibrated_count = len(summary.calibrated_servo_ids)
         items.append(
@@ -389,6 +397,29 @@ def _discover_calibration_items(project_root: Path) -> list[ManagedDataItem]:
                 treat_current_name_as_canonical=True,
             )
         )
+    for archive in sorted(neutral_archive_root.glob("*.json"), reverse=True):
+        if archive.name == neutral_path.name or not _is_neutral_archive_name(archive.name):
+            continue
+        payload = _read_json(archive)
+        items.append(
+            _build_item(
+                category_key="calibration",
+                category_label="Calibration",
+                item_type="servo_calibration_archive",
+                readable_name="Servo Calibration Archive",
+                path=archive,
+                root_path=neutral_archive_root,
+                canonical_root_path=neutral_archive_root,
+                canonical_label="neutral_setpoints",
+                timestamp_label=_timestamp_from_payload_or_name(payload, archive.name),
+                path_kind="file",
+                extension=".json",
+                status="archived",
+                details=f"Servo calibration archive | {_servo_count_from_payload(payload)} servo(s)",
+                original_name=archive.name,
+            )
+        )
+    if neutral_path.parent.exists():
         for archive in sorted(neutral_path.parent.glob("*.json"), reverse=True):
             if archive.name == neutral_path.name or not _is_neutral_archive_name(archive.name):
                 continue
@@ -401,16 +432,20 @@ def _discover_calibration_items(project_root: Path) -> list[ManagedDataItem]:
                     readable_name="Servo Calibration Archive",
                     path=archive,
                     root_path=neutral_path.parent,
-                    canonical_root_path=neutral_path.parent,
+                    canonical_root_path=neutral_archive_root,
                     canonical_label="neutral_setpoints",
                     timestamp_label=_timestamp_from_payload_or_name(payload, archive.name),
                     path_kind="file",
                     extension=".json",
                     status="archived",
-                    details=f"Servo calibration archive | {_servo_count_from_payload(payload)} servo(s)",
+                    details=(
+                        f"Servo calibration archive | {_servo_count_from_payload(payload)} servo(s)"
+                        " | legacy config root"
+                    ),
                     original_name=archive.name,
                 )
             )
+    items.extend(_discover_pivot_calibration_items(project_root))
     return items
 
 
@@ -420,40 +455,30 @@ def _discover_experiment_items(project_root: Path) -> list[ManagedDataItem]:
     if not experiments_root.exists():
         return items
     for experiment_root in sorted((path for path in experiments_root.iterdir() if path.is_dir()), reverse=True):
+        if _looks_like_timestamped_run_dir(experiment_root.name):
+            experiment_name = _experiment_name_from_run_dir(experiment_root.name)
+            if not experiment_name or experiment_name in DIAGNOSTIC_EXPERIMENT_NAMES or experiment_name == "tracker_validation":
+                continue
+            items.append(
+                _build_experiment_item(
+                    run_dir=experiment_root,
+                    experiment_name=experiment_name,
+                    root_path=experiments_root,
+                    canonical_root_path=experiments_root / experiment_name,
+                    legacy_note="legacy experiments root",
+                )
+            )
+            continue
         experiment_name = experiment_root.name
         if experiment_name in DIAGNOSTIC_EXPERIMENT_NAMES or experiment_name == "tracker_validation":
             continue
         for run_dir in sorted((path for path in experiment_root.iterdir() if path.is_dir()), reverse=True):
-            metadata_path = run_dir / "metadata.json"
-            summary_path = run_dir / "summary.json"
-            readable_name = _humanize_name(experiment_name)
-            timestamp_label = _timestamp_from_name(run_dir.name)
-            details = "Missing metadata.json or summary.json"
-            status = "invalid"
-            if metadata_path.exists() and summary_path.exists():
-                metadata = _read_json(metadata_path)
-                summary = _read_json(summary_path)
-                readable_name = _humanize_name(str(metadata.get("experiment_name", experiment_name) or experiment_name))
-                timestamp_label = _timestamp_from_payload_or_name(metadata, run_dir.name)
-                details = _experiment_details(metadata, summary)
-                status = str(summary.get("status", "") or "saved")
             items.append(
-                _build_item(
-                    category_key="experiments",
-                    category_label="Experiments",
-                    item_type=experiment_name,
-                    readable_name=readable_name,
-                    path=run_dir,
+                _build_experiment_item(
+                    run_dir=run_dir,
+                    experiment_name=experiment_name,
                     root_path=experiment_root,
                     canonical_root_path=experiments_root / experiment_name,
-                    canonical_label=experiment_name,
-                    timestamp_label=timestamp_label,
-                    path_kind="dir",
-                    extension="",
-                    status=status,
-                    details=details,
-                    original_name=run_dir.name,
-                    metadata={"experiment_name": experiment_name},
                 )
             )
     return items
@@ -610,9 +635,14 @@ def _discover_diagnostic_items(project_root: Path) -> list[ManagedDataItem]:
                     )
                 )
 
-    legacy_tracker_validation_root = project_root / "data" / "experiments" / "tracker_validation"
-    if legacy_tracker_validation_root.exists():
-        for run_dir in sorted((path for path in legacy_tracker_validation_root.iterdir() if path.is_dir()), reverse=True):
+    canonical_tracker_root = project_root / "data" / "diagnostics" / "tracker_validation"
+    for legacy_root, note in (
+        (project_root / "data" / "experiments" / "tracker_validation", "legacy experiments root"),
+        (project_root / "data" / "tracker_validations", "legacy tracker_validations root"),
+    ):
+        if not legacy_root.exists():
+            continue
+        for run_dir in sorted((path for path in legacy_root.iterdir() if path.is_dir()), reverse=True):
             report_path = run_dir / "tracker_validation_report.json"
             report = _read_json(report_path) if report_path.exists() else {}
             items.append(
@@ -622,19 +652,45 @@ def _discover_diagnostic_items(project_root: Path) -> list[ManagedDataItem]:
                     item_type="tracker_validation",
                     readable_name="Tracker Validation",
                     path=run_dir,
-                    root_path=legacy_tracker_validation_root,
-                    canonical_root_path=project_root / "data" / "diagnostics" / "tracker_validation",
+                    root_path=legacy_root,
+                    canonical_root_path=canonical_tracker_root,
                     canonical_label="tracker_validation",
                     timestamp_label=_timestamp_from_name(run_dir.name),
                     path_kind="dir",
                     extension="",
                     status=("saved" if report else "invalid"),
                     details=(
-                        _tracker_validation_details(report) + " | legacy experiments root"
+                        _tracker_validation_details(report) + f" | {note}"
                         if report
-                        else "Missing tracker_validation_report.json | legacy experiments root"
+                        else f"Missing tracker_validation_report.json | {note}"
                     ),
                     original_name=run_dir.name,
+                )
+            )
+        for report_path in sorted((path for path in legacy_root.glob("*.json") if path.is_file()), reverse=True):
+            report = _read_json(report_path)
+            stamp = _timestamp_from_payload_or_name(report, report_path.name)
+            items.append(
+                _build_item(
+                    category_key="diagnostics",
+                    category_label="Diagnostics",
+                    item_type="tracker_validation",
+                    readable_name="Tracker Validation",
+                    path=report_path,
+                    root_path=legacy_root,
+                    canonical_root_path=canonical_tracker_root,
+                    canonical_label="tracker_validation",
+                    timestamp_label=stamp,
+                    path_kind="file",
+                    extension=".json",
+                    status="saved",
+                    details=_tracker_validation_details(report) + f" | {note}",
+                    original_name=report_path.name,
+                    canonical_path_override=(
+                        canonical_tracker_root / f"{stamp}_tracker_validation" / "tracker_validation_report.json"
+                        if stamp
+                        else None
+                    ),
                 )
             )
 
@@ -678,6 +734,184 @@ def _discover_diagnostic_items(project_root: Path) -> list[ManagedDataItem]:
     return items
 
 
+def _discover_pivot_calibration_items(project_root: Path) -> list[ManagedDataItem]:
+    items: list[ManagedDataItem] = []
+    pivot_root = project_root / "data" / "pivot_calibration"
+    if not pivot_root.exists():
+        return items
+
+    accepted_tip_path = pivot_root / "generated_penprobe_tip.csv"
+    if accepted_tip_path.exists():
+        items.append(
+            _build_item(
+                category_key="calibration",
+                category_label="Calibration",
+                item_type="pivot_tip_active",
+                readable_name="Accepted Pivot Tip File",
+                path=accepted_tip_path,
+                root_path=pivot_root,
+                canonical_root_path=pivot_root,
+                canonical_label="generated_penprobe_tip",
+                timestamp_label=_timestamp_from_name(accepted_tip_path.name),
+                path_kind="file",
+                extension=".csv",
+                status="active",
+                details="Accepted 0B tip file",
+                deletable=False,
+                delete_reason="Active pivot tip file",
+                protected=True,
+                original_name=accepted_tip_path.name,
+                treat_current_name_as_canonical=True,
+            )
+        )
+
+    captures_root = pivot_root / "captures"
+    if captures_root.exists():
+        for path in sorted((entry for entry in captures_root.iterdir() if entry.is_file()), reverse=True):
+            if path.suffix.lower() != ".csv":
+                continue
+            items.append(
+                _build_item(
+                    category_key="calibration",
+                    category_label="Calibration",
+                    item_type="pivot_capture",
+                    readable_name="Pivot Capture CSV",
+                    path=path,
+                    root_path=captures_root,
+                    canonical_root_path=captures_root,
+                    canonical_label="pivot_0B_samples",
+                    timestamp_label=_timestamp_from_name(path.name),
+                    path_kind="file",
+                    extension=".csv",
+                    status="saved",
+                    details="Raw tracker-driven pivot capture",
+                    original_name=path.name,
+                )
+            )
+
+    staged_root = pivot_root / "staged"
+    if staged_root.exists():
+        for path in sorted((entry for entry in staged_root.iterdir() if entry.is_file()), reverse=True):
+            if path.suffix.lower() != ".csv":
+                continue
+            items.append(
+                _build_item(
+                    category_key="calibration",
+                    category_label="Calibration",
+                    item_type="pivot_tip_staged",
+                    readable_name="Staged Pivot Tip File",
+                    path=path,
+                    root_path=staged_root,
+                    canonical_root_path=staged_root,
+                    canonical_label="generated_penprobe_tip",
+                    timestamp_label=_timestamp_from_name(path.name),
+                    path_kind="file",
+                    extension=".csv",
+                    status="staged",
+                    details="Pending pivot tip acceptance",
+                    original_name=path.name,
+                )
+            )
+
+    for run_dir in sorted((entry for entry in pivot_root.iterdir() if entry.is_dir()), reverse=True):
+        if run_dir.name in {"captures", "staged"}:
+            continue
+        metadata_path = run_dir / "metadata.json"
+        summary_path = run_dir / "summary.json"
+        readable_name = "Pivot Calibration"
+        canonical_label = "pivot_calibration_review" if "review" in run_dir.name else "pivot_calibration"
+        timestamp_label = _timestamp_from_name(run_dir.name)
+        status = "invalid"
+        details = "Missing metadata.json or summary.json"
+        metadata_payload: dict[str, Any] = {}
+        if metadata_path.exists() and summary_path.exists():
+            metadata_payload = _read_json(metadata_path)
+            summary_payload = _read_json(summary_path)
+            metrics = summary_payload.get("experiment_metrics", {})
+            if not isinstance(metrics, dict):
+                metrics = {}
+            timestamp_label = _timestamp_from_payload_or_name(metadata_payload, run_dir.name)
+            status = str(summary_payload.get("status", "") or "saved")
+            if "review" in run_dir.name:
+                readable_name = "Pivot Calibration Review"
+                canonical_label = "pivot_calibration_review"
+            else:
+                readable_name = "Pivot Calibration"
+                canonical_label = "pivot_calibration"
+            rmse = metrics.get("rmse_mm")
+            used = metrics.get("sample_count_used")
+            rejected = metrics.get("sample_count_rejected")
+            details = readable_name
+            if rmse is not None:
+                details += f" | RMSE {float(rmse):.3f} mm"
+            if used is not None or rejected is not None:
+                details += f" | {int(used or 0)} used / {int(rejected or 0)} rejected"
+        items.append(
+            _build_item(
+                category_key="calibration",
+                category_label="Calibration",
+                item_type="pivot_calibration_run",
+                readable_name=readable_name,
+                path=run_dir,
+                root_path=pivot_root,
+                canonical_root_path=pivot_root,
+                canonical_label=canonical_label,
+                timestamp_label=timestamp_label,
+                path_kind="dir",
+                extension="",
+                status=status,
+                details=details,
+                original_name=run_dir.name,
+                metadata=metadata_payload,
+            )
+        )
+    return items
+
+
+def _build_experiment_item(
+    *,
+    run_dir: Path,
+    experiment_name: str,
+    root_path: Path,
+    canonical_root_path: Path,
+    legacy_note: str = "",
+) -> ManagedDataItem:
+    metadata_path = run_dir / "metadata.json"
+    summary_path = run_dir / "summary.json"
+    readable_name = _humanize_name(experiment_name)
+    timestamp_label = _timestamp_from_name(run_dir.name)
+    details = "Missing metadata.json or summary.json"
+    status = "invalid"
+    metadata_payload: dict[str, Any] = {"experiment_name": experiment_name}
+    if metadata_path.exists() and summary_path.exists():
+        metadata = _read_json(metadata_path)
+        summary = _read_json(summary_path)
+        readable_name = _humanize_name(str(metadata.get("experiment_name", experiment_name) or experiment_name))
+        timestamp_label = _timestamp_from_payload_or_name(metadata, run_dir.name)
+        details = _experiment_details(metadata, summary)
+        status = str(summary.get("status", "") or "saved")
+        metadata_payload = {"experiment_name": experiment_name, **metadata}
+    if legacy_note:
+        details = f"{details} | {legacy_note}"
+    return _build_item(
+        category_key="experiments",
+        category_label="Experiments",
+        item_type=experiment_name,
+        readable_name=readable_name,
+        path=run_dir,
+        root_path=root_path,
+        canonical_root_path=canonical_root_path,
+        canonical_label=experiment_name,
+        timestamp_label=timestamp_label,
+        path_kind="dir",
+        extension="",
+        status=status,
+        details=details,
+        original_name=run_dir.name,
+        metadata=metadata_payload,
+    )
+
+
 def _build_item(
     *,
     category_key: str,
@@ -698,9 +932,10 @@ def _build_item(
     protected: bool = False,
     original_name: str = "",
     treat_current_name_as_canonical: bool = False,
+    canonical_path_override: Path | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> ManagedDataItem:
-    canonical_path = _proposed_canonical_path(
+    canonical_path = canonical_path_override or _proposed_canonical_path(
         canonical_root_path,
         timestamp_label=timestamp_label,
         canonical_label=canonical_label,
@@ -936,6 +1171,19 @@ def _timestamp_from_name(name: str) -> str:
     if not match:
         return ""
     return f"{match.group(1)}_{match.group(2)}"
+
+
+def _looks_like_timestamped_run_dir(name: str) -> bool:
+    return bool(re.match(r"^\d{8}_\d{6}_.+", str(name or "")))
+
+
+def _experiment_name_from_run_dir(name: str) -> str:
+    raw = str(name or "")
+    if not _looks_like_timestamped_run_dir(raw):
+        return ""
+    stripped = re.sub(r"^\d{8}_\d{6}_", "", raw)
+    stripped = re.sub(r"_\d{2}$", "", stripped)
+    return sanitize_output_name(stripped, default="")
 
 
 def _payload_registration_fre(payload: dict[str, Any]) -> float | None:

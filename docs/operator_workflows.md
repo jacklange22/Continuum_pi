@@ -224,5 +224,5 @@ Hard failure:
 
 ## Legacy Surface
 
-`Tracker Legacy` remains available only for compatibility checks and deeper tracker-first diagnostics.
-Normal operation should use `Tracking` plus `Registration`.
+The Python legacy-bridge compatibility modules remain available only for explicit bridge fallback/debug work.
+Normal operation should use the current `Tracking` plus `Registration` workflows.

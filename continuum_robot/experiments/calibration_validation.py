@@ -198,10 +198,18 @@ def list_registration_validation_candidates(project_root: Path, *, limit: int | 
 def list_pivot_validation_candidates(project_root: Path, *, limit: int | None = None) -> list[ValidationRunCandidate]:
     """List saved canonical pivot-calibration runs for the validation page."""
     loader = ExperimentDatasetLoader()
-    root = Path(project_root) / "data" / "experiments" / "pivot_calibration"
+    root = Path(project_root) / "data" / "pivot_calibration"
     if not root.exists():
         return []
-    run_dirs = sorted((path for path in root.iterdir() if path.is_dir()), key=lambda item: item.name, reverse=True)
+    run_dirs = sorted(
+        (
+            path
+            for path in root.iterdir()
+            if path.is_dir() and (path / "metadata.json").exists() and (path / "summary.json").exists()
+        ),
+        key=lambda item: item.name,
+        reverse=True,
+    )
     if limit is not None:
         run_dirs = run_dirs[: max(0, int(limit))]
     candidates: list[ValidationRunCandidate] = []

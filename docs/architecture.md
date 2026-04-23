@@ -101,11 +101,12 @@ Runtime config:
 
 Persistent runtime artifacts:
 
-- `config/` for durable servo startup calibration state
+- `config/` for runtime YAML and the active servo startup calibration singleton
 - `data/pivot_calibration/` for accepted and staged 0B tip-calibration artifacts plus pivot review data
 - `data/registrations/` for durable accepted/latest registration artifacts
 - `data/diagnostics/tracker_validation/` for saved tracker validation reports
 - `data/diagnostics/data_management_migration/` for dry-run and applied migration ledgers
+- `data/calibration/servo_calibration/` for archived servo startup calibration history
 - `data/experiments/` for canonical experiment datasets
 - `data/experiments/<experiment_name>/` for canonical run bundles grouped by experiment type
 - `data/pivot_calibration/captures/` for raw pivot-review capture CSVs

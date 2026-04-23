@@ -136,7 +136,13 @@ def _write_pivot_run(
             "pivot_input_tool_id": "0B",
         },
     )
-    return writer.write_dataset(metadata, [], summary, output_dir_name=name).output_dir
+    return writer.write_dataset(
+        metadata,
+        [],
+        summary,
+        output_root=project_root / "data",
+        output_dir_name=name,
+    ).output_dir
 
 
 def test_registration_validation_analysis_and_runner_outputs(tmp_path: Path) -> None:
@@ -228,7 +234,7 @@ def test_pivot_validation_analysis_and_runner_outputs(tmp_path: Path) -> None:
         tip_vector_local_mm=[-0.4, 0.1, 125.1],
         rmse_mm=0.36,
     )
-    _write_pivot_run(
+    run_d = _write_pivot_run(
         tmp_path,
         name="20260101_000300_not_pivot",
         tip_vector_local_mm=[0.0, 0.0, 125.0],
@@ -241,7 +247,7 @@ def test_pivot_validation_analysis_and_runner_outputs(tmp_path: Path) -> None:
             str(run_a.relative_to(tmp_path)),
             str(run_b.relative_to(tmp_path)),
             str(run_c.relative_to(tmp_path)),
-            "data/experiments/pivot_calibration/20260101_000300_not_pivot",
+            str(run_d.relative_to(tmp_path)),
         ],
         project_root=tmp_path,
     )
