@@ -1,0 +1,26 @@
+Pivot Validation Summary
+Offline analysis of repeated saved pivot-calibration runs. Metrics quantify tip-offset spread only; no arbitrary orientation estimate is implied.
+
+Run ID: 7a55e4359ecf
+Timestamp: 2026-04-23T21:42:06.683645+00:00
+Status: success
+Selected runs: 11
+Valid runs: 6
+Skipped runs: 5
+
+Tip-norm mean / std / max (mm): 17.556 / 0.796 / 18.591
+RMSE mean / std / max (mm): 0.605 / 0.352 / 1.082
+Distance to consensus mean / std / max (mm): 1.190 / 0.532 / 2.145
+Consensus tip vector (local mm): [-1.2200939860306932, -4.762916380159955, 16.822221000106698]
+
+Saved plots:
+- pivot_tip_scatter.png
+- pivot_axis_histograms.png
+- pivot_quality_summary.png
+
+Skipped source artifacts:
+- data/pivot_calibration/20260401_181455_pivot_calibration_review: Pivot run is missing tip_vector_local_mm.
+- data/pivot_calibration/20260401_181454_pivot_calibration_review: Pivot run is missing tip_vector_local_mm.
+- data/pivot_calibration/20260401_181429_pivot_calibration_review: Pivot run is missing tip_vector_local_mm.
+- data/pivot_calibration/20260401_181408_pivot_calibration_review: Pivot run is missing tip_vector_local_mm.
+- data/pivot_calibration/20260401_181404_pivot_calibration_review: Pivot run is missing tip_vector_local_mm.

@@ -63,6 +63,7 @@ class ExperimentTab(QWidget):
         self.selected_badges_label.hide()
 
         self.experiment_combo = QComboBox()
+        self.experiment_combo.setObjectName("experimentSelectorCombo")
         self.experiment_combo.setMinimumHeight(36)
         self.experiment_combo.currentIndexChanged.connect(self._on_experiment_selected)
         self.load_defaults_button = QPushButton("Load Defaults")
@@ -98,6 +99,7 @@ class ExperimentTab(QWidget):
         header_card.body_layout.addWidget(selected_summary)
 
         self.page_stack = QStackedWidget()
+        self.page_stack.setObjectName("experimentPageStack")
         self.empty_page = EmptyExperimentWorkspace()
         self.page_stack.addWidget(self.empty_page)
         self.page_stack.setCurrentWidget(self.empty_page)
@@ -135,6 +137,8 @@ class ExperimentTab(QWidget):
         ):
             if self.page_stack.currentWidget() is not page:
                 self.page_stack.setCurrentWidget(page)
+            if hasattr(page, "_log_interaction_snapshot"):
+                page._log_interaction_snapshot("tab_manual_update_skipped", selector=self.experiment_combo)
             return False
 
         self.load_defaults_button.setEnabled(True)
@@ -156,6 +160,8 @@ class ExperimentTab(QWidget):
             elapsed_ms=(time.monotonic() - set_state_started) * 1000.0,
         )
         self.page_stack.setCurrentWidget(page)
+        if hasattr(page, "_log_interaction_snapshot"):
+            page._log_interaction_snapshot("tab_update_complete", selector=self.experiment_combo)
         self._log_event(
             "update_complete",
             experiment=state.selected_experiment,
@@ -184,13 +190,26 @@ class ExperimentTab(QWidget):
         if row < 0:
             return
         raw_name = self.experiment_combo.itemData(row)
-        self._log_event("page_selection", row=row, experiment=raw_name or "")
+        selected_before = self.controller.state.selected_experiment
+        self._log_event(
+            "page_selection",
+            row=row,
+            experiment=raw_name or "",
+            selected_before=selected_before or "",
+        )
         if not raw_name:
             if self.controller.state.selected_experiment:
                 self.controller.clear_selection()
+                self._log_event("page_selection_cleared", selected_before=selected_before or "")
             return
         if raw_name != self.controller.state.selected_experiment:
             self.controller.select_experiment(str(raw_name))
+            self._log_event(
+                "page_selection_requested",
+                experiment=raw_name,
+                selected_before=selected_before or "",
+                selected_after=self.controller.state.selected_experiment or "",
+            )
 
     def _page_for(self, experiment_name: str) -> QWidget:
         if experiment_name not in self._pages:

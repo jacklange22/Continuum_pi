@@ -39,7 +39,7 @@ from continuum_robot.gui.controllers.servos_controller import ServosController
 from continuum_robot.gui.controllers.system_controller import SystemController, SystemViewState
 from continuum_robot.gui.controllers.experiment_controller import ExperimentController
 from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpController, TrackerMvpViewState
-from continuum_robot.gui.experiment_visualization import ChartModel, VisualizationModel
+from continuum_robot.gui.experiment_visualization import ChartModel, ScatterSeries3D, VisualizationModel
 from continuum_robot.gui.theme import COLORS
 from continuum_robot.gui.tabs.experiment_tab import ExperimentTab
 from continuum_robot.gui.tabs.pretension_tab import PretensionTab
@@ -49,6 +49,7 @@ from continuum_robot.gui.tabs.system_tab import SystemTab
 from continuum_robot.gui.tabs.tracker_mvp_tab import TrackerMvpTab
 from continuum_robot.gui.tabs.tracking_tab import TrackingTab
 from continuum_robot.gui.widgets.experiment_results_widget import ExperimentResultsWidget
+from continuum_robot.gui.widgets.experiment_3d_widget import BACKEND_NATIVE_3D, BACKEND_PLACEHOLDER, BACKEND_PROJECTION
 from continuum_robot.gui.widgets import experiment_pages as experiment_pages_module
 from continuum_robot.gui.widgets.runtime_tip_calibration_dialog import RuntimeTipCalibrationDialog
 from continuum_robot.gui.widgets.tool_plot_widget import ToolPlotWidget
@@ -2435,6 +2436,27 @@ def test_registration_validation_page_uses_single_scroll_shell(tmp_path: Path) -
     assert page.parameter_panel is page.parameter_container
 
 
+@pytest.mark.parametrize("experiment_name", ["registration_validation", "pivot_validation"])
+def test_validation_page_scroll_hierarchy_has_single_outer_scroll_shell(
+    tmp_path: Path, experiment_name: str
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment(experiment_name)
+    tab.update(controller.refresh())
+    page = tab._page_for(experiment_name)
+
+    scroll_areas = page.findChildren(QScrollArea)
+
+    assert page.parameter_scroll is None
+    assert page.parameter_panel is page.parameter_container
+    assert page.scroll_area in scroll_areas
+    assert len(scroll_areas) == 1
+    assert page.scroll_area.widgetResizable() is True
+    assert page.run_table.parent() is not page.scroll_area
+
+
 def test_registration_validation_page_slow_row_formatting_stays_responsive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2497,8 +2519,141 @@ def test_registration_validation_placeholder_hides_after_candidates_load(
     QTest.qWait(60)
 
     assert page.loading_label.isVisible() is False
+    assert page.loading_label.isEnabled() is False
+    assert page.loading_label.testAttribute(Qt.WA_TransparentForMouseEvents) is True
     assert page.run_table.isVisible() is True
+    assert page.run_table.isEnabled() is True
     assert page.run_table.rowCount() == 1
+
+
+@pytest.mark.parametrize(
+    ("experiment_name", "candidate_factory", "candidate_attr"),
+    [
+        (
+            "registration_validation",
+            lambda: [
+                ValidationRunCandidate(
+                    path="data/registrations/registration_a.json",
+                    timestamp_utc="2026-01-01T00:00:00+00:00",
+                    label="registration_a.json",
+                )
+            ],
+            "list_registration_validation_candidates",
+        ),
+        (
+            "pivot_validation",
+            lambda: [
+                ValidationRunCandidate(
+                    path="data/pivot_calibrations/pivot_a",
+                    timestamp_utc="2026-01-01T00:00:00+00:00",
+                    label="pivot_a",
+                )
+            ],
+            "list_pivot_validation_candidates",
+        ),
+    ],
+)
+def test_validation_pages_use_exclusive_non_intercepting_candidate_surfaces(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    experiment_name: str,
+    candidate_factory,
+    candidate_attr: str,
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    monkeypatch.setattr(experiment_pages_module, candidate_attr, lambda _project_root: candidate_factory())
+    controller.select_experiment(experiment_name)
+
+    tab.update(controller.refresh())
+    page = tab._page_for(experiment_name)
+    QTest.qWait(80)
+
+    assert page.loading_label.isVisible() is False
+    assert page.loading_label.isEnabled() is False
+    assert page.loading_label.testAttribute(Qt.WA_TransparentForMouseEvents) is True
+    assert page.run_table.isVisible() is True
+    assert page.run_table.isEnabled() is True
+    assert page.run_table.viewport().isEnabled() is True
+    assert page.run_table.rowCount() == 1
+
+
+@pytest.mark.parametrize(
+    ("experiment_name", "candidate_attr"),
+    [
+        ("registration_validation", "list_registration_validation_candidates"),
+        ("pivot_validation", "list_pivot_validation_candidates"),
+    ],
+)
+def test_validation_page_table_remains_clickable_after_candidate_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    experiment_name: str,
+    candidate_attr: str,
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    candidate_path = f"data/{experiment_name}/source_a"
+    monkeypatch.setattr(
+        experiment_pages_module,
+        candidate_attr,
+        lambda _project_root: [
+            ValidationRunCandidate(
+                path=candidate_path,
+                timestamp_utc="2026-01-01T00:00:00+00:00",
+                label="source_a",
+            )
+        ],
+    )
+    controller.select_experiment(experiment_name)
+    tab.update(controller.refresh())
+    page = tab._page_for(experiment_name)
+    QTest.qWait(80)
+
+    item = page.run_table.item(0, 0)
+    assert item is not None
+    assert item.flags() & Qt.ItemIsUserCheckable
+    assert item.flags() & Qt.ItemIsEnabled
+
+    item.setCheckState(Qt.Checked)
+    QTest.qWait(20)
+
+    assert controller.get_config_value("run_paths", []) == [candidate_path]
+
+
+@pytest.mark.parametrize("experiment_name", ["registration_validation", "pivot_validation"])
+def test_validation_pages_defer_and_force_non_native_visualization(tmp_path: Path, experiment_name: str) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment(experiment_name)
+    state = controller.refresh()
+    tab.update(state)
+    page = tab._page_for(experiment_name)
+
+    assert page.defer_visualization_until_data is True
+    assert page.visualization_mode_override == experiment_pages_module.VIS_MODE_PROJECTION
+    assert page.viewer_3d is None
+    assert page.viewer_placeholder is not None
+    assert page.viewer_placeholder.testAttribute(Qt.WA_TransparentForMouseEvents) is True
+
+    state.visualization_model = VisualizationModel(
+        series_3d=[
+            ScatterSeries3D(
+                name="Loaded Validation Points",
+                color_hex="#2563eb",
+                points_xyz=[(0.0, 0.0, 0.0), (1.0, 2.0, 3.0)],
+            )
+        ]
+    )
+    page.set_state(state)
+
+    assert page.viewer_3d is not None
+    assert page.viewer_3d.backend_mode in {BACKEND_PROJECTION, BACKEND_PLACEHOLDER}
+    assert page.viewer_3d.backend_mode != BACKEND_NATIVE_3D
+    assert getattr(page.viewer_3d, "_container", None) is None
 
 
 def test_registration_validation_candidate_reload_replaces_old_rows_cleanly(
@@ -2719,6 +2874,49 @@ def test_experiment_workspace_can_switch_away_from_registration_validation_while
 
     release.set()
     QTest.qWait(50)
+
+
+@pytest.mark.parametrize(
+    ("experiment_name", "candidate_attr"),
+    [
+        ("registration_validation", "list_registration_validation_candidates"),
+        ("pivot_validation", "list_pivot_validation_candidates"),
+    ],
+)
+def test_experiment_selector_switches_away_after_validation_candidates_apply(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    experiment_name: str,
+    candidate_attr: str,
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    monkeypatch.setattr(
+        experiment_pages_module,
+        candidate_attr,
+        lambda _project_root: [
+            ValidationRunCandidate(
+                path=f"data/{experiment_name}/source_a",
+                timestamp_utc="2026-01-01T00:00:00+00:00",
+                label="source_a",
+            )
+        ],
+    )
+    controller.select_experiment(experiment_name)
+    tab.update(controller.refresh())
+    page = tab._page_for(experiment_name)
+    QTest.qWait(80)
+    assert page.run_table.isVisible() is True
+
+    target_index = tab.experiment_combo.findData("command_schedule_validation")
+    assert target_index >= 0
+    tab.experiment_combo.setCurrentIndex(target_index)
+    QTest.qWait(20)
+    tab.update(controller.refresh())
+
+    assert controller.state.selected_experiment == "command_schedule_validation"
+    assert tab.page_stack.currentWidget() is tab._page_for("command_schedule_validation")
 
 
 def test_experiment_workspace_loads_pivot_validation_page(tmp_path: Path) -> None:

@@ -11,10 +11,11 @@ from typing import Callable
 
 import numpy as np
 import yaml
-from PySide6.QtCore import QCoreApplication, QSignalBlocker, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, QSignalBlocker, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QBoxLayout,
     QCheckBox,
     QComboBox,
@@ -2548,6 +2549,8 @@ class _ValidationSelectionPage(ExperimentPageBase):
     show_visualization = True
     refresh_policy = "manual"
     parameter_panel_scrollable = False
+    defer_visualization_until_data = True
+    visualization_mode_override = VIS_MODE_PROJECTION
 
     selection_title = "Source Runs"
     selection_subtitle = "Choose the saved runs to analyze."
@@ -2571,10 +2574,12 @@ class _ValidationSelectionPage(ExperimentPageBase):
         self._table_apply_token = 0
         super().__init__(controller, experiment_name, parent)
         self.run_button.setText(self.run_button_text)
+        self._install_interaction_instrumentation()
         self.candidates_loaded.connect(self._apply_loaded_candidates)
 
     def _build_parameter_sections(self) -> None:
         selection_card = ExperimentCard(self.selection_title, self.selection_subtitle)
+        selection_card.setObjectName(f"{self.experiment_name}SelectionCard")
         toolbar = QHBoxLayout()
         toolbar.setContentsMargins(0, 0, 0, 0)
         toolbar.setSpacing(8)
@@ -2597,16 +2602,22 @@ class _ValidationSelectionPage(ExperimentPageBase):
         selection_card.body_layout.addWidget(self.selection_summary_widget)
 
         self.loading_label = QLabel("Loading saved runs...")
+        self.loading_label.setObjectName(f"{self.experiment_name}LoadingLabel")
         self.loading_label.setProperty("role", "muted")
         self.loading_label.setWordWrap(True)
+        self.loading_label.setEnabled(False)
+        self.loading_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.loading_label.hide()
         selection_card.body_layout.addWidget(self.loading_label)
 
         self.run_table = QTableWidget(0, len(self.table_headers))
+        self.run_table.setObjectName(f"{self.experiment_name}RunTable")
+        self.run_table.viewport().setObjectName(f"{self.experiment_name}RunTableViewport")
         self.run_table.setHorizontalHeaderLabels(list(self.table_headers))
         self.run_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.run_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.run_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.run_table.setFocusPolicy(Qt.ClickFocus)
         self.run_table.verticalHeader().setVisible(False)
         self.run_table.horizontalHeader().setStretchLastSection(True)
         self.run_table.setMinimumHeight(280)
@@ -2637,6 +2648,7 @@ class _ValidationSelectionPage(ExperimentPageBase):
         self._sync_table(candidates, selected)
         self.selection_summary_widget.set_pairs(self._summary_pairs(candidates, selected))
         self._sync_loading_state(candidates)
+        self._log_interaction_snapshot("set_state_end")
         self._log_stage(
             "set_state",
             "end",
@@ -2846,6 +2858,7 @@ class _ValidationSelectionPage(ExperimentPageBase):
         self._sync_table(self._candidate_cache, selected)
         self.selection_summary_widget.set_pairs(self._summary_pairs(self._candidate_cache, selected))
         self._sync_loading_state(self._candidate_cache)
+        self._log_interaction_snapshot("candidate_apply_end")
         self._log_stage(
             "candidate_apply",
             "end",
@@ -2855,23 +2868,30 @@ class _ValidationSelectionPage(ExperimentPageBase):
         )
 
     def _sync_loading_state(self, candidates) -> None:
+        has_candidates = bool(candidates)
         if self._candidate_loading:
-            self.loading_label.setText("Loading saved runs..." if not candidates else "Refreshing saved runs...")
-            self.loading_label.show()
-            self.run_table.setEnabled(bool(candidates))
-            self.run_table.setVisible(bool(candidates))
+            self.loading_label.setText("Loading saved runs..." if not has_candidates else "Refreshing saved runs...")
+            self.loading_label.setVisible(not has_candidates)
+            self.loading_label.setEnabled(not has_candidates)
+            self.run_table.setEnabled(has_candidates)
+            self.run_table.setVisible(has_candidates)
+            self._log_surface_state("loading_state")
             return
         if self._candidate_error:
             self.loading_label.setText(f"Could not load saved runs: {self._candidate_error}")
-            self.loading_label.show()
-            self.run_table.setEnabled(bool(candidates))
-            self.run_table.setVisible(bool(candidates))
+            self.loading_label.setVisible(not has_candidates)
+            self.loading_label.setEnabled(not has_candidates)
+            self.run_table.setEnabled(has_candidates)
+            self.run_table.setVisible(has_candidates)
+            self._log_surface_state("error_state")
             return
-        self.loading_label.setVisible(not bool(candidates))
-        if not candidates:
+        self.loading_label.setVisible(not has_candidates)
+        self.loading_label.setEnabled(not has_candidates)
+        if not has_candidates:
             self.loading_label.setText("No saved runs found yet.")
-        self.run_table.setVisible(bool(candidates))
-        self.run_table.setEnabled(True)
+        self.run_table.setVisible(has_candidates)
+        self.run_table.setEnabled(has_candidates)
+        self._log_surface_state("loaded_state")
 
     def _schedule_table_apply(self, generation: int) -> None:
         self._table_apply_token += 1
@@ -2922,6 +2942,7 @@ class _ValidationSelectionPage(ExperimentPageBase):
             self._schedule_table_apply(generation)
             return
         self._table_apply_complete = True
+        self._log_interaction_snapshot("table_apply_end")
         self._log_stage(
             "table_rebuild",
             "end",
@@ -2940,6 +2961,96 @@ class _ValidationSelectionPage(ExperimentPageBase):
         details["experiment"] = self.experiment_name
         rendered = " ".join(f"{key}={value}" for key, value in details.items())
         LOG.info("ValidationPage[%s] %s | %s", stage, event, rendered)
+
+    def _install_interaction_instrumentation(self) -> None:
+        if self.viewer_placeholder is not None:
+            self.viewer_placeholder.setObjectName(f"{self.experiment_name}ViewerPlaceholder")
+            self.viewer_placeholder.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        watched_widgets = [
+            self,
+            self.scroll_area,
+            self.scroll_area.viewport(),
+            self.parameter_container,
+            self.loading_label,
+            self.run_table,
+            self.run_table.viewport(),
+            self.viewer_placeholder,
+        ]
+        for widget in watched_widgets:
+            if widget is not None:
+                widget.installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:  # pragma: no cover - log-only Pi diagnostics
+        event_type = event.type()
+        if event_type in {
+            QEvent.Type.MouseButtonPress,
+            QEvent.Type.Wheel,
+            QEvent.Type.FocusIn,
+            QEvent.Type.FocusOut,
+        }:
+            self._log_stage(
+                "interaction",
+                _event_type_name(event_type),
+                source=_widget_debug_name(watched),
+                visible=getattr(watched, "isVisible", lambda: False)(),
+                enabled=getattr(watched, "isEnabled", lambda: False)(),
+                table_visible=self.run_table.isVisible(),
+                table_enabled=self.run_table.isEnabled(),
+                loading_visible=self.loading_label.isVisible(),
+                loading_enabled=self.loading_label.isEnabled(),
+                viewer_placeholder_visible=(
+                    self.viewer_placeholder.isVisible() if self.viewer_placeholder is not None else False
+                ),
+                viewer_backend=getattr(self.viewer_3d, "backend_mode", "none"),
+            )
+        return super().eventFilter(watched, event)
+
+    def _log_surface_state(self, event: str) -> None:
+        self._log_stage(
+            "surface_state",
+            event,
+            loading_visible=self.loading_label.isVisible(),
+            loading_enabled=self.loading_label.isEnabled(),
+            loading_transparent=self.loading_label.testAttribute(Qt.WA_TransparentForMouseEvents),
+            table_visible=self.run_table.isVisible(),
+            table_enabled=self.run_table.isEnabled(),
+            table_rows=self.run_table.rowCount(),
+            table_viewport_enabled=self.run_table.viewport().isEnabled(),
+            table_focus_policy=str(self.run_table.focusPolicy()),
+            viewer_placeholder_visible=(
+                self.viewer_placeholder.isVisible() if self.viewer_placeholder is not None else False
+            ),
+            viewer_placeholder_transparent=(
+                self.viewer_placeholder.testAttribute(Qt.WA_TransparentForMouseEvents)
+                if self.viewer_placeholder is not None
+                else False
+            ),
+            viewer_backend=getattr(self.viewer_3d, "backend_mode", "none"),
+            viewer_container_present=bool(getattr(self.viewer_3d, "_container", None)),
+        )
+
+    def _log_interaction_snapshot(self, event: str, *, selector: QWidget | None = None) -> None:
+        selector_top = _widget_at_center(selector) if selector is not None else "n/a"
+        table_top = _widget_at_center(self.run_table) if self.run_table.isVisible() else "n/a"
+        self._log_stage(
+            "interaction_snapshot",
+            event,
+            page_visible=self.isVisible(),
+            page_enabled=self.isEnabled(),
+            scroll_visible=self.scroll_area.isVisible(),
+            scroll_enabled=self.scroll_area.isEnabled(),
+            selector_top=selector_top,
+            table_top=table_top,
+            loading_rect=_global_rect_text(self.loading_label),
+            table_rect=_global_rect_text(self.run_table),
+            scroll_rect=_global_rect_text(self.scroll_area),
+            viewer_placeholder_rect=_global_rect_text(self.viewer_placeholder),
+            viewer_placeholder_visible=(
+                self.viewer_placeholder.isVisible() if self.viewer_placeholder is not None else False
+            ),
+            viewer_backend=getattr(self.viewer_3d, "backend_mode", "none"),
+            viewer_container_present=bool(getattr(self.viewer_3d, "_container", None)),
+        )
 
     @staticmethod
     def _is_gui_thread() -> bool:
@@ -3189,6 +3300,40 @@ def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBas
 def _yaml_block(value) -> str:
     rendered = yaml.safe_dump(value if value is not None else [], sort_keys=False)
     return str(rendered or "").strip()
+
+
+def _event_type_name(event_type) -> str:
+    names = {
+        QEvent.Type.MouseButtonPress: "mouse_press",
+        QEvent.Type.Wheel: "wheel",
+        QEvent.Type.FocusIn: "focus_in",
+        QEvent.Type.FocusOut: "focus_out",
+    }
+    return names.get(event_type, str(event_type))
+
+
+def _widget_debug_name(widget) -> str:
+    if widget is None:
+        return "none"
+    object_name = str(getattr(widget, "objectName", lambda: "")() or "")
+    cls_name = widget.__class__.__name__
+    return f"{cls_name}#{object_name}" if object_name else cls_name
+
+
+def _global_rect_text(widget: QWidget | None) -> str:
+    if widget is None:
+        return "none"
+    rect = widget.rect()
+    top_left = widget.mapToGlobal(rect.topLeft())
+    return f"{top_left.x()},{top_left.y()},{rect.width()}x{rect.height()}"
+
+
+def _widget_at_center(widget: QWidget | None) -> str:
+    if widget is None or not widget.isVisible():
+        return "none"
+    center = widget.rect().center()
+    top = QApplication.widgetAt(widget.mapToGlobal(center))
+    return _widget_debug_name(top)
 
 
 def _render_inline_list(value) -> str:

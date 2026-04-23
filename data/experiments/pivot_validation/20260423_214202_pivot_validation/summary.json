@@ -1,0 +1,271 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "pivot_validation",
+  "run_id": "7a55e4359ecf",
+  "success": true,
+  "sample_counts": {
+    "total": 0
+  },
+  "dropped_frames": 0,
+  "invalid_transforms": 0,
+  "stage_pass_fail": {
+    "setup": "passed",
+    "precheck": "passed",
+    "execute": "passed",
+    "finalize": "passed"
+  },
+  "status": "success",
+  "experiment_metrics": {
+    "experiment_name": "pivot_validation",
+    "selected_run_count": 11,
+    "valid_run_count": 6,
+    "invalid_run_count": 5,
+    "selected_run_paths": [
+      "data/pivot_calibration/20260419_225103_pivot_calibration_review",
+      "data/pivot_calibration/20260419_225008_pivot_calibration_review",
+      "data/pivot_calibration/20260412_214329_pivot_calibration_review",
+      "data/pivot_calibration/20260403_161031_pivot_calibration_review",
+      "data/pivot_calibration/20260401_193401_pivot_calibration_review",
+      "data/pivot_calibration/20260401_181455_pivot_calibration_review",
+      "data/pivot_calibration/20260401_181454_pivot_calibration_review",
+      "data/pivot_calibration/20260401_181429_pivot_calibration_review",
+      "data/pivot_calibration/20260401_181408_pivot_calibration_review",
+      "data/pivot_calibration/20260401_181404_pivot_calibration_review",
+      "data/pivot_calibration/20260331_210343_pivot_calibration"
+    ],
+    "valid_run_paths": [
+      "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260419_225103_pivot_calibration_review",
+      "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260419_225008_pivot_calibration_review",
+      "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260412_214329_pivot_calibration_review",
+      "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260403_161031_pivot_calibration_review",
+      "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260401_193401_pivot_calibration_review",
+      "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260331_210343_pivot_calibration"
+    ],
+    "invalid_runs": [
+      {
+        "path": "data/pivot_calibration/20260401_181455_pivot_calibration_review",
+        "reason": "Pivot run is missing tip_vector_local_mm."
+      },
+      {
+        "path": "data/pivot_calibration/20260401_181454_pivot_calibration_review",
+        "reason": "Pivot run is missing tip_vector_local_mm."
+      },
+      {
+        "path": "data/pivot_calibration/20260401_181429_pivot_calibration_review",
+        "reason": "Pivot run is missing tip_vector_local_mm."
+      },
+      {
+        "path": "data/pivot_calibration/20260401_181408_pivot_calibration_review",
+        "reason": "Pivot run is missing tip_vector_local_mm."
+      },
+      {
+        "path": "data/pivot_calibration/20260401_181404_pivot_calibration_review",
+        "reason": "Pivot run is missing tip_vector_local_mm."
+      }
+    ],
+    "consensus_tip_vector_local_mm": [
+      -1.2200939860306932,
+      -4.762916380159955,
+      16.822221000106698
+    ],
+    "per_run_rows": [
+      {
+        "path": "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260419_225103_pivot_calibration_review",
+        "label": "20260419_225103_pivot_calibration_review",
+        "timestamp_utc": "2026-04-19T22:51:03.981329+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -1.7546567518016551,
+          -3.3724125459572463,
+          16.696994630976242
+        ],
+        "rmse_mm": 1.08230298837079,
+        "sample_count_total": 227,
+        "sample_count_used": 225,
+        "sample_count_rejected": 2,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 17.124299004736585,
+        "distance_to_consensus_mm": 1.4949715405340434,
+        "run_index": 0
+      },
+      {
+        "path": "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260419_225008_pivot_calibration_review",
+        "label": "20260419_225008_pivot_calibration_review",
+        "timestamp_utc": "2026-04-19T22:50:08.777647+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -2.395984134881423,
+          -5.1969592111159955,
+          15.081726097417354
+        ],
+        "rmse_mm": 1.045427946934847,
+        "sample_count_total": 204,
+        "sample_count_used": 202,
+        "sample_count_rejected": 2,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 16.13095121479594,
+        "distance_to_consensus_mm": 2.1448620765811754,
+        "run_index": 1
+      },
+      {
+        "path": "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260412_214329_pivot_calibration_review",
+        "label": "20260412_214329_pivot_calibration_review",
+        "timestamp_utc": "2026-04-12T21:43:29.779039+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -0.38167713484225996,
+          -4.61165353485589,
+          17.54452186018712
+        ],
+        "rmse_mm": 0.5633266712600637,
+        "sample_count_total": 231,
+        "sample_count_used": 230,
+        "sample_count_rejected": 1,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 18.144510824582568,
+        "distance_to_consensus_mm": 1.1169341060237745,
+        "run_index": 2
+      },
+      {
+        "path": "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260403_161031_pivot_calibration_review",
+        "label": "20260403_161031_pivot_calibration_review",
+        "timestamp_utc": "2026-04-03T16:10:31.069921+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -0.641706017074999,
+          -5.219020000174567,
+          16.592756673838366
+        ],
+        "rmse_mm": 0.433105243825143,
+        "sample_count_total": 200,
+        "sample_count_used": 200,
+        "sample_count_rejected": 0,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 17.406019947471624,
+        "distance_to_consensus_mm": 0.7715030990559311,
+        "run_index": 3
+      },
+      {
+        "path": "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260401_193401_pivot_calibration_review",
+        "label": "20260401_193401_pivot_calibration_review",
+        "timestamp_utc": "2026-04-01T19:34:01.795914+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -1.2588734540303086,
+          -5.101593801722373,
+          17.154790090807758
+        ],
+        "rmse_mm": 0.39044095317218275,
+        "sample_count_total": 247,
+        "sample_count_used": 246,
+        "sample_count_rejected": 1,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 17.941511774393774,
+        "distance_to_consensus_mm": 0.4762441003353547,
+        "run_index": 4
+      },
+      {
+        "path": "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260331_210343_pivot_calibration",
+        "label": "20260331_210343_pivot_calibration",
+        "timestamp_utc": "2026-03-31T21:03:43.214480+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -0.8876664235535127,
+          -5.075859187133659,
+          17.86253664741335
+        ],
+        "rmse_mm": 0.11249068996846895,
+        "sample_count_total": 80,
+        "sample_count_used": 80,
+        "sample_count_rejected": 0,
+        "input_format": "unknown",
+        "tip_norm_mm": 18.590925572636195,
+        "distance_to_consensus_mm": 1.1360888744997726,
+        "run_index": 5
+      }
+    ],
+    "tip_norm_summary_mm": {
+      "count": 6,
+      "mean": 17.55636972310278,
+      "median": 17.673765860932697,
+      "std": 0.7964146998948702,
+      "min": 16.13095121479594,
+      "max": 18.590925572636195
+    },
+    "rmse_summary_mm": {
+      "count": 6,
+      "mean": 0.6045157489219158,
+      "median": 0.4982159575426034,
+      "std": 0.3515866395656429,
+      "min": 0.11249068996846895,
+      "max": 1.08230298837079
+    },
+    "distance_to_consensus_summary_mm": {
+      "count": 6,
+      "mean": 1.1901006328383419,
+      "median": 1.1265114902617737,
+      "std": 0.5319149900419453,
+      "min": 0.4762441003353547,
+      "max": 2.1448620765811754
+    },
+    "sample_count_used_summary": {
+      "count": 6,
+      "mean": 197.16666666666666,
+      "median": 213.5,
+      "std": 54.7674376086943,
+      "min": 80.0,
+      "max": 246.0
+    },
+    "sample_count_rejected_summary": {
+      "count": 6,
+      "mean": 1.0,
+      "median": 1.0,
+      "std": 0.816496580927726,
+      "min": 0.0,
+      "max": 2.0
+    },
+    "per_axis_summary_mm": {
+      "x": {
+        "count": 6,
+        "mean": -1.2200939860306932,
+        "median": -1.0732699387919107,
+        "std": 0.6853177344773694,
+        "min": -2.395984134881423,
+        "max": -0.38167713484225996
+      },
+      "y": {
+        "count": 6,
+        "mean": -4.762916380159955,
+        "median": -5.088726494428016,
+        "std": 0.6538910012264317,
+        "min": -5.219020000174567,
+        "max": -3.3724125459572463
+      },
+      "z": {
+        "count": 6,
+        "mean": 16.822221000106698,
+        "median": 16.925892360892,
+        "std": 0.895566432063778,
+        "min": 15.081726097417354,
+        "max": 17.86253664741335
+      }
+    },
+    "summary_requirements": {
+      "force_status": "success"
+    }
+  },
+  "warning_messages": [
+    "Skipped 20260401_181455_pivot_calibration_review: Pivot run is missing tip_vector_local_mm.",
+    "Skipped 20260401_181454_pivot_calibration_review: Pivot run is missing tip_vector_local_mm.",
+    "Skipped 20260401_181429_pivot_calibration_review: Pivot run is missing tip_vector_local_mm.",
+    "Skipped 20260401_181408_pivot_calibration_review: Pivot run is missing tip_vector_local_mm.",
+    "Skipped 20260401_181404_pivot_calibration_review: Pivot run is missing tip_vector_local_mm."
+  ],
+  "error_messages": []
+}
