@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 
-from PySide6.QtCore import QSignalBlocker, Qt
+from PySide6.QtCore import QCoreApplication, QSignalBlocker, QThread, Qt
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -108,6 +108,7 @@ class ExperimentTab(QWidget):
         layout.addWidget(self.page_stack, 1)
 
     def update(self, state: ExperimentViewState) -> None:
+        started = time.monotonic()
         self._update_selector(state)
         if not state.selected_experiment:
             self.selected_experiment_title.setText("Select An Experiment")
@@ -133,10 +134,22 @@ class ExperimentTab(QWidget):
         if state.selected_experiment != self._last_logged_selection:
             LOG.debug("Activating experiment workspace page: %s", state.selected_experiment)
             self._last_logged_selection = state.selected_experiment
+            self._log_event("page_activation", experiment=state.selected_experiment)
         self._update_status_chip(state)
         page = self._page_for(state.selected_experiment)
+        set_state_started = time.monotonic()
         page.set_state(state)
+        self._log_event(
+            "set_state_applied",
+            experiment=state.selected_experiment,
+            elapsed_ms=(time.monotonic() - set_state_started) * 1000.0,
+        )
         self.page_stack.setCurrentWidget(page)
+        self._log_event(
+            "update_complete",
+            experiment=state.selected_experiment,
+            elapsed_ms=(time.monotonic() - started) * 1000.0,
+        )
 
     def _update_selector(self, state: ExperimentViewState) -> None:
         target_keys = ["", *[option.name for option in state.experiment_options]]
@@ -159,6 +172,7 @@ class ExperimentTab(QWidget):
         if row < 0:
             return
         raw_name = self.experiment_combo.itemData(row)
+        self._log_event("page_selection", row=row, experiment=raw_name or "")
         if not raw_name:
             if self.controller.state.selected_experiment:
                 self.controller.clear_selection()
@@ -175,6 +189,21 @@ class ExperimentTab(QWidget):
             duration_ms = (time.monotonic() - started) * 1000.0
             LOG.debug("Built experiment workspace page %s in %.1f ms", experiment_name, duration_ms)
         return self._pages[experiment_name]
+
+    @staticmethod
+    def _is_gui_thread() -> bool:
+        app = QCoreApplication.instance()
+        if app is None:
+            return False
+        return bool(QThread.currentThread() == app.thread())
+
+    def _log_event(self, stage: str, **fields) -> None:
+        details = dict(fields)
+        if "elapsed_ms" in details:
+            details["elapsed_ms"] = f"{float(details['elapsed_ms']):.1f}"
+        details["gui_thread"] = self._is_gui_thread()
+        rendered = " ".join(f"{key}={value}" for key, value in details.items())
+        LOG.info("ExperimentTab %s | %s", stage, rendered)
 
     def _update_status_chip(self, state: ExperimentViewState) -> None:
         status = state.preflight_report.overall_status

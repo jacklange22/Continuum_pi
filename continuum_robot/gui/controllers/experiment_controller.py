@@ -148,6 +148,7 @@ class ExperimentController:
             raise RuntimeError("No workspace-visible experiments are registered.")
 
     def refresh(self) -> ExperimentViewState:
+        started = time.monotonic()
         with self._lock:
             selected_experiment = self.state.selected_experiment
             output_root = self._resolve_repo_path(self.state.output_root)
@@ -277,6 +278,14 @@ class ExperimentController:
             self.state.result_summary_lines = list(visualization_model.summary_lines)
             self.state.result_details = result_details
             self._visualization_dirty = False
+            if selected_experiment in {"registration_validation", "pivot_validation"}:
+                LOG.info(
+                    "ExperimentController refresh | experiment=%s elapsed_ms=%.1f history_loading=%s history_count=%s",
+                    selected_experiment,
+                    (time.monotonic() - started) * 1000.0,
+                    self.state.history_loading,
+                    len(self.state.history),
+                )
             return self.state
 
     def refresh_prerequisites(self) -> ExperimentViewState:
@@ -290,7 +299,17 @@ class ExperimentController:
                 and self._preflight_cache_report is not None
                 and (now - self._last_prerequisite_refresh_s) < self.PREREQUISITE_REFRESH_INTERVAL_S
             ):
+                if self.state.selected_experiment in {"registration_validation", "pivot_validation"}:
+                    LOG.info(
+                        "ExperimentController refresh_prerequisites | experiment=%s mode=cached",
+                        self.state.selected_experiment,
+                    )
                 return self.state
+        if self.state.selected_experiment in {"registration_validation", "pivot_validation"}:
+            LOG.info(
+                "ExperimentController refresh_prerequisites | experiment=%s mode=full",
+                self.state.selected_experiment,
+            )
         return self.refresh()
 
     def select_experiment(self, experiment_name: str) -> None:

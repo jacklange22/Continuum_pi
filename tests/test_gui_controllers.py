@@ -5,6 +5,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from pathlib import Path
 import json
+import logging
 import threading
 import time
 
@@ -2303,6 +2304,182 @@ def test_registration_validation_page_caches_empty_discovery_results(
 
     assert calls["count"] == 1
     assert page.loading_label.text() == "No saved runs found yet."
+
+
+def test_registration_validation_page_skips_duplicate_concurrent_load_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    release = threading.Event()
+    calls = {"count": 0}
+
+    def _slow_candidates(_project_root):
+        calls["count"] += 1
+        release.wait(timeout=1.0)
+        return []
+
+    monkeypatch.setattr(experiment_pages_module, "list_registration_validation_candidates", _slow_candidates)
+    controller.select_experiment("registration_validation")
+    state = controller.refresh()
+    tab.update(state)
+    page = tab._page_for("registration_validation")
+
+    page._ensure_candidates_loaded()
+    page._ensure_candidates_loaded()
+
+    release.set()
+    QTest.qWait(50)
+
+    assert calls["count"] == 1
+
+
+def test_registration_validation_page_discards_stale_async_results(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("registration_validation")
+    page = tab._page_for("registration_validation")
+    page._candidate_load_generation = 2
+    page._candidate_cache = [
+        ValidationRunCandidate(
+            path="data/registrations/current.json",
+            timestamp_utc="2026-01-01T00:00:00+00:00",
+            label="current.json",
+        )
+    ]
+
+    page._apply_loaded_candidates(
+        1,
+        [
+            ValidationRunCandidate(
+                path="data/registrations/stale.json",
+                timestamp_utc="2026-01-01T00:00:00+00:00",
+                label="stale.json",
+            )
+        ],
+        None,
+    )
+
+    assert [candidate.path for candidate in page._candidate_cache] == ["data/registrations/current.json"]
+
+
+def test_registration_validation_selection_changes_do_not_trigger_reload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    calls = {"count": 0}
+
+    def _candidates(_project_root):
+        calls["count"] += 1
+        return [
+            ValidationRunCandidate(
+                path="data/registrations/registration_a.json",
+                timestamp_utc="2026-01-01T00:00:00+00:00",
+                label="registration_a.json",
+            )
+        ]
+
+    monkeypatch.setattr(experiment_pages_module, "list_registration_validation_candidates", _candidates)
+    controller.select_experiment("registration_validation")
+    state = controller.refresh()
+    tab.update(state)
+    page = tab._page_for("registration_validation")
+    QTest.qWait(50)
+
+    item = page.run_table.item(0, 0)
+    assert item is not None
+    item.setCheckState(Qt.Checked)
+    QTest.qWait(20)
+
+    assert calls["count"] == 1
+
+
+def test_registration_validation_table_apply_is_batched(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("registration_validation")
+    page = tab._page_for("registration_validation")
+    candidates = [
+        ValidationRunCandidate(
+            path=f"data/registrations/run_{index}.json",
+            timestamp_utc="2026-01-01T00:00:00+00:00",
+            label=f"run_{index}.json",
+        )
+        for index in range(80)
+    ]
+
+    page._sync_table(candidates, set())
+
+    assert page.run_table.rowCount() == 80
+    assert page._table_apply_complete is False
+
+    QTest.qWait(80)
+
+    assert page._table_apply_complete is True
+    assert page.run_table.item(79, 0) is not None
+
+
+def test_registration_validation_page_slow_row_formatting_stays_responsive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("registration_validation")
+    page = tab._page_for("registration_validation")
+    candidates = [
+        ValidationRunCandidate(
+            path=f"data/registrations/run_{index}.json",
+            timestamp_utc="2026-01-01T00:00:00+00:00",
+            label=f"run_{index}.json",
+        )
+        for index in range(48)
+    ]
+    monkeypatch.setattr(experiment_pages_module, "list_registration_validation_candidates", lambda _project_root: candidates)
+    original_row_values = page._row_values
+
+    def _slow_row_values(candidate):
+        time.sleep(0.002)
+        return original_row_values(candidate)
+
+    monkeypatch.setattr(page, "_row_values", _slow_row_values)
+
+    started = time.monotonic()
+    tab.update(controller.refresh())
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.1
+    assert page.loading_label.isVisible() is True
+
+    QTest.qWait(180)
+
+    assert page._table_apply_complete is True
+    assert page.run_table.item(47, 0) is not None
+
+
+def test_registration_validation_page_emits_timing_stage_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("registration_validation")
+    monkeypatch.setattr(experiment_pages_module, "list_registration_validation_candidates", lambda _project_root: [])
+
+    caplog.set_level(logging.INFO)
+    tab.update(controller.refresh())
+    QTest.qWait(80)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("ValidationPage[set_state] start" in message for message in messages)
+    assert any("ValidationPage[async_discovery] start" in message for message in messages)
+    assert any("ValidationPage[async_discovery] end" in message for message in messages)
+    assert any("ValidationPage[candidate_apply] end" in message for message in messages)
 
 
 def test_experiment_workspace_can_switch_away_from_registration_validation_while_loading(

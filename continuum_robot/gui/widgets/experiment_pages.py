@@ -11,7 +11,7 @@ from typing import Callable
 
 import numpy as np
 import yaml
-from PySide6.QtCore import QSignalBlocker, Qt, QUrl, Signal
+from PySide6.QtCore import QCoreApplication, QSignalBlocker, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -2484,6 +2484,7 @@ class _ValidationSelectionPage(ExperimentPageBase):
     """Shared offline multi-run selection page for thesis validation analyses."""
 
     candidates_loaded = Signal(int, object, object)
+    TABLE_APPLY_BATCH_SIZE = 16
 
     show_visualization = True
 
@@ -2500,6 +2501,12 @@ class _ValidationSelectionPage(ExperimentPageBase):
         self._candidate_cache_loaded = False
         self._candidate_error: str | None = None
         self._candidate_cache_key: tuple[str, str] | None = None
+        self._pending_candidates: list[object] = []
+        self._pending_selected: set[str] = set()
+        self._table_apply_generation = 0
+        self._table_apply_row = 0
+        self._table_apply_complete = True
+        self._table_apply_started_s = 0.0
         super().__init__(controller, experiment_name, parent)
         self.run_button.setText(self.run_button_text)
         self.candidates_loaded.connect(self._apply_loaded_candidates)
@@ -2552,19 +2559,46 @@ class _ValidationSelectionPage(ExperimentPageBase):
         self.parameter_layout.addWidget(help_card)
 
     def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
+        selected = {str(value) for value in (self.controller.get_config_value("run_paths", []) or [])}
+        started = time.monotonic()
+        self._log_stage(
+            "set_state",
+            "start",
+            candidate_count=len(self._candidate_cache),
+            selected_count=len(selected),
+            loading=self._candidate_loading,
+            table_rows=self.run_table.rowCount(),
+        )
         _ = state
         self._ensure_candidates_loaded()
         candidates = list(self._candidate_cache)
-        selected = {str(value) for value in (self.controller.get_config_value("run_paths", []) or [])}
         self._sync_table(candidates, selected)
         self.selection_summary_widget.set_pairs(self._summary_pairs(candidates, selected))
         self._sync_loading_state(candidates)
+        self._log_stage(
+            "set_state",
+            "end",
+            started_s=started,
+            candidate_count=len(candidates),
+            selected_count=len(selected),
+            loading=self._candidate_loading,
+            table_rows=self.run_table.rowCount(),
+        )
 
     def _refresh_sources(self) -> None:
+        started = time.monotonic()
+        self._log_stage("explicit_refresh", "start", candidate_count=len(self._candidate_cache))
         self._ensure_candidates_loaded(force=True)
         selected = {str(value) for value in (self.controller.get_config_value("run_paths", []) or [])}
         self._sync_loading_state(list(self._candidate_cache))
         self.selection_summary_widget.set_pairs(self._summary_pairs(list(self._candidate_cache), selected))
+        self._log_stage(
+            "explicit_refresh",
+            "end",
+            started_s=started,
+            candidate_count=len(self._candidate_cache),
+            loading=self._candidate_loading,
+        )
 
     def _set_all_selected(self, selected: bool) -> None:
         candidates = list(self._candidate_cache)
@@ -2577,6 +2611,8 @@ class _ValidationSelectionPage(ExperimentPageBase):
     def _on_item_changed(self, item: QTableWidgetItem) -> None:
         if item.column() != 0:
             return
+        started = time.monotonic()
+        self._log_stage("selection_change", "start", candidate_count=len(self._candidate_cache))
         selected_paths: list[str] = []
         for row in range(self.run_table.rowCount()):
             path_item = self.run_table.item(row, 0)
@@ -2589,26 +2625,41 @@ class _ValidationSelectionPage(ExperimentPageBase):
         known = {candidate.path for candidate in self._candidate_cache}
         selected_paths = [path for path in selected_paths if path in known]
         self.controller.set_config_value("run_paths", selected_paths)
+        self._log_stage(
+            "selection_change",
+            "end",
+            started_s=started,
+            selected_count=len(selected_paths),
+            candidate_count=len(self._candidate_cache),
+        )
 
     def _sync_table(self, candidates, selected: set[str]) -> None:
         signature = tuple(self._row_signature(candidate, selected) for candidate in candidates)
         if signature == self._table_signature:
+            if not self._table_apply_complete and self.controller.state.selected_experiment == self.experiment_name:
+                QTimer.singleShot(0, lambda generation=self._table_apply_generation: self._apply_table_batch(generation))
             return
         self._table_signature = signature
+        self._table_apply_generation += 1
+        self._table_apply_row = 0
+        self._table_apply_complete = False
+        self._table_apply_started_s = time.monotonic()
+        self._pending_candidates = list(candidates)
+        self._pending_selected = set(selected)
+        self._log_stage(
+            "table_rebuild",
+            "start",
+            generation=self._table_apply_generation,
+            candidate_count=len(candidates),
+        )
 
-        def _rebuild() -> None:
+        def _initialize_table() -> None:
             with QSignalBlocker(self.run_table):
+                self.run_table.clearContents()
                 self.run_table.setRowCount(len(candidates))
-                for row, candidate in enumerate(candidates):
-                    for column, text in enumerate(self._row_values(candidate)):
-                        item = QTableWidgetItem(text)
-                        if column == 0:
-                            item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
-                            item.setCheckState(Qt.Checked if candidate.path in selected else Qt.Unchecked)
-                            item.setData(Qt.UserRole, candidate.path)
-                        self.run_table.setItem(row, column, item)
 
-        preserve_scroll_position(self.run_table, _rebuild)
+        preserve_scroll_position(self.run_table, _initialize_table)
+        QTimer.singleShot(0, lambda generation=self._table_apply_generation: self._apply_table_batch(generation))
 
     def _row_signature(self, candidate, selected: set[str]) -> tuple[str, ...]:
         return (*self._row_values(candidate), "1" if candidate.path in selected else "0")
@@ -2640,13 +2691,22 @@ class _ValidationSelectionPage(ExperimentPageBase):
             self._candidate_cache_loaded = False
             self._table_signature = None
         if self._candidate_loading:
+            self._log_stage(
+                "async_discovery",
+                "skip",
+                reason="already_loading",
+                generation=self._candidate_load_generation,
+            )
             return
         if self._candidate_cache_loaded and not force:
+            self._log_stage("async_discovery", "skip", reason="cache_hit", candidate_count=len(self._candidate_cache))
             return
         self._candidate_loading = True
         self._candidate_error = None
         self._candidate_load_generation += 1
         generation = self._candidate_load_generation
+        started = time.monotonic()
+        self._log_stage("async_discovery", "start", generation=generation, force=force)
 
         def _worker() -> None:
             try:
@@ -2660,6 +2720,15 @@ class _ValidationSelectionPage(ExperimentPageBase):
                 )
                 candidates = []
                 error = str(exc)
+            elapsed_ms = (time.monotonic() - started) * 1000.0
+            self._log_stage(
+                "async_discovery",
+                "end",
+                elapsed_ms=elapsed_ms,
+                generation=generation,
+                candidate_count=len(candidates),
+                error=error or "",
+            )
             self.candidates_loaded.emit(generation, candidates, error)
 
         threading.Thread(
@@ -2669,17 +2738,42 @@ class _ValidationSelectionPage(ExperimentPageBase):
         ).start()
 
     def _apply_loaded_candidates(self, generation: int, candidates, error: object) -> None:
+        started = time.monotonic()
+        self._log_stage(
+            "candidate_apply",
+            "start",
+            generation=generation,
+            candidate_count=len(candidates or []),
+        )
         if int(generation) != int(self._candidate_load_generation):
+            self._log_stage("candidate_apply", "skip", reason="stale_generation", generation=generation)
             return
         self._candidate_loading = False
         self._candidate_error = str(error) if error else None
         self._candidate_cache = list(candidates or [])
         self._candidate_cache_loaded = True
         self._table_signature = None
+        if self.controller.state.selected_experiment != self.experiment_name:
+            self._log_stage(
+                "candidate_apply",
+                "defer",
+                started_s=started,
+                generation=generation,
+                candidate_count=len(self._candidate_cache),
+                reason="page_inactive",
+            )
+            return
         selected = {str(value) for value in (self.controller.get_config_value("run_paths", []) or [])}
         self._sync_table(self._candidate_cache, selected)
         self.selection_summary_widget.set_pairs(self._summary_pairs(self._candidate_cache, selected))
         self._sync_loading_state(self._candidate_cache)
+        self._log_stage(
+            "candidate_apply",
+            "end",
+            started_s=started,
+            generation=generation,
+            candidate_count=len(self._candidate_cache),
+        )
 
     def _sync_loading_state(self, candidates) -> None:
         if self._candidate_loading:
@@ -2696,6 +2790,73 @@ class _ValidationSelectionPage(ExperimentPageBase):
         if not candidates:
             self.loading_label.setText("No saved runs found yet.")
         self.run_table.setEnabled(True)
+
+    def _apply_table_batch(self, generation: int) -> None:
+        if int(generation) != int(self._table_apply_generation):
+            self._log_stage("table_rebuild", "skip", reason="stale_generation", generation=generation)
+            return
+        if self.controller.state.selected_experiment != self.experiment_name:
+            self._log_stage(
+                "page_visibility",
+                "defer",
+                generation=generation,
+                candidate_count=len(self._pending_candidates),
+                reason="page_inactive_during_table_apply",
+            )
+            return
+        start_row = int(self._table_apply_row)
+        end_row = min(start_row + self.TABLE_APPLY_BATCH_SIZE, len(self._pending_candidates))
+        if start_row >= end_row:
+            self._table_apply_complete = True
+            self._log_stage(
+                "table_rebuild",
+                "end",
+                started_s=self._table_apply_started_s,
+                generation=generation,
+                candidate_count=len(self._pending_candidates),
+            )
+            return
+        with QSignalBlocker(self.run_table):
+            for row in range(start_row, end_row):
+                candidate = self._pending_candidates[row]
+                row_values = self._row_values(candidate)
+                for column, text in enumerate(row_values):
+                    item = QTableWidgetItem(text)
+                    if column == 0:
+                        item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                        item.setCheckState(Qt.Checked if candidate.path in self._pending_selected else Qt.Unchecked)
+                        item.setData(Qt.UserRole, candidate.path)
+                    self.run_table.setItem(row, column, item)
+        self._table_apply_row = end_row
+        if end_row < len(self._pending_candidates):
+            QTimer.singleShot(0, lambda current_generation=generation: self._apply_table_batch(current_generation))
+            return
+        self._table_apply_complete = True
+        self._log_stage(
+            "table_rebuild",
+            "end",
+            started_s=self._table_apply_started_s,
+            generation=generation,
+            candidate_count=len(self._pending_candidates),
+        )
+
+    def _log_stage(self, stage: str, event: str, *, started_s: float | None = None, elapsed_ms: float | None = None, **fields) -> None:
+        details = dict(fields)
+        if elapsed_ms is None and started_s is not None:
+            elapsed_ms = (time.monotonic() - float(started_s)) * 1000.0
+        if elapsed_ms is not None:
+            details["elapsed_ms"] = f"{float(elapsed_ms):.1f}"
+        details["gui_thread"] = self._is_gui_thread()
+        details["experiment"] = self.experiment_name
+        rendered = " ".join(f"{key}={value}" for key, value in details.items())
+        LOG.info("ValidationPage[%s] %s | %s", stage, event, rendered)
+
+    @staticmethod
+    def _is_gui_thread() -> bool:
+        app = QCoreApplication.instance()
+        if app is None:
+            return False
+        return bool(QThread.currentThread() == app.thread())
 
 
 class RegistrationValidationPage(_ValidationSelectionPage):
