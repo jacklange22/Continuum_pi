@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDoubleSpinBox,
+    QFrame,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -22,7 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from continuum_robot.gui.controllers.system_controller import SystemViewState
-from continuum_robot.gui.theme import grouped_workspace_stylesheet
+from continuum_robot.gui.theme import chip_stylesheet, grouped_workspace_stylesheet, semantic_chip_colors
 from continuum_robot.gui.view_utils import set_text_document
 
 
@@ -47,50 +51,89 @@ class SystemTab(QWidget):
             grouped_workspace_stylesheet(
                 object_name="systemWorkspace",
                 input_selectors=["QComboBox", "QSpinBox", "QDoubleSpinBox", "QPlainTextEdit"],
+                extra_rules="""
+                QWidget#systemWorkspace QFrame[role="statusHeader"] {
+                    background: #141b22;
+                    border: 1px solid #384859;
+                    border-radius: 18px;
+                }
+                QWidget#systemWorkspace QFrame[role="statusCard"] {
+                    background: #19222b;
+                    border: 1px solid #384859;
+                    border-radius: 16px;
+                }
+                QWidget#systemWorkspace QFrame[role="connectionCard"] {
+                    background: #19222b;
+                    border: 1px solid #384859;
+                    border-radius: 16px;
+                }
+                QWidget#systemWorkspace QLabel[role="section-kicker"] {
+                    color: #b1bcc7;
+                    font-size: 11px;
+                    font-weight: 700;
+                    text-transform: uppercase;
+                    letter-spacing: 0.08em;
+                }
+                QWidget#systemWorkspace QLabel[role="status-title"] {
+                    color: #dce4eb;
+                    font-size: 14px;
+                    font-weight: 700;
+                }
+                QWidget#systemWorkspace QLabel[role="status-detail"] {
+                    color: #b1bcc7;
+                }
+                QWidget#systemWorkspace QLabel[role="status-pill"] {
+                    padding: 7px 12px;
+                    border-radius: 999px;
+                    font-weight: 700;
+                }
+                QWidget#systemWorkspace QLabel[role="blockerBanner"] {
+                    background: #552d32;
+                    color: #fbe8ea;
+                    border: 1px solid #956569;
+                    border-radius: 12px;
+                    padding: 10px 12px;
+                    font-weight: 700;
+                }
+                QWidget#systemWorkspace QWidget[role="advancedPanel"] {
+                    background: #141b22;
+                    border: 1px solid #384859;
+                    border-radius: 12px;
+                }
+                """,
             )
         )
 
-        self.title_label = QLabel("System Workspace")
+        self.title_label = QLabel("System")
         self.title_label.setProperty("role", "title")
         self.workflow_hint = QLabel(
-            "Use this page as the operator bring-up summary. Confirm OpenRB readiness, review diagnostics, "
-            "adjust only the key bring-up parameters, then Save + Apply to reload the runtime cleanly."
+            "Check bring-up truth first, connect hardware second, adjust the few startup settings only when needed, and copy session diagnostics fast."
         )
         self.workflow_hint.setProperty("role", "hint")
         self.workflow_hint.setWordWrap(True)
 
-        self.mock_mode_label = QLabel()
-        self.mock_mode_label.setProperty("role", "status")
-        self.robot_config_label = QLabel()
-        self.robot_config_label.setWordWrap(True)
-        self.expected_servo_ids_label = QLabel()
-        self.expected_servo_ids_label.setWordWrap(True)
-        self.refresh_rate_label = QLabel()
-        self.refresh_rate_label.setWordWrap(True)
-        self.freshness_label = QLabel()
-        self.freshness_label.setWordWrap(True)
-        self.telemetry_cadence_label = QLabel()
-        self.telemetry_cadence_label.setWordWrap(True)
-        self.telemetry_fields_label = QLabel()
-        self.telemetry_fields_label.setWordWrap(True)
-        self.telemetry_bottleneck_label = QLabel()
-        self.telemetry_bottleneck_label.setWordWrap(True)
+        self.mode_label = self._build_status_pill()
+        self.robot_label = self._build_status_pill()
+        self.tracker_header_label = self._build_status_pill()
+        self.openrb_header_label = self._build_status_pill()
+        self.overall_header_label = self._build_status_pill()
+        self.blocker_label = QLabel()
+        self.blocker_label.setProperty("role", "blockerBanner")
+        self.blocker_label.setWordWrap(True)
+        self.blocker_label.hide()
+
         self.tracker_status_label = QLabel()
+        self.tracker_status_label.setProperty("role", "status-detail")
         self.tracker_status_label.setWordWrap(True)
-        self.registration_status_label = QLabel()
-        self.registration_status_label.setWordWrap(True)
-        self.runtime_tip_status_label = QLabel()
-        self.runtime_tip_status_label.setWordWrap(True)
-        self.live_tip_status_label = QLabel()
-        self.live_tip_status_label.setWordWrap(True)
         self.openrb_status_label = QLabel()
+        self.openrb_status_label.setProperty("role", "status-detail")
         self.openrb_status_label.setWordWrap(True)
-        self.readiness_status_label = QLabel()
-        self.readiness_status_label.setWordWrap(True)
-        self.bus_status_label = QLabel()
-        self.bus_status_label.setWordWrap(True)
-        self.external_power_label = QLabel()
-        self.external_power_label.setWordWrap(True)
+        self.saved_path_label = QLabel("none")
+        self.saved_path_label.setProperty("role", "status-detail")
+        self.saved_path_label.setWordWrap(True)
+        self.session_log_label = QLabel("unset")
+        self.session_log_label.setProperty("role", "status-detail")
+        self.session_log_label.setWordWrap(True)
 
         self.aurora_port_combo = QComboBox()
         self.aurora_port_combo.setEditable(True)
@@ -109,60 +152,88 @@ class SystemTab(QWidget):
         self.openrb_connect_button.setProperty("role", "primary")
         self.openrb_disconnect_button = QPushButton("Disconnect OpenRB")
         self.openrb_disconnect_button.setProperty("variant", "ghost")
-        self.prepare_button = QPushButton("Re-Prepare OpenRB")
+        self.prepare_button = QPushButton("Re-Prepare OpenRB Pass-Through")
         self.prepare_button.setProperty("variant", "ghost")
-        self.readiness_button = QPushButton("Refresh Servo Readiness")
-        self.readiness_button.setProperty("variant", "ghost")
-        self.refresh_button = QPushButton("Rescan Ports")
-        self.refresh_button.setProperty("variant", "ghost")
-        self.refresh_button.clicked.connect(self._rescan_ports)
+        self.tracker_rescan_button = QPushButton("Rescan")
+        self.tracker_rescan_button.setProperty("variant", "ghost")
+        self.openrb_rescan_button = QPushButton("Rescan")
+        self.openrb_rescan_button.setProperty("variant", "ghost")
+        self.tracker_rescan_button.clicked.connect(self._rescan_ports)
+        self.openrb_rescan_button.clicked.connect(self._rescan_ports)
         self.tracker_connect_button.clicked.connect(self._connect_tracker)
         self.tracker_disconnect_button.clicked.connect(self.controller.disconnect_tracker)
         self.openrb_connect_button.clicked.connect(self._connect_openrb)
         self.openrb_disconnect_button.clicked.connect(self.controller.disconnect_openrb)
         self.prepare_button.clicked.connect(self.controller.prepare_openrb)
-        self.readiness_button.clicked.connect(self._refresh_readiness)
 
-        summary_box = QGroupBox("Runtime / Connection Summary")
-        summary_layout = QVBoxLayout(summary_box)
-        summary_form = QFormLayout()
-        summary_form.setLabelAlignment(Qt.AlignLeft)
-        summary_form.addRow("Mock mode", self.mock_mode_label)
-        summary_form.addRow("Robot config", self.robot_config_label)
-        summary_form.addRow("Expected servo IDs", self.expected_servo_ids_label)
-        summary_form.addRow("GUI refresh", self.refresh_rate_label)
-        summary_form.addRow("Freshness limit", self.freshness_label)
-        summary_form.addRow("Servo telemetry cadence", self.telemetry_cadence_label)
-        summary_form.addRow("Servo telemetry fields", self.telemetry_fields_label)
-        summary_form.addRow("Throughput note", self.telemetry_bottleneck_label)
-        summary_form.addRow("Aurora port", self.aurora_port_combo)
-        summary_form.addRow("OpenRB port", self.openrb_port_combo)
-        summary_form.addRow("Tracker state", self.tracker_status_label)
-        summary_form.addRow("Base registration", self.registration_status_label)
-        summary_form.addRow("Runtime tip calibration", self.runtime_tip_status_label)
-        summary_form.addRow("Live tip pose", self.live_tip_status_label)
-        summary_form.addRow("OpenRB state", self.openrb_status_label)
-        summary_form.addRow("Readiness", self.readiness_status_label)
-        summary_form.addRow("Bus response", self.bus_status_label)
-        summary_form.addRow("External power", self.external_power_label)
-        summary_layout.addLayout(summary_form)
+        header_box = QFrame()
+        header_box.setProperty("role", "statusHeader")
+        header_layout = QVBoxLayout(header_box)
+        header_layout.setContentsMargins(18, 18, 18, 18)
+        header_layout.setSpacing(12)
+        kicker = QLabel("Bring-Up Status")
+        kicker.setProperty("role", "section-kicker")
+        header_layout.addWidget(kicker)
 
-        summary_primary_buttons = QHBoxLayout()
-        summary_primary_buttons.setSpacing(10)
-        summary_primary_buttons.addWidget(self.tracker_connect_button)
-        summary_primary_buttons.addWidget(self.openrb_connect_button)
-        summary_primary_buttons.addStretch(1)
-        summary_layout.addLayout(summary_primary_buttons)
+        card_grid = QGridLayout()
+        card_grid.setHorizontalSpacing(12)
+        card_grid.setVerticalSpacing(12)
+        card_grid.addWidget(self._build_status_card("Mode", self.mode_label), 0, 0)
+        card_grid.addWidget(self._build_status_card("Robot Layout", self.robot_label), 0, 1)
+        card_grid.addWidget(self._build_status_card("Overall", self.overall_header_label), 0, 2)
+        card_grid.addWidget(self._build_status_card("Tracker", self.tracker_header_label), 1, 0, 1, 2)
+        card_grid.addWidget(self._build_status_card("OpenRB", self.openrb_header_label), 1, 2)
+        header_layout.addLayout(card_grid)
+        header_layout.addWidget(self.blocker_label)
 
-        summary_secondary_buttons = QHBoxLayout()
-        summary_secondary_buttons.setSpacing(10)
-        summary_secondary_buttons.addWidget(self.tracker_disconnect_button)
-        summary_secondary_buttons.addWidget(self.openrb_disconnect_button)
-        summary_secondary_buttons.addWidget(self.prepare_button)
-        summary_secondary_buttons.addWidget(self.readiness_button)
-        summary_secondary_buttons.addWidget(self.refresh_button)
-        summary_secondary_buttons.addStretch(1)
-        summary_layout.addLayout(summary_secondary_buttons)
+        connections_box = QGroupBox("Connections")
+        connections_layout = QVBoxLayout(connections_box)
+        connections_layout.addWidget(
+            self._build_connection_card(
+                title="Tracker",
+                detail_label=self.tracker_status_label,
+                port_combo=self.aurora_port_combo,
+                rescan_button=self.tracker_rescan_button,
+                connect_button=self.tracker_connect_button,
+                disconnect_button=self.tracker_disconnect_button,
+            )
+        )
+        connections_layout.addWidget(
+            self._build_connection_card(
+                title="OpenRB",
+                detail_label=self.openrb_status_label,
+                port_combo=self.openrb_port_combo,
+                rescan_button=self.openrb_rescan_button,
+                connect_button=self.openrb_connect_button,
+                disconnect_button=self.openrb_disconnect_button,
+            )
+        )
+        self.connection_advanced_toggle = QPushButton("Show Advanced")
+        self.connection_advanced_toggle.setCheckable(True)
+        self.connection_advanced_toggle.setProperty("variant", "ghost")
+        self.connection_advanced_toggle.toggled.connect(
+            lambda checked: self._toggle_advanced_section(
+                self.connection_advanced_toggle,
+                self.connection_advanced_panel,
+                checked,
+            )
+        )
+        self.connection_advanced_panel = QWidget()
+        self.connection_advanced_panel.setProperty("role", "advancedPanel")
+        self.connection_advanced_panel.hide()
+        connection_advanced_layout = QVBoxLayout(self.connection_advanced_panel)
+        connection_advanced_layout.setContentsMargins(12, 12, 12, 12)
+        connection_advanced_layout.setSpacing(10)
+        advanced_hint = QLabel("Use this only if OpenRB needs its DYNAMIXEL pass-through prepared again after reconnects.")
+        advanced_hint.setProperty("role", "hint")
+        advanced_hint.setWordWrap(True)
+        prepare_row = QHBoxLayout()
+        prepare_row.addWidget(self.prepare_button)
+        prepare_row.addStretch(1)
+        connection_advanced_layout.addWidget(advanced_hint)
+        connection_advanced_layout.addLayout(prepare_row)
+        connections_layout.addWidget(self.connection_advanced_toggle, alignment=Qt.AlignLeft)
+        connections_layout.addWidget(self.connection_advanced_panel)
 
         self.robot_config_combo = QComboBox()
         self.robot_config_combo.currentIndexChanged.connect(self._mark_parameter_dirty)
@@ -176,85 +247,100 @@ class SystemTab(QWidget):
         self.poll_rate_spin = QSpinBox()
         self.poll_rate_spin.setRange(1, 60)
         self.poll_rate_spin.valueChanged.connect(self._mark_parameter_dirty)
-        self.fine_jog_spin = QSpinBox()
-        self.fine_jog_spin.setRange(1, 512)
-        self.fine_jog_spin.valueChanged.connect(self._mark_parameter_dirty)
-        self.coarse_jog_spin = QSpinBox()
-        self.coarse_jog_spin.setRange(1, 1024)
-        self.coarse_jog_spin.valueChanged.connect(self._mark_parameter_dirty)
         self.telemetry_freshness_spin = QDoubleSpinBox()
         self.telemetry_freshness_spin.setRange(0.01, 10.0)
         self.telemetry_freshness_spin.setDecimals(3)
         self.telemetry_freshness_spin.setSingleStep(0.05)
         self.telemetry_freshness_spin.valueChanged.connect(self._mark_parameter_dirty)
-        self.saved_path_label = QLabel("none")
-        self.saved_path_label.setWordWrap(True)
 
         self.save_parameters_button = QPushButton("Save + Apply")
         self.save_parameters_button.setProperty("role", "primary")
         self.save_parameters_button.clicked.connect(self._save_runtime_parameters)
         self.parameters_hint = QLabel(
-            "Save + Apply writes `config/system.local.yaml`, then rebuilds the controllers and services "
-            "using the saved values. Existing hardware connections are closed during reload. "
-            "Use the Pretension tab for live pretension tuning; this page is for runtime/connection settings."
+            "Save only the startup settings that should persist into the next launch."
         )
         self.parameters_hint.setProperty("role", "hint")
         self.parameters_hint.setWordWrap(True)
 
-        parameters_box = QGroupBox("Bring-Up Parameters")
+        parameters_box = QGroupBox("Startup Settings")
         parameters_layout = QVBoxLayout(parameters_box)
         parameters_form = QFormLayout()
         parameters_form.setLabelAlignment(Qt.AlignLeft)
-        parameters_form.addRow("Mock mode", self.mock_mode_combo)
-        parameters_form.addRow("Robot config", self.robot_config_combo)
+        parameters_form.addRow("Mode", self.mock_mode_combo)
+        parameters_form.addRow("Robot profile", self.robot_config_combo)
         parameters_form.addRow("Baudrate", self.baudrate_spin)
-        parameters_form.addRow("GUI refresh (Hz)", self.poll_rate_spin)
-        parameters_form.addRow("Fine jog (ticks)", self.fine_jog_spin)
-        parameters_form.addRow("Coarse jog (ticks)", self.coarse_jog_spin)
-        parameters_form.addRow("Telemetry stale after (s)", self.telemetry_freshness_spin)
-        parameters_form.addRow("Saved overrides", self.saved_path_label)
         parameters_layout.addLayout(parameters_form)
-        parameters_layout.addWidget(self.save_parameters_button)
+        save_row = QHBoxLayout()
+        save_row.addWidget(self.save_parameters_button)
+        save_row.addStretch(1)
+        parameters_layout.addLayout(save_row)
         parameters_layout.addWidget(self.parameters_hint)
-
-        self.config_summary = QPlainTextEdit()
-        self.config_summary.setReadOnly(True)
-        self.config_summary.setLineWrapMode(QPlainTextEdit.WidgetWidth)
-        self.config_summary.setMinimumHeight(170)
-        self.copy_config_button = QPushButton("Copy Effective Config")
-        self.copy_config_button.clicked.connect(lambda: self._copy_text(self.config_summary.toPlainText()))
-
-        config_box = QGroupBox("Effective Config")
-        config_layout = QVBoxLayout(config_box)
-        config_button_row = QHBoxLayout()
-        config_button_row.addStretch(1)
-        config_button_row.addWidget(self.copy_config_button)
-        config_layout.addLayout(config_button_row)
-        config_layout.addWidget(self.config_summary)
+        self.settings_advanced_toggle = QPushButton("Show Advanced")
+        self.settings_advanced_toggle.setCheckable(True)
+        self.settings_advanced_toggle.setProperty("variant", "ghost")
+        self.settings_advanced_toggle.toggled.connect(
+            lambda checked: self._toggle_advanced_section(
+                self.settings_advanced_toggle,
+                self.settings_advanced_panel,
+                checked,
+            )
+        )
+        self.settings_advanced_panel = QWidget()
+        self.settings_advanced_panel.setProperty("role", "advancedPanel")
+        self.settings_advanced_panel.hide()
+        settings_advanced_layout = QVBoxLayout(self.settings_advanced_panel)
+        settings_advanced_layout.setContentsMargins(12, 12, 12, 12)
+        settings_advanced_form = QFormLayout()
+        settings_advanced_form.setLabelAlignment(Qt.AlignLeft)
+        settings_advanced_form.addRow("GUI refresh (Hz)", self.poll_rate_spin)
+        settings_advanced_form.addRow("Telemetry stale after (s)", self.telemetry_freshness_spin)
+        settings_advanced_form.addRow("Saved overrides", self.saved_path_label)
+        settings_advanced_layout.addLayout(settings_advanced_form)
+        parameters_layout.addWidget(self.settings_advanced_toggle, alignment=Qt.AlignLeft)
+        parameters_layout.addWidget(self.settings_advanced_panel)
 
         self.status_text = QPlainTextEdit()
         self.status_text.setReadOnly(True)
         self.status_text.setLineWrapMode(QPlainTextEdit.WidgetWidth)
-        self.status_text.setMinimumHeight(180)
-        self.copy_diagnostics_button = QPushButton("Copy Diagnostics")
-        self.copy_diagnostics_button.clicked.connect(lambda: self._copy_text(self.status_text.toPlainText()))
+        self.status_text.setMinimumHeight(170)
+        self.copy_diagnostics_button = QPushButton("Copy Session Diagnostics")
+        self.copy_diagnostics_button.clicked.connect(self._copy_session_diagnostics)
+        self.copy_log_path_button = QPushButton("Copy Log Path")
+        self.copy_log_path_button.setProperty("variant", "ghost")
+        self.copy_log_path_button.clicked.connect(lambda: self._copy_text(self.session_log_label.text()))
+        self.open_log_button = QPushButton("Open Log")
+        self.open_log_button.setProperty("variant", "ghost")
+        self.open_log_button.clicked.connect(self._open_session_log)
+        self.open_logs_folder_button = QPushButton("Open Logs Folder")
+        self.open_logs_folder_button.setProperty("variant", "ghost")
+        self.open_logs_folder_button.clicked.connect(self._open_logs_folder)
 
-        diagnostics_box = QGroupBox("Diagnostics")
+        diagnostics_box = QGroupBox("Session Diagnostics")
         diagnostics_layout = QVBoxLayout(diagnostics_box)
+        diagnostics_form = QFormLayout()
+        diagnostics_form.setLabelAlignment(Qt.AlignLeft)
+        diagnostics_form.addRow("Current session log", self.session_log_label)
+        diagnostics_layout.addLayout(diagnostics_form)
         diagnostics_button_row = QHBoxLayout()
-        diagnostics_button_row.addStretch(1)
         diagnostics_button_row.addWidget(self.copy_diagnostics_button)
+        diagnostics_button_row.addWidget(self.copy_log_path_button)
+        diagnostics_button_row.addWidget(self.open_log_button)
+        diagnostics_button_row.addWidget(self.open_logs_folder_button)
+        diagnostics_button_row.addStretch(1)
         diagnostics_layout.addLayout(diagnostics_button_row)
+        diagnostics_preview_hint = QLabel("Latest session activity")
+        diagnostics_preview_hint.setProperty("role", "section-kicker")
+        diagnostics_layout.addWidget(diagnostics_preview_hint)
         diagnostics_layout.addWidget(self.status_text)
 
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(14)
-        content_layout.addWidget(summary_box)
+        content_layout.addWidget(header_box)
+        content_layout.addWidget(connections_box)
         content_layout.addWidget(parameters_box)
         content_layout.addWidget(diagnostics_box)
-        content_layout.addWidget(config_box)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -268,47 +354,18 @@ class SystemTab(QWidget):
         layout.addWidget(self.scroll_area, 1)
 
     def update(self, state: SystemViewState) -> None:
-        self.mock_mode_label.setText("Enabled" if state.mock_mode else "Disabled")
-        self.robot_config_label.setText(f"{state.robot_config} | mode={state.robot_mode}")
-        self.expected_servo_ids_label.setText(", ".join(str(servo_id) for servo_id in state.expected_servo_ids) or "none")
-        self.refresh_rate_label.setText(f"{int(state.poll_rate_hz)} Hz")
-        self.freshness_label.setText(f"{float(state.telemetry_freshness_timeout_s):.3f} s")
-        self.telemetry_cadence_label.setText(state.servo_telemetry_cadence_summary)
-        self.telemetry_fields_label.setText(state.servo_telemetry_field_summary)
-        self.telemetry_bottleneck_label.setText(state.servo_telemetry_bottleneck_summary)
-        self.tracker_status_label.setText(
-            f"{state.tracker_connection_state} | backend={state.tracker_backend_identity or 'unknown'} "
-            f"| stream={'connected' if state.tracker_backend_connected else 'disconnected'}"
-        )
-        self.registration_status_label.setText(state.registration_summary)
-        self.runtime_tip_status_label.setText(state.runtime_tip_summary)
-        self.live_tip_status_label.setText(state.live_tip_summary)
-        self.openrb_status_label.setText(
-            f"{state.openrb_status} | prepared={state.openrb_prepared} | bus={'connected' if state.dynamixel_connected else 'disconnected'}"
-        )
-        self.readiness_status_label.setText(
-            state.readiness_message
-        )
-        if state.expected_servo_ids:
-            self.bus_status_label.setText(
-                f"responsive={state.bus_reachable} | detected={len(state.detected_servo_ids)}/{len(state.expected_servo_ids)} "
-                f"| telemetry={state.telemetry_ready_count}/{len(state.expected_servo_ids)}"
-            )
-        else:
-            self.bus_status_label.setText("no expected servo IDs configured")
-        if state.external_power_ready is None:
-            external_power = "not confirmed"
-        else:
-            external_power = "ready" if state.external_power_ready else "blocked"
-        self.external_power_label.setText(external_power)
-        self._set_plain_text_preserving_view(self.config_summary, state.config_summary)
-
-        status_lines = [state.status_message]
-        if state.last_error:
-            status_lines.append(f"Error: {state.last_error}")
-        if state.bench_debug_text:
-            status_lines.extend(["", state.bench_debug_text])
-        self._set_plain_text_preserving_view(self.status_text, "\n".join(status_lines))
+        diagnostics_preview = state.diagnostics_preview or "No session activity captured yet."
+        self._set_status_pill(self.mode_label, state.mode_display, "accent" if state.mock_mode else "info")
+        self._set_status_pill(self.robot_label, state.robot_layout_display, "neutral")
+        self._set_status_pill(self.tracker_header_label, state.tracker_status_label, state.tracker_status_kind)
+        self._set_status_pill(self.openrb_header_label, state.openrb_status_label, state.openrb_status_kind)
+        self._set_status_pill(self.overall_header_label, state.overall_status_label, state.overall_status_kind)
+        self.blocker_label.setText(f"Blocking reason: {state.primary_blocker}")
+        self.blocker_label.setVisible(bool(str(state.primary_blocker).strip()))
+        self.tracker_status_label.setText(state.tracker_truth_summary)
+        self.openrb_status_label.setText(state.openrb_truth_summary)
+        self.session_log_label.setText(state.session_log_summary or "unset")
+        self._set_plain_text_preserving_view(self.status_text, diagnostics_preview)
         self._set_combo_items(self.aurora_port_combo, state.available_ports, state.aurora_port)
         self._set_combo_items(self.openrb_port_combo, state.available_ports, state.openrb_port)
         applied_values = self._parameter_values_from_state(state)
@@ -328,7 +385,75 @@ class SystemTab(QWidget):
         self.openrb_connect_button.setEnabled(not openrb_connected)
         self.openrb_disconnect_button.setEnabled(openrb_connected)
         self.prepare_button.setEnabled(bool(state.openrb_connected))
-        self.readiness_button.setEnabled(bool(state.dynamixel_connected))
+        session_log_path = self._session_log_path()
+        has_session_log = bool(session_log_path is not None and session_log_path.exists())
+        self.copy_log_path_button.setEnabled(has_session_log)
+        self.open_log_button.setEnabled(has_session_log)
+        self.open_logs_folder_button.setEnabled(has_session_log)
+
+    def _build_status_pill(self) -> QLabel:
+        label = QLabel()
+        label.setProperty("role", "status-pill")
+        label.setAlignment(Qt.AlignCenter)
+        label.setWordWrap(True)
+        return label
+
+    def _build_status_card(self, title: str, value_label: QLabel) -> QFrame:
+        card = QFrame()
+        card.setProperty("role", "statusCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+        title_label = QLabel(title)
+        title_label.setProperty("role", "status-title")
+        layout.addWidget(title_label)
+        layout.addWidget(value_label)
+        layout.addStretch(1)
+        return card
+
+    def _build_connection_card(
+        self,
+        *,
+        title: str,
+        detail_label: QLabel,
+        port_combo: QComboBox,
+        rescan_button: QPushButton,
+        connect_button: QPushButton,
+        disconnect_button: QPushButton,
+    ) -> QFrame:
+        card = QFrame()
+        card.setProperty("role", "connectionCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        title_label = QLabel(title)
+        title_label.setProperty("role", "status-title")
+        layout.addWidget(title_label)
+        layout.addWidget(detail_label)
+
+        port_row = QHBoxLayout()
+        port_row.addWidget(port_combo, 1)
+        port_row.addWidget(rescan_button)
+        layout.addLayout(port_row)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(10)
+        action_row.addWidget(connect_button)
+        action_row.addWidget(disconnect_button)
+        action_row.addStretch(1)
+        layout.addLayout(action_row)
+        return card
+
+    def _toggle_advanced_section(self, button: QPushButton, panel: QWidget, checked: bool) -> None:
+        panel.setVisible(bool(checked))
+        button.setText("Hide Advanced" if checked else "Show Advanced")
+
+    @staticmethod
+    def _set_status_pill(label: QLabel, text: str, kind: str) -> None:
+        background, foreground = semantic_chip_colors(kind)
+        label.setText(text)
+        label.setStyleSheet(chip_stylesheet(background=background, foreground=foreground))
 
     def _set_combo_items(self, combo: QComboBox, ports, selected: str) -> None:
         if combo.hasFocus():
@@ -366,13 +491,6 @@ class SystemTab(QWidget):
         self._sync_openrb_port()
         self.controller.connect_openrb()
 
-    def _refresh_readiness(self) -> None:
-        refresh_fn = getattr(self.controller, "refresh_readiness", None)
-        if callable(refresh_fn):
-            refresh_fn()
-            return
-        self.update(self.controller.refresh())
-
     def _save_runtime_parameters(self) -> None:
         parameters = {
             "mock_mode": bool(self.mock_mode_combo.currentData()),
@@ -380,8 +498,6 @@ class SystemTab(QWidget):
             "openrb_port": self._selected_port(self.openrb_port_combo),
             "baudrate": int(self.baudrate_spin.value()),
             "poll_rate_hz": int(self.poll_rate_spin.value()),
-            "fine_jog_step_ticks": int(self.fine_jog_spin.value()),
-            "coarse_jog_step_ticks": int(self.coarse_jog_spin.value()),
             "telemetry_freshness_timeout_s": float(self.telemetry_freshness_spin.value()),
         }
         handler = self._apply_runtime_parameters or self.controller.save_runtime_parameters
@@ -391,6 +507,26 @@ class SystemTab(QWidget):
             self._applied_parameter_values = dict(parameters)
         except Exception:
             self.update(self.controller.refresh())
+
+    def _copy_session_diagnostics(self) -> None:
+        builder = getattr(self.controller, "build_session_diagnostics_document", None)
+        if callable(builder):
+            self._copy_text(builder())
+            return
+        self._copy_text(self.status_text.toPlainText())
+
+    def _open_session_log(self) -> None:
+        path = self._session_log_path()
+        if path is None or not path.exists():
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _open_logs_folder(self) -> None:
+        path = self._session_log_path()
+        if path is None or not path.exists():
+            return
+        logs_root = path.parent.parent if path.parent.name == "current" else path.parent
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(logs_root)))
 
     def _mark_parameter_dirty(self, *_args) -> None:
         if self._updating_parameter_widgets:
@@ -416,8 +552,6 @@ class SystemTab(QWidget):
 
             self.baudrate_spin.setValue(int(values["baudrate"]))
             self.poll_rate_spin.setValue(int(values["poll_rate_hz"]))
-            self.fine_jog_spin.setValue(int(values["fine_jog_step_ticks"]))
-            self.coarse_jog_spin.setValue(int(values["coarse_jog_step_ticks"]))
             self.telemetry_freshness_spin.setValue(float(values["telemetry_freshness_timeout_s"]))
         finally:
             self._updating_parameter_widgets = False
@@ -428,8 +562,6 @@ class SystemTab(QWidget):
             "robot_config": str(state.robot_config),
             "baudrate": int(state.baudrate),
             "poll_rate_hz": int(state.poll_rate_hz),
-            "fine_jog_step_ticks": int(state.fine_jog_step_ticks),
-            "coarse_jog_step_ticks": int(state.coarse_jog_step_ticks),
             "telemetry_freshness_timeout_s": float(state.telemetry_freshness_timeout_s),
         }
 
@@ -439,8 +571,6 @@ class SystemTab(QWidget):
             "robot_config": str(self.robot_config_combo.currentData() or self.robot_config_combo.currentText()).strip(),
             "baudrate": int(self.baudrate_spin.value()),
             "poll_rate_hz": int(self.poll_rate_spin.value()),
-            "fine_jog_step_ticks": int(self.fine_jog_spin.value()),
-            "coarse_jog_step_ticks": int(self.coarse_jog_spin.value()),
             "telemetry_freshness_timeout_s": float(self.telemetry_freshness_spin.value()),
         }
 
@@ -451,6 +581,10 @@ class SystemTab(QWidget):
     @staticmethod
     def _copy_text(text: str) -> None:
         QApplication.clipboard().setText(str(text))
+
+    def _session_log_path(self) -> Path | None:
+        text = str(self.session_log_label.text()).strip()
+        return Path(text) if text and text.lower() != "unset" else None
 
     @staticmethod
     def _selected_port(combo: QComboBox) -> str:

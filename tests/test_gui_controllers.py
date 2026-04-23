@@ -672,6 +672,20 @@ def test_servos_tab_hides_id_assignment_controls_from_operator_surface(tmp_path:
     assert not hasattr(tab, "assign_button")
 
 
+def test_servos_tab_save_jog_settings_prefers_callback(tmp_path: Path) -> None:
+    _app()
+    controller = ServosController(_servo_service(tmp_path), _settings())
+    received: list[dict] = []
+    tab = ServosTab(controller, apply_runtime_parameters=lambda **kwargs: received.append(dict(kwargs)))
+
+    tab.update(controller.state)
+    tab.fine_jog_step_spin.setValue(7)
+    tab.coarse_jog_step_spin.setValue(31)
+    tab.save_servo_settings_button.click()
+
+    assert received == [{"fine_jog_step_ticks": 7, "coarse_jog_step_ticks": 31}]
+
+
 def test_pretension_tab_wraps_workspace_in_scroll_area(tmp_path: Path) -> None:
     _app()
     service = _pretension_service(tmp_path)
@@ -1265,6 +1279,28 @@ def test_system_controller_saves_runtime_parameters(tmp_path: Path) -> None:
     assert saved["robot_overrides"]["tightening_rotation_by_servo"]["1"] == "ccw"
 
 
+def test_system_controller_builds_comprehensive_session_diagnostics_document(tmp_path: Path) -> None:
+    settings = _settings()
+    session_log = tmp_path / "data" / "logs" / "current" / "operator_gui_test.log"
+    session_log.parent.mkdir(parents=True)
+    session_log.write_text("first event\nsecond event\n", encoding="utf-8")
+    controller = SystemController(
+        tracking_service=_tracking_service(settings, tmp_path),
+        openrb_client=MockOpenRbClient(),
+        servo_service=_servo_service(tmp_path),
+        settings=settings,
+        session_log_path=str(session_log),
+    )
+
+    controller.refresh()
+    document = controller.build_session_diagnostics_document()
+
+    assert "System Session Diagnostics" in document
+    assert "Session log:" in document
+    assert "second event" in document
+    assert "Effective config:" in document
+
+
 def test_pretension_controller_saves_defaults_without_runtime_rebuild(tmp_path: Path) -> None:
     settings = _settings()
     service = _pretension_service(tmp_path)
@@ -1335,25 +1371,53 @@ def test_system_tab_wraps_workspace_in_scroll_area() -> None:
     assert tab.scroll_area.widget() is not None
 
 
-def test_system_tab_surfaces_registration_runtime_tip_and_live_tip_summaries() -> None:
+def test_system_tab_surfaces_operator_bring_up_truth() -> None:
     _app()
     controller = _PortSelectionController()
-    controller.state.registration_summary = "loaded | latest_registration.json | FRE=0.400 mm"
-    controller.state.runtime_tip_summary = "accepted | latest_runtime_tip_calibration.json"
-    controller.state.live_tip_summary = "ready | tip_pose_status=ok"
-    controller.state.servo_telemetry_cadence_summary = "GUI 20.0 Hz | System auto servo summary 5.0 Hz"
-    controller.state.servo_telemetry_field_summary = "Live reads position/current/voltage/temperature."
-    controller.state.servo_telemetry_bottleneck_summary = "Current telemetry is limited by baudrate."
+    controller.state.mode_display = "Mock"
+    controller.state.robot_layout_display = "1 Segment"
+    controller.state.tracker_status_label = "Connected"
+    controller.state.tracker_status_kind = "ready"
+    controller.state.openrb_status_label = "Connected"
+    controller.state.openrb_status_kind = "ready"
+    controller.state.overall_status_label = "Ready"
+    controller.state.overall_status_kind = "ready"
+    controller.state.primary_blocker = ""
+    controller.state.tracker_truth_summary = "Healthy on ndi."
+    controller.state.openrb_truth_summary = "OpenRB and the DYNAMIXEL bus are ready."
+    controller.state.session_log_summary = "data/logs/current/operator_gui_test.log"
+    controller.state.diagnostics_preview = "first event\nsecond event"
     tab = SystemTab(controller)
 
     tab.update(controller.state)
 
-    assert "FRE=0.400 mm" in tab.registration_status_label.text()
-    assert "latest_runtime_tip_calibration.json" in tab.runtime_tip_status_label.text()
-    assert "tip_pose_status=ok" in tab.live_tip_status_label.text()
-    assert "System auto servo summary 5.0 Hz" in tab.telemetry_cadence_label.text()
-    assert "position/current/voltage/temperature" in tab.telemetry_fields_label.text()
-    assert "baudrate" in tab.telemetry_bottleneck_label.text()
+    assert tab.mode_label.text() == "Mock"
+    assert tab.robot_label.text() == "1 Segment"
+    assert tab.overall_header_label.text() == "Ready"
+    assert tab.blocker_label.isHidden()
+    assert "Healthy on ndi." in tab.tracker_status_label.text()
+    assert tab.session_log_label.text().endswith("operator_gui_test.log")
+    assert "second event" in tab.status_text.toPlainText()
+
+
+def test_system_tab_shows_blocker_banner_when_blocked() -> None:
+    _app()
+    controller = _PortSelectionController()
+    controller.state.mode_display = "Hardware"
+    controller.state.robot_layout_display = "2 Segments"
+    controller.state.tracker_status_label = "Degraded"
+    controller.state.tracker_status_kind = "warning"
+    controller.state.openrb_status_label = "Not Connected"
+    controller.state.openrb_status_kind = "blocked"
+    controller.state.overall_status_label = "Blocked"
+    controller.state.overall_status_kind = "blocked"
+    controller.state.primary_blocker = "OpenRB / DYNAMIXEL is not connected."
+    tab = SystemTab(controller)
+
+    tab.update(controller.state)
+
+    assert not tab.blocker_label.isHidden()
+    assert "OpenRB / DYNAMIXEL is not connected." in tab.blocker_label.text()
 
 
 def test_system_tab_save_apply_prefers_callback_when_available() -> None:
@@ -1380,18 +1444,17 @@ def test_system_tab_preserves_unsaved_parameter_edits_across_refresh() -> None:
 
     tab.update(controller.state)
     tab.poll_rate_spin.setValue(24)
-    tab.fine_jog_spin.setValue(9)
+    tab.telemetry_freshness_spin.setValue(0.5)
     tab.update(controller.state)
 
     assert tab.poll_rate_spin.value() == 24
-    assert tab.fine_jog_spin.value() == 9
+    assert tab.telemetry_freshness_spin.value() == 0.5
 
 
 def test_system_tab_preserves_scrolled_diagnostics_position_on_update() -> None:
     _app()
     controller = _PortSelectionController()
-    controller.state.status_message = "\n".join(f"line {index}" for index in range(80))
-    controller.state.bench_debug_text = "\n".join(f"debug {index}" for index in range(80))
+    controller.state.diagnostics_preview = "\n".join(f"line {index}" for index in range(160))
     tab = SystemTab(controller)
     tab.resize(900, 700)
     tab.show()
@@ -1402,11 +1465,22 @@ def test_system_tab_preserves_scrolled_diagnostics_position_on_update() -> None:
     scroll_bar.setValue(max(1, scroll_bar.maximum() // 2))
     previous_value = scroll_bar.value()
 
-    controller.state.status_message += "\nline 81"
+    controller.state.diagnostics_preview += "\nline 161"
     tab.update(controller.state)
     QTest.qWait(20)
 
     assert tab.status_text.verticalScrollBar().value() >= previous_value - 2
+
+
+def test_system_tab_copy_session_diagnostics_prefers_controller_document_builder() -> None:
+    _app()
+    controller = _PortSelectionController()
+    controller.build_session_diagnostics_document = lambda: "full diagnostics document"
+    tab = SystemTab(controller)
+
+    tab.copy_diagnostics_button.click()
+
+    assert QApplication.clipboard().text() == "full diagnostics document"
 
 
 def test_experiment_results_widget_preserves_summary_scroll_on_update() -> None:
@@ -2650,7 +2724,7 @@ def test_registration_and_experiment_tabs_expose_resizable_layout_defaults(tmp_p
     assert repeatability_page.viewer_placeholder is not None
     assert servos_tab.telemetry_table.minimumHeight() >= 190
     assert servos_tab.calibration_table.minimumHeight() >= 160
-    assert system_tab.config_summary.minimumHeight() >= 170
+    assert system_tab.status_text.minimumHeight() >= 160
 
 
 def test_registration_servos_and_pretension_tabs_stack_splitters_on_narrow_width(tmp_path: Path) -> None:
@@ -2782,7 +2856,7 @@ def test_app_window_applies_dark_theme_palette_without_breaking_key_labels(tmp_p
         assert palette.color(QPalette.Window).lightness() < 40
         assert palette.color(QPalette.WindowText).lightness() > 180
         window.system_tab.update(window.system_controller.refresh())
-        assert window.system_tab.title_label.text() == "System Workspace"
+        assert window.system_tab.title_label.text() == "System"
         assert window.system_tab.tracker_status_label.text() != ""
         assert window.experiment_tab.selected_status_chip.text() != ""
     finally:

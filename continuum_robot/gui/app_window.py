@@ -220,7 +220,10 @@ class AppWindow(QMainWindow):
             workflow_controller=self.tracker_mvp_controller,
             open_runtime_tip_calibration=self._open_runtime_tip_calibration,
         )
-        self.servos_tab = ServosTab(self.servos_controller)
+        self.servos_tab = ServosTab(
+            self.servos_controller,
+            apply_runtime_parameters=self._save_and_apply_servo_jog_settings,
+        )
         self.pretension_tab = PretensionTab(self.pretension_controller)
         self.experiment_tab = ExperimentTab(self.experiment_controller)
         self.modeling_tab = ModelingTab(self.modeling_controller)
@@ -281,6 +284,18 @@ class AppWindow(QMainWindow):
         )
         self.system_controller.state.last_error = None
         self.refresh()
+
+    def _save_and_apply_servo_jog_settings(self, *, fine_jog_step_ticks: int, coarse_jog_step_ticks: int) -> None:
+        self._save_and_apply_runtime_parameters(
+            mock_mode=bool(self.system_controller.state.mock_mode),
+            robot_config=str(self.system_controller.state.robot_config),
+            openrb_port=str(self.system_controller.state.openrb_port),
+            baudrate=int(self.system_controller.state.baudrate),
+            poll_rate_hz=int(self.system_controller.state.poll_rate_hz),
+            fine_jog_step_ticks=int(fine_jog_step_ticks),
+            coarse_jog_step_ticks=int(coarse_jog_step_ticks),
+            telemetry_freshness_timeout_s=float(self.system_controller.state.telemetry_freshness_timeout_s),
+        )
 
     def _shutdown_workspace(self) -> None:
         dialog = getattr(self, "runtime_tip_calibration_dialog", None)

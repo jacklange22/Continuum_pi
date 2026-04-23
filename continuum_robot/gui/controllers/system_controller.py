@@ -28,10 +28,19 @@ class SystemViewState:
     aurora_port: str
     openrb_port: str
     baudrate: int
+    mode_display: str = "Hardware"
+    robot_layout_display: str = "Unknown"
+    tracker_status_label: str = "Not Connected"
+    tracker_status_kind: str = "blocked"
+    openrb_status_label: str = "Not Connected"
+    openrb_status_kind: str = "blocked"
+    overall_status_label: str = "Blocked"
+    overall_status_kind: str = "blocked"
     tracker_connection_state: str = "disconnected"
     tracker_backend_identity: str = ""
     tracker_backend_running: bool = False
     tracker_backend_connected: bool = False
+    tracker_truth_summary: str = "Tracker not connected."
     registration_summary: str = "Not loaded."
     runtime_tip_summary: str = "Not loaded."
     live_tip_summary: str = "Blocked."
@@ -42,7 +51,10 @@ class SystemViewState:
     motion_ready: bool = False
     external_power_ready: bool | None = None
     openrb_status: str = "OpenRB disconnected."
+    openrb_truth_summary: str = "OpenRB not connected."
     readiness_message: str = "OpenRB readiness not checked."
+    overall_status_summary: str = "Blocked"
+    primary_blocker: str = "Tracker is not connected."
     status_message: str = "System idle."
     last_error: str | None = None
     available_ports: list[SerialPortInfo] = field(default_factory=list)
@@ -69,6 +81,8 @@ class SystemViewState:
     saved_overrides_path: str = ""
     config_summary: str = ""
     session_log_path: str = ""
+    session_log_summary: str = ""
+    diagnostics_preview: str = ""
 
 
 class SystemController:
@@ -117,6 +131,7 @@ class SystemController:
             saved_overrides_path=self._existing_overrides_path(config_loader),
             session_log_path=str(session_log_path or ""),
         )
+        self._last_truth_snapshot: dict[str, str] = {}
         self._refresh_telemetry_policy()
         self.rescan_ports()
 
@@ -357,6 +372,9 @@ class SystemController:
             self.state.last_error = tracker_state.last_error
         self._refresh_telemetry_policy()
         self.state.config_summary = self._build_live_config_summary()
+        self._refresh_operator_truth(tracker_state)
+        self._refresh_session_diagnostics()
+        self._log_truth_transitions()
         return self.state
 
     def _refresh_telemetry_policy(self) -> None:
@@ -370,6 +388,169 @@ class SystemController:
         self.state.servo_telemetry_cadence_summary = policy.cadence_summary
         self.state.servo_telemetry_field_summary = policy.field_summary
         self.state.servo_telemetry_bottleneck_summary = policy.bottleneck_summary
+
+    def _refresh_operator_truth(self, tracker_state) -> None:
+        self.state.mode_display = "Mock" if self.state.mock_mode else "Hardware"
+        self.state.robot_layout_display = self._robot_layout_display(
+            self.state.robot_mode,
+            self.state.expected_servo_ids,
+        )
+        tracker_connected = bool(
+            self.state.tracker_backend_connected
+            or self.state.tracker_connection_state in {"starting", "connecting"}
+        )
+        tracker_healthy = bool(
+            tracker_connected
+            and self.state.tracker_connection_state not in {"disconnected", "error"}
+            and not getattr(tracker_state, "tracker_data_stale", False)
+            and not getattr(tracker_state, "last_error", None)
+        )
+        if tracker_healthy:
+            backend = self.state.tracker_backend_identity or "backend unknown"
+            self.state.tracker_status_label = "Connected"
+            self.state.tracker_status_kind = "ready"
+            self.state.tracker_truth_summary = f"Healthy on {backend}."
+        elif tracker_connected:
+            backend = self.state.tracker_backend_identity or "backend unknown"
+            self.state.tracker_status_label = "Degraded"
+            self.state.tracker_status_kind = "warning"
+            state_label = self.state.tracker_connection_state.replace("_", " ")
+            self.state.tracker_truth_summary = f"{state_label.capitalize()} on {backend}."
+        else:
+            self.state.tracker_status_label = "Not Connected"
+            self.state.tracker_status_kind = "blocked"
+            self.state.tracker_truth_summary = "Tracker not connected."
+
+        openrb_connected = bool(self.state.openrb_connected or self.state.dynamixel_connected)
+        if self.state.motion_ready and openrb_connected:
+            self.state.openrb_status_label = "Connected"
+            self.state.openrb_status_kind = "ready"
+            self.state.openrb_truth_summary = "OpenRB and the DYNAMIXEL bus are ready."
+        elif openrb_connected and self.state.bus_reachable:
+            self.state.openrb_status_label = "Degraded"
+            self.state.openrb_status_kind = "warning"
+            self.state.openrb_truth_summary = self.state.readiness_message or "OpenRB is connected with warnings."
+        elif openrb_connected:
+            self.state.openrb_status_label = "Degraded"
+            self.state.openrb_status_kind = "warning"
+            self.state.openrb_truth_summary = self.state.openrb_status or "OpenRB is connected."
+        else:
+            self.state.openrb_status_label = "Not Connected"
+            self.state.openrb_status_kind = "blocked"
+            self.state.openrb_truth_summary = "OpenRB not connected."
+
+        if tracker_healthy and (self.state.mock_mode or self.state.motion_ready):
+            self.state.overall_status_label = "Ready"
+            self.state.overall_status_kind = "ready"
+            self.state.overall_status_summary = "Ready"
+            self.state.primary_blocker = ""
+            return
+        self.state.overall_status_label = "Blocked"
+        self.state.overall_status_kind = "blocked"
+        self.state.overall_status_summary = "Blocked"
+        self.state.primary_blocker = self._primary_blocker_message(
+            tracker_connected=tracker_connected,
+            tracker_healthy=tracker_healthy,
+            openrb_connected=openrb_connected,
+        )
+
+    def _primary_blocker_message(
+        self,
+        *,
+        tracker_connected: bool,
+        tracker_healthy: bool,
+        openrb_connected: bool,
+    ) -> str:
+        if self.state.last_error:
+            return str(self.state.last_error)
+        if not tracker_connected:
+            return "Tracker is not connected."
+        if not tracker_healthy:
+            return self.state.tracker_connection_state.replace("_", " ")
+        if self.state.mock_mode:
+            return self.state.status_message
+        if not openrb_connected:
+            return "OpenRB / DYNAMIXEL is not connected."
+        if not self.state.bus_reachable:
+            return "Configured servos are not responding on the DYNAMIXEL bus."
+        if not self.state.motion_ready:
+            return self.state.readiness_message or "Servo readiness is blocked."
+        return self.state.status_message
+
+    def _refresh_session_diagnostics(self) -> None:
+        session_log_path = Path(self.state.session_log_path) if self.state.session_log_path else None
+        if session_log_path is None:
+            self.state.session_log_summary = "Current session log unavailable."
+            self.state.diagnostics_preview = "No session log is active for this launch."
+            return
+        self.state.session_log_summary = str(session_log_path)
+        log_lines = self._read_session_log_lines(session_log_path)
+        tail = "\n".join(log_lines[-12:]).strip()
+        if tail:
+            self.state.diagnostics_preview = tail
+        else:
+            self.state.diagnostics_preview = "No session log lines yet."
+
+    def build_session_diagnostics_document(self) -> str:
+        session_log_path = Path(self.state.session_log_path) if self.state.session_log_path else None
+        log_text = ""
+        if session_log_path is not None and session_log_path.exists():
+            log_text = session_log_path.read_text(encoding="utf-8")
+        sections = [
+            "System Session Diagnostics",
+            "",
+            f"Overall: {self.state.overall_status_label}",
+            f"Primary blocker: {self.state.primary_blocker or 'none'}",
+            f"Mode: {self.state.mode_display}",
+            f"Robot layout: {self.state.robot_layout_display}",
+            f"Robot profile: {self.state.robot_config}",
+            f"Tracker: {self.state.tracker_truth_summary}",
+            f"OpenRB: {self.state.openrb_truth_summary}",
+            f"Status message: {self.state.status_message}",
+            f"Last error: {self.state.last_error or 'none'}",
+            f"Saved overrides: {self.state.saved_overrides_path or 'none'}",
+            f"Session log: {self.state.session_log_path or 'unset'}",
+            "",
+            "Measurement chain:",
+            f"Registration: {self.state.registration_summary}",
+            f"Runtime tip: {self.state.runtime_tip_summary}",
+            f"Live tip: {self.state.live_tip_summary}",
+            "",
+            "Effective config:",
+            self.state.config_summary,
+            "",
+            "Session log contents:",
+            log_text or "(session log is empty)",
+        ]
+        return "\n".join(sections).rstrip() + "\n"
+
+    @staticmethod
+    def _read_session_log_lines(path: Path) -> list[str]:
+        if not path.exists():
+            return []
+        return path.read_text(encoding="utf-8").splitlines()
+
+    def _log_truth_transitions(self) -> None:
+        current = {
+            "overall": self.state.overall_status_summary,
+            "blocker": self.state.primary_blocker,
+            "tracker": self.state.tracker_truth_summary,
+            "openrb": self.state.openrb_truth_summary,
+            "status": self.state.status_message,
+            "error": self.state.last_error or "",
+        }
+        if not self._last_truth_snapshot:
+            self._last_truth_snapshot = dict(current)
+            return
+        for key, value in current.items():
+            previous = self._last_truth_snapshot.get(key, "")
+            if value == previous:
+                continue
+            if key == "error" and value:
+                LOG.warning("System %s changed | %s", key, value)
+            else:
+                LOG.info("System %s changed | %s", key, value)
+        self._last_truth_snapshot = dict(current)
 
     @staticmethod
     def _registration_summary(tracker_state) -> str:
@@ -499,8 +680,8 @@ class SystemController:
         openrb_port: str,
         baudrate: int,
         poll_rate_hz: int,
-        fine_jog_step_ticks: int,
-        coarse_jog_step_ticks: int,
+        fine_jog_step_ticks: int | None = None,
+        coarse_jog_step_ticks: int | None = None,
         position_min_offset_ticks: int | None = None,
         position_max_offset_ticks: int | None = None,
         software_position_margin_ticks: int | None = None,
@@ -513,9 +694,13 @@ class SystemController:
                 raise RuntimeError("Config loader is unavailable; runtime parameter editing is disabled.")
             if poll_rate_hz <= 0:
                 raise ValueError("GUI refresh rate must be positive.")
-            if fine_jog_step_ticks <= 0 or coarse_jog_step_ticks <= 0:
+            resolved_fine_jog = self.state.fine_jog_step_ticks if fine_jog_step_ticks is None else int(fine_jog_step_ticks)
+            resolved_coarse_jog = (
+                self.state.coarse_jog_step_ticks if coarse_jog_step_ticks is None else int(coarse_jog_step_ticks)
+            )
+            if resolved_fine_jog <= 0 or resolved_coarse_jog <= 0:
                 raise ValueError("Jog increments must be positive.")
-            if fine_jog_step_ticks > coarse_jog_step_ticks:
+            if resolved_fine_jog > resolved_coarse_jog:
                 raise ValueError("Fine jog increment must be less than or equal to coarse jog increment.")
             resolved_min_offset = (
                 self.state.position_min_offset_ticks
@@ -560,8 +745,8 @@ class SystemController:
                 "baudrate": int(baudrate),
                 "poll_rate_hz": int(poll_rate_hz),
                 "safety_overrides": {
-                    "fine_jog_step_ticks": int(fine_jog_step_ticks),
-                    "coarse_jog_step_ticks": int(coarse_jog_step_ticks),
+                    "fine_jog_step_ticks": int(resolved_fine_jog),
+                    "coarse_jog_step_ticks": int(resolved_coarse_jog),
                     "position_min_offset_ticks": int(resolved_min_offset),
                     "position_max_offset_ticks": int(resolved_max_offset),
                     "software_position_margin_ticks": int(resolved_margin),
@@ -583,8 +768,8 @@ class SystemController:
             self.state.baudrate = int(baudrate)
             self.state.expected_servo_ids = list(robot.servo_ids)
             self.state.poll_rate_hz = int(poll_rate_hz)
-            self.state.fine_jog_step_ticks = int(fine_jog_step_ticks)
-            self.state.coarse_jog_step_ticks = int(coarse_jog_step_ticks)
+            self.state.fine_jog_step_ticks = int(resolved_fine_jog)
+            self.state.coarse_jog_step_ticks = int(resolved_coarse_jog)
             self.state.position_min_offset_ticks = int(resolved_min_offset)
             self.state.position_max_offset_ticks = int(resolved_max_offset)
             self.state.software_position_margin_ticks = int(resolved_margin)
@@ -671,6 +856,24 @@ class SystemController:
             f"Saved overrides: {self.state.saved_overrides_path or 'none'}"
             f"\nSession log: {self.state.session_log_path or 'unset'}"
         )
+
+    @staticmethod
+    def _robot_layout_display(robot_mode: str, expected_servo_ids: list[int]) -> str:
+        mode = str(robot_mode or "").strip().lower()
+        if mode == "1-servo":
+            return "1 Servo"
+        if mode == "4-servo":
+            return "1 Segment"
+        if mode == "8-servo":
+            return "2 Segments"
+        servo_count = len(expected_servo_ids)
+        if servo_count == 1:
+            return "1 Servo"
+        if servo_count == 4:
+            return "1 Segment"
+        if servo_count == 8:
+            return "2 Segments"
+        return str(robot_mode or "Unknown").replace("_", " ")
 
     @staticmethod
     def _default_tightening_direction(settings: Settings) -> str:

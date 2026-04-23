@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
@@ -36,11 +38,21 @@ from continuum_robot.gui.view_utils import (
 class ServosTab(QWidget):
     """Servo scan, one-servo bring-up, calibration, and cautious motion UI."""
 
-    def __init__(self, controller, parent=None) -> None:
+    def __init__(
+        self,
+        controller,
+        parent=None,
+        *,
+        apply_runtime_parameters: Callable[..., None] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.controller = controller
+        self._apply_runtime_parameters = apply_runtime_parameters
         self.displacement_inputs: list[QDoubleSpinBox] = []
         self._displacement_labels: list[QLabel] = []
+        self._updating_jog_settings = False
+        self._jog_settings_dirty = False
+        self._applied_jog_settings: dict[str, int] = {}
 
         self.setObjectName("servoWorkspace")
         self.setStyleSheet(
@@ -56,6 +68,7 @@ class ServosTab(QWidget):
             "Use this workspace for servo bring-up and practical manual startup-state capture. "
             "Refresh readiness, verify the expected servos, jog the configured servos to the desired startup pose, "
             "then capture that 4-servo state as manual pretension if needed. "
+            "Use Servo Settings here for jog-step tuning. "
             "Use the Pretension tab for feedback-based algorithm development, tuning, and validation."
         )
         self.workflow_hint.setProperty("role", "hint")
@@ -149,6 +162,20 @@ class ServosTab(QWidget):
         self.fine_plus_button.clicked.connect(lambda: self._jog("fine", 1))
         self.coarse_minus_button.clicked.connect(lambda: self._jog("coarse", -1))
         self.coarse_plus_button.clicked.connect(lambda: self._jog("coarse", 1))
+        self.fine_jog_step_spin = QSpinBox()
+        self.fine_jog_step_spin.setRange(1, 512)
+        self.fine_jog_step_spin.valueChanged.connect(self._mark_jog_settings_dirty)
+        self.coarse_jog_step_spin = QSpinBox()
+        self.coarse_jog_step_spin.setRange(1, 1024)
+        self.coarse_jog_step_spin.valueChanged.connect(self._mark_jog_settings_dirty)
+        self.save_servo_settings_button = QPushButton("Save Jog Settings")
+        self.save_servo_settings_button.setProperty("role", "primary")
+        self.save_servo_settings_button.clicked.connect(self._save_servo_settings)
+        self.servo_settings_hint = QLabel(
+            "These step sizes persist into the next launch and control the fine/coarse jog buttons on this page."
+        )
+        self.servo_settings_hint.setProperty("role", "hint")
+        self.servo_settings_hint.setWordWrap(True)
 
         self.calibration_servo_spin = QSpinBox()
         self.calibration_servo_spin.setRange(1, 252)
@@ -289,6 +316,18 @@ class ServosTab(QWidget):
         jog_buttons.addWidget(self.coarse_plus_button)
         jog_layout.addLayout(jog_buttons)
 
+        self.servo_settings_box = QGroupBox("Servo Settings")
+        servo_settings_layout = QVBoxLayout(self.servo_settings_box)
+        servo_settings_form = QFormLayout()
+        servo_settings_form.addRow("Fine jog (ticks)", self.fine_jog_step_spin)
+        servo_settings_form.addRow("Coarse jog (ticks)", self.coarse_jog_step_spin)
+        servo_settings_layout.addLayout(servo_settings_form)
+        servo_settings_row = QHBoxLayout()
+        servo_settings_row.addWidget(self.save_servo_settings_button)
+        servo_settings_row.addStretch(1)
+        servo_settings_layout.addLayout(servo_settings_row)
+        servo_settings_layout.addWidget(self.servo_settings_hint)
+
         self.startup_box = QGroupBox("Startup Calibration")
         startup_layout = QFormLayout(self.startup_box)
         startup_layout.addRow("Servo", self.calibration_servo_spin)
@@ -332,6 +371,7 @@ class ServosTab(QWidget):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(12)
         left_layout.addWidget(jog_box)
+        left_layout.addWidget(self.servo_settings_box)
         left_layout.addWidget(bringup_actions_box)
         left_layout.addWidget(self.manual_pretension_box)
         left_layout.addWidget(self.pretension_box)
@@ -515,6 +555,14 @@ class ServosTab(QWidget):
         self.selected_servo_ready_label.setText("Yes" if state.selected_servo_motion_ready else "No")
         self._rebuild_servo_selector(state.servo_ids or state.expected_servo_ids, selected_servo_id)
 
+        applied_jog_settings = self._jog_settings_from_state(state)
+        if not self._jog_settings_dirty:
+            self._apply_jog_settings(applied_jog_settings)
+        elif self._current_jog_settings() == applied_jog_settings:
+            self._jog_settings_dirty = False
+            self._apply_jog_settings(applied_jog_settings)
+        self._applied_jog_settings = applied_jog_settings
+
         any_servo = bool(state.servo_ids)
         show_single_servo_advanced = state.single_servo_mode
         motion_allowed = state.connected and any_servo and state.selected_servo_motion_ready
@@ -538,6 +586,9 @@ class ServosTab(QWidget):
         self.fine_plus_button.setEnabled(motion_allowed)
         self.coarse_minus_button.setEnabled(motion_allowed)
         self.coarse_plus_button.setEnabled(motion_allowed)
+        self.save_servo_settings_button.setEnabled(
+            bool(self._apply_runtime_parameters) and self._current_jog_settings() != self._applied_jog_settings
+        )
         self.save_startup_button.setEnabled(show_single_servo_advanced and state.connected and any_servo)
         self.start_pretension_button.setEnabled(show_single_servo_advanced and motion_allowed and not state.pretension_running)
         self.cancel_pretension_button.setEnabled(show_single_servo_advanced and state.pretension_running)
@@ -698,6 +749,19 @@ class ServosTab(QWidget):
             threshold_ma=int(self.threshold_spin.value()),
         )
 
+    def _mark_jog_settings_dirty(self, *_args) -> None:
+        if self._updating_jog_settings:
+            return
+        self._jog_settings_dirty = self._current_jog_settings() != self._applied_jog_settings
+
+    def _save_servo_settings(self) -> None:
+        if self._apply_runtime_parameters is None:
+            return
+        parameters = self._current_jog_settings()
+        self._apply_runtime_parameters(**parameters)
+        self._jog_settings_dirty = False
+        self._applied_jog_settings = dict(parameters)
+
     def _start_pretension(self) -> None:
         self._safe_call(
             self.controller.start_pretension,
@@ -759,6 +823,27 @@ class ServosTab(QWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._apply_responsive_layout()
+
+    def _apply_jog_settings(self, values: dict[str, int]) -> None:
+        self._updating_jog_settings = True
+        try:
+            self.fine_jog_step_spin.setValue(int(values["fine_jog_step_ticks"]))
+            self.coarse_jog_step_spin.setValue(int(values["coarse_jog_step_ticks"]))
+        finally:
+            self._updating_jog_settings = False
+
+    @staticmethod
+    def _jog_settings_from_state(state: ServosViewState) -> dict[str, int]:
+        return {
+            "fine_jog_step_ticks": int(state.fine_jog_step_ticks),
+            "coarse_jog_step_ticks": int(state.coarse_jog_step_ticks),
+        }
+
+    def _current_jog_settings(self) -> dict[str, int]:
+        return {
+            "fine_jog_step_ticks": int(self.fine_jog_step_spin.value()),
+            "coarse_jog_step_ticks": int(self.coarse_jog_step_spin.value()),
+        }
 
     def _apply_responsive_layout(self) -> None:
         available_width = max(self.width(), self.scroll_area.viewport().width())
