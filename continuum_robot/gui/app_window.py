@@ -8,6 +8,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow, QTabWidget
 
 from continuum_robot.app.bootstrap import AppContext, build_app_context
+from continuum_robot.gui.controllers.data_management_controller import DataManagementController
 from continuum_robot.gui.controllers.experiment_controller import ExperimentController
 from continuum_robot.gui.controllers.modeling_controller import ModelingController
 from continuum_robot.gui.controllers.pretension_controller import PretensionController
@@ -17,6 +18,7 @@ from continuum_robot.gui.controllers.servos_controller import ServosController
 from continuum_robot.gui.controllers.system_controller import SystemController
 from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpController
 from continuum_robot.gui.controllers.tracking_controller import TrackingController
+from continuum_robot.gui.tabs.data_management_tab import DataManagementTab
 from continuum_robot.gui.tabs.experiment_tab import ExperimentTab
 from continuum_robot.gui.tabs.modeling_tab import ModelingTab
 from continuum_robot.gui.tabs.pretension_tab import PretensionTab
@@ -112,6 +114,11 @@ class AppWindow(QMainWindow):
             self.modeling_tab.update(modeling_state)
             self.statusBar().showMessage(modeling_state.status_message)
             return
+        elif current_widget is self.data_management_tab:
+            data_management_state = self.data_management_controller.refresh()
+            self.data_management_tab.update(data_management_state)
+            self.statusBar().showMessage(data_management_state.status_message)
+            return
         self.statusBar().showMessage(system_state.status_message)
 
     def _refresh_servo_state(self):
@@ -192,6 +199,7 @@ class AppWindow(QMainWindow):
             artifact_root=context.project_root / "data" / "models" / "ann",
             results_root=context.project_root / "data" / "modeling_results",
         )
+        self.data_management_controller = DataManagementController(project_root=context.project_root)
         self.tracker_mvp_controller = TrackerMvpController(
             tracking_service=tracking_service,
             registration_service=registration_service,
@@ -216,6 +224,7 @@ class AppWindow(QMainWindow):
         self.pretension_tab = PretensionTab(self.pretension_controller)
         self.experiment_tab = ExperimentTab(self.experiment_controller)
         self.modeling_tab = ModelingTab(self.modeling_controller)
+        self.data_management_tab = DataManagementTab(self.data_management_controller)
         for widget, label in (
             (self.system_tab, "System"),
             (self.tracking_tab, "Tracking"),
@@ -224,6 +233,7 @@ class AppWindow(QMainWindow):
             (self.pretension_tab, "Pretension"),
             (self.experiment_tab, "Experiment"),
             (self.modeling_tab, "Modeling"),
+            (self.data_management_tab, "Data"),
         ):
             new_tab_widget.addTab(widget, label)
         new_tab_widget.currentChanged.connect(self._handle_tab_changed)

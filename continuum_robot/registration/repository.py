@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Any
 import numpy as np
+
+from continuum_robot.experiments.dataset_io import canonical_timestamped_path
 
 
 @dataclass
@@ -49,8 +50,12 @@ class RegistrationRepository:
         self.validation_dir.mkdir(parents=True, exist_ok=True)
 
     def save_record(self, record: RegistrationRecord) -> Path:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
-        path = self.root_dir / f"registration_{stamp}.json"
+        path = canonical_timestamped_path(
+            self.root_dir,
+            "registration",
+            timestamp_utc=record.timestamp_utc,
+            extension=".json",
+        )
         payload = self._to_payload(record)
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -60,7 +65,14 @@ class RegistrationRepository:
 
     def list_saved_records(self, *, limit: int | None = None) -> list[Path]:
         """Return timestamped accepted-registration payloads, newest first."""
-        paths = sorted(self.root_dir.glob("registration_*.json"), reverse=True)
+        paths = sorted(
+            (
+                path
+                for path in self.root_dir.glob("*.json")
+                if path.name != "latest_registration.json" and _is_registration_record_name(path.name)
+            ),
+            reverse=True,
+        )
         if limit is not None:
             return paths[: max(0, int(limit))]
         return paths
@@ -72,8 +84,12 @@ class RegistrationRepository:
 
     def save_validation_summary(self, summary: dict[str, Any], *, timestamp_utc: str | None = None) -> Path:
         """Persist a repeated-run registration validation summary."""
-        stamp = _timestamp_stamp(timestamp_utc)
-        path = self.validation_dir / f"registration_validation_{stamp}.json"
+        path = canonical_timestamped_path(
+            self.validation_dir,
+            "registration_validation",
+            timestamp_utc=timestamp_utc,
+            extension=".json",
+        )
         path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
         latest = self.validation_dir / "latest_registration_validation.json"
@@ -105,16 +121,7 @@ class RegistrationRepository:
         payload["raw_captured_landmarks_aurora_xyz"] = payload["raw_captured_landmarks_robot_xyz"]
         payload["averaged_landmarks_aurora_xyz"] = payload["averaged_landmarks_robot_xyz"]
         return payload
-
-
-def _timestamp_stamp(timestamp_utc: str | None) -> str:
-    if timestamp_utc:
-        try:
-            parsed = datetime.fromisoformat(str(timestamp_utc).replace("Z", "+00:00"))
-        except ValueError:
-            cleaned = "".join(character for character in str(timestamp_utc) if character.isdigit())
-            if cleaned:
-                return cleaned
-        else:
-            return parsed.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
+def _is_registration_record_name(name: str) -> bool:
+    if name.startswith("registration_") and name.endswith(".json"):
+        return True
+    return name.endswith("_registration.json")

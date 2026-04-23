@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import yaml
 
 from continuum_robot.experiments.schemas import (
@@ -24,6 +25,73 @@ def canonical_experiment_output_root(output_root: Path, experiment_name: str) ->
     if not safe_name:
         return root
     return root if root.name == safe_name else root / safe_name
+
+
+def canonical_timestamp_token(timestamp_utc: str | None = None) -> str:
+    """Return one canonical UTC timestamp token for operator-facing outputs."""
+    if timestamp_utc:
+        raw = str(timestamp_utc).strip()
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            match = re.search(r"(\d{8})[T_]?(\d{6})", raw)
+            if match:
+                return f"{match.group(1)}_{match.group(2)}"
+        else:
+            return parsed.astimezone(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+
+def sanitize_output_name(name: str, *, default: str = "artifact") -> str:
+    """Return a filesystem-safe artifact label for canonical output naming."""
+    cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "_", str(name or "").strip())
+    return cleaned.strip("_") or default
+
+
+def canonical_timestamped_name(
+    root: Path,
+    label: str,
+    *,
+    timestamp_utc: str | None = None,
+    extension: str = "",
+) -> str:
+    """Return a collision-safe `YYYYMMDD_HHMMSS_label` name under one root."""
+    root = Path(root)
+    stamp = canonical_timestamp_token(timestamp_utc)
+    safe_label = sanitize_output_name(label)
+    safe_extension = str(extension or "")
+    base_stem = f"{stamp}_{safe_label}"
+    candidate = root / f"{base_stem}{safe_extension}"
+    if not candidate.exists():
+        return candidate.name
+    suffix = 1
+    while True:
+        named = root / f"{base_stem}_{suffix:02d}{safe_extension}"
+        if not named.exists():
+            return named.name
+        suffix += 1
+
+
+def canonical_timestamped_path(
+    root: Path,
+    label: str,
+    *,
+    timestamp_utc: str | None = None,
+    extension: str = "",
+) -> Path:
+    """Return a collision-safe canonical artifact path under one root."""
+    root = Path(root)
+    return root / canonical_timestamped_name(
+        root,
+        label,
+        timestamp_utc=timestamp_utc,
+        extension=extension,
+    )
+
+
+def default_experiment_output_dir_name(root: Path, experiment_name: str) -> str:
+    """Return a timestamped canonical run-directory name with collision handling."""
+    return canonical_timestamped_name(Path(root), experiment_name, extension="")
 
 
 class ExperimentDatasetWriter:
@@ -49,8 +117,7 @@ class ExperimentDatasetWriter:
         if output_dir_name:
             output_dir = root / str(output_dir_name)
         else:
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            output_dir = root / f"{timestamp}_{metadata.run_id}"
+            output_dir = root / default_experiment_output_dir_name(root, metadata.experiment_name)
         output_dir.mkdir(parents=True, exist_ok=False)
         metadata_path = output_dir / "metadata.json"
         samples_path = output_dir / "samples.jsonl"

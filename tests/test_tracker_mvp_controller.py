@@ -245,7 +245,7 @@ def test_tracker_mvp_validation_creates_artifact_and_updates_state(
     state = controller.refresh()
 
     assert report_path.exists()
-    assert report_path.parent.parent == tmp_path / "data" / "experiments" / "tracker_validation"
+    assert report_path.parent.parent == tmp_path / "data" / "diagnostics" / "tracker_validation"
     assert report_path.name == "tracker_validation_report.json"
     assert json.loads(report_path.read_text(encoding="utf-8"))["tracker_ready"] is True
     assert state.validation_passed is True

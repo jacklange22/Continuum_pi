@@ -44,7 +44,7 @@ python scripts/run_lab_workflow.py tracker-mvp
 
 Tracker validation:
 
-- `data/experiments/tracker_validation/<run>/tracker_validation_report.json`
+- `data/diagnostics/tracker_validation/<run>/tracker_validation_report.json`
 
 Pivot calibration:
 
@@ -151,7 +151,7 @@ Tracker connect fails:
 
 Tracker validation fails:
 
-- inspect the saved JSON report in `data/experiments/tracker_validation/`
+- inspect the saved JSON report in `data/diagnostics/tracker_validation/`
 - check backend selected, FPS, freshness, and visible tool IDs
 - fix tool visibility before attempting pivot or registration
 

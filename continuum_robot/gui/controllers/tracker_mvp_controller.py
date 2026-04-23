@@ -12,7 +12,7 @@ import time
 import numpy as np
 
 from continuum_robot.config.settings import Settings
-from continuum_robot.experiments.dataset_io import canonical_experiment_output_root
+from continuum_robot.experiments.dataset_io import canonical_timestamped_path
 from continuum_robot.experiments.pivot_utils import write_tip_vector_file
 from continuum_robot.hardware.serial_ports import SerialPortInfo, discover_serial_ports
 from continuum_robot.tracking.benchmarking import TrackerBenchmarkThresholds
@@ -229,11 +229,10 @@ class TrackerMvpController:
                     self.settings.registration.capture_tool_id,
                 ),
             )
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            report_dir = canonical_experiment_output_root(
-                self._experiment_runtime_root(),
+            report_dir = canonical_timestamped_path(
+                self.project_root / "data" / "diagnostics" / "tracker_validation",
                 "tracker_validation",
-            ) / f"{stamp}_tracker_validation"
+            )
             report_dir.mkdir(parents=True, exist_ok=True)
             report_path = report_dir / "tracker_validation_report.json"
             report_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")

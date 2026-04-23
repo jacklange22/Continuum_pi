@@ -16,6 +16,10 @@ from continuum_robot.experiments.builtins import (
     ServoTrackerSyncValidationConfig,
     TrackerTimingValidationConfig,
 )
+from continuum_robot.experiments.calibration_validation import (
+    PivotValidationConfig,
+    RegistrationValidationConfig,
+)
 from continuum_robot.experiments.single_segment_repeatability import (
     LEGACY_CAPTURE_COUNT,
     LEGACY_TARGET_COUNT,
@@ -580,6 +584,78 @@ def evaluate_preflight(
         checks.append(_info("tracking_state", "Tracking", "Tracker input is not required for schedule validation."))
         checks.append(_info("mode", "Run Mode", "Schedule validation is a pure software validation run."))
         checks.append(_info("registration", "Registration", "Registration is not required for schedule validation."))
+
+    elif experiment_name == "registration_validation":
+        config = RegistrationValidationConfig.from_dict(payload)
+        checks.append(_info("tracking_state", "Tracking", "Registration validation is an offline analysis run. Live tracking is not required."))
+        checks.append(_info("mode", "Run Mode", "Registration validation analyzes previously saved registration solves."))
+        checks.append(_info("registration", "Registration", "This run consumes saved registration artifacts rather than the live registration state."))
+        if len(config.run_paths) < 2:
+            checks.append(
+                _blocked(
+                    "run_paths",
+                    "Selected Runs",
+                    "Select at least 2 saved registration runs before running the validation analysis.",
+                )
+            )
+        else:
+            missing = [
+                str(_resolve_repo_path(project_root, raw_path))
+                for raw_path in config.run_paths
+                if not _resolve_repo_path(project_root, raw_path).exists()
+            ]
+            if missing:
+                checks.append(
+                    _blocked(
+                        "run_paths",
+                        "Selected Runs",
+                        f"Some selected registration runs are missing: {', '.join(missing[:3])}",
+                    )
+                )
+            else:
+                checks.append(
+                    _ok(
+                        "run_paths",
+                        "Selected Runs",
+                        f"{len(config.run_paths)} saved registration runs will be analyzed offline.",
+                    )
+                )
+
+    elif experiment_name == "pivot_validation":
+        config = PivotValidationConfig.from_dict(payload)
+        checks.append(_info("tracking_state", "Tracking", "Pivot validation is an offline analysis run. Live tracking is not required."))
+        checks.append(_info("mode", "Run Mode", "Pivot validation analyzes previously saved pivot-calibration runs."))
+        checks.append(_info("registration", "Registration", "Pivot validation does not require live registration state."))
+        if len(config.run_paths) < 2:
+            checks.append(
+                _blocked(
+                    "run_paths",
+                    "Selected Runs",
+                    "Select at least 2 saved pivot-calibration runs before running the validation analysis.",
+                )
+            )
+        else:
+            missing = [
+                str(_resolve_repo_path(project_root, raw_path))
+                for raw_path in config.run_paths
+                if not _resolve_repo_path(project_root, raw_path).exists()
+            ]
+            if missing:
+                checks.append(
+                    _blocked(
+                        "run_paths",
+                        "Selected Runs",
+                        f"Some selected pivot runs are missing: {', '.join(missing[:3])}",
+                    )
+                )
+            else:
+                checks.append(
+                    _ok(
+                        "run_paths",
+                        "Selected Runs",
+                        f"{len(config.run_paths)} saved pivot-calibration runs will be analyzed offline.",
+                    )
+                )
 
     elif experiment_name == "collect_pose_command_dataset":
         config = CollectPoseCommandDatasetConfig.from_dict(payload)

@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 from continuum_robot.app.bootstrap import build_app_context
+from continuum_robot.experiments.dataset_io import canonical_timestamped_path
 from continuum_robot.hardware.dxl_bus import DxlBusConfig
 
 
@@ -336,13 +337,9 @@ def main(argv: list[str] | None = None) -> int:
         ]
         run_dir = args.output_dir
         if run_dir is None:
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            run_dir = (
-                ctx.project_root
-                / "data"
-                / "diagnostics"
-                / "servo_telemetry"
-                / f"{timestamp}_{'_'.join(profiles)}_{len(servo_ids)}servos"
+            run_dir = canonical_timestamped_path(
+                ctx.project_root / "data" / "diagnostics" / "servo_telemetry",
+                f"servo_telemetry_{'_'.join(profiles)}_{len(servo_ids)}servos",
             )
         outputs = write_benchmark_outputs(
             output_dir=run_dir,

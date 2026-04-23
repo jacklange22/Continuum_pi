@@ -19,7 +19,7 @@ from continuum_robot.experiments.critical_experiments import (
     build_grid_accuracy_preview,
 )
 from continuum_robot.experiments.builtins import ServoTrackerSyncValidationConfig
-from continuum_robot.experiments.dataset_io import canonical_experiment_output_root
+from continuum_robot.experiments.dataset_io import canonical_experiment_output_root, canonical_timestamp_token, sanitize_output_name
 from continuum_robot.experiments.single_segment_repeatability import SingleSegmentRepeatabilityConfig
 from continuum_robot.tracking.timing_benchmark import (
     compute_servo_tracker_sync_summary,
@@ -571,6 +571,8 @@ class ExperimentController:
         preferred_order = [
             "single_segment_repeatability",
             "collect_pose_command_dataset",
+            "registration_validation",
+            "pivot_validation",
             "aurora_grid_accuracy",
             "tracker_timing_validation",
             "servo_tracker_sync_validation",
@@ -641,8 +643,8 @@ class ExperimentController:
         if not self.state.selected_experiment:
             self._planned_output_dir_name = ""
             return
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        safe_name = self.state.selected_experiment.replace(" ", "_")
+        timestamp = canonical_timestamp_token()
+        safe_name = sanitize_output_name(self.state.selected_experiment, default="experiment")
         self._planned_output_dir_name = f"{timestamp}_{safe_name}"
 
     def _planned_output_dir(self, output_root: Path, experiment_name: str) -> Path:
@@ -931,6 +933,14 @@ class ExperimentController:
                 return f"accepted={int(value)}"
             mode = metrics.get("dataset_mode")
             return str(mode).replace("_", " ") if mode else ""
+        if experiment_name == "registration_validation":
+            summary = metrics.get("translation_delta_to_consensus_summary_mm", {}) or {}
+            value = summary.get("mean")
+            return f"mean_dT={float(value):.3f} mm" if value is not None else f"valid={int(metrics.get('valid_run_count', 0) or 0)}"
+        if experiment_name == "pivot_validation":
+            summary = metrics.get("distance_to_consensus_summary_mm", {}) or {}
+            value = summary.get("mean")
+            return f"mean_dC={float(value):.3f} mm" if value is not None else f"valid={int(metrics.get('valid_run_count', 0) or 0)}"
         if experiment_name == "replay_runner":
             source = metrics.get("source_experiment_name")
             count = metrics.get("source_sample_count")
@@ -1208,6 +1218,12 @@ class ExperimentController:
                         ),
                     ),
                 ]
+            if preview_metrics and experiment_name in {"registration_validation", "pivot_validation"}:
+                return [
+                    ("Selected Runs", str(int(preview_metrics.get("selected_run_count", 0) or 0))),
+                    ("Valid Runs", str(int(preview_metrics.get("valid_run_count", 0) or 0))),
+                    ("Skipped Runs", str(int(preview_metrics.get("invalid_run_count", 0) or 0))),
+                ]
             if preview_metrics:
                 return [
                     ("Preview Status", self._format_metric_value(preview_metrics.get("status"))),
@@ -1316,6 +1332,55 @@ class ExperimentController:
                     ("Command Plot", str(command_plot_path) if command_plot_path.exists() else "not written"),
                     ("Export JSONL", str(export_jsonl_path) if export_jsonl_path.exists() else "not written"),
                     ("Legacy DAT", str(legacy_dat_path) if legacy_dat_path.exists() else "not written"),
+                    ("Summary Note", str(summary_text_path) if summary_text_path.exists() else "not written"),
+                ]
+            )
+            return pairs
+        if bundle_experiment_name == "registration_validation":
+            metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
+            csv_path = bundle.paths.output_dir / "metrics.csv"
+            summary_text_path = bundle.paths.output_dir / "registration_validation_summary.txt"
+            pairs.extend(
+                [
+                    ("Selected Runs", str(int(metrics.get("selected_run_count", 0) or 0))),
+                    ("Valid Runs", str(int(metrics.get("valid_run_count", 0) or 0))),
+                    ("Skipped Runs", str(int(metrics.get("invalid_run_count", 0) or 0))),
+                    ("Mean FRE", self._format_metric_value((metrics.get("fre_summary_mm", {}) or {}).get("mean"))),
+                    (
+                        "Mean dT",
+                        self._format_metric_value((metrics.get("translation_delta_to_consensus_summary_mm", {}) or {}).get("mean")),
+                    ),
+                    (
+                        "Mean dR",
+                        self._format_metric_value((metrics.get("rotation_delta_to_consensus_summary_deg", {}) or {}).get("mean")),
+                    ),
+                    ("Metrics CSV", str(csv_path) if csv_path.exists() else "not written"),
+                    ("Summary Note", str(summary_text_path) if summary_text_path.exists() else "not written"),
+                ]
+            )
+            return pairs
+        if bundle_experiment_name == "pivot_validation":
+            metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
+            csv_path = bundle.paths.output_dir / "metrics.csv"
+            summary_text_path = bundle.paths.output_dir / "pivot_validation_summary.txt"
+            pairs.extend(
+                [
+                    ("Selected Runs", str(int(metrics.get("selected_run_count", 0) or 0))),
+                    ("Valid Runs", str(int(metrics.get("valid_run_count", 0) or 0))),
+                    ("Skipped Runs", str(int(metrics.get("invalid_run_count", 0) or 0))),
+                    (
+                        "Mean Norm",
+                        self._format_metric_value((metrics.get("tip_norm_summary_mm", {}) or {}).get("mean")),
+                    ),
+                    (
+                        "Mean RMSE",
+                        self._format_metric_value((metrics.get("rmse_summary_mm", {}) or {}).get("mean")),
+                    ),
+                    (
+                        "Mean dC",
+                        self._format_metric_value((metrics.get("distance_to_consensus_summary_mm", {}) or {}).get("mean")),
+                    ),
+                    ("Metrics CSV", str(csv_path) if csv_path.exists() else "not written"),
                     ("Summary Note", str(summary_text_path) if summary_text_path.exists() else "not written"),
                 ]
             )
@@ -1432,6 +1497,8 @@ class ExperimentController:
     def _mode_label(experiment_name: str, config_payload: dict[str, Any]) -> str:
         if experiment_name == "replay_runner":
             return "offline"
+        if experiment_name in {"registration_validation", "pivot_validation"}:
+            return "offline thesis validation"
         if experiment_name == "single_segment_repeatability":
             return "live thesis repeatability"
         if experiment_name == "command_schedule_validation":
@@ -1490,6 +1557,10 @@ class ExperimentController:
                 f"target {int(config_payload.get('sample_count_target', 0) or 0)} samples, "
                 f"{samples_per_command} samples/command"
             )
+        if experiment_name == "registration_validation":
+            return f"{len(config_payload.get('run_paths', []) or [])} saved registration runs selected"
+        if experiment_name == "pivot_validation":
+            return f"{len(config_payload.get('run_paths', []) or [])} saved pivot-calibration runs selected"
         if experiment_name == "replay_runner":
             return str(config_payload.get("dataset_path", "select an existing run"))
         if experiment_name == "pretension_validation":

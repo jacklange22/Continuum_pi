@@ -12,6 +12,8 @@ from pathlib import Path
 import json
 from typing import Any
 
+from continuum_robot.experiments.dataset_io import canonical_timestamped_path
+
 
 SCHEMA_VERSION = 4
 
@@ -864,8 +866,11 @@ class NeutralCalibrationService:
 
     def _archive_latest_if_present(self) -> None:
         if self.path.exists():
-            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            archive_path = self.path.with_name(f"{self.path.stem}_{stamp}{self.path.suffix}")
+            archive_path = canonical_timestamped_path(
+                self.path.parent,
+                self.path.stem,
+                extension=self.path.suffix,
+            )
             archive_path.write_text(self.path.read_text(encoding="utf-8"), encoding="utf-8")
 
     @staticmethod

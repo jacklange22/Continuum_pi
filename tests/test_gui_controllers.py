@@ -614,7 +614,7 @@ def test_app_window_promotes_tracking_and_registration_before_legacy(tmp_path: P
     window = AppWindow(_app_context(tmp_path))
     try:
         labels = [window.tab_widget.tabText(index) for index in range(window.tab_widget.count())]
-        assert labels == ["System", "Tracking", "Registration", "Servos", "Pretension", "Experiment", "Modeling"]
+        assert labels == ["System", "Tracking", "Registration", "Servos", "Pretension", "Experiment", "Modeling", "Data"]
     finally:
         window.shutdown()
 
@@ -2083,6 +2083,8 @@ def test_experiment_workspace_hides_operational_pivot_workflow_from_selector(tmp
     assert "pivot_calibration" not in option_names
     assert "repeatability_dataset" not in option_names
     assert "single_segment_repeatability" in option_names
+    assert "registration_validation" in option_names
+    assert "pivot_validation" in option_names
     assert "tracker_timing_validation" in option_names
     assert "servo_tracker_sync_validation" in option_names
     assert "pretension_validation" in option_names
@@ -2129,6 +2131,38 @@ def test_experiment_workspace_loads_motor_babble_page_and_summary(tmp_path: Path
     assert page.run_button.text() == "Run Motor Babble Dataset"
     assert page.collection_summary_widget._pairs_signature is not None
     assert page.viewer_3d is None
+
+
+def test_experiment_workspace_loads_registration_validation_page(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("registration_validation")
+
+    state = controller.refresh()
+    tab.update(state)
+    page = tab._page_for("registration_validation")
+
+    assert state.selected_experiment == "registration_validation"
+    assert state.experiment_title == "Registration Validation"
+    assert page.run_button.text() == "Run Registration Validation"
+    assert page.run_table.columnCount() == 6
+
+
+def test_experiment_workspace_loads_pivot_validation_page(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("pivot_validation")
+
+    state = controller.refresh()
+    tab.update(state)
+    page = tab._page_for("pivot_validation")
+
+    assert state.selected_experiment == "pivot_validation"
+    assert state.experiment_title == "Pivot Validation"
+    assert page.run_button.text() == "Run Pivot Validation"
+    assert page.run_table.columnCount() == 6
 
 
 def test_experiment_workspace_loads_motor_babble_run_result_details(tmp_path: Path) -> None:

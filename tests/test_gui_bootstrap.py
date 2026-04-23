@@ -26,7 +26,7 @@ def test_app_window_bootstraps_with_real_tabs() -> None:
     window = AppWindow(context)
     try:
         assert window.windowTitle() == "Continuum Robot Operator Console"
-        assert window.tab_widget.count() == 7
+        assert window.tab_widget.count() == 8
         assert window.tab_widget.tabText(0) == "System"
         assert window.tab_widget.tabText(1) == "Tracking"
         assert window.tab_widget.tabText(2) == "Registration"
@@ -34,5 +34,6 @@ def test_app_window_bootstraps_with_real_tabs() -> None:
         assert window.tab_widget.tabText(4) == "Pretension"
         assert window.tab_widget.tabText(5) == "Experiment"
         assert window.tab_widget.tabText(6) == "Modeling"
+        assert window.tab_widget.tabText(7) == "Data"
     finally:
         window.shutdown()

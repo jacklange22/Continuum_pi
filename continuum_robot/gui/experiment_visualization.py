@@ -117,6 +117,10 @@ def build_visualization_model(
         return _build_servo_tracker_sync_model(samples=samples, metrics=metrics, config_payload=config_payload)
     if experiment_name == "collect_pose_command_dataset":
         return _build_modeling_dataset_model(samples=samples, metrics=metrics, config_payload=config_payload)
+    if experiment_name == "registration_validation":
+        return _build_registration_validation_model(metrics=metrics)
+    if experiment_name == "pivot_validation":
+        return _build_pivot_validation_model(metrics=metrics)
     return _build_generic_model(
         experiment_name=experiment_name,
         samples=samples,
@@ -546,6 +550,152 @@ def _build_modeling_dataset_model(*, samples, metrics: dict[str, Any], config_pa
             + ", ".join(f"{reason}={int(count)}" for reason, count in sorted(rejection_reasons.items()))
         )
     return VisualizationModel(series_3d=series, charts=charts, summary_lines=summary_lines or ["No modeling dataset loaded."])
+
+
+def _build_registration_validation_model(*, metrics: dict[str, Any]) -> VisualizationModel:
+    rows = list(metrics.get("per_run_rows") or [])
+    origin_points = [
+        tuple(float(value) for value in row["robot_origin_in_aurora_mm"])
+        for row in rows
+        if isinstance(row.get("robot_origin_in_aurora_mm"), list) and len(row.get("robot_origin_in_aurora_mm")) == 3
+    ]
+    series = []
+    if origin_points:
+        series.append(
+            ScatterSeries3D(
+                name="Solved Frame Origins",
+                color_hex=COLORS.scene_measurement,
+                points_xyz=origin_points,
+                point_size=0.16,
+                mesh="sphere",
+            )
+        )
+    consensus_origin = metrics.get("consensus_robot_origin_in_aurora_mm")
+    if isinstance(consensus_origin, list) and len(consensus_origin) == 3:
+        series.append(
+            ScatterSeries3D(
+                name="Consensus Origin",
+                color_hex=COLORS.text_primary,
+                points_xyz=[tuple(float(value) for value in consensus_origin)],
+                point_size=0.22,
+                mesh="cube",
+            )
+        )
+    charts = [
+        _histogram_chart(
+            title="FRE Distribution",
+            values=[float(row.get("fre_mm")) for row in rows if row.get("fre_mm") is not None],
+            x_title="FRE (mm)",
+            y_title="Count",
+            caption="Histogram of per-run fiducial registration error.",
+            color_hex=COLORS.scene_truth,
+        ),
+        ChartModel(
+            kind="line",
+            title="Transform Delta To Consensus",
+            x_title="Run",
+            y_title="Magnitude",
+            caption="Side-by-side comparison of translation and rotation deltas to the consensus transform for each selected run.",
+            series_xy=[
+                ChartSeriesModel(
+                    name="Translation (mm)",
+                    points_xy=[(float(index), float(row.get("translation_delta_to_consensus_mm", 0.0) or 0.0)) for index, row in enumerate(rows)],
+                    color_hex=COLORS.scene_measurement,
+                ),
+                ChartSeriesModel(
+                    name="Rotation (deg)",
+                    points_xy=[(float(index), float(row.get("rotation_delta_to_consensus_deg", 0.0) or 0.0)) for index, row in enumerate(rows)],
+                    color_hex=COLORS.scene_residual,
+                ),
+            ],
+        ),
+    ]
+    spread = dict(metrics.get("robot_origin_spread_mm", {}) or {})
+    summary_lines = [
+        f"Selected runs: {metrics.get('selected_run_count', 0)}",
+        f"Valid runs: {metrics.get('valid_run_count', 0)}",
+        f"Skipped runs: {metrics.get('invalid_run_count', 0)}",
+        f"Mean FRE: {_fmt((metrics.get('fre_summary_mm', {}) or {}).get('mean'))} mm",
+        f"Mean translation delta: {_fmt((metrics.get('translation_delta_to_consensus_summary_mm', {}) or {}).get('mean'))} mm",
+        f"Mean rotation delta: {_fmt((metrics.get('rotation_delta_to_consensus_summary_deg', {}) or {}).get('mean'))} deg",
+        f"Robot-origin RMS distance: {_fmt(spread.get('rms_distance_mm'))} mm",
+        f"Robot-origin max distance: {_fmt(spread.get('max_distance_mm'))} mm",
+    ]
+    return VisualizationModel(series_3d=series, charts=charts, summary_lines=summary_lines)
+
+
+def _build_pivot_validation_model(*, metrics: dict[str, Any]) -> VisualizationModel:
+    rows = list(metrics.get("per_run_rows") or [])
+    points = [
+        tuple(float(value) for value in row["tip_vector_local_mm"])
+        for row in rows
+        if isinstance(row.get("tip_vector_local_mm"), list) and len(row.get("tip_vector_local_mm")) == 3
+    ]
+    series = []
+    if points:
+        series.append(
+            ScatterSeries3D(
+                name="Tip Offset Solutions",
+                color_hex=COLORS.selection_bg,
+                points_xyz=points,
+                point_size=0.16,
+                mesh="sphere",
+            )
+        )
+    consensus = metrics.get("consensus_tip_vector_local_mm")
+    if isinstance(consensus, list) and len(consensus) == 3:
+        series.append(
+            ScatterSeries3D(
+                name="Consensus Tip Offset",
+                color_hex=COLORS.text_primary,
+                points_xyz=[tuple(float(value) for value in consensus)],
+                point_size=0.22,
+                mesh="cube",
+            )
+        )
+    charts = [
+        ChartModel(
+            kind="bar",
+            title="Tip Offset By Axis",
+            x_title="Axis",
+            y_title="Mean Offset (mm)",
+            caption="Consensus-based mean offset along each local tool axis.",
+            categories=["X", "Y", "Z"],
+            values=[
+                float(((metrics.get("per_axis_summary_mm", {}) or {}).get(axis, {}) or {}).get("mean", 0.0) or 0.0)
+                for axis in ("x", "y", "z")
+            ],
+            color_hex=COLORS.scene_measurement,
+        ),
+        ChartModel(
+            kind="line",
+            title="Solve Quality By Run",
+            x_title="Run",
+            y_title="Magnitude (mm)",
+            caption="Per-run solve RMSE and distance to the consensus tip vector.",
+            series_xy=[
+                ChartSeriesModel(
+                    name="RMSE (mm)",
+                    points_xy=[(float(index), float(row.get("rmse_mm", 0.0) or 0.0)) for index, row in enumerate(rows)],
+                    color_hex=COLORS.selection_bg,
+                ),
+                ChartSeriesModel(
+                    name="Distance To Consensus (mm)",
+                    points_xy=[(float(index), float(row.get("distance_to_consensus_mm", 0.0) or 0.0)) for index, row in enumerate(rows)],
+                    color_hex=COLORS.scene_truth,
+                ),
+            ],
+        ),
+    ]
+    summary_lines = [
+        f"Selected runs: {metrics.get('selected_run_count', 0)}",
+        f"Valid runs: {metrics.get('valid_run_count', 0)}",
+        f"Skipped runs: {metrics.get('invalid_run_count', 0)}",
+        f"Mean tip norm: {_fmt((metrics.get('tip_norm_summary_mm', {}) or {}).get('mean'))} mm",
+        f"Mean solve RMSE: {_fmt((metrics.get('rmse_summary_mm', {}) or {}).get('mean'))} mm",
+        f"Mean distance to consensus: {_fmt((metrics.get('distance_to_consensus_summary_mm', {}) or {}).get('mean'))} mm",
+    ]
+    return VisualizationModel(series_3d=series, charts=charts, summary_lines=summary_lines)
 
 
 def _repeatability_group_key(*, sample, color_mode: str) -> str:

@@ -17,6 +17,7 @@ from continuum_robot.experiments.dataset_io import ExperimentDatasetLoader, Expe
 from continuum_robot.experiments.experiment_models import ExperimentPoint
 from continuum_robot.experiments.framework import BaseExperiment, ExperimentHardwareRequirements, ExperimentSession
 from continuum_robot.experiments.critical_experiments import register_critical_experiments
+from continuum_robot.experiments.calibration_validation import register_calibration_validation_experiments
 from continuum_robot.experiments.modeling_dataset_outputs import write_modeling_dataset_outputs
 from continuum_robot.experiments.pretension_validation_outputs import write_pretension_validation_outputs
 from continuum_robot.experiments.servo_tracker_sync_outputs import write_servo_tracker_sync_outputs
@@ -3290,6 +3291,7 @@ def register_builtin_experiments(registry) -> None:
         default_config_path="config/experiment_collect_pose_command_dataset.example.yaml",
         factory=CollectPoseCommandDatasetExperiment.from_dict,
     )
+    register_calibration_validation_experiments(registry)
     register_critical_experiments(registry)
 
 

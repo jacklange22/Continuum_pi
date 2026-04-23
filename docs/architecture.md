@@ -104,7 +104,8 @@ Persistent runtime artifacts:
 - `config/` for durable servo startup calibration state
 - `data/pivot_calibration/` for accepted and staged 0B tip-calibration artifacts plus pivot review data
 - `data/registrations/` for durable accepted/latest registration artifacts
-- `data/experiments/tracker_validation/` for saved tracker validation reports
+- `data/diagnostics/tracker_validation/` for saved tracker validation reports
+- `data/diagnostics/data_management_migration/` for dry-run and applied migration ledgers
 - `data/experiments/` for canonical experiment datasets
 - `data/experiments/<experiment_name>/` for canonical run bundles grouped by experiment type
 - `data/pivot_calibration/captures/` for raw pivot-review capture CSVs

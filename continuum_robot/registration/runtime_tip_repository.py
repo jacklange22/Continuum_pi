@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 import json
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from continuum_robot.experiments.dataset_io import canonical_timestamped_path
 
 
 @dataclass
@@ -55,13 +56,17 @@ class RuntimeTipCalibrationRepository:
         mark_as_latest: bool = True,
         alias_path: Path | None = None,
     ) -> Path:
-        stamp = _timestamp_stamp(record.timestamp_utc)
         prefix = (
             "runtime_tip_quick_4_point"
             if str(record.calibration_kind).strip().lower() == "runtime_tip_calibration_quick_4_point"
             else "runtime_tip_calibration"
         )
-        path = self.root_dir / f"{prefix}_{stamp}.json"
+        path = canonical_timestamped_path(
+            self.root_dir,
+            prefix,
+            timestamp_utc=record.timestamp_utc,
+            extension=".json",
+        )
         payload = self._to_payload(record)
         path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         if alias_path is not None:
@@ -81,7 +86,15 @@ class RuntimeTipCalibrationRepository:
         return self.load_payload(self.quick_latest_path)
 
     def list_saved_records(self, *, limit: int | None = None) -> list[Path]:
-        paths = sorted(self.root_dir.glob("runtime_tip_calibration_*.json"), reverse=True)
+        paths = sorted(
+            (
+                path
+                for path in self.root_dir.glob("*.json")
+                if path.name not in {"latest_runtime_tip_calibration.json", "latest_quick_4_point_runtime_tip.json"}
+                and _is_runtime_tip_record_name(path.name)
+            ),
+            reverse=True,
+        )
         if limit is None:
             return paths
         return paths[: max(0, int(limit))]
@@ -97,16 +110,9 @@ class RuntimeTipCalibrationRepository:
         if T_coil_tip.shape == (4, 4):
             payload["T_tip_2_coil"] = np.linalg.inv(T_coil_tip).tolist()
         return payload
-
-
-def _timestamp_stamp(timestamp_utc: str | None) -> str:
-    if timestamp_utc:
-        try:
-            parsed = datetime.fromisoformat(str(timestamp_utc).replace("Z", "+00:00"))
-        except ValueError:
-            cleaned = "".join(character for character in str(timestamp_utc) if character.isdigit())
-            if cleaned:
-                return cleaned
-        else:
-            return parsed.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
+def _is_runtime_tip_record_name(name: str) -> bool:
+    if name.startswith("runtime_tip_calibration_") and name.endswith(".json"):
+        return True
+    if name.startswith("runtime_tip_quick_4_point_") and name.endswith(".json"):
+        return True
+    return name.endswith("_runtime_tip_calibration.json") or name.endswith("_runtime_tip_quick_4_point.json")

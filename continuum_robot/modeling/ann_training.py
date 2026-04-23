@@ -16,7 +16,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from continuum_robot.experiments.dataset_io import canonical_experiment_output_root
+from continuum_robot.experiments.dataset_io import canonical_experiment_output_root, canonical_timestamped_path
 
 try:
     from continuum_robot.gui.experiment_visualization import ChartModel, ChartSeriesModel, VisualizationModel
@@ -1254,9 +1254,8 @@ def _allocate_artifact_dir(*, project_root: Path, artifact_root_raw: str, artifa
     if not artifact_root.is_absolute():
         artifact_root = Path(project_root) / artifact_root
     artifact_root.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     safe_name = _slugify(artifact_name) or "legacy_ann"
-    return artifact_root / f"{stamp}_{safe_name}"
+    return canonical_timestamped_path(artifact_root, safe_name)
 
 
 def _slugify(value: str) -> str:

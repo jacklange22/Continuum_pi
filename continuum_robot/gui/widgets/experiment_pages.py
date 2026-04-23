@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import logging
+from pathlib import Path
 import time
 from typing import Callable
 
@@ -55,6 +56,10 @@ from continuum_robot.experiments.builtins import (
     PretensionValidationExperimentConfig,
     ServoTrackerSyncValidationConfig,
     TrackerTimingValidationConfig,
+)
+from continuum_robot.experiments.calibration_validation import (
+    list_pivot_validation_candidates,
+    list_registration_validation_candidates,
 )
 from continuum_robot.experiments.single_segment_repeatability import (
     SingleSegmentRepeatabilityConfig,
@@ -2474,6 +2479,215 @@ class ReplayRunnerPage(ExperimentPageBase):
         self._set_line_text(self.dataset_path_edit, str(self.controller.get_config_value("dataset_path", "")))
 
 
+class _ValidationSelectionPage(ExperimentPageBase):
+    """Shared offline multi-run selection page for thesis validation analyses."""
+
+    show_visualization = True
+
+    selection_title = "Source Runs"
+    selection_subtitle = "Choose the saved runs to analyze."
+    run_button_text = "Run Validation"
+    table_headers: tuple[str, ...] = ()
+
+    def __init__(self, controller, experiment_name: str, parent=None) -> None:
+        self._table_signature: tuple[tuple[str, ...], ...] | None = None
+        super().__init__(controller, experiment_name, parent)
+        self.run_button.setText(self.run_button_text)
+
+    def _build_parameter_sections(self) -> None:
+        selection_card = ExperimentCard(self.selection_title, self.selection_subtitle)
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.setSpacing(8)
+        refresh_button = QPushButton("Refresh")
+        refresh_button.setProperty("variant", "ghost")
+        refresh_button.clicked.connect(self._refresh_sources)
+        select_all_button = QPushButton("Select All")
+        select_all_button.setProperty("variant", "ghost")
+        select_all_button.clicked.connect(lambda: self._set_all_selected(True))
+        clear_button = QPushButton("Clear")
+        clear_button.setProperty("variant", "ghost")
+        clear_button.clicked.connect(lambda: self._set_all_selected(False))
+        toolbar.addWidget(refresh_button)
+        toolbar.addWidget(select_all_button)
+        toolbar.addWidget(clear_button)
+        toolbar.addStretch(1)
+        selection_card.body_layout.addLayout(toolbar)
+
+        self.selection_summary_widget = KeyValueSummaryWidget()
+        selection_card.body_layout.addWidget(self.selection_summary_widget)
+
+        self.run_table = QTableWidget(0, len(self.table_headers))
+        self.run_table.setHorizontalHeaderLabels(list(self.table_headers))
+        self.run_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.run_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.run_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.run_table.verticalHeader().setVisible(False)
+        self.run_table.horizontalHeader().setStretchLastSection(True)
+        self.run_table.setMinimumHeight(280)
+        self.run_table.itemChanged.connect(self._on_item_changed)
+        selection_card.body_layout.addWidget(self.run_table)
+
+        help_card = ExperimentCard(
+            "Saved Outputs",
+            "Each validation run writes summary.json, metrics.csv, config_snapshot.yaml, a concise summary text file, and thesis-ready PNG plots under the canonical experiment output folder.",
+        )
+        self.parameter_layout.addWidget(selection_card)
+        self.parameter_layout.addWidget(help_card)
+
+    def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
+        _ = state
+        candidates = self._candidates()
+        selected = {str(value) for value in (self.controller.get_config_value("run_paths", []) or [])}
+        self._sync_table(candidates, selected)
+        self.selection_summary_widget.set_pairs(self._summary_pairs(candidates, selected))
+
+    def _refresh_sources(self) -> None:
+        try:
+            self.set_state(self.controller.refresh())
+        except Exception:
+            return
+
+    def _set_all_selected(self, selected: bool) -> None:
+        candidates = self._candidates()
+        run_paths = [candidate.path for candidate in candidates] if selected else []
+        self.controller.set_config_value("run_paths", run_paths)
+        self._refresh_sources()
+
+    def _on_item_changed(self, item: QTableWidgetItem) -> None:
+        if item.column() != 0:
+            return
+        candidates = self._candidates()
+        selected_paths: list[str] = []
+        for row in range(self.run_table.rowCount()):
+            path_item = self.run_table.item(row, 0)
+            if path_item is None:
+                continue
+            if path_item.checkState() == Qt.Checked:
+                raw_path = path_item.data(Qt.UserRole)
+                if raw_path:
+                    selected_paths.append(str(raw_path))
+        known = {candidate.path for candidate in candidates}
+        selected_paths = [path for path in selected_paths if path in known]
+        self.controller.set_config_value("run_paths", selected_paths)
+
+    def _sync_table(self, candidates, selected: set[str]) -> None:
+        signature = tuple(self._row_signature(candidate, selected) for candidate in candidates)
+        if signature == self._table_signature:
+            return
+        self._table_signature = signature
+
+        def _rebuild() -> None:
+            with QSignalBlocker(self.run_table):
+                self.run_table.setRowCount(len(candidates))
+                for row, candidate in enumerate(candidates):
+                    for column, text in enumerate(self._row_values(candidate)):
+                        item = QTableWidgetItem(text)
+                        if column == 0:
+                            item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+                            item.setCheckState(Qt.Checked if candidate.path in selected else Qt.Unchecked)
+                            item.setData(Qt.UserRole, candidate.path)
+                        self.run_table.setItem(row, column, item)
+
+        preserve_scroll_position(self.run_table, _rebuild)
+
+    def _row_signature(self, candidate, selected: set[str]) -> tuple[str, ...]:
+        return (*self._row_values(candidate), "1" if candidate.path in selected else "0")
+
+    def _summary_pairs(self, candidates, selected: set[str]) -> list[tuple[str, str]]:
+        included = [candidate for candidate in candidates if candidate.path in selected]
+        return [
+            ("Available Runs", str(len(candidates))),
+            ("Included", str(len(included))),
+            ("Selection", self._selection_summary_text(included)),
+        ]
+
+    def _selection_summary_text(self, included) -> str:
+        if not included:
+            return "Select at least 2 saved runs."
+        return f"{len(included)} run(s) selected."
+
+    def _candidates(self):
+        raise NotImplementedError
+
+    def _row_values(self, candidate) -> tuple[str, ...]:
+        raise NotImplementedError
+
+
+class RegistrationValidationPage(_ValidationSelectionPage):
+    page_hint = (
+        "Analyze repeated saved registration solves as one thesis-facing validation bundle. "
+        "Select multiple prior registration records, quantify FRE and transform spread, and save citeable figures without touching the live Registration workflow."
+    )
+    selection_title = "Saved Registration Runs"
+    selection_subtitle = "Choose the accepted registration records to include in the repeated-run stability analysis."
+    run_button_text = "Run Registration Validation"
+    table_headers = ("Use", "Saved", "FRE (mm)", "Landmarks", "Tool", "Run")
+
+    def _candidates(self):
+        return list_registration_validation_candidates(self.controller.project_root)
+
+    def _row_values(self, candidate) -> tuple[str, ...]:
+        metadata = dict(candidate.metadata or {})
+        return (
+            "",
+            str(candidate.timestamp_utc).replace("T", " ").replace("+00:00", "Z"),
+            _fmt_float(metadata.get("fre_mm")),
+            str(int(metadata.get("landmark_count", 0) or 0)),
+            str(metadata.get("measurement_tool_id", "unknown") or "unknown"),
+            str(candidate.path),
+        )
+
+    def _selection_summary_text(self, included) -> str:
+        if not included:
+            return "Select at least 2 saved registration records."
+        fre_values = [
+            float(candidate.metadata.get("fre_mm"))
+            for candidate in included
+            if candidate.metadata.get("fre_mm") is not None
+        ]
+        if not fre_values:
+            return f"{len(included)} run(s) selected."
+        return f"{len(included)} selected | mean FRE {_fmt_float(float(np.mean(fre_values)))} mm"
+
+
+class PivotValidationPage(_ValidationSelectionPage):
+    page_hint = (
+        "Analyze repeated saved pivot-calibration runs as one thesis-facing validation bundle. "
+        "Select multiple prior pivot solves, quantify per-axis offset spread and solve-quality variation, and save citeable figures without reopening the live pivot workflow."
+    )
+    selection_title = "Saved Pivot Runs"
+    selection_subtitle = "Choose the hidden canonical pivot-calibration runs to include in the repeated-run tip-offset analysis."
+    run_button_text = "Run Pivot Validation"
+    table_headers = ("Use", "Saved", "RMSE (mm)", "Used / Rejected", "Tool", "Run")
+
+    def _candidates(self):
+        return list_pivot_validation_candidates(self.controller.project_root)
+
+    def _row_values(self, candidate) -> tuple[str, ...]:
+        metadata = dict(candidate.metadata or {})
+        return (
+            "",
+            str(candidate.timestamp_utc).replace("T", " ").replace("+00:00", "Z"),
+            _fmt_float(metadata.get("rmse_mm")),
+            f"{int(metadata.get('sample_count_used', 0) or 0)} / {int(metadata.get('sample_count_rejected', 0) or 0)}",
+            str(metadata.get("tool_id", "0B") or "0B"),
+            str(candidate.path),
+        )
+
+    def _selection_summary_text(self, included) -> str:
+        if not included:
+            return "Select at least 2 saved pivot-calibration runs."
+        rmse_values = [
+            float(candidate.metadata.get("rmse_mm"))
+            for candidate in included
+            if candidate.metadata.get("rmse_mm") is not None
+        ]
+        if not rmse_values:
+            return f"{len(included)} run(s) selected."
+        return f"{len(included)} selected | mean RMSE {_fmt_float(float(np.mean(rmse_values)))} mm"
+
+
 class EmptyExperimentWorkspace(QWidget):
     """Empty state shown before the operator selects an experiment."""
 
@@ -2622,6 +2836,8 @@ def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBas
     """Return the custom page widget for one supported experiment."""
     factories: dict[str, Callable[[object], ExperimentPageBase]] = {
         "single_segment_repeatability": lambda ctrl: SingleSegmentRepeatabilityPage(ctrl, "single_segment_repeatability"),
+        "registration_validation": lambda ctrl: RegistrationValidationPage(ctrl, "registration_validation"),
+        "pivot_validation": lambda ctrl: PivotValidationPage(ctrl, "pivot_validation"),
         "aurora_grid_accuracy": lambda ctrl: AuroraGridAccuracyPage(ctrl, "aurora_grid_accuracy"),
         "tracker_timing_validation": lambda ctrl: TrackerTimingValidationPage(ctrl, "tracker_timing_validation"),
         "servo_tracker_sync_validation": lambda ctrl: ServoTrackerSyncValidationPage(ctrl, "servo_tracker_sync_validation"),
@@ -2662,6 +2878,12 @@ def _render_sample_triplet(metrics: dict[str, object]) -> str:
     accepted_count = int(metrics.get("accepted_sample_count", 0) or 0)
     rejected_count = int(metrics.get("rejected_sample_count", metrics.get("outlier_count", 0)) or 0)
     return f"{raw_count} / {accepted_count} / {rejected_count}"
+
+
+def _fmt_float(value: object) -> str:
+    if value is None:
+        return "n/a"
+    return f"{float(value):.3f}"
 
 
 def _status_label(status: str) -> str:

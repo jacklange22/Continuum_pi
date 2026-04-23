@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 
+from continuum_robot.experiments.dataset_io import canonical_timestamped_path
 from continuum_robot.modeling.ann_training import (
     LEGACY_FULL_POSE_INPUT_DIM,
     LEGACY_FULL_POSE_OUTPUT_DIM,
@@ -951,8 +952,7 @@ def _allocate_results_dir(*, project_root: Path, results_root_raw: str, dataset_
     if not results_root.is_absolute():
         results_root = Path(project_root) / results_root
     results_root.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    return results_root / f"{stamp}_{_slugify(dataset_name)}"
+    return canonical_timestamped_path(results_root, _slugify(dataset_name))
 
 
 def _slugify(value: str) -> str:

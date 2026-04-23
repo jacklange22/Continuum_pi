@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import datetime, timezone
 from pathlib import Path
 import json
 import threading
@@ -18,6 +19,7 @@ from continuum_robot.config.schemas import (
 )
 from continuum_robot.config.settings import Settings
 from continuum_robot.experiments.dataset_io import ExperimentDatasetLoader, ExperimentDatasetWriter
+from continuum_robot.experiments import dataset_io
 from continuum_robot.experiments.experiment_runner import ExperimentRunner
 from continuum_robot.experiments.framework import BaseExperiment, ExperimentHardwareRequirements, ExperimentSession
 from continuum_robot.experiments.registry import ExperimentRegistry
@@ -428,6 +430,41 @@ def test_dataset_writer_roundtrip_loads_canonical_bundle(tmp_path: Path) -> None
     assert paths.output_dir.parent == tmp_path / "datasets" / "roundtrip_test"
     assert len(bundle.samples) == 1
     assert bundle.summary.success is True
+
+
+def test_dataset_writer_uses_timestamp_experiment_name_and_collision_suffix(tmp_path: Path, monkeypatch) -> None:
+    class _FixedDateTime:
+        @staticmethod
+        def now(_tz=None):
+            return datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(dataset_io, "datetime", _FixedDateTime)
+    writer = ExperimentDatasetWriter(tmp_path / "datasets")
+    metadata = ExperimentMetadata(
+        schema_version="1.0",
+        experiment_name="registration_validation",
+        run_id="abc123",
+        timestamp_utc="2026-01-02T03:04:05+00:00",
+        git_commit=None,
+        backend_info={"mock_mode": True},
+        registration_info={"exists": False},
+        config_used={},
+    )
+    summary = ExperimentSummary(
+        schema_version="1.0",
+        experiment_name="registration_validation",
+        run_id="abc123",
+        success=True,
+        sample_counts={"total": 0},
+        dropped_frames=0,
+        invalid_transforms=0,
+        stage_pass_fail={"execute": "passed"},
+    )
+    first = writer.write_dataset(metadata, [], summary)
+    second = writer.write_dataset(metadata, [], summary)
+
+    assert first.output_dir.name == "20260102_030405_registration_validation"
+    assert second.output_dir.name == "20260102_030405_registration_validation_01"
 
 
 def test_tracker_pipeline_mock_runs_and_logs_samples(tmp_path: Path) -> None:
