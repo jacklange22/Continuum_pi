@@ -158,6 +158,17 @@ class _StaleControllerBus(MockDxlBus):
             result[int(servo_id)].last_read_monotonic_s = self._state[int(servo_id)].last_read_monotonic_s
         return result
 
+
+class _DisconnectTrackingBus(MockDxlBus):
+    def __init__(self, servo_ids: list[int]) -> None:
+        super().__init__(servo_ids)
+        self.torque_disable_calls: list[int] = []
+
+    def write_torque_enable(self, servo_id: int, enabled: bool) -> None:
+        if not bool(enabled):
+            self.torque_disable_calls.append(int(servo_id))
+        super().write_torque_enable(servo_id, enabled)
+
     def read_telemetry(self, servo_ids: list[int], **kwargs):
         result = super().read_telemetry(servo_ids, **kwargs)
         for servo_id in servo_ids:
@@ -232,6 +243,28 @@ def test_system_controller_reports_motion_ready_in_single_servo_bench_mode_witho
     assert controller.state.bus_reachable is True
     assert controller.state.motion_ready is True
     assert "Active range: 0..4095" in controller.state.readiness_message
+
+
+def test_system_controller_disconnect_attempts_torque_off(tmp_path: Path) -> None:
+    settings = _settings_4servo()
+    bus = _DisconnectTrackingBus([1, 2, 3, 4])
+    servo_service = _servo_service(
+        tmp_path,
+        dxl_bus=bus,
+        context_servo_ids=[1, 2, 3, 4],
+        robot_mode="4-servo",
+    )
+    controller = SystemController(
+        tracking_service=_TrackingStub(),
+        openrb_client=MockOpenRbClient(),
+        servo_service=servo_service,
+        settings=settings,
+    )
+    controller.connect_openrb()
+
+    controller.disconnect_openrb()
+
+    assert sorted(bus.torque_disable_calls) == [1, 2, 3, 4]
 
 
 def test_servos_controller_allows_raw_range_bench_motion_without_neutral_capture(tmp_path: Path) -> None:
