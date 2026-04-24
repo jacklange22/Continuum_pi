@@ -1,4 +1,24 @@
+mode: single_servo_trace  # single_servo_trace | single_segment_staged
 servo_id: 1
+servo_ids: [1, 2, 3, 4]  # used by staged mode
+repeat_runs: 3
+allow_current_only_when_tracker_missing: true
+enable_tip_centering: true
+tip_center_tolerance_mm: 3.0
+tip_center_max_iterations: 16
+tip_center_step_ticks: 2
+tip_center_x_sign: 1
+tip_center_y_sign: 1
+tip_target_xy_mm: [0.0, 0.0]
+max_tip_displacement_mm: 50.0
+equalization_step_ticks: 2
+equalization_max_iterations: 24
+load_balance_tolerance_ma: 120.0
+pair_balance_tolerance_ma: 80.0
+settle_verify_time_s: 0.2
+accept_max_load_balance_error_ma: 150.0
+accept_max_pair_balance_error_ma: 120.0
+accept_max_final_tip_xy_offset_mm: 5.0
 
 # Leave individual fields unset to use the current live pretension defaults
 # from the active servo safety/runtime configuration.

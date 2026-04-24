@@ -581,33 +581,48 @@ def _build_registration_validation_model(*, metrics: dict[str, Any]) -> Visualiz
                 mesh="cube",
             )
         )
+    run_labels = [f"R{index + 1}" for index in range(len(rows))]
+    translation_values = [float(row.get("translation_delta_to_consensus_mm", 0.0) or 0.0) for row in rows]
+    rotation_values = [float(row.get("rotation_delta_to_consensus_deg", 0.0) or 0.0) for row in rows]
+    origin_distance_values = [float(row.get("origin_distance_to_consensus_mm", 0.0) or 0.0) for row in rows]
     charts = [
         _histogram_chart(
-            title="FRE Distribution",
+            title="FRE Distribution (mm)",
             values=[float(row.get("fre_mm")) for row in rows if row.get("fre_mm") is not None],
             x_title="FRE (mm)",
             y_title="Count",
-            caption="Histogram of per-run fiducial registration error.",
+            caption="Histogram of per-run fiducial registration error (FRE) on the landmarks used in each solve.",
             color_hex=COLORS.scene_truth,
         ),
         ChartModel(
-            kind="line",
-            title="Transform Delta To Consensus",
+            kind="bar",
+            title="Translation Spread By Run",
             x_title="Run",
-            y_title="Magnitude",
-            caption="Side-by-side comparison of translation and rotation deltas to the consensus transform for each selected run.",
-            series_xy=[
-                ChartSeriesModel(
-                    name="Translation (mm)",
-                    points_xy=[(float(index), float(row.get("translation_delta_to_consensus_mm", 0.0) or 0.0)) for index, row in enumerate(rows)],
-                    color_hex=COLORS.scene_measurement,
-                ),
-                ChartSeriesModel(
-                    name="Rotation (deg)",
-                    points_xy=[(float(index), float(row.get("rotation_delta_to_consensus_deg", 0.0) or 0.0)) for index, row in enumerate(rows)],
-                    color_hex=COLORS.scene_residual,
-                ),
-            ],
+            y_title="Translation Delta (mm)",
+            caption="Per-run translation delta to the consensus transform.",
+            categories=run_labels,
+            values=translation_values,
+            color_hex=COLORS.scene_measurement,
+        ),
+        ChartModel(
+            kind="bar",
+            title="Rotation Spread By Run",
+            x_title="Run",
+            y_title="Rotation Delta (deg)",
+            caption="Per-run rotation-angle delta to the consensus transform.",
+            categories=run_labels,
+            values=rotation_values,
+            color_hex=COLORS.scene_residual,
+        ),
+        ChartModel(
+            kind="bar",
+            title="Frame-Origin Distance To Consensus",
+            x_title="Run",
+            y_title="Origin Distance (mm)",
+            caption="Per-run distance between solved frame origin and the consensus frame origin (Aurora frame).",
+            categories=run_labels,
+            values=origin_distance_values,
+            color_hex=COLORS.selection_bg,
         ),
     ]
     spread = dict(metrics.get("robot_origin_spread_mm", {}) or {})
@@ -615,11 +630,10 @@ def _build_registration_validation_model(*, metrics: dict[str, Any]) -> Visualiz
         f"Selected runs: {metrics.get('selected_run_count', 0)}",
         f"Valid runs: {metrics.get('valid_run_count', 0)}",
         f"Skipped runs: {metrics.get('invalid_run_count', 0)}",
-        f"Mean FRE: {_fmt((metrics.get('fre_summary_mm', {}) or {}).get('mean'))} mm",
-        f"Mean translation delta: {_fmt((metrics.get('translation_delta_to_consensus_summary_mm', {}) or {}).get('mean'))} mm",
-        f"Mean rotation delta: {_fmt((metrics.get('rotation_delta_to_consensus_summary_deg', {}) or {}).get('mean'))} deg",
-        f"Robot-origin RMS distance: {_fmt(spread.get('rms_distance_mm'))} mm",
-        f"Robot-origin max distance: {_fmt(spread.get('max_distance_mm'))} mm",
+        f"FRE mean/std/max (mm): {_fmt((metrics.get('fre_summary_mm', {}) or {}).get('mean'))} / {_fmt((metrics.get('fre_summary_mm', {}) or {}).get('std'))} / {_fmt((metrics.get('fre_summary_mm', {}) or {}).get('max'))}",
+        f"Translation spread mean/std/max (mm): {_fmt((metrics.get('translation_delta_to_consensus_summary_mm', {}) or {}).get('mean'))} / {_fmt((metrics.get('translation_delta_to_consensus_summary_mm', {}) or {}).get('std'))} / {_fmt((metrics.get('translation_delta_to_consensus_summary_mm', {}) or {}).get('max'))}",
+        f"Rotation spread mean/std/max (deg): {_fmt((metrics.get('rotation_delta_to_consensus_summary_deg', {}) or {}).get('mean'))} / {_fmt((metrics.get('rotation_delta_to_consensus_summary_deg', {}) or {}).get('std'))} / {_fmt((metrics.get('rotation_delta_to_consensus_summary_deg', {}) or {}).get('max'))}",
+        f"Frame-origin RMS/max distance (mm): {_fmt(spread.get('rms_distance_mm'))} / {_fmt(spread.get('max_distance_mm'))}",
     ]
     return VisualizationModel(series_3d=series, charts=charts, summary_lines=summary_lines)
 
@@ -653,13 +667,16 @@ def _build_pivot_validation_model(*, metrics: dict[str, Any]) -> VisualizationMo
                 mesh="cube",
             )
         )
+    run_labels = [f"R{index + 1}" for index in range(len(rows))]
+    rmse_values = [float(row.get("rmse_mm", 0.0) or 0.0) for row in rows]
+    deviation_values = [float(row.get("distance_to_consensus_mm", 0.0) or 0.0) for row in rows]
     charts = [
         ChartModel(
             kind="bar",
-            title="Tip Offset By Axis",
+            title="Tip Offset Mean By Axis (mm)",
             x_title="Axis",
             y_title="Mean Offset (mm)",
-            caption="Consensus-based mean offset along each local tool axis.",
+            caption="Consensus-based mean tip-offset component along each local tool axis.",
             categories=["X", "Y", "Z"],
             values=[
                 float(((metrics.get("per_axis_summary_mm", {}) or {}).get(axis, {}) or {}).get("mean", 0.0) or 0.0)
@@ -668,32 +685,40 @@ def _build_pivot_validation_model(*, metrics: dict[str, Any]) -> VisualizationMo
             color_hex=COLORS.scene_measurement,
         ),
         ChartModel(
-            kind="line",
-            title="Solve Quality By Run",
+            kind="bar",
+            title="Tip-Offset Deviation To Consensus",
             x_title="Run",
-            y_title="Magnitude (mm)",
-            caption="Per-run solve RMSE and distance to the consensus tip vector.",
-            series_xy=[
-                ChartSeriesModel(
-                    name="RMSE (mm)",
-                    points_xy=[(float(index), float(row.get("rmse_mm", 0.0) or 0.0)) for index, row in enumerate(rows)],
-                    color_hex=COLORS.selection_bg,
-                ),
-                ChartSeriesModel(
-                    name="Distance To Consensus (mm)",
-                    points_xy=[(float(index), float(row.get("distance_to_consensus_mm", 0.0) or 0.0)) for index, row in enumerate(rows)],
-                    color_hex=COLORS.scene_truth,
-                ),
-            ],
+            y_title="Deviation (mm)",
+            caption="Per-run norm deviation from each solved tip-offset vector to the consensus tip-offset vector.",
+            categories=run_labels,
+            values=deviation_values,
+            color_hex=COLORS.scene_truth,
+        ),
+        ChartModel(
+            kind="bar",
+            title="Pivot Solve RMSE By Run",
+            x_title="Run",
+            y_title="RMSE (mm)",
+            caption="Per-run pivot solve residual RMSE.",
+            categories=run_labels,
+            values=rmse_values,
+            color_hex=COLORS.selection_bg,
         ),
     ]
+    consensus = metrics.get("consensus_tip_vector_local_mm")
+    consensus_text = (
+        f"[{_fmt(consensus[0])}, {_fmt(consensus[1])}, {_fmt(consensus[2])}] mm"
+        if isinstance(consensus, list) and len(consensus) == 3
+        else "n/a"
+    )
     summary_lines = [
         f"Selected runs: {metrics.get('selected_run_count', 0)}",
         f"Valid runs: {metrics.get('valid_run_count', 0)}",
         f"Skipped runs: {metrics.get('invalid_run_count', 0)}",
-        f"Mean tip norm: {_fmt((metrics.get('tip_norm_summary_mm', {}) or {}).get('mean'))} mm",
-        f"Mean solve RMSE: {_fmt((metrics.get('rmse_summary_mm', {}) or {}).get('mean'))} mm",
-        f"Mean distance to consensus: {_fmt((metrics.get('distance_to_consensus_summary_mm', {}) or {}).get('mean'))} mm",
+        f"Consensus tip-offset [x, y, z] (mm): {consensus_text}",
+        f"Tip-offset norm mean/std/max (mm): {_fmt((metrics.get('tip_norm_summary_mm', {}) or {}).get('mean'))} / {_fmt((metrics.get('tip_norm_summary_mm', {}) or {}).get('std'))} / {_fmt((metrics.get('tip_norm_summary_mm', {}) or {}).get('max'))}",
+        f"Tip-offset deviation mean/std/max (mm): {_fmt((metrics.get('distance_to_consensus_summary_mm', {}) or {}).get('mean'))} / {_fmt((metrics.get('distance_to_consensus_summary_mm', {}) or {}).get('std'))} / {_fmt((metrics.get('distance_to_consensus_summary_mm', {}) or {}).get('max'))}",
+        f"Pivot RMSE mean/std/max (mm): {_fmt((metrics.get('rmse_summary_mm', {}) or {}).get('mean'))} / {_fmt((metrics.get('rmse_summary_mm', {}) or {}).get('std'))} / {_fmt((metrics.get('rmse_summary_mm', {}) or {}).get('max'))}",
     ]
     return VisualizationModel(series_3d=series, charts=charts, summary_lines=summary_lines)
 
@@ -963,6 +988,57 @@ def _build_generic_model(
 
 
 def _build_pretension_validation_model(*, samples, metrics: dict[str, Any]) -> VisualizationModel:
+    mode = str(metrics.get("mode", "single_servo_trace") or "single_servo_trace").strip().lower()
+    if mode in {"single_segment_staged", "staged", "four_servo_staged"}:
+        run_rows = list(metrics.get("run_rows") or [])
+        accepted_points = [
+            (float(index + 1), float(row.get("final_tip_xy_offset_mm") or 0.0))
+            for index, row in enumerate(run_rows)
+            if row.get("final_tip_xy_offset_mm") is not None
+        ]
+        load_points = [
+            (float(index + 1), float(row.get("load_balance_error_ma") or 0.0))
+            for index, row in enumerate(run_rows)
+            if row.get("load_balance_error_ma") is not None
+        ]
+        summary_lines = [
+            "Mode: single_segment_staged",
+            f"Servo IDs: {metrics.get('servo_ids')}",
+            f"Run Count: {metrics.get('run_count', 0)}",
+            f"Accepted Runs: {metrics.get('accepted_run_count', 0)}",
+            f"Accepted Fraction: {_fmt(metrics.get('accepted_run_fraction'))}",
+            f"Final Tip XY Std: {_fmt(metrics.get('final_tip_xy_std_mm'))} mm",
+            f"Position Std (ticks): {metrics.get('final_position_std_ticks_by_servo')}",
+            f"Current Std (mA): {metrics.get('final_current_std_ma_by_servo')}",
+            f"Failure Reasons: {metrics.get('failure_reason_counts')}",
+        ]
+        charts: list[ChartModel] = []
+        if accepted_points:
+            charts.append(
+                ChartModel(
+                    kind="line",
+                    title="Final Tip XY Offset",
+                    x_title="Run Index",
+                    y_title="Tip XY Offset (mm)",
+                    caption="Per-run final tip XY offset from the configured target center.",
+                    points_xy=accepted_points,
+                    color_hex=COLORS.scene_truth,
+                )
+            )
+        if load_points:
+            charts.append(
+                ChartModel(
+                    kind="line",
+                    title="Load Balance Error",
+                    x_title="Run Index",
+                    y_title="Load Balance Error (mA)",
+                    caption="Per-run spread of final current-above-baseline across the 4 servos.",
+                    points_xy=load_points,
+                    color_hex=COLORS.scene_measurement,
+                )
+            )
+        return VisualizationModel(charts=charts, summary_lines=summary_lines)
+
     trace_points = extract_pretension_trace_points(samples)
     use_mm = any(point.travel_from_untensioned_mm is not None for point in trace_points)
     x_title = "Travel From Untensioned (mm)" if use_mm else "Travel From Untensioned (ticks)"

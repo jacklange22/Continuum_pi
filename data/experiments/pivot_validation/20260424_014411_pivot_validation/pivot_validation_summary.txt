@@ -1,0 +1,23 @@
+Pivot Validation Summary
+Offline analysis of repeated saved pivot-calibration runs. Metrics quantify tip-offset spread only; no arbitrary orientation estimate is implied (all lengths in mm).
+
+Run ID: ed5f922f49c0
+Timestamp: 2026-04-24T01:44:27.542215+00:00
+Status: success
+Selected runs: 5
+Valid runs: 5
+Skipped runs: 0
+
+Definitions:
+- Pivot RMSE is per-run solve residual quality.
+- Distance to consensus is cross-run repeatability spread of solved tip offsets.
+
+Tip-offset norm mean / std / max (mm): 17.349 / 0.710 / 18.145
+Pivot solve RMSE mean / std / max (mm): 0.703 / 0.300 / 1.082
+Tip-offset deviation to consensus mean / std / max (mm): 1.234 / 0.455 / 1.956
+Consensus tip-offset vector [x, y, z] (mm): [-1.2865794985261292, -4.700327818765214, 16.614157870645368]
+
+Saved plots:
+- pivot_tip_scatter.png
+- pivot_axis_histograms.png
+- pivot_quality_summary.png

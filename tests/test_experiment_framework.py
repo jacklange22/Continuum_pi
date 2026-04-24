@@ -81,6 +81,28 @@ class _PretensionExperimentBus(MockDxlBus):
             self._state[1].present_current_ma = self._current_sequence.pop(0)
 
 
+class _StagedPretensionExperimentBus(MockDxlBus):
+    def __init__(self) -> None:
+        super().__init__([1, 2, 3, 4])
+        self._current_sequences = {
+            1: [180, 235],
+            2: [182, 236],
+            3: [179, 234],
+            4: [181, 237],
+        }
+        for telemetry in self._state.values():
+            telemetry.torque_enabled = True
+            telemetry.present_position = 4031
+            telemetry.present_current_ma = 150
+
+    def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
+        super().write_goal_positions(positions_by_id)
+        for servo_id in positions_by_id:
+            sequence = self._current_sequences.get(int(servo_id), [])
+            if sequence:
+                self._state[int(servo_id)].present_current_ma = int(sequence.pop(0))
+
+
 class _SequencedTrackingService:
     def __init__(self, snapshots: list[TrackingSnapshot]) -> None:
         self._snapshots = list(snapshots)
@@ -1054,6 +1076,128 @@ def test_pretension_validation_experiment_writes_outputs_without_tracker_data(tm
     assert result.summary.experiment_metrics["tracker_metric_sample_count"] == 0
     assert result.paths.output_dir.joinpath("pretension_response.png").exists()
     assert result.paths.output_dir.joinpath("pretension_summary.txt").exists()
+
+
+def test_pretension_validation_single_segment_staged_writes_units_metrics_and_plots(tmp_path: Path) -> None:
+    settings = _settings()
+    servo_service = ServoService(
+        dxl_bus=_StagedPretensionExperimentBus(),
+        mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
+        safety_guard=SafetyGuard(
+            min_offset_ticks=-600,
+            max_offset_ticks=600,
+            max_current_ma=850,
+            default_pretension_current_threshold_ma=220,
+            fine_jog_step_ticks=5,
+            coarse_jog_step_ticks=25,
+            software_position_margin_ticks=64,
+            telemetry_stale_after_s=0.25,
+            pretension_step_ticks=2,
+            pretension_timeout_s=2.0,
+            pretension_settle_time_s=0.0,
+            pretension_baseline_sample_count=3,
+            pretension_current_filter_window=1,
+            pretension_current_delta_threshold_ma=60,
+            pretension_absolute_trigger_current_ma=500,
+            pretension_max_travel_ticks=320,
+        ),
+        neutral_calibration=NeutralCalibrationService(path=tmp_path / "pretension_neutral_staged.json"),
+        pretension_validation=PretensionValidationService(),
+        sleep_fn=lambda _seconds: None,
+    )
+    servo_service.connect("/dev/mock-openrb", 115200)
+    tracking_service = _SequencedTrackingService(
+        [
+            _trusted_modeling_snapshot(
+                translation_mm=[0.0, 0.0, 60.0],
+                registration_path=tmp_path / "latest_registration.json",
+                frame_number=1,
+                runtime_tip_mode="coil_as_tip",
+            ),
+            _trusted_modeling_snapshot(
+                translation_mm=[0.5, -0.2, 60.0],
+                registration_path=tmp_path / "latest_registration.json",
+                frame_number=2,
+                runtime_tip_mode="coil_as_tip",
+            ),
+            _trusted_modeling_snapshot(
+                translation_mm=[0.2, 0.1, 60.0],
+                registration_path=tmp_path / "latest_registration.json",
+                frame_number=3,
+                runtime_tip_mode="coil_as_tip",
+            ),
+        ]
+    )
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        servo_service=servo_service,
+        tracking_service=tracking_service,
+    )
+
+    result = runner.run_experiment(
+        "pretension_validation",
+        config={
+            "mode": "single_segment_staged",
+            "servo_ids": [1, 2, 3, 4],
+            "repeat_runs": 1,
+            "include_tracker_displacement": True,
+            "allow_current_only_when_tracker_missing": True,
+            "enable_tip_centering": False,
+            "equalization_max_iterations": 2,
+        },
+    )
+
+    assert result.success is True
+    metrics = result.summary.experiment_metrics
+    assert metrics["mode"] == "single_segment_staged"
+    assert metrics["run_count"] == 1
+    assert metrics["units"]["baseline_current_ma"] == "mA"
+    assert metrics["units"]["tip_position_mm"] == "mm"
+    assert result.paths.output_dir.joinpath("metrics.csv").exists()
+    assert result.paths.output_dir.joinpath("pretension_summary.txt").exists()
+    assert result.paths.output_dir.joinpath("pretension_current_vs_position.png").exists()
+    assert result.paths.output_dir.joinpath("pretension_tip_xy_path.png").exists()
+    assert result.paths.output_dir.joinpath("pretension_final_current_distribution.png").exists()
+    assert result.paths.output_dir.joinpath("pretension_repeatability_summary.png").exists()
+
+
+def test_pretension_validation_single_segment_staged_requires_tracker_when_current_only_disabled(tmp_path: Path) -> None:
+    settings = _settings()
+    servo_service = ServoService(
+        dxl_bus=_StagedPretensionExperimentBus(),
+        mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
+        safety_guard=SafetyGuard(min_offset_ticks=-600, max_offset_ticks=600, max_current_ma=850),
+        neutral_calibration=NeutralCalibrationService(path=tmp_path / "pretension_neutral_staged.json"),
+        pretension_validation=PretensionValidationService(),
+        sleep_fn=lambda _seconds: None,
+    )
+    servo_service.connect("/dev/mock-openrb", 115200)
+    runner = ExperimentRunner(
+        project_root=Path(__file__).resolve().parents[1],
+        settings=settings,
+        tracking_service=None,
+        servo_service=servo_service,
+        output_dir=tmp_path / "data" / "experiments",
+        default_settle_time_s=0.0,
+        registration_path=tmp_path / "latest_registration.json",
+        sleep_fn=lambda _seconds: None,
+    )
+
+    result = runner.run_experiment(
+        "pretension_validation",
+        config={
+            "mode": "single_segment_staged",
+            "servo_ids": [1, 2, 3, 4],
+            "repeat_runs": 1,
+            "include_tracker_displacement": True,
+            "allow_current_only_when_tracker_missing": False,
+            "enable_tip_centering": False,
+        },
+    )
+
+    assert result.success is False
+    assert "tracking_service is unavailable" in result.message
 
 
 def test_collect_pose_command_dataset_marks_registration_missing(tmp_path: Path) -> None:

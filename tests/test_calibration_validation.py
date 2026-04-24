@@ -184,8 +184,12 @@ def test_registration_validation_analysis_and_runner_outputs(tmp_path: Path) -> 
     assert metrics["valid_run_count"] == 3
     assert metrics["invalid_run_count"] == 1
     assert metrics["fre_summary_mm"]["mean"] == pytest.approx((0.41 + 0.47 + 0.52) / 3.0)
+    assert metrics["fre_summary_mm"]["range"] is not None
     assert metrics["translation_delta_to_consensus_summary_mm"]["max"] is not None
+    assert metrics["rotation_spread_deg"]["mean"] is not None
     assert metrics["robot_origin_spread_mm"]["rms_distance_mm"] is not None
+    assert metrics["units"]["translation_spread_mm"] == "mm"
+    assert metrics["units"]["rotation_spread_deg"] == "deg"
     assert warnings and "missing.json" in warnings[0]
 
     runner = _runner(tmp_path)
@@ -207,6 +211,10 @@ def test_registration_validation_analysis_and_runner_outputs(tmp_path: Path) -> 
     assert (result.paths.output_dir / "registration_fre_histogram.png").exists()
     assert (result.paths.output_dir / "registration_frame_origins.png").exists()
     assert (result.paths.output_dir / "registration_transform_spread.png").exists()
+    assert result.summary.experiment_metrics["units"]["translation_spread_mm"] == "mm"
+    registration_csv_header = (result.paths.output_dir / "metrics.csv").read_text(encoding="utf-8").splitlines()[0]
+    assert "translation_delta_to_consensus_mm" in registration_csv_header
+    assert "rotation_delta_to_consensus_deg" in registration_csv_header
 
     candidates = list_registration_validation_candidates(tmp_path)
     assert [candidate.path for candidate in candidates][:2] == [
@@ -257,7 +265,9 @@ def test_pivot_validation_analysis_and_runner_outputs(tmp_path: Path) -> None:
     assert metrics["tip_norm_summary_mm"]["mean"] == pytest.approx(
         np.mean([np.linalg.norm([0.0, 0.0, 124.8]), np.linalg.norm([0.3, -0.2, 125.4]), np.linalg.norm([-0.4, 0.1, 125.1])])
     )
+    assert metrics["tip_norm_summary_mm"]["range"] is not None
     assert metrics["per_axis_summary_mm"]["z"]["mean"] == pytest.approx(np.mean([124.8, 125.4, 125.1]))
+    assert metrics["units"]["tip_offset_deviation_to_consensus_summary_mm"] == "mm"
     assert warnings and "not_pivot" in warnings[0]
 
     runner = _runner(tmp_path)
@@ -273,10 +283,14 @@ def test_pivot_validation_analysis_and_runner_outputs(tmp_path: Path) -> None:
     assert (result.paths.output_dir / "pivot_tip_scatter.png").exists()
     assert (result.paths.output_dir / "pivot_axis_histograms.png").exists()
     assert (result.paths.output_dir / "pivot_quality_summary.png").exists()
+    assert result.summary.experiment_metrics["units"]["per_run_rows"]["distance_to_consensus_mm"] == "mm"
+    pivot_csv_header = (result.paths.output_dir / "metrics.csv").read_text(encoding="utf-8").splitlines()[0]
+    assert "tip_offset_norm_mm" in pivot_csv_header
+    assert "tip_offset_deviation_to_consensus_mm" in pivot_csv_header
+    assert "pivot_rmse_mm" in pivot_csv_header
 
     candidates = list_pivot_validation_candidates(tmp_path)
     assert candidates[0].path == str(run_c.relative_to(tmp_path))
-
 
 def test_runner_registers_validation_analysis_experiments(tmp_path: Path) -> None:
     runner = _runner(tmp_path)
@@ -284,3 +298,76 @@ def test_runner_registers_validation_analysis_experiments(tmp_path: Path) -> Non
 
     assert "registration_validation" in names
     assert "pivot_validation" in names
+
+
+def test_validation_visualization_models_include_units(tmp_path: Path) -> None:
+    pytest.importorskip("PySide6")
+    from continuum_robot.gui.experiment_visualization import build_visualization_model
+
+    run_a = _write_pivot_run(
+        tmp_path,
+        name="20260101_000000_pivot_calibration",
+        tip_vector_local_mm=[0.0, 0.0, 124.8],
+        rmse_mm=0.31,
+    )
+    run_b = _write_pivot_run(
+        tmp_path,
+        name="20260101_000100_pivot_calibration",
+        tip_vector_local_mm=[0.3, -0.2, 125.4],
+        rmse_mm=0.28,
+    )
+    pivot_metrics, _ = analyze_pivot_runs(
+        [str(run_a.relative_to(tmp_path)), str(run_b.relative_to(tmp_path))],
+        project_root=tmp_path,
+    )
+    pivot_model = build_visualization_model(
+        experiment_name="pivot_validation",
+        samples=[],
+        metrics=pivot_metrics,
+        config_payload={},
+        color_mode="target_point",
+        show_centroids=True,
+        show_truth=True,
+    )
+    assert any("Consensus tip-offset [x, y, z] (mm)" in line for line in pivot_model.summary_lines)
+    assert any("mm" in chart.y_title.lower() for chart in pivot_model.charts)
+
+    record_a = _write_registration_record(
+        tmp_path,
+        stem="registration_20260101T000000_100001Z.json",
+        timestamp_utc="2026-01-01T00:00:00+00:00",
+        fre_mm=0.41,
+        translation_mm=[10.0, 2.0, -1.0],
+        rotation_deg=0.0,
+    )
+    record_b = _write_registration_record(
+        tmp_path,
+        stem="registration_20260101T000100_100002Z.json",
+        timestamp_utc="2026-01-01T00:01:00+00:00",
+        fre_mm=0.47,
+        translation_mm=[10.4, 1.8, -0.8],
+        rotation_deg=1.0,
+    )
+    record_c = _write_registration_record(
+        tmp_path,
+        stem="registration_20260101T000200_100003Z.json",
+        timestamp_utc="2026-01-01T00:02:00+00:00",
+        fre_mm=0.52,
+        translation_mm=[9.8, 2.3, -1.1],
+        rotation_deg=-0.8,
+    )
+    registration_metrics, _ = analyze_registration_runs(
+        [str(record_a.relative_to(tmp_path)), str(record_b.relative_to(tmp_path)), str(record_c.relative_to(tmp_path))],
+        project_root=tmp_path,
+    )
+    registration_model = build_visualization_model(
+        experiment_name="registration_validation",
+        samples=[],
+        metrics=registration_metrics,
+        config_payload={},
+        color_mode="target_point",
+        show_centroids=True,
+        show_truth=True,
+    )
+    assert any("Rotation spread mean/std/max (deg)" in line for line in registration_model.summary_lines)
+    assert any("deg" in chart.y_title.lower() for chart in registration_model.charts)

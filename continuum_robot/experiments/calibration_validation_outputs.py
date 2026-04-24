@@ -40,7 +40,24 @@ def write_registration_validation_outputs(*, output_dir: Path, metadata, summary
     fre_plot_path = output_dir / "registration_fre_histogram.png"
     origin_plot_path = output_dir / "registration_frame_origins.png"
     spread_plot_path = output_dir / "registration_transform_spread.png"
-    _write_rows_csv(csv_path, rows=metrics.get("per_run_rows") or [])
+    _write_rows_csv(
+        csv_path,
+        rows=metrics.get("per_run_rows") or [],
+        header_overrides={
+            "path": "path",
+            "label": "label",
+            "timestamp_utc": "timestamp_utc",
+            "measurement_tool_id": "measurement_tool_id",
+            "coil_tool_id": "coil_tool_id",
+            "fre_mm": "fre_mm",
+            "landmark_count": "landmark_count",
+            "robot_origin_in_aurora_mm": "robot_origin_in_aurora_mm",
+            "translation_delta_to_consensus_mm": "translation_delta_to_consensus_mm",
+            "rotation_delta_to_consensus_deg": "rotation_delta_to_consensus_deg",
+            "origin_distance_to_consensus_mm": "origin_distance_to_consensus_mm",
+            "run_index": "run_index",
+        },
+    )
     text_path.write_text(
         "\n".join(build_registration_validation_summary_lines(metadata=metadata, summary=summary, metrics=metrics)).strip() + "\n",
         encoding="utf-8",
@@ -72,7 +89,26 @@ def write_pivot_validation_outputs(*, output_dir: Path, metadata, summary) -> di
     scatter_plot_path = output_dir / "pivot_tip_scatter.png"
     axis_plot_path = output_dir / "pivot_axis_histograms.png"
     quality_plot_path = output_dir / "pivot_quality_summary.png"
-    _write_rows_csv(csv_path, rows=metrics.get("per_run_rows") or [])
+    _write_rows_csv(
+        csv_path,
+        rows=metrics.get("per_run_rows") or [],
+        header_overrides={
+            "path": "path",
+            "label": "label",
+            "timestamp_utc": "timestamp_utc",
+            "status": "status",
+            "tool_id": "tool_id",
+            "tip_vector_local_mm": "tip_vector_local_mm",
+            "tip_norm_mm": "tip_offset_norm_mm",
+            "distance_to_consensus_mm": "tip_offset_deviation_to_consensus_mm",
+            "rmse_mm": "pivot_rmse_mm",
+            "sample_count_total": "sample_count_total",
+            "sample_count_used": "sample_count_used",
+            "sample_count_rejected": "sample_count_rejected",
+            "input_format": "input_format",
+            "run_index": "run_index",
+        },
+    )
     text_path.write_text(
         "\n".join(build_pivot_validation_summary_lines(metadata=metadata, summary=summary, metrics=metrics)).strip() + "\n",
         encoding="utf-8",
@@ -100,7 +136,7 @@ def build_registration_validation_summary_lines(*, metadata, summary, metrics: d
     spread = dict(metrics.get("robot_origin_spread_mm", {}) or {})
     lines = [
         "Registration Validation Summary",
-        "Offline analysis of repeated saved registration solves. Metrics quantify FRE spread, transform spread, and where the downstream robot/model frame origin lands in Aurora space.",
+        "Offline analysis of repeated saved registration solves. Metrics quantify FRE spread, transform spread, and where the downstream robot/model frame origin lands in Aurora space (all distances in mm, rotation in degrees).",
         "",
         f"Run ID: {metadata.run_id}",
         f"Timestamp: {metadata.timestamp_utc}",
@@ -109,9 +145,13 @@ def build_registration_validation_summary_lines(*, metadata, summary, metrics: d
         f"Valid runs: {int(metrics.get('valid_run_count', 0) or 0)}",
         f"Skipped runs: {int(metrics.get('invalid_run_count', 0) or 0)}",
         "",
+        "Definitions:",
+        "- FRE is residual error on the fiducials used by each registration solve (not an external ground-truth held-out error).",
+        "- Translation/rotation spread values are transform deltas relative to a consensus transform across selected runs.",
+        "",
         f"FRE mean / std / max (mm): {_metric_triplet(metrics.get('fre_summary_mm'))}",
-        f"Translation delta to consensus mean / std / max (mm): {_metric_triplet(metrics.get('translation_delta_to_consensus_summary_mm'))}",
-        f"Rotation delta to consensus mean / std / max (deg): {_metric_triplet(metrics.get('rotation_delta_to_consensus_summary_deg'))}",
+        f"Translation spread mean / std / max (mm): {_metric_triplet(metrics.get('translation_delta_to_consensus_summary_mm'))}",
+        f"Rotation spread mean / std / max (deg): {_metric_triplet(metrics.get('rotation_delta_to_consensus_summary_deg'))}",
         f"Robot-origin RMS / max distance to consensus (mm): {_fmt(spread.get('rms_distance_mm'))} / {_fmt(spread.get('max_distance_mm'))}",
         f"Robot-origin XYZ span (mm): x={_fmt(spread.get('span_x_mm'))}, y={_fmt(spread.get('span_y_mm'))}, z={_fmt(spread.get('span_z_mm'))}",
         "",
@@ -132,7 +172,7 @@ def build_pivot_validation_summary_lines(*, metadata, summary, metrics: dict[str
     """Return human-readable pivot-validation summary text."""
     lines = [
         "Pivot Validation Summary",
-        "Offline analysis of repeated saved pivot-calibration runs. Metrics quantify tip-offset spread only; no arbitrary orientation estimate is implied.",
+        "Offline analysis of repeated saved pivot-calibration runs. Metrics quantify tip-offset spread only; no arbitrary orientation estimate is implied (all lengths in mm).",
         "",
         f"Run ID: {metadata.run_id}",
         f"Timestamp: {metadata.timestamp_utc}",
@@ -141,10 +181,14 @@ def build_pivot_validation_summary_lines(*, metadata, summary, metrics: dict[str
         f"Valid runs: {int(metrics.get('valid_run_count', 0) or 0)}",
         f"Skipped runs: {int(metrics.get('invalid_run_count', 0) or 0)}",
         "",
-        f"Tip-norm mean / std / max (mm): {_metric_triplet(metrics.get('tip_norm_summary_mm'))}",
-        f"RMSE mean / std / max (mm): {_metric_triplet(metrics.get('rmse_summary_mm'))}",
-        f"Distance to consensus mean / std / max (mm): {_metric_triplet(metrics.get('distance_to_consensus_summary_mm'))}",
-        f"Consensus tip vector (local mm): {metrics.get('consensus_tip_vector_local_mm')}",
+        "Definitions:",
+        "- Pivot RMSE is per-run solve residual quality.",
+        "- Distance to consensus is cross-run repeatability spread of solved tip offsets.",
+        "",
+        f"Tip-offset norm mean / std / max (mm): {_metric_triplet(metrics.get('tip_norm_summary_mm'))}",
+        f"Pivot solve RMSE mean / std / max (mm): {_metric_triplet(metrics.get('rmse_summary_mm'))}",
+        f"Tip-offset deviation to consensus mean / std / max (mm): {_metric_triplet(metrics.get('distance_to_consensus_summary_mm'))}",
+        f"Consensus tip-offset vector [x, y, z] (mm): {metrics.get('consensus_tip_vector_local_mm')}",
         "",
         "Saved plots:",
         "- pivot_tip_scatter.png",
@@ -159,14 +203,21 @@ def build_pivot_validation_summary_lines(*, metadata, summary, metrics: dict[str
     return lines
 
 
-def _write_rows_csv(path: Path, *, rows: list[dict[str, Any]]) -> None:
+def _write_rows_csv(
+    path: Path,
+    *,
+    rows: list[dict[str, Any]],
+    header_overrides: dict[str, str] | None = None,
+) -> None:
     fieldnames: list[str] = []
+    header_overrides = dict(header_overrides or {})
     for row in rows:
         for key in row:
             if key not in fieldnames:
                 fieldnames.append(str(key))
+    output_headers = [header_overrides.get(key, key) for key in fieldnames]
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames or ["empty"])
+        writer = csv.DictWriter(handle, fieldnames=output_headers or ["empty"])
         writer.writeheader()
         if not fieldnames:
             writer.writerow({"empty": ""})
@@ -174,7 +225,7 @@ def _write_rows_csv(path: Path, *, rows: list[dict[str, Any]]) -> None:
         for row in rows:
             writer.writerow(
                 {
-                    key: _csv_value(row.get(key))
+                    header_overrides.get(key, key): _csv_value(row.get(key))
                     for key in fieldnames
                 }
             )
@@ -187,14 +238,14 @@ def _csv_value(value: Any) -> Any:
 
 
 def _write_registration_fre_histogram(*, fre_plot_path: Path, metrics: dict[str, Any]) -> None:
-    image = _new_image(1180, 720)
+    image = _new_publication_image(1180, 720)
     painter = QPainter(image)
     painter.setRenderHint(QPainter.Antialiasing, True)
     _draw_title(
         painter,
         QRectF(34.0, 24.0, 1112.0, 56.0),
-        "REGISTRATION FRE DISTRIBUTION",
-        "Histogram of per-run fiducial registration error across the selected saved solves.",
+        "REGISTRATION FRE DISTRIBUTION (MM)",
+        "Histogram of per-run fiducial registration error (FRE) across the selected saved solves.",
     )
     chart_rect = QRectF(36.0, 104.0, 740.0, 560.0)
     summary_rect = QRectF(808.0, 104.0, 338.0, 560.0)
@@ -215,11 +266,11 @@ def _write_registration_fre_histogram(*, fre_plot_path: Path, metrics: dict[str,
         summary_rect.adjusted(16.0, 36.0, -16.0, -16.0),
         [
             ("Valid Runs", str(int(metrics.get("valid_run_count", 0) or 0))),
-            ("Mean FRE", _metric_stat(metrics.get("fre_summary_mm"), "mean")),
-            ("Std FRE", _metric_stat(metrics.get("fre_summary_mm"), "std")),
-            ("Max FRE", _metric_stat(metrics.get("fre_summary_mm"), "max")),
-            ("Mean dT", _metric_stat(metrics.get("translation_delta_to_consensus_summary_mm"), "mean")),
-            ("Mean dR", _metric_stat(metrics.get("rotation_delta_to_consensus_summary_deg"), "mean")),
+            ("Mean FRE (mm)", _metric_stat(metrics.get("fre_summary_mm"), "mean")),
+            ("Std FRE (mm)", _metric_stat(metrics.get("fre_summary_mm"), "std")),
+            ("Max FRE (mm)", _metric_stat(metrics.get("fre_summary_mm"), "max")),
+            ("Mean dT (mm)", _metric_stat(metrics.get("translation_delta_to_consensus_summary_mm"), "mean")),
+            ("Mean dR (deg)", _metric_stat(metrics.get("rotation_delta_to_consensus_summary_deg"), "mean")),
         ],
     )
     painter.end()
@@ -227,18 +278,18 @@ def _write_registration_fre_histogram(*, fre_plot_path: Path, metrics: dict[str,
 
 
 def _write_registration_origin_plot(*, origin_plot_path: Path, metrics: dict[str, Any]) -> None:
-    image = _new_image(1180, 760)
+    image = _new_publication_image(1180, 760)
     painter = QPainter(image)
     painter.setRenderHint(QPainter.Antialiasing, True)
     _draw_title(
         painter,
         QRectF(34.0, 24.0, 1112.0, 56.0),
-        "REGISTRATION FRAME ORIGINS",
-        "Projected 3D scatter of solved robot/model-frame origins expressed in Aurora space.",
+        "REGISTRATION FRAME ORIGINS (MM)",
+        "Projected 3D scatter of solved robot/model-frame origins expressed in Aurora space with equal projected scaling.",
     )
     scatter_rect = QRectF(36.0, 104.0, 820.0, 600.0)
     summary_rect = QRectF(888.0, 104.0, 258.0, 600.0)
-    _draw_panel(painter, scatter_rect, "Solved Frame Origins")
+    _draw_panel(painter, scatter_rect, "Solved Frame Origins (mm)")
     _draw_panel(painter, summary_rect, "Spread")
     points = [
         np.asarray(row.get("robot_origin_in_aurora_mm") or [], dtype=float)
@@ -252,20 +303,21 @@ def _write_registration_origin_plot(*, origin_plot_path: Path, metrics: dict[str
         point_color=QColor("#0f766e"),
         point_radius=5.0,
         empty_text="No valid registration origins were available.",
+        axis_note="Projected axes in mm (equal projected scale)",
     )
     spread = dict(metrics.get("robot_origin_spread_mm", {}) or {})
     _draw_summary_pairs(
         painter,
         summary_rect.adjusted(16.0, 36.0, -16.0, -16.0),
         [
-            ("Std X", _fmt(spread.get("std_x_mm"))),
-            ("Std Y", _fmt(spread.get("std_y_mm"))),
-            ("Std Z", _fmt(spread.get("std_z_mm"))),
-            ("RMS Dist", _fmt(spread.get("rms_distance_mm"))),
-            ("Max Dist", _fmt(spread.get("max_distance_mm"))),
-            ("Span X", _fmt(spread.get("span_x_mm"))),
-            ("Span Y", _fmt(spread.get("span_y_mm"))),
-            ("Span Z", _fmt(spread.get("span_z_mm"))),
+            ("Std X (mm)", _fmt(spread.get("std_x_mm"))),
+            ("Std Y (mm)", _fmt(spread.get("std_y_mm"))),
+            ("Std Z (mm)", _fmt(spread.get("std_z_mm"))),
+            ("RMS Dist (mm)", _fmt(spread.get("rms_distance_mm"))),
+            ("Max Dist (mm)", _fmt(spread.get("max_distance_mm"))),
+            ("Span X (mm)", _fmt(spread.get("span_x_mm"))),
+            ("Span Y (mm)", _fmt(spread.get("span_y_mm"))),
+            ("Span Z (mm)", _fmt(spread.get("span_z_mm"))),
         ],
     )
     painter.end()
@@ -277,13 +329,13 @@ def _write_registration_spread_plot(*, spread_plot_path: Path, metrics: dict[str
     labels = [f"R{index + 1}" for index in range(len(rows))]
     translation_values = [float(row.get("translation_delta_to_consensus_mm", 0.0) or 0.0) for row in rows]
     rotation_values = [float(row.get("rotation_delta_to_consensus_deg", 0.0) or 0.0) for row in rows]
-    image = _new_image(1180, 760)
+    image = _new_publication_image(1180, 760)
     painter = QPainter(image)
     painter.setRenderHint(QPainter.Antialiasing, True)
     _draw_title(
         painter,
         QRectF(34.0, 24.0, 1112.0, 56.0),
-        "REGISTRATION TRANSFORM SPREAD",
+        "REGISTRATION TRANSFORM SPREAD (MM / DEG)",
         "Per-run translation and rotation deltas relative to the consensus transform.",
     )
     top_rect = QRectF(36.0, 104.0, 1108.0, 280.0)
@@ -313,18 +365,18 @@ def _write_registration_spread_plot(*, spread_plot_path: Path, metrics: dict[str
 
 
 def _write_pivot_scatter_plot(*, scatter_plot_path: Path, metrics: dict[str, Any]) -> None:
-    image = _new_image(1180, 760)
+    image = _new_publication_image(1180, 760)
     painter = QPainter(image)
     painter.setRenderHint(QPainter.Antialiasing, True)
     _draw_title(
         painter,
         QRectF(34.0, 24.0, 1112.0, 56.0),
-        "PIVOT TIP-OFFSET SCATTER",
-        "Projected 3D scatter of per-run local tip-offset solutions.",
+        "PIVOT TIP-OFFSET SCATTER (MM)",
+        "Projected 3D scatter of per-run local tip-offset solutions with equal projected scaling.",
     )
     scatter_rect = QRectF(36.0, 104.0, 820.0, 600.0)
     summary_rect = QRectF(888.0, 104.0, 258.0, 600.0)
-    _draw_panel(painter, scatter_rect, "Tip Vectors")
+    _draw_panel(painter, scatter_rect, "Tip Offset Vectors (mm)")
     _draw_panel(painter, summary_rect, "Summary")
     points = [
         np.asarray(row.get("tip_vector_local_mm") or [], dtype=float)
@@ -338,17 +390,18 @@ def _write_pivot_scatter_plot(*, scatter_plot_path: Path, metrics: dict[str, Any
         point_color=QColor("#7c3aed"),
         point_radius=5.0,
         empty_text="No valid tip vectors were available.",
+        axis_note="Projected axes in mm (equal projected scale)",
     )
     _draw_summary_pairs(
         painter,
         summary_rect.adjusted(16.0, 36.0, -16.0, -16.0),
         [
             ("Valid Runs", str(int(metrics.get("valid_run_count", 0) or 0))),
-            ("Mean Norm", _metric_stat(metrics.get("tip_norm_summary_mm"), "mean")),
-            ("Std Norm", _metric_stat(metrics.get("tip_norm_summary_mm"), "std")),
-            ("Mean RMSE", _metric_stat(metrics.get("rmse_summary_mm"), "mean")),
-            ("Mean dC", _metric_stat(metrics.get("distance_to_consensus_summary_mm"), "mean")),
-            ("Consensus", str(metrics.get("consensus_tip_vector_local_mm"))),
+            ("Mean Norm (mm)", _metric_stat(metrics.get("tip_norm_summary_mm"), "mean")),
+            ("Std Norm (mm)", _metric_stat(metrics.get("tip_norm_summary_mm"), "std")),
+            ("Mean RMSE (mm)", _metric_stat(metrics.get("rmse_summary_mm"), "mean")),
+            ("Mean dC (mm)", _metric_stat(metrics.get("distance_to_consensus_summary_mm"), "mean")),
+            ("Consensus [x,y,z] mm", str(metrics.get("consensus_tip_vector_local_mm"))),
         ],
     )
     painter.end()
@@ -362,14 +415,14 @@ def _write_pivot_axis_histograms(*, axis_plot_path: Path, metrics: dict[str, Any
         "Y": [float(row["tip_vector_local_mm"][1]) for row in rows if isinstance(row.get("tip_vector_local_mm"), list)],
         "Z": [float(row["tip_vector_local_mm"][2]) for row in rows if isinstance(row.get("tip_vector_local_mm"), list)],
     }
-    image = _new_image(1280, 780)
+    image = _new_publication_image(1280, 780)
     painter = QPainter(image)
     painter.setRenderHint(QPainter.Antialiasing, True)
     _draw_title(
         painter,
         QRectF(34.0, 24.0, 1212.0, 56.0),
-        "PIVOT AXIS DISTRIBUTIONS",
-        "Per-axis histograms for the saved tip-offset solutions.",
+        "PIVOT AXIS DISTRIBUTIONS (MM)",
+        "Per-axis histograms for saved tip-offset vectors.",
     )
     rects = [
         QRectF(36.0, 104.0, 388.0, 600.0),
@@ -397,14 +450,14 @@ def _write_pivot_quality_plot(*, quality_plot_path: Path, metrics: dict[str, Any
     labels = [f"R{index + 1}" for index in range(len(rows))]
     rmse_values = [float(row.get("rmse_mm", 0.0) or 0.0) for row in rows]
     distance_values = [float(row.get("distance_to_consensus_mm", 0.0) or 0.0) for row in rows]
-    image = _new_image(1180, 760)
+    image = _new_publication_image(1180, 760)
     painter = QPainter(image)
     painter.setRenderHint(QPainter.Antialiasing, True)
     _draw_title(
         painter,
         QRectF(34.0, 24.0, 1112.0, 56.0),
-        "PIVOT QUALITY SUMMARY",
-        "Per-run solve RMSE and distance to the consensus tip vector.",
+        "PIVOT QUALITY SUMMARY (MM)",
+        "Per-run pivot solve RMSE and tip-offset deviation to the consensus vector.",
     )
     top_rect = QRectF(36.0, 104.0, 1108.0, 280.0)
     bottom_rect = QRectF(36.0, 414.0, 1108.0, 280.0)
@@ -440,6 +493,7 @@ def _draw_projected_scatter(
     point_color: QColor,
     point_radius: float,
     empty_text: str,
+    axis_note: str,
 ) -> None:
     if not points:
         painter.setFont(_body_font())
@@ -450,11 +504,12 @@ def _draw_projected_scatter(
     minimum = projected.min(axis=0)
     maximum = projected.max(axis=0)
     span = np.maximum(maximum - minimum, 1e-6)
+    shared_span = float(max(span[0], span[1], 1e-6))
     painter.setPen(QPen(QColor("#cbd5e1"), 1.0))
     painter.drawRect(rect)
     for point in projected:
-        x_norm = float((point[0] - minimum[0]) / span[0])
-        y_norm = float((point[1] - minimum[1]) / span[1])
+        x_norm = float((point[0] - minimum[0]) / shared_span)
+        y_norm = float((point[1] - minimum[1]) / shared_span)
         x = rect.left() + (x_norm * rect.width())
         y = rect.bottom() - (y_norm * rect.height())
         painter.setPen(Qt.NoPen)
@@ -462,7 +517,16 @@ def _draw_projected_scatter(
         painter.drawEllipse(QRectF(x - point_radius, y - point_radius, point_radius * 2.0, point_radius * 2.0))
     painter.setPen(QColor("#475569"))
     painter.setFont(_body_font())
-    painter.drawText(rect.adjusted(8.0, 8.0, -8.0, -8.0), Qt.AlignLeft | Qt.AlignTop, "Isometric projection")
+    painter.drawText(rect.adjusted(8.0, 8.0, -8.0, -8.0), Qt.AlignLeft | Qt.AlignTop, axis_note)
+
+
+def _new_publication_image(width: int, height: int):
+    image = _new_image(width, height)
+    # 300 dpi export target for thesis-ready raster figures.
+    dots_per_meter = int(round(300.0 / 0.0254))
+    image.setDotsPerMeterX(dots_per_meter)
+    image.setDotsPerMeterY(dots_per_meter)
+    return image
 
 
 def _project_point(point: np.ndarray) -> tuple[float, float]:

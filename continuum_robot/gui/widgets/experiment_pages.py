@@ -1994,9 +1994,13 @@ class PretensionValidationPage(ExperimentPageBase):
     def _build_parameter_sections(self) -> None:
         setup_card = ExperimentCard(
             "Validation Setup",
-            "Keep this page focused on one servo at a time. Use the Pretension tab for tuning; use this page for canonical response-vs-travel datasets.",
+            "Use single-servo trace mode for detailed load-onset traces, or staged 4-servo mode for repeatable startup-state characterization.",
         )
         setup_form = QFormLayout()
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("Single-Servo Trace", "single_servo_trace")
+        self.mode_combo.addItem("Staged 4-Servo Startup", "single_segment_staged")
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         self.servo_combo = QComboBox()
         configured_ids = list(self.controller.settings.robot.servo_ids or [])
         if configured_ids:
@@ -2009,8 +2013,29 @@ class PretensionValidationPage(ExperimentPageBase):
         self.include_tracker_check.toggled.connect(
             lambda value: self.controller.set_config_value("include_tracker_displacement", bool(value))
         )
+        self.allow_current_only_check = QCheckBox("Allow current-only fallback when tracker tip pose is unavailable")
+        self.allow_current_only_check.toggled.connect(
+            lambda value: self.controller.set_config_value("allow_current_only_when_tracker_missing", bool(value))
+        )
+        self.staged_servo_ids_edit = QLineEdit()
+        self.staged_servo_ids_edit.setPlaceholderText("1,2,3,4")
+        self.staged_servo_ids_edit.editingFinished.connect(self._on_staged_servo_ids_changed)
+        self.repeat_runs_spin = QSpinBox()
+        self.repeat_runs_spin.setRange(1, 50)
+        self.repeat_runs_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("repeat_runs", int(value))
+        )
+        self.enable_tip_centering_check = QCheckBox("Enable staged tip XY centering (robot frame)")
+        self.enable_tip_centering_check.toggled.connect(
+            lambda value: self.controller.set_config_value("enable_tip_centering", bool(value))
+        )
         setup_form.addRow("Servo", self.servo_combo)
+        setup_form.addRow("Mode", self.mode_combo)
+        setup_form.addRow("Staged Servo IDs", self.staged_servo_ids_edit)
+        setup_form.addRow("Repeat Runs", self.repeat_runs_spin)
         setup_form.addRow("Tracker Metric", self.include_tracker_check)
+        setup_form.addRow("Tracker Fallback", self.allow_current_only_check)
+        setup_form.addRow("Tip Centering", self.enable_tip_centering_check)
         setup_card.body_layout.addLayout(setup_form)
         note = QLabel(
             "Servo convention: raw XC330 position uses 0..4095 ticks, 4095 is untensioned, and tightening lowers raw counts."
@@ -2109,8 +2134,17 @@ class PretensionValidationPage(ExperimentPageBase):
         _ = state
         config = PretensionValidationExperimentConfig.from_dict(self.controller.config_payload())
         defaults = self._resolved_defaults(config.servo_id)
+        mode = str(config.mode or "single_servo_trace")
+        self._set_combo_value(self.mode_combo, mode)
         self._set_combo_value(self.servo_combo, str(int(config.servo_id)))
         self._set_checkbox(self.include_tracker_check, bool(config.include_tracker_displacement))
+        self._set_checkbox(self.allow_current_only_check, bool(config.allow_current_only_when_tracker_missing))
+        self._set_checkbox(self.enable_tip_centering_check, bool(config.enable_tip_centering))
+        self._set_line_text(
+            self.staged_servo_ids_edit,
+            ",".join(str(int(value)) for value in (config.servo_ids or self.controller.settings.robot.servo_ids)),
+        )
+        self._set_spin(self.repeat_runs_spin, int(config.repeat_runs))
         self._set_spin(
             self.untensioned_spin,
             int(config.untensioned_reference_tick if config.untensioned_reference_tick is not None else defaults.untensioned_reference_tick),
@@ -2169,8 +2203,16 @@ class PretensionValidationPage(ExperimentPageBase):
         )
         self.parameter_summary_widget.set_pairs(
             [
-                ("Travel Axis", "Travel is plotted from the untensioned reference toward lower raw counts."),
-                ("Current Metric", "Current is saved as an engagement proxy, not a tendon-force estimate."),
+                (
+                    "Mode",
+                    (
+                        "Single-servo trace mode captures fine-grained current/position onset behavior."
+                        if mode == "single_servo_trace"
+                        else "Staged mode runs baseline, per-servo take-up, load equalization, and optional tip XY centering."
+                    ),
+                ),
+                ("Travel Axis", "Travel is measured from the untensioned reference toward lower raw counts (ticks / mm)."),
+                ("Current Metric", "Current is saved as an engagement/load proxy, not a tendon-force estimate."),
                 (
                     "Tracker Metric",
                     (
@@ -2187,6 +2229,17 @@ class PretensionValidationPage(ExperimentPageBase):
         servo_id = int(raw_servo_id) if raw_servo_id not in (None, "") else 1
         self.controller.set_config_value("servo_id", servo_id)
         self._refresh_now()
+
+    def _on_mode_changed(self) -> None:
+        mode = str(self.mode_combo.currentData() or "single_servo_trace")
+        self.controller.set_config_value("mode", mode)
+        self._refresh_now()
+
+    def _on_staged_servo_ids_changed(self) -> None:
+        raw_text = self.staged_servo_ids_edit.text().strip()
+        parsed = PretensionValidationExperimentConfig.from_dict({"servo_ids": raw_text}).servo_ids
+        self.controller.set_config_value("servo_ids", parsed)
+        self._set_line_text(self.staged_servo_ids_edit, ",".join(str(value) for value in parsed))
 
     def _resolved_defaults(self, servo_id: int):
         try:

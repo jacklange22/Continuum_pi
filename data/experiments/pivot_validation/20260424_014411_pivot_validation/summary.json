@@ -1,0 +1,268 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "pivot_validation",
+  "run_id": "ed5f922f49c0",
+  "success": true,
+  "sample_counts": {
+    "total": 0
+  },
+  "dropped_frames": 0,
+  "invalid_transforms": 0,
+  "stage_pass_fail": {
+    "setup": "passed",
+    "precheck": "passed",
+    "execute": "passed",
+    "finalize": "passed"
+  },
+  "status": "success",
+  "experiment_metrics": {
+    "experiment_name": "pivot_validation",
+    "selected_run_count": 5,
+    "valid_run_count": 5,
+    "invalid_run_count": 0,
+    "selected_run_paths": [
+      "data/pivot_calibration/20260419_225103_pivot_calibration_review",
+      "data/pivot_calibration/20260419_225008_pivot_calibration_review",
+      "data/pivot_calibration/20260412_214329_pivot_calibration_review",
+      "data/pivot_calibration/20260403_161031_pivot_calibration_review",
+      "data/pivot_calibration/20260401_193401_pivot_calibration_review"
+    ],
+    "valid_run_paths": [
+      "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260419_225103_pivot_calibration_review",
+      "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260419_225008_pivot_calibration_review",
+      "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260412_214329_pivot_calibration_review",
+      "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260403_161031_pivot_calibration_review",
+      "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260401_193401_pivot_calibration_review"
+    ],
+    "invalid_runs": [],
+    "units": {
+      "consensus_tip_vector_local_mm": "mm",
+      "tip_norm_summary_mm": "mm",
+      "rmse_summary_mm": "mm",
+      "distance_to_consensus_summary_mm": "mm",
+      "tip_offset_deviation_to_consensus_summary_mm": "mm",
+      "per_axis_summary_mm": {
+        "x": "mm",
+        "y": "mm",
+        "z": "mm"
+      },
+      "sample_count_used_summary": "count",
+      "sample_count_rejected_summary": "count",
+      "per_run_rows": {
+        "tip_vector_local_mm": "mm",
+        "tip_norm_mm": "mm",
+        "distance_to_consensus_mm": "mm",
+        "rmse_mm": "mm",
+        "sample_count_total": "count",
+        "sample_count_used": "count",
+        "sample_count_rejected": "count",
+        "run_index": "index"
+      }
+    },
+    "definitions": {
+      "tip_vector_local_mm": "Per-run solved tip-offset vector in tool-local coordinates from standard pivot calibration.",
+      "distance_to_consensus_mm": "Euclidean norm deviation from each run tip vector to the consensus tip vector.",
+      "rmse_mm": "Pivot solve residual RMSE reported by each pivot-calibration run."
+    },
+    "interpretation_limits": {
+      "tip_offset_only": true,
+      "orientation_estimated": false,
+      "note": "Standard pivot calibration outputs a tip offset vector, not a full arbitrary orientation estimate."
+    },
+    "consensus_tip_vector_local_mm": [
+      -1.2865794985261292,
+      -4.700327818765214,
+      16.614157870645368
+    ],
+    "per_run_rows": [
+      {
+        "path": "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260419_225103_pivot_calibration_review",
+        "label": "20260419_225103_pivot_calibration_review",
+        "timestamp_utc": "2026-04-19T22:51:03.981329+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -1.7546567518016551,
+          -3.3724125459572463,
+          16.696994630976242
+        ],
+        "rmse_mm": 1.08230298837079,
+        "sample_count_total": 227,
+        "sample_count_used": 225,
+        "sample_count_rejected": 2,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 17.124299004736585,
+        "distance_to_consensus_mm": 1.410431570709028,
+        "run_index": 0
+      },
+      {
+        "path": "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260419_225008_pivot_calibration_review",
+        "label": "20260419_225008_pivot_calibration_review",
+        "timestamp_utc": "2026-04-19T22:50:08.777647+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -2.395984134881423,
+          -5.1969592111159955,
+          15.081726097417354
+        ],
+        "rmse_mm": 1.045427946934847,
+        "sample_count_total": 204,
+        "sample_count_used": 202,
+        "sample_count_rejected": 2,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 16.13095121479594,
+        "distance_to_consensus_mm": 1.9559571893662837,
+        "run_index": 1
+      },
+      {
+        "path": "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260412_214329_pivot_calibration_review",
+        "label": "20260412_214329_pivot_calibration_review",
+        "timestamp_utc": "2026-04-12T21:43:29.779039+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -0.38167713484225996,
+          -4.61165353485589,
+          17.54452186018712
+        ],
+        "rmse_mm": 0.5633266712600637,
+        "sample_count_total": 231,
+        "sample_count_used": 230,
+        "sample_count_rejected": 1,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 18.144510824582568,
+        "distance_to_consensus_mm": 1.3008799212315996,
+        "run_index": 2
+      },
+      {
+        "path": "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260403_161031_pivot_calibration_review",
+        "label": "20260403_161031_pivot_calibration_review",
+        "timestamp_utc": "2026-04-03T16:10:31.069921+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -0.641706017074999,
+          -5.219020000174567,
+          16.592756673838366
+        ],
+        "rmse_mm": 0.433105243825143,
+        "sample_count_total": 200,
+        "sample_count_used": 200,
+        "sample_count_rejected": 0,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 17.406019947471624,
+        "distance_to_consensus_mm": 0.8278655672021065,
+        "run_index": 3
+      },
+      {
+        "path": "/Users/jacklange/Continuum/pi_code/data/pivot_calibration/20260401_193401_pivot_calibration_review",
+        "label": "20260401_193401_pivot_calibration_review",
+        "timestamp_utc": "2026-04-01T19:34:01.795914+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -1.2588734540303086,
+          -5.101593801722373,
+          17.154790090807758
+        ],
+        "rmse_mm": 0.39044095317218275,
+        "sample_count_total": 247,
+        "sample_count_used": 246,
+        "sample_count_rejected": 1,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 17.941511774393774,
+        "distance_to_consensus_mm": 0.6738436105342948,
+        "run_index": 4
+      }
+    ],
+    "tip_norm_summary_mm": {
+      "count": 5,
+      "mean": 17.349458553196097,
+      "median": 17.406019947471624,
+      "std": 0.7101114389005789,
+      "min": 16.13095121479594,
+      "max": 18.144510824582568,
+      "range": 2.013559609786629
+    },
+    "rmse_summary_mm": {
+      "count": 5,
+      "mean": 0.7029207607126053,
+      "median": 0.5633266712600637,
+      "std": 0.3003906124900032,
+      "min": 0.39044095317218275,
+      "max": 1.08230298837079,
+      "range": 0.6918620351986072
+    },
+    "distance_to_consensus_summary_mm": {
+      "count": 5,
+      "mean": 1.2337955718086626,
+      "median": 1.3008799212315996,
+      "std": 0.45509193697391703,
+      "min": 0.6738436105342948,
+      "max": 1.9559571893662837,
+      "range": 1.2821135788319888
+    },
+    "tip_offset_deviation_to_consensus_summary_mm": {
+      "count": 5,
+      "mean": 1.2337955718086626,
+      "median": 1.3008799212315996,
+      "std": 0.45509193697391703,
+      "min": 0.6738436105342948,
+      "max": 1.9559571893662837,
+      "range": 1.2821135788319888
+    },
+    "sample_count_used_summary": {
+      "count": 5,
+      "mean": 220.6,
+      "median": 225.0,
+      "std": 17.453939383417143,
+      "min": 200.0,
+      "max": 246.0,
+      "range": 46.0
+    },
+    "sample_count_rejected_summary": {
+      "count": 5,
+      "mean": 1.2,
+      "median": 1.0,
+      "std": 0.7483314773547883,
+      "min": 0.0,
+      "max": 2.0,
+      "range": 2.0
+    },
+    "per_axis_summary_mm": {
+      "x": {
+        "count": 5,
+        "mean": -1.2865794985261292,
+        "median": -1.2588734540303086,
+        "std": 0.7328509646553986,
+        "min": -2.395984134881423,
+        "max": -0.38167713484225996,
+        "range": 2.014307000039163
+      },
+      "y": {
+        "count": 5,
+        "mean": -4.700327818765214,
+        "median": -5.101593801722373,
+        "std": 0.6997029095817073,
+        "min": -5.219020000174567,
+        "max": -3.3724125459572463,
+        "range": 1.8466074542173203
+      },
+      "z": {
+        "count": 5,
+        "mean": 16.614157870645368,
+        "median": 16.696994630976242,
+        "std": 0.8382753044435228,
+        "min": 15.081726097417354,
+        "max": 17.54452186018712,
+        "range": 2.462795762769767
+      }
+    },
+    "summary_requirements": {
+      "force_status": "success"
+    }
+  },
+  "warning_messages": [],
+  "error_messages": []
+}

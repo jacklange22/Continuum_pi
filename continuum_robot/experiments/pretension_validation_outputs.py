@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
 from pathlib import Path
 import struct
@@ -41,9 +42,20 @@ def write_pretension_validation_outputs(
 ) -> dict[str, Path]:
     """Write stable plot/text artifacts for one pretension-validation run."""
     output_dir = Path(output_dir)
+    metrics = summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else {}
+    mode = str(metrics.get("mode", "single_servo_trace") or "single_servo_trace").strip().lower()
+    if mode in {"single_segment_staged", "staged", "four_servo_staged"}:
+        return _write_staged_pretension_outputs(
+            output_dir=output_dir,
+            metadata=metadata,
+            summary=summary,
+            metrics=metrics,
+        )
     plot_path = output_dir / "pretension_response.png"
     summary_text_path = output_dir / "pretension_summary.txt"
+    metrics_csv_path = output_dir / "metrics.csv"
     trace_points = extract_pretension_trace_points(samples)
+    _write_single_servo_metrics_csv(metrics_csv_path=metrics_csv_path, metrics=metrics)
     _write_summary_text(
         summary_text_path=summary_text_path,
         metadata=metadata,
@@ -58,6 +70,48 @@ def write_pretension_validation_outputs(
     return {
         "plot_path": plot_path,
         "summary_text_path": summary_text_path,
+        "metrics_csv_path": metrics_csv_path,
+    }
+
+
+def _write_staged_pretension_outputs(
+    *,
+    output_dir: Path,
+    metadata,
+    summary,
+    metrics: dict[str, Any],
+) -> dict[str, Path]:
+    summary_text_path = output_dir / "pretension_summary.txt"
+    metrics_csv_path = output_dir / "metrics.csv"
+    current_vs_position_path = output_dir / "pretension_current_vs_position.png"
+    tip_xy_path = output_dir / "pretension_tip_xy_path.png"
+    final_current_dist_path = output_dir / "pretension_final_current_distribution.png"
+    repeatability_path = output_dir / "pretension_repeatability_summary.png"
+    response_alias_path = output_dir / "pretension_response.png"
+
+    run_rows = list(metrics.get("run_rows") or [])
+    trace_rows = list(metrics.get("trace_rows") or [])
+    _write_staged_metrics_csv(metrics_csv_path=metrics_csv_path, run_rows=run_rows)
+    _write_staged_summary_text(
+        summary_text_path=summary_text_path,
+        metadata=metadata,
+        summary=summary,
+        metrics=metrics,
+    )
+    _write_staged_current_vs_position_plot(current_vs_position_path=current_vs_position_path, trace_rows=trace_rows)
+    _write_staged_tip_xy_plot(tip_xy_path=tip_xy_path, run_rows=run_rows)
+    _write_staged_final_current_distribution_plot(final_current_dist_path=final_current_dist_path, run_rows=run_rows)
+    _write_staged_repeatability_plot(repeatability_path=repeatability_path, metrics=metrics)
+    if current_vs_position_path.exists():
+        response_alias_path.write_bytes(current_vs_position_path.read_bytes())
+    return {
+        "summary_text_path": summary_text_path,
+        "metrics_csv_path": metrics_csv_path,
+        "current_vs_position_plot_path": current_vs_position_path,
+        "tip_xy_path_plot_path": tip_xy_path,
+        "final_current_distribution_plot_path": final_current_dist_path,
+        "repeatability_plot_path": repeatability_path,
+        "plot_path": response_alias_path,
     }
 
 
@@ -103,6 +157,272 @@ def extract_pretension_trace_points(samples) -> list[PretensionTracePoint]:
         )
     rows.sort(key=lambda row: (row.servo_id, row.monotonic_time_s, row.phase))
     return rows
+
+
+def _write_single_servo_metrics_csv(*, metrics_csv_path: Path, metrics: dict[str, Any]) -> None:
+    fieldnames = [
+        "servo_id",
+        "accepted",
+        "status",
+        "stop_reason",
+        "final_position_tick",
+        "travel_used_ticks",
+        "travel_used_mm",
+        "baseline_current_ma",
+        "effective_trigger_current_ma",
+        "trigger_current_ma",
+        "hard_current_stop_ma",
+        "max_observed_current_ma",
+        "max_observed_filtered_current_ma",
+        "max_observed_displacement_mm",
+        "trigger_displacement_mm",
+        "tracker_metric_frame",
+        "tracker_metric_sample_count",
+        "trace_sample_count",
+    ]
+    with metrics_csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerow({key: metrics.get(key) for key in fieldnames})
+
+
+def _write_staged_metrics_csv(*, metrics_csv_path: Path, run_rows: list[dict[str, Any]]) -> None:
+    fieldnames = [
+        "run_index",
+        "accepted",
+        "reject_reasons",
+        "servo_id",
+        "baseline_current_ma",
+        "final_current_ma",
+        "current_above_baseline_ma",
+        "start_position_ticks",
+        "final_position_ticks",
+        "travel_used_ticks",
+        "travel_used_mm",
+        "stop_reason",
+        "load_balance_error_ma",
+        "pair_balance_error_ma",
+        "final_tip_x_mm",
+        "final_tip_y_mm",
+        "final_tip_z_mm",
+        "final_tip_xy_offset_mm",
+        "tip_centering_status",
+        "equalization_status",
+    ]
+    with metrics_csv_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for run in run_rows:
+            servo_map = run.get("final_position_ticks_by_servo") or {}
+            servo_ids = sorted(int(key) for key in servo_map.keys())
+            tip_xyz = run.get("final_tip_xyz_mm") if isinstance(run.get("final_tip_xyz_mm"), list) else None
+            for servo_id in servo_ids:
+                baseline_map = dict(run.get("baseline_current_ma_by_servo") or {})
+                final_current_map = dict(run.get("final_current_ma_by_servo") or {})
+                current_above_map = dict(run.get("current_above_baseline_ma_by_servo") or {})
+                start_map = dict(run.get("start_position_ticks_by_servo") or {})
+                final_map = dict(run.get("final_position_ticks_by_servo") or {})
+                stop_map = dict(run.get("stop_reason_by_servo") or {})
+                start_tick = start_map.get(str(int(servo_id)))
+                final_tick = final_map.get(str(int(servo_id)))
+                writer.writerow(
+                    {
+                        "run_index": run.get("run_index"),
+                        "accepted": bool(run.get("accepted")),
+                        "reject_reasons": ",".join(str(value) for value in (run.get("reject_reasons") or [])),
+                        "servo_id": int(servo_id),
+                        "baseline_current_ma": baseline_map.get(str(int(servo_id))),
+                        "final_current_ma": final_current_map.get(str(int(servo_id))),
+                        "current_above_baseline_ma": current_above_map.get(str(int(servo_id))),
+                        "start_position_ticks": start_tick,
+                        "final_position_ticks": final_tick,
+                        "travel_used_ticks": (
+                            None
+                            if start_tick is None or final_tick is None
+                            else int(start_tick) - int(final_tick)
+                        ),
+                        "travel_used_mm": None,
+                        "stop_reason": stop_map.get(str(int(servo_id))),
+                        "load_balance_error_ma": run.get("load_balance_error_ma"),
+                        "pair_balance_error_ma": run.get("pair_balance_error_ma"),
+                        "final_tip_x_mm": (tip_xyz[0] if tip_xyz is not None and len(tip_xyz) > 0 else None),
+                        "final_tip_y_mm": (tip_xyz[1] if tip_xyz is not None and len(tip_xyz) > 1 else None),
+                        "final_tip_z_mm": (tip_xyz[2] if tip_xyz is not None and len(tip_xyz) > 2 else None),
+                        "final_tip_xy_offset_mm": run.get("final_tip_xy_offset_mm"),
+                        "tip_centering_status": run.get("tip_centering_status"),
+                        "equalization_status": run.get("equalization_status"),
+                    }
+                )
+
+
+def _write_staged_summary_text(
+    *,
+    summary_text_path: Path,
+    metadata,
+    summary,
+    metrics: dict[str, Any],
+) -> None:
+    lines = [
+        "Pretension Validation Summary (Single-Segment Staged)",
+        "Current is treated as a load/engagement proxy only; values are not calibrated tendon force.",
+        "",
+        f"Run ID: {metadata.run_id}",
+        f"Timestamp: {metadata.timestamp_utc}",
+        f"Status: {summary.status}",
+        f"Servo IDs: {metrics.get('servo_ids')}",
+        f"Repeat runs: {metrics.get('repeat_runs')}",
+        f"Accepted runs: {metrics.get('accepted_run_count')} / {metrics.get('run_count')}",
+        f"Accepted fraction: {_fmt_float(metrics.get('accepted_run_fraction'))}",
+        "",
+        "Units:",
+        "- Current: mA",
+        "- Position: ticks",
+        "- Travel / tip position: mm",
+        "",
+        "Repeatability:",
+        f"- Final position std by servo (ticks): {metrics.get('final_position_std_ticks_by_servo')}",
+        f"- Final current std by servo (mA): {metrics.get('final_current_std_ma_by_servo')}",
+        f"- Final tip XY std (mm): {_fmt_float(metrics.get('final_tip_xy_std_mm'))}",
+        f"- Failure reasons: {metrics.get('failure_reason_counts')}",
+        "",
+        "Saved plots:",
+        "- pretension_current_vs_position.png",
+        "- pretension_tip_xy_path.png",
+        "- pretension_final_current_distribution.png",
+        "- pretension_repeatability_summary.png",
+    ]
+    summary_text_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+
+
+def _write_staged_current_vs_position_plot(*, current_vs_position_path: Path, trace_rows: list[dict[str, Any]]) -> None:
+    grouped: dict[int, list[tuple[float, float]]] = {}
+    for row in trace_rows:
+        servo_id = row.get("servo_id")
+        position = row.get("final_position_tick")
+        if position is None:
+            position = row.get("position_tick")
+        current = row.get("final_current_ma")
+        if current is None:
+            current = row.get("raw_current_ma")
+        if servo_id in (None, "") or position in (None, "") or current in (None, ""):
+            continue
+        grouped.setdefault(int(servo_id), []).append((float(position), float(current)))
+    width, height = 1080, 720
+    canvas = _Canvas(width, height, background=(255, 255, 255))
+    canvas.text(28, 16, "PRETENSION CURRENT VS POSITION", color=(15, 23, 42), scale=2)
+    canvas.text(28, 40, "POSITION (TICKS) / CURRENT (MA)", color=(71, 85, 105), scale=1)
+    rect = (40, 72, width - 80, height - 120)
+    _draw_plot_frame(canvas, rect, "CURRENT VS POSITION")
+    points: list[tuple[float, float, tuple[int, int, int]]] = []
+    palette = [(37, 99, 235), (217, 119, 6), (22, 163, 74), (139, 92, 246)]
+    for index, servo_id in enumerate(sorted(grouped)):
+        color = palette[index % len(palette)]
+        for x_value, y_value in grouped[servo_id]:
+            points.append((x_value, y_value, color))
+    if not points:
+        canvas.text(84, 220, "NO POSITION/CURRENT TRACE DATA", color=(100, 116, 139), scale=2)
+        canvas.save_png(current_vs_position_path)
+        return
+    x_values = [point[0] for point in points]
+    y_values = [point[1] for point in points]
+    x_min, x_max = _expand_range(_min_max(x_values), pad_fraction=0.05, minimum_span=50.0)
+    y_min, y_max = _expand_range(_min_max(y_values), pad_fraction=0.08, minimum_span=20.0)
+    for x_value, y_value, color in points:
+        canvas.circle(
+            int(_plot_x(rect, x_min, x_max, x_value)),
+            int(_plot_y(rect, y_min, y_max, y_value)),
+            3,
+            color,
+        )
+    canvas.save_png(current_vs_position_path)
+
+
+def _write_staged_tip_xy_plot(*, tip_xy_path: Path, run_rows: list[dict[str, Any]]) -> None:
+    points = []
+    for row in run_rows:
+        xyz = row.get("final_tip_xyz_mm")
+        if not isinstance(xyz, list) or len(xyz) < 2:
+            continue
+        points.append((float(xyz[0]), float(xyz[1]), bool(row.get("accepted", False))))
+    width, height = 1080, 720
+    canvas = _Canvas(width, height, background=(255, 255, 255))
+    canvas.text(28, 16, "PRETENSION FINAL TIP XY", color=(15, 23, 42), scale=2)
+    canvas.text(28, 40, "TIP XY IN ROBOT FRAME (MM)", color=(71, 85, 105), scale=1)
+    rect = (40, 72, width - 80, height - 120)
+    _draw_plot_frame(canvas, rect, "TIP XY")
+    if not points:
+        canvas.text(84, 220, "NO TIP XY DATA AVAILABLE", color=(100, 116, 139), scale=2)
+        canvas.save_png(tip_xy_path)
+        return
+    x_values = [point[0] for point in points]
+    y_values = [point[1] for point in points]
+    x_min, x_max = _expand_range(_min_max(x_values), pad_fraction=0.2, minimum_span=2.0)
+    y_min, y_max = _expand_range(_min_max(y_values), pad_fraction=0.2, minimum_span=2.0)
+    for x_value, y_value, accepted in points:
+        color = (22, 163, 74) if accepted else (220, 38, 38)
+        canvas.circle(
+            int(_plot_x(rect, x_min, x_max, x_value)),
+            int(_plot_y(rect, y_min, y_max, y_value)),
+            4,
+            color,
+        )
+    canvas.save_png(tip_xy_path)
+
+
+def _write_staged_final_current_distribution_plot(*, final_current_dist_path: Path, run_rows: list[dict[str, Any]]) -> None:
+    by_servo: dict[int, list[float]] = {}
+    for row in run_rows:
+        for key, value in dict(row.get("final_current_ma_by_servo") or {}).items():
+            if value is None:
+                continue
+            by_servo.setdefault(int(key), []).append(float(value))
+    width, height = 1080, 680
+    canvas = _Canvas(width, height, background=(255, 255, 255))
+    canvas.text(28, 16, "FINAL CURRENT DISTRIBUTION", color=(15, 23, 42), scale=2)
+    canvas.text(28, 40, "MEAN FINAL CURRENT BY SERVO (MA)", color=(71, 85, 105), scale=1)
+    rect = (52, 88, width - 104, height - 150)
+    _draw_plot_frame(canvas, rect, "FINAL CURRENT (MA)")
+    if not by_servo:
+        canvas.text(84, 220, "NO FINAL CURRENT DATA", color=(100, 116, 139), scale=2)
+        canvas.save_png(final_current_dist_path)
+        return
+    servo_ids = sorted(by_servo)
+    means = [sum(values) / len(values) for values in [by_servo[sid] for sid in servo_ids]]
+    y_min, y_max = _expand_range(_min_max(means), pad_fraction=0.2, minimum_span=20.0)
+    bar_width = max(12, int((rect[2] - 90) / max(1, len(servo_ids))))
+    left_start = rect[0] + 46
+    for index, servo_id in enumerate(servo_ids):
+        mean_value = means[index]
+        x_left = left_start + (index * (bar_width + 12))
+        y_top = int(_plot_y(rect, y_min, y_max, mean_value))
+        y_base = int(_plot_y(rect, y_min, y_max, y_min))
+        for x in range(x_left, x_left + bar_width):
+            canvas.line(x, y_top, x, y_base, color=(37, 99, 235), thickness=1)
+        canvas.text(x_left, y_base + 8, f"S{servo_id}", color=(15, 23, 42), scale=1)
+    canvas.save_png(final_current_dist_path)
+
+
+def _write_staged_repeatability_plot(*, repeatability_path: Path, metrics: dict[str, Any]) -> None:
+    position_std = dict(metrics.get("final_position_std_ticks_by_servo") or {})
+    current_std = dict(metrics.get("final_current_std_ma_by_servo") or {})
+    width, height = 1080, 680
+    canvas = _Canvas(width, height, background=(255, 255, 255))
+    canvas.text(28, 16, "PRETENSION REPEATABILITY SUMMARY", color=(15, 23, 42), scale=2)
+    canvas.text(28, 40, "STD OF FINAL POSITION (TICKS) / CURRENT (MA)", color=(71, 85, 105), scale=1)
+    canvas.rect(36, 84, width - 72, height - 132, color=(203, 213, 225), thickness=1)
+    lines = [
+        f"Accepted runs: {metrics.get('accepted_run_count')} / {metrics.get('run_count')}",
+        f"Accepted fraction: {_fmt_float(metrics.get('accepted_run_fraction'))}",
+        f"Final tip XY std (mm): {_fmt_float(metrics.get('final_tip_xy_std_mm'))}",
+        f"Failure reasons: {metrics.get('failure_reason_counts')}",
+        f"Position std by servo (ticks): {position_std}",
+        f"Current std by servo (mA): {current_std}",
+    ]
+    y = 108
+    for line in lines:
+        canvas.text(52, y, line, color=(15, 23, 42), scale=1)
+        y += 28
+    canvas.save_png(repeatability_path)
 
 
 def _write_summary_text(*, summary_text_path: Path, metadata, summary, trace_points: list[PretensionTracePoint]) -> None:

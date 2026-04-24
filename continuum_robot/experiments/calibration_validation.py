@@ -261,7 +261,15 @@ def analyze_registration_runs(run_paths: Iterable[str], *, project_root: Path) -
             continue
         valid_rows.append(row)
     if len(valid_rows) < 2:
-        return _base_validation_metrics("registration_validation", run_paths, valid_rows, invalid_rows), _warning_messages(invalid_rows)
+        metrics = _base_validation_metrics("registration_validation", run_paths, valid_rows, invalid_rows)
+        metrics["units"] = _registration_units_metadata()
+        metrics["definitions"] = {
+            "fre_mm": "Fiducial registration error (FRE) residual magnitude on the landmarks used in each solve.",
+            "translation_delta_to_consensus_mm": "Translation component of transform delta from each run to the consensus transform.",
+            "rotation_delta_to_consensus_deg": "Rotation-angle component of transform delta from each run to the consensus transform.",
+            "robot_origin_in_aurora_mm": "Robot/model frame origin expressed in Aurora frame (mm) for each solved transform.",
+        }
+        return metrics, _warning_messages(invalid_rows)
 
     consensus_transform = _consensus_transform([row["T_robot_aurora_array"] for row in valid_rows])
     consensus_origin = np.linalg.inv(consensus_transform)[0:3, 3]
@@ -301,8 +309,22 @@ def analyze_registration_runs(run_paths: Iterable[str], *, project_root: Path) -
     metrics = _base_validation_metrics("registration_validation", run_paths, valid_rows, invalid_rows)
     metrics.update(
         {
+            "units": _registration_units_metadata(),
+            "definitions": {
+                "fre_mm": "Fiducial registration error (FRE) residual magnitude on the landmarks used in each solve.",
+                "translation_delta_to_consensus_mm": "Translation component of transform delta from each run to the consensus transform.",
+                "rotation_delta_to_consensus_deg": "Rotation-angle component of transform delta from each run to the consensus transform.",
+                "robot_origin_in_aurora_mm": "Robot/model frame origin expressed in Aurora frame (mm) for each solved transform.",
+            },
+            "transform_convention": {
+                "transform_key": "T_robot_aurora",
+                "maps_from_frame": "aurora",
+                "maps_to_frame": "robot",
+                "origin_reported_key": "robot_origin_in_aurora_mm",
+            },
             "consensus_transform_T_robot_aurora": consensus_transform.tolist(),
             "consensus_robot_origin_in_aurora_mm": _vector3(consensus_origin),
+            "frame_origins_in_aurora_mm": [_vector3(row["robot_origin_in_aurora_mm_array"]) for row in valid_rows],
             "per_run_rows": [
                 {
                     key: value
@@ -318,6 +340,9 @@ def analyze_registration_runs(run_paths: Iterable[str], *, project_root: Path) -
             "pairwise_translation_delta_summary_mm": _summarize_scalars(pairwise_translation),
             "pairwise_rotation_delta_summary_deg": _summarize_scalars(pairwise_rotation),
             "landmark_count_summary": _summarize_scalars(landmark_counts),
+            "translation_spread_mm": _summarize_scalars(translation_deltas),
+            "rotation_spread_deg": _summarize_scalars(rotation_deltas),
+            "frame_origin_distance_spread_mm": _summarize_scalars(origin_distances),
             "robot_origin_spread_mm": {
                 "std_x_mm": float(origin_points[:, 0].std(ddof=0)),
                 "std_y_mm": float(origin_points[:, 1].std(ddof=0)),
@@ -348,7 +373,14 @@ def analyze_pivot_runs(run_paths: Iterable[str], *, project_root: Path) -> tuple
             continue
         valid_rows.append(row)
     if len(valid_rows) < 2:
-        return _base_validation_metrics("pivot_validation", run_paths, valid_rows, invalid_rows), _warning_messages(invalid_rows)
+        metrics = _base_validation_metrics("pivot_validation", run_paths, valid_rows, invalid_rows)
+        metrics["units"] = _pivot_units_metadata()
+        metrics["definitions"] = {
+            "tip_vector_local_mm": "Per-run solved tip-offset vector in tool-local coordinates from standard pivot calibration.",
+            "distance_to_consensus_mm": "Euclidean norm deviation from each run tip vector to the consensus tip vector.",
+            "rmse_mm": "Pivot solve residual RMSE reported by each pivot-calibration run.",
+        }
+        return metrics, _warning_messages(invalid_rows)
 
     tip_vectors = np.vstack([row["tip_vector_local_mm_array"] for row in valid_rows])
     consensus_tip = tip_vectors.mean(axis=0)
@@ -374,6 +406,17 @@ def analyze_pivot_runs(run_paths: Iterable[str], *, project_root: Path) -> tuple
     metrics = _base_validation_metrics("pivot_validation", run_paths, valid_rows, invalid_rows)
     metrics.update(
         {
+            "units": _pivot_units_metadata(),
+            "definitions": {
+                "tip_vector_local_mm": "Per-run solved tip-offset vector in tool-local coordinates from standard pivot calibration.",
+                "distance_to_consensus_mm": "Euclidean norm deviation from each run tip vector to the consensus tip vector.",
+                "rmse_mm": "Pivot solve residual RMSE reported by each pivot-calibration run.",
+            },
+            "interpretation_limits": {
+                "tip_offset_only": True,
+                "orientation_estimated": False,
+                "note": "Standard pivot calibration outputs a tip offset vector, not a full arbitrary orientation estimate.",
+            },
             "consensus_tip_vector_local_mm": _vector3(consensus_tip),
             "per_run_rows": [
                 {
@@ -386,6 +429,7 @@ def analyze_pivot_runs(run_paths: Iterable[str], *, project_root: Path) -> tuple
             "tip_norm_summary_mm": _summarize_scalars(norms),
             "rmse_summary_mm": _summarize_scalars(rmse_values),
             "distance_to_consensus_summary_mm": _summarize_scalars(distances),
+            "tip_offset_deviation_to_consensus_summary_mm": _summarize_scalars(distances),
             "sample_count_used_summary": _summarize_scalars(sample_used),
             "sample_count_rejected_summary": _summarize_scalars(sample_rejected),
             "per_axis_summary_mm": {
@@ -489,7 +533,7 @@ def _warning_messages(invalid_rows: list[dict[str, Any]]) -> list[str]:
 def _summarize_scalars(values: Iterable[float]) -> dict[str, Any]:
     array = np.asarray([float(value) for value in values], dtype=float)
     if array.size == 0:
-        return {"count": 0, "mean": None, "median": None, "std": None, "min": None, "max": None}
+        return {"count": 0, "mean": None, "median": None, "std": None, "min": None, "max": None, "range": None}
     return {
         "count": int(array.size),
         "mean": float(array.mean()),
@@ -497,6 +541,7 @@ def _summarize_scalars(values: Iterable[float]) -> dict[str, Any]:
         "std": float(array.std(ddof=0)),
         "min": float(array.min()),
         "max": float(array.max()),
+        "range": float(array.max() - array.min()),
     }
 
 
@@ -521,3 +566,64 @@ def _display_path(path: Path, *, project_root: Path) -> str:
 
 def _resolve_source_path(session: ExperimentSession, raw_path: str | Path) -> Path:
     return _resolve_path(session.context.project_root, raw_path)
+
+
+def _registration_units_metadata() -> dict[str, Any]:
+    return {
+        "fre_summary_mm": "mm",
+        "translation_delta_to_consensus_summary_mm": "mm",
+        "rotation_delta_to_consensus_summary_deg": "deg",
+        "origin_distance_to_consensus_summary_mm": "mm",
+        "pairwise_translation_delta_summary_mm": "mm",
+        "pairwise_rotation_delta_summary_deg": "deg",
+        "translation_spread_mm": "mm",
+        "rotation_spread_deg": "deg",
+        "frame_origin_distance_spread_mm": "mm",
+        "robot_origin_spread_mm": {
+            "std_x_mm": "mm",
+            "std_y_mm": "mm",
+            "std_z_mm": "mm",
+            "mean_distance_mm": "mm",
+            "rms_distance_mm": "mm",
+            "max_distance_mm": "mm",
+            "span_x_mm": "mm",
+            "span_y_mm": "mm",
+            "span_z_mm": "mm",
+        },
+        "per_run_rows": {
+            "fre_mm": "mm",
+            "translation_delta_to_consensus_mm": "mm",
+            "rotation_delta_to_consensus_deg": "deg",
+            "origin_distance_to_consensus_mm": "mm",
+            "robot_origin_in_aurora_mm": "mm",
+            "landmark_count": "count",
+            "run_index": "index",
+        },
+    }
+
+
+def _pivot_units_metadata() -> dict[str, Any]:
+    return {
+        "consensus_tip_vector_local_mm": "mm",
+        "tip_norm_summary_mm": "mm",
+        "rmse_summary_mm": "mm",
+        "distance_to_consensus_summary_mm": "mm",
+        "tip_offset_deviation_to_consensus_summary_mm": "mm",
+        "per_axis_summary_mm": {
+            "x": "mm",
+            "y": "mm",
+            "z": "mm",
+        },
+        "sample_count_used_summary": "count",
+        "sample_count_rejected_summary": "count",
+        "per_run_rows": {
+            "tip_vector_local_mm": "mm",
+            "tip_norm_mm": "mm",
+            "distance_to_consensus_mm": "mm",
+            "rmse_mm": "mm",
+            "sample_count_total": "count",
+            "sample_count_used": "count",
+            "sample_count_rejected": "count",
+            "run_index": "index",
+        },
+    }
