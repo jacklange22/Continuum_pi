@@ -35,6 +35,8 @@ from continuum_robot.experiments.single_segment_repeatability import (
     compute_single_segment_repeatability_metrics,
     generate_legacy_revisit_sequence,
     load_repeatability_metrics_from_run,
+    repeatability_ring_tick_defaults,
+    repeatability_target_tick_profile,
 )
 from continuum_robot.hardware.mock_dxl_bus import MockDxlBus
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
@@ -51,12 +53,29 @@ def test_legacy_17_point_target_generation_is_exact() -> None:
     assert len(targets) == LEGACY_TARGET_COUNT
     assert targets[0].ring == "center"
     assert targets[0].cable_deltas_mm == [0.0, 0.0, 0.0, 0.0]
-    assert [target.ring_radius_mm for target in targets[1:9]] == [6.0] * 8
-    assert [target.ring_radius_mm for target in targets[9:17]] == [12.0] * 8
-    assert targets[1].cable_deltas_mm == [-6.0, 0.0, 6.0, 0.0]
-    assert targets[3].cable_deltas_mm == [0.0, -6.0, 0.0, 6.0]
-    assert targets[9].cable_deltas_mm == [-12.0, 0.0, 12.0, 0.0]
+    assert [target.ring_radius_mm for target in targets[1:9]] == [4.0] * 8
+    assert [target.ring_radius_mm for target in targets[9:17]] == [8.0] * 8
+    assert targets[1].cable_deltas_mm == [-4.0, 0.0, 4.0, 0.0]
+    assert targets[3].cable_deltas_mm == [0.0, -4.0, 0.0, 4.0]
+    assert targets[9].cable_deltas_mm == [-8.0, 0.0, 8.0, 0.0]
     assert targets[16].angle_deg == 315.0
+
+
+def test_repeatability_ring_tick_defaults_match_20mm_spool_math() -> None:
+    mapper = TendonDisplacementMapper(spool_diameter_cm=2.0, ticks_per_rev=4096)
+    ring_ticks = repeatability_ring_tick_defaults(
+        mapper=mapper,
+        inner_ring_radius_mm=4.0,
+        outer_ring_radius_mm=8.0,
+    )
+    target_profile = repeatability_target_tick_profile(
+        targets=build_legacy_17_point_targets(inner_ring_radius_mm=4.0, outer_ring_radius_mm=8.0),
+        mapper=mapper,
+    )
+
+    assert ring_ticks["inner_ring_radius_ticks"] == 261
+    assert ring_ticks["outer_ring_radius_ticks"] == 522
+    assert target_profile["max_abs_tick_delta"] == 522
 
 
 def test_legacy_revisit_sequence_visits_every_other_target_once_per_target() -> None:
@@ -306,6 +325,73 @@ def test_preflight_accepts_manual_pretension_source_for_repeatability(tmp_path: 
     )
 
 
+def test_preflight_blocks_repeatability_when_ring_amplitude_exceeds_experiment_cap(tmp_path: Path) -> None:
+    pytest.importorskip("PySide6")
+    from continuum_robot.gui.experiment_preflight import RUN_BLOCKED, evaluate_preflight
+
+    settings = _settings(mock_mode=False)
+    service = _servo_service(tmp_path)
+    snapshot = _tracking_snapshot()
+    report = evaluate_preflight(
+        experiment_name="single_segment_repeatability",
+        config_payload={
+            "inner_ring_radius_mm": 4.0,
+            "outer_ring_radius_mm": 8.0,
+            "max_target_tick_delta_from_startup": 500,
+        },
+        config_error=None,
+        settings=settings,
+        tracking_snapshot=snapshot,
+        servo_connected=True,
+        neutral_setpoints={1: 2048, 2: 2048, 3: 2048, 4: 2048},
+        registration_path=tmp_path / "latest_registration.json",
+        output_root=tmp_path / "data" / "experiments",
+        planned_output_dir=tmp_path / "data" / "experiments" / "single_segment_repeatability" / "run",
+        project_root=tmp_path,
+        servo_calibration_summary=service.neutral_calibration.get_calibration_summary(),
+    )
+
+    assert report.overall_status == RUN_BLOCKED
+    assert any(
+        check.key == "target_geometry" and "exceeds the configured experiment cap" in check.message
+        for check in report.checks
+    )
+
+
+def test_repeatability_command_blocks_targets_beyond_experiment_tick_cap(tmp_path: Path) -> None:
+    settings = _settings(mock_mode=False)
+    service = _servo_service(tmp_path)
+    experiment = SingleSegmentRepeatabilityExperiment(
+        SingleSegmentRepeatabilityConfig(max_target_tick_delta_from_startup=100)
+    )
+    metadata = ExperimentMetadata(
+        schema_version="1.0",
+        experiment_name=experiment.name,
+        run_id="cap-test",
+        timestamp_utc="2026-04-24T00:00:00Z",
+        git_commit=None,
+        backend_info={},
+        registration_info={},
+        config_used=experiment.config_dict(),
+    )
+    session = ExperimentSession(
+        context=ExperimentContext(
+            project_root=tmp_path,
+            settings=settings,
+            tracking_service=_TrackingService(_tracking_snapshot()),
+            servo_service=service,
+            registration_path=tmp_path / "data" / "registrations" / "latest_registration.json",
+            output_root=tmp_path / "data" / "experiments",
+            sleep_fn=lambda _seconds: None,
+        ),
+        metadata=metadata,
+    )
+    experiment.setup(session)
+
+    with pytest.raises(RuntimeError, match="experiment-safe target envelope"):
+        experiment._command_target(session, experiment._targets[9])
+
+
 def test_experiment_registration_and_custom_page_routing(tmp_path: Path) -> None:
     pytest.importorskip("PySide6")
     from continuum_robot.experiments.experiment_runner import ExperimentRunner
@@ -452,7 +538,7 @@ def test_capture_gate_rejects_stale_tracker_data(tmp_path: Path) -> None:
         target=build_legacy_17_point_targets()[0],
         phase="repeat",
         sample_index=0,
-        commanded_motor_values={},
+        command_payload={},
     )
 
     assert sample.extra["capture_accepted"] is False
@@ -480,7 +566,7 @@ def _settings(*, mock_mode: bool) -> Settings:
         runtime=RuntimeConfig(mock_mode=mock_mode),
         robot=RobotConfig(
             mode="4-servo",
-            spool_diameter_cm=1.2,
+            spool_diameter_cm=2.0,
             ticks_per_revolution=4096,
             servo_ids=[1, 2, 3, 4],
             tendon_to_servo=[1, 2, 3, 4],
@@ -503,14 +589,14 @@ def _servo_service(tmp_path: Path, *, pretension_source: str = "algorithmic") ->
         servo_ids=[1, 2, 3, 4],
         tendon_to_servo=[1, 2, 3, 4],
         ticks_per_revolution=4096,
-        spool_diameter_cm=1.2,
+        spool_diameter_cm=2.0,
         position_min_offset_ticks=-2048,
         position_max_offset_ticks=2047,
         default_pretension_current_threshold_ma=220,
     )
     service = ServoService(
         dxl_bus=MockDxlBus([1, 2, 3, 4]),
-        mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
+        mapper=TendonDisplacementMapper(spool_diameter_cm=2.0),
         safety_guard=SafetyGuard(min_offset_ticks=-2048, max_offset_ticks=2047, max_current_ma=850),
         neutral_calibration=NeutralCalibrationService(path=tmp_path / "neutral.json", context=context),
         pretension_validation=PretensionValidationService(),

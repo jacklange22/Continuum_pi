@@ -1537,7 +1537,9 @@ class ExperimentController:
         if experiment_name == "single_segment_repeatability":
             config = SingleSegmentRepeatabilityConfig.from_dict(config_payload)
             return (
-                f"legacy 17 targets, 272 visits, 544 captures, "
+                f"legacy 17 targets ({float(config.inner_ring_radius_mm):.1f}/{float(config.outer_ring_radius_mm):.1f} mm rings), "
+                f"272 visits, 544 captures, "
+                f"cap {int(config.max_target_tick_delta_from_startup)} ticks, "
                 f"settle {float(config.settle_time_s):.2f}s, "
                 f"tool {config.tool_id}"
             )

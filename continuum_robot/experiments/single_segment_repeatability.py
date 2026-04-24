@@ -36,6 +36,9 @@ LEGACY_TARGET_COUNT = 17
 LEGACY_APPROACHES_PER_TARGET = 16
 LEGACY_VISIT_COUNT = LEGACY_TARGET_COUNT * LEGACY_APPROACHES_PER_TARGET
 LEGACY_CAPTURE_COUNT = LEGACY_VISIT_COUNT * 2
+DEFAULT_INNER_RING_RADIUS_MM = 4.0
+DEFAULT_OUTER_RING_RADIUS_MM = 8.0
+DEFAULT_MAX_TARGET_TICK_DELTA_FROM_STARTUP = 650
 
 
 LOG = logging.getLogger(__name__)
@@ -100,6 +103,9 @@ class SingleSegmentRepeatabilityConfig:
     min_repeat_capture_fraction: float = 0.85
     max_rejected_capture_fraction: float = 0.10
     baseline_run_path: str = ""
+    inner_ring_radius_mm: float = DEFAULT_INNER_RING_RADIUS_MM
+    outer_ring_radius_mm: float = DEFAULT_OUTER_RING_RADIUS_MM
+    max_target_tick_delta_from_startup: int = DEFAULT_MAX_TARGET_TICK_DELTA_FROM_STARTUP
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "SingleSegmentRepeatabilityConfig":
@@ -120,6 +126,23 @@ class SingleSegmentRepeatabilityConfig:
             min_repeat_capture_fraction=max(0.0, min(1.0, float(payload.get("min_repeat_capture_fraction", 0.85)))),
             max_rejected_capture_fraction=max(0.0, min(1.0, float(payload.get("max_rejected_capture_fraction", 0.10)))),
             baseline_run_path=str(payload.get("baseline_run_path", "") or "").strip(),
+            inner_ring_radius_mm=max(
+                0.0,
+                float(payload.get("inner_ring_radius_mm", DEFAULT_INNER_RING_RADIUS_MM)),
+            ),
+            outer_ring_radius_mm=max(
+                0.0,
+                float(payload.get("outer_ring_radius_mm", DEFAULT_OUTER_RING_RADIUS_MM)),
+            ),
+            max_target_tick_delta_from_startup=max(
+                1,
+                int(
+                    payload.get(
+                        "max_target_tick_delta_from_startup",
+                        DEFAULT_MAX_TARGET_TICK_DELTA_FROM_STARTUP,
+                    )
+                ),
+            ),
         )
 
 
@@ -129,7 +152,7 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
     name = "single_segment_repeatability"
     description = (
         "Faithful live recreation of the legacy single-segment 17-target repeatability protocol: "
-        "center, 6 mm ring, 12 mm ring, and every-target revisit from all other targets."
+        "center, inner ring, outer ring, and every-target revisit from all other targets."
     )
     hardware_requirements = ExperimentHardwareRequirements(
         tracking_required=True,
@@ -141,7 +164,10 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
     def __init__(self, config: SingleSegmentRepeatabilityConfig) -> None:
         super().__init__(config)
         self.config: SingleSegmentRepeatabilityConfig
-        self._targets = build_legacy_17_point_targets()
+        self._targets = build_legacy_17_point_targets(
+            inner_ring_radius_mm=float(self.config.inner_ring_radius_mm),
+            outer_ring_radius_mm=float(self.config.outer_ring_radius_mm),
+        )
         self._visits = generate_legacy_revisit_sequence(self._targets, seed=self.config.random_seed)
         self._neutral_ticks: list[int] = []
         self._servo_ids: list[int] = []
@@ -153,7 +179,41 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
     def setup(self, session: ExperimentSession) -> None:
         self._servo_ids = _configured_single_segment_servo_ids(session)
         self._neutral_ticks = _load_neutral_ticks(session, self._servo_ids)
-        session.set_metric("target_catalog", [target.to_dict() for target in self._targets])
+        tick_profile = repeatability_target_tick_profile(
+            targets=self._targets,
+            mapper=session.context.servo_service.mapper,
+        )
+        session.set_metric(
+            "target_catalog",
+            [
+                {
+                    **target.to_dict(),
+                    "cable_deltas_ticks": list(
+                        tick_profile["per_target_cable_deltas_ticks"].get(int(target.target_index), [])
+                    ),
+                }
+                for target in self._targets
+            ],
+        )
+        ring_ticks = repeatability_ring_tick_defaults(
+            mapper=session.context.servo_service.mapper,
+            inner_ring_radius_mm=float(self.config.inner_ring_radius_mm),
+            outer_ring_radius_mm=float(self.config.outer_ring_radius_mm),
+        )
+        session.set_metric(
+            "target_geometry",
+            {
+                "inner_ring_radius_mm": float(self.config.inner_ring_radius_mm),
+                "outer_ring_radius_mm": float(self.config.outer_ring_radius_mm),
+                "inner_ring_radius_ticks": int(ring_ticks["inner_ring_radius_ticks"]),
+                "outer_ring_radius_ticks": int(ring_ticks["outer_ring_radius_ticks"]),
+                "max_target_abs_tick_delta_from_startup": int(tick_profile["max_abs_tick_delta"]),
+                "max_target_tick_delta_from_startup_cap": int(
+                    self.config.max_target_tick_delta_from_startup
+                ),
+                "spool_diameter_mm": float(session.context.settings.robot.spool_diameter_cm) * 10.0,
+            },
+        )
         session.set_metric("planned_visit_count", LEGACY_VISIT_COUNT)
         session.set_metric("planned_capture_count", LEGACY_CAPTURE_COUNT)
         session.set_metric("protocol", "legacy_17_target_single_segment_all_other_approaches")
@@ -310,11 +370,23 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
         target: LegacyRepeatabilityTarget,
     ) -> dict[str, Any]:
         requested = [float(value) for value in target.cable_deltas_cm]
+        requested_ticks = [
+            int(session.context.servo_service.mapper.displacement_cm_to_ticks(float(value)))
+            for value in requested
+        ]
+        max_tick_delta = max((abs(int(value)) for value in requested_ticks), default=0)
+        if max_tick_delta > int(self.config.max_target_tick_delta_from_startup):
+            raise RuntimeError(
+                "Repeatability command blocked by experiment-safe target envelope: "
+                f"target {target.label} requests {max_tick_delta} ticks but cap is "
+                f"{int(self.config.max_target_tick_delta_from_startup)} ticks."
+            )
         LOG.info(
-            "Repeatability command dispatch | target=%s | target_index=%s | requested_cable_cm=%s",
+            "Repeatability command dispatch | target=%s | target_index=%s | requested_cable_cm=%s | requested_ticks=%s",
             target.label,
             int(target.target_index),
             requested,
+            requested_ticks,
         )
         try:
             command = session.context.servo_service.command_displacement(
@@ -343,6 +415,7 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
         )
         return {
             "commanded_motor_values": {str(servo_id): int(goal) for servo_id, goal in command.positions_by_id.items()},
+            "requested_cable_ticks": list(requested_ticks),
             "motion_profile": {
                 "operating_mode_label": (
                     session.context.servo_service.operating_mode_label(debug_entry.operating_mode)
@@ -376,6 +449,10 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
             require_robot_frame_tip=bool(self.config.require_robot_frame_tip),
         )
         telemetry_payload = _read_servo_telemetry_payload(session, self._servo_ids)
+        target_ticks = [
+            int(session.context.servo_service.mapper.displacement_cm_to_ticks(float(value)))
+            for value in target.cable_deltas_cm
+        ]
         flags = [] if gate["accepted"] else ["capture_rejected", str(gate["reason"])]
         if getattr(snapshot, "registration_state", "") != "loaded":
             flags.append("registration_missing")
@@ -393,6 +470,7 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
             "target_angle_deg": float(target.angle_deg),
             "target_cable_deltas_mm": [float(value) for value in target.cable_deltas_mm],
             "target_cable_deltas_cm": [float(value) for value in target.cable_deltas_cm],
+            "target_cable_deltas_ticks": list(target_ticks),
             "source_target_index": int(visit.approach_index),
             "desired_target_index": int(visit.target_index),
             "legacy_sequence_index": int(visit.sequence_index),
@@ -438,15 +516,21 @@ def register_single_segment_repeatability(registry) -> None:
     )
 
 
-def build_legacy_17_point_targets() -> list[LegacyRepeatabilityTarget]:
+def build_legacy_17_point_targets(
+    *,
+    inner_ring_radius_mm: float = DEFAULT_INNER_RING_RADIUS_MM,
+    outer_ring_radius_mm: float = DEFAULT_OUTER_RING_RADIUS_MM,
+) -> list[LegacyRepeatabilityTarget]:
     """Return the exact legacy 17-target single-segment target catalog.
 
     The target math mirrors the reference repeatability script:
-    ``[0] + [6 mm] * 8 + [12 mm] * 8`` and 16 angular slots. Tendon commands
+    ``[0] + [inner] * 8 + [outer] * 8`` and 16 angular slots. Tendon commands
     follow the legacy four-cable delta convention
     ``-length * [cos(theta), sin(theta), -cos(theta), -sin(theta)]``.
     """
-    cable_lengths_mm = [0.0] + [6.0] * 8 + [12.0] * 8
+    inner = max(0.0, float(inner_ring_radius_mm))
+    outer = max(0.0, float(outer_ring_radius_mm))
+    cable_lengths_mm = [0.0] + [inner] * 8 + [outer] * 8
     cable_angles_rad = [0.0] + [float(index) * math.pi / 4.0 for index in range(16)]
     targets: list[LegacyRepeatabilityTarget] = []
     for index, (length_mm, angle_rad) in enumerate(zip(cable_lengths_mm, cable_angles_rad)):
@@ -481,6 +565,39 @@ def build_legacy_17_point_targets() -> list[LegacyRepeatabilityTarget]:
             )
         )
     return targets
+
+
+def repeatability_ring_tick_defaults(
+    *,
+    mapper,
+    inner_ring_radius_mm: float = DEFAULT_INNER_RING_RADIUS_MM,
+    outer_ring_radius_mm: float = DEFAULT_OUTER_RING_RADIUS_MM,
+) -> dict[str, int]:
+    """Return ring radii converted to absolute per-servo tick deltas."""
+    inner_ticks = abs(int(mapper.displacement_cm_to_ticks(float(inner_ring_radius_mm) / 10.0)))
+    outer_ticks = abs(int(mapper.displacement_cm_to_ticks(float(outer_ring_radius_mm) / 10.0)))
+    return {
+        "inner_ring_radius_ticks": int(inner_ticks),
+        "outer_ring_radius_ticks": int(outer_ticks),
+    }
+
+
+def repeatability_target_tick_profile(*, targets: list[LegacyRepeatabilityTarget], mapper) -> dict[str, Any]:
+    """Return per-target cable tick deltas plus maximum absolute amplitude."""
+    per_target: dict[int, list[int]] = {}
+    max_abs_tick_delta = 0
+    for target in targets:
+        cable_ticks = [
+            int(mapper.displacement_cm_to_ticks(float(delta_cm)))
+            for delta_cm in target.cable_deltas_cm
+        ]
+        per_target[int(target.target_index)] = cable_ticks
+        if cable_ticks:
+            max_abs_tick_delta = max(max_abs_tick_delta, max(abs(value) for value in cable_ticks))
+    return {
+        "per_target_cable_deltas_ticks": per_target,
+        "max_abs_tick_delta": int(max_abs_tick_delta),
+    }
 
 
 def generate_legacy_revisit_sequence(
@@ -787,6 +904,26 @@ def _precheck_single_segment_repeatability(
         raise RuntimeError(f"Single-segment repeatability requires exactly 4 configured servos; found {servo_ids}.")
     if len(neutral_ticks) != len(servo_ids):
         raise RuntimeError("Neutral setpoints are missing for one or more configured servos.")
+    if float(config.outer_ring_radius_mm) < float(config.inner_ring_radius_mm):
+        raise RuntimeError(
+            "Repeatability target config is invalid: outer_ring_radius_mm must be >= inner_ring_radius_mm."
+        )
+    target_catalog = build_legacy_17_point_targets(
+        inner_ring_radius_mm=float(config.inner_ring_radius_mm),
+        outer_ring_radius_mm=float(config.outer_ring_radius_mm),
+    )
+    tick_profile = repeatability_target_tick_profile(
+        targets=target_catalog,
+        mapper=session.context.servo_service.mapper,
+    )
+    max_target_abs_tick_delta = int(tick_profile["max_abs_tick_delta"])
+    if max_target_abs_tick_delta > int(config.max_target_tick_delta_from_startup):
+        raise RuntimeError(
+            "Repeatability target envelope exceeds the configured experiment-safe amplitude cap: "
+            f"{max_target_abs_tick_delta} ticks requested > "
+            f"{int(config.max_target_tick_delta_from_startup)} ticks cap. "
+            "Lower the ring radii or increase max_target_tick_delta_from_startup intentionally."
+        )
     calibration_summary = session.context.servo_service.neutral_calibration.get_calibration_summary()
     if not calibration_summary.exists or not calibration_summary.compatible:
         raise RuntimeError(f"Servo calibration artifact is not ready: {calibration_summary.message}")
@@ -826,6 +963,19 @@ def _record_repeatability_run_provenance(
         tool_id=config.tool_id,
         max_tracker_age_s=float(config.max_tracker_age_s),
         require_robot_frame_tip=bool(config.require_robot_frame_tip),
+    )
+    target_catalog = build_legacy_17_point_targets(
+        inner_ring_radius_mm=float(config.inner_ring_radius_mm),
+        outer_ring_radius_mm=float(config.outer_ring_radius_mm),
+    )
+    target_tick_profile = repeatability_target_tick_profile(
+        targets=target_catalog,
+        mapper=session.context.servo_service.mapper,
+    )
+    ring_ticks = repeatability_ring_tick_defaults(
+        mapper=session.context.servo_service.mapper,
+        inner_ring_radius_mm=float(config.inner_ring_radius_mm),
+        outer_ring_radius_mm=float(config.outer_ring_radius_mm),
     )
     pretension_source = servo_calibration_summary.pretension_source_summary([int(value) for value in servo_ids])
     pretension_entries: dict[str, Any] = {}
@@ -957,6 +1107,16 @@ def _record_repeatability_run_provenance(
             "servos": pretension_entries,
         },
         "precheck_trust_summary": precheck_summary,
+        "repeatability_target_geometry": {
+            "inner_ring_radius_mm": float(config.inner_ring_radius_mm),
+            "outer_ring_radius_mm": float(config.outer_ring_radius_mm),
+            "inner_ring_radius_ticks": int(ring_ticks["inner_ring_radius_ticks"]),
+            "outer_ring_radius_ticks": int(ring_ticks["outer_ring_radius_ticks"]),
+            "max_target_abs_tick_delta_from_startup": int(target_tick_profile["max_abs_tick_delta"]),
+            "max_target_tick_delta_from_startup_cap": int(config.max_target_tick_delta_from_startup),
+            "spool_diameter_mm": float(settings.robot.spool_diameter_cm) * 10.0,
+            "ticks_per_revolution": int(settings.robot.ticks_per_revolution),
+        },
     }
     session.metadata.backend_info["run_provenance"] = {
         "backend_identity": provenance["backend_identity"],
