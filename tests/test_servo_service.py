@@ -1147,6 +1147,10 @@ def test_servo_service_pretension_fails_on_overcurrent(tmp_path: Path) -> None:
 
     assert result.success is False
     assert result.status == "overcurrent"
+    assert result.torque_cleanup_action == "disarm_after_terminal_state"
+    assert result.torque_cleanup_attempted is True
+    assert result.torque_cleanup_success is True
+    assert bus._state[1].torque_enabled is False
 
 
 def test_servo_service_pretension_fails_on_travel_limit(tmp_path: Path) -> None:
@@ -1174,6 +1178,10 @@ def test_servo_service_pretension_blocks_until_servo_is_in_pretension_window(tmp
     assert result.status == "arming_failed"
     assert result.failure_phase == "arming"
     assert result.primary_reason == "Servo is outside the pretension window."
+    assert result.torque_cleanup_action == "disarm_after_terminal_state"
+    assert result.torque_cleanup_attempted is True
+    assert result.torque_cleanup_success is True
+    assert bus._state[1].torque_enabled is False
 
 
 def test_servo_service_pretension_fails_on_timeout(tmp_path: Path) -> None:
@@ -1341,6 +1349,10 @@ def test_servo_service_pretension_fails_when_current_disappears(tmp_path: Path) 
     assert result.primary_reason == "Current telemetry is unavailable."
     assert result.stop_reason == "missing_current"
     assert "Incorrect status packet" in (result.detail_reason or "")
+    assert result.torque_cleanup_action == "disarm_after_terminal_state"
+    assert result.torque_cleanup_attempted is True
+    assert result.torque_cleanup_success is True
+    assert bus._state[1].torque_enabled is False
 
 
 def test_servo_service_pretension_tolerates_one_transient_missing_current_sample(tmp_path: Path) -> None:
