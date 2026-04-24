@@ -37,3 +37,23 @@ def test_app_window_bootstraps_with_real_tabs() -> None:
         assert window.tab_widget.tabText(7) == "Data"
     finally:
         window.shutdown()
+
+
+def test_app_window_shutdown_calls_system_disconnect() -> None:
+    _app()
+    context = build_app_context()
+    window = AppWindow(context)
+    calls: list[str] = []
+    original_disconnect = window.system_controller.disconnect_openrb
+
+    def _recording_disconnect() -> None:
+        calls.append("disconnect_openrb")
+        original_disconnect()
+
+    window.system_controller.disconnect_openrb = _recording_disconnect
+    try:
+        window.shutdown()
+    finally:
+        if window.isVisible():
+            window.close()
+    assert "disconnect_openrb" in calls

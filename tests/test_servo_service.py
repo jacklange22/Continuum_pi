@@ -89,6 +89,26 @@ class _BaselineSequenceBus(MockDxlBus):
         return result
 
 
+class _SteppingReadDropPretensionBus(_PretensionBus):
+    def __init__(self, *, drop_read_count: int, recovered_current_ma: int = 230) -> None:
+        super().__init__(current_sequence=[int(recovered_current_ma)])
+        self._drop_read_count = max(0, int(drop_read_count))
+        self._step_started = False
+        self._state[1].torque_enabled = True
+
+    def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
+        self._step_started = True
+        super().write_goal_positions(positions_by_id)
+
+    def read_telemetry(self, servo_ids: list[int], **kwargs) -> dict[int, object]:
+        result = super().read_telemetry(servo_ids, **kwargs)
+        if self._step_started and self._drop_read_count > 0:
+            self._drop_read_count -= 1
+            result[1].present_current_ma = None
+            result[1].present_current_raw_unit = None
+        return result
+
+
 class _GoalWriteFailureBus(MockDxlBus):
     def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
         raise RuntimeError("mock write timeout")
@@ -122,6 +142,28 @@ class _RecordingMotionConfigBus(MockDxlBus):
 class _GoalCurrentFailureBus(_RecordingMotionConfigBus):
     def write_goal_current_ma(self, servo_id: int, current_ma: int) -> None:
         raise RuntimeError("[RxPacketError] The data value exceeds the limit value!")
+
+
+class _DisconnectOrderBus(MockDxlBus):
+    def __init__(self, *, fail_servo_id: int | None = None) -> None:
+        super().__init__([1, 2])
+        self.fail_servo_id = fail_servo_id
+        self.events: list[tuple[str, int | None, bool | None]] = []
+
+    def write_torque_enable(self, servo_id: int, enabled: bool) -> None:
+        self.events.append(("torque", int(servo_id), bool(enabled)))
+        if self.fail_servo_id is not None and int(servo_id) == int(self.fail_servo_id):
+            raise RuntimeError("mock torque disable failure")
+        super().write_torque_enable(servo_id, enabled)
+
+    def disconnect(self) -> None:
+        self.events.append(("disconnect", None, None))
+        super().disconnect()
+
+
+class _PretensionGoalWriteCrashBus(_PretensionBus):
+    def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
+        raise RuntimeError("mock unexpected write failure")
 
 
 def _build_service(
@@ -1030,6 +1072,8 @@ def test_servo_service_pretension_auto_enables_torque_when_safe(tmp_path: Path) 
     assert result.success is True
     assert result.status == "threshold_reached"
     assert bus._state[1].torque_enabled is True
+    assert result.torque_cleanup_action == "left_on_after_success"
+    assert result.torque_cleanup_success is True
 
 
 def test_servo_service_pretension_blocks_when_torque_enable_fails(tmp_path: Path) -> None:
@@ -1103,6 +1147,10 @@ def test_servo_service_pretension_fails_on_overcurrent(tmp_path: Path) -> None:
 
     assert result.success is False
     assert result.status == "overcurrent"
+    assert result.torque_cleanup_action == "disarm_after_terminal_state"
+    assert result.torque_cleanup_attempted is True
+    assert result.torque_cleanup_success is True
+    assert bus._state[1].torque_enabled is False
 
 
 def test_servo_service_pretension_fails_on_travel_limit(tmp_path: Path) -> None:
@@ -1130,6 +1178,10 @@ def test_servo_service_pretension_blocks_until_servo_is_in_pretension_window(tmp
     assert result.status == "arming_failed"
     assert result.failure_phase == "arming"
     assert result.primary_reason == "Servo is outside the pretension window."
+    assert result.torque_cleanup_action == "disarm_after_terminal_state"
+    assert result.torque_cleanup_attempted is True
+    assert result.torque_cleanup_success is True
+    assert bus._state[1].torque_enabled is False
 
 
 def test_servo_service_pretension_fails_on_timeout(tmp_path: Path) -> None:
@@ -1154,6 +1206,126 @@ def test_servo_service_pretension_fails_on_timeout(tmp_path: Path) -> None:
 
     assert result.success is False
     assert result.status == "timeout"
+    assert result.torque_cleanup_action == "disarm_after_terminal_state"
+    assert result.torque_cleanup_success is True
+    assert bus._state[1].torque_enabled is False
+
+
+def test_servo_service_disconnect_disarms_known_servos_before_bus_close(tmp_path: Path) -> None:
+    bus = _DisconnectOrderBus(fail_servo_id=1)
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1, 2])
+    service.connect("/dev/mock-openrb", 115200)
+
+    service.disconnect()
+
+    assert bus.events[0] == ("torque", 1, False)
+    assert bus.events[1] == ("torque", 2, False)
+    assert bus.events[-1][0] == "disconnect"
+
+
+def test_servo_service_pretension_cancel_disarms_servo_when_routine_armed_torque(tmp_path: Path) -> None:
+    bus = _PretensionBus(current_sequence=[180, 190])
+    bus._state[1].torque_enabled = False
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+
+    result = service.run_pretension_routine(servo_id=1, stop_requested=lambda: True)
+
+    assert result.success is False
+    assert result.status == "canceled"
+    assert result.torque_cleanup_action == "disarm_after_terminal_state"
+    assert result.torque_cleanup_success is True
+    assert bus._state[1].torque_enabled is False
+
+
+def test_servo_service_pretension_timeout_disarms_servo_when_routine_armed_torque(tmp_path: Path) -> None:
+    timeline = iter([0.0] * 20 + [3.0] * 20)
+    bus = _PretensionBus(current_sequence=[180, 190])
+    bus._state[1].torque_enabled = False
+    service = _build_service(
+        tmp_path,
+        dxl_bus=bus,
+        context_servo_ids=[1],
+        time_fn=lambda: next(timeline),
+        telemetry_stale_after_s=10.0,
+    )
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+
+    result = service.run_pretension_routine(servo_id=1)
+
+    assert result.success is False
+    assert result.status == "timeout"
+    assert result.torque_cleanup_action == "disarm_after_terminal_state"
+    assert result.torque_cleanup_success is True
+    assert bus._state[1].torque_enabled is False
+
+
+def test_servo_service_pretension_cancel_disarms_servo_when_torque_was_already_on(tmp_path: Path) -> None:
+    bus = _PretensionBus(current_sequence=[180, 190])
+    bus._state[1].torque_enabled = True
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+
+    result = service.run_pretension_routine(servo_id=1, stop_requested=lambda: True)
+
+    assert result.success is False
+    assert result.status == "canceled"
+    assert result.torque_cleanup_action == "disarm_after_terminal_state"
+    assert result.torque_cleanup_success is True
+    assert bus._state[1].torque_enabled is False
+
+
+def test_servo_service_pretension_unexpected_exception_still_disarms_and_reports_cleanup(tmp_path: Path) -> None:
+    bus = _PretensionGoalWriteCrashBus(current_sequence=[180])
+    bus._state[1].torque_enabled = True
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+
+    result = service.run_pretension_routine(servo_id=1)
+
+    assert result.success is False
+    assert result.status == "exception"
+    assert result.torque_cleanup_action == "disarm_after_terminal_state"
+    assert result.torque_cleanup_attempted is True
+    assert result.torque_cleanup_success is True
+    assert bus._state[1].torque_enabled is False
+
+
+def test_servo_service_jog_behavior_still_uses_auto_torque_on_goal_write(tmp_path: Path) -> None:
+    bus = MockDxlBus([1])
+    bus._state[1].torque_enabled = False
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    bus._state[1].present_position = 2048
+
+    result = service.jog_servo_action(servo_id=1, action="tighten_fine")
+
+    assert result.success is True
+    assert bus._state[1].torque_enabled is True
 
 
 def test_servo_service_pretension_fails_when_current_disappears(tmp_path: Path) -> None:
@@ -1174,8 +1346,79 @@ def test_servo_service_pretension_fails_when_current_disappears(tmp_path: Path) 
     assert result.success is False
     assert result.status == "invalid_telemetry"
     assert result.failure_phase == "stepping"
-    assert result.primary_reason == "Telemetry is incomplete."
+    assert result.primary_reason == "Current telemetry is unavailable."
+    assert result.stop_reason == "missing_current"
     assert "Incorrect status packet" in (result.detail_reason or "")
+    assert result.torque_cleanup_action == "disarm_after_terminal_state"
+    assert result.torque_cleanup_attempted is True
+    assert result.torque_cleanup_success is True
+    assert bus._state[1].torque_enabled is False
+
+
+def test_servo_service_pretension_tolerates_one_transient_missing_current_sample(tmp_path: Path) -> None:
+    bus = _SteppingReadDropPretensionBus(drop_read_count=1, recovered_current_ma=230)
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+
+    result = service.run_pretension_routine(
+        servo_id=1,
+        parameters=PretensionParameters(
+            untensioned_reference_tick=4095,
+            step_ticks=2,
+            settle_time_s=0.0,
+            baseline_sample_count=1,
+            current_filter_window=1,
+            current_delta_threshold_ma=60,
+            absolute_trigger_current_ma=500,
+            hard_current_stop_ma=850,
+            max_travel_ticks=320,
+            timeout_s=2.0,
+        ),
+    )
+
+    assert result.success is True
+    assert result.status == "threshold_reached"
+    assert result.stop_reason == "baseline_delta_trigger"
+
+
+def test_servo_service_pretension_fails_after_transient_missing_current_budget_is_exhausted(tmp_path: Path) -> None:
+    bus = _SteppingReadDropPretensionBus(drop_read_count=4, recovered_current_ma=230)
+    bus._state[1].telemetry_error = "[TxRxResult] Incorrect status packet!"
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+
+    result = service.run_pretension_routine(
+        servo_id=1,
+        parameters=PretensionParameters(
+            untensioned_reference_tick=4095,
+            step_ticks=2,
+            settle_time_s=0.0,
+            baseline_sample_count=1,
+            current_filter_window=1,
+            current_delta_threshold_ma=60,
+            absolute_trigger_current_ma=500,
+            hard_current_stop_ma=850,
+            max_travel_ticks=320,
+            timeout_s=2.0,
+        ),
+    )
+
+    assert result.success is False
+    assert result.status == "invalid_telemetry"
+    assert result.stop_reason == "missing_current"
+    assert result.primary_reason == "Current telemetry is unavailable."
 
 
 def test_servo_service_measures_filtered_pretension_baseline(tmp_path: Path) -> None:

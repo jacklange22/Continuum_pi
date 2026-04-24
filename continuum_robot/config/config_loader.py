@@ -52,7 +52,7 @@ class ConfigLoader:
         )
         robot = RobotConfig(
             mode=str(robot_data.get("mode", "4-servo")),
-            spool_diameter_cm=float(robot_data.get("spool_diameter_cm", 1.2)),
+            spool_diameter_cm=float(robot_data.get("spool_diameter_cm", 2.0)),
             ticks_per_revolution=int(robot_data.get("ticks_per_revolution", 4096)),
             servo_ids=[int(v) for v in robot_data.get("servo_ids", [1, 2, 3, 4])],
             tendon_to_servo=[int(v) for v in robot_data.get("tendon_to_servo", [1, 2, 3, 4])],
@@ -236,7 +236,7 @@ class ConfigLoader:
             raise FileNotFoundError(f"Robot config {robot_config_name} was not found in {self.base_dir}.")
         return RobotConfig(
             mode=str(robot_data.get("mode", "4-servo")),
-            spool_diameter_cm=float(robot_data.get("spool_diameter_cm", 1.2)),
+            spool_diameter_cm=float(robot_data.get("spool_diameter_cm", 2.0)),
             ticks_per_revolution=int(robot_data.get("ticks_per_revolution", 4096)),
             servo_ids=[int(v) for v in robot_data.get("servo_ids", [1, 2, 3, 4])],
             tendon_to_servo=[int(v) for v in robot_data.get("tendon_to_servo", [1, 2, 3, 4])],

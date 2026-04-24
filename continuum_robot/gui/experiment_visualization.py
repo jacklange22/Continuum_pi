@@ -240,9 +240,29 @@ def _build_repeatability_model(
         metrics=metrics,
         acceptance=acceptance,
     )
+    geometry = dict(metrics.get("target_geometry", {}) or {})
     summary_lines = [
         f"Run status: {metrics.get('status', 'unknown')}",
         f"Pose frame: {metrics.get('position_frame', 'unknown')}",
+        (
+            "Ring radii: "
+            f"inner {_fmt(geometry.get('inner_ring_radius_mm'))} mm "
+            f"({_fmt(geometry.get('inner_ring_radius_ticks'))} ticks), "
+            f"outer {_fmt(geometry.get('outer_ring_radius_mm'))} mm "
+            f"({_fmt(geometry.get('outer_ring_radius_ticks'))} ticks)"
+            if geometry
+            else "Ring radii: n/a"
+        ),
+        (
+            "Target cap: "
+            f"{_fmt(geometry.get('max_target_tick_delta_from_startup_cap'))} ticks "
+            f"(max requested {_fmt(geometry.get('max_target_abs_tick_delta_from_startup'))} ticks)"
+            if geometry
+            else "Target cap: n/a"
+        ),
+        (
+            f"Spool diameter: {_fmt(geometry.get('spool_diameter_mm'))} mm" if geometry else "Spool diameter: n/a"
+        ),
         f"Targets summarized: {metrics.get('target_count', len(per_target))}",
         f"Target revisits: {metrics.get('visit_count', metrics.get('planned_visit_count', 0))}",
         f"Valid samples: {metrics.get('valid_sample_count', metrics.get('valid_repeat_sample_count', 0))}",

@@ -21,7 +21,7 @@ class RobotConfig:
     """Robot hardware configuration."""
 
     mode: str = "4-servo"
-    spool_diameter_cm: float = 1.2
+    spool_diameter_cm: float = 2.0
     ticks_per_revolution: int = 4096
     servo_ids: list[int] = field(default_factory=lambda: [1, 2, 3, 4])
     tendon_to_servo: list[int] = field(default_factory=lambda: [1, 2, 3, 4])

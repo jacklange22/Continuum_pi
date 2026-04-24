@@ -25,8 +25,11 @@ from continuum_robot.experiments.single_segment_repeatability import (
     LEGACY_TARGET_COUNT,
     LEGACY_VISIT_COUNT,
     SingleSegmentRepeatabilityConfig,
+    build_legacy_17_point_targets,
     load_repeatability_metrics_from_run,
+    repeatability_target_tick_profile,
 )
+from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
 from continuum_robot.experiments.critical_experiments import (
     GridDefinitionConfig,
     PivotCalibrationConfig,
@@ -281,6 +284,52 @@ def evaluate_preflight(
                     f"This protocol requires exactly 4 configured servos/tendons. Found {servo_ids}.",
                 )
             )
+        if float(config.outer_ring_radius_mm) < float(config.inner_ring_radius_mm):
+            checks.append(
+                _blocked(
+                    "target_geometry",
+                    "Target Geometry",
+                    "outer_ring_radius_mm must be >= inner_ring_radius_mm.",
+                )
+            )
+        else:
+            target_catalog = build_legacy_17_point_targets(
+                inner_ring_radius_mm=float(config.inner_ring_radius_mm),
+                outer_ring_radius_mm=float(config.outer_ring_radius_mm),
+            )
+            mapper = TendonDisplacementMapper(
+                spool_diameter_cm=float(settings.robot.spool_diameter_cm),
+                ticks_per_rev=int(settings.robot.ticks_per_revolution),
+            )
+            target_profile = repeatability_target_tick_profile(
+                targets=target_catalog,
+                mapper=mapper,
+            )
+            max_tick_delta = int(target_profile.get("max_abs_tick_delta", 0) or 0)
+            cap = int(config.max_target_tick_delta_from_startup)
+            if max_tick_delta > cap:
+                checks.append(
+                    _blocked(
+                        "target_geometry",
+                        "Target Geometry",
+                        "Repeatability target amplitude exceeds the configured experiment cap: "
+                        f"{max_tick_delta} ticks requested > {cap} ticks cap. "
+                        "Reduce ring radii or raise max_target_tick_delta_from_startup intentionally.",
+                    )
+                )
+            else:
+                checks.append(
+                    _ok(
+                        "target_geometry",
+                        "Target Geometry",
+                        (
+                            f"Inner/outer ring={float(config.inner_ring_radius_mm):.1f}/"
+                            f"{float(config.outer_ring_radius_mm):.1f} mm, "
+                            f"max target delta={max_tick_delta} ticks, "
+                            f"cap={cap} ticks, spool={float(settings.robot.spool_diameter_cm) * 10.0:.1f} mm."
+                        ),
+                    )
+                )
         if not servo_connected:
             checks.append(
                 _blocked(

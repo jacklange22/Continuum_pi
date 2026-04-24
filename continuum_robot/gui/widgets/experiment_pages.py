@@ -67,6 +67,7 @@ from continuum_robot.experiments.single_segment_repeatability import (
     SingleSegmentRepeatabilityConfig,
     build_legacy_17_point_targets,
     generate_legacy_revisit_sequence,
+    repeatability_ring_tick_defaults,
 )
 from continuum_robot.gui.controllers.experiment_controller import ExperimentViewState
 from continuum_robot.gui.theme import COLORS, chip_stylesheet, semantic_chip_colors
@@ -738,7 +739,7 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
         super().__init__(controller, experiment_name, parent)
         self.run_button.setText("Run 17-Target Repeatability")
-        self._target_table_signature: tuple[tuple[str, str, str, str, str], ...] | None = None
+        self._target_table_signature: tuple[tuple[str, str, str, str, str, str], ...] | None = None
 
     def _build_parameter_sections(self) -> None:
         protocol_card = ExperimentCard(
@@ -843,10 +844,12 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
 
         target_card = ExperimentCard(
             "Fixed Target Catalog",
-            "Target 0 is center; targets 1-8 are a 6 mm cable-displacement ring; targets 9-16 are a 12 mm ring.",
+            "Target 0 is center; targets 1-8 use the configured inner ring and targets 9-16 use the configured outer ring.",
         )
-        self.target_table = QTableWidget(0, 5)
-        self.target_table.setHorizontalHeaderLabels(["Target", "Ring", "Angle", "Command (mm)", "Approaches"])
+        self.target_table = QTableWidget(0, 6)
+        self.target_table.setHorizontalHeaderLabels(
+            ["Target", "Ring", "Angle", "Command (mm)", "Command (ticks)", "Approaches"]
+        )
         self.target_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.target_table.setSelectionMode(QAbstractItemView.NoSelection)
         self.target_table.verticalHeader().setVisible(False)
@@ -877,13 +880,37 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
         self._sync_target_table(config)
 
     def _sync_protocol_summary(self, config: SingleSegmentRepeatabilityConfig) -> None:
-        visits = generate_legacy_revisit_sequence(seed=int(config.random_seed))
+        targets = build_legacy_17_point_targets(
+            inner_ring_radius_mm=float(config.inner_ring_radius_mm),
+            outer_ring_radius_mm=float(config.outer_ring_radius_mm),
+        )
+        visits = generate_legacy_revisit_sequence(targets=targets, seed=int(config.random_seed))
         planned_captures = len(visits) * 2
         total_time_min = (planned_captures * float(config.settle_time_s)) / 60.0
+        ring_ticks = repeatability_ring_tick_defaults(
+            mapper=self.controller.servo_service.mapper,
+            inner_ring_radius_mm=float(config.inner_ring_radius_mm),
+            outer_ring_radius_mm=float(config.outer_ring_radius_mm),
+        )
+        spool_diameter_mm = float(self.controller.settings.robot.spool_diameter_cm) * 10.0
         self.protocol_summary_widget.set_pairs(
             [
                 ("Protocol", "Legacy 17-target single segment"),
                 ("Targets", "17 (center + 8 inner + 8 outer)"),
+                (
+                    "Ring Radii",
+                    (
+                        f"inner {float(config.inner_ring_radius_mm):.1f} mm "
+                        f"({int(ring_ticks['inner_ring_radius_ticks'])} ticks), "
+                        f"outer {float(config.outer_ring_radius_mm):.1f} mm "
+                        f"({int(ring_ticks['outer_ring_radius_ticks'])} ticks)"
+                    ),
+                ),
+                ("Spool Diameter", f"{spool_diameter_mm:.1f} mm"),
+                (
+                    "Repeatability Amplitude Cap",
+                    f"{int(config.max_target_tick_delta_from_startup)} ticks max from startup",
+                ),
                 ("Approach Visits", str(len(visits))),
                 ("Planned Captures", str(planned_captures)),
                 ("Repeat Captures Used For RMSE", str(len(visits))),
@@ -926,17 +953,22 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
             self.controller.set_config_value("baseline_run_path", path)
 
     def _sync_target_table(self, config: SingleSegmentRepeatabilityConfig) -> None:
-        targets = build_legacy_17_point_targets()
+        targets = build_legacy_17_point_targets(
+            inner_ring_radius_mm=float(config.inner_ring_radius_mm),
+            outer_ring_radius_mm=float(config.outer_ring_radius_mm),
+        )
         visits = generate_legacy_revisit_sequence(targets, seed=int(config.random_seed))
         approaches_by_target: dict[int, int] = {}
         for visit in visits:
             approaches_by_target[int(visit.target_index)] = approaches_by_target.get(int(visit.target_index), 0) + 1
+        mapper = self.controller.servo_service.mapper
         signature = tuple(
             (
                 target.label,
                 target.ring,
                 f"{target.angle_deg:.0f}",
                 _render_inline_list(target.cable_deltas_mm),
+                _render_inline_list([int(mapper.displacement_cm_to_ticks(float(value))) for value in target.cable_deltas_cm]),
                 str(approaches_by_target.get(int(target.target_index), 0)),
             )
             for target in targets
@@ -954,6 +986,12 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
                         target.ring,
                         f"{target.angle_deg:.0f} deg",
                         _render_inline_list(target.cable_deltas_mm),
+                        _render_inline_list(
+                            [
+                                int(mapper.displacement_cm_to_ticks(float(value)))
+                                for value in target.cable_deltas_cm
+                            ]
+                        ),
                         str(approaches_by_target.get(int(target.target_index), 0)),
                     ]
                     for column, text in enumerate(cells):

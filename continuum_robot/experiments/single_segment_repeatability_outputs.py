@@ -47,6 +47,7 @@ def build_single_segment_repeatability_summary_pairs(*, metrics: dict[str, Any])
     run_validity = dict(metrics.get("run_validity", {}) or {})
     criteria = dict(run_validity.get("criteria", {}) or {})
     observed = dict(run_validity.get("observed", {}) or {})
+    geometry = dict(metrics.get("target_geometry", {}) or {})
     repeat_valid = int(metrics.get("valid_repeat_sample_count", 0) or 0)
     repeat_planned = int(
         criteria.get("planned_repeat_capture_count", metrics.get("planned_visit_count", 0) or 0) or 0
@@ -56,6 +57,30 @@ def build_single_segment_repeatability_summary_pairs(*, metrics: dict[str, Any])
     pairs = [
         ("Protocol", "Legacy 17 target / all-other approaches"),
         ("Targets", str(int(metrics.get("target_count", 0) or 0))),
+        (
+            "Ring Radii",
+            (
+                f"inner {_fmt(geometry.get('inner_ring_radius_mm'), suffix=' mm')} "
+                f"({_fmt(geometry.get('inner_ring_radius_ticks'), suffix=' ticks')}), "
+                f"outer {_fmt(geometry.get('outer_ring_radius_mm'), suffix=' mm')} "
+                f"({_fmt(geometry.get('outer_ring_radius_ticks'), suffix=' ticks')})"
+                if geometry
+                else "n/a"
+            ),
+        ),
+        (
+            "Amplitude Cap",
+            (
+                f"{_fmt(geometry.get('max_target_tick_delta_from_startup_cap'), suffix=' ticks')} "
+                f"(max target {_fmt(geometry.get('max_target_abs_tick_delta_from_startup'), suffix=' ticks')})"
+                if geometry
+                else "n/a"
+            ),
+        ),
+        (
+            "Spool Diameter",
+            _fmt(geometry.get("spool_diameter_mm"), suffix=" mm") if geometry else "n/a",
+        ),
         ("Planned Captures", str(int(metrics.get("planned_capture_count", 0) or 0))),
         ("Run Validity", "PASS" if run_validity.get("thesis_valid_run") else "FAIL"),
         (
