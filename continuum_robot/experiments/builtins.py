@@ -41,6 +41,11 @@ from continuum_robot.tracking.timing_benchmark import (
     extract_servo_timing_records,
     extract_tracker_timing_records,
 )
+from continuum_robot.tracking.runtime_tip_policy import (
+    WORKFLOW_MODELING_DATASET,
+    WORKFLOW_PRETENSION_VALIDATION,
+    evaluate_runtime_tip_trust,
+)
 
 try:
     import numpy as np
@@ -1639,6 +1644,27 @@ class PretensionValidationExperiment(BaseExperiment):
     def precheck(self, session: ExperimentSession) -> None:
         if not session.context.servo_service.is_connected:
             raise RuntimeError("pretension_validation requires a connected servo service.")
+        tracker_service = session.context.tracking_service
+        if bool(self.config.include_tracker_displacement) and tracker_service is not None:
+            snapshot_reader = getattr(tracker_service, "peek_snapshot", None)
+            snapshot = snapshot_reader() if callable(snapshot_reader) else tracker_service.get_snapshot()
+            runtime_tip_policy = evaluate_runtime_tip_trust(
+                snapshot=snapshot,
+                workflow=WORKFLOW_PRETENSION_VALIDATION,
+                allow_lower_trust=True,
+            )
+            session.metadata.registration_info["runtime_tip_policy"] = runtime_tip_policy.to_dict()
+            if self._is_staged_mode() and bool(self.config.enable_tip_centering) and not runtime_tip_policy.allowed_for_workflow:
+                raise RuntimeError(
+                    "Pretension tip centering requires an allowed runtime tip policy outcome; "
+                    f"mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}, "
+                    f"reasons={runtime_tip_policy.reasons or ['policy_not_allowed']}."
+                )
+            if runtime_tip_policy.allowed_for_workflow and not runtime_tip_policy.thesis_trusted:
+                session.add_warning(
+                    "Pretension validation is using a lower-trust runtime tip path: "
+                    f"mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}."
+                )
 
     def execute(self, session: ExperimentSession) -> None:
         if self._is_staged_mode():
@@ -1655,6 +1681,19 @@ class PretensionValidationExperiment(BaseExperiment):
                 "Tracker displacement was requested, but tracking_service is unavailable. "
                 "This run will save current-versus-travel data only."
             )
+        runtime_tip_policy = (
+            evaluate_runtime_tip_trust(
+                snapshot=(
+                    tracker_service.peek_snapshot()
+                    if hasattr(tracker_service, "peek_snapshot")
+                    else tracker_service.get_snapshot()
+                ),
+                workflow=WORKFLOW_PRETENSION_VALIDATION,
+                allow_lower_trust=True,
+            )
+            if tracker_service is not None
+            else None
+        )
 
         sample_index = 0
         progress_index = 0
@@ -1846,6 +1885,10 @@ class PretensionValidationExperiment(BaseExperiment):
                 )
             ),
             "tracker_metric_sample_count": len(tracker_displacements),
+            "runtime_tip_policy": runtime_tip_policy.to_dict() if runtime_tip_policy is not None else None,
+            "runtime_tip_mode_used": runtime_tip_policy.mode if runtime_tip_policy is not None else None,
+            "runtime_tip_trust_level": runtime_tip_policy.trust_label if runtime_tip_policy is not None else "unavailable",
+            "thesis_trusted_runtime_tip": bool(runtime_tip_policy.thesis_trusted) if runtime_tip_policy is not None else False,
             "trace_sample_count": len(trace_points),
             "parameters": {
                 "servo_id": int(self.config.servo_id),
@@ -2209,7 +2252,16 @@ class PretensionValidationExperiment(BaseExperiment):
                     {"phase": "settle_verify", "run_index": run_index, "quality_score_0_100": float(quality_score)},
                 )
 
-        session.metrics.update(self._reliable_pretension_metrics(
+        runtime_tip_policy = (
+            evaluate_runtime_tip_trust(
+                snapshot=tracker_service.get_snapshot(),
+                workflow=WORKFLOW_PRETENSION_VALIDATION,
+                allow_lower_trust=True,
+            )
+            if tracker_service is not None
+            else None
+        )
+        staged_metrics = self._reliable_pretension_metrics(
             mode_kind=mode_kind,
             servo_ids=servo_ids,
             repeat_runs=repeat_runs,
@@ -2220,7 +2272,16 @@ class PretensionValidationExperiment(BaseExperiment):
             final_tip_xy_points_mm=final_tip_xy_points_mm,
             quality_scores=quality_scores,
             manual_startup_artifact=manual_startup_artifact,
-        ))
+        )
+        staged_metrics["runtime_tip_policy"] = runtime_tip_policy.to_dict() if runtime_tip_policy is not None else None
+        staged_metrics["runtime_tip_mode_used"] = runtime_tip_policy.mode if runtime_tip_policy is not None else None
+        staged_metrics["runtime_tip_trust_level"] = (
+            runtime_tip_policy.trust_label if runtime_tip_policy is not None else "unavailable"
+        )
+        staged_metrics["thesis_trusted_runtime_tip"] = (
+            bool(runtime_tip_policy.thesis_trusted) if runtime_tip_policy is not None else False
+        )
+        session.metrics.update(staged_metrics)
 
     def _execute_legacy_single_segment_staged(self, session: ExperimentSession) -> None:
         servo_service = session.context.servo_service
@@ -2972,6 +3033,15 @@ class PretensionValidationExperiment(BaseExperiment):
             else None
         )
 
+        runtime_tip_policy = (
+            evaluate_runtime_tip_trust(
+                snapshot=tracker_service.get_snapshot(),
+                workflow=WORKFLOW_PRETENSION_VALIDATION,
+                allow_lower_trust=True,
+            )
+            if tracker_service is not None
+            else None
+        )
         session.metrics.update(
             {
                 "mode": "single_segment_staged",
@@ -2998,6 +3068,14 @@ class PretensionValidationExperiment(BaseExperiment):
                 "quality_score_std_0_100": _std(quality_scores),
                 "quality_scores_0_100": quality_scores,
                 "manual_startup_artifact": manual_startup_artifact,
+                "runtime_tip_policy": runtime_tip_policy.to_dict() if runtime_tip_policy is not None else None,
+                "runtime_tip_mode_used": runtime_tip_policy.mode if runtime_tip_policy is not None else None,
+                "runtime_tip_trust_level": (
+                    runtime_tip_policy.trust_label if runtime_tip_policy is not None else "unavailable"
+                ),
+                "thesis_trusted_runtime_tip": (
+                    bool(runtime_tip_policy.thesis_trusted) if runtime_tip_policy is not None else False
+                ),
                 "advanced_startup_artifacts": [
                     {
                         "run_index": int(row.get("run_index", 0)),
@@ -4439,6 +4517,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             poll_interval_s=float(self.config.capture_poll_interval_s),
             require_robot_frame_tip=bool(self.config.require_robot_frame_tip),
             allow_mock_state=bool(self.config.dry_run),
+            allow_lower_trust_runtime_tip=bool(self.config.allow_lower_trust_runtime_tip),
         )
         accepted = bool(gate.get("accepted"))
         status_flags = ["capture_accepted"] if accepted else ["capture_rejected"]
@@ -4447,6 +4526,11 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         live_servo_feedback = _read_collect_pose_live_servo_feedback(
             session=session,
             servo_ids=servo_ids,
+        )
+        runtime_tip_policy = evaluate_runtime_tip_trust(
+            snapshot=snapshot,
+            workflow=WORKFLOW_MODELING_DATASET,
+            allow_lower_trust=bool(self.config.allow_lower_trust_runtime_tip),
         )
         sample = _sample_from_tracking_snapshot(
             session,
@@ -4467,6 +4551,9 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 "capture_accepted": bool(accepted),
                 "capture_rejection_reason": None if accepted else str(gate.get("reason", "tracker_gate_rejected")),
                 "tracker_gate": dict(gate),
+                "runtime_tip_mode": runtime_tip_policy.mode,
+                "runtime_tip_trust_level": runtime_tip_policy.trust_label,
+                "runtime_tip_policy": runtime_tip_policy.to_dict(),
                 "requested_pair_command_cm": list(command_result.get("requested_pair_command_cm", []) or []),
                 "resolved_pair_command_cm": list(command_result.get("resolved_pair_command_cm", []) or []),
                 "previous_pair_command_cm": list(previous_pair_command_cm or []),
@@ -4532,14 +4619,19 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             if isinstance(sample.extra.get("resolved_pair_command_cm"), list)
             and len(sample.extra.get("resolved_pair_command_cm")) == 2
         ]
-        runtime_tip_mode = str(getattr(session.context.tracking_service.get_snapshot(), "runtime_tip_mode", "latest_accepted") or "latest_accepted")
+        snapshot = session.context.tracking_service.get_snapshot()
+        runtime_tip_policy = evaluate_runtime_tip_trust(
+            snapshot=snapshot,
+            workflow=WORKFLOW_MODELING_DATASET,
+            allow_lower_trust=bool(self.config.allow_lower_trust_runtime_tip),
+        )
+        runtime_tip_mode = runtime_tip_policy.mode
         pretension_source = session.context.servo_service.pretension_source_summary(list(self._servo_ids))
         strict_runtime_tip = not bool(self.config.allow_lower_trust_runtime_tip)
         strict_pretension = not bool(self.config.allow_lower_trust_pretension)
         lower_trust_active = (
             bool(self.config.dry_run)
-            or (strict_runtime_tip and runtime_tip_mode != "latest_accepted")
-            or (not strict_runtime_tip and runtime_tip_mode != "latest_accepted")
+            or not bool(runtime_tip_policy.thesis_trusted)
             or (not pretension_source.accepted or not pretension_source.usable)
             or (not strict_pretension and pretension_source.source_type not in {"manual", "algorithmic"})
         )
@@ -4560,6 +4652,9 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             "robot_frame_tip_sample_count": int(len(robot_positions)),
             "orientation_sample_count": int(len(tip_tangents)),
             "runtime_tip_mode_used": runtime_tip_mode,
+            "runtime_tip_trust_level": runtime_tip_policy.trust_label,
+            "runtime_tip_policy": runtime_tip_policy.to_dict(),
+            "thesis_trusted_runtime_tip": bool(runtime_tip_policy.thesis_trusted),
             "pretension_source_used": pretension_source.source_type,
             "pretension_source_message": pretension_source.message,
             "requires_robot_frame_tip": bool(self.config.require_robot_frame_tip),
@@ -4631,16 +4726,22 @@ def _precheck_collect_pose_command_dataset(
         raise RuntimeError("Thesis-grade modeling datasets require live runtime mode. Disable mock mode or switch to dry_run.")
     if (not config.dry_run) and snapshot.canonical_state != "streaming_healthy":
         raise RuntimeError(f"Tracker must be streaming healthy before modeling dataset collection; current state is {snapshot.canonical_state}.")
-    runtime_tip_mode = str(getattr(snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted")
+    runtime_tip_policy = evaluate_runtime_tip_trust(
+        snapshot=snapshot,
+        workflow=WORKFLOW_MODELING_DATASET,
+        allow_lower_trust=bool(config.allow_lower_trust_runtime_tip),
+    )
     if config.require_robot_frame_tip and snapshot.registration_state != "loaded":
         raise RuntimeError("Accepted base registration must be loaded before modeling dataset collection.")
     if config.require_robot_frame_tip:
-        if runtime_tip_mode != "latest_accepted" and not config.allow_lower_trust_runtime_tip:
+        if not runtime_tip_policy.allowed_for_workflow:
             raise RuntimeError(
-                "Motor Babble defaults to the trusted latest_accepted runtime tip mode. "
-                f"Current mode is {runtime_tip_mode}; enable the lower-trust override explicitly if you intend to use it."
+                "Motor Babble requires the shared runtime tip policy to allow modeling data. "
+                f"Current mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}, "
+                f"reasons={runtime_tip_policy.reasons or ['policy_not_allowed']}. "
+                "Enable the lower-trust override only when you intend a lower-trust modeling dataset."
             )
-        if snapshot.tip_pose_status != "ok" or snapshot.T_robot_tip is None:
+        if snapshot.tip_pose_status not in {"ok", "coil_as_tip"} or snapshot.T_robot_tip is None:
             raise RuntimeError(
                 f"Live robot-frame tip pose must be active before modeling dataset collection; tip pose status is {snapshot.tip_pose_status}."
             )
@@ -4650,6 +4751,7 @@ def _precheck_collect_pose_command_dataset(
         max_tracker_age_s=float(config.max_tracker_age_s),
         require_robot_frame_tip=bool(config.require_robot_frame_tip),
         allow_mock_state=bool(config.dry_run),
+        allow_lower_trust_runtime_tip=bool(config.allow_lower_trust_runtime_tip),
     )
     if not gate["accepted"]:
         session.add_warning(
@@ -4999,6 +5101,7 @@ def _wait_for_collect_pose_capture(
     poll_interval_s: float,
     require_robot_frame_tip: bool,
     allow_mock_state: bool,
+    allow_lower_trust_runtime_tip: bool = False,
 ) -> tuple[Any, dict[str, Any]]:
     deadline = session.context.monotonic_fn() + float(timeout_s)
     last_snapshot = session.context.tracking_service.get_snapshot()
@@ -5008,6 +5111,7 @@ def _wait_for_collect_pose_capture(
         max_tracker_age_s=max_tracker_age_s,
         require_robot_frame_tip=require_robot_frame_tip,
         allow_mock_state=allow_mock_state,
+        allow_lower_trust_runtime_tip=allow_lower_trust_runtime_tip,
     )
     if last_gate["accepted"]:
         return last_snapshot, last_gate
@@ -5021,6 +5125,7 @@ def _wait_for_collect_pose_capture(
             max_tracker_age_s=max_tracker_age_s,
             require_robot_frame_tip=require_robot_frame_tip,
             allow_mock_state=allow_mock_state,
+            allow_lower_trust_runtime_tip=allow_lower_trust_runtime_tip,
         )
         if last_gate["accepted"]:
             return last_snapshot, last_gate
@@ -5034,6 +5139,7 @@ def _modeling_tracker_gate_status(
     max_tracker_age_s: float,
     require_robot_frame_tip: bool,
     allow_mock_state: bool = False,
+    allow_lower_trust_runtime_tip: bool = False,
 ) -> dict[str, Any]:
     tool_key = str(tool_id or "0A").upper()
     tool = snapshot.tools.get(tool_key)
@@ -5062,9 +5168,14 @@ def _modeling_tracker_gate_status(
     if require_robot_frame_tip:
         if snapshot.registration_state != "loaded":
             reasons.append(f"registration_state_{snapshot.registration_state}")
-        if snapshot.runtime_tip_calibration_state != "loaded":
-            reasons.append(f"runtime_tip_state_{snapshot.runtime_tip_calibration_state}")
-        if snapshot.tip_pose_status != "ok":
+        runtime_tip_policy = evaluate_runtime_tip_trust(
+            snapshot=snapshot,
+            workflow=WORKFLOW_MODELING_DATASET,
+            allow_lower_trust=bool(allow_lower_trust_runtime_tip),
+        )
+        if not runtime_tip_policy.allowed_for_workflow:
+            reasons.extend(runtime_tip_policy.reasons or ["runtime_tip_policy_not_allowed"])
+        if snapshot.tip_pose_status not in {"ok", "coil_as_tip"}:
             reasons.append(f"tip_pose_status_{snapshot.tip_pose_status}")
         if snapshot.T_robot_tip is None:
             reasons.append("missing_T_robot_tip")
@@ -5079,6 +5190,13 @@ def _modeling_tracker_gate_status(
         "tip_pose_status": getattr(snapshot, "tip_pose_status", None),
         "registration_state": getattr(snapshot, "registration_state", None),
         "runtime_tip_mode": getattr(snapshot, "runtime_tip_mode", None),
+        "runtime_tip_trust_level": (
+            evaluate_runtime_tip_trust(
+                snapshot=snapshot,
+                workflow=WORKFLOW_MODELING_DATASET,
+                allow_lower_trust=bool(allow_lower_trust_runtime_tip),
+            ).trust_label
+        ),
     }
 
 
@@ -5091,6 +5209,11 @@ def _record_collect_pose_run_provenance(
     pair_limits: dict[str, Any],
 ) -> None:
     snapshot = session.context.tracking_service.get_snapshot()
+    runtime_tip_policy = evaluate_runtime_tip_trust(
+        snapshot=snapshot,
+        workflow=WORKFLOW_MODELING_DATASET,
+        allow_lower_trust=bool(config.allow_lower_trust_runtime_tip),
+    )
     servo_calibration_summary = session.context.servo_service.get_calibration_summary()
     pretension_source = session.context.servo_service.pretension_source_summary([int(value) for value in servo_ids])
     startup_reference_error: str | None = None
@@ -5118,6 +5241,7 @@ def _record_collect_pose_run_provenance(
         max_tracker_age_s=float(config.max_tracker_age_s),
         require_robot_frame_tip=bool(config.require_robot_frame_tip),
         allow_mock_state=bool(config.dry_run),
+        allow_lower_trust_runtime_tip=bool(config.allow_lower_trust_runtime_tip),
     )
     provenance = {
         "dataset_mode": str(config.dataset_mode or "workspace_coverage"),
@@ -5147,8 +5271,10 @@ def _record_collect_pose_run_provenance(
         "runtime_tip_calibration": {
             **_collect_pose_file_provenance(runtime_tip_path),
             "state": str(snapshot.runtime_tip_calibration_state or ""),
-            "mode": str(getattr(snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted"),
-            "trust_level": str(getattr(snapshot, "runtime_tip_trust_level", "missing") or "missing"),
+            "mode": runtime_tip_policy.mode,
+            "trust_level": runtime_tip_policy.trust_label,
+            "policy": runtime_tip_policy.to_dict(),
+            "thesis_trusted": bool(runtime_tip_policy.thesis_trusted),
             "mode_message": str(getattr(snapshot, "runtime_tip_mode_message", "") or ""),
             "selected_artifact_kind": getattr(snapshot, "runtime_tip_selected_artifact_kind", None),
             "selected_artifact_path": getattr(snapshot, "runtime_tip_selected_artifact_path", None),
@@ -5183,7 +5309,8 @@ def _record_collect_pose_run_provenance(
             else "ready",
             "tracker_gate": dict(gate),
             "tracking_state": str(snapshot.canonical_state or ""),
-            "runtime_tip_mode": str(getattr(snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted"),
+            "runtime_tip_mode": runtime_tip_policy.mode,
+            "runtime_tip_trust_level": runtime_tip_policy.trust_label,
             "pretension_source_type": pretension_source.source_type,
             "pretension_message": pretension_source.message,
         },
@@ -5199,6 +5326,7 @@ def _record_collect_pose_run_provenance(
     }
     session.metadata.registration_info["base_registration"] = provenance["base_registration"]
     session.metadata.registration_info["runtime_tip_calibration"] = provenance["runtime_tip_calibration"]
+    session.metadata.registration_info["runtime_tip_policy"] = runtime_tip_policy.to_dict()
     session.set_metric("run_provenance", provenance)
 
 

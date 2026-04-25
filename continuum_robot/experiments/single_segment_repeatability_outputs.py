@@ -174,6 +174,40 @@ def build_single_segment_repeatability_summary_lines(*, metadata, summary, metri
         lines.append(f"- Invalid reason: {reason}")
     for reason in list(run_validity.get("warning_reasons", []) or []):
         lines.append(f"- Coverage note: {reason}")
+    legacy_style = dict(metrics.get("legacy_style_comparison", {}) or {})
+    if legacy_style:
+        selection = dict(legacy_style.get("sample_selection", {}) or {})
+        lines.extend(
+            [
+                "",
+                "Legacy-style comparison:",
+                "- Definition: desired-target repeat captures only; mean XYZ centroid; "
+                "XY_RMSE uses XY-plane distances; XYZ_RMSE/max use 3D Euclidean distances. "
+                "The legacy plot labels used XYZ_RMSE while displaying XY scatter.",
+                f"- Pose frame used: {legacy_style.get('pose_frame_used', 'unknown')}",
+                (
+                    f"- Selected repeat samples: {selection.get('selected_repeat_sample_count', 'n/a')} "
+                    f"(rejected/excluded {selection.get('rejected_repeat_sample_count', 'n/a')}; "
+                    f"filter {selection.get('outlier_filter', 'n/a')})"
+                ),
+                f"- Overall legacy-style XY RMSE: {_fmt(legacy_style.get('overall_XY_RMSE_mm'), suffix=' mm')}",
+                f"- Overall legacy-style XYZ RMSE: {_fmt(legacy_style.get('overall_XYZ_RMSE_mm'), suffix=' mm')}",
+                f"- Overall legacy-style max deviation: {_fmt(legacy_style.get('overall_max_deviation_mm'), suffix=' mm')}",
+            ]
+        )
+    transform_audit = dict(metrics.get("transform_chain_audit", {}) or {})
+    if transform_audit:
+        lines.extend(
+            [
+                "",
+                "Transform-chain audit:",
+                f"- Registration artifact: {transform_audit.get('registration_artifact_path', 'n/a')}",
+                f"- Runtime tip artifact: {transform_audit.get('runtime_tip_artifact_path', 'n/a')}",
+                f"- Runtime tip mode/trust: {transform_audit.get('runtime_tip_mode', 'unknown')} / {transform_audit.get('runtime_tip_trust_level', 'unknown')}",
+                f"- Pose frame used for analysis: {transform_audit.get('pose_frame_used_for_analysis', 'unknown')}",
+                f"- Identity/fallback behavior: {'yes' if transform_audit.get('identity_or_fallback') else 'no'}",
+            ]
+        )
     per_target = sorted(
         (metrics.get("per_target_metrics", {}) or {}).values(),
         key=lambda item: int(item.get("target_index", 10**9)),
@@ -257,7 +291,7 @@ def build_single_segment_repeatability_summary_lines(*, metadata, summary, metri
                 (
                     "- Thesis trust: "
                     + (
-                        "trusted latest_accepted runtime tip"
+                        f"thesis_trusted runtime tip policy ({runtime_tip.get('mode', 'unknown')})"
                         if provenance.get("thesis_trusted_runtime_tip")
                         else "lower-trust/debug; do not treat as thesis-trusted"
                     )
@@ -288,7 +322,9 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
     metrics = summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else {}
     summary_text_path = output_dir / "repeatability_summary.txt"
     diagnostics_csv_path = output_dir / "repeatability_debug_samples.csv"
+    legacy_comparison_csv_path = output_dir / "repeatability_legacy_style_comparison.csv"
     clusters_path = output_dir / "repeatability_clusters.png"
+    legacy_clusters_path = output_dir / "tip_pos_clusters.png"
     rmse_path = output_dir / "repeatability_rmse_summary.png"
     path_dependence_path = output_dir / "repeatability_path_dependence.png"
     commanded_vs_measured_path = output_dir / "repeatability_commanded_vs_measured_tip.png"
@@ -307,9 +343,11 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
         encoding="utf-8",
     )
     _write_debug_samples_csv(diagnostics_csv_path, samples=samples)
+    _write_legacy_style_comparison_csv(legacy_comparison_csv_path, metrics=metrics)
     if _QT_AVAILABLE:
         _ensure_plot_qt_app()
         _write_cluster_figure(clusters_path=clusters_path, samples=samples, metrics=metrics)
+        _write_legacy_tip_clusters_figure(path=legacy_clusters_path, metrics=metrics)
         _write_rmse_figure(rmse_path=rmse_path, metrics=metrics)
         _write_path_dependence_figure(path_dependence_path=path_dependence_path, metrics=metrics)
         _write_commanded_vs_measured_figure(path=commanded_vs_measured_path, samples=samples, metrics=metrics)
@@ -319,6 +357,7 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
     else:
         for path in [
             clusters_path,
+            legacy_clusters_path,
             rmse_path,
             path_dependence_path,
             commanded_vs_measured_path,
@@ -331,7 +370,9 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
     return {
         "summary_text_path": summary_text_path,
         "diagnostics_csv_path": diagnostics_csv_path,
+        "legacy_comparison_csv_path": legacy_comparison_csv_path,
         "clusters_path": clusters_path,
+        "legacy_clusters_path": legacy_clusters_path,
         "rmse_path": rmse_path,
         "path_dependence_path": path_dependence_path,
         "commanded_vs_measured_path": commanded_vs_measured_path,
@@ -482,6 +523,59 @@ def _sample_diagnostic_rows(samples) -> list[dict[str, Any]]:
     return rows
 
 
+def _write_legacy_style_comparison_csv(path: Path, *, metrics: dict[str, Any]) -> None:
+    fieldnames = [
+        "target_id",
+        "n_samples",
+        "XY_RMSE_mm",
+        "XYZ_RMSE_mm",
+        "max_deviation_mm",
+        "centroid_x_mm",
+        "centroid_y_mm",
+        "centroid_z_mm",
+        "analysis_mode",
+    ]
+    rows: list[dict[str, Any]] = []
+    legacy = dict(metrics.get("legacy_style_comparison", {}) or {})
+    legacy_per_target = dict(legacy.get("per_target", {}) or {})
+    for key in sorted(legacy_per_target, key=lambda value: int(value) if str(value).isdigit() else 10**9):
+        row = dict(legacy_per_target.get(key, {}) or {})
+        rows.append(
+            {
+                "target_id": row.get("target_id", row.get("target_index", key)),
+                "n_samples": row.get("n_samples"),
+                "XY_RMSE_mm": row.get("XY_RMSE_mm"),
+                "XYZ_RMSE_mm": row.get("XYZ_RMSE_mm"),
+                "max_deviation_mm": row.get("max_deviation_mm"),
+                "centroid_x_mm": row.get("centroid_x_mm"),
+                "centroid_y_mm": row.get("centroid_y_mm"),
+                "centroid_z_mm": row.get("centroid_z_mm"),
+                "analysis_mode": "legacy_style",
+            }
+        )
+    strict_per_target = dict(metrics.get("per_target_metrics", {}) or {})
+    for key in sorted(strict_per_target, key=lambda value: int(value) if str(value).isdigit() else 10**9):
+        row = dict(strict_per_target.get(key, {}) or {})
+        centroid = row.get("centroid_mm") if isinstance(row.get("centroid_mm"), list) else []
+        rows.append(
+            {
+                "target_id": row.get("target_index", key),
+                "n_samples": row.get("repeat_sample_count"),
+                "XY_RMSE_mm": row.get("XY_RMSE_mm"),
+                "XYZ_RMSE_mm": row.get("XYZ_RMSE_mm", row.get("spread_rms_mm")),
+                "max_deviation_mm": row.get("max_deviation_mm"),
+                "centroid_x_mm": centroid[0] if len(centroid) >= 1 else None,
+                "centroid_y_mm": centroid[1] if len(centroid) >= 2 else None,
+                "centroid_z_mm": centroid[2] if len(centroid) >= 3 else None,
+                "analysis_mode": "thesis_strict",
+            }
+        )
+    with Path(path).open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def _write_cluster_figure(*, clusters_path: Path, samples, metrics: dict[str, Any]) -> None:
     image = _new_image(1280, 920)
     painter = QPainter(image)
@@ -504,6 +598,101 @@ def _write_cluster_figure(*, clusters_path: Path, samples, metrics: dict[str, An
     )
     painter.end()
     image.save(str(clusters_path))
+
+
+def _write_legacy_tip_clusters_figure(*, path: Path, metrics: dict[str, Any]) -> None:
+    legacy = dict(metrics.get("legacy_style_comparison", {}) or {})
+    per_target = [
+        dict(row)
+        for _key, row in sorted(
+            dict(legacy.get("per_target", {}) or {}).items(),
+            key=lambda item: int(item[0]) if str(item[0]).isdigit() else 10**9,
+        )
+    ]
+    image = _new_image(1360, 920)
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    _draw_title(
+        painter,
+        QRectF(34.0, 24.0, 1292.0, 58.0),
+        "TIP POSITION CLUSTERS AND RMSE",
+        "Legacy-style comparison: XY scatter shown, labels/reporting use 3D RMSE to each target centroid.",
+    )
+    chart_rect = QRectF(48.0, 108.0, 920.0, 760.0)
+    legend_rect = QRectF(996.0, 108.0, 328.0, 760.0)
+    _draw_panel(painter, chart_rect, "Tip Position Clusters (XY, mm)")
+    _draw_panel(painter, legend_rect, "Per-Target XYZ RMSE")
+    plot_rect = chart_rect.adjusted(48.0, 48.0, -30.0, -58.0)
+    points_by_target: dict[int, list[list[float]]] = {}
+    centroids: dict[int, list[float]] = {}
+    rmse_by_target: dict[int, float | None] = {}
+    combined_xy: list[tuple[float, float]] = []
+    for row in per_target:
+        target_id = int(row.get("target_id", row.get("target_index", -1)) or -1)
+        samples = [
+            [float(value) for value in sample]
+            for sample in list(row.get("sample_positions_mm", []) or [])
+            if isinstance(sample, list) and len(sample) >= 2
+        ]
+        points_by_target[target_id] = samples
+        centroid = row.get("centroid_mm")
+        if isinstance(centroid, list) and len(centroid) >= 2:
+            centroids[target_id] = [float(value) for value in centroid]
+            combined_xy.append((float(centroid[0]), float(centroid[1])))
+        rmse_by_target[target_id] = _optional_float(row.get("XYZ_RMSE_mm"))
+        combined_xy.extend((float(sample[0]), float(sample[1])) for sample in samples)
+    if not combined_xy:
+        painter.setFont(_body_font())
+        painter.setPen(QColor("#64748b"))
+        painter.drawText(plot_rect, Qt.AlignCenter, "No legacy-style repeat captures were available.")
+        painter.end()
+        image.save(str(path))
+        return
+    xs = [point[0] for point in combined_xy]
+    ys = [point[1] for point in combined_xy]
+    min_x, max_x = _expand_range(min(xs), max(xs), minimum_span=5.0, pad_fraction=0.12)
+    min_y, max_y = _expand_range(min(ys), max(ys), minimum_span=5.0, pad_fraction=0.12)
+    painter.setPen(QPen(QColor("#e2e8f0"), 1.0))
+    painter.drawLine(QPointF(plot_rect.left(), plot_rect.bottom()), QPointF(plot_rect.right(), plot_rect.bottom()))
+    painter.drawLine(QPointF(plot_rect.left(), plot_rect.top()), QPointF(plot_rect.left(), plot_rect.bottom()))
+    painter.setFont(_body_font())
+    painter.setPen(QColor("#475569"))
+    painter.drawText(QRectF(plot_rect.left(), plot_rect.bottom() + 12.0, plot_rect.width(), 18.0), Qt.AlignCenter, "x (mm)")
+    painter.drawText(QRectF(plot_rect.left(), plot_rect.top() - 26.0, plot_rect.width(), 18.0), Qt.AlignRight, "y (mm)")
+    legend_pairs: list[tuple[str, str]] = []
+    for index, target_id in enumerate(sorted(points_by_target)):
+        color = QColor.fromHsv(int((index * 37) % 360), 185, 205)
+        painter.setBrush(color)
+        painter.setPen(Qt.NoPen)
+        for point in points_by_target[target_id]:
+            painter.drawEllipse(
+                QPointF(
+                    _scale_x(plot_rect, float(point[0]), min_x, max_x),
+                    _scale_y(plot_rect, float(point[1]), min_y, max_y),
+                ),
+                4.0,
+                4.0,
+            )
+        centroid = centroids.get(target_id)
+        if centroid:
+            center = QPointF(
+                _scale_x(plot_rect, float(centroid[0]), min_x, max_x),
+                _scale_y(plot_rect, float(centroid[1]), min_y, max_y),
+            )
+            painter.setPen(QPen(QColor("#0f172a"), 1.3))
+            painter.setBrush(QColor("#ffffff"))
+            painter.drawRect(QRectF(center.x() - 5.0, center.y() - 5.0, 10.0, 10.0))
+            painter.setPen(QColor("#334155"))
+            painter.drawText(QPointF(center.x() + 7.0, center.y() - 4.0), str(target_id + 1))
+        rmse = rmse_by_target.get(target_id)
+        legend_pairs.append((f"{target_id + 1}", _fmt(rmse, suffix=" mm")))
+    _draw_summary_pairs(
+        painter,
+        legend_rect.adjusted(16.0, 38.0, -16.0, -16.0),
+        legend_pairs,
+    )
+    painter.end()
+    image.save(str(path))
 
 
 def _write_commanded_vs_measured_figure(*, path: Path, samples, metrics: dict[str, Any]) -> None:
@@ -841,6 +1030,15 @@ def _signed_int(value: Any) -> str:
     if value is None:
         return "n/a"
     return f"{int(value):+d}"
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _short_hash(value: Any) -> str:

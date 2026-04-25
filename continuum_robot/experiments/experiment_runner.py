@@ -25,7 +25,9 @@ from continuum_robot.experiments.schemas import (
     ExperimentRunResult,
     ExperimentSummary,
 )
+from continuum_robot.experiments.transform_chain_outputs import write_transform_chain_outputs
 from continuum_robot.experiments.validation import STATUS_PARTIAL_SUCCESS, STATUS_SUCCESS, classify_summary_status
+from continuum_robot.tracking.runtime_tip_policy import evaluate_runtime_tip_trust
 
 
 LOG = logging.getLogger(__name__)
@@ -207,6 +209,28 @@ class ExperimentRunner:
                 message = f"{message} Additional outputs failed: {exc}"
             else:
                 message = f"Additional outputs failed: {exc}"
+        try:
+            tracking_snapshot = None
+            if self.tracking_service is not None:
+                snapshot_reader = getattr(self.tracking_service, "peek_snapshot", None)
+                tracking_snapshot = snapshot_reader() if callable(snapshot_reader) else self.tracking_service.get_snapshot()
+            if tracking_snapshot is not None:
+                write_transform_chain_outputs(
+                    output_dir=paths.output_dir,
+                    snapshot=tracking_snapshot,
+                    workflow=experiment.name,
+                    allow_lower_trust=bool((experiment.config_dict() or {}).get("allow_lower_trust_runtime_tip", False)),
+                    provenance_note=f"experiment_run:{experiment.name}:{run_id}",
+                )
+        except Exception as exc:
+            LOG.exception(
+                "Transform-chain outputs failed | name=%s | run_id=%s | output_dir=%s | error=%s",
+                experiment.name,
+                run_id,
+                paths.output_dir,
+                exc,
+            )
+            session.add_warning(f"Transform-chain summary outputs failed: {exc}")
         if final_success:
             message = message or f"Completed experiment {experiment.name}."
         elif not message:
@@ -341,6 +365,11 @@ class ExperimentRunner:
             ),
             pretension_source_info.get("source_type", "unknown"),
         )
+        runtime_tip_policy = (
+            evaluate_runtime_tip_trust(snapshot=tracking_snapshot).to_dict()
+            if tracking_snapshot is not None
+            else evaluate_runtime_tip_trust().to_dict()
+        )
         registration_info = {
             "path": str(self.registration_path),
             "exists": self.registration_path.exists(),
@@ -368,6 +397,8 @@ class ExperimentRunner:
             "runtime_tip_selected_artifact_path": (
                 tracking_snapshot.runtime_tip_selected_artifact_path if tracking_snapshot is not None else None
             ),
+            "runtime_tip_policy": runtime_tip_policy,
+            "thesis_trusted_runtime_tip": bool(runtime_tip_policy.get("thesis_trusted", False)),
         }
         return ExperimentMetadata(
             schema_version=self.SCHEMA_VERSION,

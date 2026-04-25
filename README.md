@@ -38,6 +38,7 @@ Primary transform convention:
 - `T_A_B` maps coordinates from frame `B` into frame `A`.
 - Composition is `T_A_C = T_A_B @ T_B_C`.
 - Live runtime tip pose is `T_robot_tip = T_robot_aurora @ T_aurora_0A @ T_coil_tip`.
+- Current runtime tip trust policy treats `coil_as_tip` as the thesis-trusted robot-frame position path when the live tip pose is available. `latest_accepted` runtime tip calibration artifacts are still useful, but are recorded as `lower_trust` until that workflow is independently validated.
 
 Runtime tool roles:
 
@@ -53,7 +54,7 @@ Working baseline workflows:
 - Python-native Aurora path through `scikit-surgerynditracker`, `TrackingBackendRouter`, `TrackerBackendNDI`, and `TrackingService`.
 - Tracker diagnostics, smoke tests, and timing benchmarks.
 - GUI-guided 4-point robot/body registration using `0B`, candidate landmarks from `config/registration.yaml`, repeated captures, solve/review/save, and persisted registration artifacts.
-- Runtime tip calibration support for the `0A` coil-to-tip transform.
+- Runtime tip policy support for `coil_as_tip`, accepted runtime tip calibration artifacts, and quick 4-point overrides, with trust status recorded in preflight, metadata, and transform-chain outputs.
 - OpenRB/DYNAMIXEL transport through the Robotis SDK, including connect, scan, telemetry, ID assignment, operating mode writes, goal position writes, and conservative one-servo bring-up tools.
 - Servo calibration artifacts with neutral ticks, safe bounds, pretension thresholds, tightening metadata, and compatibility checks.
 - Pretension validation and manual/automatic pretension state persistence used by experiment preflight.
@@ -63,7 +64,7 @@ Working baseline workflows:
 In-progress or still bench-sensitive workflows:
 
 - Pretension is central but still being characterized. It should be treated as a measured startup-state workflow, not solved tendon-force sensing.
-- Single-segment repeatability is the main thesis experiment, but run quality depends on accepted registration, runtime tip calibration, servo calibration, pretension state, and live tracker freshness.
+- Single-segment repeatability is the main thesis experiment, but run quality depends on accepted registration, the shared runtime tip trust policy, servo calibration, pretension state, and live tracker freshness.
 - Modeling/babble dataset collection exists, but it should follow repeatability and pretension validation rather than displace them.
 - 8-servo/two-segment operation is configuration-supported but not the current validation target.
 
@@ -130,7 +131,7 @@ Typical live sequence:
 3. In `Tracking`, connect Aurora and verify `0A`/`0B` visibility, freshness, valid transforms, and timing.
 4. Run or accept `0B` pivot calibration so the pen-probe tip file is current.
 5. In `Registration`, select four suitable landmarks, capture repeated `0B` samples, solve, review FRE/RMSE, and save the accepted registration.
-6. Confirm `T_robot_tip` is computable from live `0A`, registration, and runtime tip calibration.
+6. Confirm `T_robot_tip` is computable from live `0A`, registration, and the selected runtime tip policy. For thesis repeatability, the current trusted path is `coil_as_tip`.
 7. In `System`/`Servos`, connect OpenRB, prepare the DYNAMIXEL bus, scan IDs, verify telemetry, capture neutral/bounds, and only then jog or command motion.
 8. In `Pretension`, characterize or capture the startup pretension state and accept the source before thesis-grade experiments.
 9. In `Experiment`, run validation or repeatability experiments only after preflight checks pass.

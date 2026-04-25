@@ -832,9 +832,9 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
         self.fail_rejected_check.toggled.connect(
             lambda value: self.controller.set_config_value("fail_on_rejected_capture", bool(value))
         )
-        self.debug_coil_as_tip_check = QCheckBox("Allow debug coil-as-tip runtime tip")
+        self.debug_coil_as_tip_check = QCheckBox("Allow lower-trust runtime tip override")
         self.debug_coil_as_tip_check.setToolTip(
-            "Bench/debug only. Runs with identity T_coil_tip and marks outputs lower-trust, not thesis-trusted."
+            "Compatibility flag for lower-trust runtime tip modes. Coil-as-tip itself is governed by the shared runtime tip policy."
         )
         self.debug_coil_as_tip_check.toggled.connect(
             lambda value: self.controller.set_config_value("allow_debug_coil_as_tip", bool(value))

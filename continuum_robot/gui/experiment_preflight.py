@@ -35,6 +35,12 @@ from continuum_robot.experiments.critical_experiments import (
     PivotCalibrationConfig,
 )
 from continuum_robot.experiments.schedules import generate_command_schedule
+from continuum_robot.tracking.runtime_tip_policy import (
+    WORKFLOW_MODELING_DATASET,
+    WORKFLOW_PRETENSION_VALIDATION,
+    WORKFLOW_REPEATABILITY,
+    evaluate_runtime_tip_trust,
+)
 
 
 PREFLIGHT_OK = "ok"
@@ -246,47 +252,39 @@ def evaluate_preflight(
                     "No penprobe_file is configured for the 0B pivot-calibrated tip.",
                 )
             )
-        runtime_tip_mode = str(getattr(tracking_snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted")
-        debug_coil_as_tip = bool(config.allow_debug_coil_as_tip and runtime_tip_mode == "coil_as_tip")
-        if (
-            runtime_tip_mode == "latest_accepted"
-            and tracking_snapshot.runtime_tip_calibration_state == "loaded"
-            and not tracking_snapshot.runtime_tip_identity_fallback
-            and tracking_snapshot.tip_pose_status == "ok"
-            and tracking_snapshot.T_robot_tip is not None
-        ):
+        runtime_tip_policy = evaluate_runtime_tip_trust(
+            snapshot=tracking_snapshot,
+            workflow=WORKFLOW_REPEATABILITY,
+            allow_lower_trust=bool(config.allow_debug_coil_as_tip),
+        )
+        if runtime_tip_policy.allowed_for_workflow and runtime_tip_policy.thesis_trusted:
             checks.append(
                 _ok(
                     "runtime_tip",
-                    "0A Runtime Tip Calibration",
-                    "Runtime T_coil_tip is loaded and live robot-frame tip pose is active.",
+                    "Runtime Tip Policy",
+                    runtime_tip_policy.status_message,
                 )
             )
-        elif (
-            debug_coil_as_tip
-            and tracking_snapshot.T_robot_tip is not None
-            and tracking_snapshot.tip_pose_status in {"ok", "coil_as_tip"}
-        ):
+        elif runtime_tip_policy.allowed_for_workflow:
             checks.append(
                 _warning(
                     "runtime_tip",
-                    "0A Runtime Tip Calibration",
-                    "Debug coil_as_tip override is explicitly enabled. The run will use identity T_coil_tip "
-                    "with the 0A coil pose as the tip, no runtime tip calibration artifact, and lower-trust "
-                    "debug/fallback provenance. It is not thesis-trusted.",
+                    "Runtime Tip Policy",
+                    f"{runtime_tip_policy.status_message} This run is {runtime_tip_policy.trust_label}.",
                 )
             )
         else:
+            mode = str(getattr(tracking_snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted")
             checks.append(
                 _blocked(
                     "runtime_tip",
-                    "0A Runtime Tip Calibration",
-                    "Repeatability requires latest_accepted 0A runtime tip calibration with no identity fallback. "
-                    f"Mode={runtime_tip_mode}, "
+                    "Runtime Tip Policy",
+                    "Repeatability requires a thesis_trusted runtime tip policy outcome. "
+                    f"Mode={mode}, trust={runtime_tip_policy.trust_label}, "
                     f"Runtime state={tracking_snapshot.runtime_tip_calibration_state}, "
                     f"tip pose={tracking_snapshot.tip_pose_status}, "
                     f"fallback={tracking_snapshot.runtime_tip_identity_fallback}. "
-                    "For bench diagnostics only, set allow_debug_coil_as_tip: true while live runtime tip mode is coil_as_tip.",
+                    f"Reasons={runtime_tip_policy.reasons or ['policy_not_allowed']}.",
                 )
             )
         servo_ids = [int(value) for value in (settings.robot.tendon_to_servo or settings.robot.servo_ids or [])]
@@ -832,38 +830,37 @@ def evaluate_preflight(
             )
         else:
             checks.append(_blocked("registration", "Base Registration", f"Accepted base registration must be loaded. Runtime state is {tracking_snapshot.registration_state}."))
-        runtime_tip_mode = str(getattr(tracking_snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted")
-        runtime_tip_ready = (
-            tracking_snapshot.runtime_tip_calibration_state == "loaded"
-            and tracking_snapshot.tip_pose_status == "ok"
-            and tracking_snapshot.T_robot_tip is not None
+        runtime_tip_policy = evaluate_runtime_tip_trust(
+            snapshot=tracking_snapshot,
+            workflow=WORKFLOW_MODELING_DATASET,
+            allow_lower_trust=bool(config.allow_lower_trust_runtime_tip),
         )
-        if runtime_tip_ready and runtime_tip_mode == "latest_accepted":
-            checks.append(_ok("runtime_tip", "Runtime Tip", "Trusted latest_accepted runtime tip is loaded and live robot-frame tip pose is active."))
-        elif runtime_tip_ready and config.allow_lower_trust_runtime_tip:
+        if runtime_tip_policy.allowed_for_workflow and runtime_tip_policy.thesis_trusted:
+            checks.append(_ok("runtime_tip", "Runtime Tip Policy", runtime_tip_policy.status_message))
+        elif runtime_tip_policy.allowed_for_workflow:
             checks.append(
                 _warning(
                     "runtime_tip",
-                    "Runtime Tip",
-                    f"Runtime tip mode {runtime_tip_mode} is active with a live robot-frame tip pose. This run is explicitly lower trust.",
+                    "Runtime Tip Policy",
+                    f"{runtime_tip_policy.status_message} This run is explicitly {runtime_tip_policy.trust_label}.",
                 )
             )
         elif not bool(config.require_robot_frame_tip) and bool(config.allow_lower_trust_runtime_tip):
             checks.append(
                 _warning(
                     "runtime_tip",
-                    "Runtime Tip",
-                    f"Live robot-frame tip pose is not required for this explicitly lower-trust run. Current mode={runtime_tip_mode}, state={tracking_snapshot.runtime_tip_calibration_state}, tip pose={tracking_snapshot.tip_pose_status}.",
+                    "Runtime Tip Policy",
+                    f"Live robot-frame tip pose is not required for this explicitly lower-trust run. Current policy={runtime_tip_policy.trust_label}, mode={runtime_tip_policy.mode}, state={tracking_snapshot.runtime_tip_calibration_state}, tip pose={tracking_snapshot.tip_pose_status}.",
                 )
             )
         else:
             checks.append(
                 _blocked(
                     "runtime_tip",
-                    "Runtime Tip",
+                    "Runtime Tip Policy",
                     (
-                        f"Runtime tip must be loaded and active for modeling data. "
-                        f"Mode={runtime_tip_mode}, state={tracking_snapshot.runtime_tip_calibration_state}, tip pose={tracking_snapshot.tip_pose_status}."
+                        f"Runtime tip policy must allow modeling data. "
+                        f"Mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}, state={tracking_snapshot.runtime_tip_calibration_state}, tip pose={tracking_snapshot.tip_pose_status}, reasons={runtime_tip_policy.reasons or ['policy_not_allowed']}."
                     ),
                 )
             )
@@ -939,6 +936,37 @@ def evaluate_preflight(
                         "Tracking",
                         "Tracker displacement was requested, but live tracking is not currently ready. "
                         "The run can still save current-versus-travel data only.",
+                    )
+                )
+            runtime_tip_policy = evaluate_runtime_tip_trust(
+                snapshot=tracking_snapshot,
+                workflow=WORKFLOW_PRETENSION_VALIDATION,
+                allow_lower_trust=True,
+            )
+            if runtime_tip_policy.thesis_trusted:
+                checks.append(_ok("runtime_tip", "Runtime Tip Policy", runtime_tip_policy.status_message))
+            elif runtime_tip_policy.allowed_for_workflow:
+                checks.append(
+                    _warning(
+                        "runtime_tip",
+                        "Runtime Tip Policy",
+                        f"{runtime_tip_policy.status_message} Pretension validation will record this as {runtime_tip_policy.trust_label}.",
+                    )
+                )
+            elif str(config.mode).strip().lower() in {"single_segment_staged", "advanced_4servo", "staged"} and bool(config.enable_tip_centering):
+                checks.append(
+                    _blocked(
+                        "runtime_tip",
+                        "Runtime Tip Policy",
+                        f"Tip centering requires an allowed runtime tip policy outcome. Mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}, reasons={runtime_tip_policy.reasons or ['policy_not_allowed']}.",
+                    )
+                )
+            else:
+                checks.append(
+                    _warning(
+                        "runtime_tip",
+                        "Runtime Tip Policy",
+                        f"Runtime tip is not available for robot-frame tip metrics. Mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}.",
                     )
                 )
         else:

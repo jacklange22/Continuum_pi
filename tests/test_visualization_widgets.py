@@ -256,7 +256,7 @@ def test_tracking_scene_reports_explicit_coil_as_tip_mode_with_visible_tip_glyph
         live_state=_tracking_state(
             registration_state="loaded",
             runtime_tip_mode="coil_as_tip",
-            runtime_tip_trust_level="fallback_debug",
+            runtime_tip_trust_level="thesis_trusted",
             runtime_tip_calibration_state="coil_as_tip",
             runtime_tip_mode_message="Coil-as-tip override is active. The 0A coil pose is shown directly as the tip.",
             tip_pose_status="coil_as_tip",
@@ -283,7 +283,7 @@ def test_tracking_scene_reports_explicit_coil_as_tip_mode_with_visible_tip_glyph
 
     assert frame == "robot"
     assert any(point.key == "tip" for point in scene.points)
-    assert any("Runtime tip mode: coil as tip | fallback debug" == line for line in scene.overlay_lines)
+    assert any("Runtime tip mode: coil as tip | thesis trusted" == line for line in scene.overlay_lines)
     assert any("Tip pose: coil as tip" == line for line in scene.overlay_lines)
     assert any("Tip glyph: shown" == line for line in scene.overlay_lines)
 

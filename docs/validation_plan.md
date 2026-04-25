@@ -157,7 +157,7 @@ Method:
 - capture the hat truth points with the accepted `0B` pen probe calibration
 - collect stationary `0A` samples
 - solve and save the runtime tip artifact
-- verify tracking reports that live tip pose is using the accepted runtime tip artifact
+- verify tracking reports the selected runtime tip policy and does not present lower-trust calibration artifacts as thesis-trusted
 
 Acceptance:
 
@@ -165,10 +165,12 @@ Acceptance:
 - hat-fit RMSE and max residual are saved
 - `0A` translation and rotation spread summaries are saved
 - tracking clearly distinguishes:
-  - accepted runtime tip artifact loaded
+  - `coil_as_tip` thesis-trusted position path
+  - accepted runtime tip artifact loaded as `lower_trust`
   - missing runtime tip artifact
   - identity fallback
   - invalid runtime tip artifact
+- `transform_chain_summary.json`, `transform_chain_summary.txt`, and `transform_chain_overview.png` are written for current-state diagnostics and experiment runs
 
 ## Experiment Validation
 

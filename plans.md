@@ -33,7 +33,7 @@ Success does not mean every source of error disappears. Success means the system
 - Is the tracker stable before robot motion is involved?
 - Is the `0B` probe tip calibration good enough for registration?
 - Is the robot/body registration good enough to trust robot-frame tip measurements?
-- Is the `0A` runtime tip transform accepted and current?
+- Is the active runtime tip policy explicit and appropriate for the run?
 - Are servo commands bounded by real calibration artifacts?
 - Is pretension/startup state repeatable enough to compare runs?
 - Does repeatability error depend on prior target/path history?
@@ -48,7 +48,7 @@ Primary error sources:
 - `0B` pivot calibration error.
 - Four-point base/robot registration error and landmark choice.
 - Physical base movement after registration.
-- `0A` runtime tip calibration error.
+- runtime tip policy error: `coil_as_tip` is the current trusted robot-frame position path, while accepted runtime tip calibration artifacts remain lower-trust until validated.
 - Servo position read/write behavior, operating mode, current/voltage/temperature telemetry, and stale readings.
 - Neutral capture and calibrated safe bounds.
 - Pretension threshold choice and accepted startup-state source.
@@ -80,7 +80,7 @@ The project should move up this ladder in order. A later rung is lower-trust if 
    Done when the operator can select four visible landmarks, capture repeated `0B` samples, solve, review FRE/RMSE, save intentionally, and produce `data/registrations/latest_registration.json`.
 
 5. Runtime tip validation
-   Done when `T_robot_tip = T_robot_aurora @ T_aurora_0A @ T_coil_tip` is live, registration and runtime-tip calibration states are visible, and failures distinguish missing registration, stale tracker data, and missing/identity fallback runtime tip calibration.
+   Done when `T_robot_tip = T_robot_aurora @ T_aurora_0A @ T_coil_tip` is live, registration and runtime-tip policy states are visible, and failures distinguish missing registration, stale tracker data, lower-trust calibration artifacts, debug overrides, and unavailable tip pose.
 
 6. One-servo OpenRB/DYNAMIXEL bring-up
    Done when a single real servo can be discovered, identified, read for telemetry, assigned an ID if needed, captured for neutral/bounds, and jogged inside conservative limits with external power and fresh telemetry.
@@ -92,7 +92,7 @@ The project should move up this ladder in order. A later rung is lower-trust if 
    Done when pretension validation or manual pretension capture creates an accepted startup-state source for every configured servo, with current/travel evidence and clear lower-trust flags where needed.
 
 9. Single-segment repeatability
-   Done when `single_segment_repeatability` runs with live tracker, accepted registration, accepted runtime tip calibration, accepted pretension source, neutral return on finalize, and outputs path-dependence/repeatability plots and summary metrics.
+   Done when `single_segment_repeatability` runs with live tracker, accepted registration, a thesis-trusted runtime tip policy outcome, accepted pretension source, neutral return on finalize, and outputs path-dependence/repeatability plots and summary metrics.
 
 10. Hysteresis and modeling datasets
     Done when repeatability has established a trusted baseline and `collect_pose_command_dataset` can collect model-training data with provenance good enough to compare against repeatability/hysteresis observations.
@@ -113,8 +113,8 @@ Registration and runtime tip:
 
 - The default operator path is now 4-point body registration using `config/registration.yaml`.
 - Legacy SolidWorks/reference assets remain protected inputs, not the default runtime architecture.
-- Runtime tip calibration is separated from `0B` pivot calibration and base registration.
-- Registration quality still depends on physical landmark choice, base stability, and accepted tip artifacts.
+- Runtime tip calibration is separated from `0B` pivot calibration and base registration; accepted calibration artifacts are currently lower-trust until their own validation is complete.
+- Registration quality still depends on physical landmark choice, base stability, and declared tip policy.
 
 Servo and hardware:
 

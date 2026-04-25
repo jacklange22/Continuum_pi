@@ -829,7 +829,7 @@ class RuntimeTipCalibrationService:
             )
         return (
             "Latest accepted live mode is selected. Use Session mode = Full Accepted Hat Calibration below "
-            "to capture or update the trusted full runtime-tip artifact."
+            "to capture or update the full runtime-tip artifact; policy currently records that path as lower_trust until validated."
         )
 
     @staticmethod

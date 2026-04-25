@@ -241,7 +241,7 @@ def _trusted_modeling_snapshot(
     frame_number: int = 1,
     tracker_age_s: float = 0.01,
     tracker_stale: bool = False,
-    runtime_tip_mode: str = "latest_accepted",
+    runtime_tip_mode: str = "coil_as_tip",
     registration_state: str = "loaded",
     tip_pose_status: str = "ok",
     include_robot_tip: bool = True,
@@ -271,15 +271,19 @@ def _trusted_modeling_snapshot(
         registration_state=str(registration_state),
         registration_path=str(registration_path),
         T_robot_aurora=np.eye(4).tolist() if registration_state == "loaded" else None,
-        runtime_tip_calibration_state="loaded" if include_robot_tip else "missing_runtime_tip_calibration",
+        runtime_tip_calibration_state=(
+            "coil_as_tip"
+            if runtime_tip_mode == "coil_as_tip" and include_robot_tip
+            else ("loaded" if include_robot_tip else "missing_runtime_tip_calibration")
+        ),
         runtime_tip_calibration_path=str(registration_path.parent / "latest_runtime_tip_calibration.json"),
         runtime_tip_mode=str(runtime_tip_mode),
-        runtime_tip_trust_level="trusted" if runtime_tip_mode == "latest_accepted" else "override",
+        runtime_tip_trust_level="thesis_trusted" if runtime_tip_mode == "coil_as_tip" else "lower_trust",
         runtime_tip_mode_message="Test runtime tip mode",
         runtime_tip_selected_artifact_kind="latest_runtime_tip_calibration",
         runtime_tip_selected_artifact_path=str(registration_path.parent / "latest_runtime_tip_calibration.json"),
-        runtime_tip_identity_fallback=False,
-        tip_pose_status=str(tip_pose_status),
+        runtime_tip_identity_fallback=bool(runtime_tip_mode == "coil_as_tip"),
+        tip_pose_status=("coil_as_tip" if runtime_tip_mode == "coil_as_tip" and tip_pose_status == "ok" else str(tip_pose_status)),
         T_robot_tip=T_robot_tip,
         normalized_live_tool_ids=["0A", "0B"],
         tools={
@@ -1279,7 +1283,8 @@ def test_collect_pose_command_dataset_records_full_pose_when_registration_exists
     assert bundle.paths.output_dir.joinpath("modeling_command_distribution.png").exists()
     assert bundle.paths.output_dir.joinpath("modeling_dataset_legacy_compat.dat").exists()
     metrics = bundle.summary.experiment_metrics
-    assert metrics["run_provenance"]["runtime_tip_calibration"]["mode"] == "latest_accepted"
+    assert metrics["run_provenance"]["runtime_tip_calibration"]["mode"] == "coil_as_tip"
+    assert metrics["run_provenance"]["runtime_tip_calibration"]["trust_level"] == "thesis_trusted"
     assert metrics["run_provenance"]["pretension_artifact"]["active_source_type"] == "manual"
     assert metrics["run_provenance"]["startup_reference_source"] == "manual"
     export_rows = [
@@ -1345,7 +1350,7 @@ def test_collect_pose_command_dataset_blocks_lower_trust_runtime_tip_by_default(
         translation_mm=[0.0, 0.0, 0.0],
         registration_path=registration_path,
         frame_number=1,
-        runtime_tip_mode="coil_as_tip",
+        runtime_tip_mode="latest_accepted",
     )
     runner = _runner(
         tmp_path,
@@ -1366,6 +1371,6 @@ def test_collect_pose_command_dataset_blocks_lower_trust_runtime_tip_by_default(
     )
 
     assert result.success is False
-    assert "latest_accepted runtime tip mode" in result.message
+    assert "runtime tip policy" in result.message.lower()
     bundle = runner.load_dataset(result.paths.output_dir)
     assert bundle.summary.status == "invalid_due_to_insufficient_samples"

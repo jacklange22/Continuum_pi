@@ -40,6 +40,7 @@ from continuum_robot.tracking.aurora_framer import AuroraFramer
 from continuum_robot.tracking.aurora_parser import AuroraParser
 from continuum_robot.tracking.tip_pose_service import TipPoseService
 from continuum_robot.tracking.tool_models import AuroraToolMeasurement
+from continuum_robot.tracking.runtime_tip_policy import evaluate_runtime_tip_trust
 from continuum_robot.tracking.transforms import assert_rigid_transform_matrix, make_transform_A_B
 from continuum_robot.utils.time_utils import utc_now_iso
 
@@ -586,6 +587,8 @@ class TrackingService:
             state=runtime_tip_calibration_state,
             source=runtime_tip_source,
             timestamp_utc=runtime_tip_timestamp_utc,
+            has_robot_tip=tip_service is not None,
+            identity_fallback=runtime_tip_identity_fallback,
         )
 
         with self._lock:
@@ -1470,48 +1473,54 @@ class TrackingService:
         state: str,
         source: str | None,
         timestamp_utc: str | None,
+        has_robot_tip: bool = False,
+        identity_fallback: bool = False,
     ) -> tuple[str, str]:
+        evaluation = evaluate_runtime_tip_trust(
+            mode=mode,
+            calibration_state=state,
+            tip_pose_status=("coil_as_tip" if mode == cls.RUNTIME_TIP_MODE_COIL_AS_TIP else "ok"),
+            has_robot_tip=has_robot_tip,
+            identity_fallback=identity_fallback,
+        )
+        detail = f" ({timestamp_utc})" if timestamp_utc else ""
+        source_detail = f" Source={source}." if source else ""
         if mode == cls.RUNTIME_TIP_MODE_COIL_AS_TIP:
-            return (
-                "fallback_debug",
-                "Coil-as-tip override is active. The live chain uses identity T_coil_tip, so the 0A coil pose is shown directly as the tip without an extra runtime transform.",
-            )
+            return (evaluation.trust_label, evaluation.status_message)
         if mode == cls.RUNTIME_TIP_MODE_QUICK_4_POINT:
             if state == "quick_4_point_loaded":
-                detail = f" ({timestamp_utc})" if timestamp_utc else ""
                 return (
-                    "quick_override",
-                    f"Quick 4-point runtime tip override is active{detail}.",
+                    evaluation.trust_label,
+                    f"{evaluation.status_message}{detail}{source_detail}",
                 )
             if state == "invalid_runtime_tip_calibration":
                 return (
-                    "invalid",
+                    evaluation.trust_label,
                     "Quick 4-point runtime tip override is selected, but the saved override artifact is invalid.",
                 )
             return (
-                "missing",
+                evaluation.trust_label,
                 "Quick 4-point runtime tip override is selected, but no saved quick artifact is available.",
             )
         if state == "loaded":
-            detail = f" ({timestamp_utc})" if timestamp_utc else ""
-            return ("trusted", f"Latest accepted runtime tip artifact is active{detail}.")
+            return (evaluation.trust_label, f"{evaluation.status_message}{detail}{source_detail}")
         if state == "loaded_from_registration_artifact":
             return (
-                "quick_override",
+                "lower_trust",
                 "Tracking is using a legacy registration-embedded runtime tip transform instead of a separate accepted artifact.",
             )
         if state == "identity_tip_fallback":
             return (
-                "fallback_debug",
+                "debug_only",
                 "Tracking is using the identity runtime tip fallback because no separate accepted runtime tip artifact is active.",
             )
         if state == "invalid_runtime_tip_calibration":
-            return ("invalid", "The saved runtime tip artifact is invalid and cannot be trusted.")
+            return ("unavailable", "The saved runtime tip artifact is invalid and cannot be trusted.")
         if state == "missing_runtime_tip_calibration":
-            return ("missing", "No accepted runtime tip artifact is available.")
+            return ("unavailable", "No accepted runtime tip artifact is available.")
         if source:
-            return ("warning", f"Runtime tip source is {source} with state {state}.")
-        return ("missing", f"Runtime tip state is {state}.")
+            return ("lower_trust", f"Runtime tip source is {source} with state {state}.")
+        return ("unavailable", f"Runtime tip state is {state}.")
 
     @staticmethod
     def _default_runtime_tip_path(*, project_root: Path, registration_path: Path) -> Path:

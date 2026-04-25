@@ -33,6 +33,7 @@ from continuum_robot.experiments.single_segment_repeatability import (
     SingleSegmentRepeatabilityExperiment,
     build_legacy_17_point_targets,
     compute_repeatability_baseline_comparison,
+    compute_legacy_style_repeatability_analysis,
     compute_single_segment_repeatability_metrics,
     generate_legacy_revisit_sequence,
     load_repeatability_metrics_from_run,
@@ -129,9 +130,41 @@ def test_repeatability_metrics_use_repeat_captures_and_robot_frame() -> None:
     assert metrics["valid_repeat_sample_count"] == 4
     assert metrics["valid_approach_sample_count"] == 1
     assert metrics["per_target_metrics"]["1"]["centroid_mm"] == [1.0, 0.0, 0.0]
+    assert metrics["per_target_metrics"]["1"]["XY_RMSE_mm"] == pytest.approx(1.0)
+    assert metrics["per_target_metrics"]["1"]["XYZ_RMSE_mm"] == pytest.approx(1.0)
     assert metrics["per_target_metrics"]["1"]["spread_rms_mm"] == pytest.approx(1.0)
     assert metrics["per_target_metrics"]["2"]["spread_rms_mm"] == pytest.approx(2.5)
     assert metrics["overall_repeatability_rms_mm"] == pytest.approx(((1.0**2 + 1.0**2 + 2.5**2 + 2.5**2) / 4) ** 0.5)
+    assert metrics["legacy_style_comparison"]["per_target"]["2"]["XYZ_RMSE_mm"] == pytest.approx(2.5)
+
+
+def test_legacy_style_repeatability_analysis_matches_legacy_xyz_rmse_definition() -> None:
+    samples = [
+        _sample(phase="approach", sample_index=0, target_index=1, approach_index=0, position_mm=[100.0, 100.0, 0.0]),
+        _sample(phase="repeat", sample_index=1, target_index=1, approach_index=0, position_mm=[0.0, 0.0, 0.0]),
+        _sample(phase="repeat", sample_index=2, target_index=1, approach_index=1, position_mm=[2.0, 0.0, 0.0]),
+        _sample(phase="repeat", sample_index=3, target_index=1, approach_index=2, position_mm=[1.0, 0.0, 2.0]),
+        _sample(phase="repeat", sample_index=4, target_index=1, approach_index=3, position_mm=[150.0, 0.0, 0.0]),
+        _sample(
+            phase="repeat",
+            sample_index=5,
+            target_index=1,
+            approach_index=4,
+            position_mm=[9.0, 9.0, 9.0],
+            accepted=False,
+        ),
+    ]
+
+    analysis = compute_legacy_style_repeatability_analysis(samples, tool_id="0A")
+
+    row = analysis["per_target"]["1"]
+    assert row["n_samples"] == 3
+    assert row["centroid_mm"] == pytest.approx([1.0, 0.0, 2.0 / 3.0])
+    assert row["XY_RMSE_mm"] == pytest.approx((2.0 / 3.0) ** 0.5)
+    assert row["XYZ_RMSE_mm"] == pytest.approx((14.0 / 9.0) ** 0.5)
+    assert row["max_deviation_mm"] == pytest.approx(4.0 / 3.0)
+    assert analysis["sample_selection"]["selected_repeat_sample_count"] == 3
+    assert analysis["sample_selection"]["rejected_repeat_sample_count"] == 2
 
 
 def test_repeatability_metrics_mark_scientifically_weak_partial_run_invalid() -> None:
@@ -298,9 +331,9 @@ def test_preflight_blocks_repeatability_when_runtime_tip_mode_is_quick_override(
     assert any("Mode=quick_4_point" in check.message for check in report.checks if check.key == "runtime_tip")
 
 
-def test_preflight_blocks_repeatability_coil_as_tip_by_default(tmp_path: Path) -> None:
+def test_preflight_allows_repeatability_coil_as_tip_as_trusted_policy(tmp_path: Path) -> None:
     pytest.importorskip("PySide6")
-    from continuum_robot.gui.experiment_preflight import RUN_BLOCKED, evaluate_preflight
+    from continuum_robot.gui.experiment_preflight import RUN_OK, evaluate_preflight
 
     settings = _settings(mock_mode=False)
     service = _servo_service(tmp_path)
@@ -327,16 +360,16 @@ def test_preflight_blocks_repeatability_coil_as_tip_by_default(tmp_path: Path) -
         servo_calibration_summary=service.neutral_calibration.get_calibration_summary(),
     )
 
-    assert report.overall_status == RUN_BLOCKED
+    assert report.overall_status == RUN_OK
     assert any(
-        check.key == "runtime_tip" and "allow_debug_coil_as_tip" in check.message
+        check.key == "runtime_tip" and check.status == "ok"
         for check in report.checks
     )
 
 
-def test_preflight_allows_repeatability_debug_coil_as_tip_with_warning(tmp_path: Path) -> None:
+def test_preflight_ignores_legacy_debug_flag_for_trusted_coil_as_tip(tmp_path: Path) -> None:
     pytest.importorskip("PySide6")
-    from continuum_robot.gui.experiment_preflight import RUN_WARNING, evaluate_preflight
+    from continuum_robot.gui.experiment_preflight import RUN_OK, evaluate_preflight
 
     settings = _settings(mock_mode=False)
     service = _servo_service(tmp_path)
@@ -363,9 +396,9 @@ def test_preflight_allows_repeatability_debug_coil_as_tip_with_warning(tmp_path:
         servo_calibration_summary=service.neutral_calibration.get_calibration_summary(),
     )
 
-    assert report.overall_status == RUN_WARNING
+    assert report.overall_status == RUN_OK
     assert any(
-        check.key == "runtime_tip" and "not thesis-trusted" in check.message
+        check.key == "runtime_tip" and check.status == "ok"
         for check in report.checks
     )
 
@@ -469,7 +502,7 @@ def test_repeatability_command_blocks_targets_beyond_experiment_tick_cap(tmp_pat
         experiment._command_target(session, experiment._targets[9])
 
 
-def test_repeatability_precheck_blocks_coil_as_tip_without_debug_override(tmp_path: Path) -> None:
+def test_repeatability_precheck_allows_coil_as_tip_without_debug_override(tmp_path: Path) -> None:
     service = _servo_service(tmp_path)
     pivot_tip_file = tmp_path / "tools" / "penprobe_08_09_24c"
     pivot_tip_file.parent.mkdir(parents=True, exist_ok=True)
@@ -486,18 +519,15 @@ def test_repeatability_precheck_blocks_coil_as_tip_without_debug_override(tmp_pa
     )
     experiment.setup(session)
 
-    with pytest.raises(RuntimeError, match="allow_debug_coil_as_tip"):
-        experiment.precheck(session)
+    experiment.precheck(session)
 
 
-def test_repeatability_precheck_allows_debug_coil_as_tip_and_records_lower_trust(tmp_path: Path) -> None:
+def test_repeatability_precheck_records_coil_as_tip_as_thesis_trusted(tmp_path: Path) -> None:
     service = _servo_service(tmp_path)
     pivot_tip_file = tmp_path / "tools" / "penprobe_08_09_24c"
     pivot_tip_file.parent.mkdir(parents=True, exist_ok=True)
     pivot_tip_file.write_text("0,0,0\n", encoding="utf-8")
-    experiment = SingleSegmentRepeatabilityExperiment(
-        SingleSegmentRepeatabilityConfig(allow_debug_coil_as_tip=True)
-    )
+    experiment = SingleSegmentRepeatabilityExperiment(SingleSegmentRepeatabilityConfig())
     session = _session(
         tmp_path,
         service=service,
@@ -514,10 +544,11 @@ def test_repeatability_precheck_allows_debug_coil_as_tip_and_records_lower_trust
     provenance = session.metrics["run_provenance"]
     runtime_tip = provenance["runtime_tip_calibration"]
     assert runtime_tip["mode"] == "coil_as_tip"
-    assert runtime_tip["trust_level"] == "fallback_debug"
+    assert runtime_tip["trust_level"] == "thesis_trusted"
     assert runtime_tip["artifact_used"] is False
     assert runtime_tip["identity_marker"] == "T_coil_tip_identity__coil_pose_used_as_tip"
-    assert provenance["thesis_trusted_runtime_tip"] is False
+    assert runtime_tip["policy"]["uses_coil_as_tip"] is True
+    assert provenance["thesis_trusted_runtime_tip"] is True
 
 
 def test_experiment_registration_and_custom_page_routing(tmp_path: Path) -> None:
@@ -565,7 +596,7 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     snapshot.registration_path = str(registration_path)
     snapshot.stored_registration_timestamp_utc = "2026-04-15T00:00:00Z"
     snapshot.stored_registration_fre_mm = 0.4
-    snapshot.runtime_tip_calibration_path = str(runtime_tip_path)
+    snapshot.runtime_tip_calibration_path = None
     snapshot.stored_runtime_tip_timestamp_utc = "2026-04-15T00:05:00Z"
     tracking = _TrackingService(snapshot)
     pivot_tip_file = tmp_path / "tools" / "penprobe_08_09_24c"
@@ -596,6 +627,8 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     assert result.paths.output_dir.parent.name == "single_segment_repeatability"
     assert (result.paths.output_dir / "repeatability_summary.txt").exists()
     assert (result.paths.output_dir / "repeatability_clusters.png").exists()
+    assert (result.paths.output_dir / "tip_pos_clusters.png").exists()
+    assert (result.paths.output_dir / "repeatability_legacy_style_comparison.csv").exists()
     assert (result.paths.output_dir / "repeatability_rmse_summary.png").exists()
     assert (result.paths.output_dir / "repeatability_path_dependence.png").exists()
     assert (result.paths.output_dir / "repeatability_debug_samples.csv").exists()
@@ -612,14 +645,17 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     summary_payload = json.loads(result.paths.summary_path.read_text(encoding="utf-8"))
     assert metadata_payload["registration_info"]["pivot_tip"]["path"].endswith("penprobe_08_09_24c")
     assert metadata_payload["registration_info"]["base_registration"]["path"] == str(registration_path)
-    assert metadata_payload["registration_info"]["runtime_tip_calibration"]["path"] == str(runtime_tip_path)
-    assert metadata_payload["registration_info"]["runtime_tip_mode"] == "latest_accepted"
+    assert metadata_payload["registration_info"]["runtime_tip_calibration"]["path"] is None
+    assert metadata_payload["registration_info"]["runtime_tip_mode"] == "coil_as_tip"
+    assert metadata_payload["registration_info"]["runtime_tip_policy"]["trust_label"] == "thesis_trusted"
     assert metadata_payload["backend_info"]["pretension_source"]["source_type"] == "algorithmic"
     assert summary_payload["experiment_metrics"]["run_provenance"]["pretension_artifact"]["path"].endswith("neutral.json")
     assert summary_payload["experiment_metrics"]["run_provenance"]["pretension_artifact"]["active_source_type"] == "algorithmic"
-    assert summary_payload["experiment_metrics"]["run_provenance"]["runtime_tip_calibration"]["mode"] == "latest_accepted"
-    assert summary_payload["experiment_metrics"]["runtime_tip_trust_level"] == "trusted"
+    assert summary_payload["experiment_metrics"]["run_provenance"]["runtime_tip_calibration"]["mode"] == "coil_as_tip"
+    assert summary_payload["experiment_metrics"]["runtime_tip_trust_level"] == "thesis_trusted"
     assert summary_payload["experiment_metrics"]["thesis_trusted_run"] is True
+    assert summary_payload["experiment_metrics"]["legacy_style_comparison"]["analysis_mode"] == "legacy_style"
+    assert summary_payload["experiment_metrics"]["transform_chain_audit"]["pose_frame_used_for_analysis"] == "robot"
     assert summary_payload["experiment_metrics"]["run_provenance"]["startup_reference_source"] == "algorithmic"
     assert summary_payload["experiment_metrics"]["run_provenance"]["precheck_trust_summary"]["overall_status"] == "ready"
     assert "tracker_bridge" not in (result.paths.output_dir / "config_snapshot.yaml").read_text(encoding="utf-8")
@@ -638,9 +674,13 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     assert accepted_capture["extra"]["raw_tracker_tool_pose"]["translation_mm"] == [1.0, 2.0, 3.0]
     assert accepted_capture["extra"]["robot_frame_tip_pose_used"]["translation_mm"] == [1.0, 2.0, 3.0]
     assert accepted_capture["extra"]["accept_reject_reason"] == "ok"
+    csv_text = (result.paths.output_dir / "repeatability_legacy_style_comparison.csv").read_text(encoding="utf-8")
+    assert "legacy_style" in csv_text
+    assert "thesis_strict" in csv_text
+    assert "XY_RMSE_mm" in csv_text
 
 
-def test_debug_coil_as_tip_repeatability_run_is_labeled_lower_trust(tmp_path: Path) -> None:
+def test_coil_as_tip_repeatability_run_is_labeled_thesis_trusted(tmp_path: Path) -> None:
     if importlib.util.find_spec("PySide6") is None:
         pytest.skip("PySide6 is required for saved repeatability figure generation.")
     from continuum_robot.experiments.experiment_runner import ExperimentRunner
@@ -684,16 +724,17 @@ def test_debug_coil_as_tip_repeatability_run_is_labeled_lower_trust(tmp_path: Pa
     metrics = result.summary.experiment_metrics
     runtime_tip = metrics["run_provenance"]["runtime_tip_calibration"]
     assert runtime_tip["mode"] == "coil_as_tip"
-    assert runtime_tip["trust_level"] == "fallback_debug"
+    assert runtime_tip["trust_level"] == "thesis_trusted"
     assert runtime_tip["artifact_used"] is False
     assert runtime_tip["identity_marker"] == "T_coil_tip_identity__coil_pose_used_as_tip"
-    assert metrics["thesis_trusted_run"] is False
-    assert metrics["run_validity"]["thesis_valid_run"] is False
-    assert result.summary.status == "partial_success"
+    assert runtime_tip["policy"]["thesis_trusted"] is True
+    assert metrics["thesis_trusted_run"] is True
+    assert metrics["run_validity"]["thesis_valid_run"] is True
+    assert result.summary.status == "success"
     assert result.success is True
     sample_payload = json.loads(result.paths.samples_path.read_text(encoding="utf-8").splitlines()[0])
     assert sample_payload["extra"]["runtime_tip_mode"] == "coil_as_tip"
-    assert sample_payload["extra"]["runtime_tip_trust_level"] == "fallback_debug"
+    assert sample_payload["extra"]["runtime_tip_trust_level"] == "thesis_trusted"
 
 
 def test_capture_gate_rejects_stale_tracker_data(tmp_path: Path) -> None:
@@ -938,9 +979,9 @@ def _tracking_snapshot(
     position_mm: list[float] | None = None,
     stale: bool = False,
     age_s: float = 0.01,
-    runtime_tip_state: str = "loaded",
-    tip_pose_status: str = "ok",
-    runtime_tip_mode: str = "latest_accepted",
+    runtime_tip_state: str = "coil_as_tip",
+    tip_pose_status: str = "coil_as_tip",
+    runtime_tip_mode: str = "coil_as_tip",
 ) -> TrackingSnapshot:
     position = position_mm or [0.0, 0.0, 50.0]
     matrix = [
@@ -984,9 +1025,9 @@ def _tracking_snapshot(
         runtime_tip_calibration_state=runtime_tip_state,
         runtime_tip_mode=runtime_tip_mode,
         runtime_tip_trust_level=(
-            "trusted"
-            if runtime_tip_mode == "latest_accepted" and runtime_tip_state == "loaded"
-            else ("quick_override" if runtime_tip_mode == "quick_4_point" else "fallback_debug")
+            "thesis_trusted"
+            if runtime_tip_mode == "coil_as_tip" and runtime_tip_state == "coil_as_tip"
+            else ("debug_only" if runtime_tip_mode == "quick_4_point" else "lower_trust")
         ),
         runtime_tip_mode_message=f"mode={runtime_tip_mode}",
         runtime_tip_identity_fallback=(
@@ -1034,7 +1075,15 @@ class _DummyController:
         return None
 
 
-def _sample(*, phase: str, sample_index: int, target_index: int, approach_index: int, position_mm: list[float]):
+def _sample(
+    *,
+    phase: str,
+    sample_index: int,
+    target_index: int,
+    approach_index: int,
+    position_mm: list[float],
+    accepted: bool = True,
+):
     from continuum_robot.experiments.schemas import ExperimentTimeseriesSample
 
     return ExperimentTimeseriesSample(
@@ -1047,6 +1096,6 @@ def _sample(*, phase: str, sample_index: int, target_index: int, approach_index:
         revisit_index=sample_index,
         approach_index=approach_index,
         pose_in_robot_frame={"tip": {"translation_mm": [float(value) for value in position_mm]}},
-        status_flags=["full_pose_available"],
-        extra={"capture_accepted": True},
+        status_flags=["full_pose_available"] if accepted else ["capture_rejected"],
+        extra={"capture_accepted": bool(accepted)},
     )
