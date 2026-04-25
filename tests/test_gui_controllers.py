@@ -3139,6 +3139,19 @@ def test_repeatability_page_uses_manual_refresh_policy_when_idle(tmp_path: Path)
     assert controller.should_periodically_refresh_selected_experiment() is False
 
 
+def test_pretension_validation_page_uses_manual_refresh_policy_when_idle(tmp_path: Path) -> None:
+    controller = _experiment_controller(tmp_path)
+    controller.select_experiment("pretension_validation")
+    controller.refresh()
+    controller.state.history_loading = False
+    controller._history_dirty = False
+    controller._visualization_dirty = False
+    controller._preflight_cache_report = controller.state.preflight_report
+
+    assert controller.refresh_policy_for() == "manual"
+    assert controller.should_periodically_refresh_selected_experiment() is False
+
+
 def test_repeatability_manual_page_skips_unchanged_set_state_updates(tmp_path: Path) -> None:
     _app()
     controller = _experiment_controller(tmp_path)
@@ -3951,8 +3964,12 @@ def test_experiment_pretension_validation_page_exposes_staged_mode_controls(tmp_
 
     mode_options = {str(page.mode_combo.itemData(index)) for index in range(page.mode_combo.count())}
     assert "single_servo_trace" in mode_options
+    assert "single_segment_characterization" in mode_options
     assert "single_segment_staged" in mode_options
-    assert page.staged_mode_card.isHidden() is True
+    strategy_options = {str(page.strategy_combo.itemData(index)) for index in range(page.strategy_combo.count())}
+    assert {"conservative_startup", "characterization", "legacy"}.issubset(strategy_options)
+    assert page.staged_mode_card.isHidden() is False
+    assert controller.refresh_policy_for("pretension_validation") == "manual"
 
     staged_index = page.mode_combo.findData("single_segment_staged")
     assert staged_index >= 0

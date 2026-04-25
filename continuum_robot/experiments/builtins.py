@@ -5,10 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
+import json
 import logging
 import math
 from pathlib import Path
 import random
+import shutil
 import threading
 import time
 from typing import Any
@@ -224,6 +226,7 @@ class PretensionValidationExperimentConfig:
     """Config for one-servo pretension response validation."""
 
     mode: str = "single_servo_trace"
+    staged_strategy: str = "conservative_startup"
     servo_id: int = 1
     servo_ids: list[int] = field(default_factory=list)
     repeat_runs: int = 1
@@ -238,8 +241,17 @@ class PretensionValidationExperimentConfig:
     tip_center_y_sign: int = 1
     tip_target_xy_mm: list[float] = field(default_factory=lambda: [0.0, 0.0])
     max_tip_displacement_mm: float = 50.0
+    tip_divergence_stop_mm: float = 2.0
     equalization_step_ticks: int = 2
     equalization_max_iterations: int = 24
+    conservative_max_iterations: int = 24
+    conservative_step_ticks: int = 1
+    conservative_max_cumulative_travel_ticks: int = 80
+    characterization_step_ticks: int = 1
+    characterization_pair_cycles: int = 1
+    current_characterization_sample_count: int = 20
+    current_noise_multiplier: float = 3.0
+    min_meaningful_current_delta_ma: float = 2.0
     load_balance_tolerance_ma: float = 6.0
     pair_balance_tolerance_ma: float = 6.0
     settle_verify_time_s: float = 0.2
@@ -287,6 +299,7 @@ class PretensionValidationExperimentConfig:
             raw_target_xy.append(0.0)
         return cls(
             mode=str(payload.get("mode", "single_servo_trace") or "single_servo_trace").strip().lower(),
+            staged_strategy=str(payload.get("staged_strategy", "conservative_startup") or "conservative_startup").strip().lower(),
             servo_id=int(payload.get("servo_id", 1)),
             servo_ids=servo_ids,
             repeat_runs=max(1, int(payload.get("repeat_runs", 1))),
@@ -301,8 +314,20 @@ class PretensionValidationExperimentConfig:
             tip_center_y_sign=(1 if int(payload.get("tip_center_y_sign", 1)) >= 0 else -1),
             tip_target_xy_mm=raw_target_xy,
             max_tip_displacement_mm=max(0.0, float(payload.get("max_tip_displacement_mm", 50.0))),
+            tip_divergence_stop_mm=max(0.0, float(payload.get("tip_divergence_stop_mm", 2.0))),
             equalization_step_ticks=max(1, int(payload.get("equalization_step_ticks", 2))),
             equalization_max_iterations=max(0, int(payload.get("equalization_max_iterations", 24))),
+            conservative_max_iterations=max(0, int(payload.get("conservative_max_iterations", 24))),
+            conservative_step_ticks=max(1, int(payload.get("conservative_step_ticks", payload.get("tip_center_step_ticks", 1)))),
+            conservative_max_cumulative_travel_ticks=max(
+                0,
+                int(payload.get("conservative_max_cumulative_travel_ticks", 80)),
+            ),
+            characterization_step_ticks=max(1, int(payload.get("characterization_step_ticks", 1))),
+            characterization_pair_cycles=max(1, int(payload.get("characterization_pair_cycles", 1))),
+            current_characterization_sample_count=max(2, int(payload.get("current_characterization_sample_count", 20))),
+            current_noise_multiplier=max(1.0, float(payload.get("current_noise_multiplier", 3.0))),
+            min_meaningful_current_delta_ma=max(0.0, float(payload.get("min_meaningful_current_delta_ma", 2.0))),
             load_balance_tolerance_ma=max(0.0, float(payload.get("load_balance_tolerance_ma", 6.0))),
             pair_balance_tolerance_ma=max(0.0, float(payload.get("pair_balance_tolerance_ma", 6.0))),
             settle_verify_time_s=max(0.0, float(payload.get("settle_verify_time_s", 0.2))),
@@ -1860,15 +1885,344 @@ class PretensionValidationExperiment(BaseExperiment):
             summary=summary,
             samples=session.samples,
         )
+        self._write_pretension_debug_export_bundle(session=session, paths=paths, summary=summary)
 
     def _is_staged_mode(self) -> bool:
         return str(getattr(self.config, "mode", "single_servo_trace") or "").strip().lower() in {
             "single_segment_staged",
             "staged",
             "four_servo_staged",
+            "single_segment_characterization",
+            "pretension_characterization",
+            "characterization",
+            "advanced_startup",
+            "conservative_startup",
         }
 
     def _execute_single_segment_staged(self, session: ExperimentSession) -> None:
+        if str(getattr(self.config, "staged_strategy", "conservative_startup") or "").strip().lower() != "legacy":
+            self._execute_reliable_staged_pretension(session)
+            return
+        self._execute_legacy_single_segment_staged(session)
+
+    def _execute_reliable_staged_pretension(self, session: ExperimentSession) -> None:
+        """Run the evidence-first 4-servo pretension workflow.
+
+        This path intentionally avoids the selected-servo current-threshold take-up loop.
+        Current is characterized first, then used only as a load proxy for small
+        paired moves while tracker centering remains the primary objective.
+        """
+        servo_service = session.context.servo_service
+        tracker_service = session.context.tracking_service
+        include_tracker = bool(self.config.include_tracker_displacement and tracker_service is not None)
+        if bool(self.config.include_tracker_displacement) and tracker_service is None:
+            if not bool(self.config.allow_current_only_when_tracker_missing):
+                raise RuntimeError("Tracker tip pose is required for advanced pretension, but tracking_service is unavailable.")
+            session.add_warning("Tracker tip pose is unavailable; advanced pretension will run in current-only diagnostic mode.")
+        if include_tracker and tracker_service.get_snapshot() is None:
+            include_tracker = False
+            if not bool(self.config.allow_current_only_when_tracker_missing):
+                raise RuntimeError("Tracker snapshot is unavailable for advanced pretension.")
+            session.add_warning("Tracker snapshot is unavailable; advanced pretension will run in current-only diagnostic mode.")
+
+        servo_ids = self._staged_servo_ids(session)
+        repeat_runs = max(1, int(self.config.repeat_runs))
+        mode_kind = self._reliable_pretension_mode()
+        total_progress = max(1, repeat_runs * (4 if mode_kind == "characterization" else 5))
+        progress = 0
+        run_rows: list[dict[str, Any]] = []
+        trace_rows: list[dict[str, Any]] = []
+        failure_counts: dict[str, int] = {}
+        final_tip_xy_points_mm: list[list[float]] = []
+        quality_scores: list[float] = []
+        accepted_runs = 0
+        manual_startup_artifact = self._manual_startup_artifact_snapshot(servo_service, servo_ids)
+
+        with servo_service.exclusive_bus_operation(
+            owner="pretension_validation",
+            servo_id=None,
+            reason=f"advanced pretension {mode_kind}",
+        ):
+            for run_index in range(repeat_runs):
+                session.raise_if_stop_requested()
+                target_xy = self._target_xy()
+                run_label = f"run_{run_index + 1:02d}"
+                missing_fields: list[str] = []
+                reject_reasons: list[str] = []
+                clipped_move_count = 0
+                correction_move_count = 0
+                correction_travel_ticks = 0
+                stop_reason = ""
+                converged = False
+                trace_start_index = len(trace_rows)
+
+                initial = self._advanced_measurement(
+                    servo_service=servo_service,
+                    tracker_service=tracker_service if include_tracker else None,
+                    servo_ids=servo_ids,
+                    baseline_current_ma_by_servo={},
+                    target_xy_mm=target_xy,
+                )
+                start_position_ticks = dict(initial["measured_positions_ticks"])
+                missing_fields.extend(initial["missing_fields"])
+                row = self._advanced_stage_row(
+                    mode_kind=mode_kind,
+                    run_index=run_index,
+                    stage="initial_state",
+                    target_xy_mm=target_xy,
+                    measurement=initial,
+                    extra={"manual_startup_artifact": manual_startup_artifact},
+                )
+                trace_rows.append(row)
+                self._add_staged_sample(session, phase="pretension_stage_initial", run_index=run_index, step_index=len(trace_rows) - 1, payload=row)
+                progress += 1
+                session.update_progress(progress, total_progress, {"phase": "initial_state", "run_index": run_index})
+
+                # Explicit start mode: release_200_from_current is preferred for advanced startup.
+                start_rows = []
+                for pair_index, (left_index, right_index) in enumerate(((0, 2), (1, 3)), start=1):
+                    for servo_id in (int(servo_ids[left_index]), int(servo_ids[right_index])):
+                        parameters = self._staged_parameters_for_servo(session, servo_id)
+                        move = servo_service.move_servo_to_pretension_reference(servo_id=int(servo_id), parameters=parameters)
+                        if move.clamped:
+                            clipped_move_count += 1
+                        if move.success:
+                            correction_move_count += 1
+                            correction_travel_ticks += abs(int(move.delta_ticks))
+                        start_rows.append(
+                            {
+                                "pair_label": str(pair_index),
+                                "servo_id": int(servo_id),
+                                "start_mode": str(parameters.start_mode),
+                                "status": str(move.status),
+                                "success": bool(move.success),
+                                "current_position_tick": move.current_position_tick,
+                                "goal_tick": move.goal_tick,
+                                "delta_ticks": int(move.delta_ticks),
+                                "clamped": bool(move.clamped),
+                                "message": move.message,
+                            }
+                        )
+                after_start = self._advanced_measurement(
+                    servo_service=servo_service,
+                    tracker_service=tracker_service if include_tracker else None,
+                    servo_ids=servo_ids,
+                    baseline_current_ma_by_servo={},
+                    target_xy_mm=target_xy,
+                )
+                row = self._advanced_stage_row(
+                    mode_kind=mode_kind,
+                    run_index=run_index,
+                    stage="explicit_start",
+                    target_xy_mm=target_xy,
+                    measurement=after_start,
+                    extra={"start_moves": start_rows, "clipped_move_count": clipped_move_count},
+                )
+                trace_rows.append(row)
+                self._add_staged_sample(session, phase="pretension_stage_explicit_start", run_index=run_index, step_index=len(trace_rows) - 1, payload=row)
+                progress += 1
+                session.update_progress(progress, total_progress, {"phase": "explicit_start", "run_index": run_index})
+
+                current_characterization = self._characterize_current_noise(
+                    session=session,
+                    servo_service=servo_service,
+                    tracker_service=tracker_service if include_tracker else None,
+                    servo_ids=servo_ids,
+                    run_index=run_index,
+                    target_xy_mm=target_xy,
+                    mode_kind=mode_kind,
+                    trace_rows=trace_rows,
+                )
+                baseline_current_ma_by_servo = {
+                    int(servo_id): float(stats["mean_current_ma"])
+                    for servo_id, stats in current_characterization["by_servo"].items()
+                    if stats.get("mean_current_ma") is not None
+                }
+                effective_load_tolerance_ma = max(
+                    float(self.config.load_balance_tolerance_ma),
+                    float(current_characterization.get("max_useful_current_delta_ma") or 0.0),
+                )
+                progress += 1
+                session.update_progress(progress, total_progress, {"phase": "current_characterization", "run_index": run_index})
+
+                if mode_kind == "characterization":
+                    mode_result = self._run_pair_characterization_sequence(
+                        session=session,
+                        servo_service=servo_service,
+                        tracker_service=tracker_service if include_tracker else None,
+                        servo_ids=servo_ids,
+                        run_index=run_index,
+                        target_xy_mm=target_xy,
+                        baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                        trace_rows=trace_rows,
+                    )
+                    clipped_move_count += int(mode_result.get("clipped_move_count", 0))
+                    correction_move_count += int(mode_result.get("move_count", 0))
+                    correction_travel_ticks += int(mode_result.get("travel_ticks", 0))
+                    stop_reason = str(mode_result.get("stop_reason") or "characterization_complete")
+                    converged = False
+                else:
+                    mode_result = self._run_conservative_startup_sequence(
+                        session=session,
+                        servo_service=servo_service,
+                        tracker_service=tracker_service if include_tracker else None,
+                        servo_ids=servo_ids,
+                        run_index=run_index,
+                        target_xy_mm=target_xy,
+                        baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                        effective_load_tolerance_ma=effective_load_tolerance_ma,
+                        trace_rows=trace_rows,
+                    )
+                    clipped_move_count += int(mode_result.get("clipped_move_count", 0))
+                    correction_move_count += int(mode_result.get("move_count", 0))
+                    correction_travel_ticks += int(mode_result.get("travel_ticks", 0))
+                    stop_reason = str(mode_result.get("stop_reason") or "")
+                    converged = bool(mode_result.get("converged", False))
+                    if stop_reason and stop_reason not in {"converged", "within_tolerance"}:
+                        reject_reasons.append(stop_reason)
+                progress += 1
+                session.update_progress(progress, total_progress, {"phase": mode_kind, "run_index": run_index})
+
+                pre_settle = self._advanced_measurement(
+                    servo_service=servo_service,
+                    tracker_service=tracker_service if include_tracker else None,
+                    servo_ids=servo_ids,
+                    baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                    target_xy_mm=target_xy,
+                )
+                if float(self.config.settle_verify_time_s) > 0.0:
+                    session.context.sleep_fn(float(self.config.settle_verify_time_s))
+                final = self._advanced_measurement(
+                    servo_service=servo_service,
+                    tracker_service=tracker_service if include_tracker else None,
+                    servo_ids=servo_ids,
+                    baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                    target_xy_mm=target_xy,
+                )
+                missing_fields.extend(final["missing_fields"])
+                settle_tip_drift_mm = self._distance_mm(pre_settle.get("tip_xyz_mm"), final.get("tip_xyz_mm"))
+                final_position_ticks = dict(final["measured_positions_ticks"])
+                final_currents_ma = dict(final["raw_current_ma"])
+                current_above_baseline_ma = dict(final["current_above_baseline_ma"])
+                tip_xy_offset_mm = final.get("tip_xy_error_mm")
+                if final.get("tip_xy_mm") is not None:
+                    final_tip_xy_points_mm.append(list(final["tip_xy_mm"]))
+                if missing_fields:
+                    reject_reasons.append("missing_telemetry")
+                if mode_kind != "characterization" and not converged:
+                    reject_reasons.append("not_converged")
+                if (
+                    mode_kind != "characterization"
+                    and include_tracker
+                    and tip_xy_offset_mm is not None
+                    and float(tip_xy_offset_mm) > float(self.config.accept_max_final_tip_xy_offset_mm)
+                ):
+                    reject_reasons.append("tip_center_error")
+                if (
+                    mode_kind != "characterization"
+                    and final.get("load_balance_error_ma") is not None
+                    and float(final["load_balance_error_ma"]) > effective_load_tolerance_ma
+                ):
+                    reject_reasons.append("load_balance_error")
+                if include_tracker and tip_xy_offset_mm is None and not bool(self.config.allow_current_only_when_tracker_missing):
+                    reject_reasons.append("missing_tip_pose")
+                reject_reasons = sorted(set(reason for reason in reject_reasons if reason))
+
+                quality_components, quality_score = self._staged_quality_score(
+                    tip_xy_offset_mm=tip_xy_offset_mm,
+                    settle_tip_drift_mm=settle_tip_drift_mm,
+                    load_balance_error_ma=final.get("load_balance_error_ma"),
+                    pair_balance_error_ma=final.get("pair_balance_error_ma"),
+                    final_position_ticks=final_position_ticks,
+                    start_position_ticks=start_position_ticks,
+                    missing_fields=missing_fields,
+                    clipped_move_count=clipped_move_count,
+                    correction_move_count=correction_move_count,
+                    correction_travel_ticks=correction_travel_ticks,
+                    takeup_success=bool(converged or mode_kind == "characterization"),
+                )
+                accepted = bool(mode_kind == "characterization" or not reject_reasons)
+                if accepted:
+                    accepted_runs += 1
+                if quality_score is not None:
+                    quality_scores.append(float(quality_score))
+                for reason in reject_reasons:
+                    failure_counts[reason] = int(failure_counts.get(reason, 0)) + 1
+
+                run_trace_rows = trace_rows[trace_start_index:]
+                run_row = {
+                    "run_index": int(run_index),
+                    "run_label": run_label,
+                    "mode": mode_kind,
+                    "accepted": bool(accepted),
+                    "reject_reasons": reject_reasons,
+                    "stop_reason": stop_reason or ("characterization_complete" if mode_kind == "characterization" else "converged"),
+                    "converged": bool(converged),
+                    "servo_ids": list(servo_ids),
+                    "target_xy_mm": list(target_xy),
+                    "current_characterization": current_characterization,
+                    "effective_load_tolerance_ma": float(effective_load_tolerance_ma),
+                    "baseline_current_ma_by_servo": {str(k): float(v) for k, v in baseline_current_ma_by_servo.items()},
+                    "final_current_ma_by_servo": {str(k): v for k, v in final_currents_ma.items()},
+                    "current_above_baseline_ma_by_servo": {str(k): v for k, v in current_above_baseline_ma.items()},
+                    "start_position_ticks_by_servo": {str(k): v for k, v in start_position_ticks.items()},
+                    "final_position_ticks_by_servo": {str(k): v for k, v in final_position_ticks.items()},
+                    "load_balance_error_ma": final.get("load_balance_error_ma"),
+                    "pair_balance_error_ma": final.get("pair_balance_error_ma"),
+                    "initial_tip_xyz_mm": initial.get("tip_xyz_mm"),
+                    "pre_settle_tip_xyz_mm": pre_settle.get("tip_xyz_mm"),
+                    "final_tip_xyz_mm": final.get("tip_xyz_mm"),
+                    "final_tip_xy_offset_mm": tip_xy_offset_mm,
+                    "settle_tip_drift_mm": settle_tip_drift_mm,
+                    "clipped_move_count": int(clipped_move_count),
+                    "correction_move_count": int(correction_move_count),
+                    "correction_travel_ticks": int(correction_travel_ticks),
+                    "quality_score_0_100": float(quality_score),
+                    "quality_components": dict(quality_components),
+                    "missing_fields": sorted(set(missing_fields)),
+                    "trace_sample_count": len(run_trace_rows),
+                }
+                run_rows.append(run_row)
+                row = self._advanced_stage_row(
+                    mode_kind=mode_kind,
+                    run_index=run_index,
+                    stage="settle_verify",
+                    target_xy_mm=target_xy,
+                    measurement=final,
+                    extra={
+                        "accepted": bool(accepted),
+                        "reject_reasons": reject_reasons,
+                        "quality_score_0_100": float(quality_score),
+                        "quality_components": dict(quality_components),
+                        "settle_tip_drift_mm": settle_tip_drift_mm,
+                        "stop_reason": run_row["stop_reason"],
+                    },
+                )
+                trace_rows.append(row)
+                self._add_staged_sample(session, phase="pretension_stage_verify", run_index=run_index, step_index=len(trace_rows) - 1, payload=row)
+                if mode_kind != "characterization" and accepted:
+                    self._save_advanced_startup_artifact(servo_service=servo_service, servo_ids=servo_ids, run_row=run_row)
+                progress += 1
+                session.update_progress(
+                    progress,
+                    total_progress,
+                    {"phase": "settle_verify", "run_index": run_index, "quality_score_0_100": float(quality_score)},
+                )
+
+        session.metrics.update(self._reliable_pretension_metrics(
+            mode_kind=mode_kind,
+            servo_ids=servo_ids,
+            repeat_runs=repeat_runs,
+            accepted_runs=accepted_runs,
+            failure_counts=failure_counts,
+            run_rows=run_rows,
+            trace_rows=trace_rows,
+            final_tip_xy_points_mm=final_tip_xy_points_mm,
+            quality_scores=quality_scores,
+            manual_startup_artifact=manual_startup_artifact,
+        ))
+
+    def _execute_legacy_single_segment_staged(self, session: ExperimentSession) -> None:
         servo_service = session.context.servo_service
         tracker_service = session.context.tracking_service
         include_tracker = bool(self.config.include_tracker_displacement and tracker_service is not None)
@@ -2698,6 +3052,9 @@ class PretensionValidationExperiment(BaseExperiment):
 
     def _staged_parameters_for_servo(self, session: ExperimentSession, servo_id: int) -> PretensionParameters:
         defaults = session.context.servo_service.default_pretension_parameters(int(servo_id))
+        default_start_mode = str(defaults.start_mode)
+        if str(getattr(self.config, "staged_strategy", "") or "").strip().lower() != "legacy":
+            default_start_mode = "release_200_from_current"
         return PretensionParameters(
             untensioned_reference_tick=(
                 int(self.config.untensioned_reference_tick)
@@ -2707,7 +3064,7 @@ class PretensionValidationExperiment(BaseExperiment):
             start_mode=(
                 str(self.config.pretension_start_mode).strip().lower()
                 if self.config.pretension_start_mode not in (None, "")
-                else str(defaults.start_mode)
+                else default_start_mode
             ),
             step_ticks=int(self.config.step_ticks) if self.config.step_ticks is not None else int(defaults.step_ticks),
             settle_time_s=(
@@ -2794,6 +3151,591 @@ class PretensionValidationExperiment(BaseExperiment):
                 + (float(left_xyz_mm[2]) - float(right_xyz_mm[2])) ** 2
             )
         )
+
+    def _reliable_pretension_mode(self) -> str:
+        mode = str(getattr(self.config, "mode", "") or "").strip().lower()
+        strategy = str(getattr(self.config, "staged_strategy", "") or "").strip().lower()
+        if mode in {"single_segment_characterization", "pretension_characterization", "characterization"}:
+            return "characterization"
+        if strategy in {"characterization", "identification"}:
+            return "characterization"
+        return "conservative_startup"
+
+    @staticmethod
+    def _current_stats(values: list[float]) -> dict[str, float | int | None]:
+        cleaned = [float(value) for value in values if value is not None]
+        if not cleaned:
+            return {
+                "sample_count": 0,
+                "mean_current_ma": None,
+                "std_current_ma": None,
+                "min_current_ma": None,
+                "max_current_ma": None,
+                "peak_to_peak_current_ma": None,
+            }
+        mean_value = float(sum(cleaned) / len(cleaned))
+        std_value = (
+            float(math.sqrt(sum((value - mean_value) ** 2 for value in cleaned) / len(cleaned)))
+            if len(cleaned) > 1
+            else 0.0
+        )
+        return {
+            "sample_count": int(len(cleaned)),
+            "mean_current_ma": mean_value,
+            "std_current_ma": std_value,
+            "min_current_ma": float(min(cleaned)),
+            "max_current_ma": float(max(cleaned)),
+            "peak_to_peak_current_ma": float(max(cleaned) - min(cleaned)),
+        }
+
+    def _advanced_measurement(
+        self,
+        *,
+        servo_service,
+        tracker_service,
+        servo_ids: list[int],
+        baseline_current_ma_by_servo: dict[int, float],
+        target_xy_mm: list[float],
+        commanded_positions_ticks: dict[int, int | None] | None = None,
+    ) -> dict[str, Any]:
+        telemetry = servo_service.read_live_telemetry(servo_ids)
+        positions: dict[int, int | None] = {}
+        raw_current: dict[int, int | None] = {}
+        filtered_current: dict[int, float | None] = {}
+        baseline_current: dict[int, float | None] = {}
+        above_baseline: dict[int, float | None] = {}
+        current_validity: dict[int, str] = {}
+        position_error: dict[int, int | None] = {}
+        missing_fields: list[str] = []
+        for servo_id in servo_ids:
+            entry = telemetry[int(servo_id)]
+            positions[int(servo_id)] = entry.present_position
+            raw_current[int(servo_id)] = entry.present_current_ma
+            baseline = baseline_current_ma_by_servo.get(int(servo_id))
+            baseline_current[int(servo_id)] = baseline
+            filtered_current[int(servo_id)] = float(entry.present_current_ma) if entry.present_current_ma is not None else None
+            above_baseline[int(servo_id)] = (
+                float(entry.present_current_ma) - float(baseline)
+                if entry.present_current_ma is not None and baseline is not None
+                else None
+            )
+            if entry.present_current_ma is None:
+                current_validity[int(servo_id)] = "missing"
+                missing_fields.append(f"servo_{int(servo_id)}_present_current_ma")
+            elif entry.telemetry_error:
+                current_validity[int(servo_id)] = "telemetry_error"
+            else:
+                current_validity[int(servo_id)] = "valid"
+            if entry.present_position is None:
+                missing_fields.append(f"servo_{int(servo_id)}_present_position")
+            commanded = (commanded_positions_ticks or {}).get(int(servo_id))
+            position_error[int(servo_id)] = (
+                int(entry.present_position) - int(commanded)
+                if entry.present_position is not None and commanded is not None
+                else None
+            )
+        load_values = [float(value) for value in above_baseline.values() if value is not None]
+        load_balance_error_ma = float(max(load_values) - min(load_values)) if load_values else None
+        pair_balance_error_ma = None
+        if len(servo_ids) >= 4 and all(above_baseline.get(int(sid)) is not None for sid in servo_ids):
+            pair_balance_error_ma = max(
+                abs(float(above_baseline[int(servo_ids[0])] - above_baseline[int(servo_ids[2])])),
+                abs(float(above_baseline[int(servo_ids[1])] - above_baseline[int(servo_ids[3])])),
+            )
+        tip_xyz = self._staged_tip_position_mm(tracker_service) if tracker_service is not None else None
+        tip_xy = [float(tip_xyz[0]), float(tip_xyz[1])] if tip_xyz is not None and len(tip_xyz) >= 2 else None
+        tip_error = self._tip_xy_offset(tip_xyz, target_xy_mm)
+        ownership = servo_service.bus_ownership_status()
+        return {
+            "timestamp_utc": _utc_now_iso(),
+            "target_xy_mm": list(target_xy_mm),
+            "tip_xyz_mm": list(tip_xyz) if tip_xyz is not None else None,
+            "tip_xy_mm": tip_xy,
+            "tip_xy_error_mm": tip_error,
+            "commanded_positions_ticks": {int(k): v for k, v in dict(commanded_positions_ticks or {}).items()},
+            "measured_positions_ticks": positions,
+            "position_error_ticks": position_error,
+            "raw_current_ma": raw_current,
+            "filtered_current_ma": filtered_current,
+            "current_validity": current_validity,
+            "baseline_current_ma": baseline_current,
+            "current_above_baseline_ma": above_baseline,
+            "pair_balance_error_ma": pair_balance_error_ma,
+            "load_balance_error_ma": load_balance_error_ma,
+            "ownership_state": {
+                "active": bool(ownership.active),
+                "owner": ownership.owner,
+                "reason": ownership.reason,
+                "held_by_current_thread": bool(ownership.held_by_current_thread),
+            },
+            "missing_fields": sorted(set(missing_fields)),
+        }
+
+    @staticmethod
+    def _json_safe_keyed(mapping: dict[Any, Any]) -> dict[str, Any]:
+        return {str(k): v for k, v in dict(mapping or {}).items()}
+
+    def _advanced_stage_row(
+        self,
+        *,
+        mode_kind: str,
+        run_index: int,
+        stage: str,
+        target_xy_mm: list[float],
+        measurement: dict[str, Any],
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        row = {
+            "timestamp_utc": measurement.get("timestamp_utc", _utc_now_iso()),
+            "run_id": f"run_{int(run_index) + 1:02d}",
+            "run_index": int(run_index),
+            "stage": str(stage),
+            "mode": str(mode_kind),
+            "target_xy_mm": list(target_xy_mm),
+            "tip_xy_mm": measurement.get("tip_xy_mm"),
+            "tip_xyz_mm": measurement.get("tip_xyz_mm"),
+            "tip_xy_error_mm": measurement.get("tip_xy_error_mm"),
+            "commanded_positions_ticks": self._json_safe_keyed(measurement.get("commanded_positions_ticks") or {}),
+            "measured_positions_ticks": self._json_safe_keyed(measurement.get("measured_positions_ticks") or {}),
+            "position_error_ticks": self._json_safe_keyed(measurement.get("position_error_ticks") or {}),
+            "raw_current_ma": self._json_safe_keyed(measurement.get("raw_current_ma") or {}),
+            "filtered_current_ma": self._json_safe_keyed(measurement.get("filtered_current_ma") or {}),
+            "current_validity": self._json_safe_keyed(measurement.get("current_validity") or {}),
+            "baseline_current_ma": self._json_safe_keyed(measurement.get("baseline_current_ma") or {}),
+            "current_above_baseline_ma": self._json_safe_keyed(measurement.get("current_above_baseline_ma") or {}),
+            "pair_balance_error_ma": measurement.get("pair_balance_error_ma"),
+            "load_balance_error_ma": measurement.get("load_balance_error_ma"),
+            "ownership_state": dict(measurement.get("ownership_state") or {}),
+            "missing_fields": list(measurement.get("missing_fields") or []),
+        }
+        row.update(dict(extra or {}))
+        return row
+
+    def _characterize_current_noise(
+        self,
+        *,
+        session: ExperimentSession,
+        servo_service,
+        tracker_service,
+        servo_ids: list[int],
+        run_index: int,
+        target_xy_mm: list[float],
+        mode_kind: str,
+        trace_rows: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        sample_count = max(2, int(self.config.current_characterization_sample_count))
+        samples_by_servo: dict[int, list[float]] = {int(servo_id): [] for servo_id in servo_ids}
+        for sample_index in range(sample_count):
+            measurement = self._advanced_measurement(
+                servo_service=servo_service,
+                tracker_service=tracker_service,
+                servo_ids=servo_ids,
+                baseline_current_ma_by_servo={},
+                target_xy_mm=target_xy_mm,
+            )
+            for servo_id, current in measurement["raw_current_ma"].items():
+                if current is not None:
+                    samples_by_servo[int(servo_id)].append(float(current))
+            row = self._advanced_stage_row(
+                mode_kind=mode_kind,
+                run_index=run_index,
+                stage="current_characterization_sample",
+                target_xy_mm=target_xy_mm,
+                measurement=measurement,
+                extra={"sample_index": int(sample_index)},
+            )
+            trace_rows.append(row)
+            self._add_staged_sample(session, phase="pretension_current_characterization", run_index=run_index, step_index=len(trace_rows) - 1, payload=row)
+        by_servo = {int(servo_id): self._current_stats(values) for servo_id, values in samples_by_servo.items()}
+        noise_floor = max(
+            [
+                float(stats.get("std_current_ma") or 0.0)
+                for stats in by_servo.values()
+            ]
+            or [0.0]
+        )
+        peak_to_peak = max(
+            [
+                float(stats.get("peak_to_peak_current_ma") or 0.0)
+                for stats in by_servo.values()
+            ]
+            or [0.0]
+        )
+        useful_delta = max(
+            float(self.config.min_meaningful_current_delta_ma),
+            peak_to_peak,
+            noise_floor * float(self.config.current_noise_multiplier),
+        )
+        summary = {
+            "sample_count": int(sample_count),
+            "by_servo": {str(k): v for k, v in by_servo.items()},
+            "max_noise_std_ma": float(noise_floor),
+            "max_peak_to_peak_ma": float(peak_to_peak),
+            "noise_multiplier": float(self.config.current_noise_multiplier),
+            "max_useful_current_delta_ma": float(useful_delta),
+            "interpretation": "current is treated as a relative load proxy; deltas below useful threshold are not considered reliable",
+        }
+        row = {
+            "timestamp_utc": _utc_now_iso(),
+            "run_id": f"run_{int(run_index) + 1:02d}",
+            "run_index": int(run_index),
+            "stage": "current_characterization",
+            "mode": str(mode_kind),
+            "target_xy_mm": list(target_xy_mm),
+            **summary,
+        }
+        trace_rows.append(row)
+        self._add_staged_sample(session, phase="pretension_current_characterization", run_index=run_index, step_index=len(trace_rows) - 1, payload=row)
+        return summary
+
+    def _apply_pair_command(
+        self,
+        *,
+        servo_service,
+        telemetry: dict[int, Any],
+        sid_a: int,
+        delta_a: int,
+        sid_b: int,
+        delta_b: int,
+        reason: str,
+    ) -> dict[str, Any]:
+        pos_a = telemetry[int(sid_a)].present_position
+        pos_b = telemetry[int(sid_b)].present_position
+        if pos_a is None or pos_b is None:
+            return {
+                "success": False,
+                "stop_reason": "missing_position",
+                "clipped_move_count": 0,
+                "move_count": 0,
+                "travel_ticks": 0,
+                "commanded_positions_ticks": {},
+            }
+        target_a = int(pos_a) + int(delta_a)
+        target_b = int(pos_b) + int(delta_b)
+        move_a = servo_service.move_servo_to_raw_target(servo_id=int(sid_a), target_tick=target_a, reason=reason)
+        move_b = servo_service.move_servo_to_raw_target(servo_id=int(sid_b), target_tick=target_b, reason=reason)
+        return {
+            "success": bool(move_a.success and move_b.success),
+            "stop_reason": "" if move_a.success and move_b.success else f"{move_a.status}|{move_b.status}",
+            "clipped_move_count": int(bool(move_a.clamped)) + int(bool(move_b.clamped)),
+            "move_count": int(bool(move_a.success)) + int(bool(move_b.success)),
+            "travel_ticks": abs(int(move_a.delta_ticks)) + abs(int(move_b.delta_ticks)),
+            "commanded_positions_ticks": {int(sid_a): target_a, int(sid_b): target_b},
+            "move_status": {str(sid_a): str(move_a.status), str(sid_b): str(move_b.status)},
+            "delta_ticks": {str(sid_a): int(delta_a), str(sid_b): int(delta_b)},
+        }
+
+    def _run_pair_characterization_sequence(
+        self,
+        *,
+        session: ExperimentSession,
+        servo_service,
+        tracker_service,
+        servo_ids: list[int],
+        run_index: int,
+        target_xy_mm: list[float],
+        baseline_current_ma_by_servo: dict[int, float],
+        trace_rows: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        total = {"move_count": 0, "travel_ticks": 0, "clipped_move_count": 0, "stop_reason": ""}
+        step = max(1, int(self.config.characterization_step_ticks))
+        cycles = max(1, int(self.config.characterization_pair_cycles))
+        commands = [
+            ("pair_1_3_positive", int(servo_ids[0]), -step, int(servo_ids[2]), step),
+            ("pair_1_3_negative", int(servo_ids[0]), step, int(servo_ids[2]), -step),
+            ("pair_2_4_positive", int(servo_ids[1]), -step, int(servo_ids[3]), step),
+            ("pair_2_4_negative", int(servo_ids[1]), step, int(servo_ids[3]), -step),
+        ]
+        for cycle_index in range(cycles):
+            for label, sid_a, delta_a, sid_b, delta_b in commands:
+                session.raise_if_stop_requested()
+                before = self._advanced_measurement(
+                    servo_service=servo_service,
+                    tracker_service=tracker_service,
+                    servo_ids=servo_ids,
+                    baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                    target_xy_mm=target_xy_mm,
+                )
+                telemetry = servo_service.read_live_telemetry(servo_ids)
+                move = self._apply_pair_command(
+                    servo_service=servo_service,
+                    telemetry=telemetry,
+                    sid_a=sid_a,
+                    delta_a=delta_a,
+                    sid_b=sid_b,
+                    delta_b=delta_b,
+                    reason="pretension_characterization_pair_step",
+                )
+                after = self._advanced_measurement(
+                    servo_service=servo_service,
+                    tracker_service=tracker_service,
+                    servo_ids=servo_ids,
+                    baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                    target_xy_mm=target_xy_mm,
+                    commanded_positions_ticks=move.get("commanded_positions_ticks"),
+                )
+                total["move_count"] += int(move.get("move_count", 0))
+                total["travel_ticks"] += int(move.get("travel_ticks", 0))
+                total["clipped_move_count"] += int(move.get("clipped_move_count", 0))
+                if not bool(move.get("success")):
+                    total["stop_reason"] = str(move.get("stop_reason") or "move_failed")
+                tip_before = before.get("tip_xy_mm")
+                tip_after = after.get("tip_xy_mm")
+                tip_delta = (
+                    [float(tip_after[0]) - float(tip_before[0]), float(tip_after[1]) - float(tip_before[1])]
+                    if tip_before is not None and tip_after is not None
+                    else None
+                )
+                row = self._advanced_stage_row(
+                    mode_kind="characterization",
+                    run_index=run_index,
+                    stage="pair_characterization_step",
+                    target_xy_mm=target_xy_mm,
+                    measurement=after,
+                    extra={
+                        "cycle_index": int(cycle_index),
+                        "pair_label": label,
+                        "move": move,
+                        "tip_xy_delta_mm": tip_delta,
+                        "tip_xy_delta_per_tick_mm": (
+                            None
+                            if tip_delta is None or int(move.get("travel_ticks", 0)) <= 0
+                            else [float(tip_delta[0]) / float(move["travel_ticks"]), float(tip_delta[1]) / float(move["travel_ticks"])]
+                        ),
+                    },
+                )
+                trace_rows.append(row)
+                self._add_staged_sample(session, phase="pretension_pair_characterization", run_index=run_index, step_index=len(trace_rows) - 1, payload=row)
+                if total["stop_reason"]:
+                    return total
+        total["stop_reason"] = "characterization_complete"
+        return total
+
+    def _run_conservative_startup_sequence(
+        self,
+        *,
+        session: ExperimentSession,
+        servo_service,
+        tracker_service,
+        servo_ids: list[int],
+        run_index: int,
+        target_xy_mm: list[float],
+        baseline_current_ma_by_servo: dict[int, float],
+        effective_load_tolerance_ma: float,
+        trace_rows: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        result = {"move_count": 0, "travel_ticks": 0, "clipped_move_count": 0, "stop_reason": "", "converged": False}
+        step = max(1, int(self.config.conservative_step_ticks))
+        best_error = math.inf
+        worse_count = 0
+        for iteration in range(max(0, int(self.config.conservative_max_iterations))):
+            session.raise_if_stop_requested()
+            measurement = self._advanced_measurement(
+                servo_service=servo_service,
+                tracker_service=tracker_service,
+                servo_ids=servo_ids,
+                baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                target_xy_mm=target_xy_mm,
+            )
+            tip_error = measurement.get("tip_xy_error_mm")
+            load_error = measurement.get("load_balance_error_ma")
+            pair_error = measurement.get("pair_balance_error_ma")
+            if tip_error is not None and float(tip_error) <= float(self.config.tip_center_tolerance_mm):
+                result["converged"] = True
+                result["stop_reason"] = "within_tolerance"
+                break
+            if (
+                result["travel_ticks"] >= int(self.config.conservative_max_cumulative_travel_ticks)
+                and int(self.config.conservative_max_cumulative_travel_ticks) > 0
+            ):
+                result["stop_reason"] = "travel_budget_exhausted"
+                break
+            if tip_error is not None:
+                if float(tip_error) < best_error:
+                    best_error = float(tip_error)
+                    worse_count = 0
+                elif float(tip_error) > best_error + float(self.config.tip_divergence_stop_mm):
+                    worse_count += 1
+                    if worse_count >= 2:
+                        result["stop_reason"] = "tip_diverging"
+                        break
+            if load_error is not None and float(load_error) > (2.0 * float(effective_load_tolerance_ma)):
+                result["stop_reason"] = "load_proxy_spread_limit"
+                break
+
+            telemetry = servo_service.read_live_telemetry(servo_ids)
+            commands: list[tuple[str, int, int, int, int]] = []
+            tip_xy = measurement.get("tip_xy_mm")
+            if tip_xy is not None:
+                x_error = float(tip_xy[0]) - float(target_xy_mm[0])
+                y_error = float(tip_xy[1]) - float(target_xy_mm[1])
+                if abs(x_error) > float(self.config.tip_center_tolerance_mm) * 0.5:
+                    x_delta = step * (1 if x_error < 0.0 else -1) * int(self.config.tip_center_x_sign or 1)
+                    commands.append(("center_pair_1_3", int(servo_ids[0]), -int(x_delta), int(servo_ids[2]), int(x_delta)))
+                if abs(y_error) > float(self.config.tip_center_tolerance_mm) * 0.5:
+                    y_delta = step * (1 if y_error < 0.0 else -1) * int(self.config.tip_center_y_sign or 1)
+                    commands.append(("center_pair_2_4", int(servo_ids[1]), -int(y_delta), int(servo_ids[3]), int(y_delta)))
+            elif pair_error is not None and float(pair_error) > float(effective_load_tolerance_ma):
+                loads = measurement.get("current_above_baseline_ma") or {}
+                for label, left_index, right_index in (("balance_pair_1_3", 0, 2), ("balance_pair_2_4", 1, 3)):
+                    sid_a = int(servo_ids[left_index])
+                    sid_b = int(servo_ids[right_index])
+                    if loads.get(sid_a) is None or loads.get(sid_b) is None:
+                        continue
+                    diff = float(loads[sid_a]) - float(loads[sid_b])
+                    if abs(diff) <= float(effective_load_tolerance_ma):
+                        continue
+                    delta_a = step if diff > 0.0 else -step
+                    delta_b = -step if diff > 0.0 else step
+                    commands.append((label, sid_a, delta_a, sid_b, delta_b))
+            if not commands:
+                result["stop_reason"] = "no_actionable_error"
+                break
+            iteration_moves = []
+            for label, sid_a, delta_a, sid_b, delta_b in commands[:2]:
+                move = self._apply_pair_command(
+                    servo_service=servo_service,
+                    telemetry=telemetry,
+                    sid_a=sid_a,
+                    delta_a=delta_a,
+                    sid_b=sid_b,
+                    delta_b=delta_b,
+                    reason="pretension_conservative_pair_step",
+                )
+                iteration_moves.append({"pair_label": label, **move})
+                result["move_count"] += int(move.get("move_count", 0))
+                result["travel_ticks"] += int(move.get("travel_ticks", 0))
+                result["clipped_move_count"] += int(move.get("clipped_move_count", 0))
+                if not bool(move.get("success")):
+                    result["stop_reason"] = str(move.get("stop_reason") or "move_failed")
+                    break
+            after = self._advanced_measurement(
+                servo_service=servo_service,
+                tracker_service=tracker_service,
+                servo_ids=servo_ids,
+                baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                target_xy_mm=target_xy_mm,
+            )
+            row = self._advanced_stage_row(
+                mode_kind="conservative_startup",
+                run_index=run_index,
+                stage="conservative_pair_step",
+                target_xy_mm=target_xy_mm,
+                measurement=after,
+                extra={
+                    "iteration": int(iteration + 1),
+                    "effective_load_tolerance_ma": float(effective_load_tolerance_ma),
+                    "moves": iteration_moves,
+                    "partial_quality_components": {
+                        "tip_centering": self._bounded_score(after.get("tip_xy_error_mm"), float(self.config.accept_max_final_tip_xy_offset_mm), missing_score=45.0),
+                        "pair_balance": self._bounded_score(after.get("pair_balance_error_ma"), float(effective_load_tolerance_ma), missing_score=55.0),
+                        "load_balance": self._bounded_score(after.get("load_balance_error_ma"), float(effective_load_tolerance_ma), missing_score=55.0),
+                    },
+                },
+            )
+            trace_rows.append(row)
+            self._add_staged_sample(session, phase="pretension_conservative_startup", run_index=run_index, step_index=len(trace_rows) - 1, payload=row)
+            if result["stop_reason"]:
+                break
+        if not result["stop_reason"]:
+            result["stop_reason"] = "iteration_limit"
+        return result
+
+    @staticmethod
+    def _series_std(values: list[float]) -> float | None:
+        if len(values) < 2:
+            return 0.0 if values else None
+        mean_value = float(sum(values) / len(values))
+        return float(math.sqrt(sum((value - mean_value) ** 2 for value in values) / len(values)))
+
+    def _reliable_pretension_metrics(
+        self,
+        *,
+        mode_kind: str,
+        servo_ids: list[int],
+        repeat_runs: int,
+        accepted_runs: int,
+        failure_counts: dict[str, int],
+        run_rows: list[dict[str, Any]],
+        trace_rows: list[dict[str, Any]],
+        final_tip_xy_points_mm: list[list[float]],
+        quality_scores: list[float],
+        manual_startup_artifact: dict[str, Any],
+    ) -> dict[str, Any]:
+        per_servo_position_std: dict[str, float | None] = {}
+        per_servo_current_std: dict[str, float | None] = {}
+        for servo_id in servo_ids:
+            final_positions = [
+                float(row["final_position_ticks_by_servo"][str(int(servo_id))])
+                for row in run_rows
+                if row.get("final_position_ticks_by_servo", {}).get(str(int(servo_id))) is not None
+            ]
+            final_currents = [
+                float(row["final_current_ma_by_servo"][str(int(servo_id))])
+                for row in run_rows
+                if row.get("final_current_ma_by_servo", {}).get(str(int(servo_id))) is not None
+            ]
+            per_servo_position_std[str(int(servo_id))] = self._series_std(final_positions)
+            per_servo_current_std[str(int(servo_id))] = self._series_std(final_currents)
+        tip_xy_std_mm = None
+        if final_tip_xy_points_mm:
+            x_std = self._series_std([float(point[0]) for point in final_tip_xy_points_mm]) or 0.0
+            y_std = self._series_std([float(point[1]) for point in final_tip_xy_points_mm]) or 0.0
+            tip_xy_std_mm = float(math.sqrt((x_std * x_std) + (y_std * y_std)))
+        return {
+            "mode": "single_segment_staged",
+            "staged_strategy": str(getattr(self.config, "staged_strategy", "conservative_startup") or "conservative_startup"),
+            "algorithm_mode": str(mode_kind),
+            "algorithm": "reliable_advanced_4servo_pretension",
+            "servo_ids": list(servo_ids),
+            "repeat_runs": int(repeat_runs),
+            "pretension_start_mode": (
+                str(self.config.pretension_start_mode).strip().lower()
+                if self.config.pretension_start_mode not in (None, "")
+                else "live_default"
+            ),
+            "run_count": int(len(run_rows)),
+            "accepted_run_count": int(accepted_runs),
+            "accepted_run_fraction": float(accepted_runs / len(run_rows)) if run_rows else 0.0,
+            "failure_reason_counts": dict(sorted(failure_counts.items())),
+            "final_position_std_ticks_by_servo": per_servo_position_std,
+            "final_current_std_ma_by_servo": per_servo_current_std,
+            "final_tip_xy_std_mm": tip_xy_std_mm,
+            "quality_score_mean_0_100": float(sum(quality_scores) / len(quality_scores)) if quality_scores else None,
+            "quality_score_std_0_100": self._series_std(quality_scores),
+            "quality_scores_0_100": list(quality_scores),
+            "manual_startup_artifact": manual_startup_artifact,
+            "advanced_startup_artifacts": [
+                {
+                    "run_index": int(row.get("run_index", 0)),
+                    "accepted": bool(row.get("accepted")),
+                    "quality_score_0_100": row.get("quality_score_0_100"),
+                    "final_position_ticks_by_servo": row.get("final_position_ticks_by_servo"),
+                    "final_current_ma_by_servo": row.get("final_current_ma_by_servo"),
+                    "final_tip_xyz_mm": row.get("final_tip_xyz_mm"),
+                    "final_tip_xy_offset_mm": row.get("final_tip_xy_offset_mm"),
+                }
+                for row in run_rows
+            ],
+            "run_rows": run_rows,
+            "trace_rows": trace_rows,
+            "units": {
+                "current_ma": "mA",
+                "baseline_current_ma": "mA",
+                "current_above_baseline_ma": "mA",
+                "position_ticks": "ticks",
+                "travel_used_ticks": "ticks",
+                "travel_used_mm": "mm",
+                "tip_position_mm": "mm",
+                "tip_xy_offset_mm": "mm",
+                "load_balance_error_ma": "mA",
+                "pair_balance_error_ma": "mA",
+                "quality_score_0_100": "score",
+            },
+            "summary_requirements": {
+                "force_status": "success" if accepted_runs == len(run_rows) else "partial_success"
+            },
+        }
 
     @staticmethod
     def _bounded_score(value: float | None, tolerance: float, *, missing_score: float = 50.0) -> float:
@@ -2934,6 +3876,59 @@ class PretensionValidationExperiment(BaseExperiment):
                     "final_current_ma_by_servo": final_currents,
                 },
             )
+
+    def _write_pretension_debug_export_bundle(self, *, session: ExperimentSession, paths, summary) -> None:
+        metrics = getattr(summary, "experiment_metrics", {}) or {}
+        if not isinstance(metrics, dict) or "pretension" not in str(metrics.get("algorithm", "")):
+            return
+        export_dir = Path(paths.output_dir) / "pretension_debug_bundle"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        manifest: dict[str, Any] = {
+            "created_at_utc": _utc_now_iso(),
+            "source_output_dir": str(paths.output_dir),
+            "files": [],
+            "note": "Upload this folder or zip when reviewing pretension hardware behavior.",
+        }
+        for filename in ("summary.json", "metrics.csv", "samples.jsonl", "pretension_summary.txt", "metadata.json", "config_snapshot.yaml"):
+            source = Path(paths.output_dir) / filename
+            if not source.exists():
+                continue
+            destination = export_dir / filename
+            shutil.copy2(source, destination)
+            manifest["files"].append(str(destination.name))
+        for plot_path in sorted(Path(paths.output_dir).glob("*.png")):
+            destination = export_dir / plot_path.name
+            shutil.copy2(plot_path, destination)
+            manifest["files"].append(str(destination.name))
+        diagnostics = {
+            "experiment_name": getattr(session.metadata, "experiment_name", "pretension_validation"),
+            "status": getattr(summary, "status", None),
+            "message": getattr(summary, "message", None),
+            "algorithm": metrics.get("algorithm"),
+            "algorithm_mode": metrics.get("algorithm_mode"),
+            "failure_reason_counts": metrics.get("failure_reason_counts"),
+            "accepted_run_count": metrics.get("accepted_run_count"),
+            "run_count": metrics.get("run_count"),
+            "quality_scores_0_100": metrics.get("quality_scores_0_100"),
+        }
+        (export_dir / "debug_manifest.json").write_text(
+            json.dumps({"manifest": manifest, "diagnostics": diagnostics}, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        (export_dir / "session_log_excerpt.txt").write_text(
+            "\n".join(
+                [
+                    "Pretension debug bundle created by pretension_validation.",
+                    f"Output directory: {paths.output_dir}",
+                    f"Algorithm: {metrics.get('algorithm')}",
+                    f"Mode: {metrics.get('algorithm_mode')}",
+                    f"Failures: {metrics.get('failure_reason_counts')}",
+                    "Attach this bundle plus the GUI/operator log if available.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
 
     @staticmethod
     def _add_staged_sample(

@@ -1,4 +1,5 @@
-mode: single_segment_staged  # single_servo_trace | single_segment_staged
+mode: single_segment_staged  # single_servo_trace | single_segment_characterization | single_segment_staged
+staged_strategy: conservative_startup  # conservative_startup | characterization | legacy
 servo_id: 1
 servo_ids: [1, 2, 3, 4]  # used by staged mode
 repeat_runs: 3
@@ -11,8 +12,17 @@ tip_center_x_sign: 1
 tip_center_y_sign: 1
 tip_target_xy_mm: [0.0, 0.0]
 max_tip_displacement_mm: 50.0
+tip_divergence_stop_mm: 2.0
 equalization_step_ticks: 2
 equalization_max_iterations: 24
+conservative_step_ticks: 1
+conservative_max_iterations: 24
+conservative_max_cumulative_travel_ticks: 80
+characterization_step_ticks: 1
+characterization_pair_cycles: 1
+current_characterization_sample_count: 20
+current_noise_multiplier: 3.0
+min_meaningful_current_delta_ma: 2.0
 load_balance_tolerance_ma: 6.0
 pair_balance_tolerance_ma: 6.0
 settle_verify_time_s: 0.2

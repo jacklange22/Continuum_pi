@@ -109,6 +109,7 @@ class ExperimentController:
         "registration_validation",
         "pivot_validation",
         "single_segment_repeatability",
+        "pretension_validation",
     }
 
     def __init__(

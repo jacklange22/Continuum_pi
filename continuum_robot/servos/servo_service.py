@@ -3882,6 +3882,12 @@ class ServoService:
             missing_position = telemetry.present_position is None
             if "stale" in lowered:
                 return "stale_telemetry", "Telemetry is stale."
+            if "no status packet" in lowered:
+                return "no_status_packet", "The DYNAMIXEL bus did not return a status packet."
+            if "incorrect status packet" in lowered:
+                return "incorrect_status_packet", "The DYNAMIXEL bus returned an incorrect status packet."
+            if "txrxresult" in lowered:
+                return "dxl_txrx_error", "The DYNAMIXEL SDK reported a transport/status error."
             if missing_current and missing_position:
                 return "missing_current_and_position", "Current and position telemetry are unavailable."
             if missing_current:
@@ -3903,6 +3909,12 @@ class ServoService:
             merged = f"{primary_text} {detail_text}".strip()
             if "bus contention" in merged:
                 return "bus_contention"
+            if "no status packet" in merged:
+                return "no_status_packet"
+            if "incorrect status packet" in merged:
+                return "incorrect_status_packet"
+            if "txrxresult" in merged:
+                return "dxl_txrx_error"
             if "stale" in merged:
                 return "stale_telemetry"
             if telemetry is None:

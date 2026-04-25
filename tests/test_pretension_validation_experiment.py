@@ -106,7 +106,8 @@ def _runner(tmp_path: Path, servo_service: ServoService) -> ExperimentRunner:
 
 def _advanced_config() -> dict:
     return {
-        "mode": "single_segment_staged",
+        "mode": "single_segment_characterization",
+        "staged_strategy": "characterization",
         "servo_ids": [1, 2, 3, 4],
         "repeat_runs": 1,
         "include_tracker_displacement": False,
@@ -124,6 +125,13 @@ def _advanced_config() -> dict:
         "max_travel_ticks": 4,
         "timeout_s": 2.0,
         "equalization_max_iterations": 1,
+        "current_characterization_sample_count": 3,
+        "characterization_pair_cycles": 1,
+        "characterization_step_ticks": 1,
+        "conservative_step_ticks": 1,
+        "conservative_max_iterations": 2,
+        "conservative_max_cumulative_travel_ticks": 8,
+        "min_meaningful_current_delta_ma": 2.0,
         "load_balance_tolerance_ma": 6.0,
         "pair_balance_tolerance_ma": 6.0,
         "accept_max_load_balance_error_ma": 6.0,
@@ -139,6 +147,11 @@ def test_pretension_validation_config_uses_adjustable_advanced_tolerances() -> N
             "tip_center_tolerance_mm": 2.5,
             "load_balance_tolerance_ma": 5.5,
             "pair_balance_tolerance_ma": 4.5,
+            "staged_strategy": "characterization",
+            "current_characterization_sample_count": 11,
+            "min_meaningful_current_delta_ma": 3.5,
+            "conservative_step_ticks": 1,
+            "conservative_max_cumulative_travel_ticks": 20,
             "accept_max_final_tip_xy_offset_mm": 3.0,
             "accept_max_load_balance_error_ma": 6.0,
             "accept_max_pair_balance_error_ma": 6.0,
@@ -148,6 +161,11 @@ def test_pretension_validation_config_uses_adjustable_advanced_tolerances() -> N
     assert config.tip_center_tolerance_mm == 2.5
     assert config.load_balance_tolerance_ma == 5.5
     assert config.pair_balance_tolerance_ma == 4.5
+    assert config.staged_strategy == "characterization"
+    assert config.current_characterization_sample_count == 11
+    assert config.min_meaningful_current_delta_ma == 3.5
+    assert config.conservative_step_ticks == 1
+    assert config.conservative_max_cumulative_travel_ticks == 20
     assert config.accept_max_final_tip_xy_offset_mm == 3.0
     assert config.accept_max_load_balance_error_ma == 6.0
     assert config.accept_max_pair_balance_error_ma == 6.0
@@ -162,20 +180,18 @@ def test_advanced_pretension_staged_run_saves_quality_pairing_and_plots(tmp_path
     metrics = result.summary.experiment_metrics
     run_row = metrics["run_rows"][0]
     stages = [row.get("stage") for row in metrics["trace_rows"]]
-    pair_labels = {
-        str(row.get("pair_label"))
-        for row in metrics["trace_rows"]
-        if row.get("stage") == "paired_takeup"
-    }
 
     assert result.success is True
-    assert metrics["algorithm"] == "advanced_4servo_pretension"
+    assert metrics["algorithm"] == "reliable_advanced_4servo_pretension"
+    assert metrics["algorithm_mode"] == "characterization"
     assert run_row["quality_score_0_100"] >= 0.0
     assert run_row["quality_score_0_100"] <= 100.0
     assert "tip_centering" in run_row["quality_components"]
-    assert "custom_start" in stages
-    assert "paired_takeup" in stages
-    assert pair_labels == {"1", "2"}
+    assert "explicit_start" in stages
+    assert "current_characterization" in stages
+    assert "pair_characterization_step" in stages
+    assert "paired_takeup" not in stages
+    assert run_row["current_characterization"]["max_useful_current_delta_ma"] >= 2.0
     assert metrics["quality_scores_0_100"] == [run_row["quality_score_0_100"]]
 
     expected_plots = [
@@ -191,7 +207,16 @@ def test_advanced_pretension_staged_run_saves_quality_pairing_and_plots(tmp_path
     ]
     for filename in expected_plots:
         assert (result.paths.output_dir / filename).exists()
+    bundle_dir = result.paths.output_dir / "pretension_debug_bundle"
+    assert (bundle_dir / "summary.json").exists()
+    assert (bundle_dir / "metrics.csv").exists()
+    assert (bundle_dir / "samples.jsonl").exists()
+    assert (bundle_dir / "debug_manifest.json").exists()
     assert "quality_score_0_100" in (result.paths.output_dir / "metrics.csv").read_text(encoding="utf-8").splitlines()[0]
+    sample_text = (result.paths.output_dir / "samples.jsonl").read_text(encoding="utf-8")
+    assert "current_validity" in sample_text
+    assert "ownership_state" in sample_text
+    assert "target_xy_mm" in sample_text
 
 
 def test_advanced_pretension_metrics_preserve_manual_artifact_comparison(tmp_path: Path) -> None:

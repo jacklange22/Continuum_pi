@@ -1484,13 +1484,34 @@ def test_servo_service_pretension_fails_when_current_disappears(tmp_path: Path) 
     assert result.success is False
     assert result.status == "invalid_telemetry"
     assert result.failure_phase == "stepping"
-    assert result.primary_reason == "Current telemetry is unavailable."
-    assert result.stop_reason == "missing_current"
+    assert result.primary_reason == "The DYNAMIXEL bus returned an incorrect status packet."
+    assert result.stop_reason == "incorrect_status_packet"
     assert "Incorrect status packet" in (result.detail_reason or "")
     assert result.torque_cleanup_action == "disarm_after_terminal_state"
     assert result.torque_cleanup_attempted is True
     assert result.torque_cleanup_success is True
     assert bus._state[1].torque_enabled is False
+
+
+def test_servo_service_pretension_classifies_no_status_packet(tmp_path: Path) -> None:
+    bus = _PretensionBus(current_sequence=[None])
+    bus._state[1].torque_enabled = True
+    bus._state[1].telemetry_error = "[TxRxResult] There is no status packet!"
+    service = _build_service(tmp_path, dxl_bus=bus)
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+
+    result = service.run_pretension_routine(servo_id=1)
+
+    assert result.success is False
+    assert result.status == "invalid_telemetry"
+    assert result.stop_reason == "no_status_packet"
+    assert result.primary_reason == "The DYNAMIXEL bus did not return a status packet."
 
 
 def test_servo_service_pretension_tolerates_one_transient_missing_current_sample(tmp_path: Path) -> None:

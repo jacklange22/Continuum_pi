@@ -296,6 +296,9 @@ def _write_staged_summary_text(
         f"Run ID: {metadata.run_id}",
         f"Timestamp: {metadata.timestamp_utc}",
         f"Status: {summary.status}",
+        f"Algorithm: {metrics.get('algorithm')}",
+        f"Algorithm mode: {metrics.get('algorithm_mode')}",
+        f"Staged strategy: {metrics.get('staged_strategy')}",
         f"Servo IDs: {metrics.get('servo_ids')}",
         f"Repeat runs: {metrics.get('repeat_runs')}",
         f"Accepted runs: {metrics.get('accepted_run_count')} / {metrics.get('run_count')}",
@@ -313,6 +316,7 @@ def _write_staged_summary_text(
         f"- Quality score mean (0-100): {_fmt_float(metrics.get('quality_score_mean_0_100'))}",
         f"- Quality score std (0-100): {_fmt_float(metrics.get('quality_score_std_0_100'))}",
         f"- Failure reasons: {metrics.get('failure_reason_counts')}",
+        f"- Current characterization: {[row.get('current_characterization') for row in metrics.get('run_rows', [])]}",
         "",
         "Manual vs advanced artifact:",
         f"- Manual startup artifact: {metrics.get('manual_startup_artifact')}",
@@ -343,9 +347,15 @@ def _write_staged_current_vs_position_plot(*, current_vs_position_path: Path, tr
         current = row.get("final_current_ma")
         if current is None:
             current = row.get("raw_current_ma")
+        if isinstance(current, dict):
+            current = None
         if servo_id in (None, "") or position in (None, "") or current in (None, ""):
             continue
         grouped.setdefault(int(servo_id), []).append((float(position), float(current)))
+    for point in _flatten_staged_trace_servo_points(trace_rows):
+        if point["position_tick"] is None or point["current_ma"] is None:
+            continue
+        grouped.setdefault(int(point["servo_id"]), []).append((float(point["position_tick"]), float(point["current_ma"])))
     width, height = 1080, 720
     canvas = _Canvas(width, height, background=(255, 255, 255))
     canvas.text(28, 16, "PRETENSION CURRENT VS POSITION", color=(15, 23, 42), scale=2)
@@ -376,6 +386,52 @@ def _write_staged_current_vs_position_plot(*, current_vs_position_path: Path, tr
     canvas.save_png(current_vs_position_path)
 
 
+def _flatten_staged_trace_servo_points(trace_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    points: list[dict[str, Any]] = []
+    first_position_by_run_servo: dict[tuple[int, int], float] = {}
+    for row in trace_rows:
+        run_index = _as_int(row.get("run_index")) or 0
+        measured_positions = dict(row.get("measured_positions_ticks") or {})
+        raw_currents = dict(row.get("raw_current_ma") or {})
+        filtered_currents = dict(row.get("filtered_current_ma") or {})
+        tip_error = _as_float(
+            row.get("tip_xy_error_mm")
+            if row.get("tip_xy_error_mm") is not None
+            else row.get("tip_xy_offset_mm") or row.get("final_tip_xy_offset_mm")
+        )
+        servo_keys = set(measured_positions.keys()) | set(raw_currents.keys()) | set(filtered_currents.keys())
+        for raw_servo_id in servo_keys:
+            try:
+                servo_id = int(raw_servo_id)
+            except Exception:
+                continue
+            position = _as_float(measured_positions.get(str(servo_id), measured_positions.get(servo_id)))
+            raw_current = _as_float(raw_currents.get(str(servo_id), raw_currents.get(servo_id)))
+            filtered_current = _as_float(filtered_currents.get(str(servo_id), filtered_currents.get(servo_id)))
+            key = (int(run_index), int(servo_id))
+            if position is not None and key not in first_position_by_run_servo:
+                first_position_by_run_servo[key] = float(position)
+            start_position = first_position_by_run_servo.get(key)
+            travel_ticks = (
+                None
+                if position is None or start_position is None
+                else abs(float(position) - float(start_position))
+            )
+            points.append(
+                {
+                    "run_index": int(run_index),
+                    "servo_id": int(servo_id),
+                    "position_tick": position,
+                    "current_ma": filtered_current if filtered_current is not None else raw_current,
+                    "raw_current_ma": raw_current,
+                    "filtered_current_ma": filtered_current,
+                    "travel_ticks": travel_ticks,
+                    "tip_error_mm": tip_error,
+                }
+            )
+    return points
+
+
 def _write_staged_tendon_vs_tip_plot(*, plot_path: Path, trace_rows: list[dict[str, Any]]) -> None:
     points: list[tuple[float, float]] = []
     latest_tip_error_by_run: dict[int, float] = {}
@@ -390,6 +446,9 @@ def _write_staged_tendon_vs_tip_plot(*, plot_path: Path, trace_rows: list[dict[s
             travel = travel_ticks
         if travel is not None and int(run_index) in latest_tip_error_by_run:
             points.append((float(travel), float(latest_tip_error_by_run[int(run_index)])))
+    for point in _flatten_staged_trace_servo_points(trace_rows):
+        if point["travel_ticks"] is not None and point["tip_error_mm"] is not None:
+            points.append((float(point["travel_ticks"]), float(point["tip_error_mm"])))
     _write_basic_scatter_plot(
         plot_path=plot_path,
         title="TENDON DISPLACEMENT VS TIP XY ERROR",
@@ -403,12 +462,16 @@ def _write_staged_tendon_vs_tip_plot(*, plot_path: Path, trace_rows: list[dict[s
 def _write_staged_tendon_vs_current_plot(*, plot_path: Path, trace_rows: list[dict[str, Any]]) -> None:
     points: list[tuple[float, float]] = []
     for row in trace_rows:
-        current = _as_float(row.get("final_current_ma") or row.get("raw_current_ma") or row.get("filtered_current_ma"))
+        raw_current_value = row.get("final_current_ma") or row.get("raw_current_ma") or row.get("filtered_current_ma")
+        current = None if isinstance(raw_current_value, dict) else _as_float(raw_current_value)
         travel = _as_float(row.get("travel_used_mm"))
         if travel is None:
             travel = _as_float(row.get("travel_used_ticks"))
         if travel is not None and current is not None:
             points.append((float(travel), float(current)))
+    for point in _flatten_staged_trace_servo_points(trace_rows):
+        if point["travel_ticks"] is not None and point["current_ma"] is not None:
+            points.append((float(point["travel_ticks"]), float(point["current_ma"])))
     _write_basic_scatter_plot(
         plot_path=plot_path,
         title="TENDON DISPLACEMENT VS CURRENT",
@@ -427,9 +490,13 @@ def _write_staged_current_vs_tip_error_plot(*, plot_path: Path, trace_rows: list
         tip_error = _as_float(row.get("tip_xy_offset_mm") or row.get("final_tip_xy_offset_mm"))
         if tip_error is not None:
             latest_tip_error_by_run[int(run_index)] = float(tip_error)
-        current = _as_float(row.get("final_current_ma") or row.get("raw_current_ma") or row.get("filtered_current_ma"))
+        raw_current_value = row.get("final_current_ma") or row.get("raw_current_ma") or row.get("filtered_current_ma")
+        current = None if isinstance(raw_current_value, dict) else _as_float(raw_current_value)
         if current is not None and int(run_index) in latest_tip_error_by_run:
             points.append((float(current), float(latest_tip_error_by_run[int(run_index)])))
+    for point in _flatten_staged_trace_servo_points(trace_rows):
+        if point["current_ma"] is not None and point["tip_error_mm"] is not None:
+            points.append((float(point["current_ma"]), float(point["tip_error_mm"])))
     _write_basic_scatter_plot(
         plot_path=plot_path,
         title="CURRENT VS TIP XY ERROR",

@@ -2020,10 +2020,10 @@ class ServoTrackerSyncValidationPage(ExperimentPageBase):
 
 
 class PretensionValidationPage(ExperimentPageBase):
+    refresh_policy = "manual"
     page_hint = (
-        "Validate pretension response against commanded travel for one selected servo. "
-        "Current is treated conservatively as an engagement proxy only, and optional tracker displacement "
-        "can be captured alongside the servo trace when live tracking is available."
+        "Run single-servo onset traces, current characterization, or conservative 4-servo startup. "
+        "Current is treated as a relative load proxy only; tracker XY centering is the primary startup metric."
     )
 
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
@@ -2038,8 +2038,16 @@ class PretensionValidationPage(ExperimentPageBase):
         setup_form = QFormLayout()
         self.mode_combo = QComboBox()
         self.mode_combo.addItem("Single-Servo Trace", "single_servo_trace")
-        self.mode_combo.addItem("Staged 4-Servo Startup", "single_segment_staged")
+        self.mode_combo.addItem("Characterization / Identification", "single_segment_characterization")
+        self.mode_combo.addItem("Conservative 4-Servo Startup", "single_segment_staged")
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        self.strategy_combo = QComboBox()
+        self.strategy_combo.addItem("Conservative Startup", "conservative_startup")
+        self.strategy_combo.addItem("Characterization", "characterization")
+        self.strategy_combo.addItem("Legacy Threshold Routine", "legacy")
+        self.strategy_combo.currentIndexChanged.connect(
+            lambda _index: self.controller.set_config_value("staged_strategy", str(self.strategy_combo.currentData()))
+        )
         self.servo_combo = QComboBox()
         configured_ids = list(self.controller.settings.robot.servo_ids or [])
         if configured_ids:
@@ -2070,6 +2078,7 @@ class PretensionValidationPage(ExperimentPageBase):
         )
         setup_form.addRow("Servo", self.servo_combo)
         setup_form.addRow("Mode", self.mode_combo)
+        setup_form.addRow("Staged Strategy", self.strategy_combo)
         setup_form.addRow("Staged Servo IDs", self.staged_servo_ids_edit)
         setup_form.addRow("Repeat Runs", self.repeat_runs_spin)
         setup_form.addRow("Tracker Metric", self.include_tracker_check)
@@ -2201,10 +2210,43 @@ class PretensionValidationPage(ExperimentPageBase):
         self.equalization_max_iterations_spin.valueChanged.connect(
             lambda value: self.controller.set_config_value("equalization_max_iterations", int(value))
         )
+        self.conservative_step_spin = QSpinBox()
+        self.conservative_step_spin.setRange(1, 25)
+        self.conservative_step_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("conservative_step_ticks", int(value))
+        )
+        self.conservative_iterations_spin = QSpinBox()
+        self.conservative_iterations_spin.setRange(0, 500)
+        self.conservative_iterations_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("conservative_max_iterations", int(value))
+        )
+        self.travel_budget_spin = QSpinBox()
+        self.travel_budget_spin.setRange(0, 4095)
+        self.travel_budget_spin.setSpecialValueText("Disabled")
+        self.travel_budget_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("conservative_max_cumulative_travel_ticks", int(value))
+        )
+        self.current_noise_samples_spin = QSpinBox()
+        self.current_noise_samples_spin.setRange(2, 500)
+        self.current_noise_samples_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("current_characterization_sample_count", int(value))
+        )
+        self.min_meaningful_current_delta_spin = QDoubleSpinBox()
+        self.min_meaningful_current_delta_spin.setRange(0.0, 500.0)
+        self.min_meaningful_current_delta_spin.setDecimals(1)
+        self.min_meaningful_current_delta_spin.setSingleStep(1.0)
+        self.min_meaningful_current_delta_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("min_meaningful_current_delta_ma", float(value))
+        )
         staged_form.addRow("Load Balance Tolerance (mA)", self.load_balance_tolerance_spin)
         staged_form.addRow("Pair Balance Tolerance (mA)", self.pair_balance_tolerance_spin)
         staged_form.addRow("Tip XY Tolerance (mm)", self.tip_center_tolerance_spin)
         staged_form.addRow("Equalization Max Iterations", self.equalization_max_iterations_spin)
+        staged_form.addRow("Conservative Step (ticks)", self.conservative_step_spin)
+        staged_form.addRow("Conservative Iterations", self.conservative_iterations_spin)
+        staged_form.addRow("Cumulative Travel Budget", self.travel_budget_spin)
+        staged_form.addRow("Current Noise Samples", self.current_noise_samples_spin)
+        staged_form.addRow("Minimum Useful Current Delta (mA)", self.min_meaningful_current_delta_spin)
         staged_card.body_layout.addLayout(staged_form)
         self.staged_mode_card = staged_card
 
@@ -2226,6 +2268,7 @@ class PretensionValidationPage(ExperimentPageBase):
         defaults = self._resolved_defaults(config.servo_id)
         mode = str(config.mode or "single_servo_trace")
         self._set_combo_value(self.mode_combo, mode)
+        self._set_combo_value(self.strategy_combo, str(config.staged_strategy or "conservative_startup"))
         self._set_combo_value(
             self.pretension_start_mode_combo,
             str(config.pretension_start_mode or defaults.start_mode),
@@ -2299,7 +2342,13 @@ class PretensionValidationPage(ExperimentPageBase):
         self._set_double(self.pair_balance_tolerance_spin, float(config.pair_balance_tolerance_ma))
         self._set_double(self.tip_center_tolerance_spin, float(config.tip_center_tolerance_mm))
         self._set_spin(self.equalization_max_iterations_spin, int(config.equalization_max_iterations))
+        self._set_spin(self.conservative_step_spin, int(config.conservative_step_ticks))
+        self._set_spin(self.conservative_iterations_spin, int(config.conservative_max_iterations))
+        self._set_spin(self.travel_budget_spin, int(config.conservative_max_cumulative_travel_ticks))
+        self._set_spin(self.current_noise_samples_spin, int(config.current_characterization_sample_count))
+        self._set_double(self.min_meaningful_current_delta_spin, float(config.min_meaningful_current_delta_ma))
         self._sync_mode_visibility(mode)
+        strategy_label = str(config.staged_strategy or "conservative_startup").replace("_", " ")
         self.parameter_summary_widget.set_pairs(
             [
                 (
@@ -2307,15 +2356,17 @@ class PretensionValidationPage(ExperimentPageBase):
                     (
                         "Single-servo trace mode captures fine-grained current/position onset behavior."
                         if mode == "single_servo_trace"
-                        else "Advanced staged mode runs baseline, explicit startup release, paired take-up, load balancing, tip XY centering, settle, and scoring."
+                        else "Advanced staged mode characterizes current noise, uses bounded paired moves, checks tip XY, settles, and scores the run."
                     ),
                 ),
+                ("Staged Strategy", strategy_label),
                 (
                     "Pretension Start",
                     str(config.pretension_start_mode or defaults.start_mode).replace("_", " "),
                 ),
                 ("Target XY", f"{float(config.tip_target_xy_mm[0]):.2f}, {float(config.tip_target_xy_mm[1]):.2f} mm"),
                 ("Quality Score", "Saved as quality_score_0_100 plus component scores for each staged run."),
+                ("Debug Bundle", "Each staged run exports pretension_debug_bundle with summary, CSV, JSONL, and plots."),
                 ("Travel Axis", "Travel is measured from the untensioned reference toward lower raw counts (ticks / mm)."),
                 ("Current Metric", "Current is saved as an engagement/load proxy, not a tendon-force estimate."),
                 (
@@ -2338,6 +2389,12 @@ class PretensionValidationPage(ExperimentPageBase):
     def _on_mode_changed(self) -> None:
         mode = str(self.mode_combo.currentData() or "single_servo_trace")
         self.controller.set_config_value("mode", mode)
+        if mode == "single_segment_characterization":
+            self._set_combo_value(self.strategy_combo, "characterization")
+            self.controller.set_config_value("staged_strategy", "characterization")
+        elif mode == "single_segment_staged" and str(self.strategy_combo.currentData() or "") == "characterization":
+            self._set_combo_value(self.strategy_combo, "conservative_startup")
+            self.controller.set_config_value("staged_strategy", "conservative_startup")
         self._sync_mode_visibility(mode)
         self._refresh_now()
 
@@ -2364,8 +2421,12 @@ class PretensionValidationPage(ExperimentPageBase):
             "single_segment_staged",
             "staged",
             "four_servo_staged",
+            "single_segment_characterization",
+            "pretension_characterization",
+            "characterization",
         }
         self.servo_combo.setEnabled(not staged_mode)
+        self.strategy_combo.setEnabled(staged_mode)
         self.staged_servo_ids_edit.setEnabled(staged_mode)
         self.enable_tip_centering_check.setEnabled(staged_mode)
         self.repeat_runs_spin.setEnabled(staged_mode)
