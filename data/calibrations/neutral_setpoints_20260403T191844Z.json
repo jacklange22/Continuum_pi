@@ -1,0 +1,82 @@
+{
+  "robot": {
+    "default_pretension_current_threshold_ma": 220,
+    "position_max_offset_ticks": 600,
+    "position_min_offset_ticks": -600,
+    "robot_config_name": "robot_4servo.yaml",
+    "robot_mode": "4-servo",
+    "servo_ids": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "spool_diameter_cm": 1.2,
+    "tendon_to_servo": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "ticks_per_revolution": 4096,
+    "tightening_rotation_by_servo": {
+      "1": "cw",
+      "2": "cw",
+      "3": "cw",
+      "4": "cw"
+    }
+  },
+  "schema_version": 3,
+  "servos": {
+    "1": {
+      "calibrated_at_utc": null,
+      "capture_source": null,
+      "hardware_current_limit_ma": null,
+      "hardware_max_tick": null,
+      "hardware_min_tick": null,
+      "last_measured_current_ma": null,
+      "latest_pretension_run": {
+        "absolute_trigger_current_ma": 220,
+        "baseline_current_ma": 18.666666666666668,
+        "elapsed_s": 0.14981592597905546,
+        "filtered_current_ma": null,
+        "final_current_ma": null,
+        "final_position_tick": null,
+        "last_commanded_target_tick": 3273,
+        "parameters": {
+          "absolute_trigger_current_ma": 220,
+          "baseline_sample_count": 5,
+          "current_delta_threshold_ma": 60,
+          "current_filter_window": 3,
+          "hard_current_stop_ma": 850,
+          "max_travel_ticks": 320,
+          "settle_time_s": 0.05,
+          "step_ticks": 2,
+          "timeout_s": 10.0,
+          "untensioned_reference_tick": 4095
+        },
+        "recorded_at_utc": "2026-04-03T19:16:53Z",
+        "start_position_tick": 3275,
+        "status": "invalid_telemetry",
+        "steps_taken": 1,
+        "stop_reason": "unsafe_telemetry",
+        "trigger_current_ma": 78,
+        "untensioned_reference_tick": 4031
+      },
+      "neutral_setpoint": null,
+      "pretension_completed_at_utc": "2026-04-03T19:16:53Z",
+      "pretension_current_threshold_ma": 78,
+      "pretension_final_position_tick": null,
+      "pretension_result_status": "invalid_telemetry",
+      "safe_max_tick": null,
+      "safe_min_tick": null,
+      "servo_id": 1,
+      "status": "invalid_telemetry",
+      "tendon_index": null,
+      "tightening_rotation": null,
+      "valid": false
+    }
+  },
+  "source_format": "servo_calibration_v2",
+  "updated_at_utc": "2026-04-03T19:16:53Z"
+}

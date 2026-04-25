@@ -1,25 +1,29 @@
-# OS/editor noise
-.DS_Store
-.idea/
-.vscode/
-*.swp
-
-# Python
+# Python / environment
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-.coverage.*
-htmlcov/
+*.py[cod]
 .venv/
-venv/
-*.egg-info/
-build/
-dist/
+.env
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
+
+# Runtime logs: do not sync noisy session logs
+data/logs/**
+!data/logs/.gitkeep
+
+# Temporary/cache files
+data/tmp/**
+data/cache/**
+
+# Large binary artifacts: prefer Git LFS or manual sync
+data/**/*.mp4
+data/**/*.mov
+data/**/*.bag
+data/**/*.avi
+data/**/*.h5
+data/**/*.hdf5
 
 # Local machine config overrides
 config/*.local.yaml
@@ -27,18 +31,12 @@ config/*.local.yaml
 # Native build output
 bin/
 
-# Canonical data roots that should sync between Pi and Mac are intentionally tracked:
-# data/experiments/, data/pivot_calibration/, data/registrations/,
-# data/runtime_tip_calibration/, data/calibration/servo_calibration/,
-# data/diagnostics/, data/modeling_results/, and data/models/.
-
-# Noisy runtime logs
+# Runtime data
+data/calibrations/*
+!data/calibrations/.gitkeep
 data/logs/*
 !data/logs/.gitkeep
-
-# Raw packet/frame captures can grow quickly; keep curated derivatives under data/diagnostics/.
+data/registrations/*
+!data/registrations/.gitkeep
 data/tracker_captures/*
 !data/tracker_captures/.gitkeep
-
-# Deprecated legacy calibration root; current calibration outputs live under data/calibration/.
-data/calibrations/

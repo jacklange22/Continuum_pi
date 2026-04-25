@@ -1,0 +1,105 @@
+{
+  "current_registration_path": "/home/continuum-pi/Continuum_pi/data/registrations/registration_20260420T151038_270547Z.json",
+  "current_timestamp_utc": "2026-04-20T15:10:16.402Z",
+  "history_run_count": 3,
+  "comparison_count": 2,
+  "comparisons_to_recent_runs": [
+    {
+      "path": "/home/continuum-pi/Continuum_pi/data/registrations/registration_20260419T225301_998672Z.json",
+      "timestamp_utc": "2026-04-19T22:52:43.513Z",
+      "fre_mm": 1.4871893089498147,
+      "fre_delta_mm": 0.9381967122257225,
+      "translation_delta_mm": 2.266048648010391,
+      "rotation_delta_deg": 1.1049592366628467
+    },
+    {
+      "path": "/home/continuum-pi/Continuum_pi/data/registrations/registration_20260401T193748Z.json",
+      "timestamp_utc": "2026-04-01T19:37:30.115Z",
+      "fre_mm": 0.7175823132483328,
+      "fre_delta_mm": 0.1685897165242406,
+      "translation_delta_mm": 464.38224287487765,
+      "rotation_delta_deg": 95.53668718506117
+    }
+  ],
+  "fre_summary_mm": {
+    "count": 3,
+    "mean": 0.9179214063074133,
+    "std": 0.40837489464427984,
+    "min": 0.5489925967240922,
+    "max": 1.4871893089498147
+  },
+  "translation_delta_summary_mm": {
+    "count": 2,
+    "mean": 233.32414576144402,
+    "std": 231.05809711343363,
+    "min": 2.266048648010391,
+    "max": 464.38224287487765
+  },
+  "rotation_delta_summary_deg": {
+    "count": 2,
+    "mean": 48.32082321086201,
+    "std": 47.215863974199166,
+    "min": 1.1049592366628467,
+    "max": 95.53668718506117
+  },
+  "per_landmark_residual_summary_mm_by_label": {
+    "L1": {
+      "count": 3,
+      "mean_mm": 0.8839790300052418,
+      "std_mm": 0.37740355655281327,
+      "max_mm": 1.3966949033727267,
+      "min_mm": 0.499199943794517
+    },
+    "L2": {
+      "count": 3,
+      "mean_mm": 1.0028136627524844,
+      "std_mm": 0.3335732191343069,
+      "max_mm": 1.4304345126993414,
+      "min_mm": 0.616486730442853
+    },
+    "L3": {
+      "count": 3,
+      "mean_mm": 0.8317276532946415,
+      "std_mm": 0.6772465049878618,
+      "max_mm": 1.787339202978498,
+      "min_mm": 0.2982517126497953
+    },
+    "L4": {
+      "count": 3,
+      "mean_mm": 0.8467566207164744,
+      "std_mm": 0.3594577217386732,
+      "max_mm": 1.286641825795332,
+      "min_mm": 0.40615469854407693
+    }
+  },
+  "worst_landmark_by_mean_residual": "L2",
+  "worst_landmark_mean_residual_mm": 1.0028136627524844,
+  "generated_at_utc": "2026-04-20T15:10:38.275Z",
+  "validation_kind": "repeated_registration_comparison",
+  "current_record_timestamp_utc": "2026-04-20T15:10:16.402Z",
+  "registration_mode": "simple",
+  "current_fre_mm": 0.5489925967240922,
+  "runtime_application": {
+    "state": "registration_loaded_waiting_for_live_pose",
+    "message": "Tracking loaded this accepted registration; live pose is waiting on runtime status 'missing_registration'.",
+    "registration_state": "loaded",
+    "tip_pose_status": "missing_registration",
+    "registration_path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+    "loaded_latest_registration": true,
+    "timestamp_matches_latest": true,
+    "role_match": true,
+    "stored_registration_timestamp_utc": "2026-04-20T15:10:16.402Z",
+    "stored_registration_fre_mm": 0.5489925967240922,
+    "stored_registration_measurement_tool_id": "0B",
+    "stored_registration_coil_tool_id": "0A",
+    "runtime_tip_calibration_state": "loaded",
+    "runtime_tip_calibration_path": "/home/continuum-pi/Continuum_pi/data/runtime_tip_calibration/latest_runtime_tip_calibration.json",
+    "runtime_tip_mode": "latest_accepted",
+    "runtime_tip_trust_level": "trusted",
+    "runtime_tip_mode_message": "Latest accepted runtime tip artifact is active (2026-04-17T22:55:56.544Z).",
+    "stored_runtime_tip_timestamp_utc": "2026-04-17T22:55:56.544Z",
+    "stored_runtime_tip_measurement_tool_id": "0B",
+    "stored_runtime_tip_coil_tool_id": "0A",
+    "runtime_tip_identity_fallback": false
+  }
+}

@@ -1,0 +1,113 @@
+{
+  "current_registration_path": "/home/continuum-pi/Continuum_pi/data/registrations/20260423_203241_registration.json",
+  "current_timestamp_utc": "2026-04-23T20:32:41.278Z",
+  "history_run_count": 4,
+  "comparison_count": 3,
+  "comparisons_to_recent_runs": [
+    {
+      "path": "/home/continuum-pi/Continuum_pi/data/registrations/registration_20260420T151038_270547Z.json",
+      "timestamp_utc": "2026-04-20T15:10:16.402Z",
+      "fre_mm": 0.5489925967240922,
+      "fre_delta_mm": 0.0832685047214593,
+      "translation_delta_mm": 373.8961556978974,
+      "rotation_delta_deg": 88.36648593436412
+    },
+    {
+      "path": "/home/continuum-pi/Continuum_pi/data/registrations/registration_20260419T225301_998672Z.json",
+      "timestamp_utc": "2026-04-19T22:52:43.513Z",
+      "fre_mm": 1.4871893089498147,
+      "fre_delta_mm": 0.8549282075042632,
+      "translation_delta_mm": 375.2886570696591,
+      "rotation_delta_deg": 88.55975590840013
+    },
+    {
+      "path": "/home/continuum-pi/Continuum_pi/data/registrations/registration_20260401T193748Z.json",
+      "timestamp_utc": "2026-04-01T19:37:30.115Z",
+      "fre_mm": 0.7175823132483328,
+      "fre_delta_mm": 0.0853212118027813,
+      "translation_delta_mm": 103.69286291100507,
+      "rotation_delta_deg": 7.177220630108277
+    }
+  ],
+  "fre_summary_mm": {
+    "count": 4,
+    "mean": 0.8465063300919479,
+    "std": 0.3746703621376759,
+    "min": 0.5489925967240922,
+    "max": 1.4871893089498147
+  },
+  "translation_delta_summary_mm": {
+    "count": 3,
+    "mean": 284.2925585595205,
+    "std": 127.70453480924864,
+    "min": 103.69286291100507,
+    "max": 375.2886570696591
+  },
+  "rotation_delta_summary_deg": {
+    "count": 3,
+    "mean": 61.367820824290845,
+    "std": 38.31862210792572,
+    "min": 7.177220630108277,
+    "max": 88.55975590840013
+  },
+  "per_landmark_residual_summary_mm_by_label": {
+    "L1": {
+      "count": 4,
+      "mean_mm": 0.7326694404483185,
+      "std_mm": 0.4189377746750561,
+      "max_mm": 1.3966949033727267,
+      "min_mm": 0.2787406717775487
+    },
+    "L2": {
+      "count": 4,
+      "mean_mm": 0.9369221439777227,
+      "std_mm": 0.310609716737987,
+      "max_mm": 1.4304345126993414,
+      "min_mm": 0.616486730442853
+    },
+    "L3": {
+      "count": 4,
+      "mean_mm": 0.7387726600132524,
+      "std_mm": 0.6082096790717283,
+      "max_mm": 1.787339202978498,
+      "min_mm": 0.2982517126497953
+    },
+    "L4": {
+      "count": 4,
+      "mean_mm": 0.8534876410837713,
+      "std_mm": 0.3115177526140733,
+      "max_mm": 1.286641825795332,
+      "min_mm": 0.40615469854407693
+    }
+  },
+  "worst_landmark_by_mean_residual": "L2",
+  "worst_landmark_mean_residual_mm": 0.9369221439777227,
+  "generated_at_utc": "2026-04-23T20:33:15.982Z",
+  "validation_kind": "repeated_registration_comparison",
+  "current_record_timestamp_utc": "2026-04-23T20:32:41.278Z",
+  "registration_mode": "simple",
+  "current_fre_mm": 0.6322611014455515,
+  "runtime_application": {
+    "state": "coil_as_tip_override",
+    "message": "Tracking is using the explicit coil-as-tip override. Tip pose is available, but T_coil_tip is identity and this mode is lower trust.",
+    "registration_state": "loaded",
+    "tip_pose_status": "identity_tip_fallback",
+    "registration_path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+    "loaded_latest_registration": true,
+    "timestamp_matches_latest": true,
+    "role_match": true,
+    "stored_registration_timestamp_utc": "2026-04-23T20:32:41.278Z",
+    "stored_registration_fre_mm": 0.6322611014455515,
+    "stored_registration_measurement_tool_id": "0B",
+    "stored_registration_coil_tool_id": "0A",
+    "runtime_tip_calibration_state": "coil_as_tip",
+    "runtime_tip_calibration_path": null,
+    "runtime_tip_mode": "coil_as_tip",
+    "runtime_tip_trust_level": "fallback_debug",
+    "runtime_tip_mode_message": "Coil-as-tip override is active. The live chain uses identity T_coil_tip, so the 0A coil pose is shown directly as the tip without an extra runtime transform.",
+    "stored_runtime_tip_timestamp_utc": null,
+    "stored_runtime_tip_measurement_tool_id": "0B",
+    "stored_runtime_tip_coil_tool_id": "0A",
+    "runtime_tip_identity_fallback": true
+  }
+}

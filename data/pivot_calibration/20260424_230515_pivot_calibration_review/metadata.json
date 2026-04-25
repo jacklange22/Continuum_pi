@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "pivot_calibration",
+  "run_id": "4a039b123f8a",
+  "timestamp_utc": "2026-04-24T23:05:15.967849+00:00",
+  "git_commit": "80a7fab6c6d86b29d3bd95a7a1842c8d188d5ea8",
+  "backend_info": {
+    "mock_mode": false,
+    "tracking_backend_configured": "ndi",
+    "tracking_backend_selected": "ndi",
+    "tracking_backend_identity": "ndi_tracker_python",
+    "tracking_state": "streaming_healthy",
+    "servo_connected": true,
+    "pretension_source": {
+      "source_type": "none",
+      "accepted": false,
+      "usable": false,
+      "message": "Accepted pretension/startup state is missing for servo(s): 1, 2, 3, 4",
+      "updated_at_utc": "2026-04-24T22:58:16Z",
+      "note": null
+    }
+  },
+  "registration_info": {
+    "path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+    "exists": true,
+    "tracking_registration_state": "loaded",
+    "tip_pose_status": "ok",
+    "runtime_tip_mode": "latest_accepted",
+    "runtime_tip_trust_level": "trusted",
+    "runtime_tip_mode_message": "Latest accepted runtime tip artifact is active (2026-04-17T22:55:56.544Z).",
+    "runtime_tip_calibration_state": "loaded",
+    "runtime_tip_selected_artifact_kind": "runtime_tip_calibration_hat",
+    "runtime_tip_selected_artifact_path": "/home/continuum-pi/Continuum_pi/data/runtime_tip_calibration/latest_runtime_tip_calibration.json"
+  },
+  "config_used": {
+    "tool_id": "0B",
+    "sample_count": 80,
+    "sample_period_s": 0.02,
+    "std_dev_threshold": 3.0,
+    "min_samples": 12,
+    "output_tip_file": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/staged/20260424_230515_generated_penprobe_tip.csv",
+    "input_path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/captures/20260424_230515_pivot_0B_samples.csv",
+    "dry_run": false,
+    "seed": 0,
+    "synthetic_tip_vector_mm": [
+      0.0,
+      0.0,
+      125.0
+    ],
+    "synthetic_pivot_point_mm": [
+      25.0,
+      -10.0,
+      40.0
+    ],
+    "synthetic_noise_std_mm": 0.25,
+    "synthetic_outlier_count": 0,
+    "acceptance": {}
+  },
+  "operator_notes": "tracker_mvp_gui_review"
+}
