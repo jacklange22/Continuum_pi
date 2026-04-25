@@ -1,0 +1,22 @@
+Pretension Validation Summary
+Current is used here as an engagement proxy only. This run does not claim tendon-force sensing.
+
+Run ID: fda39ed0da80
+Timestamp: 2026-04-25T16:21:02.323913+00:00
+Servo ID: 1
+Accepted: no
+Status: partial_success
+Stop Reason: timeout
+Final Position (ticks): 3796
+Travel Used (ticks): 245
+Travel Used (mm): 3.758
+Baseline Current (mA): 18.333
+Effective Trigger Current (mA): 78.000
+Observed Trigger Current (mA): n/a
+Hard Current Stop (mA): 850.000
+Max Observed Current (mA): 22.000
+Max Observed Filtered Current (mA): 22.000
+Max Observed Displacement (mm): 1.372
+Trigger Displacement (mm): n/a
+Tracker Metric Frame: robot_tip_mm
+Trace Sample Count: 37

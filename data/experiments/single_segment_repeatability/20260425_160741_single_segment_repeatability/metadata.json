@@ -1,0 +1,56 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "single_segment_repeatability",
+  "run_id": "395a7232faf3",
+  "timestamp_utc": "2026-04-25T16:07:47.665199+00:00",
+  "git_commit": "7ac3f50385f9ed7330ce97b435e99912156ce24c",
+  "backend_info": {
+    "mock_mode": false,
+    "tracking_backend_configured": "ndi",
+    "tracking_backend_selected": "ndi",
+    "tracking_backend_identity": "ndi_tracker_python",
+    "tracking_state": "streaming_healthy",
+    "servo_connected": true,
+    "pretension_source": {
+      "source_type": "manual",
+      "accepted": true,
+      "usable": true,
+      "message": "Accepted manual pretension/startup state is recorded for servo(s): 1, 2, 3, 4",
+      "updated_at_utc": "2026-04-24T23:09:10Z",
+      "note": null
+    }
+  },
+  "registration_info": {
+    "path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+    "exists": true,
+    "tracking_registration_state": "loaded",
+    "tip_pose_status": "ok",
+    "runtime_tip_mode": "latest_accepted",
+    "runtime_tip_trust_level": "trusted",
+    "runtime_tip_mode_message": "Latest accepted runtime tip artifact is active (2026-04-17T22:55:56.544Z).",
+    "runtime_tip_calibration_state": "loaded",
+    "runtime_tip_selected_artifact_kind": "runtime_tip_calibration_hat",
+    "runtime_tip_selected_artifact_path": "/home/continuum-pi/Continuum_pi/data/runtime_tip_calibration/latest_runtime_tip_calibration.json"
+  },
+  "config_used": {
+    "tool_id": "0A",
+    "settle_time_s": 2.25,
+    "capture_timeout_s": 1.0,
+    "capture_poll_interval_s": 0.035,
+    "max_tracker_age_s": 0.2,
+    "random_seed": 10,
+    "run_label": "",
+    "require_robot_frame_tip": true,
+    "return_to_center_on_finalize": true,
+    "fail_on_rejected_capture": false,
+    "thesis_goal_rms_mm": 1.0,
+    "min_repeat_captures_per_target": 12,
+    "min_repeat_capture_fraction": 0.85,
+    "max_rejected_capture_fraction": 0.1,
+    "baseline_run_path": "",
+    "inner_ring_radius_mm": 4.0,
+    "outer_ring_radius_mm": 8.0,
+    "max_target_tick_delta_from_startup": 650
+  },
+  "operator_notes": ""
+}

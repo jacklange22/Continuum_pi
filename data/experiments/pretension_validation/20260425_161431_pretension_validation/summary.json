@@ -1,0 +1,33 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "pretension_validation",
+  "run_id": "da9df1679350",
+  "success": false,
+  "sample_counts": {
+    "total": 48,
+    "phase::pretension_stage_baseline": 8,
+    "phase::pretension_stage_centering": 17,
+    "phase::pretension_stage_custom_start": 10,
+    "phase::pretension_stage_equalization": 1,
+    "phase::pretension_stage_paired_takeup": 8,
+    "phase::pretension_stage_verify": 4
+  },
+  "dropped_frames": 48,
+  "invalid_transforms": 0,
+  "stage_pass_fail": {
+    "setup": "passed",
+    "precheck": "passed",
+    "execute": "failed",
+    "finalize": "passed"
+  },
+  "status": "success",
+  "experiment_metrics": {
+    "stage_messages": {
+      "execute": "Failed to write goal position for servo 2: [TxRxResult] There is no status packet!"
+    }
+  },
+  "warning_messages": [],
+  "error_messages": [
+    "Failed to write goal position for servo 2: [TxRxResult] There is no status packet!"
+  ]
+}

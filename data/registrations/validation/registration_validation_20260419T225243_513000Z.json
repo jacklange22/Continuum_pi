@@ -1,0 +1,97 @@
+{
+  "current_registration_path": "/home/continuum-pi/Continuum_pi/data/registrations/registration_20260419T225301_998672Z.json",
+  "current_timestamp_utc": "2026-04-19T22:52:43.513Z",
+  "history_run_count": 2,
+  "comparison_count": 1,
+  "comparisons_to_recent_runs": [
+    {
+      "path": "/home/continuum-pi/Continuum_pi/data/registrations/registration_20260401T193748Z.json",
+      "timestamp_utc": "2026-04-01T19:37:30.115Z",
+      "fre_mm": 0.7175823132483328,
+      "fre_delta_mm": 0.7696069957014819,
+      "translation_delta_mm": 465.9619012842223,
+      "rotation_delta_deg": 95.73333502235344
+    }
+  ],
+  "fre_summary_mm": {
+    "count": 2,
+    "mean": 1.1023858110990736,
+    "std": 0.38480349785074097,
+    "min": 0.7175823132483328,
+    "max": 1.4871893089498147
+  },
+  "translation_delta_summary_mm": {
+    "count": 1,
+    "mean": 465.9619012842223,
+    "std": 0.0,
+    "min": 465.9619012842223,
+    "max": 465.9619012842223
+  },
+  "rotation_delta_summary_deg": {
+    "count": 1,
+    "mean": 95.73333502235344,
+    "std": 0.0,
+    "min": 95.73333502235344,
+    "max": 95.73333502235344
+  },
+  "per_landmark_residual_summary_mm_by_label": {
+    "L1": {
+      "count": 2,
+      "mean_mm": 0.9479474235836218,
+      "std_mm": 0.4487474797891049,
+      "max_mm": 1.3966949033727267,
+      "min_mm": 0.499199943794517
+    },
+    "L2": {
+      "count": 2,
+      "mean_mm": 1.1959771289073,
+      "std_mm": 0.2344573837920415,
+      "max_mm": 1.4304345126993414,
+      "min_mm": 0.9615197451152584
+    },
+    "L3": {
+      "count": 2,
+      "mean_mm": 1.0984656236170645,
+      "std_mm": 0.6888735793614335,
+      "max_mm": 1.787339202978498,
+      "min_mm": 0.409592044255631
+    },
+    "L4": {
+      "count": 2,
+      "mean_mm": 1.0670575818026733,
+      "std_mm": 0.21958424399265886,
+      "max_mm": 1.286641825795332,
+      "min_mm": 0.8474733378100143
+    }
+  },
+  "worst_landmark_by_mean_residual": "L2",
+  "worst_landmark_mean_residual_mm": 1.1959771289073,
+  "generated_at_utc": "2026-04-19T22:53:02.004Z",
+  "validation_kind": "repeated_registration_comparison",
+  "current_record_timestamp_utc": "2026-04-19T22:52:43.513Z",
+  "registration_mode": "simple",
+  "current_fre_mm": 1.4871893089498147,
+  "runtime_application": {
+    "state": "registration_loaded_waiting_for_live_pose",
+    "message": "Tracking loaded this accepted registration; live pose is waiting on runtime status 'missing_registration'.",
+    "registration_state": "loaded",
+    "tip_pose_status": "missing_registration",
+    "registration_path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+    "loaded_latest_registration": true,
+    "timestamp_matches_latest": true,
+    "role_match": true,
+    "stored_registration_timestamp_utc": "2026-04-19T22:52:43.513Z",
+    "stored_registration_fre_mm": 1.4871893089498147,
+    "stored_registration_measurement_tool_id": "0B",
+    "stored_registration_coil_tool_id": "0A",
+    "runtime_tip_calibration_state": "loaded",
+    "runtime_tip_calibration_path": "/home/continuum-pi/Continuum_pi/data/runtime_tip_calibration/latest_runtime_tip_calibration.json",
+    "runtime_tip_mode": "latest_accepted",
+    "runtime_tip_trust_level": "trusted",
+    "runtime_tip_mode_message": "Latest accepted runtime tip artifact is active (2026-04-17T22:55:56.544Z).",
+    "stored_runtime_tip_timestamp_utc": "2026-04-17T22:55:56.544Z",
+    "stored_runtime_tip_measurement_tool_id": "0B",
+    "stored_runtime_tip_coil_tool_id": "0A",
+    "runtime_tip_identity_fallback": false
+  }
+}

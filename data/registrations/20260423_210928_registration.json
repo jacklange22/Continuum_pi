@@ -1,0 +1,1024 @@
+{
+  "timestamp_utc": "2026-04-23T21:09:28.043Z",
+  "landmark_labels": [
+    "L1",
+    "L2",
+    "L3",
+    "L4"
+  ],
+  "raw_captured_landmarks_robot_xyz": {
+    "L1": [
+      [
+        26.143656778017768,
+        66.71144980134456,
+        -267.3996618098306
+      ],
+      [
+        26.206262389180655,
+        66.64786573382254,
+        -267.4958686793249
+      ],
+      [
+        26.247575744442745,
+        66.66685957830893,
+        -267.46063097080213
+      ],
+      [
+        26.234257502412287,
+        66.89125304121421,
+        -267.52059323788393
+      ],
+      [
+        26.252767248133996,
+        66.6796416212032,
+        -267.44455001618815
+      ]
+    ],
+    "L2": [
+      [
+        25.40292767519496,
+        33.99392979986821,
+        -231.40461595263082
+      ],
+      [
+        25.47436616813562,
+        34.101254046315894,
+        -231.50556976200622
+      ],
+      [
+        25.34337016458452,
+        33.83277294198938,
+        -231.39537648320274
+      ],
+      [
+        25.455735978955705,
+        34.07135724461575,
+        -231.52635759151354
+      ],
+      [
+        25.435569579864687,
+        34.08479895914166,
+        -231.49874031976617
+      ]
+    ],
+    "L3": [
+      [
+        25.522839037991154,
+        71.12981245001927,
+        -199.69427352438046
+      ],
+      [
+        25.53291152928469,
+        71.14516085586712,
+        -199.7098312438835
+      ],
+      [
+        25.5268790401936,
+        71.03669663077012,
+        -199.6742539138472
+      ],
+      [
+        25.517729926120417,
+        71.10318415579144,
+        -199.68061437486674
+      ],
+      [
+        25.55611590600843,
+        71.11576194250004,
+        -199.67724547859544
+      ]
+    ],
+    "L4": [
+      [
+        25.644266033176653,
+        101.53021290132082,
+        -236.75944289859103
+      ],
+      [
+        25.636571216808576,
+        101.5008383309999,
+        -236.7587524849475
+      ],
+      [
+        25.701847447143308,
+        101.11443571771143,
+        -236.8153018311081
+      ],
+      [
+        25.622559747629623,
+        101.57709281080538,
+        -236.7353416968975
+      ],
+      [
+        25.665671429966785,
+        101.19247755157653,
+        -236.59266256940307
+      ]
+    ]
+  },
+  "averaged_landmarks_robot_xyz": {
+    "L1": [
+      26.216903932437493,
+      66.71941395517868,
+      -267.46426094280594
+    ],
+    "L2": [
+      25.4223939133471,
+      34.016822598386184,
+      -231.46613202182388
+    ],
+    "L3": [
+      25.531295087919656,
+      71.10612320698961,
+      -199.68724370711467
+    ],
+    "L4": [
+      25.65418317494499,
+      101.38301146248281,
+      -236.73230029618944
+    ]
+  },
+  "residuals_robot_xyz_mm": {
+    "L1": [
+      -0.8140073862926869,
+      1.3421908962165503,
+      0.16898928800495128
+    ],
+    "L2": [
+      -0.6279064995280521,
+      -0.07537190366318214,
+      -0.16898928800495483
+    ],
+    "L3": [
+      -0.3596004329568956,
+      -0.737040135554281,
+      0.1689892880049335
+    ],
+    "L4": [
+      1.8015143187776061,
+      -0.5297788569989734,
+      -0.16898928800493707
+    ]
+  },
+  "fre_mm": 1.3394888532163338,
+  "T_robot_aurora": [
+    [
+      0.003362596445144695,
+      0.9974543687666357,
+      -0.0712283312558945,
+      -84.87475339036304
+    ],
+    [
+      0.0100717478277063,
+      -0.07125890248500585,
+      -0.9974070025382457,
+      -228.6226155216297
+    ],
+    [
+      -0.9999436248313416,
+      0.0026364834504996218,
+      -0.010285723804042203,
+      18.11946851582181
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "T_coil_tip": [
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      1.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "config_used": {
+    "registration_config_path": "/home/continuum-pi/Continuum_pi/config/registration.yaml",
+    "capture_tool_id": "0B",
+    "measurement_tool_id": "0B",
+    "coil_tool_id": "0A",
+    "registration_mode": "simple",
+    "measurement_point_source": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/generated_penprobe_tip.csv",
+    "penprobe_file": "data/pivot_calibration/generated_penprobe_tip.csv",
+    "capture_tip_offset_applied_before_solving": true,
+    "capture_tip_file_path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/generated_penprobe_tip.csv",
+    "capture_tip_file_sha256": "ff49e39eec0e01c210adc0b6c0ca9399856d0a5e0df75226f8491db3d9dd8619",
+    "capture_tip_vector_mm": [
+      -0.5328,
+      -4.9709,
+      17.4064
+    ],
+    "tip_calibration_source": "identity_assumption_simple_registration"
+  },
+  "T_aurora_2_tip": null,
+  "measurement_tool_id": "0B",
+  "coil_tool_id": "0A",
+  "raw_measurement_tool_samples_by_label": {
+    "L1": [
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.08460807834193798,
+          0.6759645407956959,
+          -0.10921042736335254,
+          0.723869114703247
+        ],
+        "translation_mm": [
+          8.05,
+          66.66,
+          -268.17
+        ],
+        "quality": 0.0342,
+        "source_row": 43800,
+        "source_token": "2026-04-23T21:08:14.693Z"
+      },
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.08351021141786327,
+          0.6729822905758107,
+          -0.10841325649935783,
+          0.7268888821377607
+        ],
+        "translation_mm": [
+          8.120000000000001,
+          66.55,
+          -268.42
+        ],
+        "quality": 0.0349,
+        "source_row": 43944,
+        "source_token": "2026-04-23T21:08:15.119Z"
+      },
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.0785095575501963,
+          0.6673812452642801,
+          -0.11041344144639072,
+          0.732289146984124
+        ],
+        "translation_mm": [
+          8.18,
+          66.5,
+          -268.69
+        ],
+        "quality": 0.041600000000000005,
+        "source_row": 44120,
+        "source_token": "2026-04-23T21:08:15.688Z"
+      },
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.08140980070174825,
+          0.6692805728453307,
+          -0.10601276258458617,
+          0.7308879895925996
+        ],
+        "translation_mm": [
+          8.16,
+          66.68,
+          -268.64
+        ],
+        "quality": 0.042800000000000005,
+        "source_row": 44320,
+        "source_token": "2026-04-23T21:08:16.304Z"
+      },
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.08300430596006039,
+          0.6687346915119565,
+          -0.10300534354079784,
+          0.731637954703376
+        ],
+        "translation_mm": [
+          8.18,
+          66.43,
+          -268.58
+        ],
+        "quality": 0.024800000000000003,
+        "source_row": 44560,
+        "source_token": "2026-04-23T21:08:17.057Z"
+      }
+    ],
+    "L2": [
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.6597001830797787,
+          -0.26023952037198045,
+          0.7032067900597214,
+          -0.050707700549036956
+        ],
+        "translation_mm": [
+          7.3100000000000005,
+          33.3,
+          -231.78
+        ],
+        "quality": 0.0517,
+        "source_row": 46312,
+        "source_token": "2026-04-23T21:08:22.536Z"
+      },
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.6648476014681016,
+          -0.25081795795457273,
+          0.7028503223703098,
+          -0.03270234140795265
+        ],
+        "translation_mm": [
+          7.390000000000001,
+          33.22,
+          -231.9
+        ],
+        "quality": 0.0434,
+        "source_row": 46440,
+        "source_token": "2026-04-23T21:08:22.927Z"
+      },
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.671294252973434,
+          -0.23903356147295987,
+          0.7011984516681681,
+          -0.023403285935009458
+        ],
+        "translation_mm": [
+          7.26,
+          33.02,
+          -231.95000000000002
+        ],
+        "quality": 0.0449,
+        "source_row": 46632,
+        "source_token": "2026-04-23T21:08:23.524Z"
+      },
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.6734483283861299,
+          -0.22701629127361364,
+          0.7034504814178848,
+          -0.00940067461661659
+        ],
+        "translation_mm": [
+          7.37,
+          33.26,
+          -232.0
+        ],
+        "quality": 0.043000000000000003,
+        "source_row": 46840,
+        "source_token": "2026-04-23T21:08:24.179Z"
+      },
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.6718604668036874,
+          -0.22562030561314664,
+          0.7054634910439435,
+          -0.004500405032177117
+        ],
+        "translation_mm": [
+          7.3500000000000005,
+          33.21,
+          -231.85
+        ],
+        "quality": 0.044000000000000004,
+        "source_row": 47016,
+        "source_token": "2026-04-23T21:08:24.724Z"
+      }
+    ],
+    "L3": [
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.664536490700584,
+          0.13430737502044915,
+          0.6788372759782643,
+          0.2820154858955075
+        ],
+        "translation_mm": [
+          7.5,
+          71.87,
+          -198.08
+        ],
+        "quality": 0.0543,
+        "source_row": 48968,
+        "source_token": "2026-04-23T21:08:30.823Z"
+      },
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.6661616161374466,
+          0.13421241388026622,
+          0.6764625689166325,
+          0.283926261554453
+        ],
+        "translation_mm": [
+          7.5,
+          71.86,
+          -198.20000000000002
+        ],
+        "quality": 0.0538,
+        "source_row": 49112,
+        "source_token": "2026-04-23T21:08:31.277Z"
+      },
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.6706694614798537,
+          0.13351382807569406,
+          0.6701694096893077,
+          0.288529883144852
+        ],
+        "translation_mm": [
+          7.47,
+          71.69,
+          -198.45000000000002
+        ],
+        "quality": 0.0568,
+        "source_row": 49280,
+        "source_token": "2026-04-23T21:08:31.796Z"
+      },
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.6700375868126781,
+          0.1346075510223678,
+          0.6696375643727898,
+          0.29071630818872457
+        ],
+        "translation_mm": [
+          7.46,
+          71.72,
+          -198.45000000000002
+        ],
+        "quality": 0.0536,
+        "source_row": 49496,
+        "source_token": "2026-04-23T21:08:32.476Z"
+      },
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.6675892659908629,
+          0.13321781307862618,
+          0.6713897741717849,
+          0.29293917005052256
+        ],
+        "translation_mm": [
+          7.5,
+          71.61,
+          -198.37
+        ],
+        "quality": 0.0558,
+        "source_row": 49688,
+        "source_token": "2026-04-23T21:08:33.069Z"
+      }
+    ],
+    "L4": [
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.6437477742950612,
+          -0.19341435381181432,
+          0.7387548250299238,
+          -0.049203651538476036
+        ],
+        "translation_mm": [
+          7.6000000000000005,
+          102.85000000000001,
+          -235.96
+        ],
+        "quality": 0.092,
+        "source_row": 56104,
+        "source_token": "2026-04-23T21:08:53.111Z"
+      },
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.6456531362113567,
+          -0.19181578612970604,
+          0.7375607000555695,
+          -0.04840398356974858
+        ],
+        "translation_mm": [
+          7.59,
+          102.83,
+          -236.03
+        ],
+        "quality": 0.0925,
+        "source_row": 56328,
+        "source_token": "2026-04-23T21:08:53.809Z"
+      },
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.6434339259481423,
+          -0.19431024527778049,
+          0.7391389721297352,
+          -0.04370230426474014
+        ],
+        "translation_mm": [
+          7.65,
+          102.28,
+          -235.95000000000002
+        ],
+        "quality": 0.1023,
+        "source_row": 56576,
+        "source_token": "2026-04-23T21:08:54.574Z"
+      },
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.6457480841925902,
+          -0.1987147968546812,
+          0.7363548310221529,
+          -0.03610268830626065
+        ],
+        "translation_mm": [
+          7.55,
+          102.42,
+          -235.93
+        ],
+        "quality": 0.10110000000000001,
+        "source_row": 56840,
+        "source_token": "2026-04-23T21:08:55.408Z"
+      },
+      {
+        "tool_id": "0B",
+        "tracking_state": "tracked",
+        "valid": null,
+        "validity_known": false,
+        "status": "tracked",
+        "quaternion_wxyz": [
+          0.598644582722175,
+          -0.2541189249410368,
+          0.749855843844114,
+          -0.12150904911584401
+        ],
+        "translation_mm": [
+          7.71,
+          102.97,
+          -235.04
+        ],
+        "quality": 0.0918,
+        "source_row": 65928,
+        "source_token": "2026-04-23T21:09:23.765Z"
+      }
+    ]
+  },
+  "raw_coil_samples_by_label": {
+    "L1": [],
+    "L2": [],
+    "L3": [],
+    "L4": []
+  },
+  "truth_points_in_sw_by_label": {},
+  "group_by_label": {},
+  "validation_metrics": {
+    "overall_fre_mm": 1.3394888532163338,
+    "overall_rmse_mm": 1.3394888532163338,
+    "max_residual_mm": 1.885385068770912,
+    "residual_norms_mm_by_label": {
+      "L1": 1.578810250247337,
+      "L2": 0.6546028379649796,
+      "L3": 0.8373159572473667,
+      "L4": 1.885385068770912
+    },
+    "residual_vectors_mm_by_label": {
+      "L1": [
+        -0.8140073862926869,
+        1.3421908962165503,
+        0.16898928800495128
+      ],
+      "L2": [
+        -0.6279064995280521,
+        -0.07537190366318214,
+        -0.16898928800495483
+      ],
+      "L3": [
+        -0.3596004329568956,
+        -0.737040135554281,
+        0.1689892880049335
+      ],
+      "L4": [
+        1.8015143187776061,
+        -0.5297788569989734,
+        -0.16898928800493707
+      ]
+    },
+    "registration_mode": "simple",
+    "landmark_count": 4,
+    "captures_per_landmark": 5,
+    "capture_counts_by_label": {
+      "L1": 5,
+      "L2": 5,
+      "L3": 5,
+      "L4": 5
+    },
+    "measured_landmark_frame": "aurora",
+    "truth_landmark_frame": "robot",
+    "residual_frame": "robot",
+    "truth_geometry": {
+      "point_count": 4,
+      "centroid_mm": [
+        0.0,
+        0.0,
+        -5.0
+      ],
+      "geometry_rank": 2,
+      "singular_values_mm": [
+        49.49747468305833,
+        49.497474683058314,
+        0.0
+      ],
+      "condition_number": 1.0000000000000002,
+      "min_pairwise_distance_mm": 49.49747468305833,
+      "mean_pairwise_distance_mm": 56.331649788705555,
+      "max_pairwise_distance_mm": 70.0
+    },
+    "measured_geometry": {
+      "point_count": 4,
+      "centroid_mm": [
+        25.70619402716231,
+        68.30634280575933,
+        -233.8374842419835
+      ],
+      "geometry_rank": 3,
+      "singular_values_mm": [
+        48.24805864369106,
+        47.577116217724885,
+        0.3378484368048031
+      ],
+      "condition_number": 142.80977322256217,
+      "min_pairwise_distance_mm": 46.328555470513855,
+      "mean_pairwise_distance_mm": 54.52496944981669,
+      "max_pairwise_distance_mm": 67.92228899937629
+    },
+    "residual_summary": {
+      "landmark_count": 4,
+      "mean_residual_mm": 1.2390285285576488,
+      "median_residual_mm": 1.2080631037473517,
+      "std_residual_mm": 0.5089584396697595,
+      "max_residual_mm": 1.885385068770912,
+      "min_residual_mm": 0.6546028379649796,
+      "worst_landmark_label": "L4",
+      "worst_landmark_residual_mm": 1.885385068770912
+    },
+    "worst_landmark_label": "L4",
+    "worst_landmark_residual_mm": 1.885385068770912,
+    "configured_max_fre_mm": 2.0
+  },
+  "capture_tip_provenance": {
+    "measurement_tool_id": "0B",
+    "source": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/generated_penprobe_tip.csv",
+    "path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/generated_penprobe_tip.csv",
+    "file_mtime_ns": 1776976280578122402,
+    "file_sha256": "ff49e39eec0e01c210adc0b6c0ca9399856d0a5e0df75226f8491db3d9dd8619",
+    "tip_vector_mm": [
+      -0.5328,
+      -4.9709,
+      17.4064
+    ],
+    "T_measurement_tool_tip": [
+      [
+        1.0,
+        0.0,
+        0.0,
+        -0.5328
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        -4.9709
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        17.4064
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ],
+    "offset_applied_before_solving": true,
+    "applied_stage": "capture_before_point_averaging_and_registration_solve"
+  },
+  "live_pose_tip_transform": {
+    "coil_tool_id": "0A",
+    "source": "identity_assumption_simple_registration",
+    "assumption": "Simple 4-point registration calibrates T_robot_aurora from 0B pen-probe captures. It does not solve a separate 0A-to-tip offset, so T_coil_tip remains identity by design until the separate runtime 0A hat-based tip calibration is performed.",
+    "T_coil_tip": [
+      [
+        1.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        1.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        1.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    ]
+  },
+  "T_aurora_2_model": [
+    [
+      0.003362596445144695,
+      0.9974543687666357,
+      -0.0712283312558945,
+      -84.87475339036304
+    ],
+    [
+      0.0100717478277063,
+      -0.07125890248500585,
+      -0.9974070025382457,
+      -228.6226155216297
+    ],
+    [
+      -0.9999436248313416,
+      0.0026364834504996218,
+      -0.010285723804042203,
+      18.11946851582181
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "T_tip_2_coil": [
+    [
+      1.0,
+      0.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      1.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "raw_captured_landmarks_aurora_xyz": {
+    "L1": [
+      [
+        26.143656778017768,
+        66.71144980134456,
+        -267.3996618098306
+      ],
+      [
+        26.206262389180655,
+        66.64786573382254,
+        -267.4958686793249
+      ],
+      [
+        26.247575744442745,
+        66.66685957830893,
+        -267.46063097080213
+      ],
+      [
+        26.234257502412287,
+        66.89125304121421,
+        -267.52059323788393
+      ],
+      [
+        26.252767248133996,
+        66.6796416212032,
+        -267.44455001618815
+      ]
+    ],
+    "L2": [
+      [
+        25.40292767519496,
+        33.99392979986821,
+        -231.40461595263082
+      ],
+      [
+        25.47436616813562,
+        34.101254046315894,
+        -231.50556976200622
+      ],
+      [
+        25.34337016458452,
+        33.83277294198938,
+        -231.39537648320274
+      ],
+      [
+        25.455735978955705,
+        34.07135724461575,
+        -231.52635759151354
+      ],
+      [
+        25.435569579864687,
+        34.08479895914166,
+        -231.49874031976617
+      ]
+    ],
+    "L3": [
+      [
+        25.522839037991154,
+        71.12981245001927,
+        -199.69427352438046
+      ],
+      [
+        25.53291152928469,
+        71.14516085586712,
+        -199.7098312438835
+      ],
+      [
+        25.5268790401936,
+        71.03669663077012,
+        -199.6742539138472
+      ],
+      [
+        25.517729926120417,
+        71.10318415579144,
+        -199.68061437486674
+      ],
+      [
+        25.55611590600843,
+        71.11576194250004,
+        -199.67724547859544
+      ]
+    ],
+    "L4": [
+      [
+        25.644266033176653,
+        101.53021290132082,
+        -236.75944289859103
+      ],
+      [
+        25.636571216808576,
+        101.5008383309999,
+        -236.7587524849475
+      ],
+      [
+        25.701847447143308,
+        101.11443571771143,
+        -236.8153018311081
+      ],
+      [
+        25.622559747629623,
+        101.57709281080538,
+        -236.7353416968975
+      ],
+      [
+        25.665671429966785,
+        101.19247755157653,
+        -236.59266256940307
+      ]
+    ]
+  },
+  "averaged_landmarks_aurora_xyz": {
+    "L1": [
+      26.216903932437493,
+      66.71941395517868,
+      -267.46426094280594
+    ],
+    "L2": [
+      25.4223939133471,
+      34.016822598386184,
+      -231.46613202182388
+    ],
+    "L3": [
+      25.531295087919656,
+      71.10612320698961,
+      -199.68724370711467
+    ],
+    "L4": [
+      25.65418317494499,
+      101.38301146248281,
+      -236.73230029618944
+    ]
+  }
+}
