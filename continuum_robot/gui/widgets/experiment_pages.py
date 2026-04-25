@@ -2091,6 +2091,7 @@ class PretensionValidationPage(ExperimentPageBase):
         self.pretension_start_mode_combo = QComboBox()
         self.pretension_start_mode_combo.addItem("Current Position", "current_position")
         self.pretension_start_mode_combo.addItem("Manual Startup Artifact", "manual_startup_artifact")
+        self.pretension_start_mode_combo.addItem("Release 200 From Current", "release_200_from_current")
         self.pretension_start_mode_combo.addItem("Full Release 4095", "full_release_4095")
         self.pretension_start_mode_combo.currentIndexChanged.connect(
             lambda _index: self.controller.set_config_value(
@@ -2306,13 +2307,15 @@ class PretensionValidationPage(ExperimentPageBase):
                     (
                         "Single-servo trace mode captures fine-grained current/position onset behavior."
                         if mode == "single_servo_trace"
-                        else "Staged mode runs baseline, per-servo take-up, load equalization, and optional tip XY centering."
+                        else "Advanced staged mode runs baseline, explicit startup release, paired take-up, load balancing, tip XY centering, settle, and scoring."
                     ),
                 ),
                 (
                     "Pretension Start",
                     str(config.pretension_start_mode or defaults.start_mode).replace("_", " "),
                 ),
+                ("Target XY", f"{float(config.tip_target_xy_mm[0]):.2f}, {float(config.tip_target_xy_mm[1]):.2f} mm"),
+                ("Quality Score", "Saved as quality_score_0_100 plus component scores for each staged run."),
                 ("Travel Axis", "Travel is measured from the untensioned reference toward lower raw counts (ticks / mm)."),
                 ("Current Metric", "Current is saved as an engagement/load proxy, not a tendon-force estimate."),
                 (

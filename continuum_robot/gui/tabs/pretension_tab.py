@@ -132,6 +132,7 @@ class PretensionTab(QWidget):
         self.start_mode_combo = QComboBox()
         self.start_mode_combo.addItem("Current Position", "current_position")
         self.start_mode_combo.addItem("Manual Startup Artifact", "manual_startup_artifact")
+        self.start_mode_combo.addItem("Release 200 From Current", "release_200_from_current")
         self.start_mode_combo.addItem("Full Release 4095", "full_release_4095")
         self.step_ticks_spin = QSpinBox()
         self.step_ticks_spin.setRange(1, 256)

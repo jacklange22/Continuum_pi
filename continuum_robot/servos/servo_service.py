@@ -36,10 +36,12 @@ CANONICAL_POSITION_CONVENTION = (
 )
 PRETENSION_START_MODE_CURRENT_POSITION = "current_position"
 PRETENSION_START_MODE_MANUAL_STARTUP_ARTIFACT = "manual_startup_artifact"
+PRETENSION_START_MODE_RELEASE_200_FROM_CURRENT = "release_200_from_current"
 PRETENSION_START_MODE_FULL_RELEASE_4095 = "full_release_4095"
 PRETENSION_START_MODE_OPTIONS = (
     PRETENSION_START_MODE_CURRENT_POSITION,
     PRETENSION_START_MODE_MANUAL_STARTUP_ARTIFACT,
+    PRETENSION_START_MODE_RELEASE_200_FROM_CURRENT,
     PRETENSION_START_MODE_FULL_RELEASE_4095,
 )
 SINGLE_SEGMENT_PAIR_INDEXES = ((0, 2), (1, 3))
@@ -2102,6 +2104,13 @@ class ServoService:
                     f"for servo {int(servo_id)}."
                 )
             return int(entry.pretension_final_position_tick), "using accepted manual startup artifact"
+        if mode == PRETENSION_START_MODE_RELEASE_200_FROM_CURRENT:
+            if telemetry.present_position is None:
+                raise ValueError(
+                    "Pretension start_mode=release_200_from_current requires present position telemetry."
+                )
+            release_target = min(int(hardware_max_tick), int(telemetry.present_position) + 200)
+            return int(release_target), "using live current position + 200 tick release bias"
         if mode == PRETENSION_START_MODE_FULL_RELEASE_4095:
             return int(RAW_POSITION_MAX_TICK), "using explicit full release 4095"
         return int(configured_reference_tick), "using configured untensioned reference"

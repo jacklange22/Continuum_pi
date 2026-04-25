@@ -690,6 +690,10 @@ class ExperimentController:
                 detail_parts.append(f"source=T{int(payload.get('source_target')):02d}")
             if payload.get("revisit_index") is not None:
                 detail_parts.append(f"revisit={int(payload.get('revisit_index')) + 1}")
+            if payload.get("run_index") is not None:
+                detail_parts.append(f"run={int(payload.get('run_index')) + 1}")
+            if payload.get("quality_score_0_100") is not None:
+                detail_parts.append(f"quality={float(payload.get('quality_score_0_100')):.1f}/100")
             detail_text = " " + " ".join(detail_parts) if detail_parts else ""
             self.state.status_message = f"Running {self.state.selected_experiment}:{detail_text} {current}/{total}"
 

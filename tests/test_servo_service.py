@@ -1222,6 +1222,64 @@ def test_servo_service_pretension_full_release_start_mode_uses_4095_reference(tm
     assert window.start_mode == "full_release_4095"
 
 
+def test_servo_service_pretension_release_200_start_mode_uses_current_bias(tmp_path: Path) -> None:
+    bus = _PretensionBus(current_sequence=[])
+    bus._state[1].present_position = 3000
+    bus._state[1].torque_enabled = True
+    service = _build_service(tmp_path, dxl_bus=bus)
+    service.connect("/dev/mock-openrb", 115200)
+
+    window = service.pretension_window_for_servo(
+        servo_id=1,
+        parameters=PretensionParameters(
+            untensioned_reference_tick=4095,
+            step_ticks=2,
+            settle_time_s=0.0,
+            baseline_sample_count=1,
+            current_filter_window=1,
+            current_delta_threshold_ma=60,
+            absolute_trigger_current_ma=220,
+            hard_current_stop_ma=850,
+            max_travel_ticks=320,
+            timeout_s=2.0,
+            start_mode="release_200_from_current",
+        ),
+    )
+
+    assert window.untensioned_reference_tick == 3200
+    assert window.effective_min_target_tick == 2880
+    assert window.start_mode == "release_200_from_current"
+    assert "200 tick release" in str(window.start_mode_detail)
+
+
+def test_servo_service_pretension_release_200_start_mode_respects_hard_position_limit(tmp_path: Path) -> None:
+    bus = _PretensionBus(current_sequence=[], max_limit=4050)
+    bus._state[1].present_position = 4000
+    bus._state[1].torque_enabled = True
+    service = _build_service(tmp_path, dxl_bus=bus)
+    service.connect("/dev/mock-openrb", 115200)
+
+    window = service.pretension_window_for_servo(
+        servo_id=1,
+        parameters=PretensionParameters(
+            untensioned_reference_tick=4095,
+            step_ticks=2,
+            settle_time_s=0.0,
+            baseline_sample_count=1,
+            current_filter_window=1,
+            current_delta_threshold_ma=60,
+            absolute_trigger_current_ma=220,
+            hard_current_stop_ma=850,
+            max_travel_ticks=320,
+            timeout_s=2.0,
+            start_mode="release_200_from_current",
+        ),
+    )
+
+    assert window.untensioned_reference_tick == 4050
+    assert window.hardware_safe_max_tick == 4050
+
+
 def test_servo_service_pretension_manual_artifact_start_mode_uses_saved_manual_reference(tmp_path: Path) -> None:
     bus = _PretensionBus(current_sequence=[230])
     bus._state[1].present_position = 4010

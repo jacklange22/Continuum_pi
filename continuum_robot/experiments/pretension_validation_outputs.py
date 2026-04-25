@@ -84,8 +84,15 @@ def _write_staged_pretension_outputs(
     summary_text_path = output_dir / "pretension_summary.txt"
     metrics_csv_path = output_dir / "metrics.csv"
     current_vs_position_path = output_dir / "pretension_current_vs_position.png"
+    tendon_vs_tip_path = output_dir / "pretension_tendon_displacement_vs_tip_xy.png"
+    tendon_vs_current_path = output_dir / "pretension_tendon_displacement_vs_current.png"
+    current_vs_tip_error_path = output_dir / "pretension_current_vs_tip_error.png"
+    balance_over_stages_path = output_dir / "pretension_balance_over_stages.png"
     tip_xy_path = output_dir / "pretension_tip_xy_path.png"
+    final_tip_scatter_path = output_dir / "pretension_final_tip_xy_scatter.png"
     final_current_dist_path = output_dir / "pretension_final_current_distribution.png"
+    final_position_dist_path = output_dir / "pretension_final_position_distribution.png"
+    quality_dist_path = output_dir / "pretension_quality_score_distribution.png"
     repeatability_path = output_dir / "pretension_repeatability_summary.png"
     response_alias_path = output_dir / "pretension_response.png"
 
@@ -99,8 +106,15 @@ def _write_staged_pretension_outputs(
         metrics=metrics,
     )
     _write_staged_current_vs_position_plot(current_vs_position_path=current_vs_position_path, trace_rows=trace_rows)
+    _write_staged_tendon_vs_tip_plot(plot_path=tendon_vs_tip_path, trace_rows=trace_rows)
+    _write_staged_tendon_vs_current_plot(plot_path=tendon_vs_current_path, trace_rows=trace_rows)
+    _write_staged_current_vs_tip_error_plot(plot_path=current_vs_tip_error_path, trace_rows=trace_rows)
+    _write_staged_balance_over_stages_plot(plot_path=balance_over_stages_path, trace_rows=trace_rows, run_rows=run_rows)
     _write_staged_tip_xy_plot(tip_xy_path=tip_xy_path, run_rows=run_rows)
+    _write_staged_final_tip_scatter_plot(plot_path=final_tip_scatter_path, run_rows=run_rows)
     _write_staged_final_current_distribution_plot(final_current_dist_path=final_current_dist_path, run_rows=run_rows)
+    _write_staged_final_position_distribution_plot(plot_path=final_position_dist_path, run_rows=run_rows)
+    _write_staged_quality_distribution_plot(plot_path=quality_dist_path, run_rows=run_rows)
     _write_staged_repeatability_plot(repeatability_path=repeatability_path, metrics=metrics)
     if current_vs_position_path.exists():
         response_alias_path.write_bytes(current_vs_position_path.read_bytes())
@@ -108,8 +122,15 @@ def _write_staged_pretension_outputs(
         "summary_text_path": summary_text_path,
         "metrics_csv_path": metrics_csv_path,
         "current_vs_position_plot_path": current_vs_position_path,
+        "tendon_displacement_vs_tip_xy_plot_path": tendon_vs_tip_path,
+        "tendon_displacement_vs_current_plot_path": tendon_vs_current_path,
+        "current_vs_tip_error_plot_path": current_vs_tip_error_path,
+        "balance_over_stages_plot_path": balance_over_stages_path,
         "tip_xy_path_plot_path": tip_xy_path,
+        "final_tip_xy_scatter_plot_path": final_tip_scatter_path,
         "final_current_distribution_plot_path": final_current_dist_path,
+        "final_position_distribution_plot_path": final_position_dist_path,
+        "quality_score_distribution_plot_path": quality_dist_path,
         "repeatability_plot_path": repeatability_path,
         "plot_path": response_alias_path,
     }
@@ -206,6 +227,9 @@ def _write_staged_metrics_csv(*, metrics_csv_path: Path, run_rows: list[dict[str
         "final_tip_y_mm",
         "final_tip_z_mm",
         "final_tip_xy_offset_mm",
+        "settle_tip_drift_mm",
+        "quality_score_0_100",
+        "quality_components",
         "tip_centering_status",
         "equalization_status",
     ]
@@ -249,6 +273,9 @@ def _write_staged_metrics_csv(*, metrics_csv_path: Path, run_rows: list[dict[str
                         "final_tip_y_mm": (tip_xyz[1] if tip_xyz is not None and len(tip_xyz) > 1 else None),
                         "final_tip_z_mm": (tip_xyz[2] if tip_xyz is not None and len(tip_xyz) > 2 else None),
                         "final_tip_xy_offset_mm": run.get("final_tip_xy_offset_mm"),
+                        "settle_tip_drift_mm": run.get("settle_tip_drift_mm"),
+                        "quality_score_0_100": run.get("quality_score_0_100"),
+                        "quality_components": run.get("quality_components"),
                         "tip_centering_status": run.get("tip_centering_status"),
                         "equalization_status": run.get("equalization_status"),
                     }
@@ -283,12 +310,24 @@ def _write_staged_summary_text(
         f"- Final position std by servo (ticks): {metrics.get('final_position_std_ticks_by_servo')}",
         f"- Final current std by servo (mA): {metrics.get('final_current_std_ma_by_servo')}",
         f"- Final tip XY std (mm): {_fmt_float(metrics.get('final_tip_xy_std_mm'))}",
+        f"- Quality score mean (0-100): {_fmt_float(metrics.get('quality_score_mean_0_100'))}",
+        f"- Quality score std (0-100): {_fmt_float(metrics.get('quality_score_std_0_100'))}",
         f"- Failure reasons: {metrics.get('failure_reason_counts')}",
         "",
+        "Manual vs advanced artifact:",
+        f"- Manual startup artifact: {metrics.get('manual_startup_artifact')}",
+        f"- Advanced startup artifacts: {metrics.get('advanced_startup_artifacts')}",
+        "",
         "Saved plots:",
-        "- pretension_current_vs_position.png",
+        "- pretension_tendon_displacement_vs_tip_xy.png",
+        "- pretension_tendon_displacement_vs_current.png",
+        "- pretension_current_vs_tip_error.png",
+        "- pretension_balance_over_stages.png",
         "- pretension_tip_xy_path.png",
+        "- pretension_final_tip_xy_scatter.png",
         "- pretension_final_current_distribution.png",
+        "- pretension_final_position_distribution.png",
+        "- pretension_quality_score_distribution.png",
         "- pretension_repeatability_summary.png",
     ]
     summary_text_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
@@ -337,6 +376,109 @@ def _write_staged_current_vs_position_plot(*, current_vs_position_path: Path, tr
     canvas.save_png(current_vs_position_path)
 
 
+def _write_staged_tendon_vs_tip_plot(*, plot_path: Path, trace_rows: list[dict[str, Any]]) -> None:
+    points: list[tuple[float, float]] = []
+    latest_tip_error_by_run: dict[int, float] = {}
+    for row in trace_rows:
+        run_index = _as_int(row.get("run_index")) or 0
+        tip_error = _as_float(row.get("tip_xy_offset_mm") or row.get("final_tip_xy_offset_mm"))
+        if tip_error is not None:
+            latest_tip_error_by_run[int(run_index)] = float(tip_error)
+        travel = _as_float(row.get("travel_used_mm"))
+        if travel is None:
+            travel_ticks = _as_float(row.get("travel_used_ticks"))
+            travel = travel_ticks
+        if travel is not None and int(run_index) in latest_tip_error_by_run:
+            points.append((float(travel), float(latest_tip_error_by_run[int(run_index)])))
+    _write_basic_scatter_plot(
+        plot_path=plot_path,
+        title="TENDON DISPLACEMENT VS TIP XY ERROR",
+        subtitle="TENDON DISPLACEMENT (MM WHEN AVAILABLE; TICKS FALLBACK) / TIP XY ERROR (MM)",
+        points=points,
+        color=(124, 58, 237),
+        empty_message="NO TENDON/TIP DATA",
+    )
+
+
+def _write_staged_tendon_vs_current_plot(*, plot_path: Path, trace_rows: list[dict[str, Any]]) -> None:
+    points: list[tuple[float, float]] = []
+    for row in trace_rows:
+        current = _as_float(row.get("final_current_ma") or row.get("raw_current_ma") or row.get("filtered_current_ma"))
+        travel = _as_float(row.get("travel_used_mm"))
+        if travel is None:
+            travel = _as_float(row.get("travel_used_ticks"))
+        if travel is not None and current is not None:
+            points.append((float(travel), float(current)))
+    _write_basic_scatter_plot(
+        plot_path=plot_path,
+        title="TENDON DISPLACEMENT VS CURRENT",
+        subtitle="TENDON DISPLACEMENT (MM WHEN AVAILABLE; TICKS FALLBACK) / CURRENT (MA)",
+        points=points,
+        color=(37, 99, 235),
+        empty_message="NO TENDON/CURRENT DATA",
+    )
+
+
+def _write_staged_current_vs_tip_error_plot(*, plot_path: Path, trace_rows: list[dict[str, Any]]) -> None:
+    points: list[tuple[float, float]] = []
+    latest_tip_error_by_run: dict[int, float] = {}
+    for row in trace_rows:
+        run_index = _as_int(row.get("run_index")) or 0
+        tip_error = _as_float(row.get("tip_xy_offset_mm") or row.get("final_tip_xy_offset_mm"))
+        if tip_error is not None:
+            latest_tip_error_by_run[int(run_index)] = float(tip_error)
+        current = _as_float(row.get("final_current_ma") or row.get("raw_current_ma") or row.get("filtered_current_ma"))
+        if current is not None and int(run_index) in latest_tip_error_by_run:
+            points.append((float(current), float(latest_tip_error_by_run[int(run_index)])))
+    _write_basic_scatter_plot(
+        plot_path=plot_path,
+        title="CURRENT VS TIP XY ERROR",
+        subtitle="CURRENT (MA) / TIP XY ERROR (MM)",
+        points=points,
+        color=(217, 119, 6),
+        empty_message="NO CURRENT/TIP DATA",
+    )
+
+
+def _write_staged_balance_over_stages_plot(
+    *,
+    plot_path: Path,
+    trace_rows: list[dict[str, Any]],
+    run_rows: list[dict[str, Any]],
+) -> None:
+    points: list[tuple[float, float, tuple[int, int, int]]] = []
+    index = 0
+    for row in trace_rows:
+        for key, color in (
+            ("load_balance_error_ma", (37, 99, 235)),
+            ("pair_balance_error_ma", (217, 119, 6)),
+            ("pair_current_mismatch_ma", (139, 92, 246)),
+        ):
+            value = _as_float(row.get(key))
+            if value is None:
+                continue
+            points.append((float(index), float(value), color))
+        index += 1
+    for row in run_rows:
+        for key, color in (
+            ("load_balance_error_ma", (37, 99, 235)),
+            ("pair_balance_error_ma", (217, 119, 6)),
+        ):
+            value = _as_float(row.get(key))
+            if value is not None:
+                points.append((float(index), float(value), color))
+        index += 1
+    _write_basic_scatter_plot(
+        plot_path=plot_path,
+        title="PAIR / LOAD BALANCE OVER STAGES",
+        subtitle="STAGE SAMPLE INDEX / BALANCE ERROR (MA)",
+        points=[(x, y) for x, y, _color in points],
+        colors=[color for _x, _y, color in points],
+        color=(37, 99, 235),
+        empty_message="NO BALANCE DATA",
+    )
+
+
 def _write_staged_tip_xy_plot(*, tip_xy_path: Path, run_rows: list[dict[str, Any]]) -> None:
     points = []
     for row in run_rows:
@@ -367,6 +509,39 @@ def _write_staged_tip_xy_plot(*, tip_xy_path: Path, run_rows: list[dict[str, Any
             color,
         )
     canvas.save_png(tip_xy_path)
+
+
+def _write_staged_final_tip_scatter_plot(*, plot_path: Path, run_rows: list[dict[str, Any]]) -> None:
+    points = []
+    for row in run_rows:
+        xyz = row.get("final_tip_xyz_mm")
+        if not isinstance(xyz, list) or len(xyz) < 2:
+            continue
+        points.append((float(xyz[0]), float(xyz[1]), bool(row.get("accepted", False))))
+    width, height = 1080, 720
+    canvas = _Canvas(width, height, background=(255, 255, 255))
+    canvas.text(28, 16, "FINAL TIP XY SCATTER", color=(15, 23, 42), scale=2)
+    canvas.text(28, 40, "FINAL TIP XY IN ROBOT FRAME (MM)", color=(71, 85, 105), scale=1)
+    rect = (40, 72, width - 80, height - 120)
+    _draw_plot_frame(canvas, rect, "FINAL TIP XY")
+    if not points:
+        canvas.text(84, 220, "NO FINAL TIP XY DATA", color=(100, 116, 139), scale=2)
+        canvas.save_png(plot_path)
+        return
+    x_values = [point[0] for point in points]
+    y_values = [point[1] for point in points]
+    x_min, x_max = _expand_range(_min_max(x_values + [0.0]), pad_fraction=0.2, minimum_span=3.0)
+    y_min, y_max = _expand_range(_min_max(y_values + [0.0]), pad_fraction=0.2, minimum_span=3.0)
+    canvas.circle(int(_plot_x(rect, x_min, x_max, 0.0)), int(_plot_y(rect, y_min, y_max, 0.0)), 5, (15, 23, 42))
+    for x_value, y_value, accepted in points:
+        color = (22, 163, 74) if accepted else (220, 38, 38)
+        canvas.circle(
+            int(_plot_x(rect, x_min, x_max, x_value)),
+            int(_plot_y(rect, y_min, y_max, y_value)),
+            4,
+            color,
+        )
+    canvas.save_png(plot_path)
 
 
 def _write_staged_final_current_distribution_plot(*, final_current_dist_path: Path, run_rows: list[dict[str, Any]]) -> None:
@@ -402,6 +577,52 @@ def _write_staged_final_current_distribution_plot(*, final_current_dist_path: Pa
     canvas.save_png(final_current_dist_path)
 
 
+def _write_staged_final_position_distribution_plot(*, plot_path: Path, run_rows: list[dict[str, Any]]) -> None:
+    by_servo: dict[int, list[float]] = {}
+    for row in run_rows:
+        for key, value in dict(row.get("final_position_ticks_by_servo") or {}).items():
+            if value is None:
+                continue
+            by_servo.setdefault(int(key), []).append(float(value))
+    _write_distribution_by_servo_plot(
+        plot_path=plot_path,
+        title="FINAL SERVO POSITION DISTRIBUTION",
+        subtitle="MEAN FINAL POSITION BY SERVO (TICKS)",
+        values_by_servo=by_servo,
+        empty_message="NO FINAL POSITION DATA",
+        color=(22, 163, 74),
+    )
+
+
+def _write_staged_quality_distribution_plot(*, plot_path: Path, run_rows: list[dict[str, Any]]) -> None:
+    values = [
+        float(row["quality_score_0_100"])
+        for row in run_rows
+        if row.get("quality_score_0_100") is not None
+    ]
+    width, height = 1080, 680
+    canvas = _Canvas(width, height, background=(255, 255, 255))
+    canvas.text(28, 16, "QUALITY SCORE DISTRIBUTION", color=(15, 23, 42), scale=2)
+    canvas.text(28, 40, "RUN QUALITY SCORE (0-100)", color=(71, 85, 105), scale=1)
+    rect = (52, 88, width - 104, height - 150)
+    _draw_plot_frame(canvas, rect, "QUALITY SCORE")
+    if not values:
+        canvas.text(84, 220, "NO QUALITY SCORE DATA", color=(100, 116, 139), scale=2)
+        canvas.save_png(plot_path)
+        return
+    y_min, y_max = 0.0, 100.0
+    bar_width = max(12, int((rect[2] - 90) / max(1, len(values))))
+    left_start = rect[0] + 46
+    for index, value in enumerate(values):
+        x_left = left_start + (index * (bar_width + 8))
+        y_top = int(_plot_y(rect, y_min, y_max, value))
+        y_base = int(_plot_y(rect, y_min, y_max, y_min))
+        for x in range(x_left, x_left + bar_width):
+            canvas.line(x, y_top, x, y_base, color=(139, 92, 246), thickness=1)
+        canvas.text(x_left, y_base + 8, f"R{index + 1}", color=(15, 23, 42), scale=1)
+    canvas.save_png(plot_path)
+
+
 def _write_staged_repeatability_plot(*, repeatability_path: Path, metrics: dict[str, Any]) -> None:
     position_std = dict(metrics.get("final_position_std_ticks_by_servo") or {})
     current_std = dict(metrics.get("final_current_std_ma_by_servo") or {})
@@ -423,6 +644,76 @@ def _write_staged_repeatability_plot(*, repeatability_path: Path, metrics: dict[
         canvas.text(52, y, line, color=(15, 23, 42), scale=1)
         y += 28
     canvas.save_png(repeatability_path)
+
+
+def _write_basic_scatter_plot(
+    *,
+    plot_path: Path,
+    title: str,
+    subtitle: str,
+    points: list[tuple[float, float]],
+    color: tuple[int, int, int],
+    empty_message: str,
+    colors: list[tuple[int, int, int]] | None = None,
+) -> None:
+    width, height = 1080, 720
+    canvas = _Canvas(width, height, background=(255, 255, 255))
+    canvas.text(28, 16, title, color=(15, 23, 42), scale=2)
+    canvas.text(28, 40, subtitle, color=(71, 85, 105), scale=1)
+    rect = (40, 72, width - 80, height - 120)
+    _draw_plot_frame(canvas, rect, "SCATTER")
+    if not points:
+        canvas.text(84, 220, empty_message, color=(100, 116, 139), scale=2)
+        canvas.save_png(plot_path)
+        return
+    x_values = [float(point[0]) for point in points]
+    y_values = [float(point[1]) for point in points]
+    x_min, x_max = _expand_range(_min_max(x_values), pad_fraction=0.08, minimum_span=1.0)
+    y_min, y_max = _expand_range(_min_max(y_values), pad_fraction=0.12, minimum_span=1.0)
+    for index, (x_value, y_value) in enumerate(points):
+        point_color = colors[index] if colors is not None and index < len(colors) else color
+        canvas.circle(
+            int(_plot_x(rect, x_min, x_max, float(x_value))),
+            int(_plot_y(rect, y_min, y_max, float(y_value))),
+            4,
+            point_color,
+        )
+    canvas.save_png(plot_path)
+
+
+def _write_distribution_by_servo_plot(
+    *,
+    plot_path: Path,
+    title: str,
+    subtitle: str,
+    values_by_servo: dict[int, list[float]],
+    empty_message: str,
+    color: tuple[int, int, int],
+) -> None:
+    width, height = 1080, 680
+    canvas = _Canvas(width, height, background=(255, 255, 255))
+    canvas.text(28, 16, title, color=(15, 23, 42), scale=2)
+    canvas.text(28, 40, subtitle, color=(71, 85, 105), scale=1)
+    rect = (52, 88, width - 104, height - 150)
+    _draw_plot_frame(canvas, rect, "DISTRIBUTION")
+    if not values_by_servo:
+        canvas.text(84, 220, empty_message, color=(100, 116, 139), scale=2)
+        canvas.save_png(plot_path)
+        return
+    servo_ids = sorted(values_by_servo)
+    means = [sum(values_by_servo[sid]) / len(values_by_servo[sid]) for sid in servo_ids]
+    y_min, y_max = _expand_range(_min_max(means), pad_fraction=0.2, minimum_span=20.0)
+    bar_width = max(12, int((rect[2] - 90) / max(1, len(servo_ids))))
+    left_start = rect[0] + 46
+    for index, servo_id in enumerate(servo_ids):
+        mean_value = means[index]
+        x_left = left_start + (index * (bar_width + 12))
+        y_top = int(_plot_y(rect, y_min, y_max, mean_value))
+        y_base = int(_plot_y(rect, y_min, y_max, y_min))
+        for x in range(x_left, x_left + bar_width):
+            canvas.line(x, y_top, x, y_base, color=color, thickness=1)
+        canvas.text(x_left, y_base + 8, f"S{servo_id}", color=(15, 23, 42), scale=1)
+    canvas.save_png(plot_path)
 
 
 def _write_summary_text(*, summary_text_path: Path, metadata, summary, trace_points: list[PretensionTracePoint]) -> None:

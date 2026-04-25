@@ -1,4 +1,4 @@
-mode: single_servo_trace  # single_servo_trace | single_segment_staged
+mode: single_segment_staged  # single_servo_trace | single_segment_staged
 servo_id: 1
 servo_ids: [1, 2, 3, 4]  # used by staged mode
 repeat_runs: 3
@@ -13,19 +13,19 @@ tip_target_xy_mm: [0.0, 0.0]
 max_tip_displacement_mm: 50.0
 equalization_step_ticks: 2
 equalization_max_iterations: 24
-load_balance_tolerance_ma: 120.0
-pair_balance_tolerance_ma: 80.0
+load_balance_tolerance_ma: 6.0
+pair_balance_tolerance_ma: 6.0
 settle_verify_time_s: 0.2
-accept_max_load_balance_error_ma: 150.0
-accept_max_pair_balance_error_ma: 120.0
-accept_max_final_tip_xy_offset_mm: 5.0
+accept_max_load_balance_error_ma: 6.0
+accept_max_pair_balance_error_ma: 6.0
+accept_max_final_tip_xy_offset_mm: 3.0
 
 # Leave individual fields unset to use the current live pretension defaults
 # from the active servo safety/runtime configuration.
 include_tracker_displacement: true
 tracker_tool_id: "0A"
 move_to_reference: true
-pretension_start_mode: current_position  # current_position | manual_startup_artifact | full_release_4095
+pretension_start_mode: release_200_from_current  # current_position | manual_startup_artifact | release_200_from_current | full_release_4095
 
 untensioned_reference_tick:
 step_ticks:
