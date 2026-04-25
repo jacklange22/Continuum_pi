@@ -1,38 +1,29 @@
-# OS/editor noise
-.DS_Store
-.idea/
-.vscode/
-*.swp
-
-# Python
+# Python / environment
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-.coverage.*
-htmlcov/
+*.py[cod]
 .venv/
-venv/
-*.egg-info/
-build/
-dist/
+.env
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
+
+# Runtime logs: do not sync noisy session logs
+data/logs/**
+!data/logs/.gitkeep
+
+# Temporary/cache files
+data/tmp/**
+data/cache/**
+
+# Large binary artifacts: prefer Git LFS or manual sync
+data/**/*.mp4
+data/**/*.mov
+data/**/*.bag
+data/**/*.avi
+data/**/*.h5
+data/**/*.hdf5
 
 # Local machine config overrides
 config/*.local.yaml
-
-# Native build output
-bin/
-
-# Runtime data
-data/calibrations/*
-!data/calibrations/.gitkeep
-data/logs/*
-!data/logs/.gitkeep
-data/registrations/*
-!data/registrations/.gitkeep
-data/tracker_captures/*
-!data/tracker_captures/.gitkeep
