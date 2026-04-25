@@ -137,9 +137,9 @@ def _settings() -> Settings:
     )
 
 
-def _servo_service(tmp_path: Path) -> ServoService:
+def _servo_service(tmp_path: Path, *, dxl_bus=None) -> ServoService:
     return ServoService(
-        dxl_bus=MockDxlBus([1, 2, 3, 4]),
+        dxl_bus=dxl_bus or MockDxlBus([1, 2, 3, 4]),
         mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
         safety_guard=SafetyGuard(
             min_offset_ticks=-600,
@@ -1285,6 +1285,226 @@ def test_system_controller_openrb_connect_falls_back_when_configured_port_is_sta
         assert controller.state.openrb_port == "/dev/ttyACM0"
         assert controller.state.dynamixel_connected is True
     finally:
+        controller.disconnect_openrb()
+
+
+def test_system_controller_openrb_connect_skips_onboard_uart_fallback_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _RecordingOpenRbClient(MockOpenRbClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attempted_ports: list[str] = []
+
+        def connect(self, port: str, baudrate: int = 115200) -> None:
+            self.attempted_ports.append(str(port))
+            super().connect(port, baudrate)
+
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    settings.serial.aurora_port = "/dev/ttyUSB_TRACKER"
+    settings.serial.openrb_port = "/dev/ttyACM9"
+    settings.serial.openrb_settings = {}
+    controller = SystemController(
+        tracking_service=_tracking_service(settings, tmp_path),
+        openrb_client=_RecordingOpenRbClient(),
+        servo_service=_servo_service(tmp_path),
+        settings=settings,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_refresh_available_ports_snapshot",
+        lambda: [
+            SerialPortInfo(device="/dev/ttyAMA0", description="Broadcom UART"),
+            SerialPortInfo(device="/dev/ttyACM0", description="OpenRB USB serial"),
+            SerialPortInfo(device="/dev/ttyUSB_TRACKER", description="Tracker"),
+        ],
+    )
+    controller.state.openrb_port = "/dev/ttyACM9"
+    controller.state.aurora_port = "/dev/ttyUSB_TRACKER"
+    try:
+        controller.connect_openrb()
+        attempted = controller.openrb_client.attempted_ports
+        assert attempted
+        assert attempted[0] == "/dev/ttyACM0"
+        assert "/dev/ttyAMA0" not in attempted
+        assert controller.state.openrb_port == "/dev/ttyACM0"
+    finally:
+        controller.disconnect_openrb()
+
+
+def test_system_controller_openrb_connect_allows_onboard_uart_when_explicitly_enabled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _RecordingOpenRbClient(MockOpenRbClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attempted_ports: list[str] = []
+
+        def connect(self, port: str, baudrate: int = 115200) -> None:
+            self.attempted_ports.append(str(port))
+            super().connect(port, baudrate)
+
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    settings.serial.aurora_port = "/dev/ttyUSB_TRACKER"
+    settings.serial.openrb_port = "/dev/ttyAMA0"
+    settings.serial.openrb_settings = {"allow_onboard_uart_fallback": True}
+    controller = SystemController(
+        tracking_service=_tracking_service(settings, tmp_path),
+        openrb_client=_RecordingOpenRbClient(),
+        servo_service=_servo_service(tmp_path),
+        settings=settings,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_refresh_available_ports_snapshot",
+        lambda: [
+            SerialPortInfo(device="/dev/ttyAMA0", description="Broadcom UART"),
+            SerialPortInfo(device="/dev/ttyUSB_TRACKER", description="Tracker"),
+        ],
+    )
+    controller.state.openrb_port = "/dev/ttyAMA0"
+    controller.state.aurora_port = "/dev/ttyUSB_TRACKER"
+    try:
+        controller.connect_openrb()
+        attempted = controller.openrb_client.attempted_ports
+        assert attempted == ["/dev/ttyAMA0"]
+        assert controller.state.openrb_port == "/dev/ttyAMA0"
+    finally:
+        controller.disconnect_openrb()
+
+
+def test_system_controller_openrb_candidate_filter_excludes_tracker_port(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    settings.serial.aurora_port = "/dev/ttyUSB0"
+    settings.serial.openrb_port = "/dev/ttyUSB0"
+    controller = SystemController(
+        tracking_service=_tracking_service(settings, tmp_path),
+        openrb_client=MockOpenRbClient(),
+        servo_service=_servo_service(tmp_path),
+        settings=settings,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_refresh_available_ports_snapshot",
+        lambda: [
+            SerialPortInfo(device="/dev/ttyUSB0", description="Tracker"),
+            SerialPortInfo(device="/dev/ttyACM0", description="OpenRB USB serial"),
+        ],
+    )
+    controller.state.aurora_port = "/dev/ttyUSB0"
+    controller.state.openrb_port = "/dev/ttyUSB0"
+
+    candidates, skipped = controller._openrb_port_candidates()
+
+    assert all(candidate_port != "/dev/ttyUSB0" for candidate_port, _reason in candidates)
+    assert any(
+        row["port"] == "/dev/ttyUSB0"
+        and "tracker" in row.get("detail", "")
+        for row in skipped
+    )
+
+
+def test_system_controller_reports_openrb_stage_when_bus_responds_but_configured_servos_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    settings.serial.aurora_port = "/dev/ttyUSB_TRACKER"
+    settings.serial.openrb_port = "/dev/ttyACM0"
+    tracker_service = _tracking_service(settings, tmp_path)
+    servo_service = ServoService(
+        dxl_bus=MockDxlBus([9]),
+        mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
+        safety_guard=SafetyGuard(
+            min_offset_ticks=-600,
+            max_offset_ticks=600,
+            max_current_ma=850,
+            default_pretension_current_threshold_ma=220,
+            fine_jog_step_ticks=5,
+            coarse_jog_step_ticks=25,
+            software_position_margin_ticks=64,
+            telemetry_stale_after_s=0.25,
+            pretension_step_ticks=2,
+            pretension_timeout_s=2.0,
+            pretension_settle_time_s=0.0,
+            max_temperature_c=70,
+        ),
+        neutral_calibration=NeutralCalibrationService(
+            path=tmp_path / "missing_ids_neutral.json",
+            context=ServoCalibrationContext(
+                robot_mode="4-servo",
+                servo_ids=[1, 2, 3, 4],
+                tendon_to_servo=[1, 2, 3, 4],
+                position_min_offset_ticks=-600,
+                position_max_offset_ticks=600,
+                default_pretension_current_threshold_ma=220,
+                tightening_rotation_by_servo={1: "cw", 2: "cw", 3: "cw", 4: "cw"},
+            ),
+        ),
+        pretension_validation=PretensionValidationService(),
+    )
+    controller = SystemController(
+        tracking_service=tracker_service,
+        openrb_client=MockOpenRbClient(),
+        servo_service=servo_service,
+        settings=settings,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_refresh_available_ports_snapshot",
+        lambda: [
+            SerialPortInfo(device="/dev/ttyACM0", description="OpenRB USB serial"),
+            SerialPortInfo(device="/dev/ttyUSB_TRACKER", description="Tracker"),
+        ],
+    )
+    try:
+        controller.connect_tracker()
+        controller.connect_openrb()
+        state = controller.refresh()
+        assert state.openrb_status_label == "Degraded"
+        assert "Missing: [1, 2, 3, 4]" in state.openrb_truth_summary
+        assert state.primary_blocker == "Configured servos missing on DYNAMIXEL bus: [1, 2, 3, 4]."
+    finally:
+        controller.disconnect_tracker()
+        controller.disconnect_openrb()
+
+
+def test_system_controller_reports_openrb_stage_when_serial_connected_but_bus_not_responding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    settings.serial.aurora_port = "/dev/ttyUSB_TRACKER"
+    settings.serial.openrb_port = "/dev/ttyACM0"
+    tracker_service = _tracking_service(settings, tmp_path)
+    controller = SystemController(
+        tracking_service=tracker_service,
+        openrb_client=MockOpenRbClient(),
+        servo_service=_servo_service(tmp_path, dxl_bus=MockDxlBus([])),
+        settings=settings,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_refresh_available_ports_snapshot",
+        lambda: [
+            SerialPortInfo(device="/dev/ttyACM0", description="OpenRB USB serial"),
+            SerialPortInfo(device="/dev/ttyUSB_TRACKER", description="Tracker"),
+        ],
+    )
+    try:
+        controller.connect_tracker()
+        controller.connect_openrb()
+        state = controller.refresh()
+        assert state.openrb_status_label == "Degraded"
+        assert "no configured servos responded" in state.openrb_truth_summary.lower()
+        assert state.primary_blocker == "Configured servos are not responding on the DYNAMIXEL bus."
+    finally:
+        controller.disconnect_tracker()
         controller.disconnect_openrb()
 
 

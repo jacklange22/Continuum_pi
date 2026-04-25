@@ -108,11 +108,29 @@ class MotorControlSupervisor:
                         error=error,
                     )
                 )
-                self._log.warning(
-                    "Torque disarm failed | owner=%s | servo_id=%s | reason=%s | error=%s",
+                lowered_error = error.lower()
+                expected_disconnect_failure = (
+                    str(report.reason).strip().lower() == "disconnect"
+                    and any(
+                        token in lowered_error
+                        for token in (
+                            "not connected",
+                            "disconnected",
+                            "port is not open",
+                            "port not open",
+                            "incorrect status packet",
+                            "txrxresult",
+                            "no status packet",
+                        )
+                    )
+                )
+                log_fn = self._log.info if expected_disconnect_failure else self._log.warning
+                log_fn(
+                    "Torque disarm failed | owner=%s | servo_id=%s | reason=%s | expected_disconnect_failure=%s | error=%s",
                     report.owner,
                     int(servo_id),
                     report.reason,
+                    expected_disconnect_failure,
                     error,
                 )
                 if not report.best_effort:

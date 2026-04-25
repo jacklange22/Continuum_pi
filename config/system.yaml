@@ -54,6 +54,9 @@ safety_overrides:
 openrb_settings:
   connect_timeout_s: 0.5
   port_settle_time_s: 0.15
+  # Keep onboard UARTs like `/dev/ttyAMA0` out of automatic fallback unless a
+  # machine is explicitly wired to use them for OpenRB.
+  allow_onboard_uart_fallback: false
   require_usb_to_dynamixel_firmware: true
   require_external_power_for_motion: true
 dynamixel_settings:

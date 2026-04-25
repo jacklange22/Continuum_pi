@@ -173,45 +173,97 @@ class SystemController:
         self.refresh()
 
     def connect_openrb(self) -> None:
-        attempted: list[tuple[str, str, str]] = []
+        attempted: list[dict[str, str]] = []
         try:
-            candidates = self._openrb_port_candidates()
+            candidates, skipped = self._openrb_port_candidates()
+            for skipped_row in skipped:
+                LOG.info(
+                    "OpenRB candidate skipped | port=%s | reason=%s | detail=%s",
+                    skipped_row["port"],
+                    skipped_row["reason"],
+                    skipped_row.get("detail", ""),
+                )
             if not candidates:
                 raise RuntimeError("OpenRB port is empty. Set or rescan the board port before connecting.")
 
             connected_port: str | None = None
             selected_reason: str | None = None
+            configured_port = str(self.state.openrb_port or "").strip()
             for candidate_port, candidate_reason in candidates:
+                LOG.info(
+                    "OpenRB candidate selected for attempt | port=%s | reason=%s",
+                    candidate_port,
+                    candidate_reason,
+                )
                 try:
                     self.openrb_client.connect(candidate_port, self.state.baudrate)
-                    self.openrb_client.prepare_for_dynamixel_use()
-                    try:
-                        self.servo_service.connect(candidate_port, self.state.baudrate)
-                    except Exception:
-                        self.openrb_client.disconnect()
-                        raise
-                    connected_port = str(candidate_port)
-                    selected_reason = str(candidate_reason)
-                    break
                 except Exception as exc:
-                    attempted.append((str(candidate_port), str(candidate_reason), str(exc)))
-                    try:
-                        self.servo_service.disconnect()
-                    except Exception:
-                        pass
-                    try:
-                        self.openrb_client.disconnect()
-                    except Exception:
-                        pass
+                    attempted.append(
+                        {
+                            "port": str(candidate_port),
+                            "reason": str(candidate_reason),
+                            "stage": "serial_open",
+                            "error": str(exc),
+                        }
+                    )
+                    self._best_effort_disconnect_after_failed_openrb_candidate()
                     LOG.warning(
-                        "OpenRB connect attempt failed | port=%s | reason=%s | error=%s",
+                        "OpenRB candidate failed | port=%s | reason=%s | stage=serial_open | error=%s",
                         candidate_port,
                         candidate_reason,
                         exc,
                     )
+                    continue
+                try:
+                    self.openrb_client.prepare_for_dynamixel_use()
+                except Exception as exc:
+                    attempted.append(
+                        {
+                            "port": str(candidate_port),
+                            "reason": str(candidate_reason),
+                            "stage": "pass_through_prepare",
+                            "error": str(exc),
+                        }
+                    )
+                    self._best_effort_disconnect_after_failed_openrb_candidate()
+                    LOG.warning(
+                        "OpenRB candidate failed | port=%s | reason=%s | stage=pass_through_prepare | error=%s",
+                        candidate_port,
+                        candidate_reason,
+                        exc,
+                    )
+                    continue
+                try:
+                    self.servo_service.connect(candidate_port, self.state.baudrate)
+                except Exception as exc:
+                    attempted.append(
+                        {
+                            "port": str(candidate_port),
+                            "reason": str(candidate_reason),
+                            "stage": "dynamixel_bus_connect",
+                            "error": str(exc),
+                        }
+                    )
+                    self._best_effort_disconnect_after_failed_openrb_candidate()
+                    LOG.warning(
+                        "OpenRB candidate failed | port=%s | reason=%s | stage=dynamixel_bus_connect | error=%s",
+                        candidate_port,
+                        candidate_reason,
+                        exc,
+                    )
+                    continue
+                try:
+                    connected_port = str(candidate_port)
+                    selected_reason = str(candidate_reason)
+                    break
+                finally:
+                    # The loop exits on success, but keep this branch explicit so
+                    # later stages can append instrumentation without changing flow.
+                    pass
             if connected_port is None:
                 attempts_text = "; ".join(
-                    f"{port} ({reason}): {error}" for port, reason, error in attempted
+                    f"{row['port']} ({row['reason']}, {row['stage']}): {row['error']}"
+                    for row in attempted
                 )
                 raise RuntimeError(
                     "Could not connect OpenRB on any candidate serial port. "
@@ -225,16 +277,21 @@ class SystemController:
                 self.settings.robot.servo_ids,
                 selected_reason or "configured_port",
             )
+            replacement_message = ""
+            if configured_port and configured_port != str(connected_port):
+                replacement_message = (
+                    f" Replaced configured port {configured_port} with detected fallback {connected_port}."
+                )
             if attempted:
-                attempts_text = ", ".join(f"{port} ({reason})" for port, reason, _error in attempted)
+                attempts_text = ", ".join(f"{row['port']} ({row['reason']})" for row in attempted)
                 self.state.status_message = (
-                    "OpenRB connected after fallback scan. "
-                    f"Active port {connected_port}; failed candidates: {attempts_text}."
+                    f"OpenRB serial connected on {connected_port} after fallback scan."
+                    f"{replacement_message} Failed candidates: {attempts_text}."
                 )
             else:
                 self.state.status_message = (
-                    "OpenRB validated and prepared; DYNAMIXEL bus connected. "
-                    "Use configured-servo bring-up next and jog one selected servo at a time."
+                    f"OpenRB serial connected on {connected_port} and pass-through prepared."
+                    " Verifying DYNAMIXEL bus readiness next."
                 )
             self.state.last_error = None
         except Exception as exc:
@@ -247,6 +304,16 @@ class SystemController:
             self.state.last_error = str(exc)
             self.state.status_message = f"OpenRB connect failed: {exc}"
         self.refresh_readiness()
+
+    def _best_effort_disconnect_after_failed_openrb_candidate(self) -> None:
+        try:
+            self.servo_service.disconnect()
+        except Exception:
+            pass
+        try:
+            self.openrb_client.disconnect()
+        except Exception:
+            pass
 
     def _refresh_available_ports_snapshot(self) -> list[SerialPortInfo]:
         ports = discover_serial_ports()
@@ -261,12 +328,48 @@ class SystemController:
         self.state.available_ports = sorted(deduped.values(), key=lambda port: port.device)
         return list(self.state.available_ports)
 
-    def _openrb_port_candidates(self) -> list[tuple[str, str]]:
+    def _openrb_port_candidates(self) -> tuple[list[tuple[str, str]], list[dict[str, str]]]:
         available_ports = self._refresh_available_ports_snapshot()
+        available_by_device = {
+            str(port.device).strip(): port
+            for port in available_ports
+            if str(port.device).strip()
+        }
+        available_devices = set(available_by_device)
         selected = str(self.state.openrb_port or "").strip()
         tracker_port = str(self.state.aurora_port or "").strip()
         candidates: list[tuple[str, str]] = []
+        skipped: list[dict[str, str]] = []
         seen: set[str] = set()
+        allow_onboard_uart_fallback = self._allow_onboard_uart_fallback()
+        has_non_onboard_candidates = any(
+            self._is_usb_serial_candidate(port.device) or self._is_openrb_hint(port)
+            for port in available_ports
+            if str(port.device).strip() and str(port.device).strip() != tracker_port
+        )
+
+        def _skip(port: str, reason: str, detail: str) -> None:
+            candidate = str(port or "").strip()
+            if not candidate:
+                return
+            skipped.append({"port": candidate, "reason": reason, "detail": detail})
+
+        def _allow_candidate(port_info: SerialPortInfo, *, reason: str) -> bool:
+            device = str(port_info.device or "").strip()
+            if not device:
+                return False
+            if device == tracker_port:
+                _skip(device, reason, "matches tracker_port")
+                return False
+            if (
+                self._is_onboard_uart_candidate(device)
+                and reason != "configured_port"
+                and not self._is_openrb_hint(port_info)
+                and not allow_onboard_uart_fallback
+            ):
+                _skip(device, reason, "onboard_uart_fallback_disabled")
+                return False
+            return True
 
         def _add(port: str, reason: str) -> None:
             candidate = str(port or "").strip()
@@ -276,26 +379,63 @@ class SystemController:
             candidates.append((candidate, reason))
 
         if selected:
-            _add(selected, "configured_port")
+            if selected == tracker_port:
+                _skip(selected, "configured_port", "configured_port_matches_tracker_port")
+            elif selected in available_devices:
+                selected_info = available_by_device[selected]
+                if _allow_candidate(selected_info, reason="configured_port"):
+                    _add(selected, "configured_port")
+            elif has_non_onboard_candidates:
+                _skip(selected, "configured_port", "configured_port_not_present")
+            else:
+                _add(selected, "configured_port_unlisted")
         for port_info in available_ports:
             device = str(port_info.device or "").strip()
-            description = str(port_info.description or "").lower()
-            if not device or device == tracker_port:
+            if not _allow_candidate(port_info, reason="openrb_hint"):
                 continue
-            if any(token in description for token in ("openrb", "dynamixel", "robotis")):
+            if self._is_openrb_hint(port_info):
                 _add(device, "openrb_hint")
         for port_info in available_ports:
             device = str(port_info.device or "").strip()
-            if not device or device == tracker_port:
+            if not _allow_candidate(port_info, reason="tty_usb_fallback"):
                 continue
-            if device.startswith("/dev/ttyACM"):
-                _add(device, "ttyacm_fallback")
-        for port_info in available_ports:
-            device = str(port_info.device or "").strip()
-            if not device or device == tracker_port:
-                continue
-            _add(device, "serial_fallback")
-        return candidates
+            if self._is_usb_serial_candidate(device):
+                _add(device, "tty_usb_fallback")
+        return candidates, skipped
+
+    def _allow_onboard_uart_fallback(self) -> bool:
+        openrb_settings = dict(getattr(self.settings.serial, "openrb_settings", {}) or {})
+        return bool(openrb_settings.get("allow_onboard_uart_fallback", False))
+
+    @staticmethod
+    def _is_onboard_uart_candidate(device: str) -> bool:
+        normalized = str(device or "").strip().lower()
+        return normalized.startswith("/dev/ttyama") or normalized.startswith("/dev/ttys")
+
+    @staticmethod
+    def _is_usb_serial_candidate(device: str) -> bool:
+        normalized = str(device or "").strip().lower()
+        return (
+            normalized.startswith("/dev/ttyacm")
+            or normalized.startswith("/dev/ttyusb")
+            or normalized.startswith("/dev/cu.usb")
+            or normalized.startswith("/dev/tty.usb")
+            or normalized.startswith("/dev/cu.usbserial")
+            or normalized.startswith("/dev/tty.usbserial")
+        )
+
+    @staticmethod
+    def _is_openrb_hint(port_info: SerialPortInfo) -> bool:
+        text = " ".join(
+            [
+                str(port_info.description or ""),
+                str(port_info.hwid or ""),
+                str(port_info.manufacturer or ""),
+                str(port_info.product or ""),
+                str(port_info.interface or ""),
+            ]
+        ).lower()
+        return any(token in text for token in ("openrb", "dynamixel", "robotis", "u2d2"))
 
     def disconnect_openrb(self) -> None:
         try:
@@ -309,9 +449,16 @@ class SystemController:
                 self.openrb_client.disconnect()
             except Exception:
                 pass
-            LOG.exception("OpenRB disconnect failed | error=%s", exc)
-            self.state.last_error = str(exc)
-            self.state.status_message = f"OpenRB disconnect failed: {exc}"
+            if self._is_expected_disconnect_cleanup_issue(exc):
+                LOG.info("OpenRB disconnect cleanup warning | error=%s", exc)
+                self.state.last_error = None
+                self.state.status_message = (
+                    "OpenRB disconnected; skipped some torque-off cleanup because the bus was already unavailable."
+                )
+            else:
+                LOG.exception("OpenRB disconnect failed | error=%s", exc)
+                self.state.last_error = str(exc)
+                self.state.status_message = f"OpenRB disconnect failed: {exc}"
         self.refresh()
 
     def prepare_openrb(self) -> None:
@@ -503,18 +650,40 @@ class SystemController:
             self.state.tracker_truth_summary = "Tracker not connected."
 
         openrb_connected = bool(self.state.openrb_connected or self.state.dynamixel_connected)
+        expected_ids = [int(value) for value in self.state.expected_servo_ids]
+        detected_ids = [int(value) for value in self.state.detected_servo_ids]
+        missing_ids = [servo_id for servo_id in expected_ids if servo_id not in detected_ids]
+        detected_configured_count = len([servo_id for servo_id in detected_ids if servo_id in expected_ids])
+
         if self.state.motion_ready and openrb_connected:
             self.state.openrb_status_label = "Connected"
             self.state.openrb_status_kind = "ready"
             self.state.openrb_truth_summary = "OpenRB and the DYNAMIXEL bus are ready."
+        elif openrb_connected and not self.state.openrb_prepared:
+            self.state.openrb_status_label = "Degraded"
+            self.state.openrb_status_kind = "warning"
+            self.state.openrb_truth_summary = "OpenRB serial link is up, but pass-through is not prepared."
+        elif openrb_connected and not self.state.dynamixel_connected:
+            self.state.openrb_status_label = "Degraded"
+            self.state.openrb_status_kind = "warning"
+            self.state.openrb_truth_summary = "OpenRB pass-through is prepared, but the DYNAMIXEL bus is not connected."
+        elif openrb_connected and not self.state.bus_reachable:
+            self.state.openrb_status_label = "Degraded"
+            self.state.openrb_status_kind = "warning"
+            self.state.openrb_truth_summary = (
+                "OpenRB is connected, but no configured servos responded on the DYNAMIXEL bus."
+            )
+        elif openrb_connected and missing_ids:
+            self.state.openrb_status_label = "Degraded"
+            self.state.openrb_status_kind = "warning"
+            self.state.openrb_truth_summary = (
+                f"DYNAMIXEL bus responding ({detected_configured_count}/{len(expected_ids)} configured servos). "
+                f"Missing: {missing_ids}."
+            )
         elif openrb_connected and self.state.bus_reachable:
             self.state.openrb_status_label = "Degraded"
             self.state.openrb_status_kind = "warning"
             self.state.openrb_truth_summary = self.state.readiness_message or "OpenRB is connected with warnings."
-        elif openrb_connected:
-            self.state.openrb_status_label = "Degraded"
-            self.state.openrb_status_kind = "warning"
-            self.state.openrb_truth_summary = self.state.openrb_status or "OpenRB is connected."
         else:
             self.state.openrb_status_label = "Not Connected"
             self.state.openrb_status_kind = "blocked"
@@ -552,11 +721,40 @@ class SystemController:
             return self.state.status_message
         if not openrb_connected:
             return "OpenRB / DYNAMIXEL is not connected."
+        if not self.state.openrb_prepared:
+            return "OpenRB is connected, but pass-through preparation is incomplete."
+        if not self.state.dynamixel_connected:
+            return "OpenRB serial link is ready, but the DYNAMIXEL session is not connected."
         if not self.state.bus_reachable:
             return "Configured servos are not responding on the DYNAMIXEL bus."
+        missing_ids = [
+            int(servo_id)
+            for servo_id in self.state.expected_servo_ids
+            if int(servo_id) not in {int(value) for value in self.state.detected_servo_ids}
+        ]
+        if missing_ids:
+            return f"Configured servos missing on DYNAMIXEL bus: {missing_ids}."
         if not self.state.motion_ready:
             return self.state.readiness_message or "Servo readiness is blocked."
         return self.state.status_message
+
+    @staticmethod
+    def _is_expected_disconnect_cleanup_issue(exc: Exception) -> bool:
+        text = str(exc or "").strip().lower()
+        if not text:
+            return False
+        expected_tokens = (
+            "not connected",
+            "disconnected",
+            "port is not open",
+            "port not open",
+            "incorrect status packet",
+            "txrxresult",
+            "no status packet",
+            "bus is disconnected",
+            "communication failure",
+        )
+        return any(token in text for token in expected_tokens)
 
     def _refresh_session_diagnostics(self) -> None:
         session_log_path = Path(self.state.session_log_path) if self.state.session_log_path else None

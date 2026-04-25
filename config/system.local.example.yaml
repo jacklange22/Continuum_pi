@@ -84,6 +84,9 @@ latest_runtime_tip_calibration_path: "data/runtime_tip_calibration/latest_runtim
 openrb_settings:
   connect_timeout_s: 0.5
   port_settle_time_s: 0.15
+  # Keep onboard UARTs (for example `/dev/ttyAMA0`) out of fallback unless this
+  # machine is intentionally wired that way.
+  allow_onboard_uart_fallback: false
   require_usb_to_dynamixel_firmware: true
   require_external_power_for_motion: true
 dynamixel_settings:
