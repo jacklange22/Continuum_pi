@@ -298,12 +298,87 @@ def test_preflight_blocks_repeatability_when_runtime_tip_mode_is_quick_override(
     assert any("Mode=quick_4_point" in check.message for check in report.checks if check.key == "runtime_tip")
 
 
+def test_preflight_blocks_repeatability_coil_as_tip_by_default(tmp_path: Path) -> None:
+    pytest.importorskip("PySide6")
+    from continuum_robot.gui.experiment_preflight import RUN_BLOCKED, evaluate_preflight
+
+    settings = _settings(mock_mode=False)
+    service = _servo_service(tmp_path)
+    pivot_tip_file = tmp_path / "tools" / "penprobe_08_09_24c"
+    pivot_tip_file.parent.mkdir(parents=True, exist_ok=True)
+    pivot_tip_file.write_text("0,0,0\n", encoding="utf-8")
+    snapshot = _tracking_snapshot(
+        runtime_tip_state="coil_as_tip",
+        tip_pose_status="coil_as_tip",
+        runtime_tip_mode="coil_as_tip",
+    )
+    report = evaluate_preflight(
+        experiment_name="single_segment_repeatability",
+        config_payload={},
+        config_error=None,
+        settings=settings,
+        tracking_snapshot=snapshot,
+        servo_connected=True,
+        neutral_setpoints={1: 2048, 2: 2048, 3: 2048, 4: 2048},
+        registration_path=tmp_path / "latest_registration.json",
+        output_root=tmp_path / "data" / "experiments",
+        planned_output_dir=tmp_path / "data" / "experiments" / "single_segment_repeatability" / "run",
+        project_root=tmp_path,
+        servo_calibration_summary=service.neutral_calibration.get_calibration_summary(),
+    )
+
+    assert report.overall_status == RUN_BLOCKED
+    assert any(
+        check.key == "runtime_tip" and "allow_debug_coil_as_tip" in check.message
+        for check in report.checks
+    )
+
+
+def test_preflight_allows_repeatability_debug_coil_as_tip_with_warning(tmp_path: Path) -> None:
+    pytest.importorskip("PySide6")
+    from continuum_robot.gui.experiment_preflight import RUN_WARNING, evaluate_preflight
+
+    settings = _settings(mock_mode=False)
+    service = _servo_service(tmp_path)
+    pivot_tip_file = tmp_path / "tools" / "penprobe_08_09_24c"
+    pivot_tip_file.parent.mkdir(parents=True, exist_ok=True)
+    pivot_tip_file.write_text("0,0,0\n", encoding="utf-8")
+    snapshot = _tracking_snapshot(
+        runtime_tip_state="coil_as_tip",
+        tip_pose_status="coil_as_tip",
+        runtime_tip_mode="coil_as_tip",
+    )
+    report = evaluate_preflight(
+        experiment_name="single_segment_repeatability",
+        config_payload={"allow_debug_coil_as_tip": True},
+        config_error=None,
+        settings=settings,
+        tracking_snapshot=snapshot,
+        servo_connected=True,
+        neutral_setpoints={1: 2048, 2: 2048, 3: 2048, 4: 2048},
+        registration_path=tmp_path / "latest_registration.json",
+        output_root=tmp_path / "data" / "experiments",
+        planned_output_dir=tmp_path / "data" / "experiments" / "single_segment_repeatability" / "run",
+        project_root=tmp_path,
+        servo_calibration_summary=service.neutral_calibration.get_calibration_summary(),
+    )
+
+    assert report.overall_status == RUN_WARNING
+    assert any(
+        check.key == "runtime_tip" and "not thesis-trusted" in check.message
+        for check in report.checks
+    )
+
+
 def test_preflight_accepts_manual_pretension_source_for_repeatability(tmp_path: Path) -> None:
     pytest.importorskip("PySide6")
-    from continuum_robot.gui.experiment_preflight import RUN_READY, evaluate_preflight
+    from continuum_robot.gui.experiment_preflight import RUN_OK, evaluate_preflight
 
     settings = _settings(mock_mode=False)
     service = _servo_service(tmp_path, pretension_source="manual")
+    pivot_tip_file = tmp_path / "tools" / "penprobe_08_09_24c"
+    pivot_tip_file.parent.mkdir(parents=True, exist_ok=True)
+    pivot_tip_file.write_text("0,0,0\n", encoding="utf-8")
     snapshot = _tracking_snapshot()
     report = evaluate_preflight(
         experiment_name="single_segment_repeatability",
@@ -320,7 +395,7 @@ def test_preflight_accepts_manual_pretension_source_for_repeatability(tmp_path: 
         servo_calibration_summary=service.neutral_calibration.get_calibration_summary(),
     )
 
-    assert report.overall_status == RUN_READY
+    assert report.overall_status == RUN_OK
     assert any(
         check.key == "pretension" and "manual pretension" in check.message.lower()
         for check in report.checks
@@ -392,6 +467,57 @@ def test_repeatability_command_blocks_targets_beyond_experiment_tick_cap(tmp_pat
 
     with pytest.raises(RuntimeError, match="experiment-safe target envelope"):
         experiment._command_target(session, experiment._targets[9])
+
+
+def test_repeatability_precheck_blocks_coil_as_tip_without_debug_override(tmp_path: Path) -> None:
+    service = _servo_service(tmp_path)
+    pivot_tip_file = tmp_path / "tools" / "penprobe_08_09_24c"
+    pivot_tip_file.parent.mkdir(parents=True, exist_ok=True)
+    pivot_tip_file.write_text("0,0,0\n", encoding="utf-8")
+    experiment = SingleSegmentRepeatabilityExperiment(SingleSegmentRepeatabilityConfig())
+    session = _session(
+        tmp_path,
+        service=service,
+        snapshot=_tracking_snapshot(
+            runtime_tip_state="coil_as_tip",
+            tip_pose_status="coil_as_tip",
+            runtime_tip_mode="coil_as_tip",
+        ),
+    )
+    experiment.setup(session)
+
+    with pytest.raises(RuntimeError, match="allow_debug_coil_as_tip"):
+        experiment.precheck(session)
+
+
+def test_repeatability_precheck_allows_debug_coil_as_tip_and_records_lower_trust(tmp_path: Path) -> None:
+    service = _servo_service(tmp_path)
+    pivot_tip_file = tmp_path / "tools" / "penprobe_08_09_24c"
+    pivot_tip_file.parent.mkdir(parents=True, exist_ok=True)
+    pivot_tip_file.write_text("0,0,0\n", encoding="utf-8")
+    experiment = SingleSegmentRepeatabilityExperiment(
+        SingleSegmentRepeatabilityConfig(allow_debug_coil_as_tip=True)
+    )
+    session = _session(
+        tmp_path,
+        service=service,
+        snapshot=_tracking_snapshot(
+            runtime_tip_state="coil_as_tip",
+            tip_pose_status="coil_as_tip",
+            runtime_tip_mode="coil_as_tip",
+        ),
+    )
+    experiment.setup(session)
+
+    experiment.precheck(session)
+
+    provenance = session.metrics["run_provenance"]
+    runtime_tip = provenance["runtime_tip_calibration"]
+    assert runtime_tip["mode"] == "coil_as_tip"
+    assert runtime_tip["trust_level"] == "fallback_debug"
+    assert runtime_tip["artifact_used"] is False
+    assert runtime_tip["identity_marker"] == "T_coil_tip_identity__coil_pose_used_as_tip"
+    assert provenance["thesis_trusted_runtime_tip"] is False
 
 
 def test_experiment_registration_and_custom_page_routing(tmp_path: Path) -> None:
@@ -472,6 +598,11 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     assert (result.paths.output_dir / "repeatability_clusters.png").exists()
     assert (result.paths.output_dir / "repeatability_rmse_summary.png").exists()
     assert (result.paths.output_dir / "repeatability_path_dependence.png").exists()
+    assert (result.paths.output_dir / "repeatability_debug_samples.csv").exists()
+    assert (result.paths.output_dir / "repeatability_commanded_vs_measured_tip.png").exists()
+    assert (result.paths.output_dir / "repeatability_acceptance_timeline.png").exists()
+    assert (result.paths.output_dir / "repeatability_servo_goal_ticks_vs_tip.png").exists()
+    assert (result.paths.output_dir / "repeatability_provenance_summary.png").exists()
     assert result.summary.experiment_metrics["valid_repeat_sample_count"] == LEGACY_VISIT_COUNT
     assert result.summary.status == "success"
     assert result.summary.experiment_metrics["run_validity"]["thesis_valid_run"] is True
@@ -487,6 +618,8 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     assert summary_payload["experiment_metrics"]["run_provenance"]["pretension_artifact"]["path"].endswith("neutral.json")
     assert summary_payload["experiment_metrics"]["run_provenance"]["pretension_artifact"]["active_source_type"] == "algorithmic"
     assert summary_payload["experiment_metrics"]["run_provenance"]["runtime_tip_calibration"]["mode"] == "latest_accepted"
+    assert summary_payload["experiment_metrics"]["runtime_tip_trust_level"] == "trusted"
+    assert summary_payload["experiment_metrics"]["thesis_trusted_run"] is True
     assert summary_payload["experiment_metrics"]["run_provenance"]["startup_reference_source"] == "algorithmic"
     assert summary_payload["experiment_metrics"]["run_provenance"]["precheck_trust_summary"]["overall_status"] == "ready"
     assert "tracker_bridge" not in (result.paths.output_dir / "config_snapshot.yaml").read_text(encoding="utf-8")
@@ -498,6 +631,69 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     accepted_capture = next(sample for sample in samples_payload if sample.get("extra", {}).get("capture_accepted"))
     assert accepted_capture["extra"]["servo_motion_profile"]["operating_mode_label"] == "Position Control"
     assert accepted_capture["extra"]["servo_motion_profile"]["goal_current_ma"] is None
+    assert accepted_capture["extra"]["command_target_id"]
+    assert accepted_capture["extra"]["resolved_servo_goal_ticks"]
+    assert accepted_capture["extra"]["current_servo_positions_before_command"]
+    assert accepted_capture["extra"]["current_servo_positions_after_command"]
+    assert accepted_capture["extra"]["raw_tracker_tool_pose"]["translation_mm"] == [1.0, 2.0, 3.0]
+    assert accepted_capture["extra"]["robot_frame_tip_pose_used"]["translation_mm"] == [1.0, 2.0, 3.0]
+    assert accepted_capture["extra"]["accept_reject_reason"] == "ok"
+
+
+def test_debug_coil_as_tip_repeatability_run_is_labeled_lower_trust(tmp_path: Path) -> None:
+    if importlib.util.find_spec("PySide6") is None:
+        pytest.skip("PySide6 is required for saved repeatability figure generation.")
+    from continuum_robot.experiments.experiment_runner import ExperimentRunner
+
+    settings = _settings(mock_mode=False)
+    service = _servo_service(tmp_path)
+    registration_path = tmp_path / "data" / "registrations" / "latest_registration.json"
+    registration_path.parent.mkdir(parents=True, exist_ok=True)
+    registration_path.write_text("{}", encoding="utf-8")
+    snapshot = _tracking_snapshot(
+        position_mm=[4.0, 5.0, 6.0],
+        runtime_tip_state="coil_as_tip",
+        tip_pose_status="coil_as_tip",
+        runtime_tip_mode="coil_as_tip",
+    )
+    snapshot.registration_path = str(registration_path)
+    tracking = _TrackingService(snapshot)
+    pivot_tip_file = tmp_path / "tools" / "penprobe_08_09_24c"
+    pivot_tip_file.parent.mkdir(parents=True, exist_ok=True)
+    pivot_tip_file.write_text("0,0,0\n", encoding="utf-8")
+    runner = ExperimentRunner(
+        project_root=tmp_path,
+        settings=settings,
+        tracking_service=tracking,
+        servo_service=service,
+        output_dir=tmp_path / "data" / "experiments",
+        registration_path=registration_path,
+        sleep_fn=lambda _seconds: None,
+    )
+
+    result = runner.run_experiment(
+        "single_segment_repeatability",
+        config={
+            "settle_time_s": 0.0,
+            "capture_timeout_s": 0.0,
+            "allow_debug_coil_as_tip": True,
+        },
+        output_dir=tmp_path / "data" / "experiments",
+    )
+
+    metrics = result.summary.experiment_metrics
+    runtime_tip = metrics["run_provenance"]["runtime_tip_calibration"]
+    assert runtime_tip["mode"] == "coil_as_tip"
+    assert runtime_tip["trust_level"] == "fallback_debug"
+    assert runtime_tip["artifact_used"] is False
+    assert runtime_tip["identity_marker"] == "T_coil_tip_identity__coil_pose_used_as_tip"
+    assert metrics["thesis_trusted_run"] is False
+    assert metrics["run_validity"]["thesis_valid_run"] is False
+    assert result.summary.status == "partial_success"
+    assert result.success is True
+    sample_payload = json.loads(result.paths.samples_path.read_text(encoding="utf-8").splitlines()[0])
+    assert sample_payload["extra"]["runtime_tip_mode"] == "coil_as_tip"
+    assert sample_payload["extra"]["runtime_tip_trust_level"] == "fallback_debug"
 
 
 def test_capture_gate_rejects_stale_tracker_data(tmp_path: Path) -> None:
@@ -793,9 +989,11 @@ def _tracking_snapshot(
             else ("quick_override" if runtime_tip_mode == "quick_4_point" else "fallback_debug")
         ),
         runtime_tip_mode_message=f"mode={runtime_tip_mode}",
-        runtime_tip_identity_fallback=(runtime_tip_state == "identity_tip_fallback"),
+        runtime_tip_identity_fallback=(
+            runtime_tip_state in {"identity_tip_fallback", "coil_as_tip"} or runtime_tip_mode == "coil_as_tip"
+        ),
         tip_pose_status=tip_pose_status,
-        T_robot_tip=None if tip_pose_status != "ok" else matrix,
+        T_robot_tip=None if tip_pose_status not in {"ok", "coil_as_tip"} else matrix,
     )
 
 

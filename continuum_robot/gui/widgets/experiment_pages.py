@@ -832,6 +832,13 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
         self.fail_rejected_check.toggled.connect(
             lambda value: self.controller.set_config_value("fail_on_rejected_capture", bool(value))
         )
+        self.debug_coil_as_tip_check = QCheckBox("Allow debug coil-as-tip runtime tip")
+        self.debug_coil_as_tip_check.setToolTip(
+            "Bench/debug only. Runs with identity T_coil_tip and marks outputs lower-trust, not thesis-trusted."
+        )
+        self.debug_coil_as_tip_check.toggled.connect(
+            lambda value: self.controller.set_config_value("allow_debug_coil_as_tip", bool(value))
+        )
         form.addRow("Runtime Tool", self.tool_id_edit)
         form.addRow("Settle Time (s)", self.settle_time_spin)
         form.addRow("Capture Timeout (s)", self.capture_timeout_spin)
@@ -841,6 +848,7 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
         form.addRow("Run Label", self.run_label_edit)
         form.addRow("Finalize", self.return_center_check)
         form.addRow("Rejected Captures", self.fail_rejected_check)
+        form.addRow("Debug Runtime Tip", self.debug_coil_as_tip_check)
         config_card.body_layout.addLayout(form)
 
         target_card = ExperimentCard(
@@ -875,6 +883,7 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
         self._set_line_text(self.run_label_edit, str(config.run_label or ""))
         self._set_checkbox(self.return_center_check, bool(config.return_to_center_on_finalize))
         self._set_checkbox(self.fail_rejected_check, bool(config.fail_on_rejected_capture))
+        self._set_checkbox(self.debug_coil_as_tip_check, bool(config.allow_debug_coil_as_tip))
         self._set_line_text(self.baseline_path_edit, str(config.baseline_run_path or ""))
         self._sync_protocol_summary(config)
         self._sync_comparison_summary(config)

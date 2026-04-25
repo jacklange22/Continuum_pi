@@ -28,6 +28,7 @@ from continuum_robot.experiments.schemas import ExperimentTimeseriesSample
 from continuum_robot.experiments.validation import (
     STATUS_INVALID_INSUFFICIENT_SAMPLES,
     STATUS_INVALID_REPEATABILITY_COVERAGE,
+    STATUS_PARTIAL_SUCCESS,
     STATUS_SUCCESS,
 )
 from continuum_robot.servos.servo_service import ServoBusBusyError
@@ -97,6 +98,7 @@ class SingleSegmentRepeatabilityConfig:
     random_seed: int = 0
     run_label: str = ""
     require_robot_frame_tip: bool = True
+    allow_debug_coil_as_tip: bool = False
     return_to_center_on_finalize: bool = True
     fail_on_rejected_capture: bool = False
     thesis_goal_rms_mm: float = 1.0
@@ -120,6 +122,7 @@ class SingleSegmentRepeatabilityConfig:
             random_seed=int(payload.get("random_seed", 0)),
             run_label=str(payload.get("run_label", "") or ""),
             require_robot_frame_tip=bool(payload.get("require_robot_frame_tip", True)),
+            allow_debug_coil_as_tip=bool(payload.get("allow_debug_coil_as_tip", False)),
             return_to_center_on_finalize=bool(payload.get("return_to_center_on_finalize", True)),
             fail_on_rejected_capture=bool(payload.get("fail_on_rejected_capture", False)),
             thesis_goal_rms_mm=float(payload.get("thesis_goal_rms_mm", 1.0)),
@@ -335,10 +338,29 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
                 session.add_warning(f"Baseline comparison failed: {exc}")
         accepted_repeat_count = int(metrics.get("valid_repeat_sample_count", 0) or 0)
         run_validity = dict(metrics.get("run_validity", {}) or {})
+        provenance = dict(session.metrics.get("run_provenance", {}) or {})
+        runtime_tip_trust = str(provenance.get("runtime_tip_trust_level", "unknown") or "unknown")
+        runtime_tip_mode = str(provenance.get("runtime_tip_mode", "unknown") or "unknown")
+        thesis_trusted_tip = bool(provenance.get("thesis_trusted_runtime_tip", False))
+        metrics["runtime_tip_mode_used"] = runtime_tip_mode
+        metrics["runtime_tip_trust_level"] = runtime_tip_trust
+        metrics["thesis_trusted_runtime_tip"] = thesis_trusted_tip
+        metrics["thesis_trusted_run"] = bool(thesis_trusted_tip)
+        if not thesis_trusted_tip:
+            run_validity["thesis_valid_run"] = False
+            failure_reasons = list(run_validity.get("failure_reasons", []) or [])
+            failure_reasons.append(
+                "runtime tip mode/trust is lower than thesis policy "
+                f"(mode={runtime_tip_mode}, trust={runtime_tip_trust})"
+            )
+            run_validity["failure_reasons"] = sorted(set(str(reason) for reason in failure_reasons))
+            metrics["run_validity"] = run_validity
         if accepted_repeat_count <= 0:
             force_status = STATUS_INVALID_INSUFFICIENT_SAMPLES
         elif bool(run_validity.get("thesis_valid_run", False)):
             force_status = STATUS_SUCCESS
+        elif not thesis_trusted_tip:
+            force_status = STATUS_PARTIAL_SUCCESS
         else:
             force_status = STATUS_INVALID_REPEATABILITY_COVERAGE
         metrics["status"] = force_status
@@ -375,6 +397,16 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
             int(session.context.servo_service.mapper.displacement_cm_to_ticks(float(value)))
             for value in requested
         ]
+        before_telemetry = _read_servo_telemetry_payload(
+            session,
+            self._servo_ids,
+            stage="before_command",
+        )
+        positions_before = {
+            str(servo_id): row.get("present_position_ticks")
+            for servo_id, row in dict(before_telemetry.get("by_servo", {}) or {}).items()
+            if isinstance(row, dict)
+        }
         max_tick_delta = max((abs(int(value)) for value in requested_ticks), default=0)
         if max_tick_delta > int(self.config.max_target_tick_delta_from_startup):
             raise RuntimeError(
@@ -425,6 +457,8 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
         return {
             "commanded_motor_values": {str(servo_id): int(goal) for servo_id, goal in command.positions_by_id.items()},
             "requested_cable_ticks": list(requested_ticks),
+            "servo_positions_before_command": positions_before,
+            "servo_telemetry_before_command": before_telemetry,
             "motion_profile": {
                 "operating_mode_label": (
                     session.context.servo_service.operating_mode_label(debug_entry.operating_mode)
@@ -456,6 +490,7 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
             timeout_s=float(self.config.capture_timeout_s),
             poll_interval_s=float(self.config.capture_poll_interval_s),
             require_robot_frame_tip=bool(self.config.require_robot_frame_tip),
+            allow_debug_coil_as_tip=bool(self.config.allow_debug_coil_as_tip),
         )
         telemetry_payload = _read_servo_telemetry_payload(
             session,
@@ -466,6 +501,9 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
             int(session.context.servo_service.mapper.displacement_cm_to_ticks(float(value)))
             for value in target.cable_deltas_cm
         ]
+        robot_tip_payload = dict(getattr(snapshot, "T_robot_tip", None) and {"matrix": snapshot.T_robot_tip} or {})
+        robot_tip_translation = _matrix_translation_mm(getattr(snapshot, "T_robot_tip", None))
+        raw_tool_pose = _raw_tracker_tool_pose(snapshot, str(self.config.tool_id or "0A"))
         flags = [] if gate["accepted"] else ["capture_rejected", str(gate["reason"])]
         if getattr(snapshot, "registration_state", "") != "loaded":
             flags.append("registration_missing")
@@ -497,6 +535,31 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
             "target_cable_deltas_mm": [float(value) for value in target.cable_deltas_mm],
             "target_cable_deltas_cm": [float(value) for value in target.cable_deltas_cm],
             "target_cable_deltas_ticks": list(target_ticks),
+            "command_target_id": str(target.label),
+            "command_target_index": int(target.target_index),
+            "commanded_cable_displacement_mm": [float(value) for value in target.cable_deltas_mm],
+            "commanded_cable_displacement_cm": [float(value) for value in target.cable_deltas_cm],
+            "resolved_servo_goal_ticks": dict(command_payload.get("commanded_motor_values", {}) or {}),
+            "current_servo_positions_before_command": dict(
+                command_payload.get("servo_positions_before_command", {}) or {}
+            ),
+            "current_servo_positions_after_command": {
+                str(servo_id): row.get("present_position_ticks")
+                for servo_id, row in dict(telemetry_payload.get("by_servo", {}) or {}).items()
+                if isinstance(row, dict)
+            },
+            "raw_tracker_tool_pose": raw_tool_pose,
+            "robot_frame_tip_pose_used": {
+                **robot_tip_payload,
+                "translation_mm": robot_tip_translation,
+                "status": getattr(snapshot, "tip_pose_status", None),
+            },
+            "tracker_stale_age_s": getattr(snapshot, "tracker_data_age_s", None),
+            "tracker_frame_number": getattr(snapshot, "last_frame_number", None),
+            "accept_reject_reason": "ok" if gate["accepted"] else str(gate["reason"]),
+            "runtime_tip_mode": str(getattr(snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted"),
+            "runtime_tip_trust_level": str(getattr(snapshot, "runtime_tip_trust_level", "missing") or "missing"),
+            "runtime_tip_identity_fallback": bool(getattr(snapshot, "runtime_tip_identity_fallback", False)),
             "source_target_index": int(visit.approach_index),
             "desired_target_index": int(visit.target_index),
             "legacy_sequence_index": int(visit.sequence_index),
@@ -910,24 +973,27 @@ def _precheck_single_segment_repeatability(
     if not pivot_tip_path.exists():
         raise RuntimeError(f"0B pen-probe pivot tip file is missing: {pivot_tip_path}")
     runtime_tip_mode = str(getattr(snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted")
-    if runtime_tip_mode != "latest_accepted":
+    debug_coil_as_tip = bool(config.allow_debug_coil_as_tip and runtime_tip_mode == "coil_as_tip")
+    if runtime_tip_mode != "latest_accepted" and not debug_coil_as_tip:
         raise RuntimeError(
             "Single-segment repeatability requires the trusted latest_accepted runtime tip mode; "
-            f"current mode is {runtime_tip_mode}."
+            f"current mode is {runtime_tip_mode}. Enable allow_debug_coil_as_tip only for explicit bench/debug runs."
         )
-    if snapshot.runtime_tip_calibration_state != "loaded":
+    if snapshot.runtime_tip_calibration_state != "loaded" and not debug_coil_as_tip:
         raise RuntimeError(
             f"Accepted 0A runtime tip calibration must be loaded; current state is {snapshot.runtime_tip_calibration_state}."
         )
-    if snapshot.runtime_tip_identity_fallback:
+    if snapshot.runtime_tip_identity_fallback and not debug_coil_as_tip:
         raise RuntimeError("Runtime tip calibration is using identity/fallback; repeatability requires calibrated T_coil_tip.")
-    if config.require_robot_frame_tip and (snapshot.tip_pose_status != "ok" or snapshot.T_robot_tip is None):
+    allowed_tip_statuses = {"ok", "coil_as_tip"} if debug_coil_as_tip else {"ok"}
+    if config.require_robot_frame_tip and (snapshot.tip_pose_status not in allowed_tip_statuses or snapshot.T_robot_tip is None):
         raise RuntimeError(f"Live robot-frame tip pose must be active; tip pose status is {snapshot.tip_pose_status}.")
     gate = _tracker_gate_status(
         snapshot=snapshot,
         tool_id=config.tool_id,
         max_tracker_age_s=float(config.max_tracker_age_s),
         require_robot_frame_tip=bool(config.require_robot_frame_tip),
+        allow_debug_coil_as_tip=bool(config.allow_debug_coil_as_tip),
     )
     if not gate["accepted"]:
         raise RuntimeError(f"Tracker capture gate is blocked before run start: {gate['reason']}.")
@@ -1023,6 +1089,7 @@ def _record_repeatability_run_provenance(
         tool_id=config.tool_id,
         max_tracker_age_s=float(config.max_tracker_age_s),
         require_robot_frame_tip=bool(config.require_robot_frame_tip),
+        allow_debug_coil_as_tip=bool(config.allow_debug_coil_as_tip),
     )
     target_catalog = build_legacy_17_point_targets(
         inner_ring_radius_mm=float(config.inner_ring_radius_mm),
@@ -1116,6 +1183,19 @@ def _record_repeatability_run_provenance(
         "tracking_state": str(snapshot.canonical_state or ""),
         "tool_id": str(config.tool_id or "0A"),
         "require_robot_frame_tip": bool(config.require_robot_frame_tip),
+        "allow_debug_coil_as_tip": bool(config.allow_debug_coil_as_tip),
+        "runtime_tip_mode": str(getattr(snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted"),
+        "runtime_tip_trust_level": str(getattr(snapshot, "runtime_tip_trust_level", "missing") or "missing"),
+        "thesis_trusted_runtime_tip": bool(
+            getattr(snapshot, "runtime_tip_mode", "latest_accepted") == "latest_accepted"
+            and getattr(snapshot, "runtime_tip_trust_level", "missing") == "trusted"
+            and not bool(getattr(snapshot, "runtime_tip_identity_fallback", False))
+        ),
+        "thesis_trusted_run": bool(
+            getattr(snapshot, "runtime_tip_mode", "latest_accepted") == "latest_accepted"
+            and getattr(snapshot, "runtime_tip_trust_level", "missing") == "trusted"
+            and not bool(getattr(snapshot, "runtime_tip_identity_fallback", False))
+        ),
         "startup_reference_source": str(startup_reference.source or "neutral"),
         "startup_reference_ticks_by_servo": {
             str(servo_id): int(tick)
@@ -1138,6 +1218,17 @@ def _record_repeatability_run_provenance(
             "state": str(snapshot.runtime_tip_calibration_state or ""),
             "mode": str(getattr(snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted"),
             "trust_level": str(getattr(snapshot, "runtime_tip_trust_level", "missing") or "missing"),
+            "artifact_used": bool(runtime_tip_path is not None and runtime_tip_path.exists()),
+            "identity_marker": (
+                "T_coil_tip_identity__coil_pose_used_as_tip"
+                if str(getattr(snapshot, "runtime_tip_mode", "")) == "coil_as_tip"
+                else None
+            ),
+            "thesis_trusted": bool(
+                getattr(snapshot, "runtime_tip_mode", "latest_accepted") == "latest_accepted"
+                and getattr(snapshot, "runtime_tip_trust_level", "missing") == "trusted"
+                and not bool(getattr(snapshot, "runtime_tip_identity_fallback", False))
+            ),
             "mode_message": str(getattr(snapshot, "runtime_tip_mode_message", "") or ""),
             "artifact_kind": getattr(snapshot, "runtime_tip_selected_artifact_kind", None),
             "selected_artifact_path": getattr(snapshot, "runtime_tip_selected_artifact_path", None),
@@ -1177,6 +1268,7 @@ def _record_repeatability_run_provenance(
             "spool_diameter_mm": float(settings.robot.spool_diameter_cm) * 10.0,
             "ticks_per_revolution": int(settings.robot.ticks_per_revolution),
         },
+        "transform_chain_summary": _repeatability_transform_chain_summary(snapshot),
     }
     session.metadata.backend_info["run_provenance"] = {
         "backend_identity": provenance["backend_identity"],
@@ -1189,6 +1281,18 @@ def _record_repeatability_run_provenance(
     session.metadata.registration_info["pivot_tip"] = provenance["pivot_tip"]
     session.metadata.registration_info["base_registration"] = provenance["base_registration"]
     session.metadata.registration_info["runtime_tip_calibration"] = provenance["runtime_tip_calibration"]
+    session.metadata.registration_info["runtime_tip_mode"] = provenance["runtime_tip_mode"]
+    session.metadata.registration_info["runtime_tip_trust_level"] = provenance["runtime_tip_trust_level"]
+    session.metadata.registration_info["thesis_trusted_runtime_tip"] = provenance["thesis_trusted_runtime_tip"]
+    session.metadata.registration_info["transform_chain_summary"] = provenance["transform_chain_summary"]
+    session.metadata.backend_info["pretension_source"] = {
+        "source_type": pretension_source.source_type,
+        "accepted": bool(pretension_source.accepted),
+        "usable": bool(pretension_source.usable),
+        "message": pretension_source.message,
+        "updated_at_utc": pretension_source.updated_at_utc,
+        "note": pretension_source.note,
+    }
     session.set_metric("run_provenance", provenance)
 
 
@@ -1198,6 +1302,29 @@ def _configured_single_segment_servo_ids(session: ExperimentSession) -> list[int
     if not servo_ids:
         servo_ids = [int(value) for value in robot.servo_ids]
     return servo_ids
+
+
+def _repeatability_transform_chain_summary(snapshot) -> dict[str, Any]:
+    return {
+        "expression": "T_robot_tip = T_robot_aurora @ T_aurora_coil_0A @ T_coil_tip",
+        "runtime_tip_mode": str(getattr(snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted"),
+        "runtime_tip_trust_level": str(getattr(snapshot, "runtime_tip_trust_level", "missing") or "missing"),
+        "registration_state": str(getattr(snapshot, "registration_state", "") or ""),
+        "runtime_tip_state": str(getattr(snapshot, "runtime_tip_calibration_state", "") or ""),
+        "tip_pose_status": str(getattr(snapshot, "tip_pose_status", "") or ""),
+        "registration_path": str(getattr(snapshot, "registration_path", "") or ""),
+        "runtime_tip_artifact_path": str(getattr(snapshot, "runtime_tip_calibration_path", "") or ""),
+        "identity_fallback": bool(getattr(snapshot, "runtime_tip_identity_fallback", False)),
+        "coil_as_tip_identity_marker": (
+            "T_coil_tip_identity__coil_pose_used_as_tip"
+            if str(getattr(snapshot, "runtime_tip_mode", "")) == "coil_as_tip"
+            else None
+        ),
+        "stored_registration_fre_mm": getattr(snapshot, "stored_registration_fre_mm", None),
+        "stored_registration_timestamp_utc": getattr(snapshot, "stored_registration_timestamp_utc", None),
+        "stored_runtime_tip_timestamp_utc": getattr(snapshot, "stored_runtime_tip_timestamp_utc", None),
+        "runtime_coil_tool_id": str(getattr(snapshot, "runtime_coil_tool_id", "0A") or "0A"),
+    }
 
 
 def _load_neutral_ticks(session: ExperimentSession, servo_ids: list[int]) -> list[int]:
@@ -1213,6 +1340,7 @@ def _wait_for_valid_capture(
     timeout_s: float,
     poll_interval_s: float,
     require_robot_frame_tip: bool,
+    allow_debug_coil_as_tip: bool = False,
 ) -> tuple[Any, dict[str, Any]]:
     deadline = session.context.monotonic_fn() + float(timeout_s)
     last_snapshot = session.context.tracking_service.get_snapshot()
@@ -1221,6 +1349,7 @@ def _wait_for_valid_capture(
         tool_id=tool_id,
         max_tracker_age_s=max_tracker_age_s,
         require_robot_frame_tip=require_robot_frame_tip,
+        allow_debug_coil_as_tip=allow_debug_coil_as_tip,
     )
     if last_gate["accepted"]:
         return last_snapshot, last_gate
@@ -1233,6 +1362,7 @@ def _wait_for_valid_capture(
             tool_id=tool_id,
             max_tracker_age_s=max_tracker_age_s,
             require_robot_frame_tip=require_robot_frame_tip,
+            allow_debug_coil_as_tip=allow_debug_coil_as_tip,
         )
         if last_gate["accepted"]:
             return last_snapshot, last_gate
@@ -1245,6 +1375,7 @@ def _tracker_gate_status(
     tool_id: str,
     max_tracker_age_s: float,
     require_robot_frame_tip: bool,
+    allow_debug_coil_as_tip: bool = False,
 ) -> dict[str, Any]:
     tool_key = str(tool_id or "0A").upper()
     tool = snapshot.tools.get(tool_key)
@@ -1270,11 +1401,15 @@ def _tracker_gate_status(
         if str(tool.tracking_state).lower() in {"invalid", "missing", "out_of_volume"}:
             reasons.append(f"tool_{tool_key}_state_{tool.tracking_state}")
     if require_robot_frame_tip:
+        runtime_tip_mode = str(getattr(snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted")
+        debug_coil_as_tip = bool(allow_debug_coil_as_tip and runtime_tip_mode == "coil_as_tip")
         if snapshot.runtime_tip_calibration_state != "loaded":
-            reasons.append(f"runtime_tip_state_{snapshot.runtime_tip_calibration_state}")
-        if snapshot.runtime_tip_identity_fallback:
+            if not debug_coil_as_tip:
+                reasons.append(f"runtime_tip_state_{snapshot.runtime_tip_calibration_state}")
+        if snapshot.runtime_tip_identity_fallback and not debug_coil_as_tip:
             reasons.append("runtime_tip_identity_fallback")
-        if snapshot.tip_pose_status != "ok":
+        allowed_tip_statuses = {"ok", "coil_as_tip"} if debug_coil_as_tip else {"ok"}
+        if snapshot.tip_pose_status not in allowed_tip_statuses:
             reasons.append(f"tip_pose_status_{snapshot.tip_pose_status}")
         if snapshot.T_robot_tip is None:
             reasons.append("missing_T_robot_tip")
@@ -1285,6 +1420,8 @@ def _tracker_gate_status(
         "tracker_frame_id": snapshot.last_frame_number,
         "tip_pose_status": snapshot.tip_pose_status,
         "runtime_tip_calibration_state": snapshot.runtime_tip_calibration_state,
+        "runtime_tip_mode": getattr(snapshot, "runtime_tip_mode", None),
+        "runtime_tip_trust_level": getattr(snapshot, "runtime_tip_trust_level", None),
         "tool_id": tool_key,
         "tool_present": bool(tool.present) if tool is not None else False,
         "tool_valid": tool.valid if tool is not None else None,
@@ -1502,6 +1639,39 @@ def _extract_repeatability_position(
     if isinstance(tracker_position, list) and len(tracker_position) == 3:
         return [float(value) for value in tracker_position], "tracker"
     return None, None
+
+
+def _matrix_translation_mm(matrix: Any) -> list[float] | None:
+    if not isinstance(matrix, list) or len(matrix) < 3:
+        return None
+    try:
+        return [float(matrix[0][3]), float(matrix[1][3]), float(matrix[2][3])]
+    except (IndexError, TypeError, ValueError):
+        return None
+
+
+def _raw_tracker_tool_pose(snapshot, tool_id: str) -> dict[str, Any]:
+    tool_key = str(tool_id or "0A").upper()
+    tool = getattr(snapshot, "tools", {}).get(tool_key)
+    if tool is None:
+        return {"tool_id": tool_key, "present": False, "valid": None, "tracking_state": "missing"}
+    return {
+        "tool_id": tool_key,
+        "present": bool(getattr(tool, "present", False)),
+        "valid": getattr(tool, "valid", None),
+        "tracking_state": str(getattr(tool, "tracking_state", "unknown") or "unknown"),
+        "translation_mm": (
+            [float(value) for value in getattr(tool, "translation_mm")]
+            if getattr(tool, "translation_mm", None) is not None
+            else None
+        ),
+        "quaternion_wxyz": (
+            [float(value) for value in getattr(tool, "quaternion_wxyz")]
+            if getattr(tool, "quaternion_wxyz", None) is not None
+            else None
+        ),
+        "frame_number": getattr(tool, "frame_number", None),
+    }
 
 
 def _compute_group_metrics(per_target: dict[str, Any]) -> dict[str, Any]:

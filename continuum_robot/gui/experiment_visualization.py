@@ -200,6 +200,44 @@ def _build_repeatability_model(
         color_hex=COLORS.scene_residual,
     )
     charts: list[ChartModel] = [spread_chart, max_chart]
+    acceptance_points = [
+        (
+            float(getattr(sample, "sample_index", index)),
+            1.0 if bool((getattr(sample, "extra", {}) or {}).get("capture_accepted", False)) else 0.0,
+        )
+        for index, sample in enumerate(samples)
+    ]
+    if acceptance_points:
+        charts.append(
+            ChartModel(
+                kind="line",
+                title="Accepted vs Rejected Timeline",
+                x_title="Sample Index",
+                y_title="Accepted (1) / Rejected (0)",
+                caption="Capture gate truth saved per sample; rejected points preserve stale/missing-frame reasons.",
+                points_xy=acceptance_points,
+                color_hex=COLORS.scene_residual,
+            )
+        )
+    command_tip_points: list[tuple[float, float]] = []
+    for sample in samples:
+        extra = dict(getattr(sample, "extra", {}) or {})
+        command = extra.get("commanded_cable_displacement_mm") or extra.get("target_cable_deltas_mm")
+        position, frame = extract_tip_or_tool_position_mm(sample, tool_id=tool_id, prefer_robot_frame=True)
+        if isinstance(command, list) and position is not None and frame == "robot":
+            command_tip_points.append((_norm(command), _norm(position[:2])))
+    if command_tip_points:
+        charts.append(
+            ChartModel(
+                kind="scatter",
+                title="Commanded vs Measured Tip",
+                x_title="Commanded Cable Norm (mm)",
+                y_title="Measured Tip XY Radius (mm)",
+                caption="Quick diagnostic for weird data: command magnitude versus measured robot-frame tip response.",
+                points_xy=command_tip_points,
+                color_hex=COLORS.selection_bg,
+            )
+        )
     group_metrics = metrics.get("group_metrics", {}) or {}
     group_categories: list[str] = []
     group_values: list[float] = []
@@ -244,6 +282,9 @@ def _build_repeatability_model(
     summary_lines = [
         f"Run status: {metrics.get('status', 'unknown')}",
         f"Pose frame: {metrics.get('position_frame', 'unknown')}",
+        f"Runtime tip mode: {metrics.get('runtime_tip_mode_used', 'unknown')}",
+        f"Runtime tip trust: {metrics.get('runtime_tip_trust_level', 'unknown')}",
+        "Thesis trusted runtime tip: yes" if metrics.get("thesis_trusted_runtime_tip") else "Thesis trusted runtime tip: no",
         (
             "Ring radii: "
             f"inner {_fmt(geometry.get('inner_ring_radius_mm'))} mm "
@@ -827,6 +868,13 @@ def _fmt_signed(value: Any) -> str:
     if value is None:
         return "n/a"
     return f"{float(value):+.3f}"
+
+
+def _norm(values: Any) -> float:
+    if not isinstance(values, (list, tuple)):
+        return 0.0
+    numeric = [float(value) for value in values if value is not None]
+    return float(np.linalg.norm(np.asarray(numeric, dtype=float))) if numeric else 0.0
 
 
 def _semantic_color(key: str, *, fallback_index: int) -> str:

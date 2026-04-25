@@ -27,12 +27,18 @@ config/*.local.yaml
 # Native build output
 bin/
 
-# Runtime data
-data/calibrations/*
-!data/calibrations/.gitkeep
+# Canonical data roots that should sync between Pi and Mac are intentionally tracked:
+# data/experiments/, data/pivot_calibration/, data/registrations/,
+# data/runtime_tip_calibration/, data/calibration/servo_calibration/,
+# data/diagnostics/, data/modeling_results/, and data/models/.
+
+# Noisy runtime logs
 data/logs/*
 !data/logs/.gitkeep
-data/registrations/*
-!data/registrations/.gitkeep
+
+# Raw packet/frame captures can grow quickly; keep curated derivatives under data/diagnostics/.
 data/tracker_captures/*
 !data/tracker_captures/.gitkeep
+
+# Deprecated legacy calibration root; current calibration outputs live under data/calibration/.
+data/calibrations/

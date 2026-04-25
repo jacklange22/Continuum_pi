@@ -247,6 +247,7 @@ def evaluate_preflight(
                 )
             )
         runtime_tip_mode = str(getattr(tracking_snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted")
+        debug_coil_as_tip = bool(config.allow_debug_coil_as_tip and runtime_tip_mode == "coil_as_tip")
         if (
             runtime_tip_mode == "latest_accepted"
             and tracking_snapshot.runtime_tip_calibration_state == "loaded"
@@ -261,6 +262,20 @@ def evaluate_preflight(
                     "Runtime T_coil_tip is loaded and live robot-frame tip pose is active.",
                 )
             )
+        elif (
+            debug_coil_as_tip
+            and tracking_snapshot.T_robot_tip is not None
+            and tracking_snapshot.tip_pose_status in {"ok", "coil_as_tip"}
+        ):
+            checks.append(
+                _warning(
+                    "runtime_tip",
+                    "0A Runtime Tip Calibration",
+                    "Debug coil_as_tip override is explicitly enabled. The run will use identity T_coil_tip "
+                    "with the 0A coil pose as the tip, no runtime tip calibration artifact, and lower-trust "
+                    "debug/fallback provenance. It is not thesis-trusted.",
+                )
+            )
         else:
             checks.append(
                 _blocked(
@@ -270,7 +285,8 @@ def evaluate_preflight(
                     f"Mode={runtime_tip_mode}, "
                     f"Runtime state={tracking_snapshot.runtime_tip_calibration_state}, "
                     f"tip pose={tracking_snapshot.tip_pose_status}, "
-                    f"fallback={tracking_snapshot.runtime_tip_identity_fallback}.",
+                    f"fallback={tracking_snapshot.runtime_tip_identity_fallback}. "
+                    "For bench diagnostics only, set allow_debug_coil_as_tip: true while live runtime tip mode is coil_as_tip.",
                 )
             )
         servo_ids = [int(value) for value in (settings.robot.tendon_to_servo or settings.robot.servo_ids or [])]

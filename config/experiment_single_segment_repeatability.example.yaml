@@ -14,6 +14,9 @@ outer_ring_radius_mm: 8.0
 # Experiment-scoped guardrail; this does not globally clamp manual jog/control paths.
 max_target_tick_delta_from_startup: 650
 require_robot_frame_tip: true
+# Bench/debug override only. Allows live coil_as_tip mode for diagnostics, marks output lower-trust,
+# and prevents the run from being counted as thesis-trusted.
+allow_debug_coil_as_tip: false
 return_to_center_on_finalize: true
 fail_on_rejected_capture: false
 thesis_goal_rms_mm: 1.0
