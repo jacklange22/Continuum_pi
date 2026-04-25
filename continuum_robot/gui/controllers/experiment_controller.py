@@ -105,7 +105,11 @@ class ExperimentController:
     HISTORY_LIMIT = 25
     HISTORY_SCAN_CANDIDATE_MULTIPLIER = 4
     PREREQUISITE_REFRESH_INTERVAL_S = 0.25
-    MANUAL_REFRESH_EXPERIMENTS = {"registration_validation", "pivot_validation"}
+    MANUAL_REFRESH_EXPERIMENTS = {
+        "registration_validation",
+        "pivot_validation",
+        "single_segment_repeatability",
+    }
 
     def __init__(
         self,
@@ -1587,8 +1591,11 @@ class ExperimentController:
         if experiment_name == "replay_runner":
             return str(config_payload.get("dataset_path", "select an existing run"))
         if experiment_name == "pretension_validation":
+            run_mode = str(config_payload.get("mode", "single_servo_trace") or "single_servo_trace")
+            start_mode = str(config_payload.get("pretension_start_mode", "live_default") or "live_default")
             return (
-                f"servo {config_payload.get('servo_id', 'n/a')}, "
+                f"{run_mode.replace('_', ' ')}, servo {config_payload.get('servo_id', 'n/a')}, "
+                f"start {start_mode.replace('_', ' ')}, "
                 f"step {config_payload.get('step_ticks', 'live default')} ticks, "
                 f"max travel {config_payload.get('max_travel_ticks', 'live default')} ticks, "
                 f"tracker={'on' if bool(config_payload.get('include_tracker_displacement', True)) else 'off'}"

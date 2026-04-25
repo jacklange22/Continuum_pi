@@ -1095,7 +1095,7 @@ def test_servo_service_pretension_blocks_when_torque_enable_fails(tmp_path: Path
     assert result.failure_phase == "arming"
     assert result.primary_reason == "Failed to enable torque for pretension."
     assert "mock torque enable failure" in (result.detail_reason or "")
-    assert bus.torque_enable_calls == [(1, True)]
+    assert bus.torque_enable_calls == [(1, True), (1, False)]
 
 
 def test_servo_service_pretension_uses_decreasing_raw_position_for_tightening(tmp_path: Path) -> None:
@@ -1165,23 +1165,103 @@ def test_servo_service_pretension_fails_on_travel_limit(tmp_path: Path) -> None:
     assert result.status == "travel_limit"
 
 
-def test_servo_service_pretension_blocks_until_servo_is_in_pretension_window(tmp_path: Path) -> None:
-    bus = _PretensionBus(current_sequence=[])
+def test_servo_service_pretension_current_position_start_mode_does_not_block_on_legacy_window(tmp_path: Path) -> None:
+    bus = _PretensionBus(current_sequence=[180, 230])
     bus._state[1].present_position = 64
     bus._state[1].torque_enabled = True
     service = _build_service(tmp_path, dxl_bus=bus)
     service.connect("/dev/mock-openrb", 115200)
 
-    result = service.run_pretension_routine(servo_id=1)
+    result = service.run_pretension_routine(
+        servo_id=1,
+        parameters=PretensionParameters(
+            untensioned_reference_tick=4095,
+            step_ticks=2,
+            settle_time_s=0.0,
+            baseline_sample_count=1,
+            current_filter_window=1,
+            current_delta_threshold_ma=40,
+            absolute_trigger_current_ma=220,
+            hard_current_stop_ma=850,
+            max_travel_ticks=320,
+            timeout_s=2.0,
+            start_mode="current_position",
+        ),
+    )
 
-    assert result.success is False
-    assert result.status == "arming_failed"
-    assert result.failure_phase == "arming"
-    assert result.primary_reason == "Servo is outside the pretension window."
-    assert result.torque_cleanup_action == "disarm_after_terminal_state"
-    assert result.torque_cleanup_attempted is True
-    assert result.torque_cleanup_success is True
-    assert bus._state[1].torque_enabled is False
+    assert result.success is True
+    assert result.status == "threshold_reached"
+    assert result.failure_phase is None
+
+
+def test_servo_service_pretension_full_release_start_mode_uses_4095_reference(tmp_path: Path) -> None:
+    bus = _PretensionBus(current_sequence=[])
+    bus._state[1].present_position = 4031
+    bus._state[1].torque_enabled = True
+    service = _build_service(tmp_path, dxl_bus=bus)
+    service.connect("/dev/mock-openrb", 115200)
+
+    window = service.pretension_window_for_servo(
+        servo_id=1,
+        parameters=PretensionParameters(
+            untensioned_reference_tick=4031,
+            step_ticks=2,
+            settle_time_s=0.0,
+            baseline_sample_count=1,
+            current_filter_window=1,
+            current_delta_threshold_ma=60,
+            absolute_trigger_current_ma=220,
+            hard_current_stop_ma=850,
+            max_travel_ticks=320,
+            timeout_s=2.0,
+            start_mode="full_release_4095",
+        ),
+    )
+
+    assert window.untensioned_reference_tick == 4095
+    assert window.start_mode == "full_release_4095"
+
+
+def test_servo_service_pretension_manual_artifact_start_mode_uses_saved_manual_reference(tmp_path: Path) -> None:
+    bus = _PretensionBus(current_sequence=[230])
+    bus._state[1].present_position = 4010
+    bus._state[1].torque_enabled = True
+    service = _build_service(tmp_path, dxl_bus=bus)
+    service.connect("/dev/mock-openrb", 115200)
+    service.save_startup_calibration(
+        servo_id=1,
+        min_offset_ticks=-40,
+        max_offset_ticks=40,
+        pretension_current_threshold_ma=220,
+    )
+    service.neutral_calibration.save_pretension_result(
+        servo_id=1,
+        final_position_tick=3990,
+        final_current_ma=180,
+        threshold_ma=220,
+        result_status="accepted",
+        pretension_source="manual",
+    )
+
+    window = service.pretension_window_for_servo(
+        servo_id=1,
+        parameters=PretensionParameters(
+            untensioned_reference_tick=4095,
+            step_ticks=2,
+            settle_time_s=0.0,
+            baseline_sample_count=1,
+            current_filter_window=1,
+            current_delta_threshold_ma=40,
+            absolute_trigger_current_ma=220,
+            hard_current_stop_ma=850,
+            max_travel_ticks=320,
+            timeout_s=2.0,
+            start_mode="manual_startup_artifact",
+        ),
+    )
+
+    assert window.untensioned_reference_tick == 3990
+    assert window.start_mode == "manual_startup_artifact"
 
 
 def test_servo_service_pretension_fails_on_timeout(tmp_path: Path) -> None:

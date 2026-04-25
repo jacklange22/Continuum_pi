@@ -30,6 +30,7 @@ from continuum_robot.experiments.validation import (
     STATUS_INVALID_REPEATABILITY_COVERAGE,
     STATUS_SUCCESS,
 )
+from continuum_robot.servos.servo_service import ServoBusBusyError
 
 
 LEGACY_TARGET_COUNT = 17
@@ -396,13 +397,21 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
                 motion_workflow="experiment_motion",
             )
         except Exception as exc:
+            telemetry_issue_code = _classify_repeatability_exception(exc)
             LOG.exception(
-                "Repeatability command failed | target=%s | target_index=%s | requested_cable_cm=%s | error=%s",
+                "Repeatability command failed | target=%s | target_index=%s | requested_cable_cm=%s | failure_code=%s | error=%s",
                 target.label,
                 int(target.target_index),
                 requested,
+                telemetry_issue_code or "none",
                 exc,
             )
+            if telemetry_issue_code:
+                raise RuntimeError(
+                    "runtime_telemetry_invalid: "
+                    f"stage=command_dispatch code={telemetry_issue_code} "
+                    f"target={target.label} detail={exc}"
+                ) from exc
             raise
         debug_entry = next(iter((command.debug_entries_by_id or {}).values()), None)
         LOG.info(
@@ -448,7 +457,11 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
             poll_interval_s=float(self.config.capture_poll_interval_s),
             require_robot_frame_tip=bool(self.config.require_robot_frame_tip),
         )
-        telemetry_payload = _read_servo_telemetry_payload(session, self._servo_ids)
+        telemetry_payload = _read_servo_telemetry_payload(
+            session,
+            self._servo_ids,
+            stage="runtime_capture",
+        )
         target_ticks = [
             int(session.context.servo_service.mapper.displacement_cm_to_ticks(float(value)))
             for value in target.cable_deltas_cm
@@ -458,6 +471,19 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
             flags.append("registration_missing")
         if getattr(snapshot, "T_robot_tip", None) is not None and getattr(snapshot, "tip_pose_status", "") == "ok":
             flags.append("full_pose_available")
+        if not bool(telemetry_payload.get("ok", False)):
+            flags.append("runtime_telemetry_invalid")
+            failure_code = str(telemetry_payload.get("failure_code", "") or "").strip()
+            if failure_code:
+                flags.append(f"runtime_telemetry_{failure_code}")
+            LOG.warning(
+                "Repeatability runtime telemetry invalid | phase=%s | sample_index=%s | code=%s | message=%s | issues=%s",
+                phase,
+                int(sample_index),
+                failure_code or "unknown",
+                telemetry_payload.get("message"),
+                telemetry_payload.get("issues"),
+            )
         extra = {
             "protocol": "legacy_17_target_single_segment",
             "capture_role": phase,
@@ -476,6 +502,13 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
             "legacy_sequence_index": int(visit.sequence_index),
             "settle_time_s": float(self.config.settle_time_s),
             "servo_telemetry": telemetry_payload,
+            "runtime_telemetry_status": {
+                "ok": bool(telemetry_payload.get("ok", False)),
+                "failure_code": telemetry_payload.get("failure_code"),
+                "failure_stage": telemetry_payload.get("failure_stage"),
+                "message": telemetry_payload.get("message"),
+                "issues": list(telemetry_payload.get("issues", []) or []),
+            },
             "servo_motion_profile": dict(command_payload.get("motion_profile", {}) or {}),
             "servo_command_message": str(command_payload.get("message", "") or ""),
         }
@@ -930,6 +963,33 @@ def _precheck_single_segment_repeatability(
     pretension_source = calibration_summary.pretension_source_summary([int(value) for value in servo_ids])
     if not pretension_source.accepted or not pretension_source.usable:
         raise RuntimeError(pretension_source.message)
+    with session.context.servo_service.exclusive_bus_operation(
+        owner="single_segment_repeatability_precheck",
+        reason="single-segment repeatability preflight telemetry validation",
+    ):
+        telemetry_report = _read_servo_telemetry_payload(
+            session,
+            servo_ids,
+            stage="preflight",
+        )
+        session.set_metric("preflight_servo_telemetry", telemetry_report)
+        if not bool(telemetry_report.get("ok", False)):
+            LOG.error(
+                "Repeatability preflight telemetry invalid | code=%s | message=%s | issues=%s",
+                telemetry_report.get("failure_code"),
+                telemetry_report.get("message"),
+                telemetry_report.get("issues"),
+            )
+            raise RuntimeError(
+                "preflight_telemetry_invalid: "
+                f"code={telemetry_report.get('failure_code') or 'unknown'} "
+                f"detail={telemetry_report.get('message') or 'telemetry validation failed'}"
+            )
+        LOG.info(
+            "Repeatability preflight telemetry valid | servo_ids=%s | freshness_threshold_s=%.3f",
+            servo_ids,
+            float(telemetry_report.get("freshness_threshold_s", 0.0) or 0.0),
+        )
     for servo_id in servo_ids:
         assessment = session.context.servo_service.assess_experiment_motion(int(servo_id))
         if not assessment.ready:
@@ -1232,13 +1292,91 @@ def _tracker_gate_status(
     }
 
 
-def _read_servo_telemetry_payload(session: ExperimentSession, servo_ids: list[int]) -> dict[str, Any]:
-    try:
-        telemetry_by_id = session.context.servo_service.read_live_telemetry([int(value) for value in servo_ids])
-    except Exception as exc:
-        return {"read_error": str(exc)}
+def _classify_repeatability_exception(exc: Exception) -> str | None:
+    if isinstance(exc, ServoBusBusyError):
+        return "owner_conflict" if str(exc.owner or "").strip() else "bus_contention"
+    detail = str(exc).lower()
+    if "present position is unavailable" in detail:
+        return "missing_position"
+    if "current telemetry is unavailable" in detail or "present current" in detail:
+        return "missing_current"
+    if "input voltage" in detail:
+        return "missing_voltage"
+    if "telemetry is stale" in detail or "telemetry freshness" in detail:
+        return "stale_telemetry"
+    if "did not respond to ping" in detail or "missing servo" in detail:
+        return "servo_missing"
+    if "telemetry" in detail or "read" in detail:
+        return "telemetry_read_error"
+    return None
+
+
+def _classify_repeatability_telemetry(
+    *,
+    session: ExperimentSession,
+    servo_ids: list[int],
+    telemetry_by_id: dict[int, Any] | None,
+    stage: str,
+    read_error: Exception | None = None,
+) -> dict[str, Any]:
+    selected_ids = [int(value) for value in servo_ids]
     payload: dict[str, Any] = {}
-    for servo_id, telemetry in sorted(telemetry_by_id.items()):
+    issues: list[dict[str, Any]] = []
+    failure_code: str | None = None
+
+    if read_error is not None:
+        error_code = _classify_repeatability_exception(read_error)
+        if error_code in {"owner_conflict", "bus_contention"}:
+            failure_code = error_code
+        else:
+            failure_code = "telemetry_read_error"
+        return {
+            "ok": False,
+            "failure_code": failure_code,
+            "failure_stage": str(stage),
+            "message": str(read_error),
+            "issues": [
+                {
+                    "code": failure_code,
+                    "detail": str(read_error),
+                }
+            ],
+            "servo_ids": selected_ids,
+            "by_servo": payload,
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+            "freshness_threshold_s": float(session.context.servo_service.telemetry_freshness_threshold_s()),
+        }
+
+    telemetry_by_id = dict(telemetry_by_id or {})
+    freshness_threshold_s = float(session.context.servo_service.telemetry_freshness_threshold_s())
+    for servo_id in selected_ids:
+        telemetry = telemetry_by_id.get(int(servo_id))
+        if telemetry is None:
+            issues.append(
+                {
+                    "servo_id": int(servo_id),
+                    "code": "servo_missing",
+                    "detail": "No telemetry payload returned for configured servo ID.",
+                }
+            )
+            if failure_code is None:
+                failure_code = "servo_missing"
+            payload[str(servo_id)] = {
+                "present_position_ticks": None,
+                "present_current_ma": None,
+                "torque_enabled": None,
+                "operating_mode": None,
+                "hardware_error": "telemetry_missing",
+                "present_voltage_mv": None,
+                "present_temperature_c": None,
+                "telemetry_error": "telemetry_missing",
+                "telemetry_age_s": None,
+                "telemetry_fresh": None,
+            }
+            continue
+
+        telemetry_age_s = session.context.servo_service.telemetry_age_s(telemetry)
+        telemetry_fresh = session.context.servo_service.telemetry_is_fresh(telemetry)
         payload[str(servo_id)] = {
             "present_position_ticks": telemetry.present_position,
             "present_current_ma": telemetry.present_current_ma,
@@ -1247,8 +1385,104 @@ def _read_servo_telemetry_payload(session: ExperimentSession, servo_ids: list[in
             "hardware_error": telemetry.hardware_error,
             "present_voltage_mv": telemetry.present_voltage_mv,
             "present_temperature_c": telemetry.present_temperature_c,
+            "telemetry_error": telemetry.telemetry_error,
+            "telemetry_age_s": telemetry_age_s,
+            "telemetry_fresh": telemetry_fresh,
         }
-    return payload
+        missing_fields: list[str] = []
+        if telemetry.present_position is None:
+            missing_fields.append("position")
+        if telemetry.present_current_ma is None:
+            missing_fields.append("current")
+        if telemetry.present_voltage_mv is None:
+            missing_fields.append("voltage")
+        if telemetry_fresh is False:
+            issues.append(
+                {
+                    "servo_id": int(servo_id),
+                    "code": "stale_telemetry",
+                    "detail": (
+                        f"Telemetry is stale (age={float(telemetry_age_s or 0.0):.3f}s, "
+                        f"threshold={freshness_threshold_s:.3f}s)."
+                    ),
+                }
+            )
+            if failure_code is None:
+                failure_code = "stale_telemetry"
+        if missing_fields:
+            if "position" in missing_fields:
+                code = "missing_position"
+            elif "current" in missing_fields:
+                code = "missing_current"
+            else:
+                code = "missing_voltage"
+            issues.append(
+                {
+                    "servo_id": int(servo_id),
+                    "code": code,
+                    "detail": f"Missing telemetry field(s): {', '.join(missing_fields)}.",
+                }
+            )
+            if failure_code is None:
+                failure_code = code
+        if telemetry.telemetry_error:
+            issues.append(
+                {
+                    "servo_id": int(servo_id),
+                    "code": "telemetry_read_error",
+                    "detail": str(telemetry.telemetry_error),
+                }
+            )
+            if failure_code is None:
+                failure_code = "telemetry_read_error"
+
+    if failure_code is None:
+        message = "Servo telemetry is valid."
+        ok = True
+    else:
+        issue_text = "; ".join(
+            f"servo {entry.get('servo_id', 'n/a')}: {entry.get('code')} ({entry.get('detail', '')})"
+            if "servo_id" in entry
+            else f"{entry.get('code')} ({entry.get('detail', '')})"
+            for entry in issues
+        )
+        message = issue_text or "Servo telemetry is invalid."
+        ok = False
+    return {
+        "ok": bool(ok),
+        "failure_code": failure_code,
+        "failure_stage": str(stage),
+        "message": str(message),
+        "issues": issues,
+        "servo_ids": selected_ids,
+        "by_servo": payload,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "freshness_threshold_s": freshness_threshold_s,
+    }
+
+
+def _read_servo_telemetry_payload(
+    session: ExperimentSession,
+    servo_ids: list[int],
+    *,
+    stage: str,
+) -> dict[str, Any]:
+    try:
+        telemetry_by_id = session.context.servo_service.read_live_telemetry([int(value) for value in servo_ids])
+    except Exception as exc:
+        return _classify_repeatability_telemetry(
+            session=session,
+            servo_ids=servo_ids,
+            telemetry_by_id=None,
+            stage=stage,
+            read_error=exc,
+        )
+    return _classify_repeatability_telemetry(
+        session=session,
+        servo_ids=servo_ids,
+        telemetry_by_id=telemetry_by_id,
+        stage=stage,
+    )
 
 
 def _extract_repeatability_position(

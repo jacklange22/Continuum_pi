@@ -34,6 +34,14 @@ CANONICAL_POSITION_CONVENTION = (
     "Raw XC330 position uses 0..4095 ticks: 0 is more tensioned, 4095 is untensioned, "
     "tighten lowers counts, loosen raises counts."
 )
+PRETENSION_START_MODE_CURRENT_POSITION = "current_position"
+PRETENSION_START_MODE_MANUAL_STARTUP_ARTIFACT = "manual_startup_artifact"
+PRETENSION_START_MODE_FULL_RELEASE_4095 = "full_release_4095"
+PRETENSION_START_MODE_OPTIONS = (
+    PRETENSION_START_MODE_CURRENT_POSITION,
+    PRETENSION_START_MODE_MANUAL_STARTUP_ARTIFACT,
+    PRETENSION_START_MODE_FULL_RELEASE_4095,
+)
 SINGLE_SEGMENT_PAIR_INDEXES = ((0, 2), (1, 3))
 SINGLE_SEGMENT_WORKFLOW_EXPERIMENT = "experiment_motion"
 SINGLE_SEGMENT_WORKFLOW_CURRENT_AWARE = "current_aware_validation"
@@ -386,6 +394,7 @@ class PretensionParameters:
     hard_current_stop_ma: int
     max_travel_ticks: int
     timeout_s: float
+    start_mode: str = PRETENSION_START_MODE_CURRENT_POSITION
 
 
 @dataclass
@@ -398,6 +407,8 @@ class PretensionWindow:
     untensioned_reference_tick: int
     effective_min_target_tick: int
     effective_max_target_tick: int
+    start_mode: str = PRETENSION_START_MODE_CURRENT_POSITION
+    start_mode_detail: str | None = None
 
 
 @dataclass
@@ -1068,6 +1079,7 @@ class ServoService:
         """Grant one thread exclusive ownership of the live DYNAMIXEL bus."""
         owner_name = str(owner).strip() or "servo operation"
         current_thread_id = threading.get_ident()
+        acquired_now = False
         with self._bus_state_lock:
             if self._exclusive_bus_thread_id is None:
                 self._exclusive_bus_owner = owner_name
@@ -1076,6 +1088,13 @@ class ServoService:
                 self._exclusive_bus_thread_id = current_thread_id
                 self._exclusive_bus_started_at = float(self._time_fn())
                 self._exclusive_bus_depth = 1
+                acquired_now = True
+                LOG.info(
+                    "Servo bus ownership acquired | owner=%s | servo_id=%s | reason=%s",
+                    owner_name,
+                    int(servo_id) if servo_id is not None else "all",
+                    str(reason or ""),
+                )
             elif self._exclusive_bus_thread_id == current_thread_id:
                 self._exclusive_bus_depth += 1
             else:
@@ -1089,16 +1108,36 @@ class ServoService:
         try:
             yield self.bus_ownership_status()
         finally:
+            held_ms: float | None = None
+            released_owner: str | None = None
+            released_servo_id: int | None = None
+            released_reason: str | None = None
             with self._bus_state_lock:
                 if self._exclusive_bus_thread_id != current_thread_id:
                     return
                 self._exclusive_bus_depth = max(0, int(self._exclusive_bus_depth) - 1)
                 if self._exclusive_bus_depth == 0:
+                    released_owner = self._exclusive_bus_owner
+                    released_servo_id = self._exclusive_bus_servo_id
+                    released_reason = self._exclusive_bus_reason
+                    if self._exclusive_bus_started_at is not None:
+                        held_ms = max(
+                            0.0,
+                            (float(self._time_fn()) - float(self._exclusive_bus_started_at)) * 1000.0,
+                        )
                     self._exclusive_bus_owner = None
                     self._exclusive_bus_reason = None
                     self._exclusive_bus_servo_id = None
                     self._exclusive_bus_thread_id = None
                     self._exclusive_bus_started_at = None
+            if acquired_now and released_owner is not None:
+                LOG.info(
+                    "Servo bus ownership released | owner=%s | servo_id=%s | reason=%s | held_ms=%.1f",
+                    str(released_owner),
+                    int(released_servo_id) if released_servo_id is not None else "all",
+                    str(released_reason or ""),
+                    float(held_ms or 0.0),
+                )
 
     def telemetry_age_s(self, telemetry: ServoTelemetry | None) -> float | None:
         if telemetry is None:
@@ -1982,6 +2021,13 @@ class ServoService:
             hard_current_stop_ma=int(self.safety_guard.pretension_hard_current_stop_ma),
             max_travel_ticks=int(self.safety_guard.pretension_max_travel_ticks),
             timeout_s=float(self.safety_guard.pretension_timeout_s),
+            start_mode=self._normalize_pretension_start_mode(
+                getattr(
+                    self.safety_guard,
+                    "pretension_start_mode",
+                    PRETENSION_START_MODE_CURRENT_POSITION,
+                )
+            ),
         )
 
     def apply_live_pretension_defaults(self, parameters: PretensionParameters) -> PretensionParameters:
@@ -2001,6 +2047,7 @@ class ServoService:
             hard_current_stop_ma=max(1, int(parameters.hard_current_stop_ma)),
             max_travel_ticks=max(1, int(parameters.max_travel_ticks)),
             timeout_s=max(0.01, float(parameters.timeout_s)),
+            start_mode=self._normalize_pretension_start_mode(parameters.start_mode),
         )
         self.safety_guard.pretension_untensioned_reference_tick = int(applied.untensioned_reference_tick)
         self.safety_guard.pretension_step_ticks = int(applied.step_ticks)
@@ -2014,7 +2061,50 @@ class ServoService:
         self.safety_guard.pretension_hard_current_stop_ma = int(applied.hard_current_stop_ma)
         self.safety_guard.pretension_max_travel_ticks = int(applied.max_travel_ticks)
         self.safety_guard.pretension_timeout_s = float(applied.timeout_s)
+        self.safety_guard.pretension_start_mode = str(applied.start_mode)
         return applied
+
+    @staticmethod
+    def _normalize_pretension_start_mode(value: str | None) -> str:
+        normalized = str(value or PRETENSION_START_MODE_CURRENT_POSITION).strip().lower()
+        if normalized in PRETENSION_START_MODE_OPTIONS:
+            return normalized
+        return PRETENSION_START_MODE_CURRENT_POSITION
+
+    def _resolve_pretension_reference_tick(
+        self,
+        *,
+        servo_id: int,
+        start_mode: str,
+        configured_reference_tick: int,
+        telemetry: ServoTelemetry,
+        hardware_min_tick: int,
+        hardware_max_tick: int,
+    ) -> tuple[int, str]:
+        mode = self._normalize_pretension_start_mode(start_mode)
+        if mode == PRETENSION_START_MODE_CURRENT_POSITION:
+            if telemetry.present_position is None:
+                raise ValueError(
+                    "Pretension start_mode=current_position requires present position telemetry."
+                )
+            return int(telemetry.present_position), "using live current position"
+        if mode == PRETENSION_START_MODE_MANUAL_STARTUP_ARTIFACT:
+            entry = self.neutral_calibration.entry_by_servo_id(int(servo_id))
+            source = str(entry.pretension_source or "").strip().lower() if entry is not None else ""
+            if (
+                entry is None
+                or entry.pretension_result_status != "accepted"
+                or source != "manual"
+                or entry.pretension_final_position_tick is None
+            ):
+                raise ValueError(
+                    "Pretension start_mode=manual_startup_artifact requires an accepted manual startup artifact "
+                    f"for servo {int(servo_id)}."
+                )
+            return int(entry.pretension_final_position_tick), "using accepted manual startup artifact"
+        if mode == PRETENSION_START_MODE_FULL_RELEASE_4095:
+            return int(RAW_POSITION_MAX_TICK), "using explicit full release 4095"
+        return int(configured_reference_tick), "using configured untensioned reference"
 
     def pretension_window_for_servo(
         self,
@@ -2027,14 +2117,21 @@ class ServoService:
             servo_id=int(servo_id),
             telemetry=telemetry,
         )
-        hardware_safe_min = int(current.min_position_limit) + int(self.safety_guard.software_position_margin_ticks)
-        hardware_safe_max = int(current.max_position_limit) - int(self.safety_guard.software_position_margin_ticks)
-        hardware_safe_min = max(int(RAW_POSITION_MIN_TICK), int(hardware_safe_min))
-        hardware_safe_max = min(int(RAW_POSITION_MAX_TICK), int(hardware_safe_max))
+        hardware_safe_min = max(int(RAW_POSITION_MIN_TICK), int(current.min_position_limit))
+        hardware_safe_max = min(int(RAW_POSITION_MAX_TICK), int(current.max_position_limit))
         if hardware_safe_min > hardware_safe_max:
-            raise ValueError("Software safety margin exceeds the servo hardware position range.")
+            raise ValueError("Servo hardware position limits are invalid.")
         config = parameters or self.default_pretension_parameters(int(servo_id))
-        reference_tick = min(max(int(config.untensioned_reference_tick), hardware_safe_min), hardware_safe_max)
+        resolved_start_mode = self._normalize_pretension_start_mode(config.start_mode)
+        reference_tick_raw, start_mode_detail = self._resolve_pretension_reference_tick(
+            servo_id=int(servo_id),
+            start_mode=resolved_start_mode,
+            configured_reference_tick=int(config.untensioned_reference_tick),
+            telemetry=current,
+            hardware_min_tick=int(hardware_safe_min),
+            hardware_max_tick=int(hardware_safe_max),
+        )
+        reference_tick = min(max(int(reference_tick_raw), hardware_safe_min), hardware_safe_max)
         effective_min = max(int(hardware_safe_min), int(reference_tick) - int(config.max_travel_ticks))
         effective_max = int(reference_tick)
         if effective_min > effective_max:
@@ -2046,6 +2143,8 @@ class ServoService:
             untensioned_reference_tick=int(reference_tick),
             effective_min_target_tick=int(effective_min),
             effective_max_target_tick=int(effective_max),
+            start_mode=str(resolved_start_mode),
+            start_mode_detail=str(start_mode_detail),
         )
 
     def assess_pretension_readiness(
@@ -2127,26 +2226,19 @@ class ServoService:
             errors.append(str(exc))
             safe_min = safe_max = None
             window = None
-        if not errors and current.present_position is not None and window is not None:
-            if not (
-                int(window.effective_min_target_tick)
-                <= int(current.present_position)
-                <= int(window.effective_max_target_tick)
-            ):
-                errors.append(
-                    f"Present Position {current.present_position} is outside the configured pretension window "
-                    f"[{window.effective_min_target_tick}, {window.effective_max_target_tick}]. "
-                    "Move to the untensioned reference before measuring baseline or starting pretension."
-                )
-                ready_message = " | ".join(errors)
-            else:
-                ready_message = (
-                    "Ready for selected-servo pretension. Torque will be enabled during arming."
-                    if torque_arm_required
-                    else "Ready for selected-servo pretension."
-                )
+        if errors:
+            ready_message = " | ".join(errors)
         else:
-            ready_message = " | ".join(errors) if errors else "Ready for selected-servo pretension."
+            start_hint = (
+                f" Start mode: {window.start_mode}."
+                if window is not None
+                else ""
+            )
+            ready_message = (
+                "Ready for selected-servo pretension. Torque will be enabled during arming."
+                if torque_arm_required
+                else "Ready for selected-servo pretension."
+            ) + start_hint
         primary_reason, detail_reason = self._summarize_pretension_assessment(
             errors=errors,
             telemetry=current,
@@ -2276,8 +2368,6 @@ class ServoService:
             primary = "Telemetry is stale."
         elif any("hardware error" in str(item).lower() for item in errors):
             primary = "Servo hardware error is active."
-        elif any("outside the configured pretension window" in str(item).lower() for item in errors):
-            primary = "Servo is outside the pretension window."
         elif any("hard stop" in str(item).lower() for item in errors):
             primary = "Current is already at or above the hard stop."
         elif any("torque must be enabled" in str(item).lower() for item in errors):
@@ -2417,7 +2507,10 @@ class ServoService:
                 success=True,
                 blocked=False,
                 status="already_at_reference",
-                message=f"Servo {servo_id} is already at pretension reference {goal_tick}.",
+                message=(
+                    f"Servo {servo_id} is already at pretension reference {goal_tick} "
+                    f"({window.start_mode})."
+                ),
                 goal_tick=goal_tick,
                 telemetry=assessment.telemetry,
                 assessment=assessment,
@@ -2447,7 +2540,8 @@ class ServoService:
             status="moved",
             message=(
                 f"Moved servo {servo_id} to pretension reference {goal_tick} within "
-                f"pretension window [{window.effective_min_target_tick}, {window.effective_max_target_tick}]."
+                f"pretension window [{window.effective_min_target_tick}, {window.effective_max_target_tick}] "
+                f"using start mode {window.start_mode}."
             ),
             goal_tick=int(goal_tick),
             telemetry=updated,
@@ -3517,6 +3611,25 @@ class ServoService:
                 hard_current_stop_ma=int(config.hard_current_stop_ma),
                 max_travel_ticks=int(config.max_travel_ticks),
                 timeout_s=float(config.timeout_s),
+                start_mode=self._normalize_pretension_start_mode(config.start_mode),
+            )
+        else:
+            config = PretensionParameters(
+                untensioned_reference_tick=int(config.untensioned_reference_tick),
+                step_ticks=int(config.step_ticks),
+                settle_time_s=float(config.settle_time_s),
+                baseline_sample_count=int(config.baseline_sample_count),
+                current_filter_window=int(config.current_filter_window),
+                current_delta_threshold_ma=int(config.current_delta_threshold_ma),
+                absolute_trigger_current_ma=(
+                    None
+                    if config.absolute_trigger_current_ma in (None, "")
+                    else int(config.absolute_trigger_current_ma)
+                ),
+                hard_current_stop_ma=int(config.hard_current_stop_ma),
+                max_travel_ticks=int(config.max_travel_ticks),
+                timeout_s=float(config.timeout_s),
+                start_mode=self._normalize_pretension_start_mode(config.start_mode),
             )
         if int(config.step_ticks) <= 0:
             raise ValueError("Pretension step_ticks must be positive.")
@@ -3655,6 +3768,7 @@ class ServoService:
                 "recorded_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "start_position_tick": result.start_position_tick,
                 "untensioned_reference_tick": result.untensioned_reference_tick,
+                "start_mode": str(config.start_mode),
                 "baseline_current_ma": result.baseline_current_ma,
                 "filtered_current_ma": result.filtered_current_ma,
                 "baseline_sample_count": int(config.baseline_sample_count),
@@ -3769,6 +3883,35 @@ class ServoService:
                 return "incomplete_telemetry", "Telemetry is incomplete."
             return "invalid_telemetry", primary
 
+        def _classify_telemetry_issue_from_payload(
+            *,
+            telemetry: ServoTelemetry | None,
+            primary: str | None,
+            detail: str | None,
+        ) -> str:
+            primary_text = str(primary or "").strip().lower()
+            detail_text = str(detail or "").strip().lower()
+            merged = f"{primary_text} {detail_text}".strip()
+            if "bus contention" in merged:
+                return "bus_contention"
+            if "stale" in merged:
+                return "stale_telemetry"
+            if telemetry is None:
+                return "telemetry_read_error"
+            missing_current = telemetry.present_current_ma is None
+            missing_position = telemetry.present_position is None
+            if missing_current and missing_position:
+                return "missing_current_and_position"
+            if missing_current:
+                return "missing_current"
+            if missing_position:
+                return "missing_position"
+            if "incomplete" in merged:
+                return "incomplete_telemetry"
+            if "telemetry" in merged:
+                return "telemetry_read_error"
+            return "invalid_telemetry"
+
         def _persist_unexpected_exception(
             *,
             phase: str,
@@ -3820,6 +3963,11 @@ class ServoService:
         except PretensionOperationError as exc:
             telemetry = exc.telemetry
             present_current = telemetry.present_current_ma if telemetry is not None else None
+            stop_reason_code = _classify_telemetry_issue_from_payload(
+                telemetry=telemetry,
+                primary=exc.primary_reason,
+                detail=exc.detail_reason,
+            )
             status = (
                 "overcurrent"
                 if present_current is not None and int(present_current) >= int(config.hard_current_stop_ma)
@@ -3840,7 +3988,9 @@ class ServoService:
                     final_current_ma=present_current,
                     filtered_current_ma=(float(present_current) if present_current is not None else None),
                     current_delta_ma=None,
-                    stop_reason=primary,
+                    stop_reason=(
+                        "hard_current_stop" if status == "overcurrent" else stop_reason_code
+                    ),
                     failure_phase=exc.phase,
                     primary_reason=primary,
                     detail_reason=detail,
@@ -3859,7 +4009,7 @@ class ServoService:
                     final_current_ma=telemetry.present_current_ma,
                     filtered_current_ma=None,
                     current_delta_ma=None,
-                    stop_reason="Position telemetry is unavailable.",
+                    stop_reason="missing_position",
                     failure_phase="arming",
                     primary_reason="Position telemetry is unavailable.",
                     detail_reason=assessment.detail_reason,
@@ -3911,7 +4061,11 @@ class ServoService:
                     final_current_ma=(telemetry.present_current_ma if telemetry is not None else None),
                     filtered_current_ma=None,
                     current_delta_ma=None,
-                    stop_reason=exc.primary_reason,
+                    stop_reason=_classify_telemetry_issue_from_payload(
+                        telemetry=telemetry,
+                        primary=exc.primary_reason,
+                        detail=exc.detail_reason,
+                    ),
                     failure_phase=exc.phase,
                     primary_reason=exc.primary_reason,
                     detail_reason=exc.detail_reason,

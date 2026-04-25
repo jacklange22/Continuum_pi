@@ -247,6 +247,7 @@ class PretensionValidationExperimentConfig:
     accept_max_pair_balance_error_ma: float = 120.0
     accept_max_final_tip_xy_offset_mm: float = 5.0
     tracker_tool_id: str = "0A"
+    pretension_start_mode: str | None = None
     untensioned_reference_tick: int | None = None
     step_ticks: int | None = None
     settle_time_s: float | None = None
@@ -307,6 +308,11 @@ class PretensionValidationExperimentConfig:
             accept_max_pair_balance_error_ma=max(0.0, float(payload.get("accept_max_pair_balance_error_ma", 120.0))),
             accept_max_final_tip_xy_offset_mm=max(0.0, float(payload.get("accept_max_final_tip_xy_offset_mm", 5.0))),
             tracker_tool_id=str(payload.get("tracker_tool_id", "0A")),
+            pretension_start_mode=(
+                str(payload.get("pretension_start_mode")).strip().lower()
+                if payload.get("pretension_start_mode") not in (None, "")
+                else None
+            ),
             untensioned_reference_tick=(
                 int(payload["untensioned_reference_tick"])
                 if payload.get("untensioned_reference_tick") not in (None, "")
@@ -1819,6 +1825,7 @@ class PretensionValidationExperiment(BaseExperiment):
                 "move_to_reference": bool(self.config.move_to_reference),
                 "include_tracker_displacement": bool(self.config.include_tracker_displacement),
                 "tracker_tool_id": str(self.config.tracker_tool_id),
+                "pretension_start_mode": str(parameters.start_mode),
                 "untensioned_reference_tick": int(parameters.untensioned_reference_tick),
                 "step_ticks": int(parameters.step_ticks),
                 "settle_time_s": float(parameters.settle_time_s),
@@ -2392,6 +2399,11 @@ class PretensionValidationExperiment(BaseExperiment):
                 "mode": "single_segment_staged",
                 "servo_ids": list(servo_ids),
                 "repeat_runs": int(repeat_runs),
+                "pretension_start_mode": (
+                    str(self.config.pretension_start_mode).strip().lower()
+                    if self.config.pretension_start_mode not in (None, "")
+                    else "live_default"
+                ),
                 "run_count": int(len(run_rows)),
                 "accepted_run_count": int(accepted_runs),
                 "accepted_run_fraction": (
@@ -2449,6 +2461,11 @@ class PretensionValidationExperiment(BaseExperiment):
                 int(self.config.untensioned_reference_tick)
                 if self.config.untensioned_reference_tick is not None
                 else int(defaults.untensioned_reference_tick)
+            ),
+            start_mode=(
+                str(self.config.pretension_start_mode).strip().lower()
+                if self.config.pretension_start_mode not in (None, "")
+                else str(defaults.start_mode)
             ),
             step_ticks=int(self.config.step_ticks) if self.config.step_ticks is not None else int(defaults.step_ticks),
             settle_time_s=(
@@ -2542,6 +2559,11 @@ class PretensionValidationExperiment(BaseExperiment):
                 int(self.config.untensioned_reference_tick)
                 if self.config.untensioned_reference_tick is not None
                 else int(defaults.untensioned_reference_tick)
+            ),
+            start_mode=(
+                str(self.config.pretension_start_mode).strip().lower()
+                if self.config.pretension_start_mode not in (None, "")
+                else str(defaults.start_mode)
             ),
             step_ticks=int(self.config.step_ticks) if self.config.step_ticks is not None else int(defaults.step_ticks),
             settle_time_s=(

@@ -110,6 +110,9 @@ class ConfigLoader:
             pretension_untensioned_reference_tick=int(
                 safety_data.get("pretension_untensioned_reference_tick", 4095)
             ),
+            pretension_start_mode=str(
+                safety_data.get("pretension_start_mode", "current_position")
+            ).strip().lower(),
             pretension_step_ticks=int(safety_data.get("pretension_step_ticks", 2)),
             pretension_timeout_s=float(safety_data.get("pretension_timeout_s", 10.0)),
             pretension_settle_time_s=float(safety_data.get("pretension_settle_time_s", 0.05)),

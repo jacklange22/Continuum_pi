@@ -20,6 +20,7 @@ class SafetyGuard:
         software_position_margin_ticks: int = 64,
         telemetry_stale_after_s: float = 0.25,
         pretension_untensioned_reference_tick: int = 4095,
+        pretension_start_mode: str = "current_position",
         pretension_step_ticks: int = 2,
         pretension_timeout_s: float = 10.0,
         pretension_settle_time_s: float = 0.05,
@@ -43,6 +44,7 @@ class SafetyGuard:
         self.software_position_margin_ticks = software_position_margin_ticks
         self.telemetry_stale_after_s = telemetry_stale_after_s
         self.pretension_untensioned_reference_tick = pretension_untensioned_reference_tick
+        self.pretension_start_mode = str(pretension_start_mode or "current_position").strip().lower()
         self.pretension_step_ticks = pretension_step_ticks
         self.pretension_timeout_s = pretension_timeout_s
         self.pretension_settle_time_s = pretension_settle_time_s

@@ -716,6 +716,42 @@ def test_pretension_tab_preserves_unsaved_parameter_edits_across_refresh(tmp_pat
     assert tab.current_delta_spin.value() == 95
 
 
+def test_pretension_tab_exposes_explicit_start_modes(tmp_path: Path) -> None:
+    _app()
+    service = _pretension_service(tmp_path)
+    controller = PretensionController(servo_service=service, settings=_settings())
+    tab = PretensionTab(controller)
+
+    tab.update(controller.state)
+    options = {str(tab.start_mode_combo.itemData(index)) for index in range(tab.start_mode_combo.count())}
+
+    assert {
+        "current_position",
+        "manual_startup_artifact",
+        "full_release_4095",
+    }.issubset(options)
+
+
+def test_pretension_controller_current_validity_distinguishes_zero_from_missing(tmp_path: Path) -> None:
+    service = _pretension_service(tmp_path)
+    service.connect("/dev/mock-openrb", 115200)
+    controller = PretensionController(servo_service=service, settings=_settings())
+    controller.set_selected_servo(2)
+
+    service.dxl_bus._state[2].present_current_ma = 0
+    state = controller.refresh()
+    assert state.selected_servo_current_ma == 0
+    assert state.selected_servo_current_validity == "valid"
+    assert state.selected_servo_filtered_current_source == "live_raw"
+
+    service.dxl_bus._state[2].present_current_ma = None
+    service.dxl_bus._state[2].telemetry_error = "[TxRxResult] Incorrect status packet!"
+    state = controller.refresh()
+    assert state.selected_servo_current_ma is None
+    assert state.selected_servo_current_validity == "missing"
+    assert state.selected_servo_filtered_current_source == "none"
+
+
 def test_pretension_controller_runs_only_on_selected_servo_and_persists_result(tmp_path: Path) -> None:
     settings = _settings()
     bus = _MultiServoPretensionBus(current_sequences={2: [180, 230]})
@@ -912,6 +948,7 @@ def test_pretension_controller_applies_live_parameters_without_runtime_reload(tm
     controller.apply_live_parameters(
         parameters=PretensionParameters(
             untensioned_reference_tick=4010,
+            start_mode="full_release_4095",
             step_ticks=4,
             settle_time_s=0.1,
             baseline_sample_count=6,
@@ -925,8 +962,10 @@ def test_pretension_controller_applies_live_parameters_without_runtime_reload(tm
     )
 
     assert service.safety_guard.pretension_untensioned_reference_tick == 4010
+    assert service.safety_guard.pretension_start_mode == "full_release_4095"
     assert service.safety_guard.pretension_step_ticks == 4
     assert service.safety_guard.pretension_hard_current_stop_ma == 600
+    assert controller.state.default_start_mode == "full_release_4095"
     assert controller.state.default_max_travel_ticks == 220
     assert "Hardware reconnect is not required" in controller.state.status_message
 
@@ -1199,6 +1238,53 @@ def test_system_controller_connects_mock_tracker_and_openrb(tmp_path: Path) -> N
         assert state.dynamixel_connected is True
     finally:
         controller.disconnect_tracker()
+        controller.disconnect_openrb()
+
+
+def test_system_controller_openrb_connect_falls_back_when_configured_port_is_stale(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _FlakyOpenRbClient(MockOpenRbClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.attempted_ports: list[str] = []
+
+        def connect(self, port: str, baudrate: int = 115200) -> None:
+            self.attempted_ports.append(str(port))
+            if str(port) == "/dev/ttyACM1":
+                raise RuntimeError("configured port not available")
+            super().connect(port, baudrate)
+
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    settings.serial.aurora_port = "/dev/ttyUSB_TRACKER"
+    settings.serial.openrb_port = "/dev/ttyACM1"
+    tracking_service = _tracking_service(settings, tmp_path)
+    servo_service = _servo_service(tmp_path)
+    openrb_client = _FlakyOpenRbClient()
+    controller = SystemController(
+        tracking_service=tracking_service,
+        openrb_client=openrb_client,
+        servo_service=servo_service,
+        settings=settings,
+    )
+    monkeypatch.setattr(
+        controller,
+        "_refresh_available_ports_snapshot",
+        lambda: [
+            SerialPortInfo(device="/dev/ttyACM1", description="OpenRB stale mapping"),
+            SerialPortInfo(device="/dev/ttyACM0", description="OpenRB USB serial"),
+            SerialPortInfo(device="/dev/ttyUSB_TRACKER", description="Tracker"),
+        ],
+    )
+    controller.state.openrb_port = "/dev/ttyACM1"
+    controller.state.aurora_port = "/dev/ttyUSB_TRACKER"
+    try:
+        controller.connect_openrb()
+        assert openrb_client.attempted_ports[:2] == ["/dev/ttyACM1", "/dev/ttyACM0"]
+        assert controller.state.openrb_port == "/dev/ttyACM0"
+        assert controller.state.dynamixel_connected is True
+    finally:
         controller.disconnect_openrb()
 
 
@@ -2809,7 +2895,7 @@ def test_manual_validation_pages_disable_idle_periodic_refresh(tmp_path: Path) -
 
 def test_live_experiment_pages_keep_periodic_refresh_enabled(tmp_path: Path) -> None:
     controller = _experiment_controller(tmp_path)
-    controller.select_experiment("single_segment_repeatability")
+    controller.select_experiment("tracker_timing_validation")
     controller.refresh()
     controller.state.history_loading = False
     controller._history_dirty = False
@@ -2818,6 +2904,40 @@ def test_live_experiment_pages_keep_periodic_refresh_enabled(tmp_path: Path) -> 
 
     assert controller.refresh_policy_for() == "live"
     assert controller.should_periodically_refresh_selected_experiment() is True
+
+
+def test_repeatability_page_uses_manual_refresh_policy_when_idle(tmp_path: Path) -> None:
+    controller = _experiment_controller(tmp_path)
+    controller.select_experiment("single_segment_repeatability")
+    controller.refresh()
+    controller.state.history_loading = False
+    controller._history_dirty = False
+    controller._visualization_dirty = False
+    controller._preflight_cache_report = controller.state.preflight_report
+
+    assert controller.refresh_policy_for() == "manual"
+    assert controller.should_periodically_refresh_selected_experiment() is False
+
+
+def test_repeatability_manual_page_skips_unchanged_set_state_updates(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("single_segment_repeatability")
+    page = tab._page_for("single_segment_repeatability")
+    calls = {"count": 0}
+    original_set_state = page.set_state
+
+    def _counting_set_state(state):
+        calls["count"] += 1
+        return original_set_state(state)
+
+    page.set_state = _counting_set_state
+    state = controller.refresh()
+
+    assert tab.update(state) is True
+    assert tab.update(state) is False
+    assert calls["count"] == 1
 
 
 def test_registration_validation_explicit_refresh_still_forces_candidate_reload(
@@ -2982,7 +3102,7 @@ def test_app_window_keeps_periodic_refresh_for_live_experiment_pages(
     try:
         window._refresh_timer.stop()
         controller = window.experiment_controller
-        controller.select_experiment("single_segment_repeatability")
+        controller.select_experiment("tracker_timing_validation")
         controller.refresh()
         window.tab_widget.setCurrentWidget(window.experiment_tab)
 
@@ -2998,6 +3118,45 @@ def test_app_window_keeps_periodic_refresh_for_live_experiment_pages(
         window.refresh()
 
         assert counts["refresh_prerequisites"] == 2
+    finally:
+        window.shutdown()
+
+
+def test_app_window_skips_periodic_refresh_for_idle_repeatability_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _app()
+    window = AppWindow(_app_context(tmp_path))
+    try:
+        window._refresh_timer.stop()
+        controller = window.experiment_controller
+        controller.select_experiment("single_segment_repeatability")
+        state = controller.refresh()
+        window.experiment_tab.update(state)
+        controller.state.history_loading = False
+        controller._history_dirty = False
+        controller._visualization_dirty = False
+        controller._preflight_cache_report = controller.state.preflight_report
+        window.tab_widget.setCurrentWidget(window.experiment_tab)
+
+        counts = {"refresh_prerequisites": 0, "update": 0}
+        original_update = window.experiment_tab.update
+
+        def _count_refresh_prerequisites():
+            counts["refresh_prerequisites"] += 1
+            return controller.state
+
+        def _count_update(current_state):
+            counts["update"] += 1
+            return original_update(current_state)
+
+        monkeypatch.setattr(controller, "refresh_prerequisites", _count_refresh_prerequisites)
+        monkeypatch.setattr(window.experiment_tab, "update", _count_update)
+
+        window.refresh()
+        window.refresh()
+
+        assert counts == {"refresh_prerequisites": 0, "update": 0}
     finally:
         window.shutdown()
 
@@ -3559,6 +3718,31 @@ def test_experiment_shell_routes_pretension_validation_to_custom_page(tmp_path: 
     assert tab.page_stack.currentWidget() is pretension_page
     assert pretension_page.experiment_name == "pretension_validation"
     assert pretension_page.run_button.text() == "Run Pretension Validation"
+
+
+def test_experiment_pretension_validation_page_exposes_staged_mode_controls(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+
+    controller.select_experiment("pretension_validation")
+    tab.update(controller.refresh())
+    page = tab._page_for("pretension_validation")
+
+    mode_options = {str(page.mode_combo.itemData(index)) for index in range(page.mode_combo.count())}
+    assert "single_servo_trace" in mode_options
+    assert "single_segment_staged" in mode_options
+    assert page.staged_mode_card.isHidden() is True
+
+    staged_index = page.mode_combo.findData("single_segment_staged")
+    assert staged_index >= 0
+    page.mode_combo.setCurrentIndex(staged_index)
+    QTest.qWait(20)
+
+    assert controller.config_payload().get("mode") == "single_segment_staged"
+    assert page.staged_mode_card.isHidden() is False
+    assert page.servo_combo.isEnabled() is False
+    assert page.staged_servo_ids_edit.isEnabled() is True
 
 
 def test_experiment_shell_routes_tracker_timing_validation_to_custom_page(tmp_path: Path) -> None:

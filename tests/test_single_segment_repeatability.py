@@ -4,6 +4,7 @@ from pathlib import Path
 import importlib.util
 import json
 import sys
+import threading
 
 import pytest
 
@@ -37,6 +38,7 @@ from continuum_robot.experiments.single_segment_repeatability import (
     load_repeatability_metrics_from_run,
     repeatability_ring_tick_defaults,
     repeatability_target_tick_profile,
+    _read_servo_telemetry_payload,
 )
 from continuum_robot.hardware.mock_dxl_bus import MockDxlBus
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
@@ -546,6 +548,85 @@ def test_capture_gate_rejects_stale_tracker_data(tmp_path: Path) -> None:
     assert "capture_rejected" in sample.status_flags
 
 
+def test_repeatability_telemetry_payload_classifies_missing_current_and_voltage(tmp_path: Path) -> None:
+    service = _servo_service(tmp_path)
+    service.dxl_bus._state[2].present_current_ma = None
+    service.dxl_bus._state[2].present_current_raw_unit = None
+    service.dxl_bus._state[3].present_voltage_mv = None
+    service.dxl_bus._state[3].present_voltage_raw_unit = None
+    session = _session(tmp_path, service=service)
+
+    payload = _read_servo_telemetry_payload(session, [1, 2, 3, 4], stage="runtime_capture")
+
+    assert payload["ok"] is False
+    assert payload["failure_stage"] == "runtime_capture"
+    issue_codes = {(int(row.get("servo_id", -1)), str(row.get("code", ""))) for row in payload["issues"]}
+    assert (2, "missing_current") in issue_codes
+    assert (3, "missing_voltage") in issue_codes
+
+
+def test_repeatability_telemetry_payload_classifies_owner_conflict(tmp_path: Path) -> None:
+    service = _servo_service(tmp_path)
+    session = _session(tmp_path, service=service)
+    ready = threading.Event()
+    release = threading.Event()
+
+    def _hold_bus() -> None:
+        with service.exclusive_bus_operation(owner="external_workflow", reason="test_hold"):
+            ready.set()
+            release.wait(timeout=1.0)
+
+    holder = threading.Thread(target=_hold_bus, daemon=True)
+    holder.start()
+    assert ready.wait(timeout=1.0)
+    try:
+        payload = _read_servo_telemetry_payload(session, [1, 2, 3, 4], stage="preflight")
+    finally:
+        release.set()
+        holder.join(timeout=1.0)
+
+    assert payload["ok"] is False
+    assert payload["failure_stage"] == "preflight"
+    assert payload["failure_code"] in {"owner_conflict", "bus_contention"}
+
+
+def test_repeatability_precheck_reports_preflight_telemetry_invalid_with_explicit_code(tmp_path: Path) -> None:
+    settings = _settings(mock_mode=False)
+    service = _servo_service(tmp_path)
+    service.dxl_bus._state[1].present_current_ma = None
+    service.dxl_bus._state[1].present_current_raw_unit = None
+    pivot_tip_file = tmp_path / "tools" / "penprobe_08_09_24c"
+    pivot_tip_file.parent.mkdir(parents=True, exist_ok=True)
+    pivot_tip_file.write_text("0,0,0\n", encoding="utf-8")
+    experiment = SingleSegmentRepeatabilityExperiment(SingleSegmentRepeatabilityConfig())
+    metadata = ExperimentMetadata(
+        schema_version="1.0",
+        experiment_name=experiment.name,
+        run_id="precheck-telemetry",
+        timestamp_utc="2026-04-25T00:00:00Z",
+        git_commit=None,
+        backend_info={},
+        registration_info={},
+        config_used=experiment.config_dict(),
+    )
+    session = ExperimentSession(
+        context=ExperimentContext(
+            project_root=tmp_path,
+            settings=settings,
+            tracking_service=_TrackingService(_tracking_snapshot()),
+            servo_service=service,
+            registration_path=tmp_path / "data" / "registrations" / "latest_registration.json",
+            output_root=tmp_path / "data" / "experiments",
+            sleep_fn=lambda _seconds: None,
+        ),
+        metadata=metadata,
+    )
+    experiment.setup(session)
+
+    with pytest.raises(RuntimeError, match="preflight_telemetry_invalid: code=missing_current"):
+        experiment.precheck(session)
+
+
 def test_authoritative_repeatability_docs_and_examples_reference_single_segment() -> None:
     project_root = Path(__file__).resolve().parents[1]
 
@@ -623,6 +704,37 @@ def _servo_service(tmp_path: Path, *, pretension_source: str = "algorithmic") ->
         )
         service.neutral_calibration.mark_pretension_accepted(servo_id)
     return service
+
+
+def _session(
+    tmp_path: Path,
+    *,
+    service: ServoService,
+    snapshot: TrackingSnapshot | None = None,
+    experiment_name: str = "single_segment_repeatability",
+) -> ExperimentSession:
+    metadata = ExperimentMetadata(
+        schema_version="1.0",
+        experiment_name=experiment_name,
+        run_id="telemetry-test",
+        timestamp_utc="2026-04-25T00:00:00Z",
+        git_commit=None,
+        backend_info={},
+        registration_info={},
+        config_used={},
+    )
+    return ExperimentSession(
+        context=ExperimentContext(
+            project_root=tmp_path,
+            settings=_settings(mock_mode=False),
+            tracking_service=_TrackingService(snapshot or _tracking_snapshot()),
+            servo_service=service,
+            registration_path=tmp_path / "data" / "registrations" / "latest_registration.json",
+            output_root=tmp_path / "data" / "experiments",
+            sleep_fn=lambda _seconds: None,
+        ),
+        metadata=metadata,
+    )
 
 
 def _tracking_snapshot(

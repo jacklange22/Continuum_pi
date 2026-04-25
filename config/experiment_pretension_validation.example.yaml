@@ -25,6 +25,7 @@ accept_max_final_tip_xy_offset_mm: 5.0
 include_tracker_displacement: true
 tracker_tool_id: "0A"
 move_to_reference: true
+pretension_start_mode: current_position  # current_position | manual_startup_artifact | full_release_4095
 
 untensioned_reference_tick:
 step_ticks:

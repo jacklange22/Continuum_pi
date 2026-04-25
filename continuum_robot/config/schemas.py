@@ -74,6 +74,7 @@ class SafetyConfig:
     software_position_margin_ticks: int = 64
     telemetry_stale_after_s: float = 0.25
     pretension_untensioned_reference_tick: int = 4095
+    pretension_start_mode: str = "current_position"
     pretension_step_ticks: int = 2
     pretension_timeout_s: float = 10.0
     pretension_settle_time_s: float = 0.05

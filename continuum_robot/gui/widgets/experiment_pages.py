@@ -727,6 +727,7 @@ class RepeatabilityDatasetPage(ExperimentPageBase):
 
 class SingleSegmentRepeatabilityPage(ExperimentPageBase):
     show_visualization = True
+    refresh_policy = "manual"
     defer_visualization_until_data = True
     visualization_mode_override = VIS_MODE_PROJECTION
     page_hint = (
@@ -2087,6 +2088,16 @@ class PretensionValidationPage(ExperimentPageBase):
             "These values mirror the current live pretension parameters. Leave them on the resolved defaults unless you are intentionally validating a changed threshold or travel limit.",
         )
         params_form = QFormLayout()
+        self.pretension_start_mode_combo = QComboBox()
+        self.pretension_start_mode_combo.addItem("Current Position", "current_position")
+        self.pretension_start_mode_combo.addItem("Manual Startup Artifact", "manual_startup_artifact")
+        self.pretension_start_mode_combo.addItem("Full Release 4095", "full_release_4095")
+        self.pretension_start_mode_combo.currentIndexChanged.connect(
+            lambda _index: self.controller.set_config_value(
+                "pretension_start_mode",
+                str(self.pretension_start_mode_combo.currentData()),
+            )
+        )
         self.untensioned_spin = QSpinBox()
         self.untensioned_spin.setRange(0, 4095)
         self.untensioned_spin.valueChanged.connect(
@@ -2145,6 +2156,7 @@ class PretensionValidationPage(ExperimentPageBase):
         self.timeout_spin.valueChanged.connect(
             lambda value: self.controller.set_config_value("timeout_s", float(value))
         )
+        params_form.addRow("Pretension Start Mode", self.pretension_start_mode_combo)
         params_form.addRow("Untensioned Reference", self.untensioned_spin)
         params_form.addRow("Step Ticks", self.step_ticks_spin)
         params_form.addRow("Settle Time (s)", self.settle_time_spin)
@@ -2157,6 +2169,44 @@ class PretensionValidationPage(ExperimentPageBase):
         params_form.addRow("Timeout (s)", self.timeout_spin)
         params_card.body_layout.addLayout(params_form)
 
+        staged_card = ExperimentCard(
+            "Staged 4-Servo Parameters",
+            "These staged controls apply only in staged mode and stay hidden in single-servo trace mode.",
+        )
+        staged_form = QFormLayout()
+        self.load_balance_tolerance_spin = QDoubleSpinBox()
+        self.load_balance_tolerance_spin.setRange(0.0, 5000.0)
+        self.load_balance_tolerance_spin.setDecimals(1)
+        self.load_balance_tolerance_spin.setSingleStep(5.0)
+        self.load_balance_tolerance_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("load_balance_tolerance_ma", float(value))
+        )
+        self.pair_balance_tolerance_spin = QDoubleSpinBox()
+        self.pair_balance_tolerance_spin.setRange(0.0, 5000.0)
+        self.pair_balance_tolerance_spin.setDecimals(1)
+        self.pair_balance_tolerance_spin.setSingleStep(5.0)
+        self.pair_balance_tolerance_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("pair_balance_tolerance_ma", float(value))
+        )
+        self.tip_center_tolerance_spin = QDoubleSpinBox()
+        self.tip_center_tolerance_spin.setRange(0.0, 500.0)
+        self.tip_center_tolerance_spin.setDecimals(2)
+        self.tip_center_tolerance_spin.setSingleStep(0.5)
+        self.tip_center_tolerance_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("tip_center_tolerance_mm", float(value))
+        )
+        self.equalization_max_iterations_spin = QSpinBox()
+        self.equalization_max_iterations_spin.setRange(0, 500)
+        self.equalization_max_iterations_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("equalization_max_iterations", int(value))
+        )
+        staged_form.addRow("Load Balance Tolerance (mA)", self.load_balance_tolerance_spin)
+        staged_form.addRow("Pair Balance Tolerance (mA)", self.pair_balance_tolerance_spin)
+        staged_form.addRow("Tip XY Tolerance (mm)", self.tip_center_tolerance_spin)
+        staged_form.addRow("Equalization Max Iterations", self.equalization_max_iterations_spin)
+        staged_card.body_layout.addLayout(staged_form)
+        self.staged_mode_card = staged_card
+
         summary_card = ExperimentCard(
             "What This Run Produces",
             "Each run writes a canonical time-ordered sample series plus a static response plot and compact summary note under data/experiments/....",
@@ -2166,6 +2216,7 @@ class PretensionValidationPage(ExperimentPageBase):
 
         self.parameter_layout.addWidget(setup_card)
         self.parameter_layout.addWidget(params_card)
+        self.parameter_layout.addWidget(staged_card)
         self.parameter_layout.addWidget(summary_card)
 
     def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
@@ -2174,6 +2225,10 @@ class PretensionValidationPage(ExperimentPageBase):
         defaults = self._resolved_defaults(config.servo_id)
         mode = str(config.mode or "single_servo_trace")
         self._set_combo_value(self.mode_combo, mode)
+        self._set_combo_value(
+            self.pretension_start_mode_combo,
+            str(config.pretension_start_mode or defaults.start_mode),
+        )
         self._set_combo_value(self.servo_combo, str(int(config.servo_id)))
         self._set_checkbox(self.include_tracker_check, bool(config.include_tracker_displacement))
         self._set_checkbox(self.allow_current_only_check, bool(config.allow_current_only_when_tracker_missing))
@@ -2239,6 +2294,11 @@ class PretensionValidationPage(ExperimentPageBase):
             self.timeout_spin,
             float(config.timeout_s if config.timeout_s is not None else defaults.timeout_s),
         )
+        self._set_double(self.load_balance_tolerance_spin, float(config.load_balance_tolerance_ma))
+        self._set_double(self.pair_balance_tolerance_spin, float(config.pair_balance_tolerance_ma))
+        self._set_double(self.tip_center_tolerance_spin, float(config.tip_center_tolerance_mm))
+        self._set_spin(self.equalization_max_iterations_spin, int(config.equalization_max_iterations))
+        self._sync_mode_visibility(mode)
         self.parameter_summary_widget.set_pairs(
             [
                 (
@@ -2248,6 +2308,10 @@ class PretensionValidationPage(ExperimentPageBase):
                         if mode == "single_servo_trace"
                         else "Staged mode runs baseline, per-servo take-up, load equalization, and optional tip XY centering."
                     ),
+                ),
+                (
+                    "Pretension Start",
+                    str(config.pretension_start_mode or defaults.start_mode).replace("_", " "),
                 ),
                 ("Travel Axis", "Travel is measured from the untensioned reference toward lower raw counts (ticks / mm)."),
                 ("Current Metric", "Current is saved as an engagement/load proxy, not a tendon-force estimate."),
@@ -2271,6 +2335,7 @@ class PretensionValidationPage(ExperimentPageBase):
     def _on_mode_changed(self) -> None:
         mode = str(self.mode_combo.currentData() or "single_servo_trace")
         self.controller.set_config_value("mode", mode)
+        self._sync_mode_visibility(mode)
         self._refresh_now()
 
     def _on_staged_servo_ids_changed(self) -> None:
@@ -2290,6 +2355,18 @@ class PretensionValidationPage(ExperimentPageBase):
             self.set_state(self.controller.refresh())
         except Exception:
             return
+
+    def _sync_mode_visibility(self, mode: str) -> None:
+        staged_mode = str(mode or "").strip().lower() in {
+            "single_segment_staged",
+            "staged",
+            "four_servo_staged",
+        }
+        self.servo_combo.setEnabled(not staged_mode)
+        self.staged_servo_ids_edit.setEnabled(staged_mode)
+        self.enable_tip_centering_check.setEnabled(staged_mode)
+        self.repeat_runs_spin.setEnabled(staged_mode)
+        self.staged_mode_card.setVisible(staged_mode)
 
 
 class CommandScheduleValidationPage(ExperimentPageBase):

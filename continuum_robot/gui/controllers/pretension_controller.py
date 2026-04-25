@@ -7,6 +7,7 @@ import threading
 import time
 
 from continuum_robot.servos.servo_service import (
+    PRETENSION_START_MODE_CURRENT_POSITION,
     PretensionBaselineMeasurement,
     PretensionOperationError,
     PretensionParameters,
@@ -32,7 +33,9 @@ class PretensionViewState:
     selected_servo_pretension_ready: bool = False
     selected_servo_position_tick: int | None = None
     selected_servo_current_ma: int | None = None
+    selected_servo_current_validity: str = "unknown"
     selected_servo_filtered_current_ma: float | None = None
+    selected_servo_filtered_current_source: str = "none"
     selected_servo_voltage_mv: int | None = None
     selected_servo_temperature_c: int | None = None
     selected_servo_hardware_error_text: str = "—"
@@ -51,6 +54,7 @@ class PretensionViewState:
     comparison_rows: list[dict[str, str]] = field(default_factory=list)
     calibration_path: str = ""
     default_untensioned_reference_tick: int = 4095
+    default_start_mode: str = PRETENSION_START_MODE_CURRENT_POSITION
     default_step_ticks: int = 2
     default_settle_time_s: float = 0.05
     default_baseline_sample_count: int = 5
@@ -105,6 +109,7 @@ class PretensionController:
             telemetry_freshness_threshold_s=servo_service.telemetry_freshness_threshold_s(),
             calibration_path=str(servo_service.neutral_calibration.path),
             default_untensioned_reference_tick=int(settings.safety.pretension_untensioned_reference_tick),
+            default_start_mode=str(getattr(settings.safety, "pretension_start_mode", PRETENSION_START_MODE_CURRENT_POSITION)),
             default_step_ticks=int(settings.safety.pretension_step_ticks),
             default_settle_time_s=float(settings.safety.pretension_settle_time_s),
             default_baseline_sample_count=int(settings.safety.pretension_baseline_sample_count),
@@ -351,6 +356,7 @@ class PretensionController:
     def apply_live_parameters(self, *, parameters: PretensionParameters) -> PretensionParameters:
         applied = self.servo_service.apply_live_pretension_defaults(parameters)
         self.settings.safety.pretension_untensioned_reference_tick = int(applied.untensioned_reference_tick)
+        self.settings.safety.pretension_start_mode = str(applied.start_mode)
         self.settings.safety.pretension_step_ticks = int(applied.step_ticks)
         self.settings.safety.pretension_settle_time_s = float(applied.settle_time_s)
         self.settings.safety.pretension_baseline_sample_count = int(applied.baseline_sample_count)
@@ -363,6 +369,7 @@ class PretensionController:
         self.settings.safety.pretension_max_travel_ticks = int(applied.max_travel_ticks)
         self.settings.safety.pretension_timeout_s = float(applied.timeout_s)
         self.state.default_untensioned_reference_tick = int(applied.untensioned_reference_tick)
+        self.state.default_start_mode = str(applied.start_mode)
         self.state.default_step_ticks = int(applied.step_ticks)
         self.state.default_settle_time_s = float(applied.settle_time_s)
         self.state.default_baseline_sample_count = int(applied.baseline_sample_count)
@@ -379,7 +386,7 @@ class PretensionController:
         self.state.last_error = None
         self._append_log(
             "Applied pretension parameters live: "
-            f"ref={applied.untensioned_reference_tick}, step={applied.step_ticks}, "
+            f"ref={applied.untensioned_reference_tick}, mode={applied.start_mode}, step={applied.step_ticks}, "
             f"delta={applied.current_delta_threshold_ma} mA, hard stop={applied.hard_current_stop_ma} mA."
         )
         self.refresh()
@@ -395,6 +402,7 @@ class PretensionController:
             {
                 "safety_overrides": {
                     "pretension_untensioned_reference_tick": int(applied.untensioned_reference_tick),
+                    "pretension_start_mode": str(applied.start_mode),
                     "pretension_step_ticks": int(applied.step_ticks),
                     "pretension_settle_time_s": float(applied.settle_time_s),
                     "pretension_baseline_sample_count": int(applied.baseline_sample_count),
@@ -475,10 +483,14 @@ class PretensionController:
             self.state.baseline_current_ma = result.baseline_current_ma
             self.state.baseline_filtered_current_ma = result.filtered_current_ma
             self.state.selected_servo_filtered_current_ma = result.filtered_current_ma
+            self.state.selected_servo_filtered_current_source = (
+                "run_filter_proxy" if result.filtered_current_ma is not None else "none"
+            )
             if result.current_position_tick is not None:
                 self.state.selected_servo_position_tick = int(result.current_position_tick)
             if result.final_current_ma is not None:
                 self.state.selected_servo_current_ma = int(result.final_current_ma)
+                self.state.selected_servo_current_validity = "valid"
             self.state.selected_servo_telemetry_age_s = 0.0
             self.state.selected_servo_telemetry_fresh = True
             self.state.selected_servo_block_reason = (
@@ -583,7 +595,9 @@ class PretensionController:
         self.state.selected_servo_pretension_ready = False
         self.state.selected_servo_position_tick = None
         self.state.selected_servo_current_ma = None
+        self.state.selected_servo_current_validity = "unknown"
         self.state.selected_servo_filtered_current_ma = None
+        self.state.selected_servo_filtered_current_source = "none"
         self.state.selected_servo_voltage_mv = None
         self.state.selected_servo_temperature_c = None
         self.state.selected_servo_hardware_error_text = "Disconnected"
@@ -626,15 +640,23 @@ class PretensionController:
         )
         self.state.selected_servo_position_tick = telemetry.present_position
         self.state.selected_servo_current_ma = telemetry.present_current_ma
+        self.state.selected_servo_current_validity = self._current_validity_label(telemetry)
         if not self.state.pretension_running:
             if self._last_result is not None and self._last_result.filtered_current_ma is not None:
                 self.state.selected_servo_filtered_current_ma = float(self._last_result.filtered_current_ma)
+                self.state.selected_servo_filtered_current_source = "run_filter_proxy"
             else:
                 self.state.selected_servo_filtered_current_ma = (
                     self.state.baseline_filtered_current_ma
                     if self.state.baseline_filtered_current_ma is not None
                     else (float(telemetry.present_current_ma) if telemetry.present_current_ma is not None else None)
                 )
+                if self.state.baseline_filtered_current_ma is not None:
+                    self.state.selected_servo_filtered_current_source = "baseline_filter_proxy"
+                elif telemetry.present_current_ma is not None:
+                    self.state.selected_servo_filtered_current_source = "live_raw"
+                else:
+                    self.state.selected_servo_filtered_current_source = "none"
         self.state.selected_servo_voltage_mv = telemetry.present_voltage_mv
         self.state.selected_servo_temperature_c = telemetry.present_temperature_c
         self.state.selected_servo_hardware_error_text = self._hardware_error_text(
@@ -684,6 +706,7 @@ class PretensionController:
         if self._selection_changed and not self.state.pretension_running:
             defaults = self.servo_service.default_pretension_parameters(int(self.state.selected_servo_id))
             self.state.default_untensioned_reference_tick = int(defaults.untensioned_reference_tick)
+            self.state.default_start_mode = str(defaults.start_mode)
             self.state.default_step_ticks = int(defaults.step_ticks)
             self.state.default_settle_time_s = float(defaults.settle_time_s)
             self.state.default_baseline_sample_count = int(defaults.baseline_sample_count)
@@ -741,6 +764,7 @@ class PretensionController:
                 if reference_tick is not None
                 else int(self.state.default_untensioned_reference_tick)
             ),
+            start_mode=str(self.state.default_start_mode or PRETENSION_START_MODE_CURRENT_POSITION),
             step_ticks=int(self.state.default_step_ticks),
             settle_time_s=float(self.state.default_settle_time_s),
             baseline_sample_count=int(self.state.default_baseline_sample_count),
@@ -845,3 +869,17 @@ class PretensionController:
         if code not in (None, 0):
             return f"0x{int(code):02X}"
         return str(error or "—")
+
+    def _current_validity_label(self, telemetry) -> str:
+        if telemetry is None:
+            return "unknown"
+        if telemetry.present_current_ma is None:
+            return "missing"
+        fresh = self.servo_service.telemetry_is_fresh(telemetry)
+        if fresh is False:
+            return "stale"
+        if telemetry.telemetry_error:
+            error_text = str(telemetry.telemetry_error).lower()
+            if "present_current" in error_text or "0x7e" in error_text:
+                return "invalid"
+        return "valid"

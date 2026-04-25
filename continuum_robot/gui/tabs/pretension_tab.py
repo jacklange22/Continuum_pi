@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QSplitter,
+    QComboBox,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -89,7 +90,9 @@ class PretensionTab(QWidget):
         self.pretension_ready_label = QLabel("—")
         self.position_label = QLabel("—")
         self.current_label = QLabel("—")
+        self.current_validity_label = QLabel("—")
         self.filtered_current_label = QLabel("—")
+        self.filtered_current_source_label = QLabel("—")
         self.voltage_label = QLabel("—")
         self.temperature_label = QLabel("—")
         self.bounds_label = QLabel("—")
@@ -111,7 +114,9 @@ class PretensionTab(QWidget):
         feedback_layout.addRow("Pretension ready", self.pretension_ready_label)
         feedback_layout.addRow("Raw position", self.position_label)
         feedback_layout.addRow("Current draw (mA)", self.current_label)
+        feedback_layout.addRow("Current validity", self.current_validity_label)
         feedback_layout.addRow("Filtered current", self.filtered_current_label)
+        feedback_layout.addRow("Filtered source", self.filtered_current_source_label)
         feedback_layout.addRow("Voltage (mV)", self.voltage_label)
         feedback_layout.addRow("Temperature (C)", self.temperature_label)
         feedback_layout.addRow("Untensioned reference", self.reference_label)
@@ -124,6 +129,10 @@ class PretensionTab(QWidget):
 
         self.untensioned_reference_spin = QSpinBox()
         self.untensioned_reference_spin.setRange(0, 4095)
+        self.start_mode_combo = QComboBox()
+        self.start_mode_combo.addItem("Current Position", "current_position")
+        self.start_mode_combo.addItem("Manual Startup Artifact", "manual_startup_artifact")
+        self.start_mode_combo.addItem("Full Release 4095", "full_release_4095")
         self.step_ticks_spin = QSpinBox()
         self.step_ticks_spin.setRange(1, 256)
         self.settle_time_spin = QDoubleSpinBox()
@@ -166,10 +175,12 @@ class PretensionTab(QWidget):
         ):
             signal = getattr(widget, "valueChanged")
             signal.connect(self._mark_parameter_dirty)
+        self.start_mode_combo.currentIndexChanged.connect(self._mark_parameter_dirty)
 
         parameter_box = QGroupBox("Pretension Parameters")
         parameter_layout = QFormLayout(parameter_box)
         parameter_layout.addRow("Untensioned reference", self.untensioned_reference_spin)
+        parameter_layout.addRow("Start mode", self.start_mode_combo)
         parameter_layout.addRow("Pretension step (ticks)", self.step_ticks_spin)
         parameter_layout.addRow("Settle time (s)", self.settle_time_spin)
         parameter_layout.addRow("Baseline samples", self.baseline_sample_spin)
@@ -417,9 +428,11 @@ class PretensionTab(QWidget):
         self.pretension_ready_label.setText("Yes" if state.selected_servo_pretension_ready else "No")
         self.position_label.setText(self._display(state.selected_servo_position_tick))
         self.current_label.setText(self._display(state.selected_servo_current_ma))
+        self.current_validity_label.setText(str(state.selected_servo_current_validity or "unknown"))
         self.filtered_current_label.setText(
             "—" if state.selected_servo_filtered_current_ma is None else f"{state.selected_servo_filtered_current_ma:.1f} mA"
         )
+        self.filtered_current_source_label.setText(str(state.selected_servo_filtered_current_source or "none"))
         self.voltage_label.setText(self._display(state.selected_servo_voltage_mv))
         self.temperature_label.setText(self._display(state.selected_servo_temperature_c))
         self.reference_label.setText(self._display(state.selected_servo_untensioned_reference_tick))
@@ -578,6 +591,10 @@ class PretensionTab(QWidget):
         self._updating_parameter_widgets = True
         try:
             self.untensioned_reference_spin.setValue(int(values["untensioned_reference_tick"]))
+            self._set_combo_value(
+                self.start_mode_combo,
+                str(values["start_mode"]),
+            )
             self.step_ticks_spin.setValue(int(values["step_ticks"]))
             self.settle_time_spin.setValue(float(values["settle_time_s"]))
             self.baseline_sample_spin.setValue(int(values["baseline_sample_count"]))
@@ -593,6 +610,7 @@ class PretensionTab(QWidget):
     def _current_parameter_values(self) -> dict[str, object]:
         return {
             "untensioned_reference_tick": int(self.untensioned_reference_spin.value()),
+            "start_mode": str(self.start_mode_combo.currentData() or "current_position"),
             "step_ticks": int(self.step_ticks_spin.value()),
             "settle_time_s": float(self.settle_time_spin.value()),
             "baseline_sample_count": int(self.baseline_sample_spin.value()),
@@ -608,6 +626,7 @@ class PretensionTab(QWidget):
     def _parameter_values_from_state(state) -> dict[str, object]:
         return {
             "untensioned_reference_tick": int(state.default_untensioned_reference_tick),
+            "start_mode": str(state.default_start_mode or "current_position"),
             "step_ticks": int(state.default_step_ticks),
             "settle_time_s": float(state.default_settle_time_s),
             "baseline_sample_count": int(state.default_baseline_sample_count),
@@ -627,6 +646,7 @@ class PretensionTab(QWidget):
         absolute_trigger_value = int(self.absolute_trigger_spin.value())
         return PretensionParameters(
             untensioned_reference_tick=int(self.untensioned_reference_spin.value()),
+            start_mode=str(self.start_mode_combo.currentData() or "current_position"),
             step_ticks=int(self.step_ticks_spin.value()),
             settle_time_s=float(self.settle_time_spin.value()),
             baseline_sample_count=int(self.baseline_sample_spin.value()),
@@ -637,6 +657,17 @@ class PretensionTab(QWidget):
             max_travel_ticks=int(self.max_travel_spin.value()),
             timeout_s=float(self.timeout_spin.value()),
         )
+
+    @staticmethod
+    def _set_combo_value(combo: QComboBox, value: str) -> None:
+        target = str(value or "").strip().lower()
+        index = combo.findData(target)
+        if index < 0 and combo.count() > 0:
+            index = 0
+        if index >= 0 and combo.currentIndex() != index:
+            combo.blockSignals(True)
+            combo.setCurrentIndex(index)
+            combo.blockSignals(False)
 
     @staticmethod
     def _set_spin_if_not_focused(spin: QSpinBox, value: int) -> None:

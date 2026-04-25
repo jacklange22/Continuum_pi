@@ -50,6 +50,7 @@ safety_overrides:
   min_input_voltage_mv: 4000
   default_pretension_current_threshold_ma: 220
   pretension_untensioned_reference_tick: 4095
+  pretension_start_mode: "current_position"  # current_position | manual_startup_artifact | full_release_4095
   pretension_baseline_sample_count: 5
   pretension_current_filter_window: 3
   pretension_current_delta_threshold_ma: 60

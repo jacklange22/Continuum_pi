@@ -136,16 +136,7 @@ class SystemController:
         self.rescan_ports()
 
     def rescan_ports(self) -> SystemViewState:
-        ports = discover_serial_ports()
-        if self.settings.runtime.mock_mode:
-            ports.extend(
-                [
-                    SerialPortInfo(device="/dev/mock-aurora", description="Mock Aurora port"),
-                    SerialPortInfo(device="/dev/mock-openrb", description="Mock OpenRB port"),
-                ]
-            )
-        deduped = {port.device: port for port in ports}
-        self.state.available_ports = sorted(deduped.values(), key=lambda port: port.device)
+        self._refresh_available_ports_snapshot()
         return self.refresh()
 
     def set_aurora_port(self, port: str) -> None:
@@ -182,28 +173,69 @@ class SystemController:
         self.refresh()
 
     def connect_openrb(self) -> None:
+        attempted: list[tuple[str, str, str]] = []
         try:
-            if not self.state.openrb_port:
-                raise RuntimeError("OpenRB port is empty. Set the board port before connecting.")
-            # Keep board validation and bus ownership on the canonical path so
-            # GUI status always reflects the real OpenRB + DYNAMIXEL state.
-            self.openrb_client.connect(self.state.openrb_port, self.state.baudrate)
-            self.openrb_client.prepare_for_dynamixel_use()
-            try:
-                self.servo_service.connect(self.state.openrb_port, self.state.baudrate)
-            except Exception:
-                self.openrb_client.disconnect()
-                raise
+            candidates = self._openrb_port_candidates()
+            if not candidates:
+                raise RuntimeError("OpenRB port is empty. Set or rescan the board port before connecting.")
+
+            connected_port: str | None = None
+            selected_reason: str | None = None
+            for candidate_port, candidate_reason in candidates:
+                try:
+                    self.openrb_client.connect(candidate_port, self.state.baudrate)
+                    self.openrb_client.prepare_for_dynamixel_use()
+                    try:
+                        self.servo_service.connect(candidate_port, self.state.baudrate)
+                    except Exception:
+                        self.openrb_client.disconnect()
+                        raise
+                    connected_port = str(candidate_port)
+                    selected_reason = str(candidate_reason)
+                    break
+                except Exception as exc:
+                    attempted.append((str(candidate_port), str(candidate_reason), str(exc)))
+                    try:
+                        self.servo_service.disconnect()
+                    except Exception:
+                        pass
+                    try:
+                        self.openrb_client.disconnect()
+                    except Exception:
+                        pass
+                    LOG.warning(
+                        "OpenRB connect attempt failed | port=%s | reason=%s | error=%s",
+                        candidate_port,
+                        candidate_reason,
+                        exc,
+                    )
+            if connected_port is None:
+                attempts_text = "; ".join(
+                    f"{port} ({reason}): {error}" for port, reason, error in attempted
+                )
+                raise RuntimeError(
+                    "Could not connect OpenRB on any candidate serial port. "
+                    f"Tried: {attempts_text or 'none'}."
+                )
+            self.state.openrb_port = str(connected_port)
             LOG.info(
-                "OpenRB connected | port=%s | baud=%s | expected_servo_ids=%s",
-                self.state.openrb_port,
+                "OpenRB connected | port=%s | baud=%s | expected_servo_ids=%s | selection_reason=%s",
+                connected_port,
                 self.state.baudrate,
                 self.settings.robot.servo_ids,
+                selected_reason or "configured_port",
             )
-            self.state.status_message = (
-                "OpenRB validated and prepared; DYNAMIXEL bus connected. "
-                "Use configured-servo bring-up next and jog one selected servo at a time."
-            )
+            if attempted:
+                attempts_text = ", ".join(f"{port} ({reason})" for port, reason, _error in attempted)
+                self.state.status_message = (
+                    "OpenRB connected after fallback scan. "
+                    f"Active port {connected_port}; failed candidates: {attempts_text}."
+                )
+            else:
+                self.state.status_message = (
+                    "OpenRB validated and prepared; DYNAMIXEL bus connected. "
+                    "Use configured-servo bring-up next and jog one selected servo at a time."
+                )
             self.state.last_error = None
         except Exception as exc:
             LOG.exception(
@@ -215,6 +247,55 @@ class SystemController:
             self.state.last_error = str(exc)
             self.state.status_message = f"OpenRB connect failed: {exc}"
         self.refresh_readiness()
+
+    def _refresh_available_ports_snapshot(self) -> list[SerialPortInfo]:
+        ports = discover_serial_ports()
+        if self.settings.runtime.mock_mode:
+            ports.extend(
+                [
+                    SerialPortInfo(device="/dev/mock-aurora", description="Mock Aurora port"),
+                    SerialPortInfo(device="/dev/mock-openrb", description="Mock OpenRB port"),
+                ]
+            )
+        deduped = {str(port.device): port for port in ports if str(port.device).strip()}
+        self.state.available_ports = sorted(deduped.values(), key=lambda port: port.device)
+        return list(self.state.available_ports)
+
+    def _openrb_port_candidates(self) -> list[tuple[str, str]]:
+        available_ports = self._refresh_available_ports_snapshot()
+        selected = str(self.state.openrb_port or "").strip()
+        tracker_port = str(self.state.aurora_port or "").strip()
+        candidates: list[tuple[str, str]] = []
+        seen: set[str] = set()
+
+        def _add(port: str, reason: str) -> None:
+            candidate = str(port or "").strip()
+            if not candidate or candidate in seen:
+                return
+            seen.add(candidate)
+            candidates.append((candidate, reason))
+
+        if selected:
+            _add(selected, "configured_port")
+        for port_info in available_ports:
+            device = str(port_info.device or "").strip()
+            description = str(port_info.description or "").lower()
+            if not device or device == tracker_port:
+                continue
+            if any(token in description for token in ("openrb", "dynamixel", "robotis")):
+                _add(device, "openrb_hint")
+        for port_info in available_ports:
+            device = str(port_info.device or "").strip()
+            if not device or device == tracker_port:
+                continue
+            if device.startswith("/dev/ttyACM"):
+                _add(device, "ttyacm_fallback")
+        for port_info in available_ports:
+            device = str(port_info.device or "").strip()
+            if not device or device == tracker_port:
+                continue
+            _add(device, "serial_fallback")
+        return candidates
 
     def disconnect_openrb(self) -> None:
         try:
