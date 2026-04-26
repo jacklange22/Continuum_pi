@@ -1,0 +1,11 @@
+mode: static_telemetry
+servo_ids: [1, 2, 3, 4]
+selected_servo_id: 1
+duration_s: 300.0
+sample_period_s: 0.1
+cycles: 50
+step_ticks: 8
+coordinated_delta_ticks: 6
+stop_on_first_serious_failure: false
+output_dir:
+session_log_path:

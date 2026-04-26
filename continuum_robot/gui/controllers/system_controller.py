@@ -479,6 +479,15 @@ class SystemController:
             self.state.bench_debug_text = self._build_disconnected_bench_debug_text()
             return self.refresh()
         try:
+            ownership = self.servo_service.bus_ownership_status()
+            if ownership.active and not ownership.held_by_current_thread:
+                snapshot = self.servo_service.build_cached_runtime_servo_snapshot(
+                    list(self.settings.robot.servo_ids),
+                )
+                self.sync_servo_runtime_snapshot(snapshot)
+                self.state.status_message = self.servo_service.bus_busy_message(action="system readiness refresh")
+                self.state.last_error = None
+                return self.refresh()
             if self.settings.robot.mode == "1-servo" or len(self.settings.robot.servo_ids) == 1:
                 debug_snapshot = self.servo_service.build_bench_debug_snapshot(self._expected_servo_id())
                 self.state.detected_servo_ids = (

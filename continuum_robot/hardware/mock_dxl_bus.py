@@ -178,6 +178,10 @@ class MockDxlBus(DxlBus):
                     hardware_error_code=telemetry.hardware_error_code,
                     identity_error=telemetry.identity_error,
                     telemetry_error=telemetry.telemetry_error,
-                    last_read_monotonic_s=time.monotonic(),
+                    last_read_monotonic_s=(
+                        telemetry.last_read_monotonic_s
+                        if telemetry.last_read_monotonic_s is not None
+                        else time.monotonic()
+                    ),
                 )
         return result

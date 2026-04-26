@@ -456,6 +456,8 @@ class ExperimentRunner:
                 ),
             )
         )
+        if not success and status in {STATUS_SUCCESS, STATUS_PARTIAL_SUCCESS}:
+            status = "failed"
         summary_success = bool(success and status in {STATUS_SUCCESS, STATUS_PARTIAL_SUCCESS})
         return ExperimentSummary(
             schema_version=self.SCHEMA_VERSION,

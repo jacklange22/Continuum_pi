@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 import logging
 import threading
 import time
@@ -498,6 +498,7 @@ class ServoService:
         self._exclusive_bus_depth: int = 0
         self._last_goal_positions_by_id: dict[int, int] = {}
         self._last_goal_command_monotonic_s: dict[int, float] = {}
+        self._last_telemetry_by_id: dict[int, ServoTelemetry] = {}
         self._last_single_segment_motion_configuration_by_servo: dict[int, dict[str, int | None]] = {}
         self.motor_control_supervisor = motor_control_supervisor or MotorControlSupervisor(
             configured_servo_ids_provider=self._configured_servo_ids_for_supervisor,
@@ -1033,16 +1034,20 @@ class ServoService:
         )
 
     def read_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
-        return self._guard_bus_call(
+        telemetry = self._guard_bus_call(
             "read servo telemetry",
             lambda: self.dxl_bus.read_telemetry(servo_ids),
         )
+        self._record_telemetry_cache(telemetry)
+        return telemetry
 
     def read_live_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
-        return self._guard_bus_call(
+        telemetry = self._guard_bus_call(
             "read live servo telemetry",
             lambda: self.dxl_bus.read_live_telemetry(servo_ids),
         )
+        self._record_telemetry_cache(telemetry)
+        return telemetry
 
     def set_servo_torque_enabled(self, servo_id: int, enabled: bool) -> None:
         self._guard_bus_call(
@@ -1163,6 +1168,42 @@ class ServoService:
         """Return monotonic timestamps for the most recently written goal positions."""
         with self._bus_state_lock:
             return dict(self._last_goal_command_monotonic_s)
+
+    def last_known_telemetry(self, servo_ids: list[int] | None = None) -> dict[int, ServoTelemetry]:
+        """Return cached servo telemetry without touching the live DYNAMIXEL bus."""
+        with self._bus_state_lock:
+            if servo_ids is None:
+                return dict(self._last_telemetry_by_id)
+            return {
+                int(servo_id): self._last_telemetry_by_id[int(servo_id)]
+                for servo_id in [int(value) for value in servo_ids]
+                if int(servo_id) in self._last_telemetry_by_id
+            }
+
+    def _record_telemetry_cache(self, telemetry_by_id: dict[int, ServoTelemetry]) -> None:
+        with self._bus_state_lock:
+            for servo_id, telemetry in dict(telemetry_by_id or {}).items():
+                if telemetry is not None:
+                    previous = self._last_telemetry_by_id.get(int(servo_id))
+                    if previous is None:
+                        self._last_telemetry_by_id[int(servo_id)] = telemetry
+                    else:
+                        preserve_when_omitted = {
+                            "reported_servo_id",
+                            "model_number",
+                            "firmware_version",
+                            "current_limit_ma",
+                            "min_position_limit",
+                            "max_position_limit",
+                            "bus_watchdog_value",
+                        }
+                        merged = {}
+                        for item in fields(ServoTelemetry):
+                            value = getattr(telemetry, item.name)
+                            if value is None and item.name in preserve_when_omitted:
+                                value = getattr(previous, item.name)
+                            merged[item.name] = value
+                        self._last_telemetry_by_id[int(servo_id)] = ServoTelemetry(**merged)
 
     def _guard_bus_call(self, action: str, fn: Callable[[], object]):
         self._assert_bus_access(action=action)
@@ -1883,6 +1924,93 @@ class ServoService:
             motion_ready_count=int(motion_ready_count),
             pretension_ready_count=int(pretension_ready_count),
             all_motion_ready=bool(total > 0 and motion_ready_count == total),
+            selected_servo_id=int(selected_servo_id) if selected_servo_id is not None else None,
+            message=message,
+        )
+
+    def build_cached_runtime_servo_snapshot(
+        self,
+        expected_servo_ids: list[int],
+        *,
+        selected_servo_id: int | None = None,
+    ) -> ServoRuntimeStateSnapshot:
+        """Return runtime state from cached telemetry only.
+
+        This path is intentionally bus-silent. GUI views use it while another
+        thread owns the bus for a servo-critical operation such as soak
+        diagnostics or pretension.
+        """
+        expected_ids = sorted({int(servo_id) for servo_id in expected_servo_ids})
+        telemetry_by_id = self.last_known_telemetry(expected_ids)
+        entries: dict[int, ServoRuntimeStateEntry] = {}
+        detected_servo_ids: list[int] = []
+        telemetry_ready_count = 0
+        motion_ready_count = 0
+        pretension_ready_count = 0
+        for servo_id in expected_ids:
+            telemetry = telemetry_by_id.get(int(servo_id))
+            identity_read_ok = bool(telemetry is not None and self._identity_read_ok(telemetry))
+            telemetry_read_ok = bool(
+                telemetry is not None
+                and telemetry.present_position is not None
+                and telemetry.telemetry_error is None
+            )
+            motion_assessment = (
+                self.assess_experiment_motion(int(servo_id), telemetry=telemetry)
+                if telemetry is not None
+                else None
+            )
+            pretension_assessment = (
+                self.assess_pretension_readiness(int(servo_id), telemetry=telemetry)
+                if telemetry is not None
+                else None
+            )
+            detected = bool(telemetry is not None and (telemetry_read_ok or identity_read_ok))
+            if detected:
+                detected_servo_ids.append(int(servo_id))
+            if telemetry_read_ok:
+                telemetry_ready_count += 1
+            if motion_assessment is not None and motion_assessment.ready:
+                motion_ready_count += 1
+            if pretension_assessment is not None and pretension_assessment.ready:
+                pretension_ready_count += 1
+            if telemetry is None:
+                message = f"No cached telemetry is available for servo {servo_id}."
+            elif motion_assessment is not None and motion_assessment.ready:
+                message = f"Servo {servo_id} cached telemetry was ready when last read."
+            elif motion_assessment is not None:
+                message = f"Cached state: {motion_assessment.reason}"
+            else:
+                message = f"Cached telemetry is unavailable for servo {servo_id}."
+            entries[int(servo_id)] = ServoRuntimeStateEntry(
+                servo_id=int(servo_id),
+                telemetry=telemetry,
+                identity_read_ok=identity_read_ok,
+                telemetry_read_ok=telemetry_read_ok,
+                detected=detected,
+                telemetry_status="Cached" if telemetry is not None else "Unavailable",
+                motion_assessment=motion_assessment,
+                pretension_assessment=pretension_assessment,
+                message=message,
+            )
+        missing_servo_ids = [servo_id for servo_id in expected_ids if servo_id not in detected_servo_ids]
+        owner = self.bus_ownership_status()
+        owner_text = owner.owner or "servo operation"
+        message = (
+            f"Showing cached servo state while DYNAMIXEL bus is owned by {owner_text}. "
+            f"cached={len(detected_servo_ids)}/{len(expected_ids)}."
+        )
+        return ServoRuntimeStateSnapshot(
+            connected=self.is_connected,
+            expected_servo_ids=expected_ids,
+            detected_servo_ids=detected_servo_ids,
+            missing_servo_ids=missing_servo_ids,
+            unexpected_servo_ids=[],
+            entries=entries,
+            telemetry_ready_count=int(telemetry_ready_count),
+            motion_ready_count=int(motion_ready_count),
+            pretension_ready_count=int(pretension_ready_count),
+            all_motion_ready=bool(expected_ids and motion_ready_count == len(expected_ids)),
             selected_servo_id=int(selected_servo_id) if selected_servo_id is not None else None,
             message=message,
         )
@@ -3882,18 +4010,20 @@ class ServoService:
             missing_position = telemetry.present_position is None
             if "stale" in lowered:
                 return "stale_telemetry", "Telemetry is stale."
+            if missing_current and missing_position:
+                return "missing_current_and_position", "Current and position telemetry are unavailable."
+            if missing_current and telemetry.present_current_raw_unit is None:
+                return "missing_current", "Current telemetry is unavailable."
+            if missing_position:
+                return "missing_position", "Position telemetry is unavailable."
             if "no status packet" in lowered:
                 return "no_status_packet", "The DYNAMIXEL bus did not return a status packet."
             if "incorrect status packet" in lowered:
                 return "incorrect_status_packet", "The DYNAMIXEL bus returned an incorrect status packet."
             if "txrxresult" in lowered:
                 return "dxl_txrx_error", "The DYNAMIXEL SDK reported a transport/status error."
-            if missing_current and missing_position:
-                return "missing_current_and_position", "Current and position telemetry are unavailable."
             if missing_current:
                 return "missing_current", "Current telemetry is unavailable."
-            if missing_position:
-                return "missing_position", "Position telemetry is unavailable."
             if "incomplete" in lowered:
                 return "incomplete_telemetry", "Telemetry is incomplete."
             return "invalid_telemetry", primary

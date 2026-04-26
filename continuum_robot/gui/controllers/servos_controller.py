@@ -777,11 +777,19 @@ class ServosController:
             if replace
             else [int(servo_id) for servo_id in servo_ids]
         )
-        snapshot = self.servo_service.build_runtime_servo_snapshot(
-            target_ids,
-            selected_servo_id=self.state.selected_servo_id,
-            include_scan=bool(replace),
-        )
+        ownership = self.servo_service.bus_ownership_status()
+        if ownership.active and not ownership.held_by_current_thread:
+            snapshot = self.servo_service.build_cached_runtime_servo_snapshot(
+                target_ids,
+                selected_servo_id=self.state.selected_servo_id,
+            )
+            self.state.status_message = self.servo_service.bus_busy_message(action="servo telemetry refresh")
+        else:
+            snapshot = self.servo_service.build_runtime_servo_snapshot(
+                target_ids,
+                selected_servo_id=self.state.selected_servo_id,
+                include_scan=bool(replace),
+            )
         self.latest_runtime_snapshot = snapshot
         existing_rows = dict(self.state.telemetry)
         rows: dict[int, dict] = {} if replace else dict(existing_rows)
