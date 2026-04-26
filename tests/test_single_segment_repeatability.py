@@ -403,6 +403,52 @@ def test_preflight_ignores_legacy_debug_flag_for_trusted_coil_as_tip(tmp_path: P
     )
 
 
+def test_repeatability_preflight_and_precheck_agree_on_runtime_tip_workflow_resolution(tmp_path: Path) -> None:
+    pytest.importorskip("PySide6")
+    from continuum_robot.gui.experiment_preflight import RUN_BLOCKED, evaluate_preflight
+
+    settings = _settings(mock_mode=False)
+    service = _servo_service(tmp_path)
+    pivot_tip_file = tmp_path / "tools" / "penprobe_08_09_24c"
+    pivot_tip_file.parent.mkdir(parents=True, exist_ok=True)
+    pivot_tip_file.write_text("0,0,0\n", encoding="utf-8")
+    snapshot = _tracking_snapshot(
+        runtime_tip_state="loaded",
+        tip_pose_status="ok",
+        runtime_tip_mode="latest_accepted",
+    )
+
+    report = evaluate_preflight(
+        experiment_name="single_segment_repeatability",
+        config_payload={},
+        config_error=None,
+        settings=settings,
+        tracking_snapshot=snapshot,
+        servo_connected=True,
+        neutral_setpoints={1: 2048, 2: 2048, 3: 2048, 4: 2048},
+        registration_path=tmp_path / "latest_registration.json",
+        output_root=tmp_path / "data" / "experiments",
+        planned_output_dir=tmp_path / "data" / "experiments" / "single_segment_repeatability" / "run",
+        project_root=tmp_path,
+        servo_calibration_summary=service.neutral_calibration.get_calibration_summary(),
+    )
+
+    assert report.overall_status == RUN_BLOCKED
+    runtime_tip_check = next(check for check in report.checks if check.key == "runtime_tip")
+    assert runtime_tip_check.status == "blocked"
+    assert "Requested workflow/platform=single_segment_repeatability" in runtime_tip_check.message
+    assert "resolved canonical workflow=repeatability" in runtime_tip_check.message
+
+    experiment = SingleSegmentRepeatabilityExperiment(SingleSegmentRepeatabilityConfig())
+    session = _session(tmp_path, service=service, snapshot=snapshot)
+    experiment.setup(session)
+    with pytest.raises(RuntimeError) as exc_info:
+        experiment.precheck(session)
+    message = str(exc_info.value)
+    assert "requested workflow/platform=single_segment_repeatability" in message
+    assert "resolved canonical workflow=repeatability" in message
+
+
 def test_preflight_accepts_manual_pretension_source_for_repeatability(tmp_path: Path) -> None:
     pytest.importorskip("PySide6")
     from continuum_robot.gui.experiment_preflight import RUN_OK, evaluate_preflight

@@ -32,7 +32,7 @@ from continuum_robot.experiments.validation import (
     STATUS_SUCCESS,
 )
 from continuum_robot.servos.servo_service import ServoBusBusyError
-from continuum_robot.tracking.runtime_tip_policy import WORKFLOW_REPEATABILITY, evaluate_runtime_tip_trust
+from continuum_robot.tracking.runtime_tip_policy import evaluate_runtime_tip_trust
 
 
 LEGACY_TARGET_COUNT = 17
@@ -42,6 +42,7 @@ LEGACY_CAPTURE_COUNT = LEGACY_VISIT_COUNT * 2
 DEFAULT_INNER_RING_RADIUS_MM = 4.0
 DEFAULT_OUTER_RING_RADIUS_MM = 8.0
 DEFAULT_MAX_TARGET_TICK_DELTA_FROM_STARTUP = 650
+RUNTIME_TIP_POLICY_WORKFLOW = "single_segment_repeatability"
 
 
 LOG = logging.getLogger(__name__)
@@ -530,7 +531,7 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
         raw_tool_pose = _raw_tracker_tool_pose(snapshot, str(self.config.tool_id or "0A"))
         runtime_tip_policy = evaluate_runtime_tip_trust(
             snapshot=snapshot,
-            workflow=WORKFLOW_REPEATABILITY,
+            workflow=RUNTIME_TIP_POLICY_WORKFLOW,
             allow_lower_trust=bool(self.config.allow_debug_coil_as_tip),
         )
         flags = [] if gate["accepted"] else ["capture_rejected", str(gate["reason"])]
@@ -1146,12 +1147,14 @@ def _precheck_single_segment_repeatability(
         raise RuntimeError(f"0B pen-probe pivot tip file is missing: {pivot_tip_path}")
     runtime_tip_policy = evaluate_runtime_tip_trust(
         snapshot=snapshot,
-        workflow=WORKFLOW_REPEATABILITY,
+        workflow=RUNTIME_TIP_POLICY_WORKFLOW,
         allow_lower_trust=bool(config.allow_debug_coil_as_tip),
     )
     if config.require_robot_frame_tip and not runtime_tip_policy.allowed_for_workflow:
         raise RuntimeError(
             "Single-segment repeatability requires a thesis_trusted runtime tip policy outcome; "
+            f"requested workflow/platform={runtime_tip_policy.requested_workflow}, "
+            f"resolved canonical workflow={runtime_tip_policy.workflow}, "
             f"mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}, "
             f"state={snapshot.runtime_tip_calibration_state}, tip pose={snapshot.tip_pose_status}, "
             f"reasons={runtime_tip_policy.reasons or ['policy_not_allowed']}."
@@ -1159,13 +1162,15 @@ def _precheck_single_segment_repeatability(
     if config.require_robot_frame_tip and not runtime_tip_policy.thesis_trusted:
         raise RuntimeError(
             "Single-segment repeatability is blocked because the active runtime tip path is not thesis_trusted; "
+            f"requested workflow/platform={runtime_tip_policy.requested_workflow}, "
+            f"resolved canonical workflow={runtime_tip_policy.workflow}, "
             f"mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}."
         )
     if config.require_robot_frame_tip and snapshot.T_robot_tip is None:
         raise RuntimeError(f"Live robot-frame tip pose must be active; tip pose status is {snapshot.tip_pose_status}.")
     runtime_tip_policy = evaluate_runtime_tip_trust(
         snapshot=snapshot,
-        workflow=WORKFLOW_REPEATABILITY,
+        workflow=RUNTIME_TIP_POLICY_WORKFLOW,
         allow_lower_trust=bool(config.allow_debug_coil_as_tip),
     )
     gate = _tracker_gate_status(
@@ -1476,7 +1481,7 @@ def _configured_single_segment_servo_ids(session: ExperimentSession) -> list[int
 
 
 def _repeatability_transform_chain_summary(snapshot) -> dict[str, Any]:
-    runtime_tip_policy = evaluate_runtime_tip_trust(snapshot=snapshot, workflow=WORKFLOW_REPEATABILITY)
+    runtime_tip_policy = evaluate_runtime_tip_trust(snapshot=snapshot, workflow=RUNTIME_TIP_POLICY_WORKFLOW)
     return {
         "expression": "T_robot_tip = T_robot_aurora @ T_aurora_coil_0A @ T_coil_tip",
         "runtime_tip_mode": str(getattr(snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted"),
@@ -1576,7 +1581,7 @@ def _tracker_gate_status(
     if require_robot_frame_tip:
         runtime_tip_policy = evaluate_runtime_tip_trust(
             snapshot=snapshot,
-            workflow=WORKFLOW_REPEATABILITY,
+            workflow=RUNTIME_TIP_POLICY_WORKFLOW,
             allow_lower_trust=bool(allow_debug_coil_as_tip),
         )
         if not runtime_tip_policy.allowed_for_workflow:
@@ -1596,7 +1601,7 @@ def _tracker_gate_status(
         "runtime_tip_trust_level": (
             evaluate_runtime_tip_trust(
                 snapshot=snapshot,
-                workflow=WORKFLOW_REPEATABILITY,
+                workflow=RUNTIME_TIP_POLICY_WORKFLOW,
                 allow_lower_trust=bool(allow_debug_coil_as_tip),
             ).trust_label
         ),

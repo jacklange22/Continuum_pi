@@ -37,6 +37,48 @@ KNOWN_WORKFLOWS = (
 
 
 @dataclass(frozen=True)
+class RuntimeTipWorkflowResolution:
+    """Canonical workflow resolution for policy evaluation."""
+
+    requested_workflow: str
+    canonical_workflow: str
+
+
+_WORKFLOW_ALIASES: dict[str, str] = {
+    WORKFLOW_GENERIC: WORKFLOW_GENERIC,
+    WORKFLOW_REPEATABILITY: WORKFLOW_REPEATABILITY,
+    "single_segment_repeatability": WORKFLOW_REPEATABILITY,
+    "single_segment_repeatability_platform": WORKFLOW_REPEATABILITY,
+    "repeatability_dataset": WORKFLOW_REPEATABILITY,
+    "repeatability_platform": WORKFLOW_REPEATABILITY,
+    WORKFLOW_PRETENSION_VALIDATION: WORKFLOW_PRETENSION_VALIDATION,
+    "pretension": WORKFLOW_PRETENSION_VALIDATION,
+    "pretension_platform": WORKFLOW_PRETENSION_VALIDATION,
+    WORKFLOW_PENPROBE_CHASING: WORKFLOW_PENPROBE_CHASING,
+    "penprobe": WORKFLOW_PENPROBE_CHASING,
+    "penprobe_platform": WORKFLOW_PENPROBE_CHASING,
+    WORKFLOW_MODELING_DATASET: WORKFLOW_MODELING_DATASET,
+    "collect_pose_command_dataset": WORKFLOW_MODELING_DATASET,
+    "motor_babble": WORKFLOW_MODELING_DATASET,
+    "modeling": WORKFLOW_MODELING_DATASET,
+    "modeling_platform": WORKFLOW_MODELING_DATASET,
+    WORKFLOW_TRANSFORM_CHAIN_VALIDATION: WORKFLOW_TRANSFORM_CHAIN_VALIDATION,
+    "transform_chain": WORKFLOW_TRANSFORM_CHAIN_VALIDATION,
+    "transform_chain_platform": WORKFLOW_TRANSFORM_CHAIN_VALIDATION,
+    "registration_validation": WORKFLOW_GENERIC,
+    "pivot_validation": WORKFLOW_GENERIC,
+    "aurora_grid_accuracy": WORKFLOW_GENERIC,
+    "pivot_calibration": WORKFLOW_GENERIC,
+    "tracker_pipeline_mock": WORKFLOW_GENERIC,
+    "command_schedule_validation": WORKFLOW_GENERIC,
+    "dataset_schema_roundtrip": WORKFLOW_GENERIC,
+    "replay_runner": WORKFLOW_GENERIC,
+    "tracker_timing_validation": WORKFLOW_GENERIC,
+    "servo_tracker_sync_validation": WORKFLOW_GENERIC,
+}
+
+
+@dataclass(frozen=True)
 class RuntimeTipTrustEvaluation:
     """One normalized trust decision for the active runtime tip path."""
 
@@ -45,6 +87,7 @@ class RuntimeTipTrustEvaluation:
     tip_pose_status: str
     trust_label: str
     thesis_trusted: bool
+    requested_workflow: str = WORKFLOW_GENERIC
     workflow: str = WORKFLOW_GENERIC
     allowed_for_workflow: bool = False
     requires_lower_trust_override: bool = False
@@ -63,6 +106,12 @@ class RuntimeTipTrustEvaluation:
 
         return self.trust_label
 
+    @property
+    def canonical_workflow(self) -> str:
+        """Compatibility alias for explicit canonical naming."""
+
+        return self.workflow
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "mode": self.mode,
@@ -71,7 +120,9 @@ class RuntimeTipTrustEvaluation:
             "trust_label": self.trust_label,
             "trust_level": self.trust_label,
             "thesis_trusted": bool(self.thesis_trusted),
+            "requested_workflow": self.requested_workflow,
             "workflow": self.workflow,
+            "canonical_workflow": self.workflow,
             "allowed_for_workflow": bool(self.allowed_for_workflow),
             "requires_lower_trust_override": bool(self.requires_lower_trust_override),
             "uses_coil_as_tip": bool(self.uses_coil_as_tip),
@@ -114,7 +165,8 @@ def evaluate_runtime_tip_trust(
     normalized_mode = _normalize_mode(mode)
     state = str(calibration_state or "").strip() or "missing_runtime_tip_calibration"
     pose_status = str(tip_pose_status or "").strip() or "missing_runtime_tip"
-    workflow_name = _normalize_workflow(workflow)
+    workflow_resolution = resolve_runtime_tip_workflow(workflow)
+    workflow_name = workflow_resolution.canonical_workflow
     robot_tip_available = bool(has_robot_tip)
     identity = bool(identity_fallback)
 
@@ -149,6 +201,7 @@ def evaluate_runtime_tip_trust(
             pose_status=pose_status,
             trust_label=trust_label,
             thesis_trusted=thesis_trusted,
+            requested_workflow=workflow_resolution.requested_workflow,
             workflow=workflow_name,
             allowed_workflows=allowed_workflows,
             allow_lower_trust=allow_lower_trust,
@@ -192,6 +245,7 @@ def evaluate_runtime_tip_trust(
             pose_status=pose_status,
             trust_label=trust_label,
             thesis_trusted=False,
+            requested_workflow=workflow_resolution.requested_workflow,
             workflow=workflow_name,
             allowed_workflows=allowed_workflows,
             allow_lower_trust=allow_lower_trust,
@@ -227,6 +281,7 @@ def evaluate_runtime_tip_trust(
             pose_status=pose_status,
             trust_label=trust_label,
             thesis_trusted=False,
+            requested_workflow=workflow_resolution.requested_workflow,
             workflow=workflow_name,
             allowed_workflows=allowed_workflows,
             allow_lower_trust=allow_lower_trust,
@@ -245,6 +300,7 @@ def evaluate_runtime_tip_trust(
         pose_status=pose_status,
         trust_label=TRUST_UNAVAILABLE,
         thesis_trusted=False,
+        requested_workflow=workflow_resolution.requested_workflow,
         workflow=workflow_name,
         allowed_workflows={workflow: False for workflow in KNOWN_WORKFLOWS},
         allow_lower_trust=allow_lower_trust,
@@ -265,6 +321,7 @@ def _build_evaluation(
     pose_status: str,
     trust_label: str,
     thesis_trusted: bool,
+    requested_workflow: str,
     workflow: str,
     allowed_workflows: dict[str, bool],
     allow_lower_trust: bool,
@@ -289,6 +346,7 @@ def _build_evaluation(
         tip_pose_status=pose_status,
         trust_label=trust_label,
         thesis_trusted=bool(thesis_trusted),
+        requested_workflow=requested_workflow,
         workflow=workflow,
         allowed_for_workflow=allowed,
         requires_lower_trust_override=requires_override,
@@ -314,23 +372,52 @@ def _normalize_mode(mode: str | None) -> str:
     return value
 
 
-def _normalize_workflow(workflow: str | None) -> str:
-    value = str(workflow or WORKFLOW_GENERIC).strip().lower()
-    aliases = {
-        "single_segment_repeatability": WORKFLOW_REPEATABILITY,
-        "repeatability": WORKFLOW_REPEATABILITY,
-        "pretension": WORKFLOW_PRETENSION_VALIDATION,
-        "pretension_validation": WORKFLOW_PRETENSION_VALIDATION,
-        "penprobe": WORKFLOW_PENPROBE_CHASING,
-        "penprobe_chasing": WORKFLOW_PENPROBE_CHASING,
-        "collect_pose_command_dataset": WORKFLOW_MODELING_DATASET,
-        "motor_babble": WORKFLOW_MODELING_DATASET,
-        "modeling": WORKFLOW_MODELING_DATASET,
-        "modeling_dataset": WORKFLOW_MODELING_DATASET,
-        "transform_chain": WORKFLOW_TRANSFORM_CHAIN_VALIDATION,
-        "transform_chain_validation": WORKFLOW_TRANSFORM_CHAIN_VALIDATION,
-    }
-    return aliases.get(value, value or WORKFLOW_GENERIC)
+def resolve_runtime_tip_workflow(workflow: str | None) -> RuntimeTipWorkflowResolution:
+    """Resolve a concrete workflow/platform name to the canonical policy workflow."""
+
+    requested = str(workflow or "").strip()
+    if not requested:
+        return RuntimeTipWorkflowResolution(
+            requested_workflow=WORKFLOW_GENERIC,
+            canonical_workflow=WORKFLOW_GENERIC,
+        )
+
+    normalized = _normalize_workflow_key(requested)
+    for candidate in _workflow_alias_candidates(normalized):
+        canonical = _WORKFLOW_ALIASES.get(candidate)
+        if canonical is not None:
+            return RuntimeTipWorkflowResolution(
+                requested_workflow=requested,
+                canonical_workflow=canonical,
+            )
+
+    supported = ", ".join(KNOWN_WORKFLOWS)
+    aliases = ", ".join(sorted(alias for alias in _WORKFLOW_ALIASES.keys() if alias != WORKFLOW_GENERIC))
+    raise ValueError(
+        f"Unknown runtime tip workflow/platform '{requested}'. "
+        f"Supported canonical workflows: {supported}. "
+        f"Known workflow aliases: {aliases}."
+    )
+
+
+def _normalize_workflow_key(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    while "__" in normalized:
+        normalized = normalized.replace("__", "_")
+    return normalized.strip("_")
+
+
+def _workflow_alias_candidates(value: str) -> tuple[str, ...]:
+    candidates = [value]
+    if value.startswith("experiment_"):
+        candidates.append(value.removeprefix("experiment_"))
+    for suffix in ("_platform", "_workflow", "_experiment"):
+        if value.endswith(suffix):
+            trimmed = value[: -len(suffix)]
+            if trimmed:
+                candidates.append(trimmed)
+    # Preserve order while de-duplicating.
+    return tuple(dict.fromkeys(candidates))
 
 
 def _readiness_reasons(*, state: str, pose_status: str, has_robot_tip: bool) -> list[str]:

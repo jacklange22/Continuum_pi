@@ -38,7 +38,6 @@ from continuum_robot.experiments.schedules import generate_command_schedule
 from continuum_robot.tracking.runtime_tip_policy import (
     WORKFLOW_MODELING_DATASET,
     WORKFLOW_PRETENSION_VALIDATION,
-    WORKFLOW_REPEATABILITY,
     evaluate_runtime_tip_trust,
 )
 
@@ -254,7 +253,7 @@ def evaluate_preflight(
             )
         runtime_tip_policy = evaluate_runtime_tip_trust(
             snapshot=tracking_snapshot,
-            workflow=WORKFLOW_REPEATABILITY,
+            workflow=experiment_name,
             allow_lower_trust=bool(config.allow_debug_coil_as_tip),
         )
         if runtime_tip_policy.allowed_for_workflow and runtime_tip_policy.thesis_trusted:
@@ -267,10 +266,13 @@ def evaluate_preflight(
             )
         elif runtime_tip_policy.allowed_for_workflow:
             checks.append(
-                _warning(
+                _blocked(
                     "runtime_tip",
                     "Runtime Tip Policy",
-                    f"{runtime_tip_policy.status_message} This run is {runtime_tip_policy.trust_label}.",
+                    "Repeatability requires thesis_trusted runtime tip policy output. "
+                    f"Requested workflow/platform={runtime_tip_policy.requested_workflow}, "
+                    f"resolved canonical workflow={runtime_tip_policy.workflow}, "
+                    f"mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}.",
                 )
             )
         else:
@@ -280,6 +282,8 @@ def evaluate_preflight(
                     "runtime_tip",
                     "Runtime Tip Policy",
                     "Repeatability requires a thesis_trusted runtime tip policy outcome. "
+                    f"Requested workflow/platform={runtime_tip_policy.requested_workflow}, "
+                    f"resolved canonical workflow={runtime_tip_policy.workflow}. "
                     f"Mode={mode}, trust={runtime_tip_policy.trust_label}, "
                     f"Runtime state={tracking_snapshot.runtime_tip_calibration_state}, "
                     f"tip pose={tracking_snapshot.tip_pose_status}, "
