@@ -583,8 +583,8 @@ class ServoService:
 
     def is_single_servo_bench_mode(self) -> bool:
         return (
-            str(self.neutral_calibration.context.robot_mode).strip().lower() == "1-servo"
-            and len(self.neutral_calibration.context.servo_ids) == 1
+            str(self.neutral_calibration.context.robot_mode).strip().lower() in {"1-servo", "1_servo", "one_servo"}
+            and len(self.neutral_calibration.context.expected_servo_ids or self.neutral_calibration.context.servo_ids) == 1
         )
 
     @staticmethod
@@ -592,6 +592,18 @@ class ServoService:
         return False
 
     def _configured_single_segment_servo_ids(self) -> list[int]:
+        mode = str(self.neutral_calibration.context.robot_mode or "").strip().lower().replace("-", "_")
+        if mode == "one_servo":
+            selected = getattr(self.neutral_calibration.context, "selected_servo_id", None)
+            return [int(selected)] if selected is not None else list(self.neutral_calibration.context.expected_servo_ids or [])
+        if mode in {"dual_segment", "parallel_single"} and self.neutral_calibration.context.expected_servo_ids:
+            return [int(value) for value in self.neutral_calibration.context.expected_servo_ids]
+        active_segment_ids = [
+            int(value)
+            for value in getattr(self.neutral_calibration.context, "active_segment_servo_ids", [])
+        ]
+        if active_segment_ids:
+            return list(active_segment_ids)
         configured = [
             int(value)
             for value in (
@@ -600,6 +612,26 @@ class ServoService:
             )
         ]
         return list(configured)
+
+    def active_segment_summary(self) -> dict[str, object]:
+        return {
+            "active_segment_key": getattr(self.neutral_calibration.context, "active_segment_key", None),
+            "active_segment_label": getattr(self.neutral_calibration.context, "active_segment_label", None),
+            "active_segment_servo_ids": list(getattr(self.neutral_calibration.context, "active_segment_servo_ids", []) or []),
+            "active_segment_pairs": {
+                str(key): [int(value) for value in values]
+                for key, values in dict(getattr(self.neutral_calibration.context, "active_segment_pairs", {}) or {}).items()
+            },
+            "operating_mode": getattr(self.neutral_calibration.context, "robot_mode", None),
+            "selected_servo_id": getattr(self.neutral_calibration.context, "selected_servo_id", None),
+            "expected_servo_ids": list(getattr(self.neutral_calibration.context, "expected_servo_ids", []) or []),
+            "commanded_servo_ids": list(getattr(self.neutral_calibration.context, "commanded_servo_ids", []) or []),
+            "mirror_pairs": {
+                str(key): int(value)
+                for key, value in dict(getattr(self.neutral_calibration.context, "mirror_pairs", {}) or {}).items()
+            },
+            "configured_servo_ids": list(self.neutral_calibration.context.servo_ids or []),
+        }
 
     def _resolved_single_segment_motion_profile(
         self,
@@ -659,7 +691,8 @@ class ServoService:
     def _default_allowed_operating_modes(self) -> list[int]:
         resolved = {int(value) for value in list(self.dxl_bus.config.allowed_operating_modes or [])}
         configured_ids = self._configured_single_segment_servo_ids()
-        if len(configured_ids) == 4 and str(self.neutral_calibration.context.robot_mode or "").strip().lower() == "4-servo":
+        robot_mode = str(self.neutral_calibration.context.robot_mode or "").strip().lower().replace("-", "_")
+        if len(configured_ids) == 4 and robot_mode in {"4_servo", "8_servo", "single_segment"}:
             resolved.update(
                 self._resolved_single_segment_motion_profile(
                     workflow=SINGLE_SEGMENT_WORKFLOW_EXPERIMENT,
@@ -1382,8 +1415,8 @@ class ServoService:
         summary = self.neutral_calibration.get_calibration_summary()
         calibration_entries_loaded = sorted(summary.servo_entries)
         one_servo_mode_ok = (
-            str(self.neutral_calibration.context.robot_mode).strip().lower() == "1-servo"
-            and len(self.neutral_calibration.context.servo_ids) == 1
+            str(self.neutral_calibration.context.robot_mode).strip().lower().replace("-", "_") in {"1_servo", "one_servo"}
+            and len(self.neutral_calibration.context.expected_servo_ids or self.neutral_calibration.context.servo_ids) == 1
         )
         selected_port = self.dxl_bus.port
         selected_baud = self.dxl_bus.baudrate
@@ -2886,7 +2919,7 @@ class ServoService:
         current = telemetry or self.read_telemetry([int(servo_id)])[int(servo_id)]
         configured_ids = self._configured_single_segment_servo_ids()
         use_simple_single_segment_assessment = (
-            str(self.neutral_calibration.context.robot_mode or "").strip().lower() == "4-servo"
+            str(self.neutral_calibration.context.robot_mode or "").strip().lower().replace("-", "_") in {"4_servo", "8_servo", "single_segment"}
             and len(configured_ids) == 4
             and int(servo_id) in configured_ids
         )
@@ -2989,7 +3022,7 @@ class ServoService:
         servo_ids: list[int],
     ) -> bool:
         robot_mode = str(self.neutral_calibration.context.robot_mode or "").strip().lower()
-        if robot_mode != "4-servo":
+        if robot_mode.replace("-", "_") not in {"4_servo", "8_servo", "single_segment"}:
             return False
         if len(tendon_displacements_cm) != 4 or len(neutral_ticks) != 4 or len(servo_ids) != 4:
             return False
@@ -4651,8 +4684,8 @@ class ServoService:
         configured = [
             int(value)
             for value in (
-                self.neutral_calibration.context.tendon_to_servo
-                or self.neutral_calibration.context.servo_ids
+                getattr(self.neutral_calibration.context, "expected_servo_ids", None)
+                or self._configured_single_segment_servo_ids()
             )
         ]
         selected = [int(value) for value in (servo_ids or [])]
@@ -4664,13 +4697,13 @@ class ServoService:
             configured = [int(value) for value in self.dxl_bus.scan_ids(min_id=scan_min, max_id=scan_max)]
         if not selected:
             selected = list(configured)
-        if len(configured) != 4:
+        if len(configured) not in {1, 4, 8}:
             raise RuntimeError(
-                f"Manual pretension capture is single-segment only and requires exactly 4 configured servos; found {configured}."
+                f"Manual pretension capture requires the full resolved operating-context servo set; found {configured}."
             )
         if sorted(selected) != sorted(configured):
             raise RuntimeError(
-                "Manual pretension capture must use the full configured 4-servo single-segment set: "
+                "Manual pretension capture must use the full resolved operating-context servo set: "
                 + ", ".join(str(value) for value in configured)
             )
         return list(configured)

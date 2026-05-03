@@ -1,6 +1,40 @@
 from pathlib import Path
 
 from continuum_robot.config.config_loader import ConfigLoader
+from continuum_robot.config.schemas import RobotConfig
+
+
+def test_robot_config_defaults_to_segment_a_pair_mapping() -> None:
+    robot = RobotConfig()
+
+    assert robot.active_segment_key() == "segment_a"
+    assert robot.active_segment_servo_ids() == [1, 2, 3, 4]
+    assert robot.active_segment_pairs() == {"axis_a": [1, 3], "axis_b": [2, 4]}
+
+
+def test_config_loader_defaults_to_full_platform_profile_when_available(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "system.yaml").write_text("mock_mode: true\n", encoding="utf-8")
+    (config_dir / "robot_8servo.yaml").write_text(
+        "\n".join(
+            [
+                "mode: single_segment",
+                "servo_ids: [1, 2, 3, 4, 5, 6, 7, 8]",
+                "tendon_to_servo: [1, 2, 3, 4, 5, 6, 7, 8]",
+                "segments:",
+                "  segment_a: {label: Spine 1, servo_ids: [1, 2, 3, 4], pairs: {axis_a: [1, 3], axis_b: [2, 4]}}",
+                "  segment_b: {label: Spine 2, servo_ids: [5, 6, 7, 8], pairs: {axis_a: [5, 7], axis_b: [6, 8]}}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = ConfigLoader(base_dir=config_dir).load_settings()
+
+    assert settings.runtime.robot_config == "robot_8servo.yaml"
+    assert settings.robot.all_segment_servo_ids() == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert sorted(settings.robot.segment_map()) == ["segment_a", "segment_b"]
 
 
 def test_config_loader_reads_runtime_registration_and_experiment_settings(tmp_path: Path) -> None:
@@ -35,6 +69,16 @@ def test_config_loader_reads_runtime_registration_and_experiment_settings(tmp_pa
                 "ticks_per_revolution: 4096",
                 "servo_ids: [1, 2, 3, 4, 5, 6, 7, 8]",
                 "tendon_to_servo: [1, 2, 3, 4, 5, 6, 7, 8]",
+                "active_segment: segment_b",
+                "segments:",
+                "  segment_a:",
+                "    label: Spine 1",
+                "    servo_ids: [1, 2, 3, 4]",
+                "    pairs: {axis_a: [1, 3], axis_b: [2, 4]}",
+                "  segment_b:",
+                "    label: Spine 2",
+                "    servo_ids: [5, 6, 7, 8]",
+                "    pairs: {axis_a: [5, 7], axis_b: [6, 8]}",
             ]
         ),
         encoding="utf-8",
@@ -93,6 +137,10 @@ def test_config_loader_reads_runtime_registration_and_experiment_settings(tmp_pa
     assert settings.runtime.robot_config == "robot_8servo.yaml"
     assert settings.robot.mode == "8-servo"
     assert settings.robot.servo_ids == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert settings.robot.active_segment_key() == "segment_b"
+    assert settings.robot.active_segment_label() == "Spine 2"
+    assert settings.robot.active_segment_servo_ids() == [5, 6, 7, 8]
+    assert settings.robot.active_segment_pairs() == {"axis_a": [5, 7], "axis_b": [6, 8]}
     assert settings.serial.tracker_backend == "ndi"
     assert settings.serial.tracker_type == "aurora"
     assert settings.serial.tracker_freshness_timeout_s == 0.75
@@ -114,6 +162,43 @@ def test_config_loader_reads_runtime_registration_and_experiment_settings(tmp_pa
     assert settings.registration.model_points_file is None
     assert settings.experiment.output_dir == "data/custom_runs"
     assert settings.calibration.latest_registration_path == "data/registrations/latest_registration.json"
+
+
+def test_robot_overrides_do_not_stale_servo_membership(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "system.yaml").write_text(
+        "\n".join(
+            [
+                'robot_config: "robot_8servo.yaml"',
+                "robot_overrides:",
+                "  mode: dual_segment",
+                "  servo_ids: [1]",
+                "  tendon_to_servo: [1]",
+                "  active_segment: segment_b",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (config_dir / "robot_8servo.yaml").write_text(
+        "\n".join(
+            [
+                "mode: single_segment",
+                "servo_ids: [1, 2, 3, 4, 5, 6, 7, 8]",
+                "tendon_to_servo: [1, 2, 3, 4, 5, 6, 7, 8]",
+                "segments:",
+                "  segment_a: {label: Spine 1, servo_ids: [1, 2, 3, 4], pairs: {axis_a: [1, 3], axis_b: [2, 4]}}",
+                "  segment_b: {label: Spine 2, servo_ids: [5, 6, 7, 8], pairs: {axis_a: [5, 7], axis_b: [6, 8]}}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = ConfigLoader(base_dir=config_dir).load_settings()
+
+    assert settings.robot.servo_ids == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert settings.robot.operating_context().operating_mode == "dual_segment"
+    assert settings.robot.operating_context().expected_servo_ids == [1, 2, 3, 4, 5, 6, 7, 8]
 
 
 def test_config_loader_can_save_local_overrides_and_load_robot_config(tmp_path: Path) -> None:

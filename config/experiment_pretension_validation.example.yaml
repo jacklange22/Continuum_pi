@@ -1,9 +1,11 @@
 mode: single_segment_staged  # single_servo_trace | single_segment_characterization | single_segment_staged
 staged_strategy: conservative_startup  # conservative_startup | characterization | legacy
 servo_id: 1
-servo_ids: [1, 2, 3, 4]  # used by staged mode
+servo_ids: []  # empty uses the active segment from the robot config
 repeat_runs: 3
-allow_current_only_when_tracker_missing: true
+allow_current_only_when_tracker_missing: false
+allow_no_tracker_test_run: false
+run_trust_mode: thesis_trusted  # thesis_trusted | current_only
 enable_tip_centering: true
 tip_center_tolerance_mm: 3.0
 tip_center_max_iterations: 16
@@ -18,6 +20,12 @@ equalization_max_iterations: 24
 conservative_step_ticks: 1
 conservative_max_iterations: 24
 conservative_max_cumulative_travel_ticks: 80
+soft_release_step_ticks: 2
+soft_release_max_travel_ticks: 40
+soft_release_current_target_ma: 10.0
+takeup_target_load_proxy_ma: 4.0
+takeup_max_iterations: 16
+staged_packet_retry_budget: 3
 characterization_step_ticks: 1
 characterization_pair_cycles: 1
 current_characterization_sample_count: 20
@@ -35,7 +43,7 @@ accept_max_final_tip_xy_offset_mm: 3.0
 include_tracker_displacement: true
 tracker_tool_id: "0A"
 move_to_reference: true
-pretension_start_mode: release_200_from_current  # current_position | manual_startup_artifact | release_200_from_current | full_release_4095
+pretension_start_mode: current_position  # current_position | manual_startup_artifact | release_200_from_current | full_release_4095
 
 untensioned_reference_tick:
 step_ticks:

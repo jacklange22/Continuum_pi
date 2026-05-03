@@ -25,9 +25,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from continuum_robot.config.schemas import RobotConfig, RobotSegmentConfig
 from continuum_robot.gui.controllers.system_controller import SystemViewState
 from continuum_robot.gui.theme import chip_stylesheet, grouped_workspace_stylesheet, semantic_chip_colors
 from continuum_robot.gui.view_utils import set_text_document
+from continuum_robot.gui.widgets.no_wheel_combo_box import NoWheelComboBox
 
 
 class SystemTab(QWidget):
@@ -46,6 +48,7 @@ class SystemTab(QWidget):
         self._updating_parameter_widgets = False
         self._parameter_dirty = False
         self._applied_parameter_values: dict[str, object] = {}
+        self._last_state: SystemViewState | None = None
         self.setObjectName("systemWorkspace")
         self.setStyleSheet(
             grouped_workspace_stylesheet(
@@ -135,11 +138,11 @@ class SystemTab(QWidget):
         self.session_log_label.setProperty("role", "status-detail")
         self.session_log_label.setWordWrap(True)
 
-        self.aurora_port_combo = QComboBox()
+        self.aurora_port_combo = NoWheelComboBox()
         self.aurora_port_combo.setEditable(True)
         self.aurora_port_combo.currentIndexChanged.connect(self._sync_aurora_port)
         self.aurora_port_combo.editTextChanged.connect(self._sync_aurora_port)
-        self.openrb_port_combo = QComboBox()
+        self.openrb_port_combo = NoWheelComboBox()
         self.openrb_port_combo.setEditable(True)
         self.openrb_port_combo.currentIndexChanged.connect(self._sync_openrb_port)
         self.openrb_port_combo.editTextChanged.connect(self._sync_openrb_port)
@@ -235,9 +238,28 @@ class SystemTab(QWidget):
         connections_layout.addWidget(self.connection_advanced_toggle, alignment=Qt.AlignLeft)
         connections_layout.addWidget(self.connection_advanced_panel)
 
-        self.robot_config_combo = QComboBox()
+        self.robot_config_combo = NoWheelComboBox()
         self.robot_config_combo.currentIndexChanged.connect(self._mark_parameter_dirty)
-        self.mock_mode_combo = QComboBox()
+        self.robot_config_combo.currentIndexChanged.connect(self._sync_segment_options_for_robot_profile)
+        self.operating_mode_combo = NoWheelComboBox()
+        for label, value in (
+            ("1 Servo", "one_servo"),
+            ("Single Segment", "single_segment"),
+            ("Dual Segment", "dual_segment"),
+            ("Parallel Single", "parallel_single"),
+        ):
+            self.operating_mode_combo.addItem(label, value)
+        self.operating_mode_combo.currentIndexChanged.connect(self._mark_parameter_dirty)
+        self.operating_mode_combo.currentIndexChanged.connect(self._sync_operating_mode_visibility)
+        self.selected_servo_combo = NoWheelComboBox()
+        for servo_id in range(1, 9):
+            self.selected_servo_combo.addItem(f"Servo {servo_id}", int(servo_id))
+        self.selected_servo_combo.currentIndexChanged.connect(self._mark_parameter_dirty)
+        self.selected_servo_combo.currentIndexChanged.connect(self._sync_operating_context_summary)
+        self.active_segment_combo = NoWheelComboBox()
+        self.active_segment_combo.currentIndexChanged.connect(self._mark_parameter_dirty)
+        self.active_segment_combo.currentIndexChanged.connect(self._sync_operating_context_summary)
+        self.mock_mode_combo = NoWheelComboBox()
         self.mock_mode_combo.addItem("Enabled", True)
         self.mock_mode_combo.addItem("Disabled", False)
         self.mock_mode_combo.currentIndexChanged.connect(self._mark_parameter_dirty)
@@ -256,20 +278,30 @@ class SystemTab(QWidget):
         self.save_parameters_button = QPushButton("Save + Apply")
         self.save_parameters_button.setProperty("role", "primary")
         self.save_parameters_button.clicked.connect(self._save_runtime_parameters)
-        self.parameters_hint = QLabel(
-            "Save only the startup settings that should persist into the next launch."
-        )
+        self.parameters_hint = QLabel("Save only the startup settings that should persist into the next launch.")
         self.parameters_hint.setProperty("role", "hint")
         self.parameters_hint.setWordWrap(True)
+        self.hardware_profile_hint = QLabel(
+            "Hardware profile defines the available servos, segments, geometry, and pair mappings. "
+            "Most normal operation should use the full 8-servo platform profile."
+        )
+        self.hardware_profile_hint.setProperty("role", "hint")
+        self.hardware_profile_hint.setWordWrap(True)
+        self.operating_context_summary_label = QLabel()
+        self.operating_context_summary_label.setProperty("role", "hint")
+        self.operating_context_summary_label.setWordWrap(True)
 
         parameters_box = QGroupBox("Startup Settings")
         parameters_layout = QVBoxLayout(parameters_box)
-        parameters_form = QFormLayout()
-        parameters_form.setLabelAlignment(Qt.AlignLeft)
-        parameters_form.addRow("Mode", self.mock_mode_combo)
-        parameters_form.addRow("Robot profile", self.robot_config_combo)
-        parameters_form.addRow("Baudrate", self.baudrate_spin)
-        parameters_layout.addLayout(parameters_form)
+        self.parameters_form = QFormLayout()
+        self.parameters_form.setLabelAlignment(Qt.AlignLeft)
+        self.parameters_form.addRow("Mock mode", self.mock_mode_combo)
+        self.parameters_form.addRow("Operating mode", self.operating_mode_combo)
+        self.parameters_form.addRow("Selected servo", self.selected_servo_combo)
+        self.parameters_form.addRow("Active segment", self.active_segment_combo)
+        self.parameters_form.addRow("Resolved scope", self.operating_context_summary_label)
+        self.parameters_form.addRow("Baudrate", self.baudrate_spin)
+        parameters_layout.addLayout(self.parameters_form)
         save_row = QHBoxLayout()
         save_row.addWidget(self.save_parameters_button)
         save_row.addStretch(1)
@@ -290,8 +322,10 @@ class SystemTab(QWidget):
         self.settings_advanced_panel.hide()
         settings_advanced_layout = QVBoxLayout(self.settings_advanced_panel)
         settings_advanced_layout.setContentsMargins(12, 12, 12, 12)
+        settings_advanced_layout.addWidget(self.hardware_profile_hint)
         settings_advanced_form = QFormLayout()
         settings_advanced_form.setLabelAlignment(Qt.AlignLeft)
+        settings_advanced_form.addRow("Hardware profile", self.robot_config_combo)
         settings_advanced_form.addRow("GUI refresh (Hz)", self.poll_rate_spin)
         settings_advanced_form.addRow("Telemetry stale after (s)", self.telemetry_freshness_spin)
         settings_advanced_form.addRow("Saved overrides", self.saved_path_label)
@@ -354,6 +388,7 @@ class SystemTab(QWidget):
         layout.addWidget(self.scroll_area, 1)
 
     def update(self, state: SystemViewState) -> None:
+        self._last_state = state
         diagnostics_preview = state.diagnostics_preview or "No session activity captured yet."
         self._set_status_pill(self.mode_label, state.mode_display, "accent" if state.mock_mode else "info")
         self._set_status_pill(self.robot_label, state.robot_layout_display, "neutral")
@@ -369,11 +404,15 @@ class SystemTab(QWidget):
         self._set_combo_items(self.aurora_port_combo, state.available_ports, state.aurora_port)
         self._set_combo_items(self.openrb_port_combo, state.available_ports, state.openrb_port)
         applied_values = self._parameter_values_from_state(state)
-        if not self._parameter_dirty:
+        if self._startup_parameter_popup_open():
+            self._sync_operating_mode_visibility()
+        elif not self._parameter_dirty:
             self._apply_parameter_values(state, applied_values)
         elif self._current_parameter_values() == applied_values:
             self._parameter_dirty = False
             self._apply_parameter_values(state, applied_values)
+        else:
+            self._sync_operating_mode_visibility()
         self._applied_parameter_values = applied_values
         self.saved_path_label.setText(state.saved_overrides_path or "none")
         tracker_connected = bool(
@@ -495,6 +534,9 @@ class SystemTab(QWidget):
         parameters = {
             "mock_mode": bool(self.mock_mode_combo.currentData()),
             "robot_config": str(self.robot_config_combo.currentData() or self.robot_config_combo.currentText()).strip(),
+            "operating_mode": str(self.operating_mode_combo.currentData() or "single_segment"),
+            "selected_servo_id": int(self.selected_servo_combo.currentData() or 1),
+            "active_segment": str(self.active_segment_combo.currentData() or "").strip(),
             "openrb_port": self._selected_port(self.openrb_port_combo),
             "baudrate": int(self.baudrate_spin.value()),
             "poll_rate_hz": int(self.poll_rate_spin.value()),
@@ -533,6 +575,249 @@ class SystemTab(QWidget):
             return
         current_values = self._current_parameter_values()
         self._parameter_dirty = current_values != self._applied_parameter_values
+        self._sync_operating_context_summary()
+
+    def _sync_segment_options_for_robot_profile(self, *_args) -> None:
+        if self._updating_parameter_widgets:
+            return
+        loader = getattr(self.controller, "config_loader", None)
+        if loader is None:
+            return
+        robot_config = str(self.robot_config_combo.currentData() or self.robot_config_combo.currentText()).strip()
+        try:
+            robot = loader.load_robot_config(robot_config)
+        except Exception:
+            return
+        previous = str(self.active_segment_combo.currentData() or "")
+        self._set_active_segment_options_from_robot(robot, preferred_key=previous)
+        self._sync_operating_mode_visibility()
+        self._mark_parameter_dirty()
+
+    def _set_active_segment_options_from_robot(self, robot: RobotConfig, *, preferred_key: str = "") -> None:
+        self.active_segment_combo.blockSignals(True)
+        self.active_segment_combo.clear()
+        for key, segment in robot.segment_map().items():
+            servo_ids = [int(value) for value in segment.servo_ids]
+            display = f"{segment.label} ({', '.join(str(value) for value in servo_ids)})"
+            self.active_segment_combo.addItem(display, str(key))
+        index = self.active_segment_combo.findData(str(preferred_key or ""))
+        if index < 0:
+            index = self.active_segment_combo.findData(robot.active_segment_key())
+        if index >= 0:
+            self.active_segment_combo.setCurrentIndex(index)
+        self.active_segment_combo.blockSignals(False)
+
+    def _sync_operating_mode_visibility(self, *_args) -> None:
+        self._maybe_promote_full_platform_profile()
+        mode = str(self.operating_mode_combo.currentData() or "single_segment")
+        self._set_parameter_row_visible(self.selected_servo_combo, mode == "one_servo")
+        self._set_parameter_row_visible(self.active_segment_combo, mode == "single_segment")
+        self.selected_servo_combo.setEnabled(mode == "one_servo")
+        self.active_segment_combo.setEnabled(mode == "single_segment")
+        self._sync_operating_context_summary()
+
+    def _maybe_promote_full_platform_profile(self) -> None:
+        if self._updating_parameter_widgets or self.settings_advanced_panel.isVisible():
+            return
+        full_profile = "robot_8servo.yaml"
+        full_index = self.robot_config_combo.findData(full_profile)
+        if full_index < 0:
+            return
+        current_profile = str(self.robot_config_combo.currentData() or self.robot_config_combo.currentText()).strip()
+        if current_profile == full_profile:
+            return
+        loader = getattr(self.controller, "config_loader", None)
+        if loader is None:
+            return
+        try:
+            current_robot = loader.load_robot_config(current_profile)
+            full_robot = loader.load_robot_config(full_profile)
+        except Exception:
+            return
+        current_is_full = len(current_robot.all_segment_servo_ids()) >= 8 and len(current_robot.segment_map()) >= 2
+        full_is_capable = len(full_robot.all_segment_servo_ids()) >= 8 and len(full_robot.segment_map()) >= 2
+        if current_is_full or not full_is_capable:
+            return
+        previous_segment = str(self.active_segment_combo.currentData() or "")
+        self.robot_config_combo.blockSignals(True)
+        self.robot_config_combo.setCurrentIndex(full_index)
+        self.robot_config_combo.blockSignals(False)
+        self._set_active_segment_options_from_robot(full_robot, preferred_key=previous_segment)
+        self._mark_parameter_dirty()
+
+    def _sync_operating_context_summary(self, *_args) -> None:
+        if not hasattr(self, "operating_context_summary_label"):
+            return
+        try:
+            robot = self._pending_robot_config()
+            context = self._pending_operating_context(robot)
+            lines = self._format_operating_context_summary(context)
+            lines.extend(self._format_profile_mode_warnings(robot, context))
+        except Exception as exc:
+            lines = [f"Could not resolve pending servo scope: {exc}"]
+        self.operating_context_summary_label.setText("\n".join(lines))
+
+    def _pending_operating_context(self, robot: RobotConfig | None = None):
+        robot = robot or self._pending_robot_config()
+        robot.mode = str(self.operating_mode_combo.currentData() or "single_segment")
+        robot.selected_servo_id = int(self.selected_servo_combo.currentData() or 1)
+        active_segment = str(self.active_segment_combo.currentData() or "").strip()
+        if active_segment:
+            robot.active_segment = active_segment
+        return robot.operating_context()
+
+    def _pending_robot_config(self) -> RobotConfig:
+        robot_config = str(self.robot_config_combo.currentData() or self.robot_config_combo.currentText()).strip()
+        loader = getattr(self.controller, "config_loader", None)
+        if loader is not None and robot_config:
+            try:
+                return loader.load_robot_config(robot_config)
+            except Exception:
+                pass
+        state = self._last_state or getattr(self.controller, "state", None)
+        segments: dict[str, RobotSegmentConfig] = {}
+        for segment in list(getattr(state, "available_segments", []) or []):
+            key = str(segment.get("key", "") or "").strip()
+            if not key:
+                continue
+            servo_ids = [int(value) for value in list(segment.get("servo_ids", []) or [])]
+            pairs = {
+                str(pair_key): [int(value) for value in values]
+                for pair_key, values in dict(segment.get("pairs", {}) or {}).items()
+            }
+            segments[key] = RobotSegmentConfig(
+                key=key,
+                label=str(segment.get("label", key) or key),
+                servo_ids=servo_ids,
+                pairs=pairs,
+            )
+        if not segments:
+            ids = [int(value) for value in list(getattr(state, "expected_servo_ids", []) or [1, 2, 3, 4])]
+            if len(ids) >= 8:
+                segments = {
+                    "segment_a": RobotSegmentConfig(
+                        key="segment_a",
+                        label="Spine 1",
+                        servo_ids=ids[:4],
+                        pairs={"axis_a": [ids[0], ids[2]], "axis_b": [ids[1], ids[3]]},
+                    ),
+                    "segment_b": RobotSegmentConfig(
+                        key="segment_b",
+                        label="Spine 2",
+                        servo_ids=ids[4:8],
+                        pairs={"axis_a": [ids[4], ids[6]], "axis_b": [ids[5], ids[7]]},
+                    ),
+                }
+            else:
+                ids = (ids + [1, 2, 3, 4])[:4]
+                segments = {
+                    "segment_a": RobotSegmentConfig(
+                        key="segment_a",
+                        label="Spine 1",
+                        servo_ids=ids[:4],
+                        pairs={"axis_a": [ids[0], ids[2]], "axis_b": [ids[1], ids[3]]},
+                    )
+                }
+        all_ids: list[int] = []
+        for segment in segments.values():
+            for servo_id in segment.servo_ids:
+                sid = int(servo_id)
+                if sid not in all_ids:
+                    all_ids.append(sid)
+        return RobotConfig(
+            mode=str(getattr(state, "operating_mode", "single_segment") or "single_segment"),
+            servo_ids=all_ids or [1, 2, 3, 4],
+            tendon_to_servo=all_ids or [1, 2, 3, 4],
+            active_segment=str(getattr(state, "active_segment_key", "segment_a") or "segment_a"),
+            selected_servo_id=int(getattr(state, "selected_servo_id", 1) or 1),
+            segments=segments,
+        )
+
+    @staticmethod
+    def _format_operating_context_summary(context) -> list[str]:
+        mode = str(context.operating_mode)
+        if mode == "one_servo":
+            return [f"Expected IDs: {list(context.expected_servo_ids)}"]
+        if mode == "single_segment":
+            pairs = SystemTab._format_pairs(context.active_pairs)
+            return [
+                f"{context.active_segment_label}: {list(context.active_segment_servo_ids)}",
+                f"Pairs: {pairs or 'not configured'}",
+            ]
+        if mode == "dual_segment":
+            lines = [f"Expected IDs: {list(context.expected_servo_ids)}"]
+            lines.extend(SystemTab._format_segment_lines(context.segments))
+            return lines
+        if mode == "parallel_single":
+            mirror = ", ".join(
+                f"{int(source)}->{int(target)}"
+                for source, target in sorted(dict(context.mirror_pairs or {}).items())
+            )
+            return [
+                f"Expected IDs: {list(context.expected_servo_ids)}",
+                f"Mirror mapping: {mirror or 'not configured'}",
+                "Mirrored single-segment commands, not full two-segment kinematics.",
+            ]
+        return [f"Expected IDs: {list(context.expected_servo_ids)}"]
+
+    @staticmethod
+    def _format_segment_lines(segments: dict[str, RobotSegmentConfig]) -> list[str]:
+        lines: list[str] = []
+        for key, segment in sorted(dict(segments or {}).items()):
+            label = str(segment.label or key)
+            lines.append(f"{label}: {[int(value) for value in segment.servo_ids]}")
+        return lines
+
+    @staticmethod
+    def _format_pairs(pairs: dict[str, list[int]]) -> str:
+        return ", ".join(
+            "-".join(str(int(value)) for value in values)
+            for _key, values in sorted(dict(pairs or {}).items())
+            if values
+        )
+
+    @staticmethod
+    def _format_profile_mode_warnings(robot: RobotConfig, context) -> list[str]:
+        mode = str(context.operating_mode)
+        segments = robot.segment_map()
+        warnings: list[str] = []
+        if mode == "one_servo" and context.selected_servo_id not in context.all_configured_servo_ids:
+            warnings.append(
+                "Warning: selected servo is not in the current hardware profile. "
+                "Use the 8-servo hardware profile to select any servo 1-8."
+            )
+        if mode == "single_segment" and len(segments) < 2:
+            warnings.append(
+                "Warning: current hardware profile only defines Segment A. "
+                "Use the 8-servo hardware profile to select Segment B."
+            )
+        if mode in {"dual_segment", "parallel_single"} and len(context.expected_servo_ids) != 8:
+            warnings.append(
+                "Warning: this operating mode requires an 8-servo hardware profile; "
+                f"current profile resolves expected IDs {list(context.expected_servo_ids)}."
+            )
+        if mode == "parallel_single" and len(context.mirror_pairs) != 4:
+            warnings.append(
+                "Warning: parallel_single requires four mirror pairs. "
+                f"Current hardware profile resolves {dict(context.mirror_pairs)}."
+            )
+        return warnings
+
+    def _set_parameter_row_visible(self, widget: QWidget, visible: bool) -> None:
+        widget.setVisible(bool(visible))
+        label = self.parameters_form.labelForField(widget)
+        if label is not None:
+            label.setVisible(bool(visible))
+
+    def _startup_parameter_popup_open(self) -> bool:
+        combos = (
+            self.mock_mode_combo,
+            self.robot_config_combo,
+            self.operating_mode_combo,
+            self.selected_servo_combo,
+            self.active_segment_combo,
+        )
+        return any(bool(getattr(combo, "popup_open", False)) for combo in combos)
 
     def _apply_parameter_values(self, state: SystemViewState, values: dict[str, object]) -> None:
         self._updating_parameter_widgets = True
@@ -546,6 +831,30 @@ class SystemTab(QWidget):
                 self.robot_config_combo.setCurrentIndex(index)
             self.robot_config_combo.blockSignals(False)
 
+            self.operating_mode_combo.blockSignals(True)
+            mode_index = self.operating_mode_combo.findData(values["operating_mode"])
+            if mode_index >= 0:
+                self.operating_mode_combo.setCurrentIndex(mode_index)
+            self.operating_mode_combo.blockSignals(False)
+
+            self.selected_servo_combo.blockSignals(True)
+            servo_index = self.selected_servo_combo.findData(int(values["selected_servo_id"]))
+            if servo_index >= 0:
+                self.selected_servo_combo.setCurrentIndex(servo_index)
+            self.selected_servo_combo.blockSignals(False)
+
+            self.active_segment_combo.blockSignals(True)
+            self.active_segment_combo.clear()
+            for segment in state.available_segments:
+                self.active_segment_combo.addItem(
+                    str(segment.get("display", segment.get("key", ""))),
+                    str(segment.get("key", "")),
+                )
+            segment_index = self.active_segment_combo.findData(values["active_segment"])
+            if segment_index >= 0:
+                self.active_segment_combo.setCurrentIndex(segment_index)
+            self.active_segment_combo.blockSignals(False)
+
             self.mock_mode_combo.blockSignals(True)
             self.mock_mode_combo.setCurrentIndex(0 if values["mock_mode"] else 1)
             self.mock_mode_combo.blockSignals(False)
@@ -553,13 +862,18 @@ class SystemTab(QWidget):
             self.baudrate_spin.setValue(int(values["baudrate"]))
             self.poll_rate_spin.setValue(int(values["poll_rate_hz"]))
             self.telemetry_freshness_spin.setValue(float(values["telemetry_freshness_timeout_s"]))
+            self._sync_operating_mode_visibility()
         finally:
             self._updating_parameter_widgets = False
+        self._sync_operating_mode_visibility()
 
     def _parameter_values_from_state(self, state: SystemViewState) -> dict[str, object]:
         return {
             "mock_mode": bool(state.mock_mode),
             "robot_config": str(state.robot_config),
+            "operating_mode": str(state.operating_mode),
+            "selected_servo_id": int(state.selected_servo_id),
+            "active_segment": str(state.active_segment_key),
             "baudrate": int(state.baudrate),
             "poll_rate_hz": int(state.poll_rate_hz),
             "telemetry_freshness_timeout_s": float(state.telemetry_freshness_timeout_s),
@@ -569,6 +883,9 @@ class SystemTab(QWidget):
         return {
             "mock_mode": bool(self.mock_mode_combo.currentData()),
             "robot_config": str(self.robot_config_combo.currentData() or self.robot_config_combo.currentText()).strip(),
+            "operating_mode": str(self.operating_mode_combo.currentData() or "single_segment"),
+            "selected_servo_id": int(self.selected_servo_combo.currentData() or 1),
+            "active_segment": str(self.active_segment_combo.currentData() or "").strip(),
             "baudrate": int(self.baudrate_spin.value()),
             "poll_rate_hz": int(self.poll_rate_spin.value()),
             "telemetry_freshness_timeout_s": float(self.telemetry_freshness_spin.value()),

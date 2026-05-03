@@ -28,6 +28,7 @@ from continuum_robot.config.schemas import (
     CalibrationConfig,
     ExperimentConfig,
     RobotConfig,
+    RobotSegmentConfig,
     RuntimeConfig,
     SafetyConfig,
     SerialConfig,
@@ -1586,6 +1587,8 @@ def test_system_controller_saves_runtime_parameters(tmp_path: Path) -> None:
     assert saved["baudrate"] == 57600
     assert saved["safety_overrides"]["fine_jog_step_ticks"] == 3
     assert saved["safety_overrides"]["position_min_offset_ticks"] == -120
+    assert "servo_ids" not in saved["robot_overrides"]
+    assert "tendon_to_servo" not in saved["robot_overrides"]
     assert saved["robot_overrides"]["tightening_rotation_by_servo"]["1"] == "ccw"
 
 
@@ -1759,6 +1762,268 @@ def test_system_tab_preserves_unsaved_parameter_edits_across_refresh() -> None:
 
     assert tab.poll_rate_spin.value() == 24
     assert tab.telemetry_freshness_spin.value() == 0.5
+
+
+def test_system_tab_keeps_hardware_profile_in_advanced_settings() -> None:
+    _app()
+    controller = _PortSelectionController()
+    tab = SystemTab(controller)
+
+    tab.update(controller.state)
+
+    assert tab.settings_advanced_panel.isHidden() is True
+    assert tab.robot_config_combo.isHidden() is True
+
+    tab.settings_advanced_toggle.click()
+
+    assert tab.settings_advanced_panel.isHidden() is False
+    assert tab.robot_config_combo.isHidden() is False
+
+
+def _controller_with_dual_segment_options() -> _PortSelectionController:
+    controller = _PortSelectionController()
+    controller.state.robot_config = "robot_8servo.yaml"
+    controller.state.available_robot_configs = ["robot_4servo.yaml", "robot_8servo.yaml"]
+    controller.state.operating_mode = "single_segment"
+    controller.state.robot_mode = "single_segment"
+    controller.state.selected_servo_id = 1
+    controller.state.active_segment_key = "segment_a"
+    controller.state.active_segment_label = "Spine 1"
+    controller.state.active_segment_servo_ids = [1, 2, 3, 4]
+    controller.state.active_segment_pairs = {"axis_a": [1, 3], "axis_b": [2, 4]}
+    controller.state.expected_servo_ids = [1, 2, 3, 4]
+    controller.state.available_segments = [
+        {
+            "key": "segment_a",
+            "label": "Spine 1",
+            "servo_ids": [1, 2, 3, 4],
+            "pairs": {"axis_a": [1, 3], "axis_b": [2, 4]},
+            "display": "Spine 1 (1, 2, 3, 4)",
+        },
+        {
+            "key": "segment_b",
+            "label": "Spine 2",
+            "servo_ids": [5, 6, 7, 8],
+            "pairs": {"axis_a": [5, 7], "axis_b": [6, 8]},
+            "display": "Spine 2 (5, 6, 7, 8)",
+        },
+    ]
+    return controller
+
+
+class _RobotProfileLoader:
+    def __init__(self) -> None:
+        self._robots = {
+            "robot_4servo.yaml": RobotConfig(
+                mode="single_segment",
+                servo_ids=[1, 2, 3, 4],
+                tendon_to_servo=[1, 2, 3, 4],
+                segments={
+                    "segment_a": RobotSegmentConfig(
+                        key="segment_a",
+                        label="Spine 1",
+                        servo_ids=[1, 2, 3, 4],
+                        pairs={"axis_a": [1, 3], "axis_b": [2, 4]},
+                    )
+                },
+            ),
+            "robot_8servo.yaml": RobotConfig(
+                mode="single_segment",
+                servo_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+                tendon_to_servo=[1, 2, 3, 4, 5, 6, 7, 8],
+                segments={
+                    "segment_a": RobotSegmentConfig(
+                        key="segment_a",
+                        label="Spine 1",
+                        servo_ids=[1, 2, 3, 4],
+                        pairs={"axis_a": [1, 3], "axis_b": [2, 4]},
+                    ),
+                    "segment_b": RobotSegmentConfig(
+                        key="segment_b",
+                        label="Spine 2",
+                        servo_ids=[5, 6, 7, 8],
+                        pairs={"axis_a": [5, 7], "axis_b": [6, 8]},
+                    ),
+                },
+            ),
+        }
+
+    def load_robot_config(self, name: str) -> RobotConfig:
+        return self._robots[str(name)]
+
+
+def test_system_tab_auto_selects_full_profile_for_normal_operator_scope() -> None:
+    _app()
+    controller = _PortSelectionController()
+    controller.config_loader = _RobotProfileLoader()
+    controller.state.robot_config = "robot_4servo.yaml"
+    controller.state.available_robot_configs = ["robot_4servo.yaml", "robot_8servo.yaml"]
+    tab = SystemTab(controller)
+
+    tab.update(controller.state)
+
+    assert tab.robot_config_combo.currentData() == "robot_8servo.yaml"
+    assert tab.active_segment_combo.findData("segment_b") >= 0
+    assert controller.save_calls == []
+
+
+def test_system_tab_one_servo_mode_only_shows_selected_servo_scope() -> None:
+    _app()
+    controller = _controller_with_dual_segment_options()
+    tab = SystemTab(controller)
+
+    tab.update(controller.state)
+    tab.operating_mode_combo.setCurrentIndex(tab.operating_mode_combo.findData("one_servo"))
+    tab.selected_servo_combo.setCurrentIndex(tab.selected_servo_combo.findData(8))
+
+    assert tab.selected_servo_combo.isHidden() is False
+    assert tab.active_segment_combo.isHidden() is True
+    assert "Expected IDs: [8]" in tab.operating_context_summary_label.text()
+    assert controller.save_calls == []
+
+
+def test_system_tab_single_segment_mode_only_shows_active_segment_scope() -> None:
+    _app()
+    controller = _controller_with_dual_segment_options()
+    tab = SystemTab(controller)
+
+    tab.update(controller.state)
+    tab.operating_mode_combo.setCurrentIndex(tab.operating_mode_combo.findData("single_segment"))
+    tab.active_segment_combo.setCurrentIndex(tab.active_segment_combo.findData("segment_b"))
+
+    assert tab.selected_servo_combo.isHidden() is True
+    assert tab.active_segment_combo.isHidden() is False
+    summary = tab.operating_context_summary_label.text()
+    assert "Spine 2: [5, 6, 7, 8]" in summary
+    assert "5-7, 6-8" in summary
+    assert controller.save_calls == []
+
+
+def test_system_tab_single_segment_exposes_segment_b_on_full_hardware_profile() -> None:
+    _app()
+    controller = _controller_with_dual_segment_options()
+    tab = SystemTab(controller)
+
+    tab.update(controller.state)
+    tab.operating_mode_combo.setCurrentIndex(tab.operating_mode_combo.findData("single_segment"))
+
+    assert tab.active_segment_combo.findData("segment_a") >= 0
+    assert tab.active_segment_combo.findData("segment_b") >= 0
+
+
+def test_system_tab_dual_segment_mode_hides_specific_selectors_and_summarizes_all_ids() -> None:
+    _app()
+    controller = _controller_with_dual_segment_options()
+    tab = SystemTab(controller)
+
+    tab.update(controller.state)
+    tab.operating_mode_combo.setCurrentIndex(tab.operating_mode_combo.findData("dual_segment"))
+
+    assert tab.selected_servo_combo.isHidden() is True
+    assert tab.active_segment_combo.isHidden() is True
+    summary = tab.operating_context_summary_label.text()
+    assert "Expected IDs: [1, 2, 3, 4, 5, 6, 7, 8]" in summary
+    assert "Spine 1: [1, 2, 3, 4]" in summary
+    assert "Spine 2: [5, 6, 7, 8]" in summary
+
+
+def test_system_tab_parallel_single_mode_hides_specific_selectors_and_summarizes_mirroring() -> None:
+    _app()
+    controller = _controller_with_dual_segment_options()
+    tab = SystemTab(controller)
+
+    tab.update(controller.state)
+    tab.operating_mode_combo.setCurrentIndex(tab.operating_mode_combo.findData("parallel_single"))
+
+    assert tab.selected_servo_combo.isHidden() is True
+    assert tab.active_segment_combo.isHidden() is True
+    summary = tab.operating_context_summary_label.text()
+    assert "Expected IDs: [1, 2, 3, 4, 5, 6, 7, 8]" in summary
+    assert "Mirror mapping: 1->5, 2->6, 3->7, 4->8" in summary
+    assert "not full two-segment kinematics" in summary
+
+
+def test_system_tab_warns_when_legacy_profile_cannot_support_parallel_single() -> None:
+    _app()
+    controller = _PortSelectionController()
+    controller.state.operating_mode = "single_segment"
+    controller.state.available_segments = [
+        {
+            "key": "segment_a",
+            "label": "Spine 1",
+            "servo_ids": [1, 2, 3, 4],
+            "pairs": {"axis_a": [1, 3], "axis_b": [2, 4]},
+            "display": "Spine 1 (1, 2, 3, 4)",
+        }
+    ]
+    tab = SystemTab(controller)
+
+    tab.update(controller.state)
+    tab.operating_mode_combo.setCurrentIndex(tab.operating_mode_combo.findData("parallel_single"))
+
+    summary = tab.operating_context_summary_label.text()
+    assert "requires an 8-servo hardware profile" in summary
+
+
+def test_system_tab_refresh_does_not_overwrite_dirty_operating_mode_edit() -> None:
+    _app()
+    controller = _controller_with_dual_segment_options()
+    tab = SystemTab(controller)
+
+    tab.update(controller.state)
+    tab.operating_mode_combo.setCurrentIndex(tab.operating_mode_combo.findData("parallel_single"))
+    controller.state.operating_mode = "single_segment"
+    tab.update(controller.state)
+
+    assert tab.operating_mode_combo.currentData() == "parallel_single"
+    assert controller.save_calls == []
+
+
+def test_system_tab_save_apply_is_required_to_persist_operating_mode_edits() -> None:
+    _app()
+    controller = _controller_with_dual_segment_options()
+    tab = SystemTab(controller)
+
+    tab.update(controller.state)
+    tab.operating_mode_combo.setCurrentIndex(tab.operating_mode_combo.findData("dual_segment"))
+
+    assert controller.save_calls == []
+
+    tab.save_parameters_button.click()
+
+    assert len(controller.save_calls) == 1
+    assert controller.save_calls[0]["operating_mode"] == "dual_segment"
+
+
+def test_system_tab_opening_dropdown_does_not_change_selection() -> None:
+    _app()
+    controller = _controller_with_dual_segment_options()
+    tab = SystemTab(controller)
+
+    tab.update(controller.state)
+    initial = tab.operating_mode_combo.currentData()
+    tab.operating_mode_combo.showPopup()
+    QTest.qWait(10)
+    tab.operating_mode_combo.hidePopup()
+
+    assert tab.operating_mode_combo.currentData() == initial
+    assert controller.save_calls == []
+
+
+def test_system_tab_refresh_does_not_overwrite_open_startup_combo() -> None:
+    _app()
+    controller = _controller_with_dual_segment_options()
+    tab = SystemTab(controller)
+
+    tab.update(controller.state)
+    initial = tab.operating_mode_combo.currentData()
+    tab.operating_mode_combo.showPopup()
+    controller.state.operating_mode = "dual_segment"
+    tab.update(controller.state)
+    tab.operating_mode_combo.hidePopup()
+
+    assert tab.operating_mode_combo.currentData() == initial
+    assert controller.save_calls == []
 
 
 def test_system_tab_preserves_scrolled_diagnostics_position_on_update() -> None:

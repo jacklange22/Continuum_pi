@@ -59,8 +59,15 @@ class SystemViewState:
     last_error: str | None = None
     available_ports: list[SerialPortInfo] = field(default_factory=list)
     available_robot_configs: list[str] = field(default_factory=list)
-    robot_config: str = "robot_4servo.yaml"
+    robot_config: str = "robot_8servo.yaml"
     robot_mode: str = ""
+    operating_mode: str = "single_segment"
+    selected_servo_id: int = 1
+    active_segment_key: str = "segment_a"
+    active_segment_label: str = "Spine 1"
+    available_segments: list[dict[str, object]] = field(default_factory=list)
+    active_segment_servo_ids: list[int] = field(default_factory=list)
+    active_segment_pairs: dict[str, list[int]] = field(default_factory=dict)
     expected_servo_ids: list[int] = field(default_factory=list)
     detected_servo_ids: list[int] = field(default_factory=list)
     telemetry_ready_count: int = 0
@@ -112,8 +119,15 @@ class SystemController:
                 config_loader.list_robot_configs() if config_loader is not None else [settings.runtime.robot_config]
             ),
             robot_config=settings.runtime.robot_config,
-            robot_mode=settings.robot.mode,
-            expected_servo_ids=list(settings.robot.servo_ids),
+            robot_mode=settings.robot.operating_mode(),
+            operating_mode=settings.robot.operating_context().operating_mode,
+            selected_servo_id=int(settings.robot.operating_context().selected_servo_id or settings.robot.selected_servo_id or 1),
+            active_segment_key=settings.robot.active_segment_key(),
+            active_segment_label=settings.robot.active_segment_label(),
+            available_segments=self._segment_options(settings.robot),
+            active_segment_servo_ids=settings.robot.active_segment_servo_ids(),
+            active_segment_pairs=settings.robot.active_segment_pairs(),
+            expected_servo_ids=list(settings.robot.expected_servo_ids()),
             poll_rate_hz=settings.runtime.poll_rate_hz,
             servo_telemetry_cadence_summary="",
             servo_telemetry_field_summary="",
@@ -488,7 +502,7 @@ class SystemController:
                 self.state.status_message = self.servo_service.bus_busy_message(action="system readiness refresh")
                 self.state.last_error = None
                 return self.refresh()
-            if self.settings.robot.mode == "1-servo" or len(self.settings.robot.servo_ids) == 1:
+            if self.settings.robot.operating_context().operating_mode == "one_servo":
                 debug_snapshot = self.servo_service.build_bench_debug_snapshot(self._expected_servo_id())
                 self.state.detected_servo_ids = (
                     [int(debug_snapshot.selected_servo_id)]
@@ -595,7 +609,16 @@ class SystemController:
         self.state.openrb_prepared = openrb_snapshot.prepared
         self.state.dynamixel_connected = self.servo_service.is_connected
         self.state.openrb_status = openrb_snapshot.message
-        self.state.expected_servo_ids = list(self.settings.robot.servo_ids)
+        context = self.settings.robot.operating_context()
+        self.state.robot_mode = context.operating_mode
+        self.state.operating_mode = context.operating_mode
+        self.state.selected_servo_id = int(context.selected_servo_id or self.settings.robot.selected_servo_id or 1)
+        self.state.expected_servo_ids = list(context.expected_servo_ids)
+        self.state.active_segment_key = self.settings.robot.active_segment_key()
+        self.state.active_segment_label = self.settings.robot.active_segment_label()
+        self.state.available_segments = self._segment_options(self.settings.robot)
+        self.state.active_segment_servo_ids = self.settings.robot.active_segment_servo_ids()
+        self.state.active_segment_pairs = self.settings.robot.active_segment_pairs()
         if not self.state.dynamixel_connected:
             self.state.bus_reachable = False
             self.state.motion_ready = False
@@ -965,6 +988,9 @@ class SystemController:
         *,
         mock_mode: bool,
         robot_config: str,
+        operating_mode: str | None = None,
+        selected_servo_id: int | None = None,
+        active_segment: str | None = None,
         openrb_port: str,
         baudrate: int,
         poll_rate_hz: int,
@@ -1026,6 +1052,35 @@ class SystemController:
             if resolved_threshold <= 0:
                 raise ValueError("Pretension threshold must be positive.")
             robot = self.config_loader.load_robot_config(robot_config)
+            resolved_operating_mode = (
+                str(operating_mode).strip().lower()
+                if operating_mode not in (None, "")
+                else str(robot.operating_mode())
+            )
+            robot.mode = resolved_operating_mode
+            if selected_servo_id not in (None, ""):
+                robot.selected_servo_id = int(selected_servo_id)
+            resolved_active_segment = (
+                str(active_segment).strip()
+                if active_segment not in (None, "")
+                else str(robot.active_segment_key())
+            )
+            if resolved_active_segment not in robot.segment_map():
+                raise ValueError(f"Active segment {resolved_active_segment!r} is not available in {robot_config}.")
+            robot.active_segment = resolved_active_segment
+            context = robot.operating_context()
+            if context.operating_mode == "one_servo" and int(robot.selected_servo_id) not in context.all_configured_servo_ids:
+                raise ValueError(
+                    f"Selected servo {robot.selected_servo_id} is not available in configured IDs {context.all_configured_servo_ids}."
+                )
+            if context.operating_mode in {"dual_segment", "parallel_single"} and len(context.expected_servo_ids) != 8:
+                raise ValueError(
+                    f"{context.operating_mode} requires an 8-servo robot profile; resolved expected IDs {context.expected_servo_ids}."
+                )
+            if context.operating_mode == "parallel_single" and len(context.mirror_pairs) != 4:
+                raise ValueError(
+                    f"parallel_single requires four mirror pairs; resolved {context.mirror_pairs}."
+                )
             overrides = {
                 "mock_mode": bool(mock_mode),
                 "robot_config": str(robot_config),
@@ -1042,19 +1097,29 @@ class SystemController:
                     "default_pretension_current_threshold_ma": int(resolved_threshold),
                 },
                 "robot_overrides": {
+                    "mode": context.operating_mode,
+                    "selected_servo_id": int(robot.selected_servo_id),
+                    "active_segment": resolved_active_segment,
                     "tightening_rotation_by_servo": {
                         str(servo_id): str(resolved_direction).strip().lower()
                         for servo_id in robot.servo_ids
-                    }
+                    },
                 },
             }
             path = self.config_loader.save_system_local_overrides(overrides)
             self.state.mock_mode = bool(mock_mode)
             self.state.robot_config = str(robot_config)
-            self.state.robot_mode = robot.mode
+            self.state.robot_mode = context.operating_mode
+            self.state.operating_mode = context.operating_mode
+            self.state.selected_servo_id = int(context.selected_servo_id or robot.selected_servo_id or 1)
+            self.state.active_segment_key = robot.active_segment_key()
+            self.state.active_segment_label = robot.active_segment_label()
+            self.state.available_segments = self._segment_options(robot)
+            self.state.active_segment_servo_ids = robot.active_segment_servo_ids()
+            self.state.active_segment_pairs = robot.active_segment_pairs()
             self.state.openrb_port = str(openrb_port).strip()
             self.state.baudrate = int(baudrate)
-            self.state.expected_servo_ids = list(robot.servo_ids)
+            self.state.expected_servo_ids = list(context.expected_servo_ids)
             self.state.poll_rate_hz = int(poll_rate_hz)
             self.state.fine_jog_step_ticks = int(resolved_fine_jog)
             self.state.coarse_jog_step_ticks = int(resolved_coarse_jog)
@@ -1067,6 +1132,18 @@ class SystemController:
             self.state.saved_overrides_path = str(path)
             self.state.status_message = f"Saved runtime parameters to {path}."
             self.state.last_error = None
+            self.settings.runtime.robot_config = str(robot_config)
+            self.settings.robot = robot
+            self._apply_robot_config_to_servo_context(robot)
+            LOG.info(
+                "Runtime parameters saved | hardware_profile=%s | operating_mode=%s | "
+                "expected_servo_ids=%s | commanded_servo_ids=%s | active_segment=%s",
+                robot_config,
+                context.operating_mode,
+                context.expected_servo_ids,
+                context.commanded_servo_ids,
+                resolved_active_segment if context.active_segment_key else "none",
+            )
         except Exception as exc:
             self.state.last_error = str(exc)
             self.state.status_message = f"Save runtime parameters failed: {exc}"
@@ -1075,16 +1152,59 @@ class SystemController:
         self.refresh()
         return str(path)
 
+    def _apply_robot_config_to_servo_context(self, robot) -> None:
+        calibration = getattr(self.servo_service, "neutral_calibration", None)
+        context = getattr(calibration, "context", None)
+        if context is None:
+            return
+        resolved = robot.operating_context()
+        context.robot_mode = str(resolved.operating_mode)
+        context.servo_ids = list(robot.servo_ids)
+        context.tendon_to_servo = list(robot.tendon_to_servo)
+        context.tightening_rotation_by_servo = dict(robot.tightening_rotation_by_servo)
+        context.active_segment_key = robot.active_segment_key()
+        context.active_segment_label = robot.active_segment_label()
+        context.active_segment_servo_ids = robot.active_segment_servo_ids()
+        context.active_segment_pairs = robot.active_segment_pairs()
+        context.selected_servo_id = robot.selected_servo_id
+        context.expected_servo_ids = list(resolved.expected_servo_ids)
+        context.commanded_servo_ids = list(resolved.commanded_servo_ids)
+        context.mirror_pairs = dict(resolved.mirror_pairs)
+
+    @staticmethod
+    def _segment_options(robot) -> list[dict[str, object]]:
+        options: list[dict[str, object]] = []
+        active_key = str(robot.active_segment_key())
+        for key, segment in robot.segment_map().items():
+            servo_ids = [int(value) for value in segment.servo_ids]
+            label = str(segment.label or key)
+            options.append(
+                {
+                    "key": str(key),
+                    "label": label,
+                    "servo_ids": servo_ids,
+                    "pairs": {str(k): [int(v) for v in values] for k, values in dict(segment.pairs or {}).items()},
+                    "display": f"{label} ({', '.join(str(value) for value in servo_ids)})",
+                    "active": str(key) == active_key,
+                }
+            )
+        return options
+
     @staticmethod
     def _build_config_summary(settings: Settings) -> str:
+        context = settings.robot.operating_context()
         hardware_note = (
             "Servo hardware path: mock backend validated."
             if settings.runtime.mock_mode
             else "Servo hardware path: real OpenRB serial validation and DYNAMIXEL SDK transport enabled."
         )
         return (
-            f"Mode: {settings.robot.mode}\n"
-            f"Servo IDs: {settings.robot.servo_ids}\n"
+            f"Operating mode: {context.operating_mode}\n"
+            f"Expected servo IDs: {context.expected_servo_ids}\n"
+            f"All configured servo IDs: {context.all_configured_servo_ids}\n"
+            f"Active segment: {settings.robot.active_segment_label()} ({settings.robot.active_segment_key()}) "
+            f"{settings.robot.active_segment_servo_ids()}\n"
+            f"Mirror pairs: {context.mirror_pairs}\n"
             f"Mock mode: {settings.runtime.mock_mode}\n"
             f"Tracker backend: {settings.serial.tracker_backend}\n"
             f"Legacy bridge fallback backend: {settings.serial.tracker_fallback_backend}\n"
@@ -1095,8 +1215,8 @@ class SystemController:
             f"Servo telemetry cadence: {build_telemetry_gui_policy(baudrate=settings.serial.baudrate, poll_rate_hz=settings.runtime.poll_rate_hz, telemetry_stale_after_s=settings.safety.telemetry_stale_after_s, servo_full_refresh_divisor=DEFAULT_SERVO_FULL_REFRESH_DIVISOR, system_summary_refresh_divisor=DEFAULT_SYSTEM_SUMMARY_REFRESH_DIVISOR).cadence_summary}\n"
             f"Runtime coil tool: {settings.registration.coil_tool_id}\n"
             f"Registration tool: {settings.registration.capture_tool_id}\n"
-            f"Robot config: {settings.runtime.robot_config}\n"
-            f"Robot mode: {settings.robot.mode}\n"
+            f"Hardware profile: {settings.runtime.robot_config}\n"
+            f"Robot mode: {context.operating_mode}\n"
             f"Fine/coarse jog: {settings.safety.fine_jog_step_ticks}/{settings.safety.coarse_jog_step_ticks} ticks\n"
             f"Application bounds metadata: {settings.safety.position_min_offset_ticks}..{settings.safety.position_max_offset_ticks} ticks\n"
             f"Software margin: {settings.safety.software_position_margin_ticks} ticks\n"
@@ -1121,9 +1241,12 @@ class SystemController:
 
     def _build_live_config_summary(self) -> str:
         return (
-            f"Robot config: {self.state.robot_config}\n"
-            f"Robot mode: {self.state.robot_mode}\n"
+            f"Hardware profile: {self.state.robot_config}\n"
+            f"Operating mode: {self.state.operating_mode}\n"
+            f"Selected servo: {self.state.selected_servo_id}\n"
             f"Expected servo IDs: {self.state.expected_servo_ids}\n"
+            f"Active segment: {self.state.active_segment_label} ({self.state.active_segment_key}) "
+            f"{self.state.active_segment_servo_ids}; pairs={self.state.active_segment_pairs}\n"
             f"Mock mode: {self.state.mock_mode}\n"
             f"OpenRB port: {self.state.openrb_port}\n"
             f"Baudrate: {self.state.baudrate}\n"
@@ -1147,13 +1270,15 @@ class SystemController:
 
     @staticmethod
     def _robot_layout_display(robot_mode: str, expected_servo_ids: list[int]) -> str:
-        mode = str(robot_mode or "").strip().lower()
-        if mode == "1-servo":
+        mode = str(robot_mode or "").strip().lower().replace("-", "_")
+        if mode in {"1_servo", "one_servo"}:
             return "1 Servo"
-        if mode == "4-servo":
+        if mode in {"4_servo", "single_segment"}:
             return "1 Segment"
-        if mode == "8-servo":
+        if mode == "dual_segment":
             return "2 Segments"
+        if mode == "parallel_single":
+            return "Parallel Single"
         servo_count = len(expected_servo_ids)
         if servo_count == 1:
             return "1 Servo"
@@ -1171,8 +1296,9 @@ class SystemController:
         return "cw"
 
     def _expected_servo_id(self) -> int | None:
-        if self.settings.robot.servo_ids:
-            return int(self.settings.robot.servo_ids[0])
+        expected = self.settings.robot.expected_servo_ids()
+        if expected:
+            return int(expected[0])
         return None
 
     @staticmethod
@@ -1307,7 +1433,7 @@ class SystemController:
             "last_temperature=None",
             "last_hw_error=None",
             f"calibration_entries_loaded={sorted(summary.servo_entries)}",
-            f"one_servo_mode_ok={self.settings.robot.mode == '1-servo' and len(self.settings.robot.servo_ids) == 1}",
+            f"one_servo_mode_ok={self.settings.robot.operating_context().operating_mode == 'one_servo'}",
             f"freshness_threshold_s={self.state.telemetry_freshness_timeout_s:.3f}",
             f"active_range={self.servo_service.raw_position_range()[0]}..{self.servo_service.raw_position_range()[1]}",
             f"session_log={self.state.session_log_path or 'unset'}",

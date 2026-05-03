@@ -224,6 +224,17 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
         session.set_metric("planned_capture_count", LEGACY_CAPTURE_COUNT)
         session.set_metric("protocol", "legacy_17_target_single_segment_all_other_approaches")
         session.set_metric("run_label", str(self.config.run_label or ""))
+        session.set_metric(
+            "active_segment",
+            {
+                "key": session.context.settings.robot.active_segment_key(),
+                "label": session.context.settings.robot.active_segment_label(),
+                "servo_ids": session.context.settings.robot.active_segment_servo_ids(),
+                "pairs": session.context.settings.robot.active_segment_pairs(),
+                "robot_mode": session.context.settings.robot.mode,
+            },
+        )
+        session.set_metric("operating_context", session.context.settings.robot.operating_context().metadata())
 
     def precheck(self, session: ExperimentSession) -> None:
         _precheck_single_segment_repeatability(
@@ -1185,7 +1196,10 @@ def _precheck_single_segment_repeatability(
     if not getattr(session.context.servo_service, "is_connected", False):
         raise RuntimeError("OpenRB / DYNAMIXEL servo service must be connected.")
     if len(servo_ids) != 4:
-        raise RuntimeError(f"Single-segment repeatability requires exactly 4 configured servos; found {servo_ids}.")
+        raise RuntimeError(
+            "Single-segment repeatability requires exactly 4 configured servos for active segment "
+            f"{settings.robot.active_segment_label()} ({settings.robot.active_segment_key()}); found {servo_ids}."
+        )
     if len(neutral_ticks) != len(servo_ids):
         raise RuntimeError("Neutral setpoints are missing for one or more configured servos.")
     if float(config.outer_ring_radius_mm) < float(config.inner_ring_radius_mm):
@@ -1352,7 +1366,11 @@ def _record_repeatability_run_provenance(
             {
                 "key": "servos",
                 "status": "ok",
-                "message": f"Configured single-segment servo IDs={servo_ids}; connected={bool(getattr(session.context.servo_service, 'is_connected', False))}.",
+                "message": (
+                    f"Active segment {settings.robot.active_segment_label()} "
+                    f"({settings.robot.active_segment_key()}) servo IDs={servo_ids}; "
+                    f"connected={bool(getattr(session.context.servo_service, 'is_connected', False))}."
+                ),
             },
             {
                 "key": "pretension",
@@ -1474,9 +1492,12 @@ def _record_repeatability_run_provenance(
 
 def _configured_single_segment_servo_ids(session: ExperimentSession) -> list[int]:
     robot = session.context.settings.robot
-    servo_ids = [int(value) for value in (robot.tendon_to_servo or robot.servo_ids)]
-    if not servo_ids:
-        servo_ids = [int(value) for value in robot.servo_ids]
+    context = robot.operating_context()
+    if context.operating_mode != "single_segment":
+        raise RuntimeError(
+            f"Single-segment repeatability requires single_segment operating mode; current mode is {context.operating_mode}."
+        )
+    servo_ids = [int(value) for value in context.active_segment_servo_ids]
     return servo_ids
 
 

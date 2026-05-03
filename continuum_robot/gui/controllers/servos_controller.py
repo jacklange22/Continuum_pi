@@ -21,6 +21,10 @@ class ServosViewState:
     robot_mode: str = ""
     single_servo_mode: bool = False
     expected_servo_ids: list[int] = field(default_factory=list)
+    active_segment_key: str = "segment_a"
+    active_segment_label: str = "Spine 1"
+    active_segment_servo_ids: list[int] = field(default_factory=list)
+    active_segment_pairs: dict[str, list[int]] = field(default_factory=dict)
     servo_ids: list[int] = field(default_factory=list)
     detected_servo_ids: list[int] = field(default_factory=list)
     missing_servo_ids: list[int] = field(default_factory=list)
@@ -95,18 +99,23 @@ class ServosController:
         self._last_pretension_result: PretensionRoutineResult | None = None
         self._motion_state_by_servo: dict[int, dict[str, object]] = {}
         self.latest_runtime_snapshot = None
+        operating_context = settings.robot.operating_context()
         self.state = ServosViewState(
             connected=servo_service.is_connected,
-            robot_mode=settings.robot.mode,
-            single_servo_mode=(settings.robot.mode == "1-servo" or len(settings.robot.servo_ids) == 1),
-            expected_servo_ids=list(settings.robot.servo_ids),
-            servo_ids=list(settings.robot.servo_ids),
+            robot_mode=operating_context.operating_mode,
+            single_servo_mode=(operating_context.operating_mode == "one_servo"),
+            expected_servo_ids=list(operating_context.expected_servo_ids),
+            active_segment_key=settings.robot.active_segment_key(),
+            active_segment_label=settings.robot.active_segment_label(),
+            active_segment_servo_ids=settings.robot.active_segment_servo_ids(),
+            active_segment_pairs=settings.robot.active_segment_pairs(),
+            servo_ids=list(operating_context.expected_servo_ids),
             tendon_displacements_cm=[0.0] * len(settings.robot.tendon_to_servo),
             fine_jog_step_ticks=settings.safety.fine_jog_step_ticks,
             coarse_jog_step_ticks=settings.safety.coarse_jog_step_ticks,
             default_pretension_threshold_ma=settings.safety.default_pretension_current_threshold_ma,
             telemetry_freshness_threshold_s=settings.safety.telemetry_stale_after_s,
-            selected_servo_id=(int(settings.robot.servo_ids[0]) if settings.robot.servo_ids else None),
+            selected_servo_id=(int(operating_context.selected_servo_id or operating_context.expected_servo_ids[0]) if operating_context.expected_servo_ids else None),
             position_convention_summary=servo_service.position_convention_summary(),
             status_message=(
                 "Mock servo backend ready."
@@ -122,11 +131,18 @@ class ServosController:
 
     def refresh(self) -> ServosViewState:
         self.state.connected = self.servo_service.is_connected
-        self.state.robot_mode = self.settings.robot.mode
-        self.state.expected_servo_ids = list(self.settings.robot.servo_ids)
-        self.state.single_servo_mode = (
-            self.settings.robot.mode == "1-servo" or len(self.state.expected_servo_ids) == 1
-        )
+        operating_context = self.settings.robot.operating_context()
+        self.state.robot_mode = operating_context.operating_mode
+        self.state.expected_servo_ids = list(operating_context.expected_servo_ids)
+        self.state.active_segment_key = self.settings.robot.active_segment_key()
+        self.state.active_segment_label = self.settings.robot.active_segment_label()
+        self.state.active_segment_servo_ids = self.settings.robot.active_segment_servo_ids()
+        self.state.active_segment_pairs = self.settings.robot.active_segment_pairs()
+        self.state.active_segment_key = self.settings.robot.active_segment_key()
+        self.state.active_segment_label = self.settings.robot.active_segment_label()
+        self.state.active_segment_servo_ids = self.settings.robot.active_segment_servo_ids()
+        self.state.active_segment_pairs = self.settings.robot.active_segment_pairs()
+        self.state.single_servo_mode = operating_context.operating_mode == "one_servo"
         self._refresh_single_segment_motion_diagnostics()
         self._refresh_calibration_summary()
         self._sync_active_neutral_setpoints()
@@ -521,8 +537,9 @@ class ServosController:
     def _expected_servo_id(self) -> int | None:
         if self.state.selected_servo_id is not None:
             return int(self.state.selected_servo_id)
-        if self.settings.robot.servo_ids:
-            return int(self.settings.robot.servo_ids[0])
+        expected = self.settings.robot.expected_servo_ids()
+        if expected:
+            return int(expected[0])
         return None
 
     def _capture_servo_ids(self) -> list[int]:
@@ -542,11 +559,10 @@ class ServosController:
 
     def refresh_selected_servo(self) -> ServosViewState:
         self.state.connected = self.servo_service.is_connected
-        self.state.robot_mode = self.settings.robot.mode
-        self.state.expected_servo_ids = list(self.settings.robot.servo_ids)
-        self.state.single_servo_mode = (
-            self.settings.robot.mode == "1-servo" or len(self.state.expected_servo_ids) == 1
-        )
+        operating_context = self.settings.robot.operating_context()
+        self.state.robot_mode = operating_context.operating_mode
+        self.state.expected_servo_ids = list(operating_context.expected_servo_ids)
+        self.state.single_servo_mode = operating_context.operating_mode == "one_servo"
         self._refresh_calibration_summary()
         self._sync_active_neutral_setpoints()
         if not self.state.connected:
@@ -663,8 +679,8 @@ class ServosController:
                 "Warning: a multi-servo calibration artifact is loaded. "
                 "One-servo bench mode is ignoring it until neutral is recaptured."
             )
-        configured_servo_ids = [int(value) for value in self.settings.robot.tendon_to_servo or self.settings.robot.servo_ids]
-        if not self.state.single_servo_mode and len(configured_servo_ids) == 4 and summary.exists and summary.compatible:
+        configured_servo_ids = [int(value) for value in self.settings.robot.expected_servo_ids()]
+        if not self.state.single_servo_mode and len(configured_servo_ids) in {4, 8} and summary.exists and summary.compatible:
             source_summary = summary.pretension_source_summary(configured_servo_ids)
             self.state.pretension_source_type = source_summary.source_type
             self.state.pretension_source_updated_at_utc = source_summary.updated_at_utc
@@ -710,7 +726,10 @@ class ServosController:
                 for servo_id, position in sorted(positions_by_servo.items())
             )
             if self.state.manual_pretension_can_accept:
-                summary_text = "Pending manual pretension capture is saved for the configured 4-servo set."
+                summary_text = (
+                    "Pending manual pretension capture is saved for active segment "
+                    f"{self.state.active_segment_label} ({', '.join(str(value) for value in configured_servo_ids)})."
+                )
                 self.state.pretension_source_type = "manual_pending"
             elif self.state.manual_pretension_can_clear and not source_summary.usable:
                 summary_text = "Manual pretension capture exists, but it is incomplete or not accepted yet."
@@ -1220,7 +1239,7 @@ class ServosController:
         active_setpoints: dict[int, int] = {}
         for servo_id, entry in summary.servo_entries.items():
             if (
-                int(servo_id) in self.settings.robot.servo_ids
+                int(servo_id) in self.settings.robot.expected_servo_ids()
                 and entry.valid
                 and entry.neutral_setpoint is not None
             ):
@@ -1228,13 +1247,14 @@ class ServosController:
         self.state.neutral_setpoints = active_setpoints
 
     def _refresh_single_segment_motion_diagnostics(self) -> None:
-        if self.state.single_servo_mode or len(self.state.expected_servo_ids) != 4:
+        active_ids = list(self.state.active_segment_servo_ids or self.state.expected_servo_ids)
+        if self.state.single_servo_mode or len(active_ids) != 4:
             self.state.single_segment_motion_config_summary = ""
             self.state.single_segment_reference_summary = ""
             self.state.single_segment_enforced_bounds_summary = ""
             self.state.single_segment_characterization_summary = ""
             return
-        servo_ids = list(self.state.servo_ids or self.state.expected_servo_ids)
+        servo_ids = list(active_ids)
         config_summary = self.servo_service.single_segment_motion_configuration_summary(servo_ids)
         self.state.single_segment_motion_config_summary = config_summary.message
         try:

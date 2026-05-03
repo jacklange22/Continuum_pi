@@ -59,6 +59,7 @@ from continuum_robot.experiments.builtins import (
     ServoTrackerSyncValidationConfig,
     TrackerTimingValidationConfig,
 )
+from continuum_robot.gui.widgets.no_wheel_combo_box import NoWheelComboBox
 from continuum_robot.experiments.calibration_validation import (
     list_pivot_validation_candidates,
     list_registration_validation_candidates,
@@ -533,7 +534,7 @@ class RepeatabilityDatasetPage(ExperimentPageBase):
         self.dry_run_check.toggled.connect(lambda value: self.controller.set_config_value("dry_run", bool(value)))
         self.tool_id_edit = QLineEdit()
         self.tool_id_edit.editingFinished.connect(lambda: self.controller.set_config_value("tool_id", self.tool_id_edit.text().strip() or "0A"))
-        self.target_set_combo = QComboBox()
+        self.target_set_combo = NoWheelComboBox()
         self.target_set_combo.addItem("Single-Segment Ring 17", "single_segment_ring_17")
         self.target_set_combo.addItem("Manual Targets", "manual")
         self.target_set_combo.currentIndexChanged.connect(self._on_target_set_changed)
@@ -1762,7 +1763,7 @@ class TrackerTimingValidationPage(ExperimentPageBase):
             "Keep this run focused on the backend path actually used by the app. Use Tracking for live monitoring; use this page for saved timing evidence and figures.",
         )
         scope_form = QFormLayout()
-        self.tool_mode_combo = QComboBox()
+        self.tool_mode_combo = NoWheelComboBox()
         self.tool_mode_combo.addItem("0A and 0B", "both")
         self.tool_mode_combo.addItem("0A only", "0A")
         self.tool_mode_combo.addItem("0B only", "0B")
@@ -1891,7 +1892,7 @@ class ServoTrackerSyncValidationPage(ExperimentPageBase):
         self.servo_ids_edit = QLineEdit()
         self.servo_ids_edit.setPlaceholderText("1 or 1,2")
         self.servo_ids_edit.editingFinished.connect(self._on_servo_ids_changed)
-        self.tool_mode_combo = QComboBox()
+        self.tool_mode_combo = NoWheelComboBox()
         self.tool_mode_combo.addItem("0A only", "0A")
         self.tool_mode_combo.addItem("0B only", "0B")
         self.tool_mode_combo.addItem("0A and 0B", "both")
@@ -2045,19 +2046,19 @@ class PretensionValidationPage(ExperimentPageBase):
             "Use single-servo trace mode for detailed load-onset traces, or staged 4-servo mode for repeatable startup-state characterization.",
         )
         setup_form = QFormLayout()
-        self.mode_combo = QComboBox()
+        self.mode_combo = NoWheelComboBox()
         self.mode_combo.addItem("Single-Servo Trace", "single_servo_trace")
         self.mode_combo.addItem("Characterization / Identification", "single_segment_characterization")
         self.mode_combo.addItem("Conservative 4-Servo Startup", "single_segment_staged")
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
-        self.strategy_combo = QComboBox()
+        self.strategy_combo = NoWheelComboBox()
         self.strategy_combo.addItem("Conservative Startup", "conservative_startup")
         self.strategy_combo.addItem("Characterization", "characterization")
         self.strategy_combo.addItem("Legacy Threshold Routine", "legacy")
         self.strategy_combo.currentIndexChanged.connect(
             lambda _index: self.controller.set_config_value("staged_strategy", str(self.strategy_combo.currentData()))
         )
-        self.servo_combo = QComboBox()
+        self.servo_combo = NoWheelComboBox()
         configured_ids = list(self.controller.settings.robot.servo_ids or [])
         if configured_ids:
             for servo_id in configured_ids:
@@ -2072,6 +2073,10 @@ class PretensionValidationPage(ExperimentPageBase):
         self.allow_current_only_check = QCheckBox("Allow current-only fallback when tracker tip pose is unavailable")
         self.allow_current_only_check.toggled.connect(
             lambda value: self.controller.set_config_value("allow_current_only_when_tracker_missing", bool(value))
+        )
+        self.allow_no_tracker_check = QCheckBox("Allow no-tracker current-only test run")
+        self.allow_no_tracker_check.toggled.connect(
+            lambda value: self.controller.set_config_value("allow_no_tracker_test_run", bool(value))
         )
         self.staged_servo_ids_edit = QLineEdit()
         self.staged_servo_ids_edit.setPlaceholderText("1,2,3,4")
@@ -2092,6 +2097,7 @@ class PretensionValidationPage(ExperimentPageBase):
         setup_form.addRow("Repeat Runs", self.repeat_runs_spin)
         setup_form.addRow("Tracker Metric", self.include_tracker_check)
         setup_form.addRow("Tracker Fallback", self.allow_current_only_check)
+        setup_form.addRow("No-Tracker Test", self.allow_no_tracker_check)
         setup_form.addRow("Tip Centering", self.enable_tip_centering_check)
         setup_card.body_layout.addLayout(setup_form)
         note = QLabel(
@@ -2106,7 +2112,7 @@ class PretensionValidationPage(ExperimentPageBase):
             "These values mirror the current live pretension parameters. Leave them on the resolved defaults unless you are intentionally validating a changed threshold or travel limit.",
         )
         params_form = QFormLayout()
-        self.pretension_start_mode_combo = QComboBox()
+        self.pretension_start_mode_combo = NoWheelComboBox()
         self.pretension_start_mode_combo.addItem("Current Position", "current_position")
         self.pretension_start_mode_combo.addItem("Manual Startup Artifact", "manual_startup_artifact")
         self.pretension_start_mode_combo.addItem("Release 200 From Current", "release_200_from_current")
@@ -2285,6 +2291,7 @@ class PretensionValidationPage(ExperimentPageBase):
         self._set_combo_value(self.servo_combo, str(int(config.servo_id)))
         self._set_checkbox(self.include_tracker_check, bool(config.include_tracker_displacement))
         self._set_checkbox(self.allow_current_only_check, bool(config.allow_current_only_when_tracker_missing))
+        self._set_checkbox(self.allow_no_tracker_check, bool(getattr(config, "allow_no_tracker_test_run", False)))
         self._set_checkbox(self.enable_tip_centering_check, bool(config.enable_tip_centering))
         self._set_line_text(
             self.staged_servo_ids_edit,
@@ -2448,7 +2455,7 @@ class CommandScheduleValidationPage(ExperimentPageBase):
     def _build_parameter_sections(self) -> None:
         schedule_card = ExperimentCard("Schedule", "Configure the generated command schedule you want to validate.")
         schedule_form = QFormLayout()
-        self.kind_combo = QComboBox()
+        self.kind_combo = NoWheelComboBox()
         for label, value in (
             ("Sweep", "sweep"),
             ("Grid", "grid"),
@@ -2525,7 +2532,7 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
     def _build_parameter_sections(self) -> None:
         collection_card = ExperimentCard("Dataset Mode", "Choose the dataset family you want to collect. All modes preserve ordered command history and explicit accepted/rejected capture state.")
         collection_form = QFormLayout()
-        self.dataset_mode_combo = QComboBox()
+        self.dataset_mode_combo = NoWheelComboBox()
         for label, value in (
             ("Workspace Coverage", "workspace_coverage"),
             ("Hysteresis / Path Dependence", "hysteresis_path_dependence"),
@@ -2618,10 +2625,15 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         self.allow_lower_trust_runtime_tip_check.toggled.connect(lambda value: self.controller.set_config_value("allow_lower_trust_runtime_tip", bool(value)))
         self.allow_lower_trust_pretension_check = QCheckBox("Allow missing or lower-trust pretension source")
         self.allow_lower_trust_pretension_check.toggled.connect(lambda value: self.controller.set_config_value("allow_lower_trust_pretension", bool(value)))
+        self.allow_no_tracker_test_check = QCheckBox("Allow no-tracker servo-only hardware test")
+        self.allow_no_tracker_test_check.toggled.connect(
+            lambda value: self.controller.set_config_value("allow_no_tracker_test_run", bool(value))
+        )
         self.export_legacy_dat_check = QCheckBox("Write legacy-compatible .dat export")
         self.export_legacy_dat_check.toggled.connect(lambda value: self.controller.set_config_value("export_legacy_dat", bool(value)))
         trust_form.addRow("Runtime Tip Override", self.allow_lower_trust_runtime_tip_check)
         trust_form.addRow("Pretension Override", self.allow_lower_trust_pretension_check)
+        trust_form.addRow("No-Tracker Test", self.allow_no_tracker_test_check)
         trust_form.addRow("Legacy Export", self.export_legacy_dat_check)
         trust_card.body_layout.addLayout(trust_form)
 
@@ -2663,6 +2675,7 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         self._set_spin(self.repeatability_blocks_spin, int(self.controller.get_config_value("repeatability_block_count", 3)))
         self._set_checkbox(self.allow_lower_trust_runtime_tip_check, bool(self.controller.get_config_value("allow_lower_trust_runtime_tip", False)))
         self._set_checkbox(self.allow_lower_trust_pretension_check, bool(self.controller.get_config_value("allow_lower_trust_pretension", False)))
+        self._set_checkbox(self.allow_no_tracker_test_check, bool(self.controller.get_config_value("allow_no_tracker_test_run", False)))
         self._set_checkbox(self.export_legacy_dat_check, bool(self.controller.get_config_value("export_legacy_dat", True)))
 
         is_hysteresis = mode == "hysteresis_path_dependence"
@@ -2676,7 +2689,8 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         self._sync_collection_summary(state=state, mode=mode)
 
     def _sync_collection_summary(self, *, state: ExperimentViewState, mode: str) -> None:
-        tracking_snapshot = self.controller.tracking_service.get_snapshot()
+        tracking_service = getattr(self.controller, "tracking_service", None)
+        tracking_snapshot = tracking_service.get_snapshot() if tracking_service is not None else None
         try:
             pretension_source = self.controller.servo_service.pretension_source_summary(list(self.controller.settings.robot.servo_ids))
             pretension_label = f"{pretension_source.source_type} ({'accepted' if pretension_source.accepted else 'not accepted'})"
@@ -2686,7 +2700,14 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         self.collection_summary_widget.set_pairs(
             [
                 ("Mode Summary", self._mode_blurb(mode)),
-                ("Runtime Tip", f"{tracking_snapshot.runtime_tip_mode} ({tracking_snapshot.runtime_tip_trust_level})"),
+                (
+                    "Runtime Tip",
+                    (
+                        f"{tracking_snapshot.runtime_tip_mode} ({tracking_snapshot.runtime_tip_trust_level})"
+                        if tracking_snapshot is not None
+                        else "unavailable (servo-only possible only with explicit override)"
+                    ),
+                ),
                 ("Pretension Source", pretension_label),
                 ("Preflight", state.preflight_report.summary),
                 ("Planned Commands", str(planned_commands)),

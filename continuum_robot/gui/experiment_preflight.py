@@ -291,15 +291,21 @@ def evaluate_preflight(
                     f"Reasons={runtime_tip_policy.reasons or ['policy_not_allowed']}.",
                 )
             )
-        servo_ids = [int(value) for value in (settings.robot.tendon_to_servo or settings.robot.servo_ids or [])]
+        servo_ids = [int(value) for value in settings.robot.active_segment_servo_ids()]
         if len(servo_ids) == 4:
-            checks.append(_ok("single_segment", "Single-Segment Assumption", f"Configured 4-servo single-segment IDs: {servo_ids}."))
+            checks.append(
+                _ok(
+                    "single_segment",
+                    "Single-Segment Assumption",
+                    f"Active segment {settings.robot.active_segment_label()} ({settings.robot.active_segment_key()}) servo IDs: {servo_ids}.",
+                )
+            )
         else:
             checks.append(
                 _blocked(
                     "single_segment",
                     "Single-Segment Assumption",
-                    f"This protocol requires exactly 4 configured servos/tendons. Found {servo_ids}.",
+                    f"This protocol requires exactly 4 active segment servos/tendons. Found {servo_ids}.",
                 )
             )
         if float(config.outer_ring_radius_mm) < float(config.inner_ring_radius_mm):
@@ -726,7 +732,21 @@ def evaluate_preflight(
 
     elif experiment_name == "collect_pose_command_dataset":
         config = CollectPoseCommandDatasetConfig.from_dict(payload)
-        checks.append(_tracking_state_check(settings=settings, tracker_ready=tracker_ready, backend_name=backend_name, tracking_snapshot=tracking_snapshot))
+        no_tracker_servo_only = bool(
+            (bool(config.allow_no_tracker_test_run) or str(config.run_trust_mode or "").strip().lower() == "servo_only")
+            and not tracker_ready
+        )
+        if no_tracker_servo_only:
+            checks.append(
+                _warning(
+                    "tracking_state",
+                    "Tracking",
+                    "Tracker is not connected. This run is allowed as a servo-only hardware test. "
+                    "Tip position, robot-frame pose, modeling labels, and thesis repeatability metrics will not be produced.",
+                )
+            )
+        else:
+            checks.append(_tracking_state_check(settings=settings, tracker_ready=tracker_ready, backend_name=backend_name, tracking_snapshot=tracking_snapshot))
         try:
             points = list(config.command_points) if config.command_points else (
                 generate_command_schedule(config.command_schedule)
@@ -779,19 +799,21 @@ def evaluate_preflight(
                 f"Planned commands={int(planned_command_count)}, samples/command={max(1, int(config.samples_per_command))}, planned captures={int(planned_command_count * max(1, int(config.samples_per_command)) + 2)}.",
             )
         )
-        expected_dims = len(settings.robot.tendon_to_servo or settings.robot.servo_ids)
-        neutral_count = len(neutral_setpoints)
+        operating_context = settings.robot.operating_context()
+        commanded_servo_ids = [int(value) for value in operating_context.commanded_servo_ids]
+        expected_dims = len(commanded_servo_ids)
+        missing_active_neutral = [servo_id for servo_id in commanded_servo_ids if int(servo_id) not in neutral_setpoints]
         if config.dry_run:
             checks.append(_warning("mode", "Run Mode", "Dry-run is enabled. This is useful for protocol rehearsal, but the run is not thesis-grade modeling data."))
             checks.append(
                 PreflightCheck(
                     "neutral_setpoints",
                     "Neutral Setpoints",
-                    PREFLIGHT_OK if neutral_count == expected_dims else PREFLIGHT_INFO,
+                    PREFLIGHT_OK if not missing_active_neutral else PREFLIGHT_INFO,
                     (
-                        f"Neutral setpoints are available for all {expected_dims} tendons."
-                        if neutral_count == expected_dims
-                        else "Neutral setpoints are incomplete. Dry-run output can still be recorded, but live replay would not be ready."
+                        f"Neutral setpoints are available for commanded servos {commanded_servo_ids}."
+                        if not missing_active_neutral
+                        else f"Neutral setpoints are incomplete for commanded servos {missing_active_neutral}. Dry-run output can still be recorded, but live replay would not be ready."
                     ),
                 )
             )
@@ -809,65 +831,100 @@ def evaluate_preflight(
                 PreflightCheck(
                     "neutral_setpoints",
                     "Neutral Setpoints",
-                    PREFLIGHT_OK if neutral_count == expected_dims else PREFLIGHT_BLOCKED,
+                    PREFLIGHT_OK if not missing_active_neutral else PREFLIGHT_BLOCKED,
                     (
-                        f"Neutral setpoints are available for all {expected_dims} tendons."
-                        if neutral_count == expected_dims
-                        else "Live dataset collection requires neutral setpoints for every tendon."
+                        f"Neutral setpoints are available for commanded servos {commanded_servo_ids}."
+                        if not missing_active_neutral
+                        else f"Live dataset collection requires neutral setpoints for every commanded servo; missing {missing_active_neutral}."
                     ),
                 )
             )
-        if expected_dims != 4:
-            checks.append(_blocked("single_segment", "Single Segment", f"Motor Babble currently supports exactly 4 configured servos; found {expected_dims}."))
+        if operating_context.operating_mode == "parallel_single":
+            if expected_dims != 8 or not operating_context.mirror_pairs:
+                checks.append(_blocked("single_segment", "Parallel Single", f"Parallel-single Motor Babble requires 8 commanded servos and mirror pairs; found {commanded_servo_ids}."))
+            else:
+                checks.append(_ok("single_segment", "Parallel Single", f"Parallel-single mode will mirror commands across {operating_context.mirror_pairs}."))
+        elif expected_dims != 4:
+            checks.append(_blocked("single_segment", "Single Segment", f"Motor Babble currently supports exactly 4 active segment servos; found {commanded_servo_ids}."))
         else:
-            checks.append(_ok("single_segment", "Single Segment", "Configured robot matches the current 4-servo single-segment modeling workspace."))
-        checks.append(_strict_tool_gate_check(tool_id=config.tool_id, snapshot=tracking_snapshot, max_tracker_age_s=float(config.max_tracker_age_s)))
-        if tracking_snapshot.registration_state == "loaded" and tracking_snapshot.T_robot_aurora is not None:
-            checks.append(_ok("registration", "Base Registration", "Accepted base registration is loaded and active."))
-        elif not bool(config.require_robot_frame_tip) and bool(config.allow_lower_trust_runtime_tip):
+            checks.append(
+                _ok(
+                    "single_segment",
+                    "Single Segment",
+                    f"Active segment {settings.robot.active_segment_label()} ({settings.robot.active_segment_key()}) matches the 4-servo single-segment modeling workspace.",
+                )
+            )
+        if no_tracker_servo_only:
             checks.append(
                 _warning(
                     "registration",
                     "Base Registration",
-                    f"Base registration is not loaded (state={tracking_snapshot.registration_state}). This lower-trust run will fall back to tracker-frame-only outputs.",
+                    "Registration is not required for this servo-only hardware test. No robot-frame pose labels will be produced.",
                 )
             )
-        else:
-            checks.append(_blocked("registration", "Base Registration", f"Accepted base registration must be loaded. Runtime state is {tracking_snapshot.registration_state}."))
-        runtime_tip_policy = evaluate_runtime_tip_trust(
-            snapshot=tracking_snapshot,
-            workflow=WORKFLOW_MODELING_DATASET,
-            allow_lower_trust=bool(config.allow_lower_trust_runtime_tip),
-        )
-        if runtime_tip_policy.allowed_for_workflow and runtime_tip_policy.thesis_trusted:
-            checks.append(_ok("runtime_tip", "Runtime Tip Policy", runtime_tip_policy.status_message))
-        elif runtime_tip_policy.allowed_for_workflow:
             checks.append(
                 _warning(
                     "runtime_tip",
                     "Runtime Tip Policy",
-                    f"{runtime_tip_policy.status_message} This run is explicitly {runtime_tip_policy.trust_label}.",
+                    "Runtime tip is unavailable. This run will be marked servo_only, lower_trust, not_thesis_trusted, and not valid for model training.",
                 )
             )
-        elif not bool(config.require_robot_frame_tip) and bool(config.allow_lower_trust_runtime_tip):
-            checks.append(
-                _warning(
-                    "runtime_tip",
-                    "Runtime Tip Policy",
-                    f"Live robot-frame tip pose is not required for this explicitly lower-trust run. Current policy={runtime_tip_policy.trust_label}, mode={runtime_tip_policy.mode}, state={tracking_snapshot.runtime_tip_calibration_state}, tip pose={tracking_snapshot.tip_pose_status}.",
+            if bool(config.export_legacy_dat):
+                checks.append(
+                    _warning(
+                        "legacy_export",
+                        "Legacy Export",
+                        "Legacy .dat export will be disabled for servo-only no-tracker output because no valid pose labels exist.",
+                    )
                 )
-            )
         else:
-            checks.append(
-                _blocked(
-                    "runtime_tip",
-                    "Runtime Tip Policy",
-                    (
-                        f"Runtime tip policy must allow modeling data. "
-                        f"Mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}, state={tracking_snapshot.runtime_tip_calibration_state}, tip pose={tracking_snapshot.tip_pose_status}, reasons={runtime_tip_policy.reasons or ['policy_not_allowed']}."
-                    ),
+            checks.append(_strict_tool_gate_check(tool_id=config.tool_id, snapshot=tracking_snapshot, max_tracker_age_s=float(config.max_tracker_age_s)))
+            if tracking_snapshot.registration_state == "loaded" and tracking_snapshot.T_robot_aurora is not None:
+                checks.append(_ok("registration", "Base Registration", "Accepted base registration is loaded and active."))
+            elif not bool(config.require_robot_frame_tip) and bool(config.allow_lower_trust_runtime_tip):
+                checks.append(
+                    _warning(
+                        "registration",
+                        "Base Registration",
+                        f"Base registration is not loaded (state={tracking_snapshot.registration_state}). This lower-trust run will fall back to tracker-frame-only outputs.",
+                    )
                 )
+            else:
+                checks.append(_blocked("registration", "Base Registration", f"Accepted base registration must be loaded. Runtime state is {tracking_snapshot.registration_state}."))
+            runtime_tip_policy = evaluate_runtime_tip_trust(
+                snapshot=tracking_snapshot,
+                workflow=WORKFLOW_MODELING_DATASET,
+                allow_lower_trust=bool(config.allow_lower_trust_runtime_tip),
             )
+            if runtime_tip_policy.allowed_for_workflow and runtime_tip_policy.thesis_trusted:
+                checks.append(_ok("runtime_tip", "Runtime Tip Policy", runtime_tip_policy.status_message))
+            elif runtime_tip_policy.allowed_for_workflow:
+                checks.append(
+                    _warning(
+                        "runtime_tip",
+                        "Runtime Tip Policy",
+                        f"{runtime_tip_policy.status_message} This run is explicitly {runtime_tip_policy.trust_label}.",
+                    )
+                )
+            elif not bool(config.require_robot_frame_tip) and bool(config.allow_lower_trust_runtime_tip):
+                checks.append(
+                    _warning(
+                        "runtime_tip",
+                        "Runtime Tip Policy",
+                        f"Live robot-frame tip pose is not required for this explicitly lower-trust run. Current policy={runtime_tip_policy.trust_label}, mode={runtime_tip_policy.mode}, state={tracking_snapshot.runtime_tip_calibration_state}, tip pose={tracking_snapshot.tip_pose_status}.",
+                    )
+                )
+            else:
+                checks.append(
+                    _blocked(
+                        "runtime_tip",
+                        "Runtime Tip Policy",
+                        (
+                            f"Runtime tip policy must allow modeling data. "
+                            f"Mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}, state={tracking_snapshot.runtime_tip_calibration_state}, tip pose={tracking_snapshot.tip_pose_status}, reasons={runtime_tip_policy.reasons or ['policy_not_allowed']}."
+                        ),
+                    )
+                )
         if servo_calibration_summary is None:
             checks.append(
                 _warning("pretension", "Pretension Source", "Pretension/startup artifact state is unavailable for this dry-run.")
@@ -876,7 +933,7 @@ def evaluate_preflight(
             )
         else:
             source_summary = servo_calibration_summary.pretension_source_summary(
-                [int(value) for value in (settings.robot.tendon_to_servo or settings.robot.servo_ids or [])]
+                [int(value) for value in settings.robot.active_segment_servo_ids()]
             )
             if source_summary.accepted and source_summary.usable:
                 checks.append(_ok("pretension", "Pretension Source", source_summary.message))
@@ -913,7 +970,10 @@ def evaluate_preflight(
             checks.append(_blocked("servo_service", "Servo Service", "Pretension validation requires a connected servo service."))
         else:
             checks.append(_ok("servo_service", "Servo Service", "Pretension validation can use the connected servo service."))
-        configured_ids = [int(value) for value in (settings.robot.servo_ids or [])]
+        operating_context = settings.robot.operating_context()
+        configured_ids = [int(value) for value in operating_context.all_configured_servo_ids]
+        active_ids = [int(value) for value in operating_context.active_segment_servo_ids]
+        staged_ids = [int(value) for value in (config.servo_ids or [])]
         if configured_ids and int(config.servo_id) not in configured_ids:
             checks.append(
                 _blocked(
@@ -924,6 +984,38 @@ def evaluate_preflight(
             )
         else:
             checks.append(_ok("servo_id", "Servo ID", f"Pretension validation will target servo {config.servo_id}."))
+        if config.mode in {"single_segment_staged", "single_segment_characterization", "staged", "four_servo_staged"}:
+            selected_ids = staged_ids or active_ids
+            if operating_context.operating_mode not in {"single_segment", "parallel_single"}:
+                checks.append(
+                    _blocked(
+                        "active_segment",
+                        "Active Segment",
+                        f"Staged pretension requires single_segment mode; current operating mode is {operating_context.operating_mode}.",
+                    )
+                )
+            elif len(selected_ids) != 4:
+                checks.append(
+                    _blocked(
+                        "active_segment",
+                        "Active Segment",
+                        f"Staged pretension requires exactly 4 active segment servos. Active segment {settings.robot.active_segment_label()} has {selected_ids}.",
+                    )
+                )
+            else:
+                checks.append(
+                    _ok(
+                        "active_segment",
+                        "Active Segment",
+                        f"Staged pretension will use {settings.robot.active_segment_label()} ({settings.robot.active_segment_key()}): {selected_ids}.",
+                    )
+                )
+        pretension_no_tracker_allowed = bool(
+            (bool(config.allow_no_tracker_test_run)
+            or bool(config.allow_current_only_when_tracker_missing)
+            or str(config.run_trust_mode or "").strip().lower() in {"current_only", "servo_only", "lower_trust"})
+            and not tracker_ready
+        )
         if bool(config.include_tracker_displacement):
             if tracker_ready:
                 checks.append(
@@ -931,6 +1023,15 @@ def evaluate_preflight(
                         "tracking_state",
                         "Tracking",
                         "Tracker displacement will be sampled alongside the pretension trace when frames remain fresh.",
+                    )
+                )
+            elif pretension_no_tracker_allowed:
+                checks.append(
+                    _warning(
+                        "tracking_state",
+                        "Tracking",
+                        "Tracker is not connected. This run is explicitly allowed as current-only/lower-trust pretension testing. "
+                        "Tip centering and centered-startup claims will not be produced.",
                     )
                 )
             else:
@@ -942,37 +1043,46 @@ def evaluate_preflight(
                         "The run can still save current-versus-travel data only.",
                     )
                 )
-            runtime_tip_policy = evaluate_runtime_tip_trust(
-                snapshot=tracking_snapshot,
-                workflow=WORKFLOW_PRETENSION_VALIDATION,
-                allow_lower_trust=True,
-            )
-            if runtime_tip_policy.thesis_trusted:
-                checks.append(_ok("runtime_tip", "Runtime Tip Policy", runtime_tip_policy.status_message))
-            elif runtime_tip_policy.allowed_for_workflow:
+            if pretension_no_tracker_allowed:
                 checks.append(
                     _warning(
                         "runtime_tip",
                         "Runtime Tip Policy",
-                        f"{runtime_tip_policy.status_message} Pretension validation will record this as {runtime_tip_policy.trust_label}.",
-                    )
-                )
-            elif str(config.mode).strip().lower() in {"single_segment_staged", "advanced_4servo", "staged"} and bool(config.enable_tip_centering):
-                checks.append(
-                    _blocked(
-                        "runtime_tip",
-                        "Runtime Tip Policy",
-                        f"Tip centering requires an allowed runtime tip policy outcome. Mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}, reasons={runtime_tip_policy.reasons or ['policy_not_allowed']}.",
+                        "Runtime tip is unavailable. Pretension output will be marked current_only/lower_trust and not thesis-trusted.",
                     )
                 )
             else:
-                checks.append(
-                    _warning(
-                        "runtime_tip",
-                        "Runtime Tip Policy",
-                        f"Runtime tip is not available for robot-frame tip metrics. Mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}.",
-                    )
+                runtime_tip_policy = evaluate_runtime_tip_trust(
+                    snapshot=tracking_snapshot,
+                    workflow=WORKFLOW_PRETENSION_VALIDATION,
+                    allow_lower_trust=True,
                 )
+                if runtime_tip_policy.thesis_trusted:
+                    checks.append(_ok("runtime_tip", "Runtime Tip Policy", runtime_tip_policy.status_message))
+                elif runtime_tip_policy.allowed_for_workflow:
+                    checks.append(
+                        _warning(
+                            "runtime_tip",
+                            "Runtime Tip Policy",
+                            f"{runtime_tip_policy.status_message} Pretension validation will record this as {runtime_tip_policy.trust_label}.",
+                        )
+                    )
+                elif str(config.mode).strip().lower() in {"single_segment_staged", "advanced_4servo", "staged"} and bool(config.enable_tip_centering):
+                    checks.append(
+                        _blocked(
+                            "runtime_tip",
+                            "Runtime Tip Policy",
+                            f"Tip centering requires an allowed runtime tip policy outcome. Mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}, reasons={runtime_tip_policy.reasons or ['policy_not_allowed']}.",
+                        )
+                    )
+                else:
+                    checks.append(
+                        _warning(
+                            "runtime_tip",
+                            "Runtime Tip Policy",
+                            f"Runtime tip is not available for robot-frame tip metrics. Mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}.",
+                        )
+                    )
         else:
             checks.append(
                 _info(

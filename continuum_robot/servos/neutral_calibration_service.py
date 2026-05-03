@@ -26,6 +26,14 @@ class ServoCalibrationContext:
     robot_config_name: str | None = None
     servo_ids: list[int] = field(default_factory=list)
     tendon_to_servo: list[int] = field(default_factory=list)
+    active_segment_key: str | None = None
+    active_segment_label: str | None = None
+    active_segment_servo_ids: list[int] = field(default_factory=list)
+    active_segment_pairs: dict[str, list[int]] = field(default_factory=dict)
+    selected_servo_id: int | None = None
+    expected_servo_ids: list[int] = field(default_factory=list)
+    commanded_servo_ids: list[int] = field(default_factory=list)
+    mirror_pairs: dict[int, int] = field(default_factory=dict)
     ticks_per_revolution: int | None = None
     spool_diameter_cm: float | None = None
     position_min_offset_ticks: int | None = None
@@ -450,6 +458,18 @@ class NeutralCalibrationService:
                     "status": "accepted" if accepted else "manual_captured",
                     "captured_at_utc": timestamp,
                     "operator_note": clean_note,
+                    "active_segment_key": self.context.active_segment_key,
+                    "active_segment_label": self.context.active_segment_label,
+                    "active_segment_servo_ids": list(self.context.active_segment_servo_ids),
+                    "active_segment_pairs": {
+                        str(key): [int(value) for value in values]
+                        for key, values in dict(self.context.active_segment_pairs or {}).items()
+                    },
+                    "operating_mode": self.context.robot_mode,
+                    "selected_servo_id": self.context.selected_servo_id,
+                    "expected_servo_ids": list(self.context.expected_servo_ids),
+                    "commanded_servo_ids": list(self.context.commanded_servo_ids),
+                    "mirror_pairs": {str(key): int(value) for key, value in dict(self.context.mirror_pairs or {}).items()},
                 }
             )
             entry = ServoCalibrationEntry(
@@ -833,6 +853,17 @@ class NeutralCalibrationService:
             "robot_config_name": self.context.robot_config_name,
             "servo_ids": list(self.context.servo_ids),
             "tendon_to_servo": list(self.context.tendon_to_servo),
+            "active_segment_key": self.context.active_segment_key,
+            "active_segment_label": self.context.active_segment_label,
+            "active_segment_servo_ids": list(self.context.active_segment_servo_ids),
+            "active_segment_pairs": {
+                str(key): [int(value) for value in values]
+                for key, values in dict(self.context.active_segment_pairs or {}).items()
+            },
+            "selected_servo_id": self.context.selected_servo_id,
+            "expected_servo_ids": list(self.context.expected_servo_ids),
+            "commanded_servo_ids": list(self.context.commanded_servo_ids),
+            "mirror_pairs": {str(key): int(value) for key, value in dict(self.context.mirror_pairs or {}).items()},
             "ticks_per_revolution": self.context.ticks_per_revolution,
             "spool_diameter_cm": self.context.spool_diameter_cm,
             "position_min_offset_ticks": self.context.position_min_offset_ticks,
@@ -852,18 +883,34 @@ class NeutralCalibrationService:
             return False, (
                 f"Calibration robot mode {robot.get('robot_mode')} does not match current mode {self.context.robot_mode}."
             )
-        if self.context.servo_ids:
+        required_servo_ids = list(
+            self.context.expected_servo_ids
+            or self.context.active_segment_servo_ids
+            or self.context.servo_ids
+        )
+        if required_servo_ids:
             saved_ids = [int(value) for value in robot.get("servo_ids", []) if value is not None]
-            if saved_ids and saved_ids != list(self.context.servo_ids):
-                return False, f"Calibration servo IDs {saved_ids} do not match current IDs {self.context.servo_ids}."
-            missing = [servo_id for servo_id in self.context.servo_ids if servo_id not in artifact.servos]
+            active_saved_ids = [int(value) for value in robot.get("active_segment_servo_ids", []) if value is not None]
+            allowed_saved_sets = [list(self.context.servo_ids), list(required_servo_ids)]
+            if active_saved_ids:
+                allowed_saved_sets.append(active_saved_ids)
+            if saved_ids and saved_ids not in allowed_saved_sets:
+                return False, (
+                    f"Calibration servo IDs {saved_ids} do not match current active segment IDs {required_servo_ids} "
+                    f"or configured IDs {self.context.servo_ids}."
+                )
+            missing = [servo_id for servo_id in required_servo_ids if servo_id not in artifact.servos]
             if missing:
                 return False, f"Calibration is missing servo entries for {missing}."
         if self.context.tendon_to_servo:
             saved_mapping = [int(value) for value in robot.get("tendon_to_servo", []) if value is not None]
-            if saved_mapping and saved_mapping != list(self.context.tendon_to_servo):
+            allowed_mappings = [list(self.context.tendon_to_servo)]
+            if self.context.active_segment_servo_ids:
+                allowed_mappings.append(list(self.context.active_segment_servo_ids))
+            if saved_mapping and saved_mapping not in allowed_mappings:
                 return False, (
-                    f"Calibration tendon mapping {saved_mapping} does not match current mapping {self.context.tendon_to_servo}."
+                    f"Calibration tendon mapping {saved_mapping} does not match current mapping {self.context.tendon_to_servo} "
+                    f"or active segment mapping {self.context.active_segment_servo_ids}."
                 )
         return True, ""
 

@@ -576,7 +576,7 @@ class ServosTab(QWidget):
         )
         self.startup_box.setVisible(False)
         self.pretension_box.setVisible(False)
-        self.manual_pretension_box.setVisible((not state.single_servo_mode) and len(state.expected_servo_ids) == 4)
+        self.manual_pretension_box.setVisible((not state.single_servo_mode) and len(state.expected_servo_ids) in {4, 8})
         self.displacement_box.setVisible(False)
         self.scan_button.setEnabled(state.connected)
         self.refresh_readiness_button.setEnabled(state.connected)
@@ -594,7 +594,7 @@ class ServosTab(QWidget):
         self.cancel_pretension_button.setEnabled(show_single_servo_advanced and state.pretension_running)
         self.retry_pretension_button.setEnabled(show_single_servo_advanced and motion_allowed and not state.pretension_running)
         self.accept_pretension_button.setEnabled(show_single_servo_advanced and state.pretension_result_can_accept)
-        manual_mode_available = (not state.single_servo_mode) and len(state.expected_servo_ids) == 4
+        manual_mode_available = (not state.single_servo_mode) and len(state.expected_servo_ids) in {4, 8}
         self.capture_manual_pretension_button.setEnabled(state.connected and manual_mode_available and any_servo)
         self.accept_manual_pretension_button.setEnabled(manual_mode_available and state.manual_pretension_can_accept)
         self.clear_manual_pretension_button.setEnabled(manual_mode_available and state.manual_pretension_can_clear)

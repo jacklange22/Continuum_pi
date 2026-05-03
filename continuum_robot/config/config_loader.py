@@ -10,12 +10,16 @@ from continuum_robot.config.schemas import (
     ExperimentConfig,
     RegistrationLandmarkConfig,
     RegistrationWorkflowConfig,
+    RobotSegmentConfig,
     RobotConfig,
     RuntimeConfig,
     SafetyConfig,
     SerialConfig,
 )
 from continuum_robot.config.settings import Settings
+
+
+DEFAULT_ROBOT_CONFIG = "robot_8servo.yaml"
 
 
 class ConfigLoader:
@@ -31,10 +35,17 @@ class ConfigLoader:
             self._read_yaml(self.base_dir / "system.yaml"),
             self._read_yaml(self.base_dir / "system.local.yaml"),
         )
-        robot_path = self.base_dir / str(system_data.get("robot_config", "robot_4servo.yaml"))
+        robot_config_name = str(system_data.get("robot_config") or self._default_robot_config_name())
+        robot_path = self.base_dir / robot_config_name
+        robot_overrides = dict(system_data.get("robot_overrides", {}) or {})
+        # Servo membership belongs to the selected robot profile/segment map. Older
+        # local override files may contain stale servo_ids=[1] from one-servo
+        # testing; dropping those here keeps operating mode and expected IDs coherent.
+        robot_overrides.pop("servo_ids", None)
+        robot_overrides.pop("tendon_to_servo", None)
         robot_data = self._merge_dicts(
             self._read_yaml(robot_path),
-            dict(system_data.get("robot_overrides", {}) or {}),
+            robot_overrides,
         )
         safety_data = self._merge_dicts(
             self._read_yaml(self.base_dir / "safety.yaml"),
@@ -50,18 +61,7 @@ class ConfigLoader:
             visualization_mode=str(system_data.get("visualization_mode", "auto")),
             visualization_safe_effects=bool(system_data.get("visualization_safe_effects", True)),
         )
-        robot = RobotConfig(
-            mode=str(robot_data.get("mode", "4-servo")),
-            spool_diameter_cm=float(robot_data.get("spool_diameter_cm", 2.0)),
-            ticks_per_revolution=int(robot_data.get("ticks_per_revolution", 4096)),
-            servo_ids=[int(v) for v in robot_data.get("servo_ids", [1, 2, 3, 4])],
-            tendon_to_servo=[int(v) for v in robot_data.get("tendon_to_servo", [1, 2, 3, 4])],
-            tightening_rotation_by_servo={
-                int(key): str(value).strip().lower()
-                for key, value in dict(robot_data.get("tightening_rotation_by_servo", {}) or {}).items()
-                if str(value).strip()
-            },
-        )
+        robot = self._robot_config_from_data(robot_data)
         serial = SerialConfig(
             aurora_port=str(system_data.get("aurora_port", "")),
             openrb_port=str(system_data.get("openrb_port", "")),
@@ -227,9 +227,51 @@ class ConfigLoader:
             calibration=calibration,
         )
 
+    def _robot_config_from_data(self, robot_data: dict) -> RobotConfig:
+        servo_ids = [int(v) for v in robot_data.get("servo_ids", [1, 2, 3, 4])]
+        tendon_to_servo = [int(v) for v in robot_data.get("tendon_to_servo", servo_ids or [1, 2, 3, 4])]
+        segments_payload = dict(robot_data.get("segments", {}) or {})
+        segments: dict[str, RobotSegmentConfig] = {}
+        for key, payload in segments_payload.items():
+            data = dict(payload or {})
+            segment_ids = [int(v) for v in data.get("servo_ids", [])]
+            raw_pairs = dict(data.get("pairs", {}) or {})
+            pairs = {
+                str(pair_key): [int(v) for v in values]
+                for pair_key, values in raw_pairs.items()
+            }
+            if not pairs and len(segment_ids) >= 4:
+                pairs = {"axis_a": [segment_ids[0], segment_ids[2]], "axis_b": [segment_ids[1], segment_ids[3]]}
+            segments[str(key)] = RobotSegmentConfig(
+                key=str(key),
+                label=str(data.get("label", key)),
+                servo_ids=segment_ids,
+                pairs=pairs,
+            )
+        return RobotConfig(
+            mode=str(robot_data.get("operating_mode", robot_data.get("mode", "single_segment"))),
+            spool_diameter_cm=float(robot_data.get("spool_diameter_cm", 2.0)),
+            ticks_per_revolution=int(robot_data.get("ticks_per_revolution", 4096)),
+            servo_ids=servo_ids,
+            tendon_to_servo=tendon_to_servo,
+            tightening_rotation_by_servo={
+                int(key): str(value).strip().lower()
+                for key, value in dict(robot_data.get("tightening_rotation_by_servo", {}) or {}).items()
+                if str(value).strip()
+            },
+            active_segment=str(robot_data.get("active_segment", "segment_a") or "segment_a"),
+            selected_servo_id=int(robot_data.get("selected_servo_id", 1) or 1),
+            segments=segments,
+        )
+
     def list_robot_configs(self) -> list[str]:
         """Return available robot config file names."""
         return sorted(path.name for path in self.base_dir.glob("robot_*.yaml") if path.is_file())
+
+    def _default_robot_config_name(self) -> str:
+        if (self.base_dir / DEFAULT_ROBOT_CONFIG).is_file():
+            return DEFAULT_ROBOT_CONFIG
+        return "robot_4servo.yaml"
 
     def load_robot_config(self, robot_config_name: str) -> RobotConfig:
         """Load one robot config file without the rest of the app settings."""
@@ -237,18 +279,7 @@ class ConfigLoader:
         robot_data = self._read_yaml(robot_path)
         if not robot_data:
             raise FileNotFoundError(f"Robot config {robot_config_name} was not found in {self.base_dir}.")
-        return RobotConfig(
-            mode=str(robot_data.get("mode", "4-servo")),
-            spool_diameter_cm=float(robot_data.get("spool_diameter_cm", 2.0)),
-            ticks_per_revolution=int(robot_data.get("ticks_per_revolution", 4096)),
-            servo_ids=[int(v) for v in robot_data.get("servo_ids", [1, 2, 3, 4])],
-            tendon_to_servo=[int(v) for v in robot_data.get("tendon_to_servo", [1, 2, 3, 4])],
-            tightening_rotation_by_servo={
-                int(key): str(value).strip().lower()
-                for key, value in dict(robot_data.get("tightening_rotation_by_servo", {}) or {}).items()
-                if str(value).strip()
-            },
-        )
+        return self._robot_config_from_data(robot_data)
 
     def load_system_local_overrides(self) -> dict:
         """Return the current machine-local system override mapping."""

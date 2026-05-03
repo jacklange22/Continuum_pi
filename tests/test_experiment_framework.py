@@ -1,6 +1,7 @@
 from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 import json
 import threading
 import time
@@ -130,6 +131,28 @@ class _SequencedTrackingService:
 
     def stop(self) -> None:
         self._thread = None
+
+
+class _DisconnectedTrackingService:
+    _thread = object()
+
+    def peek_snapshot(self):
+        return SimpleNamespace(
+            canonical_state="disconnected",
+            selected_backend_name="mock",
+            backend_identity="mock",
+            registration_state="missing_registration",
+            tip_pose_status="missing_runtime_tip",
+            runtime_tip_mode="latest_accepted",
+            runtime_tip_trust_level="missing",
+            runtime_tip_mode_message="Tracker disconnected.",
+            runtime_tip_calibration_state="missing_runtime_tip_calibration",
+            runtime_tip_selected_artifact_kind=None,
+            runtime_tip_selected_artifact_path=None,
+        )
+
+    def get_snapshot(self):
+        return self.peek_snapshot()
 
 
 class _TimingDiagnosticTrackingService:
@@ -1296,6 +1319,80 @@ def test_collect_pose_command_dataset_records_full_pose_when_registration_exists
     assert [row["sequence_index"] for row in export_rows] == list(range(len(export_rows)))
     assert any(row["accepted"] for row in export_rows)
     assert any(row["tip_tangent_xyz"] == [0.0, 0.0, 1.0] for row in export_rows if row["accepted"])
+
+
+def test_collect_pose_command_dataset_runs_servo_only_without_tracker_when_explicit(tmp_path: Path) -> None:
+    settings = _settings()
+    servo_service = _ready_modeling_servo_service(tmp_path)
+    runner = ExperimentRunner(
+        project_root=Path(__file__).resolve().parents[1],
+        settings=settings,
+        tracking_service=_DisconnectedTrackingService(),
+        servo_service=servo_service,
+        output_dir=tmp_path / "data" / "experiments",
+        default_settle_time_s=0.0,
+        registration_path=tmp_path / "latest_registration.json",
+        sleep_fn=lambda _seconds: None,
+    )
+
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dataset_mode": "workspace_coverage",
+            "dry_run": False,
+            "sample_count_target": 1,
+            "samples_per_command": 1,
+            "allow_no_tracker_test_run": True,
+            "run_trust_mode": "servo_only",
+        },
+    )
+
+    assert result.success is True
+    metrics = result.summary.experiment_metrics
+    assert metrics["run_trust_mode"] == "servo_only"
+    assert metrics["valid_for_model_training"] is False
+    assert metrics["valid_for_thesis_repeatability"] is False
+    assert metrics["legacy_export_enabled"] is False
+    assert metrics["position_frame"] == "none"
+    assert not result.paths.output_dir.joinpath("modeling_dataset_legacy_compat.dat").exists()
+    export_rows = [
+        json.loads(line)
+        for line in result.paths.output_dir.joinpath("modeling_dataset_export.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert export_rows
+    assert all(row["tip_position_xyz_mm"] == [] for row in export_rows)
+    assert all(row["tool_0A_translation_mm"] == [] for row in export_rows)
+    assert all("servo_only" in row["tracker_status_flags"] for row in export_rows)
+    assert all(row["servo_feedback_at_capture"] for row in export_rows)
+
+
+def test_collect_pose_command_dataset_blocks_without_tracker_when_override_disabled(tmp_path: Path) -> None:
+    settings = _settings()
+    servo_service = _ready_modeling_servo_service(tmp_path)
+    runner = ExperimentRunner(
+        project_root=Path(__file__).resolve().parents[1],
+        settings=settings,
+        tracking_service=None,
+        servo_service=servo_service,
+        output_dir=tmp_path / "data" / "experiments",
+        default_settle_time_s=0.0,
+        registration_path=tmp_path / "latest_registration.json",
+        sleep_fn=lambda _seconds: None,
+    )
+
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dataset_mode": "workspace_coverage",
+            "dry_run": False,
+            "sample_count_target": 1,
+            "samples_per_command": 1,
+        },
+    )
+
+    assert result.success is False
+    assert "requires tracking_service" in result.message
 
 
 def test_collect_pose_command_dataset_rejects_stale_tracker_samples(tmp_path: Path) -> None:

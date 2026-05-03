@@ -215,12 +215,21 @@ def _write_staged_metrics_csv(*, metrics_csv_path: Path, run_rows: list[dict[str
         "servo_id",
         "baseline_current_ma",
         "final_current_ma",
+        "signed_raw_current_ma",
         "current_above_baseline_ma",
+        "load_proxy_current_ma",
         "start_position_ticks",
+        "startup_reference_ticks",
         "final_position_ticks",
+        "tendon_displacement_mm",
         "travel_used_ticks",
         "travel_used_mm",
         "stop_reason",
+        "startup_source",
+        "trust_status",
+        "packet_retry_count",
+        "telemetry_event_counts",
+        "quality_flags",
         "load_balance_error_ma",
         "pair_balance_error_ma",
         "final_tip_x_mm",
@@ -244,8 +253,11 @@ def _write_staged_metrics_csv(*, metrics_csv_path: Path, run_rows: list[dict[str
                 baseline_map = dict(run.get("baseline_current_ma_by_servo") or {})
                 final_current_map = dict(run.get("final_current_ma_by_servo") or {})
                 current_above_map = dict(run.get("current_above_baseline_ma_by_servo") or {})
+                load_proxy_map = dict(run.get("load_proxy_current_ma_by_servo") or current_above_map)
                 start_map = dict(run.get("start_position_ticks_by_servo") or {})
+                startup_reference_map = dict(run.get("startup_reference_ticks_by_servo") or {})
                 final_map = dict(run.get("final_position_ticks_by_servo") or {})
+                tendon_displacement_map = dict(run.get("final_tendon_displacement_mm_by_servo") or {})
                 stop_map = dict(run.get("stop_reason_by_servo") or {})
                 start_tick = start_map.get(str(int(servo_id)))
                 final_tick = final_map.get(str(int(servo_id)))
@@ -257,9 +269,13 @@ def _write_staged_metrics_csv(*, metrics_csv_path: Path, run_rows: list[dict[str
                         "servo_id": int(servo_id),
                         "baseline_current_ma": baseline_map.get(str(int(servo_id))),
                         "final_current_ma": final_current_map.get(str(int(servo_id))),
+                        "signed_raw_current_ma": final_current_map.get(str(int(servo_id))),
                         "current_above_baseline_ma": current_above_map.get(str(int(servo_id))),
+                        "load_proxy_current_ma": load_proxy_map.get(str(int(servo_id))),
                         "start_position_ticks": start_tick,
+                        "startup_reference_ticks": startup_reference_map.get(str(int(servo_id))),
                         "final_position_ticks": final_tick,
+                        "tendon_displacement_mm": tendon_displacement_map.get(str(int(servo_id))),
                         "travel_used_ticks": (
                             None
                             if start_tick is None or final_tick is None
@@ -267,6 +283,11 @@ def _write_staged_metrics_csv(*, metrics_csv_path: Path, run_rows: list[dict[str
                         ),
                         "travel_used_mm": None,
                         "stop_reason": stop_map.get(str(int(servo_id))),
+                        "startup_source": run.get("startup_source"),
+                        "trust_status": run.get("trust_status"),
+                        "packet_retry_count": run.get("packet_retry_count"),
+                        "telemetry_event_counts": run.get("telemetry_event_counts"),
+                        "quality_flags": ",".join(str(value) for value in (run.get("quality_flags") or [])),
                         "load_balance_error_ma": run.get("load_balance_error_ma"),
                         "pair_balance_error_ma": run.get("pair_balance_error_ma"),
                         "final_tip_x_mm": (tip_xyz[0] if tip_xyz is not None and len(tip_xyz) > 0 else None),
@@ -305,9 +326,17 @@ def _write_staged_summary_text(
         f"Accepted fraction: {_fmt_float(metrics.get('accepted_run_fraction'))}",
         "",
         "Units:",
-        "- Current: mA",
+        "- Current: mA servo-reported current estimate; signed current is saved separately from absolute load proxy.",
+        "- Load proxy: absolute current delta from baseline in mA; not calibrated tendon force.",
         "- Position: ticks",
         "- Travel / tip position: mm",
+        "",
+        "Telemetry / trust:",
+        f"- Runtime tip mode used: {metrics.get('runtime_tip_mode_used')}",
+        f"- Runtime tip trust level: {metrics.get('runtime_tip_trust_level')}",
+        f"- Thesis-trusted runtime tip: {metrics.get('thesis_trusted_runtime_tip')}",
+        f"- Aggregate telemetry event counts: {metrics.get('telemetry_event_counts')}",
+        f"- Aggregate packet retry count: {metrics.get('packet_retry_count')}",
         "",
         "Repeatability:",
         f"- Final position std by servo (ticks): {metrics.get('final_position_std_ticks_by_servo')}",

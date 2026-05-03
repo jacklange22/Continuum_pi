@@ -150,6 +150,8 @@ class CollectPoseCommandDatasetConfig:
     repeatability_block_count: int = 3
     allow_lower_trust_runtime_tip: bool = False
     allow_lower_trust_pretension: bool = False
+    allow_no_tracker_test_run: bool = False
+    run_trust_mode: str = "thesis_trusted"
     export_legacy_dat: bool = True
     run_label: str = ""
     dataset_tag: str = ""
@@ -184,6 +186,8 @@ class CollectPoseCommandDatasetConfig:
             repeatability_block_count=max(1, int(payload.get("repeatability_block_count", 3))),
             allow_lower_trust_runtime_tip=bool(payload.get("allow_lower_trust_runtime_tip", False)),
             allow_lower_trust_pretension=bool(payload.get("allow_lower_trust_pretension", False)),
+            allow_no_tracker_test_run=bool(payload.get("allow_no_tracker_test_run", False)),
+            run_trust_mode=str(payload.get("run_trust_mode", "thesis_trusted") or "thesis_trusted").strip().lower(),
             export_legacy_dat=bool(payload.get("export_legacy_dat", True)),
             run_label=str(payload.get("run_label", "") or ""),
             dataset_tag=str(payload.get("dataset_tag", "") or ""),
@@ -237,7 +241,9 @@ class PretensionValidationExperimentConfig:
     repeat_runs: int = 1
     move_to_reference: bool = True
     include_tracker_displacement: bool = True
-    allow_current_only_when_tracker_missing: bool = True
+    allow_current_only_when_tracker_missing: bool = False
+    allow_no_tracker_test_run: bool = False
+    run_trust_mode: str = "thesis_trusted"
     enable_tip_centering: bool = True
     tip_center_tolerance_mm: float = 3.0
     tip_center_max_iterations: int = 16
@@ -252,6 +258,12 @@ class PretensionValidationExperimentConfig:
     conservative_max_iterations: int = 24
     conservative_step_ticks: int = 1
     conservative_max_cumulative_travel_ticks: int = 80
+    soft_release_step_ticks: int = 2
+    soft_release_max_travel_ticks: int = 40
+    soft_release_current_target_ma: float = 10.0
+    takeup_target_load_proxy_ma: float = 4.0
+    takeup_max_iterations: int = 16
+    staged_packet_retry_budget: int = 3
     characterization_step_ticks: int = 1
     characterization_pair_cycles: int = 1
     current_characterization_sample_count: int = 20
@@ -310,7 +322,9 @@ class PretensionValidationExperimentConfig:
             repeat_runs=max(1, int(payload.get("repeat_runs", 1))),
             move_to_reference=bool(payload.get("move_to_reference", True)),
             include_tracker_displacement=bool(payload.get("include_tracker_displacement", True)),
-            allow_current_only_when_tracker_missing=bool(payload.get("allow_current_only_when_tracker_missing", True)),
+            allow_current_only_when_tracker_missing=bool(payload.get("allow_current_only_when_tracker_missing", False)),
+            allow_no_tracker_test_run=bool(payload.get("allow_no_tracker_test_run", False)),
+            run_trust_mode=str(payload.get("run_trust_mode", "thesis_trusted") or "thesis_trusted").strip().lower(),
             enable_tip_centering=bool(payload.get("enable_tip_centering", True)),
             tip_center_tolerance_mm=max(0.0, float(payload.get("tip_center_tolerance_mm", 3.0))),
             tip_center_max_iterations=max(0, int(payload.get("tip_center_max_iterations", 16))),
@@ -328,6 +342,12 @@ class PretensionValidationExperimentConfig:
                 0,
                 int(payload.get("conservative_max_cumulative_travel_ticks", 80)),
             ),
+            soft_release_step_ticks=max(1, int(payload.get("soft_release_step_ticks", 2))),
+            soft_release_max_travel_ticks=max(0, int(payload.get("soft_release_max_travel_ticks", 40))),
+            soft_release_current_target_ma=max(0.0, float(payload.get("soft_release_current_target_ma", 10.0))),
+            takeup_target_load_proxy_ma=max(0.0, float(payload.get("takeup_target_load_proxy_ma", 4.0))),
+            takeup_max_iterations=max(0, int(payload.get("takeup_max_iterations", 16))),
+            staged_packet_retry_budget=max(1, int(payload.get("staged_packet_retry_budget", 3))),
             characterization_step_ticks=max(1, int(payload.get("characterization_step_ticks", 1))),
             characterization_pair_cycles=max(1, int(payload.get("characterization_pair_cycles", 1))),
             current_characterization_sample_count=max(2, int(payload.get("current_characterization_sample_count", 20))),
@@ -1648,6 +1668,15 @@ class PretensionValidationExperiment(BaseExperiment):
         if bool(self.config.include_tracker_displacement) and tracker_service is not None:
             snapshot_reader = getattr(tracker_service, "peek_snapshot", None)
             snapshot = snapshot_reader() if callable(snapshot_reader) else tracker_service.get_snapshot()
+            if (
+                _pretension_current_only_explicit(self.config)
+                and str(getattr(snapshot, "canonical_state", "") or "") not in {"mock", "connected", "streaming_healthy", "streaming_degraded"}
+            ):
+                session.add_warning(
+                    "Tracker is not connected. Pretension validation is explicitly allowed as current-only/lower-trust testing."
+                )
+                session.metadata.registration_info["runtime_tip_policy"] = None
+                return
             runtime_tip_policy = evaluate_runtime_tip_trust(
                 snapshot=snapshot,
                 workflow=WORKFLOW_PRETENSION_VALIDATION,
@@ -1958,20 +1987,36 @@ class PretensionValidationExperiment(BaseExperiment):
         servo_service = session.context.servo_service
         tracker_service = session.context.tracking_service
         include_tracker = bool(self.config.include_tracker_displacement and tracker_service is not None)
+        if include_tracker:
+            tracker_snapshot = _optional_tracking_snapshot(tracker_service)
+            if tracker_snapshot is None or str(getattr(tracker_snapshot, "canonical_state", "") or "") not in {"mock", "connected", "streaming_healthy", "streaming_degraded"}:
+                include_tracker = False
+                if not _pretension_current_only_explicit(self.config):
+                    raise RuntimeError("Tracker tip pose is required for advanced pretension, but tracking is not connected.")
+                session.add_warning(
+                    "Tracker is not connected; advanced pretension will run in explicitly current-only lower-trust mode. "
+                    "Tip-centering and centered-startup claims are disabled."
+                )
         if bool(self.config.include_tracker_displacement) and tracker_service is None:
-            if not bool(self.config.allow_current_only_when_tracker_missing):
+            if not _pretension_current_only_explicit(self.config):
                 raise RuntimeError("Tracker tip pose is required for advanced pretension, but tracking_service is unavailable.")
-            session.add_warning("Tracker tip pose is unavailable; advanced pretension will run in current-only diagnostic mode.")
+            session.add_warning(
+                "Tracker tip pose is unavailable; advanced pretension will run in explicitly current-only lower-trust mode. "
+                "Tip-centering and centered-startup claims are disabled."
+            )
         if include_tracker and tracker_service.get_snapshot() is None:
             include_tracker = False
-            if not bool(self.config.allow_current_only_when_tracker_missing):
+            if not _pretension_current_only_explicit(self.config):
                 raise RuntimeError("Tracker snapshot is unavailable for advanced pretension.")
-            session.add_warning("Tracker snapshot is unavailable; advanced pretension will run in current-only diagnostic mode.")
+            session.add_warning(
+                "Tracker snapshot is unavailable; advanced pretension will run in explicitly current-only lower-trust mode. "
+                "Tip-centering and centered-startup claims are disabled."
+            )
 
         servo_ids = self._staged_servo_ids(session)
         repeat_runs = max(1, int(self.config.repeat_runs))
         mode_kind = self._reliable_pretension_mode()
-        total_progress = max(1, repeat_runs * (4 if mode_kind == "characterization" else 5))
+        total_progress = max(1, repeat_runs * (5 if mode_kind == "characterization" else 6))
         progress = 0
         run_rows: list[dict[str, Any]] = []
         trace_rows: list[dict[str, Any]] = []
@@ -1997,6 +2042,9 @@ class PretensionValidationExperiment(BaseExperiment):
                 correction_travel_ticks = 0
                 stop_reason = ""
                 converged = False
+                telemetry_event_counts: dict[str, int] = {}
+                packet_retry_count = 0
+                fail_closed_stop_reason: str | None = None
                 trace_start_index = len(trace_rows)
 
                 initial = self._advanced_measurement(
@@ -2005,9 +2053,16 @@ class PretensionValidationExperiment(BaseExperiment):
                     servo_ids=servo_ids,
                     baseline_current_ma_by_servo={},
                     target_xy_mm=target_xy,
+                    trust_status=("runtime_tip" if include_tracker else "current_only_lower_trust"),
                 )
                 start_position_ticks = dict(initial["measured_positions_ticks"])
+                startup_reference_ticks = dict(start_position_ticks)
                 missing_fields.extend(initial["missing_fields"])
+                self._merge_event_counts(telemetry_event_counts, initial.get("telemetry_event_counts"))
+                packet_retry_count += int(initial.get("packet_retry_count", 0) or 0)
+                if initial.get("telemetry_fail_closed_reason"):
+                    fail_closed_stop_reason = str(initial["telemetry_fail_closed_reason"])
+                    reject_reasons.append(fail_closed_stop_reason)
                 row = self._advanced_stage_row(
                     mode_kind=mode_kind,
                     run_index=run_index,
@@ -2021,50 +2076,69 @@ class PretensionValidationExperiment(BaseExperiment):
                 progress += 1
                 session.update_progress(progress, total_progress, {"phase": "initial_state", "run_index": run_index})
 
-                # Explicit start mode: release_200_from_current is preferred for advanced startup.
-                start_rows = []
-                for pair_index, (left_index, right_index) in enumerate(((0, 2), (1, 3)), start=1):
-                    for servo_id in (int(servo_ids[left_index]), int(servo_ids[right_index])):
-                        parameters = self._staged_parameters_for_servo(session, servo_id)
-                        move = servo_service.move_servo_to_pretension_reference(servo_id=int(servo_id), parameters=parameters)
-                        if move.clamped:
-                            clipped_move_count += 1
-                        if move.success:
-                            correction_move_count += 1
-                            correction_travel_ticks += abs(int(move.delta_ticks))
-                        start_rows.append(
-                            {
-                                "pair_label": str(pair_index),
-                                "servo_id": int(servo_id),
-                                "start_mode": str(parameters.start_mode),
-                                "status": str(move.status),
-                                "success": bool(move.success),
-                                "current_position_tick": move.current_position_tick,
-                                "goal_tick": move.goal_tick,
-                                "delta_ticks": int(move.delta_ticks),
-                                "clamped": bool(move.clamped),
-                                "message": move.message,
-                            }
-                        )
+                start_mode_used = self._resolved_staged_start_mode(session, servo_ids)
+                if start_mode_used == "full_release_4095":
+                    start_result = self._run_explicit_full_release_start(
+                        session=session,
+                        servo_service=servo_service,
+                        tracker_service=tracker_service if include_tracker else None,
+                        servo_ids=servo_ids,
+                        run_index=run_index,
+                        target_xy_mm=target_xy,
+                        startup_reference_ticks_by_servo=startup_reference_ticks,
+                        mode_kind=mode_kind,
+                        trace_rows=trace_rows,
+                    )
+                else:
+                    start_result = self._run_soft_release_start(
+                        session=session,
+                        servo_service=servo_service,
+                        tracker_service=tracker_service if include_tracker else None,
+                        servo_ids=servo_ids,
+                        run_index=run_index,
+                        target_xy_mm=target_xy,
+                        startup_reference_ticks_by_servo=startup_reference_ticks,
+                        mode_kind=mode_kind,
+                        trace_rows=trace_rows,
+                    )
+                clipped_move_count += int(start_result.get("clipped_move_count", 0))
+                correction_move_count += int(start_result.get("move_count", 0))
+                correction_travel_ticks += int(start_result.get("travel_ticks", 0))
+                self._merge_event_counts(telemetry_event_counts, start_result.get("telemetry_event_counts"))
+                packet_retry_count += int(start_result.get("packet_retry_count", 0) or 0)
+                if start_result.get("stop_reason") not in (None, "", "soft_release_complete", "full_release_complete"):
+                    fail_closed_stop_reason = str(start_result["stop_reason"])
+                    reject_reasons.append(fail_closed_stop_reason)
                 after_start = self._advanced_measurement(
                     servo_service=servo_service,
                     tracker_service=tracker_service if include_tracker else None,
                     servo_ids=servo_ids,
                     baseline_current_ma_by_servo={},
                     target_xy_mm=target_xy,
+                    startup_reference_ticks_by_servo=startup_reference_ticks,
+                    trust_status=("runtime_tip" if include_tracker else "current_only_lower_trust"),
                 )
+                self._merge_event_counts(telemetry_event_counts, after_start.get("telemetry_event_counts"))
+                packet_retry_count += int(after_start.get("packet_retry_count", 0) or 0)
+                if after_start.get("telemetry_fail_closed_reason"):
+                    fail_closed_stop_reason = str(after_start["telemetry_fail_closed_reason"])
+                    reject_reasons.append(fail_closed_stop_reason)
                 row = self._advanced_stage_row(
                     mode_kind=mode_kind,
                     run_index=run_index,
-                    stage="explicit_start",
+                    stage="low_load_start",
                     target_xy_mm=target_xy,
                     measurement=after_start,
-                    extra={"start_moves": start_rows, "clipped_move_count": clipped_move_count},
+                    extra={
+                        "startup_source": start_mode_used,
+                        "start_result": start_result,
+                        "clipped_move_count": clipped_move_count,
+                    },
                 )
                 trace_rows.append(row)
-                self._add_staged_sample(session, phase="pretension_stage_explicit_start", run_index=run_index, step_index=len(trace_rows) - 1, payload=row)
+                self._add_staged_sample(session, phase="pretension_stage_low_load_start", run_index=run_index, step_index=len(trace_rows) - 1, payload=row)
                 progress += 1
-                session.update_progress(progress, total_progress, {"phase": "explicit_start", "run_index": run_index})
+                session.update_progress(progress, total_progress, {"phase": "low_load_start", "run_index": run_index})
 
                 current_characterization = self._characterize_current_noise(
                     session=session,
@@ -2075,7 +2149,14 @@ class PretensionValidationExperiment(BaseExperiment):
                     target_xy_mm=target_xy,
                     mode_kind=mode_kind,
                     trace_rows=trace_rows,
+                    startup_reference_ticks_by_servo=startup_reference_ticks,
+                    trust_status=("runtime_tip" if include_tracker else "current_only_lower_trust"),
                 )
+                self._merge_event_counts(telemetry_event_counts, current_characterization.get("telemetry_event_counts"))
+                packet_retry_count += int(current_characterization.get("packet_retry_count", 0) or 0)
+                if current_characterization.get("telemetry_fail_closed_reason"):
+                    fail_closed_stop_reason = str(current_characterization["telemetry_fail_closed_reason"])
+                    reject_reasons.append(fail_closed_stop_reason)
                 baseline_current_ma_by_servo = {
                     int(servo_id): float(stats["mean_current_ma"])
                     for servo_id, stats in current_characterization["by_servo"].items()
@@ -2088,7 +2169,17 @@ class PretensionValidationExperiment(BaseExperiment):
                 progress += 1
                 session.update_progress(progress, total_progress, {"phase": "current_characterization", "run_index": run_index})
 
-                if mode_kind == "characterization":
+                if fail_closed_stop_reason:
+                    mode_result = {
+                        "stop_reason": fail_closed_stop_reason,
+                        "move_count": 0,
+                        "travel_ticks": 0,
+                        "clipped_move_count": 0,
+                        "converged": False,
+                    }
+                    stop_reason = fail_closed_stop_reason
+                    converged = False
+                elif mode_kind == "characterization":
                     mode_result = self._run_pair_characterization_sequence(
                         session=session,
                         servo_service=servo_service,
@@ -2098,6 +2189,7 @@ class PretensionValidationExperiment(BaseExperiment):
                         target_xy_mm=target_xy,
                         baseline_current_ma_by_servo=baseline_current_ma_by_servo,
                         trace_rows=trace_rows,
+                        startup_reference_ticks_by_servo=startup_reference_ticks,
                     )
                     clipped_move_count += int(mode_result.get("clipped_move_count", 0))
                     correction_move_count += int(mode_result.get("move_count", 0))
@@ -2105,6 +2197,25 @@ class PretensionValidationExperiment(BaseExperiment):
                     stop_reason = str(mode_result.get("stop_reason") or "characterization_complete")
                     converged = False
                 else:
+                    takeup_result = self._run_symmetric_paired_takeup(
+                        session=session,
+                        servo_service=servo_service,
+                        tracker_service=tracker_service if include_tracker else None,
+                        servo_ids=servo_ids,
+                        run_index=run_index,
+                        target_xy_mm=target_xy,
+                        baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                        startup_reference_ticks_by_servo=startup_reference_ticks,
+                        effective_load_tolerance_ma=effective_load_tolerance_ma,
+                        trace_rows=trace_rows,
+                    )
+                    clipped_move_count += int(takeup_result.get("clipped_move_count", 0))
+                    correction_move_count += int(takeup_result.get("move_count", 0))
+                    correction_travel_ticks += int(takeup_result.get("travel_ticks", 0))
+                    self._merge_event_counts(telemetry_event_counts, takeup_result.get("telemetry_event_counts"))
+                    packet_retry_count += int(takeup_result.get("packet_retry_count", 0) or 0)
+                    if takeup_result.get("stop_reason") not in (None, "", "takeup_complete", "within_load_target"):
+                        reject_reasons.append(str(takeup_result["stop_reason"]))
                     mode_result = self._run_conservative_startup_sequence(
                         session=session,
                         servo_service=servo_service,
@@ -2115,10 +2226,13 @@ class PretensionValidationExperiment(BaseExperiment):
                         baseline_current_ma_by_servo=baseline_current_ma_by_servo,
                         effective_load_tolerance_ma=effective_load_tolerance_ma,
                         trace_rows=trace_rows,
+                        startup_reference_ticks_by_servo=startup_reference_ticks,
                     )
                     clipped_move_count += int(mode_result.get("clipped_move_count", 0))
                     correction_move_count += int(mode_result.get("move_count", 0))
                     correction_travel_ticks += int(mode_result.get("travel_ticks", 0))
+                    self._merge_event_counts(telemetry_event_counts, mode_result.get("telemetry_event_counts"))
+                    packet_retry_count += int(mode_result.get("packet_retry_count", 0) or 0)
                     stop_reason = str(mode_result.get("stop_reason") or "")
                     converged = bool(mode_result.get("converged", False))
                     if stop_reason and stop_reason not in {"converged", "within_tolerance"}:
@@ -2132,6 +2246,8 @@ class PretensionValidationExperiment(BaseExperiment):
                     servo_ids=servo_ids,
                     baseline_current_ma_by_servo=baseline_current_ma_by_servo,
                     target_xy_mm=target_xy,
+                    startup_reference_ticks_by_servo=startup_reference_ticks,
+                    trust_status=("runtime_tip" if include_tracker else "current_only_lower_trust"),
                 )
                 if float(self.config.settle_verify_time_s) > 0.0:
                     session.context.sleep_fn(float(self.config.settle_verify_time_s))
@@ -2141,8 +2257,16 @@ class PretensionValidationExperiment(BaseExperiment):
                     servo_ids=servo_ids,
                     baseline_current_ma_by_servo=baseline_current_ma_by_servo,
                     target_xy_mm=target_xy,
+                    startup_reference_ticks_by_servo=startup_reference_ticks,
+                    trust_status=("runtime_tip" if include_tracker else "current_only_lower_trust"),
                 )
+                self._merge_event_counts(telemetry_event_counts, pre_settle.get("telemetry_event_counts"))
+                self._merge_event_counts(telemetry_event_counts, final.get("telemetry_event_counts"))
+                packet_retry_count += int(pre_settle.get("packet_retry_count", 0) or 0)
+                packet_retry_count += int(final.get("packet_retry_count", 0) or 0)
                 missing_fields.extend(final["missing_fields"])
+                if final.get("telemetry_fail_closed_reason"):
+                    reject_reasons.append(str(final["telemetry_fail_closed_reason"]))
                 settle_tip_drift_mm = self._distance_mm(pre_settle.get("tip_xyz_mm"), final.get("tip_xyz_mm"))
                 final_position_ticks = dict(final["measured_positions_ticks"])
                 final_currents_ma = dict(final["raw_current_ma"])
@@ -2161,12 +2285,21 @@ class PretensionValidationExperiment(BaseExperiment):
                     and float(tip_xy_offset_mm) > float(self.config.accept_max_final_tip_xy_offset_mm)
                 ):
                     reject_reasons.append("tip_center_error")
+                quality_flags: list[str] = []
                 if (
                     mode_kind != "characterization"
                     and final.get("load_balance_error_ma") is not None
                     and float(final["load_balance_error_ma"]) > effective_load_tolerance_ma
                 ):
+                    quality_flags.append("load_proxy_imbalance_flagged")
+                if (
+                    mode_kind != "characterization"
+                    and final.get("load_balance_error_ma") is not None
+                    and float(final["load_balance_error_ma"]) > float(self.config.accept_max_load_balance_error_ma)
+                ):
                     reject_reasons.append("load_balance_error")
+                if mode_kind != "characterization" and not include_tracker:
+                    reject_reasons.append("current_only_lower_trust")
                 if include_tracker and tip_xy_offset_mm is None and not bool(self.config.allow_current_only_when_tracker_missing):
                     reject_reasons.append("missing_tip_pose")
                 reject_reasons = sorted(set(reason for reason in reject_reasons if reason))
@@ -2208,8 +2341,11 @@ class PretensionValidationExperiment(BaseExperiment):
                     "baseline_current_ma_by_servo": {str(k): float(v) for k, v in baseline_current_ma_by_servo.items()},
                     "final_current_ma_by_servo": {str(k): v for k, v in final_currents_ma.items()},
                     "current_above_baseline_ma_by_servo": {str(k): v for k, v in current_above_baseline_ma.items()},
+                    "load_proxy_current_ma_by_servo": {str(k): v for k, v in current_above_baseline_ma.items()},
                     "start_position_ticks_by_servo": {str(k): v for k, v in start_position_ticks.items()},
                     "final_position_ticks_by_servo": {str(k): v for k, v in final_position_ticks.items()},
+                    "startup_reference_ticks_by_servo": {str(k): v for k, v in startup_reference_ticks.items()},
+                    "final_tendon_displacement_mm_by_servo": self._json_safe_keyed(final.get("tendon_displacement_mm") or {}),
                     "load_balance_error_ma": final.get("load_balance_error_ma"),
                     "pair_balance_error_ma": final.get("pair_balance_error_ma"),
                     "initial_tip_xyz_mm": initial.get("tip_xyz_mm"),
@@ -2222,7 +2358,12 @@ class PretensionValidationExperiment(BaseExperiment):
                     "correction_travel_ticks": int(correction_travel_ticks),
                     "quality_score_0_100": float(quality_score),
                     "quality_components": dict(quality_components),
+                    "quality_flags": sorted(set(quality_flags)),
                     "missing_fields": sorted(set(missing_fields)),
+                    "telemetry_event_counts": dict(sorted(telemetry_event_counts.items())),
+                    "packet_retry_count": int(packet_retry_count),
+                    "trust_status": "runtime_tip" if include_tracker else "current_only_lower_trust",
+                    "startup_source": start_mode_used,
                     "trace_sample_count": len(run_trace_rows),
                 }
                 run_rows.append(run_row)
@@ -2237,8 +2378,11 @@ class PretensionValidationExperiment(BaseExperiment):
                         "reject_reasons": reject_reasons,
                         "quality_score_0_100": float(quality_score),
                         "quality_components": dict(quality_components),
+                        "quality_flags": sorted(set(quality_flags)),
                         "settle_tip_drift_mm": settle_tip_drift_mm,
                         "stop_reason": run_row["stop_reason"],
+                        "telemetry_event_counts": dict(sorted(telemetry_event_counts.items())),
+                        "packet_retry_count": int(packet_retry_count),
                     },
                 )
                 trace_rows.append(row)
@@ -2252,13 +2396,14 @@ class PretensionValidationExperiment(BaseExperiment):
                     {"phase": "settle_verify", "run_index": run_index, "quality_score_0_100": float(quality_score)},
                 )
 
+        final_tracking_snapshot = tracker_service.get_snapshot() if tracker_service is not None else None
         runtime_tip_policy = (
             evaluate_runtime_tip_trust(
-                snapshot=tracker_service.get_snapshot(),
+                snapshot=final_tracking_snapshot,
                 workflow=WORKFLOW_PRETENSION_VALIDATION,
                 allow_lower_trust=True,
             )
-            if tracker_service is not None
+            if final_tracking_snapshot is not None
             else None
         )
         staged_metrics = self._reliable_pretension_metrics(
@@ -2281,28 +2426,57 @@ class PretensionValidationExperiment(BaseExperiment):
         staged_metrics["thesis_trusted_runtime_tip"] = (
             bool(runtime_tip_policy.thesis_trusted) if runtime_tip_policy is not None else False
         )
+        staged_metrics["tracker_connected"] = bool(tracker_service is not None)
+        staged_metrics["registration_available"] = bool(
+            final_tracking_snapshot is not None and getattr(final_tracking_snapshot, "registration_state", None) == "loaded"
+        )
+        staged_metrics["run_trust_mode"] = "thesis_trusted" if runtime_tip_policy is not None and runtime_tip_policy.thesis_trusted else "current_only"
+        staged_metrics["valid_for_model_training"] = False
+        staged_metrics["valid_for_thesis_repeatability"] = bool(
+            runtime_tip_policy is not None and runtime_tip_policy.thesis_trusted
+        )
+        staged_metrics["not_thesis_trusted"] = not bool(
+            runtime_tip_policy is not None and runtime_tip_policy.thesis_trusted
+        )
+        staged_metrics["active_segment"] = {
+            "key": session.context.settings.robot.active_segment_key(),
+            "label": session.context.settings.robot.active_segment_label(),
+            "servo_ids": session.context.settings.robot.active_segment_servo_ids(),
+            "pairs": session.context.settings.robot.active_segment_pairs(),
+            "robot_mode": session.context.settings.robot.mode,
+        }
+        staged_metrics["operating_context"] = session.context.settings.robot.operating_context().metadata()
         session.metrics.update(staged_metrics)
 
     def _execute_legacy_single_segment_staged(self, session: ExperimentSession) -> None:
         servo_service = session.context.servo_service
         tracker_service = session.context.tracking_service
         include_tracker = bool(self.config.include_tracker_displacement and tracker_service is not None)
+        if include_tracker:
+            tracker_snapshot = _optional_tracking_snapshot(tracker_service)
+            if tracker_snapshot is None or str(getattr(tracker_snapshot, "canonical_state", "") or "") not in {"mock", "connected", "streaming_healthy", "streaming_degraded"}:
+                include_tracker = False
+                if not _pretension_current_only_explicit(self.config):
+                    raise RuntimeError("Tracker displacement is required for staged pretension, but tracking is not connected.")
+                session.add_warning(
+                    "Tracker is not connected; staged pretension will run in explicitly current-only lower-trust mode."
+                )
         if bool(self.config.include_tracker_displacement) and tracker_service is None:
-            if not bool(self.config.allow_current_only_when_tracker_missing):
+            if not _pretension_current_only_explicit(self.config):
                 raise RuntimeError(
                     "Tracker displacement is required for staged pretension, but tracking_service is unavailable."
                 )
             session.add_warning(
-                "Tracker displacement is unavailable; staged pretension will run in current-only mode."
+                "Tracker displacement is unavailable; staged pretension will run in explicitly current-only lower-trust mode."
             )
         if include_tracker:
             snapshot = tracker_service.get_snapshot()
             if snapshot is None:
                 include_tracker = False
-                if not bool(self.config.allow_current_only_when_tracker_missing):
+                if not _pretension_current_only_explicit(self.config):
                     raise RuntimeError("Tracker snapshot is unavailable for staged pretension.")
                 session.add_warning(
-                    "Tracker snapshot is unavailable at staged pretension start; falling back to current-only mode."
+                    "Tracker snapshot is unavailable at staged pretension start; falling back to explicitly current-only lower-trust mode."
                 )
 
         servo_ids = self._staged_servo_ids(session)
@@ -3117,14 +3291,20 @@ class PretensionValidationExperiment(BaseExperiment):
     def _staged_servo_ids(self, session: ExperimentSession) -> list[int]:
         configured_ids = [int(value) for value in (self.config.servo_ids or []) if int(value) > 0]
         if not configured_ids:
-            configured_ids = [int(value) for value in (session.context.settings.robot.servo_ids or []) if int(value) > 0]
+            configured_ids = [
+                int(value)
+                for value in session.context.settings.robot.active_segment_servo_ids()
+                if int(value) > 0
+            ]
         deduped: list[int] = []
         for servo_id in configured_ids:
             if servo_id not in deduped:
                 deduped.append(int(servo_id))
         if len(deduped) != 4:
+            active_label = session.context.settings.robot.active_segment_label()
             raise RuntimeError(
-                "Staged pretension validation requires exactly 4 servo IDs for the single-segment tendon set."
+                "Staged pretension validation requires exactly 4 servo IDs for the active single-segment tendon set "
+                f"({active_label}); found {deduped}."
             )
         return deduped
 
@@ -3132,7 +3312,7 @@ class PretensionValidationExperiment(BaseExperiment):
         defaults = session.context.servo_service.default_pretension_parameters(int(servo_id))
         default_start_mode = str(defaults.start_mode)
         if str(getattr(self.config, "staged_strategy", "") or "").strip().lower() != "legacy":
-            default_start_mode = "release_200_from_current"
+            default_start_mode = "current_position"
         return PretensionParameters(
             untensioned_reference_tick=(
                 int(self.config.untensioned_reference_tick)
@@ -3201,6 +3381,294 @@ class PretensionValidationExperiment(BaseExperiment):
             return None
         return [float(translation[0]), float(translation[1]), float(translation[2])]
 
+    @staticmethod
+    def _merge_event_counts(target: dict[str, int], source: dict[str, Any] | None) -> None:
+        for key, value in dict(source or {}).items():
+            target[str(key)] = int(target.get(str(key), 0)) + int(value or 0)
+
+    def _resolved_staged_start_mode(self, session: ExperimentSession, servo_ids: list[int]) -> str:
+        modes = {
+            str(self._staged_parameters_for_servo(session, int(servo_id)).start_mode).strip().lower()
+            for servo_id in servo_ids
+        }
+        if "full_release_4095" in modes:
+            return "full_release_4095"
+        if "manual_startup_artifact" in modes:
+            return "manual_startup_artifact"
+        if "release_200_from_current" in modes:
+            return "release_200_from_current"
+        return "current_position"
+
+    @staticmethod
+    def _classify_telemetry_error(error: Any) -> str | None:
+        text = str(error or "").strip().lower()
+        if not text:
+            return None
+        if "incorrect status packet" in text:
+            return "incorrect_status_packet"
+        if "no status packet" in text:
+            return "no_status_packet"
+        if "txrx" in text or "communication" in text or "packet" in text:
+            return "packet_status_error"
+        return "telemetry_error"
+
+    def _telemetry_policy_for_snapshot(self, servo_service, telemetry: dict[int, Any], servo_ids: list[int]) -> dict[str, Any]:
+        counts: dict[str, int] = {}
+        missing_current: list[int] = []
+        missing_position: list[int] = []
+        stale: list[int] = []
+        hard_errors: list[int] = []
+        for servo_id in servo_ids:
+            entry = telemetry.get(int(servo_id))
+            if entry is None:
+                missing_current.append(int(servo_id))
+                missing_position.append(int(servo_id))
+                counts["missing_servo"] = int(counts.get("missing_servo", 0)) + 1
+                continue
+            if entry.present_current_ma is None:
+                missing_current.append(int(servo_id))
+            if entry.present_position is None:
+                missing_position.append(int(servo_id))
+            classified = self._classify_telemetry_error(getattr(entry, "telemetry_error", None))
+            if classified:
+                counts[classified] = int(counts.get(classified, 0)) + 1
+            if getattr(entry, "hardware_error", None) or getattr(entry, "hardware_error_code", None) not in (None, 0):
+                hard_errors.append(int(servo_id))
+                counts["hardware_error"] = int(counts.get("hardware_error", 0)) + 1
+            try:
+                servo_service.safety_guard.validate_telemetry_freshness(getattr(entry, "last_read_monotonic_s", None))
+            except Exception:
+                stale.append(int(servo_id))
+                counts["stale_telemetry"] = int(counts.get("stale_telemetry", 0)) + 1
+        if missing_current and missing_position:
+            counts["missing_current_and_position"] = int(counts.get("missing_current_and_position", 0)) + 1
+        elif missing_current:
+            counts["missing_current"] = int(counts.get("missing_current", 0)) + 1
+        elif missing_position:
+            counts["missing_position"] = int(counts.get("missing_position", 0)) + 1
+        fail_reason = None
+        retryable = False
+        if stale:
+            fail_reason = "stale_telemetry"
+        elif hard_errors:
+            fail_reason = "safety_limit_rejected"
+        elif missing_current and missing_position:
+            fail_reason = "missing_current_and_position"
+            retryable = True
+        elif missing_current:
+            fail_reason = "missing_current"
+            retryable = True
+        elif missing_position:
+            fail_reason = "missing_position"
+            retryable = True
+        else:
+            packet_reasons = [
+                key
+                for key in ("no_status_packet", "incorrect_status_packet", "packet_status_error", "telemetry_error")
+                if counts.get(key)
+            ]
+            if packet_reasons:
+                fail_reason = str(packet_reasons[0])
+                retryable = fail_reason != "telemetry_error"
+        return {
+            "ok": fail_reason is None,
+            "retryable": bool(retryable),
+            "fail_reason": fail_reason,
+            "event_counts": counts,
+            "missing_current_servo_ids": missing_current,
+            "missing_position_servo_ids": missing_position,
+            "stale_servo_ids": stale,
+        }
+
+    def _read_live_telemetry_with_policy(self, servo_service, servo_ids: list[int]) -> tuple[dict[int, Any], dict[str, Any]]:
+        budget = max(1, int(self.config.staged_packet_retry_budget))
+        merged_counts: dict[str, int] = {}
+        last_telemetry: dict[int, Any] = {}
+        last_policy: dict[str, Any] = {}
+        retry_count = 0
+        for _attempt in range(1, budget + 1):
+            try:
+                telemetry = servo_service.read_live_telemetry(servo_ids)
+            except Exception as exc:
+                reason = self._classify_telemetry_error(str(exc)) or "packet_status_error"
+                telemetry = {}
+                last_policy = {
+                    "ok": False,
+                    "retryable": True,
+                    "fail_reason": reason,
+                    "event_counts": {reason: 1},
+                    "missing_current_servo_ids": list(servo_ids),
+                    "missing_position_servo_ids": list(servo_ids),
+                    "stale_servo_ids": [],
+                }
+            else:
+                last_policy = self._telemetry_policy_for_snapshot(servo_service, telemetry, servo_ids)
+            last_telemetry = telemetry
+            self._merge_event_counts(merged_counts, last_policy.get("event_counts"))
+            if last_policy.get("ok"):
+                return last_telemetry, {
+                    **last_policy,
+                    "event_counts": merged_counts,
+                    "packet_retry_count": retry_count,
+                    "telemetry_fail_closed_reason": None,
+                }
+            if last_policy.get("fail_reason") == "stale_telemetry":
+                return last_telemetry, {
+                    **last_policy,
+                    "event_counts": merged_counts,
+                    "packet_retry_count": retry_count,
+                    "telemetry_fail_closed_reason": "stale_telemetry",
+                }
+            if not bool(last_policy.get("retryable")):
+                return last_telemetry, {
+                    **last_policy,
+                    "event_counts": merged_counts,
+                    "packet_retry_count": retry_count,
+                    "telemetry_fail_closed_reason": last_policy.get("fail_reason"),
+                }
+            retry_count += 1
+        reason = str(last_policy.get("fail_reason") or "packet_retry_budget_exhausted")
+        if retry_count >= budget:
+            reason = "packet_retry_budget_exhausted"
+        merged_counts[reason] = int(merged_counts.get(reason, 0)) + 1
+        return last_telemetry, {
+            **last_policy,
+            "event_counts": merged_counts,
+            "packet_retry_count": retry_count,
+            "telemetry_fail_closed_reason": reason,
+        }
+
+    def _preflight_raw_targets(
+        self,
+        *,
+        servo_service,
+        telemetry: dict[int, Any],
+        targets_by_servo: dict[int, int],
+    ) -> tuple[bool, dict[str, Any]]:
+        details: dict[str, Any] = {}
+        for servo_id, target_tick in targets_by_servo.items():
+            entry = telemetry.get(int(servo_id))
+            if entry is None or entry.present_position is None:
+                return False, {"stop_reason": "missing_position", "details": details}
+            assessment = servo_service.assess_motion(
+                int(servo_id),
+                require_calibrated_bounds=False,
+                telemetry=entry,
+            )
+            details[str(int(servo_id))] = {
+                "ready": bool(assessment.ready),
+                "reason": assessment.reason,
+                "safe_min_tick": assessment.safe_min_tick,
+                "safe_max_tick": assessment.safe_max_tick,
+                "target_tick": int(target_tick),
+                "current_position_tick": int(entry.present_position),
+            }
+            if not assessment.ready:
+                reason = str(assessment.reason or "").lower()
+                if "torque" in reason and "enable" in reason:
+                    return False, {"stop_reason": "torque_enable_failed", "details": details}
+                if "stale" in reason:
+                    return False, {"stop_reason": "stale_telemetry", "details": details}
+                return False, {"stop_reason": "safety_limit_rejected", "details": details}
+            if assessment.safe_min_tick is None or assessment.safe_max_tick is None:
+                return False, {"stop_reason": "safety_limit_rejected", "details": details}
+            if int(target_tick) < int(assessment.safe_min_tick) or int(target_tick) > int(assessment.safe_max_tick):
+                return False, {"stop_reason": "safety_limit_rejected", "details": details}
+        return True, {"stop_reason": "", "details": details}
+
+    def _apply_group_command(
+        self,
+        *,
+        servo_service,
+        telemetry: dict[int, Any],
+        targets_by_servo: dict[int, int],
+        reason: str,
+        require_opposed_pair: bool = False,
+    ) -> dict[str, Any]:
+        targets = {int(k): int(v) for k, v in dict(targets_by_servo or {}).items()}
+        if not targets:
+            return {"success": False, "stop_reason": "no_command", "move_count": 0, "travel_ticks": 0, "commanded_positions_ticks": {}}
+        if require_opposed_pair and len(targets) == 2:
+            deltas = [
+                int(targets[int(servo_id)]) - int(telemetry[int(servo_id)].present_position)
+                for servo_id in targets
+                if telemetry.get(int(servo_id)) is not None and telemetry[int(servo_id)].present_position is not None
+            ]
+            if len(deltas) != 2 or deltas[0] == 0 or deltas[1] == 0 or (deltas[0] > 0) == (deltas[1] > 0):
+                return {
+                    "success": False,
+                    "stop_reason": "safety_limit_rejected",
+                    "message": "Paired correction commands must move opposing tendons in opposite raw-count directions.",
+                    "move_count": 0,
+                    "travel_ticks": 0,
+                    "commanded_positions_ticks": targets,
+                }
+        ok, preflight = self._preflight_raw_targets(
+            servo_service=servo_service,
+            telemetry=telemetry,
+            targets_by_servo=targets,
+        )
+        if not ok:
+            return {
+                "success": False,
+                "stop_reason": str(preflight.get("stop_reason") or "safety_limit_rejected"),
+                "preflight": preflight,
+                "move_count": 0,
+                "travel_ticks": 0,
+                "commanded_positions_ticks": targets,
+            }
+        start_positions = {int(servo_id): int(telemetry[int(servo_id)].present_position) for servo_id in targets}
+        try:
+            if hasattr(servo_service, "_write_goal_positions"):
+                servo_service._write_goal_positions(targets)
+            else:
+                for servo_id, target_tick in targets.items():
+                    servo_service.move_servo_to_raw_target(
+                        servo_id=int(servo_id),
+                        target_tick=int(target_tick),
+                        reason=reason,
+                    )
+        except Exception as exc:
+            after_failure = servo_service.read_live_telemetry(list(targets))
+            reached = {
+                int(servo_id): (
+                    after_failure.get(int(servo_id)) is not None
+                    and after_failure[int(servo_id)].present_position == int(target_tick)
+                )
+                for servo_id, target_tick in targets.items()
+            }
+            return {
+                "success": False,
+                "stop_reason": "partial_pair_failure" if any(reached.values()) else "safety_limit_rejected",
+                "message": str(exc),
+                "preflight": preflight,
+                "reached_targets": reached,
+                "move_count": sum(1 for reached_target in reached.values() if reached_target),
+                "travel_ticks": sum(abs(int(targets[sid]) - int(start_positions[sid])) for sid in targets if reached.get(sid)),
+                "commanded_positions_ticks": targets,
+            }
+        after = servo_service.read_live_telemetry(list(targets))
+        reached = {
+            int(servo_id): (
+                after.get(int(servo_id)) is not None
+                and after[int(servo_id)].present_position == int(target_tick)
+            )
+            for servo_id, target_tick in targets.items()
+        }
+        move_count = sum(1 for reached_target in reached.values() if reached_target)
+        success = move_count == len(targets)
+        return {
+            "success": bool(success),
+            "stop_reason": "" if success else "partial_pair_failure",
+            "preflight": preflight,
+            "reached_targets": reached,
+            "move_count": int(move_count),
+            "travel_ticks": sum(abs(int(targets[sid]) - int(start_positions[sid])) for sid, did_reach in reached.items() if did_reach),
+            "commanded_positions_ticks": targets,
+            "delta_ticks": {str(sid): int(targets[sid]) - int(start_positions[sid]) for sid in targets},
+            "move_status": {str(sid): ("moved" if reached[sid] else "not_reached") for sid in targets},
+        }
+
     def _target_xy(self) -> list[float]:
         target_xy = list(self.config.tip_target_xy_mm or [0.0, 0.0])
         if len(target_xy) < 2:
@@ -3229,6 +3697,274 @@ class PretensionValidationExperiment(BaseExperiment):
                 + (float(left_xyz_mm[2]) - float(right_xyz_mm[2])) ** 2
             )
         )
+
+    def _run_soft_release_start(
+        self,
+        *,
+        session: ExperimentSession,
+        servo_service,
+        tracker_service,
+        servo_ids: list[int],
+        run_index: int,
+        target_xy_mm: list[float],
+        startup_reference_ticks_by_servo: dict[int, int | None],
+        mode_kind: str,
+        trace_rows: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        result = {
+            "stop_reason": "soft_release_complete",
+            "move_count": 0,
+            "travel_ticks": 0,
+            "clipped_move_count": 0,
+            "released_ticks_by_servo": {str(int(servo_id)): 0 for servo_id in servo_ids},
+            "low_load_reached_by_servo": {str(int(servo_id)): False for servo_id in servo_ids},
+            "packet_retry_count": 0,
+            "telemetry_event_counts": {},
+        }
+        step = max(1, int(self.config.soft_release_step_ticks))
+        max_travel = max(0, int(self.config.soft_release_max_travel_ticks))
+        target_current = max(0.0, float(self.config.soft_release_current_target_ma))
+        if max_travel <= 0:
+            result["stop_reason"] = "soft_release_disabled"
+            return result
+        iterations = max(1, int(math.ceil(max_travel / float(step))))
+        for iteration in range(iterations):
+            session.raise_if_stop_requested()
+            measurement = self._advanced_measurement(
+                servo_service=servo_service,
+                tracker_service=tracker_service,
+                servo_ids=servo_ids,
+                baseline_current_ma_by_servo={},
+                target_xy_mm=target_xy_mm,
+                startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+                trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
+            )
+            self._merge_event_counts(result["telemetry_event_counts"], measurement.get("telemetry_event_counts"))
+            result["packet_retry_count"] += int(measurement.get("packet_retry_count", 0) or 0)
+            if measurement.get("telemetry_fail_closed_reason"):
+                result["stop_reason"] = str(measurement["telemetry_fail_closed_reason"])
+                return result
+            raw_current = dict(measurement.get("raw_current_ma") or {})
+            positions = dict(measurement.get("measured_positions_ticks") or {})
+            release_targets: dict[int, int] = {}
+            for servo_id in servo_ids:
+                current = raw_current.get(int(servo_id))
+                position = positions.get(int(servo_id))
+                released = int(result["released_ticks_by_servo"][str(int(servo_id))])
+                low_load = current is not None and abs(float(current)) <= target_current
+                capped = released >= max_travel
+                result["low_load_reached_by_servo"][str(int(servo_id))] = bool(low_load)
+                if low_load or capped or position is None:
+                    continue
+                delta = min(step, max_travel - released)
+                release_targets[int(servo_id)] = int(position) + int(delta)
+            row = self._advanced_stage_row(
+                mode_kind=mode_kind,
+                run_index=run_index,
+                stage="soft_release_check",
+                target_xy_mm=target_xy_mm,
+                measurement=measurement,
+                extra={
+                    "iteration": int(iteration + 1),
+                    "soft_release_current_target_ma": float(target_current),
+                    "released_ticks_by_servo": dict(result["released_ticks_by_servo"]),
+                    "low_load_reached_by_servo": dict(result["low_load_reached_by_servo"]),
+                },
+            )
+            trace_rows.append(row)
+            self._add_staged_sample(session, phase="pretension_soft_release", run_index=run_index, step_index=len(trace_rows) - 1, payload=row)
+            if not release_targets:
+                return result
+            telemetry, policy = self._read_live_telemetry_with_policy(servo_service, servo_ids)
+            self._merge_event_counts(result["telemetry_event_counts"], policy.get("event_counts"))
+            result["packet_retry_count"] += int(policy.get("packet_retry_count", 0) or 0)
+            if policy.get("telemetry_fail_closed_reason"):
+                result["stop_reason"] = str(policy["telemetry_fail_closed_reason"])
+                return result
+            move = self._apply_group_command(
+                servo_service=servo_service,
+                telemetry=telemetry,
+                targets_by_servo=release_targets,
+                reason="pretension_soft_release_low_load_start",
+            )
+            result["move_count"] += int(move.get("move_count", 0))
+            result["travel_ticks"] += int(move.get("travel_ticks", 0))
+            if not bool(move.get("success")):
+                result["stop_reason"] = str(move.get("stop_reason") or "safety_limit_rejected")
+                return result
+            for sid, delta in dict(move.get("delta_ticks") or {}).items():
+                result["released_ticks_by_servo"][str(int(sid))] = (
+                    int(result["released_ticks_by_servo"][str(int(sid))]) + abs(int(delta))
+                )
+        for servo_id in servo_ids:
+            if int(result["released_ticks_by_servo"][str(int(servo_id))]) >= max_travel:
+                result["low_load_reached_by_servo"][str(int(servo_id))] = bool(
+                    result["low_load_reached_by_servo"][str(int(servo_id))]
+                )
+        return result
+
+    def _run_explicit_full_release_start(
+        self,
+        *,
+        session: ExperimentSession,
+        servo_service,
+        tracker_service,
+        servo_ids: list[int],
+        run_index: int,
+        target_xy_mm: list[float],
+        startup_reference_ticks_by_servo: dict[int, int | None],
+        mode_kind: str,
+        trace_rows: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        telemetry, policy = self._read_live_telemetry_with_policy(servo_service, servo_ids)
+        result = {
+            "stop_reason": "full_release_complete",
+            "move_count": 0,
+            "travel_ticks": 0,
+            "clipped_move_count": 0,
+            "packet_retry_count": int(policy.get("packet_retry_count", 0) or 0),
+            "telemetry_event_counts": dict(policy.get("event_counts") or {}),
+            "explicit_full_release": True,
+        }
+        if policy.get("telemetry_fail_closed_reason"):
+            result["stop_reason"] = str(policy["telemetry_fail_closed_reason"])
+            return result
+        targets: dict[int, int] = {}
+        for servo_id in servo_ids:
+            parameters = self._staged_parameters_for_servo(session, int(servo_id))
+            window = servo_service.pretension_window_for_servo(servo_id=int(servo_id), parameters=parameters)
+            current_position = telemetry[int(servo_id)].present_position
+            if current_position is None:
+                result["stop_reason"] = "missing_position"
+                return result
+            targets[int(servo_id)] = int(window.effective_max_target_tick)
+            if int(window.effective_max_target_tick) != int(parameters.untensioned_reference_tick):
+                result["clipped_move_count"] += 1
+        move = self._apply_group_command(
+            servo_service=servo_service,
+            telemetry=telemetry,
+            targets_by_servo=targets,
+            reason="pretension_explicit_full_release_start",
+        )
+        result["move_count"] += int(move.get("move_count", 0))
+        result["travel_ticks"] += int(move.get("travel_ticks", 0))
+        if not bool(move.get("success")):
+            result["stop_reason"] = str(move.get("stop_reason") or "safety_limit_rejected")
+        measurement = self._advanced_measurement(
+            servo_service=servo_service,
+            tracker_service=tracker_service,
+            servo_ids=servo_ids,
+            baseline_current_ma_by_servo={},
+            target_xy_mm=target_xy_mm,
+            commanded_positions_ticks=targets,
+            startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+            trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
+        )
+        row = self._advanced_stage_row(
+            mode_kind=mode_kind,
+            run_index=run_index,
+            stage="explicit_full_release",
+            target_xy_mm=target_xy_mm,
+            measurement=measurement,
+            extra={"move": move, **result},
+        )
+        trace_rows.append(row)
+        self._add_staged_sample(session, phase="pretension_explicit_full_release", run_index=run_index, step_index=len(trace_rows) - 1, payload=row)
+        return result
+
+    def _run_symmetric_paired_takeup(
+        self,
+        *,
+        session: ExperimentSession,
+        servo_service,
+        tracker_service,
+        servo_ids: list[int],
+        run_index: int,
+        target_xy_mm: list[float],
+        baseline_current_ma_by_servo: dict[int, float],
+        startup_reference_ticks_by_servo: dict[int, int | None],
+        effective_load_tolerance_ma: float,
+        trace_rows: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        result = {"move_count": 0, "travel_ticks": 0, "clipped_move_count": 0, "stop_reason": "takeup_complete", "packet_retry_count": 0, "telemetry_event_counts": {}}
+        step = max(1, int(self.config.conservative_step_ticks))
+        target_load = max(float(self.config.takeup_target_load_proxy_ma), float(effective_load_tolerance_ma) * 0.5)
+        max_travel = max(0, int(self.config.conservative_max_cumulative_travel_ticks))
+        for iteration in range(max(0, int(self.config.takeup_max_iterations))):
+            session.raise_if_stop_requested()
+            measurement = self._advanced_measurement(
+                servo_service=servo_service,
+                tracker_service=tracker_service,
+                servo_ids=servo_ids,
+                baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                target_xy_mm=target_xy_mm,
+                startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+                trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
+            )
+            self._merge_event_counts(result["telemetry_event_counts"], measurement.get("telemetry_event_counts"))
+            result["packet_retry_count"] += int(measurement.get("packet_retry_count", 0) or 0)
+            if measurement.get("telemetry_fail_closed_reason"):
+                result["stop_reason"] = str(measurement["telemetry_fail_closed_reason"])
+                return result
+            loads = dict(measurement.get("load_proxy_current_ma") or measurement.get("current_above_baseline_ma") or {})
+            valid_loads = [float(loads.get(int(servo_id))) for servo_id in servo_ids if loads.get(int(servo_id)) is not None]
+            if len(valid_loads) == len(servo_ids) and min(valid_loads) >= target_load:
+                result["stop_reason"] = "within_load_target"
+                return result
+            if max_travel > 0 and int(result["travel_ticks"]) >= max_travel:
+                result["stop_reason"] = "travel_budget_exhausted"
+                return result
+            telemetry, policy = self._read_live_telemetry_with_policy(servo_service, servo_ids)
+            self._merge_event_counts(result["telemetry_event_counts"], policy.get("event_counts"))
+            result["packet_retry_count"] += int(policy.get("packet_retry_count", 0) or 0)
+            if policy.get("telemetry_fail_closed_reason"):
+                result["stop_reason"] = str(policy["telemetry_fail_closed_reason"])
+                return result
+            targets = {
+                int(servo_id): int(telemetry[int(servo_id)].present_position) - step
+                for servo_id in servo_ids
+                if telemetry.get(int(servo_id)) is not None and telemetry[int(servo_id)].present_position is not None
+            }
+            if len(targets) != len(servo_ids):
+                result["stop_reason"] = "missing_position"
+                return result
+            move = self._apply_group_command(
+                servo_service=servo_service,
+                telemetry=telemetry,
+                targets_by_servo=targets,
+                reason="pretension_symmetric_paired_takeup",
+            )
+            result["move_count"] += int(move.get("move_count", 0))
+            result["travel_ticks"] += int(move.get("travel_ticks", 0))
+            if not bool(move.get("success")):
+                result["stop_reason"] = str(move.get("stop_reason") or "partial_pair_failure")
+                return result
+            after = self._advanced_measurement(
+                servo_service=servo_service,
+                tracker_service=tracker_service,
+                servo_ids=servo_ids,
+                baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                target_xy_mm=target_xy_mm,
+                commanded_positions_ticks=targets,
+                startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+                trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
+            )
+            row = self._advanced_stage_row(
+                mode_kind="conservative_startup",
+                run_index=run_index,
+                stage="symmetric_paired_takeup",
+                target_xy_mm=target_xy_mm,
+                measurement=after,
+                extra={
+                    "iteration": int(iteration + 1),
+                    "takeup_target_load_proxy_ma": float(target_load),
+                    "move": move,
+                },
+            )
+            trace_rows.append(row)
+            self._add_staged_sample(session, phase="pretension_symmetric_takeup", run_index=run_index, step_index=len(trace_rows) - 1, payload=row)
+        result["stop_reason"] = "takeup_iteration_limit"
+        return result
 
     def _reliable_pretension_mode(self) -> str:
         mode = str(getattr(self.config, "mode", "") or "").strip().lower()
@@ -3275,33 +4011,58 @@ class PretensionValidationExperiment(BaseExperiment):
         baseline_current_ma_by_servo: dict[int, float],
         target_xy_mm: list[float],
         commanded_positions_ticks: dict[int, int | None] | None = None,
+        startup_reference_ticks_by_servo: dict[int, int | None] | None = None,
+        trust_status: str = "runtime_tip",
     ) -> dict[str, Any]:
-        telemetry = servo_service.read_live_telemetry(servo_ids)
+        telemetry, telemetry_policy = self._read_live_telemetry_with_policy(servo_service, servo_ids)
         positions: dict[int, int | None] = {}
         raw_current: dict[int, int | None] = {}
+        signed_raw_current: dict[int, int | None] = {}
         filtered_current: dict[int, float | None] = {}
         baseline_current: dict[int, float | None] = {}
         above_baseline: dict[int, float | None] = {}
+        tendon_displacement_mm: dict[int, float | None] = {}
         current_validity: dict[int, str] = {}
         position_error: dict[int, int | None] = {}
         missing_fields: list[str] = []
+        startup_refs = dict(startup_reference_ticks_by_servo or {})
         for servo_id in servo_ids:
-            entry = telemetry[int(servo_id)]
+            entry = telemetry.get(int(servo_id))
+            if entry is None:
+                positions[int(servo_id)] = None
+                raw_current[int(servo_id)] = None
+                signed_raw_current[int(servo_id)] = None
+                baseline_current[int(servo_id)] = baseline_current_ma_by_servo.get(int(servo_id))
+                filtered_current[int(servo_id)] = None
+                above_baseline[int(servo_id)] = None
+                tendon_displacement_mm[int(servo_id)] = None
+                current_validity[int(servo_id)] = "missing"
+                position_error[int(servo_id)] = None
+                missing_fields.append(f"servo_{int(servo_id)}_present_current_ma")
+                missing_fields.append(f"servo_{int(servo_id)}_present_position")
+                continue
             positions[int(servo_id)] = entry.present_position
             raw_current[int(servo_id)] = entry.present_current_ma
+            signed_raw_current[int(servo_id)] = entry.present_current_ma
             baseline = baseline_current_ma_by_servo.get(int(servo_id))
             baseline_current[int(servo_id)] = baseline
             filtered_current[int(servo_id)] = float(entry.present_current_ma) if entry.present_current_ma is not None else None
             above_baseline[int(servo_id)] = (
-                float(entry.present_current_ma) - float(baseline)
+                abs(float(entry.present_current_ma) - float(baseline))
                 if entry.present_current_ma is not None and baseline is not None
+                else None
+            )
+            reference_tick = startup_refs.get(int(servo_id))
+            tendon_displacement_mm[int(servo_id)] = (
+                servo_service.mapper.ticks_to_displacement_mm(int(reference_tick) - int(entry.present_position))
+                if reference_tick is not None and entry.present_position is not None
                 else None
             )
             if entry.present_current_ma is None:
                 current_validity[int(servo_id)] = "missing"
                 missing_fields.append(f"servo_{int(servo_id)}_present_current_ma")
             elif entry.telemetry_error:
-                current_validity[int(servo_id)] = "telemetry_error"
+                current_validity[int(servo_id)] = self._classify_telemetry_error(entry.telemetry_error) or "telemetry_error"
             else:
                 current_validity[int(servo_id)] = "valid"
             if entry.present_position is None:
@@ -3326,6 +4087,7 @@ class PretensionValidationExperiment(BaseExperiment):
         ownership = servo_service.bus_ownership_status()
         return {
             "timestamp_utc": _utc_now_iso(),
+            "trust_status": str(trust_status),
             "target_xy_mm": list(target_xy_mm),
             "tip_xyz_mm": list(tip_xyz) if tip_xyz is not None else None,
             "tip_xy_mm": tip_xy,
@@ -3334,10 +4096,14 @@ class PretensionValidationExperiment(BaseExperiment):
             "measured_positions_ticks": positions,
             "position_error_ticks": position_error,
             "raw_current_ma": raw_current,
+            "signed_raw_current_ma": signed_raw_current,
             "filtered_current_ma": filtered_current,
             "current_validity": current_validity,
             "baseline_current_ma": baseline_current,
             "current_above_baseline_ma": above_baseline,
+            "load_proxy_current_ma": above_baseline,
+            "startup_reference_ticks": {int(k): v for k, v in startup_refs.items()},
+            "tendon_displacement_mm": tendon_displacement_mm,
             "pair_balance_error_ma": pair_balance_error_ma,
             "load_balance_error_ma": load_balance_error_ma,
             "ownership_state": {
@@ -3347,6 +4113,12 @@ class PretensionValidationExperiment(BaseExperiment):
                 "held_by_current_thread": bool(ownership.held_by_current_thread),
             },
             "missing_fields": sorted(set(missing_fields)),
+            "telemetry_event_counts": dict(telemetry_policy.get("event_counts") or {}),
+            "packet_retry_count": int(telemetry_policy.get("packet_retry_count", 0) or 0),
+            "telemetry_fail_closed_reason": telemetry_policy.get("telemetry_fail_closed_reason"),
+            "missing_current_servo_ids": list(telemetry_policy.get("missing_current_servo_ids") or []),
+            "missing_position_servo_ids": list(telemetry_policy.get("missing_position_servo_ids") or []),
+            "stale_servo_ids": list(telemetry_policy.get("stale_servo_ids") or []),
         }
 
     @staticmethod
@@ -3377,14 +4149,22 @@ class PretensionValidationExperiment(BaseExperiment):
             "measured_positions_ticks": self._json_safe_keyed(measurement.get("measured_positions_ticks") or {}),
             "position_error_ticks": self._json_safe_keyed(measurement.get("position_error_ticks") or {}),
             "raw_current_ma": self._json_safe_keyed(measurement.get("raw_current_ma") or {}),
+            "signed_raw_current_ma": self._json_safe_keyed(measurement.get("signed_raw_current_ma") or {}),
             "filtered_current_ma": self._json_safe_keyed(measurement.get("filtered_current_ma") or {}),
             "current_validity": self._json_safe_keyed(measurement.get("current_validity") or {}),
             "baseline_current_ma": self._json_safe_keyed(measurement.get("baseline_current_ma") or {}),
             "current_above_baseline_ma": self._json_safe_keyed(measurement.get("current_above_baseline_ma") or {}),
+            "load_proxy_current_ma": self._json_safe_keyed(measurement.get("load_proxy_current_ma") or {}),
+            "startup_reference_ticks": self._json_safe_keyed(measurement.get("startup_reference_ticks") or {}),
+            "tendon_displacement_mm": self._json_safe_keyed(measurement.get("tendon_displacement_mm") or {}),
             "pair_balance_error_ma": measurement.get("pair_balance_error_ma"),
             "load_balance_error_ma": measurement.get("load_balance_error_ma"),
             "ownership_state": dict(measurement.get("ownership_state") or {}),
             "missing_fields": list(measurement.get("missing_fields") or []),
+            "telemetry_event_counts": dict(measurement.get("telemetry_event_counts") or {}),
+            "packet_retry_count": int(measurement.get("packet_retry_count", 0) or 0),
+            "telemetry_fail_closed_reason": measurement.get("telemetry_fail_closed_reason"),
+            "trust_status": measurement.get("trust_status"),
         }
         row.update(dict(extra or {}))
         return row
@@ -3400,9 +4180,14 @@ class PretensionValidationExperiment(BaseExperiment):
         target_xy_mm: list[float],
         mode_kind: str,
         trace_rows: list[dict[str, Any]],
+        startup_reference_ticks_by_servo: dict[int, int | None] | None = None,
+        trust_status: str = "runtime_tip",
     ) -> dict[str, Any]:
         sample_count = max(2, int(self.config.current_characterization_sample_count))
         samples_by_servo: dict[int, list[float]] = {int(servo_id): [] for servo_id in servo_ids}
+        telemetry_event_counts: dict[str, int] = {}
+        packet_retry_count = 0
+        telemetry_fail_closed_reason: str | None = None
         for sample_index in range(sample_count):
             measurement = self._advanced_measurement(
                 servo_service=servo_service,
@@ -3410,7 +4195,13 @@ class PretensionValidationExperiment(BaseExperiment):
                 servo_ids=servo_ids,
                 baseline_current_ma_by_servo={},
                 target_xy_mm=target_xy_mm,
+                startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+                trust_status=trust_status,
             )
+            self._merge_event_counts(telemetry_event_counts, measurement.get("telemetry_event_counts"))
+            packet_retry_count += int(measurement.get("packet_retry_count", 0) or 0)
+            if measurement.get("telemetry_fail_closed_reason") and telemetry_fail_closed_reason is None:
+                telemetry_fail_closed_reason = str(measurement["telemetry_fail_closed_reason"])
             for servo_id, current in measurement["raw_current_ma"].items():
                 if current is not None:
                     samples_by_servo[int(servo_id)].append(float(current))
@@ -3451,6 +4242,10 @@ class PretensionValidationExperiment(BaseExperiment):
             "max_peak_to_peak_ma": float(peak_to_peak),
             "noise_multiplier": float(self.config.current_noise_multiplier),
             "max_useful_current_delta_ma": float(useful_delta),
+            "telemetry_event_counts": dict(sorted(telemetry_event_counts.items())),
+            "packet_retry_count": int(packet_retry_count),
+            "telemetry_fail_closed_reason": telemetry_fail_closed_reason,
+            "current_units": "mA servo-reported current estimate; signed raw samples retained and load proxy uses absolute delta from baseline",
             "interpretation": "current is treated as a relative load proxy; deltas below useful threshold are not considered reliable",
         }
         row = {
@@ -3490,18 +4285,15 @@ class PretensionValidationExperiment(BaseExperiment):
             }
         target_a = int(pos_a) + int(delta_a)
         target_b = int(pos_b) + int(delta_b)
-        move_a = servo_service.move_servo_to_raw_target(servo_id=int(sid_a), target_tick=target_a, reason=reason)
-        move_b = servo_service.move_servo_to_raw_target(servo_id=int(sid_b), target_tick=target_b, reason=reason)
-        return {
-            "success": bool(move_a.success and move_b.success),
-            "stop_reason": "" if move_a.success and move_b.success else f"{move_a.status}|{move_b.status}",
-            "clipped_move_count": int(bool(move_a.clamped)) + int(bool(move_b.clamped)),
-            "move_count": int(bool(move_a.success)) + int(bool(move_b.success)),
-            "travel_ticks": abs(int(move_a.delta_ticks)) + abs(int(move_b.delta_ticks)),
-            "commanded_positions_ticks": {int(sid_a): target_a, int(sid_b): target_b},
-            "move_status": {str(sid_a): str(move_a.status), str(sid_b): str(move_b.status)},
-            "delta_ticks": {str(sid_a): int(delta_a), str(sid_b): int(delta_b)},
-        }
+        move = self._apply_group_command(
+            servo_service=servo_service,
+            telemetry=telemetry,
+            targets_by_servo={int(sid_a): target_a, int(sid_b): target_b},
+            reason=reason,
+            require_opposed_pair=True,
+        )
+        move["clipped_move_count"] = 0
+        return move
 
     def _run_pair_characterization_sequence(
         self,
@@ -3514,6 +4306,7 @@ class PretensionValidationExperiment(BaseExperiment):
         target_xy_mm: list[float],
         baseline_current_ma_by_servo: dict[int, float],
         trace_rows: list[dict[str, Any]],
+        startup_reference_ticks_by_servo: dict[int, int | None] | None = None,
     ) -> dict[str, Any]:
         total = {"move_count": 0, "travel_ticks": 0, "clipped_move_count": 0, "stop_reason": ""}
         step = max(1, int(self.config.characterization_step_ticks))
@@ -3533,8 +4326,15 @@ class PretensionValidationExperiment(BaseExperiment):
                     servo_ids=servo_ids,
                     baseline_current_ma_by_servo=baseline_current_ma_by_servo,
                     target_xy_mm=target_xy_mm,
+                    startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+                    trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
                 )
-                telemetry = servo_service.read_live_telemetry(servo_ids)
+                telemetry, policy = self._read_live_telemetry_with_policy(servo_service, servo_ids)
+                self._merge_event_counts(total.setdefault("telemetry_event_counts", {}), policy.get("event_counts"))
+                total["packet_retry_count"] = int(total.get("packet_retry_count", 0)) + int(policy.get("packet_retry_count", 0) or 0)
+                if policy.get("telemetry_fail_closed_reason"):
+                    total["stop_reason"] = str(policy["telemetry_fail_closed_reason"])
+                    return total
                 move = self._apply_pair_command(
                     servo_service=servo_service,
                     telemetry=telemetry,
@@ -3551,7 +4351,11 @@ class PretensionValidationExperiment(BaseExperiment):
                     baseline_current_ma_by_servo=baseline_current_ma_by_servo,
                     target_xy_mm=target_xy_mm,
                     commanded_positions_ticks=move.get("commanded_positions_ticks"),
+                    startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+                    trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
                 )
+                self._merge_event_counts(total.setdefault("telemetry_event_counts", {}), after.get("telemetry_event_counts"))
+                total["packet_retry_count"] = int(total.get("packet_retry_count", 0)) + int(after.get("packet_retry_count", 0) or 0)
                 total["move_count"] += int(move.get("move_count", 0))
                 total["travel_ticks"] += int(move.get("travel_ticks", 0))
                 total["clipped_move_count"] += int(move.get("clipped_move_count", 0))
@@ -3601,11 +4405,13 @@ class PretensionValidationExperiment(BaseExperiment):
         baseline_current_ma_by_servo: dict[int, float],
         effective_load_tolerance_ma: float,
         trace_rows: list[dict[str, Any]],
+        startup_reference_ticks_by_servo: dict[int, int | None] | None = None,
     ) -> dict[str, Any]:
-        result = {"move_count": 0, "travel_ticks": 0, "clipped_move_count": 0, "stop_reason": "", "converged": False}
+        result = {"move_count": 0, "travel_ticks": 0, "clipped_move_count": 0, "stop_reason": "", "converged": False, "packet_retry_count": 0, "telemetry_event_counts": {}}
         step = max(1, int(self.config.conservative_step_ticks))
         best_error = math.inf
         worse_count = 0
+        wrong_direction_count = 0
         for iteration in range(max(0, int(self.config.conservative_max_iterations))):
             session.raise_if_stop_requested()
             measurement = self._advanced_measurement(
@@ -3614,7 +4420,14 @@ class PretensionValidationExperiment(BaseExperiment):
                 servo_ids=servo_ids,
                 baseline_current_ma_by_servo=baseline_current_ma_by_servo,
                 target_xy_mm=target_xy_mm,
+                startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+                trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
             )
+            self._merge_event_counts(result["telemetry_event_counts"], measurement.get("telemetry_event_counts"))
+            result["packet_retry_count"] += int(measurement.get("packet_retry_count", 0) or 0)
+            if measurement.get("telemetry_fail_closed_reason"):
+                result["stop_reason"] = str(measurement["telemetry_fail_closed_reason"])
+                break
             tip_error = measurement.get("tip_xy_error_mm")
             load_error = measurement.get("load_balance_error_ma")
             pair_error = measurement.get("pair_balance_error_ma")
@@ -3641,7 +4454,12 @@ class PretensionValidationExperiment(BaseExperiment):
                 result["stop_reason"] = "load_proxy_spread_limit"
                 break
 
-            telemetry = servo_service.read_live_telemetry(servo_ids)
+            telemetry, policy = self._read_live_telemetry_with_policy(servo_service, servo_ids)
+            self._merge_event_counts(result["telemetry_event_counts"], policy.get("event_counts"))
+            result["packet_retry_count"] += int(policy.get("packet_retry_count", 0) or 0)
+            if policy.get("telemetry_fail_closed_reason"):
+                result["stop_reason"] = str(policy["telemetry_fail_closed_reason"])
+                break
             commands: list[tuple[str, int, int, int, int]] = []
             tip_xy = measurement.get("tip_xy_mm")
             if tip_xy is not None:
@@ -3693,7 +4511,19 @@ class PretensionValidationExperiment(BaseExperiment):
                 servo_ids=servo_ids,
                 baseline_current_ma_by_servo=baseline_current_ma_by_servo,
                 target_xy_mm=target_xy_mm,
+                startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+                trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
             )
+            self._merge_event_counts(result["telemetry_event_counts"], after.get("telemetry_event_counts"))
+            result["packet_retry_count"] += int(after.get("packet_retry_count", 0) or 0)
+            after_tip_error = after.get("tip_xy_error_mm")
+            if tip_error is not None and after_tip_error is not None and iteration_moves:
+                if float(after_tip_error) > float(tip_error) + float(self.config.tip_divergence_stop_mm):
+                    wrong_direction_count += 1
+                    if wrong_direction_count >= 2:
+                        result["stop_reason"] = "tip_response_wrong_direction"
+                else:
+                    wrong_direction_count = 0
             row = self._advanced_stage_row(
                 mode_kind="conservative_startup",
                 run_index=run_index,
@@ -3760,6 +4590,11 @@ class PretensionValidationExperiment(BaseExperiment):
             x_std = self._series_std([float(point[0]) for point in final_tip_xy_points_mm]) or 0.0
             y_std = self._series_std([float(point[1]) for point in final_tip_xy_points_mm]) or 0.0
             tip_xy_std_mm = float(math.sqrt((x_std * x_std) + (y_std * y_std)))
+        aggregate_telemetry_counts: dict[str, int] = {}
+        aggregate_packet_retries = 0
+        for row in run_rows:
+            self._merge_event_counts(aggregate_telemetry_counts, row.get("telemetry_event_counts"))
+            aggregate_packet_retries += int(row.get("packet_retry_count", 0) or 0)
         return {
             "mode": "single_segment_staged",
             "staged_strategy": str(getattr(self.config, "staged_strategy", "conservative_startup") or "conservative_startup"),
@@ -3776,6 +4611,8 @@ class PretensionValidationExperiment(BaseExperiment):
             "accepted_run_count": int(accepted_runs),
             "accepted_run_fraction": float(accepted_runs / len(run_rows)) if run_rows else 0.0,
             "failure_reason_counts": dict(sorted(failure_counts.items())),
+            "telemetry_event_counts": dict(sorted(aggregate_telemetry_counts.items())),
+            "packet_retry_count": int(aggregate_packet_retries),
             "final_position_std_ticks_by_servo": per_servo_position_std,
             "final_current_std_ma_by_servo": per_servo_current_std,
             "final_tip_xy_std_mm": tip_xy_std_mm,
@@ -3799,9 +4636,13 @@ class PretensionValidationExperiment(BaseExperiment):
             "trace_rows": trace_rows,
             "units": {
                 "current_ma": "mA",
+                "signed_raw_current_ma": "mA servo-reported current estimate",
                 "baseline_current_ma": "mA",
-                "current_above_baseline_ma": "mA",
+                "current_above_baseline_ma": "mA absolute delta from signed baseline; load proxy only",
+                "load_proxy_current_ma": "mA absolute delta from signed baseline; load proxy only",
                 "position_ticks": "ticks",
+                "tendon_displacement_mm": "mm relative to startup reference",
+                "packet_retry_count": "count",
                 "travel_used_ticks": "ticks",
                 "travel_used_mm": "mm",
                 "tip_position_mm": "mm",
@@ -4229,8 +5070,6 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             self._initial_neutral_ticks = _load_collect_pose_neutral_ticks(session, servo_ids=self._servo_ids)
 
     def precheck(self, session: ExperimentSession) -> None:
-        if session.context.tracking_service is None:
-            raise RuntimeError("collect_pose_command_dataset requires tracking_service.")
         _precheck_collect_pose_command_dataset(
             session=session,
             config=self.config,
@@ -4241,11 +5080,22 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
     def execute(self, session: ExperimentSession) -> None:
         servo_ids = list(self._servo_ids)
         neutral_ticks = list(self._initial_neutral_ticks)
+        pair_limit_servo_ids = list(servo_ids)
+        pair_limit_neutral_ticks = list(neutral_ticks)
+        if _collect_pose_parallel_single_mode(session):
+            active_ids = [int(value) for value in session.context.settings.robot.active_segment_servo_ids()]
+            active_neutral_by_servo = {int(servo_id): int(tick) for servo_id, tick in zip(servo_ids, neutral_ticks)}
+            pair_limit_servo_ids = list(active_ids)
+            pair_limit_neutral_ticks = [
+                int(active_neutral_by_servo[servo_id])
+                for servo_id in active_ids
+                if servo_id in active_neutral_by_servo
+            ]
         pair_limits = _collect_pose_pair_limits(
             session=session,
             config=self.config,
-            servo_ids=servo_ids,
-            neutral_ticks=neutral_ticks,
+            servo_ids=pair_limit_servo_ids,
+            neutral_ticks=pair_limit_neutral_ticks,
         )
         command_steps = _build_collect_pose_command_steps(
             config=self.config,
@@ -4257,10 +5107,33 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         rejected_count = 0
         progress = 0
         zero_vector = [0.0, 0.0, 0.0, 0.0]
+        servo_only_mode = _collect_pose_servo_only_test_mode(config=self.config, tracking_service=session.context.tracking_service)
+        run_trust_mode = "servo_only" if servo_only_mode else str(self.config.run_trust_mode or "thesis_trusted")
         session.set_metric("dataset_mode", str(self.config.dataset_mode or "workspace_coverage"))
         session.set_metric("dry_run", bool(self.config.dry_run))
+        session.set_metric("run_trust_mode", run_trust_mode)
+        session.set_metric("tracker_connected", bool(session.context.tracking_service is not None))
+        session.set_metric("valid_for_model_training", not bool(servo_only_mode))
+        session.set_metric("valid_for_thesis_repeatability", not bool(servo_only_mode))
+        session.set_metric("not_model_training_ready", bool(servo_only_mode))
+        if servo_only_mode:
+            session.add_warning(
+                "Tracker is not connected. This run is allowed as a servo-only hardware test. "
+                "Tip position, robot-frame pose, modeling labels, and thesis repeatability metrics will not be produced."
+            )
         session.set_metric("run_label", str(self.config.run_label or ""))
         session.set_metric("dataset_tag", str(self.config.dataset_tag or ""))
+        session.set_metric(
+            "active_segment",
+            {
+                "key": session.context.settings.robot.active_segment_key(),
+                "label": session.context.settings.robot.active_segment_label(),
+                "servo_ids": session.context.settings.robot.active_segment_servo_ids(),
+                "pairs": session.context.settings.robot.active_segment_pairs(),
+                "robot_mode": session.context.settings.robot.mode,
+            },
+        )
+        session.set_metric("operating_context", session.context.settings.robot.operating_context().metadata())
         session.set_metric("command_step_count", int(len(command_steps)))
         session.set_metric("samples_per_command", int(samples_per_command))
         session.set_metric("pair_limits_cm", pair_limits)
@@ -4394,7 +5267,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                     neutral_ticks=list(self._initial_neutral_ticks),
                 )
         finally:
-            if self._tracking_started_here:
+            if self._tracking_started_here and session.context.tracking_service is not None:
                 session.context.tracking_service.stop()
                 self._tracking_started_here = False
 
@@ -4418,11 +5291,20 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             list(servo_ids),
             bool(self.config.dry_run),
         )
+        command_servo_ids = list(servo_ids)
+        command_neutral_ticks = list(neutral_ticks)
+        if _collect_pose_parallel_single_mode(session) and len(requested_cable_command_cm) == 4:
+            requested_cable_command_cm = _mirror_parallel_single_displacements(
+                requested_cable_command_cm,
+                servo_ids=command_servo_ids,
+                context=session.context.settings.robot.operating_context(),
+            )
+            requested_pair_command_cm = _pair_command_from_cable_deltas(requested_cable_command_cm[:4])
         if self.config.dry_run or not servo_service.is_connected:
-            if len(neutral_ticks) != len(requested_cable_command_cm):
+            if len(command_neutral_ticks) != len(requested_cable_command_cm):
                 raise RuntimeError("Dry-run modeling command dimensions do not match the configured servo set.")
-            goals = servo_service.mapper.to_goal_positions(requested_cable_command_cm, neutral_ticks)
-            commanded_motor_values = {str(servo_id): int(goal) for servo_id, goal in zip(servo_ids, goals)}
+            goals = servo_service.mapper.to_goal_positions(requested_cable_command_cm, command_neutral_ticks)
+            commanded_motor_values = {str(servo_id): int(goal) for servo_id, goal in zip(command_servo_ids, goals)}
             return {
                 "requested_cable_command_cm": list(requested_cable_command_cm),
                 "resolved_cable_command_cm": list(requested_cable_command_cm),
@@ -4446,15 +5328,15 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         try:
             command = servo_service.command_displacement(
                 tendon_displacements_cm=list(requested_cable_command_cm),
-                neutral_ticks=neutral_ticks,
-                servo_ids=servo_ids,
+                neutral_ticks=command_neutral_ticks,
+                servo_ids=command_servo_ids,
                 motion_workflow="experiment_motion",
             )
         except Exception as exc:
             LOG.exception(
                 "Collect-pose command failed | requested_cable_cm=%s | servo_ids=%s | error=%s",
                 requested_cable_command_cm,
-                list(servo_ids),
+                list(command_servo_ids),
                 exc,
             )
             raise
@@ -4509,6 +5391,19 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         prior_family: str | None,
         step_metadata: dict[str, Any] | None = None,
     ) -> ExperimentTimeseriesSample:
+        if _collect_pose_servo_only_test_mode(config=self.config, tracking_service=session.context.tracking_service):
+            return self._capture_servo_only_dataset_sample(
+                session=session,
+                command_result=command_result,
+                phase=phase,
+                step_index=step_index,
+                sample_index=sample_index,
+                servo_ids=servo_ids,
+                previous_pair_command_cm=previous_pair_command_cm,
+                block_index=block_index,
+                prior_family=prior_family,
+                step_metadata=step_metadata,
+            )
         snapshot, gate = _wait_for_collect_pose_capture(
             session=session,
             tool_id=str(self.config.tool_id or "0A"),
@@ -4586,6 +5481,98 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             sample.status_flags.append("full_pose_available")
         return sample
 
+    def _capture_servo_only_dataset_sample(
+        self,
+        session: ExperimentSession,
+        *,
+        command_result: dict[str, Any],
+        phase: str,
+        step_index: int,
+        sample_index: int,
+        servo_ids: list[int],
+        previous_pair_command_cm: list[float] | None,
+        block_index: int | None,
+        prior_family: str | None,
+        step_metadata: dict[str, Any] | None = None,
+    ) -> ExperimentTimeseriesSample:
+        live_servo_feedback = _read_collect_pose_live_servo_feedback(
+            session=session,
+            servo_ids=servo_ids,
+        )
+        status_flags = [
+            "capture_accepted",
+            "servo_only",
+            "no_tracker",
+            "lower_trust",
+            "not_thesis_trusted",
+            "not_model_training_ready",
+        ]
+        return ExperimentTimeseriesSample(
+            monotonic_time_s=session.elapsed_s(),
+            wall_time_utc=datetime.now(timezone.utc).isoformat(),
+            phase=phase,
+            step_index=int(step_index),
+            sample_index=int(sample_index),
+            cycle_index=None if block_index is None else int(block_index),
+            commanded_motor_values=dict(command_result.get("final_goal_ticks_by_servo", {}) or {}),
+            commanded_cable_deltas_cm=list(command_result.get("resolved_cable_command_cm", []) or []),
+            tracker_frame_id=None,
+            tool_ids_seen=[],
+            transform_validity={},
+            pose_in_tracker_frame={},
+            pose_in_robot_frame={},
+            freshness_s=None,
+            latency_s=None,
+            status_flags=sorted(set(status_flags)),
+            backend_health={
+                "canonical_state": "disabled",
+                "selected_backend_name": "none",
+                "backend_identity": "servo_only_no_tracker",
+            },
+            extra={
+                "record_kind": "servo_only_motion_test",
+                "dataset_mode": str(self.config.dataset_mode or "workspace_coverage"),
+                "run_label": str(self.config.run_label or ""),
+                "dataset_tag": str(self.config.dataset_tag or ""),
+                "tool_id": str(self.config.tool_id or "0A"),
+                "capture_accepted": True,
+                "capture_rejection_reason": None,
+                "tracker_gate": {
+                    "accepted": False,
+                    "reason": "servo_only_no_tracker_test_run",
+                    "tracker_connected": False,
+                },
+                "run_trust_mode": "servo_only",
+                "valid_for_model_training": False,
+                "valid_for_thesis_repeatability": False,
+                "not_model_training_ready": True,
+                "runtime_tip_mode": "unavailable",
+                "runtime_tip_trust_level": "servo_only",
+                "runtime_tip_policy": None,
+                "requested_pair_command_cm": list(command_result.get("requested_pair_command_cm", []) or []),
+                "resolved_pair_command_cm": list(command_result.get("resolved_pair_command_cm", []) or []),
+                "previous_pair_command_cm": list(previous_pair_command_cm or []),
+                "requested_cable_command_cm": list(command_result.get("requested_cable_command_cm", []) or []),
+                "resolved_cable_command_cm": list(command_result.get("resolved_cable_command_cm", []) or []),
+                "raw_goal_ticks_by_servo": dict(command_result.get("raw_goal_ticks_by_servo", {}) or {}),
+                "final_goal_ticks_by_servo": dict(command_result.get("final_goal_ticks_by_servo", {}) or {}),
+                "clamp_reasons_by_servo": dict(command_result.get("clamp_reasons_by_servo", {}) or {}),
+                "motion_profile": dict(command_result.get("motion_profile", {}) or {}),
+                "servo_feedback_at_command": dict(command_result.get("servo_feedback", {}) or {}),
+                "servo_feedback_at_capture": dict(live_servo_feedback),
+                "servo_debug": dict(command_result.get("servo_debug", {}) or {}),
+                "command_message": str(command_result.get("message", "") or ""),
+                "prior_family": None if prior_family in (None, "") else str(prior_family),
+                "block_index": None if block_index is None else int(block_index),
+                "step_metadata": dict(step_metadata or {}),
+                "sequential_order_preserved": True,
+                "model_io_convention": {
+                    "inputs": "resolved_cable_command_cm and servo telemetry only",
+                    "outputs": "unavailable; no tracker or robot-frame labels were captured",
+                },
+            },
+        )
+
     def summarize(self, session: ExperimentSession) -> dict[str, Any]:
         samples = list(session.samples)
         accepted_samples = [sample for sample in samples if bool(sample.extra.get("capture_accepted"))]
@@ -4619,18 +5606,25 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             if isinstance(sample.extra.get("resolved_pair_command_cm"), list)
             and len(sample.extra.get("resolved_pair_command_cm")) == 2
         ]
-        snapshot = session.context.tracking_service.get_snapshot()
-        runtime_tip_policy = evaluate_runtime_tip_trust(
-            snapshot=snapshot,
-            workflow=WORKFLOW_MODELING_DATASET,
-            allow_lower_trust=bool(self.config.allow_lower_trust_runtime_tip),
+        servo_only_mode = _collect_pose_servo_only_test_mode(config=self.config, tracking_service=session.context.tracking_service)
+        snapshot = session.context.tracking_service.get_snapshot() if session.context.tracking_service is not None else None
+        runtime_tip_policy = (
+            evaluate_runtime_tip_trust(
+                snapshot=snapshot,
+                workflow=WORKFLOW_MODELING_DATASET,
+                allow_lower_trust=bool(self.config.allow_lower_trust_runtime_tip),
+            )
+            if snapshot is not None
+            else None
         )
-        runtime_tip_mode = runtime_tip_policy.mode
+        runtime_tip_mode = runtime_tip_policy.mode if runtime_tip_policy is not None else "unavailable"
         pretension_source = session.context.servo_service.pretension_source_summary(list(self._servo_ids))
         strict_runtime_tip = not bool(self.config.allow_lower_trust_runtime_tip)
         strict_pretension = not bool(self.config.allow_lower_trust_pretension)
         lower_trust_active = (
             bool(self.config.dry_run)
+            or bool(servo_only_mode)
+            or runtime_tip_policy is None
             or not bool(runtime_tip_policy.thesis_trusted)
             or (not pretension_source.accepted or not pretension_source.usable)
             or (not strict_pretension and pretension_source.source_type not in {"manual", "algorithmic"})
@@ -4651,17 +5645,23 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             ),
             "robot_frame_tip_sample_count": int(len(robot_positions)),
             "orientation_sample_count": int(len(tip_tangents)),
+            "tracker_connected": bool(session.context.tracking_service is not None),
+            "registration_available": bool(snapshot is not None and getattr(snapshot, "registration_state", None) == "loaded"),
+            "run_trust_mode": "servo_only" if servo_only_mode else str(self.config.run_trust_mode or "thesis_trusted"),
+            "valid_for_model_training": bool((not servo_only_mode) and runtime_tip_policy is not None and runtime_tip_policy.thesis_trusted and bool(robot_positions)),
+            "valid_for_thesis_repeatability": bool((not servo_only_mode) and runtime_tip_policy is not None and runtime_tip_policy.thesis_trusted and bool(robot_positions)),
+            "not_model_training_ready": bool(servo_only_mode or not robot_positions),
             "runtime_tip_mode_used": runtime_tip_mode,
-            "runtime_tip_trust_level": runtime_tip_policy.trust_label,
-            "runtime_tip_policy": runtime_tip_policy.to_dict(),
-            "thesis_trusted_runtime_tip": bool(runtime_tip_policy.thesis_trusted),
+            "runtime_tip_trust_level": runtime_tip_policy.trust_label if runtime_tip_policy is not None else "servo_only",
+            "runtime_tip_policy": runtime_tip_policy.to_dict() if runtime_tip_policy is not None else None,
+            "thesis_trusted_runtime_tip": bool(runtime_tip_policy.thesis_trusted) if runtime_tip_policy is not None else False,
             "pretension_source_used": pretension_source.source_type,
             "pretension_source_message": pretension_source.message,
             "requires_robot_frame_tip": bool(self.config.require_robot_frame_tip),
             "lower_trust_active": bool(lower_trust_active),
             "sample_order_preserved": True,
-            "legacy_export_enabled": bool(self.config.export_legacy_dat),
-            "position_frame": "robot" if robot_positions else "tracker",
+            "legacy_export_enabled": bool(self.config.export_legacy_dat and not servo_only_mode),
+            "position_frame": "robot" if robot_positions else ("none" if servo_only_mode else "tracker"),
             "command_pair_range_cm": _collect_pose_pair_range(resolved_pair_commands or requested_pair_commands),
             "workspace_span_mm": _collect_pose_workspace_span(robot_positions),
             "command_norm_stats_cm": _collect_pose_command_norm_stats(resolved_pair_commands or requested_pair_commands),
@@ -4669,12 +5669,12 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             "phase_counts": _collect_pose_phase_counts(samples),
             "summary_requirements": {
                 "min_sample_count": 1,
-                "require_registration": bool(self.config.require_robot_frame_tip and not self.config.dry_run and strict_runtime_tip),
+                "require_registration": bool(self.config.require_robot_frame_tip and not self.config.dry_run and strict_runtime_tip and not servo_only_mode),
                 "registration_available": bool(robot_positions),
-                "require_tip_calibration": bool(self.config.require_robot_frame_tip and not self.config.dry_run and strict_runtime_tip),
+                "require_tip_calibration": bool(self.config.require_robot_frame_tip and not self.config.dry_run and strict_runtime_tip and not servo_only_mode),
                 "tip_calibration_available": bool(robot_positions),
-                "allow_partial_missing_registration": bool(self.config.dry_run or not strict_runtime_tip),
-                "allow_partial_missing_tip_cal": bool(self.config.dry_run or not strict_runtime_tip),
+                "allow_partial_missing_registration": bool(self.config.dry_run or servo_only_mode or not strict_runtime_tip),
+                "allow_partial_missing_tip_cal": bool(self.config.dry_run or servo_only_mode or not strict_runtime_tip),
                 "invalid_transforms_are_fatal": False,
                 **(
                     {"force_status": "invalid_due_to_insufficient_samples"}
@@ -4696,7 +5696,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
 
 def _configured_collect_pose_servo_ids(session: ExperimentSession) -> list[int]:
     robot = session.context.settings.robot
-    servo_ids = [int(value) for value in (robot.tendon_to_servo or robot.servo_ids or [])]
+    servo_ids = [int(value) for value in robot.operating_context().commanded_servo_ids]
     return list(servo_ids)
 
 
@@ -4713,24 +5713,59 @@ def _precheck_collect_pose_command_dataset(
     neutral_ticks: list[int],
 ) -> None:
     tracking_service = session.context.tracking_service
-    if tracking_service is None:
+    servo_only_mode = _collect_pose_servo_only_test_mode(config=config, tracking_service=tracking_service)
+    if tracking_service is None and not servo_only_mode:
         raise RuntimeError("Motor Babble modeling dataset collection requires tracking_service.")
-    if len(servo_ids) != 4:
-        raise RuntimeError(f"Motor Babble modeling dataset collection requires exactly 4 configured servos; found {servo_ids}.")
+    parallel_single = _collect_pose_parallel_single_mode(session)
+    expected_count = 8 if parallel_single else 4
+    if len(servo_ids) != expected_count:
+        raise RuntimeError(
+            "Motor Babble modeling dataset collection requires "
+            f"{'8 mirrored servos in parallel_single mode' if parallel_single else 'exactly 4 active segment servos'}; found {servo_ids}."
+        )
     if not config.dry_run and not session.context.servo_service.is_connected:
         raise RuntimeError("Live Motor Babble modeling dataset collection requires a connected servo service.")
     if not config.dry_run and len(neutral_ticks) != len(servo_ids):
         raise RuntimeError("Live modeling data collection requires neutral setpoints for all 4 servos.")
-    snapshot = tracking_service.get_snapshot()
-    if not config.dry_run and bool(session.context.settings.runtime.mock_mode):
+    if servo_only_mode:
+        session.add_warning(
+            "Tracker is not connected. This run is allowed as a servo-only hardware test. "
+            "Tip position, robot-frame pose, modeling labels, and thesis repeatability metrics will not be produced."
+        )
+    snapshot = tracking_service.get_snapshot() if tracking_service is not None else None
+    if not config.dry_run and bool(session.context.settings.runtime.mock_mode) and not servo_only_mode:
         raise RuntimeError("Thesis-grade modeling datasets require live runtime mode. Disable mock mode or switch to dry_run.")
-    if (not config.dry_run) and snapshot.canonical_state != "streaming_healthy":
+    if (not config.dry_run) and not servo_only_mode and snapshot.canonical_state != "streaming_healthy":
         raise RuntimeError(f"Tracker must be streaming healthy before modeling dataset collection; current state is {snapshot.canonical_state}.")
-    runtime_tip_policy = evaluate_runtime_tip_trust(
-        snapshot=snapshot,
-        workflow=WORKFLOW_MODELING_DATASET,
-        allow_lower_trust=bool(config.allow_lower_trust_runtime_tip),
-    )
+    if servo_only_mode:
+        runtime_tip_policy = None
+    else:
+        runtime_tip_policy = evaluate_runtime_tip_trust(
+            snapshot=snapshot,
+            workflow=WORKFLOW_MODELING_DATASET,
+            allow_lower_trust=bool(config.allow_lower_trust_runtime_tip),
+        )
+    if servo_only_mode and bool(config.export_legacy_dat):
+        session.add_warning("Servo-only no-tracker collection will disable legacy .dat export because no valid pose labels exist.")
+    if servo_only_mode:
+        calibration_summary = session.context.servo_service.get_calibration_summary()
+        pretension_source = session.context.servo_service.pretension_source_summary(list(servo_ids))
+        if not config.dry_run:
+            if not calibration_summary.exists or not calibration_summary.compatible:
+                raise RuntimeError(f"Servo calibration artifact is not ready: {calibration_summary.message}")
+            if (not pretension_source.accepted or not pretension_source.usable) and not config.allow_lower_trust_pretension:
+                raise RuntimeError(
+                    "An accepted pretension/startup artifact is required before servo-only motion testing. "
+                    + pretension_source.message
+                )
+            for servo_id in servo_ids:
+                assessment = session.context.servo_service.assess_experiment_motion(int(servo_id))
+                if not assessment.ready:
+                    raise RuntimeError(f"Servo {servo_id} is not ready for coordinated motion: {assessment.reason}")
+        if config.dataset_mode not in {"workspace_coverage", "hysteresis_path_dependence", "repeatability_linked"}:
+            if not config.command_points and not bool(config.legacy_schedule_override):
+                raise RuntimeError(f"Unsupported modeling dataset mode: {config.dataset_mode}")
+        return
     if config.require_robot_frame_tip and snapshot.registration_state != "loaded":
         raise RuntimeError("Accepted base registration must be loaded before modeling dataset collection.")
     if config.require_robot_frame_tip:
@@ -4776,6 +5811,65 @@ def _precheck_collect_pose_command_dataset(
     if config.dataset_mode not in {"workspace_coverage", "hysteresis_path_dependence", "repeatability_linked"}:
         if not config.command_points and not bool(config.legacy_schedule_override):
             raise RuntimeError(f"Unsupported modeling dataset mode: {config.dataset_mode}")
+
+
+def _collect_pose_servo_only_test_mode(*, config: CollectPoseCommandDatasetConfig, tracking_service) -> bool:
+    explicit_mode = str(getattr(config, "run_trust_mode", "") or "").strip().lower()
+    explicit_no_tracker = bool(getattr(config, "allow_no_tracker_test_run", False)) or explicit_mode == "servo_only"
+    if not explicit_no_tracker:
+        return False
+    snapshot = _optional_tracking_snapshot(tracking_service)
+    if snapshot is None:
+        return True
+    return str(getattr(snapshot, "canonical_state", "") or "") not in {
+        "mock",
+        "connected",
+        "streaming_healthy",
+        "streaming_degraded",
+    }
+
+
+def _collect_pose_parallel_single_mode(session: ExperimentSession) -> bool:
+    return session.context.settings.robot.operating_context().operating_mode == "parallel_single"
+
+
+def _mirror_parallel_single_displacements(
+    displacements_cm: list[float],
+    *,
+    servo_ids: list[int],
+    context,
+) -> list[float]:
+    requested = [float(value) for value in displacements_cm]
+    if len(requested) != 4:
+        return list(requested)
+    mirror_pairs = {int(key): int(value) for key, value in dict(context.mirror_pairs or {}).items()}
+    if not mirror_pairs:
+        return list(requested)
+    base_ids = [int(value) for value in context.active_segment_servo_ids]
+    displacement_by_servo = {int(servo_id): float(value) for servo_id, value in zip(base_ids, requested)}
+    for source, mirror in mirror_pairs.items():
+        if int(source) in displacement_by_servo:
+            displacement_by_servo[int(mirror)] = float(displacement_by_servo[int(source)])
+    return [float(displacement_by_servo.get(int(servo_id), 0.0)) for servo_id in servo_ids]
+
+
+def _optional_tracking_snapshot(tracking_service):
+    if tracking_service is None:
+        return None
+    try:
+        snapshot_reader = getattr(tracking_service, "peek_snapshot", None)
+        return snapshot_reader() if callable(snapshot_reader) else tracking_service.get_snapshot()
+    except Exception:
+        return None
+
+
+def _pretension_current_only_explicit(config: PretensionValidationExperimentConfig) -> bool:
+    explicit_mode = str(getattr(config, "run_trust_mode", "") or "").strip().lower()
+    return bool(
+        getattr(config, "allow_no_tracker_test_run", False)
+        or getattr(config, "allow_current_only_when_tracker_missing", False)
+        or explicit_mode in {"current_only", "servo_only", "lower_trust"}
+    )
 
 
 def _collect_pose_pair_limits(
@@ -5208,11 +6302,16 @@ def _record_collect_pose_run_provenance(
     neutral_ticks: list[int],
     pair_limits: dict[str, Any],
 ) -> None:
-    snapshot = session.context.tracking_service.get_snapshot()
-    runtime_tip_policy = evaluate_runtime_tip_trust(
-        snapshot=snapshot,
-        workflow=WORKFLOW_MODELING_DATASET,
-        allow_lower_trust=bool(config.allow_lower_trust_runtime_tip),
+    servo_only_mode = _collect_pose_servo_only_test_mode(config=config, tracking_service=session.context.tracking_service)
+    snapshot = session.context.tracking_service.get_snapshot() if session.context.tracking_service is not None else None
+    runtime_tip_policy = (
+        evaluate_runtime_tip_trust(
+            snapshot=snapshot,
+            workflow=WORKFLOW_MODELING_DATASET,
+            allow_lower_trust=bool(config.allow_lower_trust_runtime_tip),
+        )
+        if snapshot is not None
+        else None
     )
     servo_calibration_summary = session.context.servo_service.get_calibration_summary()
     pretension_source = session.context.servo_service.pretension_source_summary([int(value) for value in servo_ids])
@@ -5233,22 +6332,35 @@ def _record_collect_pose_run_provenance(
     registration_path = Path(
         getattr(snapshot, "registration_path", None) or session.context.registration_path
     )
-    runtime_tip_path_raw = getattr(snapshot, "runtime_tip_calibration_path", None)
+    runtime_tip_path_raw = getattr(snapshot, "runtime_tip_calibration_path", None) if snapshot is not None else None
     runtime_tip_path = Path(runtime_tip_path_raw) if runtime_tip_path_raw else None
-    gate = _modeling_tracker_gate_status(
-        snapshot=snapshot,
-        tool_id=str(config.tool_id or "0A"),
-        max_tracker_age_s=float(config.max_tracker_age_s),
-        require_robot_frame_tip=bool(config.require_robot_frame_tip),
-        allow_mock_state=bool(config.dry_run),
-        allow_lower_trust_runtime_tip=bool(config.allow_lower_trust_runtime_tip),
+    gate = (
+        {
+            "accepted": False,
+            "reason": "servo_only_no_tracker_test_run",
+            "tracker_connected": False,
+            "runtime_tip_trust_level": "servo_only",
+        }
+        if servo_only_mode
+        else _modeling_tracker_gate_status(
+            snapshot=snapshot,
+            tool_id=str(config.tool_id or "0A"),
+            max_tracker_age_s=float(config.max_tracker_age_s),
+            require_robot_frame_tip=bool(config.require_robot_frame_tip),
+            allow_mock_state=bool(config.dry_run),
+            allow_lower_trust_runtime_tip=bool(config.allow_lower_trust_runtime_tip),
+        )
     )
     provenance = {
         "dataset_mode": str(config.dataset_mode or "workspace_coverage"),
         "run_label": str(config.run_label or ""),
         "dataset_tag": str(config.dataset_tag or ""),
-        "backend_identity": str(snapshot.backend_identity or ""),
-        "selected_backend_name": str(snapshot.selected_backend_name or ""),
+        "run_trust_mode": "servo_only" if servo_only_mode else str(config.run_trust_mode or "thesis_trusted"),
+        "valid_for_model_training": not bool(servo_only_mode),
+        "valid_for_thesis_repeatability": not bool(servo_only_mode),
+        "tracker_connected": bool(snapshot is not None),
+        "backend_identity": str(getattr(snapshot, "backend_identity", "") or ""),
+        "selected_backend_name": str(getattr(snapshot, "selected_backend_name", "") or ""),
         "configured_backend_name": str(getattr(session.context.settings.serial, "tracker_backend", "") or ""),
         "tool_id": str(config.tool_id or "0A"),
         "require_robot_frame_tip": bool(config.require_robot_frame_tip),
@@ -5264,17 +6376,17 @@ def _record_collect_pose_run_provenance(
         },
         "base_registration": {
             **_collect_pose_file_provenance(registration_path),
-            "state": str(snapshot.registration_state or ""),
+            "state": str(getattr(snapshot, "registration_state", None) or "unavailable"),
             "stored_timestamp_utc": getattr(snapshot, "stored_registration_timestamp_utc", None),
             "stored_fre_mm": getattr(snapshot, "stored_registration_fre_mm", None),
         },
         "runtime_tip_calibration": {
             **_collect_pose_file_provenance(runtime_tip_path),
-            "state": str(snapshot.runtime_tip_calibration_state or ""),
-            "mode": runtime_tip_policy.mode,
-            "trust_level": runtime_tip_policy.trust_label,
-            "policy": runtime_tip_policy.to_dict(),
-            "thesis_trusted": bool(runtime_tip_policy.thesis_trusted),
+            "state": str(getattr(snapshot, "runtime_tip_calibration_state", None) or "unavailable"),
+            "mode": runtime_tip_policy.mode if runtime_tip_policy is not None else "unavailable",
+            "trust_level": runtime_tip_policy.trust_label if runtime_tip_policy is not None else "servo_only",
+            "policy": runtime_tip_policy.to_dict() if runtime_tip_policy is not None else None,
+            "thesis_trusted": bool(runtime_tip_policy.thesis_trusted) if runtime_tip_policy is not None else False,
             "mode_message": str(getattr(snapshot, "runtime_tip_mode_message", "") or ""),
             "selected_artifact_kind": getattr(snapshot, "runtime_tip_selected_artifact_kind", None),
             "selected_artifact_path": getattr(snapshot, "runtime_tip_selected_artifact_path", None),
@@ -5305,12 +6417,13 @@ def _record_collect_pose_run_provenance(
                 bool(config.dry_run)
                 or bool(config.allow_lower_trust_runtime_tip)
                 or bool(config.allow_lower_trust_pretension)
+                or bool(servo_only_mode)
             )
             else "ready",
             "tracker_gate": dict(gate),
-            "tracking_state": str(snapshot.canonical_state or ""),
-            "runtime_tip_mode": runtime_tip_policy.mode,
-            "runtime_tip_trust_level": runtime_tip_policy.trust_label,
+            "tracking_state": str(getattr(snapshot, "canonical_state", None) or "disabled"),
+            "runtime_tip_mode": runtime_tip_policy.mode if runtime_tip_policy is not None else "unavailable",
+            "runtime_tip_trust_level": runtime_tip_policy.trust_label if runtime_tip_policy is not None else "servo_only",
             "pretension_source_type": pretension_source.source_type,
             "pretension_message": pretension_source.message,
         },
@@ -5319,6 +6432,10 @@ def _record_collect_pose_run_provenance(
         "dataset_mode": provenance["dataset_mode"],
         "run_label": provenance["run_label"],
         "dataset_tag": provenance["dataset_tag"],
+        "run_trust_mode": provenance["run_trust_mode"],
+        "valid_for_model_training": provenance["valid_for_model_training"],
+        "valid_for_thesis_repeatability": provenance["valid_for_thesis_repeatability"],
+        "tracker_connected": provenance["tracker_connected"],
         "backend_identity": provenance["backend_identity"],
         "selected_backend_name": provenance["selected_backend_name"],
         "pretension_artifact": provenance["pretension_artifact"],
@@ -5326,7 +6443,9 @@ def _record_collect_pose_run_provenance(
     }
     session.metadata.registration_info["base_registration"] = provenance["base_registration"]
     session.metadata.registration_info["runtime_tip_calibration"] = provenance["runtime_tip_calibration"]
-    session.metadata.registration_info["runtime_tip_policy"] = runtime_tip_policy.to_dict()
+    session.metadata.registration_info["runtime_tip_policy"] = (
+        runtime_tip_policy.to_dict() if runtime_tip_policy is not None else None
+    )
     session.set_metric("run_provenance", provenance)
 
 

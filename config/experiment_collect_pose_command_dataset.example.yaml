@@ -18,6 +18,8 @@ hysteresis_prior_family_count: 4
 repeatability_block_count: 3
 allow_lower_trust_runtime_tip: false
 allow_lower_trust_pretension: false
+allow_no_tracker_test_run: false
+run_trust_mode: "thesis_trusted"  # thesis_trusted | servo_only
 export_legacy_dat: true
 run_label: "upgraded_robot_modeling"
 dataset_tag: "baseline_v1"

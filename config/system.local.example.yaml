@@ -2,9 +2,10 @@
 # system.local.yaml is intentionally ignored by git so each computer can keep
 # its own serial ports and local bridge path without creating git noise.
 
-# Pi bring-up defaults for the 4-servo OpenRB / XC330 path.
-# Switch back to `robot_1servo.yaml` only when doing loose single-servo bench work.
-robot_config: "robot_4servo.yaml"
+# Pi bring-up defaults for the full 8-servo OpenRB / XC330 platform.
+# Normal operation should choose Operating mode in the GUI instead of switching
+# robot YAML files. Use legacy 1-servo/4-servo profiles only for special bench work.
+robot_config: "robot_8servo.yaml"
 aurora_port: "/dev/ttyUSB0"
 # On the Pi this is typically `/dev/ttyACM0` for OpenRB-150.
 # On macOS this is typically a `cu.usbmodem*` or `tty.usbmodem*` device.
@@ -27,8 +28,9 @@ poll_rate_hz: 20
 visualization_mode: "auto"
 visualization_safe_effects: true
 robot_overrides:
-  servo_ids: [1, 2, 3, 4]
-  tendon_to_servo: [1, 2, 3, 4]
+  mode: "single_segment"  # one_servo | single_segment | dual_segment | parallel_single
+  selected_servo_id: 1
+  active_segment: "segment_a"
   # Stored as wrap metadata for later expansion. Bring-up jog uses raw XC330
   # counts directly: tighten lowers counts, loosen raises counts.
   tightening_rotation_by_servo:
@@ -36,6 +38,10 @@ robot_overrides:
     2: "cw"
     3: "cw"
     4: "cw"
+    5: "cw"
+    6: "cw"
+    7: "cw"
+    8: "cw"
 safety_overrides:
   fine_jog_step_ticks: 5
   coarse_jog_step_ticks: 25

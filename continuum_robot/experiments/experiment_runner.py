@@ -320,14 +320,7 @@ class ExperimentRunner:
         if self.servo_service is not None:
             try:
                 calibration_summary = self.servo_service.get_calibration_summary()
-                configured_servo_ids = [
-                    int(value)
-                    for value in (
-                        self.settings.robot.tendon_to_servo
-                        or self.settings.robot.servo_ids
-                        or []
-                    )
-                ]
+                configured_servo_ids = [int(value) for value in self.settings.robot.expected_servo_ids()]
                 if configured_servo_ids:
                     source_summary = calibration_summary.pretension_source_summary(configured_servo_ids)
                     pretension_source_info = {
@@ -352,6 +345,15 @@ class ExperimentRunner:
             "tracking_state": tracking_snapshot.canonical_state if tracking_snapshot is not None else "disabled",
             "servo_connected": bool(getattr(self.servo_service, "is_connected", False)),
             "pretension_source": pretension_source_info,
+            "robot_mode": self.settings.robot.operating_mode(),
+            "operating_context": self.settings.robot.operating_context().metadata(),
+            "active_segment": {
+                "key": self.settings.robot.active_segment_key(),
+                "label": self.settings.robot.active_segment_label(),
+                "servo_ids": self.settings.robot.active_segment_servo_ids(),
+                "pairs": self.settings.robot.active_segment_pairs(),
+            },
+            "configured_servo_ids": list(self.settings.robot.servo_ids),
         }
         LOG.info(
             "Experiment metadata context | name=%s | run_id=%s | tracking_backend=%s | runtime_tip_mode=%s | pretension_source=%s",

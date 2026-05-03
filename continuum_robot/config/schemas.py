@@ -11,21 +11,226 @@ class RuntimeConfig:
 
     mock_mode: bool = True
     poll_rate_hz: int = 5
-    robot_config: str = "robot_4servo.yaml"
+    robot_config: str = "robot_8servo.yaml"
     visualization_mode: str = "auto"
     visualization_safe_effects: bool = True
+
+
+@dataclass
+class RobotSegmentConfig:
+    """One physical four-tendon segment group."""
+
+    key: str
+    label: str
+    servo_ids: list[int] = field(default_factory=list)
+    pairs: dict[str, list[int]] = field(default_factory=dict)
+
+
+@dataclass
+class RobotOperatingContext:
+    """Resolved servo scope for the selected robot operating mode."""
+
+    operating_mode: str
+    expected_servo_ids: list[int]
+    commanded_servo_ids: list[int]
+    all_configured_servo_ids: list[int]
+    segments: dict[str, RobotSegmentConfig]
+    selected_servo_id: int | None = None
+    active_segment_key: str | None = None
+    active_segment_label: str | None = None
+    active_segment_servo_ids: list[int] = field(default_factory=list)
+    active_pairs: dict[str, list[int]] = field(default_factory=dict)
+    mirror_pairs: dict[int, int] = field(default_factory=dict)
+    readiness_scope: str = "expected"
+
+    def metadata(self) -> dict:
+        return {
+            "operating_mode": self.operating_mode,
+            "expected_servo_ids": list(self.expected_servo_ids),
+            "commanded_servo_ids": list(self.commanded_servo_ids),
+            "selected_servo_id": self.selected_servo_id,
+            "active_segment": (
+                {
+                    "key": self.active_segment_key,
+                    "label": self.active_segment_label,
+                    "servo_ids": list(self.active_segment_servo_ids),
+                    "pairs": {
+                        str(key): [int(value) for value in values]
+                        for key, values in dict(self.active_pairs or {}).items()
+                    },
+                }
+                if self.active_segment_key
+                else None
+            ),
+            "segments": {
+                str(key): {
+                    "key": str(segment.key),
+                    "label": str(segment.label),
+                    "servo_ids": [int(value) for value in segment.servo_ids],
+                    "pairs": {
+                        str(pair_key): [int(value) for value in pair_values]
+                        for pair_key, pair_values in dict(segment.pairs or {}).items()
+                    },
+                }
+                for key, segment in sorted(dict(self.segments or {}).items())
+            },
+            "mirror_pairs": {str(key): int(value) for key, value in sorted(dict(self.mirror_pairs or {}).items())},
+            "readiness_scope": self.readiness_scope,
+            "output_mode_family": (
+                "mirrored_parallel"
+                if self.operating_mode == "parallel_single"
+                else ("dual_segment" if self.operating_mode == "dual_segment" else self.operating_mode)
+            ),
+        }
 
 
 @dataclass
 class RobotConfig:
     """Robot hardware configuration."""
 
-    mode: str = "4-servo"
+    mode: str = "single_segment"
     spool_diameter_cm: float = 2.0
     ticks_per_revolution: int = 4096
     servo_ids: list[int] = field(default_factory=lambda: [1, 2, 3, 4])
     tendon_to_servo: list[int] = field(default_factory=lambda: [1, 2, 3, 4])
     tightening_rotation_by_servo: dict[int, str] = field(default_factory=dict)
+    active_segment: str = "segment_a"
+    selected_servo_id: int = 1
+    segments: dict[str, RobotSegmentConfig] = field(default_factory=dict)
+
+    def operating_mode(self) -> str:
+        raw = str(self.mode or "single_segment").strip().lower().replace("-", "_")
+        aliases = {
+            "1_servo": "one_servo",
+            "one-servo": "one_servo",
+            "1-servo": "one_servo",
+            "4_servo": "single_segment",
+            "4-servo": "single_segment",
+            "8_servo": "dual_segment",
+            "8-servo": "dual_segment",
+            "single": "single_segment",
+            "parallel": "parallel_single",
+        }
+        return aliases.get(raw, raw if raw in {"one_servo", "single_segment", "dual_segment", "parallel_single"} else "single_segment")
+
+    def segment_map(self) -> dict[str, RobotSegmentConfig]:
+        if self.segments:
+            return dict(self.segments)
+        ids = [int(value) for value in (self.tendon_to_servo or self.servo_ids or [])]
+        pairs = {}
+        if len(ids) >= 4:
+            pairs = {"axis_a": [ids[0], ids[2]], "axis_b": [ids[1], ids[3]]}
+        return {
+            "segment_a": RobotSegmentConfig(
+                key="segment_a",
+                label="Spine 1",
+                servo_ids=list(ids[:4]),
+                pairs=pairs,
+            )
+        }
+
+    def active_segment_config(self) -> RobotSegmentConfig:
+        segments = self.segment_map()
+        key = str(self.active_segment or "segment_a")
+        if key in segments:
+            return segments[key]
+        return next(iter(segments.values()))
+
+    def active_segment_key(self) -> str:
+        return str(self.active_segment_config().key)
+
+    def active_segment_label(self) -> str:
+        return str(self.active_segment_config().label)
+
+    def active_segment_servo_ids(self) -> list[int]:
+        return [int(value) for value in self.active_segment_config().servo_ids]
+
+    def active_segment_pairs(self) -> dict[str, list[int]]:
+        segment = self.active_segment_config()
+        pairs = {str(key): [int(value) for value in values] for key, values in dict(segment.pairs or {}).items()}
+        ids = [int(value) for value in segment.servo_ids]
+        if not pairs and len(ids) >= 4:
+            pairs = {"axis_a": [ids[0], ids[2]], "axis_b": [ids[1], ids[3]]}
+        return pairs
+
+    def all_segment_servo_ids(self) -> list[int]:
+        ids: list[int] = []
+        for segment in self.segment_map().values():
+            for servo_id in segment.servo_ids:
+                sid = int(servo_id)
+                if sid not in ids:
+                    ids.append(sid)
+        return ids or [int(value) for value in self.servo_ids]
+
+    def parallel_mirror_pairs(self) -> dict[int, int]:
+        segments = self.segment_map()
+        segment_a = segments.get("segment_a")
+        segment_b = segments.get("segment_b")
+        if segment_a is None or segment_b is None:
+            return {}
+        ids_a = [int(value) for value in segment_a.servo_ids]
+        ids_b = [int(value) for value in segment_b.servo_ids]
+        return {int(a): int(b) for a, b in zip(ids_a, ids_b)}
+
+    def operating_context(self) -> RobotOperatingContext:
+        mode = self.operating_mode()
+        segments = self.segment_map()
+        all_ids = self.all_segment_servo_ids()
+        active = self.active_segment_config()
+        active_ids = [int(value) for value in active.servo_ids]
+        active_pairs = self.active_segment_pairs()
+        if mode == "one_servo":
+            selected = int(self.selected_servo_id or (all_ids[0] if all_ids else 1))
+            return RobotOperatingContext(
+                operating_mode=mode,
+                expected_servo_ids=[selected],
+                commanded_servo_ids=[selected],
+                all_configured_servo_ids=list(all_ids),
+                segments=segments,
+                selected_servo_id=selected,
+                readiness_scope="selected_servo",
+            )
+        if mode == "dual_segment":
+            return RobotOperatingContext(
+                operating_mode=mode,
+                expected_servo_ids=list(all_ids),
+                commanded_servo_ids=list(all_ids),
+                all_configured_servo_ids=list(all_ids),
+                segments=segments,
+                readiness_scope="all_segments",
+            )
+        if mode == "parallel_single":
+            return RobotOperatingContext(
+                operating_mode=mode,
+                expected_servo_ids=list(all_ids),
+                commanded_servo_ids=list(all_ids),
+                all_configured_servo_ids=list(all_ids),
+                segments=segments,
+                active_segment_key=str(active.key),
+                active_segment_label=str(active.label),
+                active_segment_servo_ids=list(active_ids),
+                active_pairs=active_pairs,
+                mirror_pairs=self.parallel_mirror_pairs(),
+                readiness_scope="mirrored_segments",
+            )
+        return RobotOperatingContext(
+            operating_mode="single_segment",
+            expected_servo_ids=list(active_ids),
+            commanded_servo_ids=list(active_ids),
+            all_configured_servo_ids=list(all_ids),
+            segments=segments,
+            active_segment_key=str(active.key),
+            active_segment_label=str(active.label),
+            active_segment_servo_ids=list(active_ids),
+            active_pairs=active_pairs,
+            readiness_scope="active_segment",
+        )
+
+    def expected_servo_ids(self) -> list[int]:
+        return self.operating_context().expected_servo_ids
+
+    def commanded_servo_ids(self) -> list[int]:
+        return self.operating_context().commanded_servo_ids
 
 
 @dataclass
