@@ -9,6 +9,8 @@ import struct
 from typing import Any
 import zlib
 
+from continuum_robot.experiments.plotting import add_metric_box, color, create_figure, legend, save_figure, set_equal_xy, style_axes
+
 
 @dataclass(frozen=True)
 class PretensionTracePoint:
@@ -385,34 +387,28 @@ def _write_staged_current_vs_position_plot(*, current_vs_position_path: Path, tr
         if point["position_tick"] is None or point["current_ma"] is None:
             continue
         grouped.setdefault(int(point["servo_id"]), []).append((float(point["position_tick"]), float(point["current_ma"])))
-    width, height = 1080, 720
-    canvas = _Canvas(width, height, background=(255, 255, 255))
-    canvas.text(28, 16, "PRETENSION CURRENT VS POSITION", color=(15, 23, 42), scale=2)
-    canvas.text(28, 40, "POSITION (TICKS) / CURRENT (MA)", color=(71, 85, 105), scale=1)
-    rect = (40, 72, width - 80, height - 120)
-    _draw_plot_frame(canvas, rect, "CURRENT VS POSITION")
-    points: list[tuple[float, float, tuple[int, int, int]]] = []
-    palette = [(37, 99, 235), (217, 119, 6), (22, 163, 74), (139, 92, 246)]
+    fig, ax = create_figure(size="wide")
+    if not grouped:
+        ax.text(0.5, 0.5, "No position/current trace data", transform=ax.transAxes, ha="center", va="center")
     for index, servo_id in enumerate(sorted(grouped)):
-        color = palette[index % len(palette)]
-        for x_value, y_value in grouped[servo_id]:
-            points.append((x_value, y_value, color))
-    if not points:
-        canvas.text(84, 220, "NO POSITION/CURRENT TRACE DATA", color=(100, 116, 139), scale=2)
-        canvas.save_png(current_vs_position_path)
-        return
-    x_values = [point[0] for point in points]
-    y_values = [point[1] for point in points]
-    x_min, x_max = _expand_range(_min_max(x_values), pad_fraction=0.05, minimum_span=50.0)
-    y_min, y_max = _expand_range(_min_max(y_values), pad_fraction=0.08, minimum_span=20.0)
-    for x_value, y_value, color in points:
-        canvas.circle(
-            int(_plot_x(rect, x_min, x_max, x_value)),
-            int(_plot_y(rect, y_min, y_max, y_value)),
-            3,
-            color,
+        rows = grouped[servo_id]
+        ax.scatter(
+            [row[0] for row in rows],
+            [row[1] for row in rows],
+            s=18,
+            alpha=0.72,
+            label=f"Servo {servo_id}",
+            color=_servo_color(index),
+            linewidths=0,
         )
-    canvas.save_png(current_vs_position_path)
+    style_axes(
+        ax,
+        title="Pretension Current vs Servo Position",
+        xlabel="Servo position (ticks)",
+        ylabel="Servo-reported current estimate (mA)",
+    )
+    legend(ax, loc="best", ncol=2)
+    save_figure(fig, current_vs_position_path)
 
 
 def _flatten_staged_trace_servo_points(trace_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -582,29 +578,7 @@ def _write_staged_tip_xy_plot(*, tip_xy_path: Path, run_rows: list[dict[str, Any
         if not isinstance(xyz, list) or len(xyz) < 2:
             continue
         points.append((float(xyz[0]), float(xyz[1]), bool(row.get("accepted", False))))
-    width, height = 1080, 720
-    canvas = _Canvas(width, height, background=(255, 255, 255))
-    canvas.text(28, 16, "PRETENSION FINAL TIP XY", color=(15, 23, 42), scale=2)
-    canvas.text(28, 40, "TIP XY IN ROBOT FRAME (MM)", color=(71, 85, 105), scale=1)
-    rect = (40, 72, width - 80, height - 120)
-    _draw_plot_frame(canvas, rect, "TIP XY")
-    if not points:
-        canvas.text(84, 220, "NO TIP XY DATA AVAILABLE", color=(100, 116, 139), scale=2)
-        canvas.save_png(tip_xy_path)
-        return
-    x_values = [point[0] for point in points]
-    y_values = [point[1] for point in points]
-    x_min, x_max = _expand_range(_min_max(x_values), pad_fraction=0.2, minimum_span=2.0)
-    y_min, y_max = _expand_range(_min_max(y_values), pad_fraction=0.2, minimum_span=2.0)
-    for x_value, y_value, accepted in points:
-        color = (22, 163, 74) if accepted else (220, 38, 38)
-        canvas.circle(
-            int(_plot_x(rect, x_min, x_max, x_value)),
-            int(_plot_y(rect, y_min, y_max, y_value)),
-            4,
-            color,
-        )
-    canvas.save_png(tip_xy_path)
+    _write_tip_xy_report(plot_path=tip_xy_path, points=points, title="Pretension Final Tip Position")
 
 
 def _write_staged_final_tip_scatter_plot(*, plot_path: Path, run_rows: list[dict[str, Any]]) -> None:
@@ -614,30 +588,7 @@ def _write_staged_final_tip_scatter_plot(*, plot_path: Path, run_rows: list[dict
         if not isinstance(xyz, list) or len(xyz) < 2:
             continue
         points.append((float(xyz[0]), float(xyz[1]), bool(row.get("accepted", False))))
-    width, height = 1080, 720
-    canvas = _Canvas(width, height, background=(255, 255, 255))
-    canvas.text(28, 16, "FINAL TIP XY SCATTER", color=(15, 23, 42), scale=2)
-    canvas.text(28, 40, "FINAL TIP XY IN ROBOT FRAME (MM)", color=(71, 85, 105), scale=1)
-    rect = (40, 72, width - 80, height - 120)
-    _draw_plot_frame(canvas, rect, "FINAL TIP XY")
-    if not points:
-        canvas.text(84, 220, "NO FINAL TIP XY DATA", color=(100, 116, 139), scale=2)
-        canvas.save_png(plot_path)
-        return
-    x_values = [point[0] for point in points]
-    y_values = [point[1] for point in points]
-    x_min, x_max = _expand_range(_min_max(x_values + [0.0]), pad_fraction=0.2, minimum_span=3.0)
-    y_min, y_max = _expand_range(_min_max(y_values + [0.0]), pad_fraction=0.2, minimum_span=3.0)
-    canvas.circle(int(_plot_x(rect, x_min, x_max, 0.0)), int(_plot_y(rect, y_min, y_max, 0.0)), 5, (15, 23, 42))
-    for x_value, y_value, accepted in points:
-        color = (22, 163, 74) if accepted else (220, 38, 38)
-        canvas.circle(
-            int(_plot_x(rect, x_min, x_max, x_value)),
-            int(_plot_y(rect, y_min, y_max, y_value)),
-            4,
-            color,
-        )
-    canvas.save_png(plot_path)
+    _write_tip_xy_report(plot_path=plot_path, points=points, title="Pretension Final Tip Scatter")
 
 
 def _write_staged_final_current_distribution_plot(*, final_current_dist_path: Path, run_rows: list[dict[str, Any]]) -> None:
@@ -647,30 +598,23 @@ def _write_staged_final_current_distribution_plot(*, final_current_dist_path: Pa
             if value is None:
                 continue
             by_servo.setdefault(int(key), []).append(float(value))
-    width, height = 1080, 680
-    canvas = _Canvas(width, height, background=(255, 255, 255))
-    canvas.text(28, 16, "FINAL CURRENT DISTRIBUTION", color=(15, 23, 42), scale=2)
-    canvas.text(28, 40, "MEAN FINAL CURRENT BY SERVO (MA)", color=(71, 85, 105), scale=1)
-    rect = (52, 88, width - 104, height - 150)
-    _draw_plot_frame(canvas, rect, "FINAL CURRENT (MA)")
-    if not by_servo:
-        canvas.text(84, 220, "NO FINAL CURRENT DATA", color=(100, 116, 139), scale=2)
-        canvas.save_png(final_current_dist_path)
-        return
     servo_ids = sorted(by_servo)
-    means = [sum(values) / len(values) for values in [by_servo[sid] for sid in servo_ids]]
-    y_min, y_max = _expand_range(_min_max(means), pad_fraction=0.2, minimum_span=20.0)
-    bar_width = max(12, int((rect[2] - 90) / max(1, len(servo_ids))))
-    left_start = rect[0] + 46
-    for index, servo_id in enumerate(servo_ids):
-        mean_value = means[index]
-        x_left = left_start + (index * (bar_width + 12))
-        y_top = int(_plot_y(rect, y_min, y_max, mean_value))
-        y_base = int(_plot_y(rect, y_min, y_max, y_min))
-        for x in range(x_left, x_left + bar_width):
-            canvas.line(x, y_top, x, y_base, color=(37, 99, 235), thickness=1)
-        canvas.text(x_left, y_base + 8, f"S{servo_id}", color=(15, 23, 42), scale=1)
-    canvas.save_png(final_current_dist_path)
+    means = [sum(by_servo[sid]) / len(by_servo[sid]) for sid in servo_ids] if servo_ids else []
+    fig, ax = create_figure(size="wide")
+    if not means:
+        ax.text(0.5, 0.5, "No final current data", transform=ax.transAxes, ha="center", va="center")
+    else:
+        ax.bar([f"S{sid}" for sid in servo_ids], means, color=color("measured"), alpha=0.9)
+        for index, servo_id in enumerate(servo_ids):
+            values = by_servo[servo_id]
+            ax.scatter([index] * len(values), values, color=color("reference"), s=16, alpha=0.45, zorder=3)
+    style_axes(
+        ax,
+        title="Final Current Distribution",
+        xlabel="Servo",
+        ylabel="Servo-reported current estimate (mA)",
+    )
+    save_figure(fig, final_current_dist_path)
 
 
 def _write_staged_final_position_distribution_plot(*, plot_path: Path, run_rows: list[dict[str, Any]]) -> None:
@@ -719,6 +663,72 @@ def _write_staged_quality_distribution_plot(*, plot_path: Path, run_rows: list[d
     canvas.save_png(plot_path)
 
 
+def _write_tip_xy_report(*, plot_path: Path, points: list[tuple[float, float, bool]], title: str) -> None:
+    fig, ax = create_figure(size="square")
+    if not points:
+        ax.text(0.5, 0.5, "No final tip XY data", transform=ax.transAxes, ha="center", va="center")
+    else:
+        accepted = [(x, y) for x, y, ok in points if ok]
+        rejected = [(x, y) for x, y, ok in points if not ok]
+        all_points = [(x, y) for x, y, _ok in points] + [(0.0, 0.0)]
+        ax.scatter([0.0], [0.0], marker="+", s=90, color=color("target"), label="Target center", zorder=4)
+        if rejected:
+            ax.scatter(
+                [point[0] for point in rejected],
+                [point[1] for point in rejected],
+                s=36,
+                color=color("rejected"),
+                alpha=0.7,
+                label="Rejected",
+                linewidths=0,
+            )
+        if accepted:
+            ax.scatter(
+                [point[0] for point in accepted],
+                [point[1] for point in accepted],
+                s=38,
+                color=color("accepted"),
+                alpha=0.82,
+                label="Accepted",
+                linewidths=0,
+            )
+        set_equal_xy(
+            ax,
+            x_values=[point[0] for point in all_points],
+            y_values=[point[1] for point in all_points],
+            minimum_span=3.0,
+        )
+    style_axes(
+        ax,
+        title=title,
+        xlabel="Robot-frame X position (mm)",
+        ylabel="Robot-frame Y position (mm)",
+    )
+    legend(ax, loc="best")
+    save_figure(fig, plot_path)
+
+
+def _servo_color(index: int) -> str:
+    palette = [color("measured"), color("fit"), color("accepted"), color("prediction")]
+    return palette[int(index) % len(palette)]
+
+
+def _pretension_scatter_labels(*, title: str, subtitle: str) -> tuple[str, str, str]:
+    title_key = str(title).strip().upper()
+    if "TENDON DISPLACEMENT VS TIP" in title_key:
+        return "Tendon Displacement vs Tip Error", "Tendon displacement or travel (mm; ticks fallback)", "Tip XY error (mm)"
+    if "TENDON DISPLACEMENT VS CURRENT" in title_key:
+        return "Tendon Displacement vs Current", "Tendon displacement or travel (mm; ticks fallback)", "Servo-reported current estimate (mA)"
+    if "CURRENT VS TIP" in title_key:
+        return "Current vs Tip Error", "Servo-reported current estimate (mA)", "Tip XY error (mm)"
+    if "BALANCE" in title_key:
+        return "Load Balance Over Pretension Stages", "Stage sample index", "Balance error (mA)"
+    parts = str(subtitle).split("/")
+    x_label = parts[0].strip().title() if parts else "X"
+    y_label = parts[1].strip().title() if len(parts) > 1 else "Y"
+    return str(title).replace("_", " ").title(), x_label, y_label
+
+
 def _write_staged_repeatability_plot(*, repeatability_path: Path, metrics: dict[str, Any]) -> None:
     position_std = dict(metrics.get("final_position_std_ticks_by_servo") or {})
     current_std = dict(metrics.get("final_current_std_ma_by_servo") or {})
@@ -752,29 +762,23 @@ def _write_basic_scatter_plot(
     empty_message: str,
     colors: list[tuple[int, int, int]] | None = None,
 ) -> None:
-    width, height = 1080, 720
-    canvas = _Canvas(width, height, background=(255, 255, 255))
-    canvas.text(28, 16, title, color=(15, 23, 42), scale=2)
-    canvas.text(28, 40, subtitle, color=(71, 85, 105), scale=1)
-    rect = (40, 72, width - 80, height - 120)
-    _draw_plot_frame(canvas, rect, "SCATTER")
+    title_text, x_label, y_label = _pretension_scatter_labels(title=title, subtitle=subtitle)
+    fig, ax = create_figure(size="wide")
     if not points:
-        canvas.text(84, 220, empty_message, color=(100, 116, 139), scale=2)
-        canvas.save_png(plot_path)
-        return
-    x_values = [float(point[0]) for point in points]
-    y_values = [float(point[1]) for point in points]
-    x_min, x_max = _expand_range(_min_max(x_values), pad_fraction=0.08, minimum_span=1.0)
-    y_min, y_max = _expand_range(_min_max(y_values), pad_fraction=0.12, minimum_span=1.0)
-    for index, (x_value, y_value) in enumerate(points):
-        point_color = colors[index] if colors is not None and index < len(colors) else color
-        canvas.circle(
-            int(_plot_x(rect, x_min, x_max, float(x_value))),
-            int(_plot_y(rect, y_min, y_max, float(y_value))),
-            4,
-            point_color,
-        )
-    canvas.save_png(plot_path)
+        ax.text(0.5, 0.5, empty_message.replace("_", " ").title(), transform=ax.transAxes, ha="center", va="center")
+    else:
+        x_values = [float(point[0]) for point in points]
+        y_values = [float(point[1]) for point in points]
+        if colors is not None:
+            point_colors = [
+                f"#{int(rgb[0]):02x}{int(rgb[1]):02x}{int(rgb[2]):02x}"
+                for rgb in colors[: len(points)]
+            ]
+        else:
+            point_colors = f"#{int(color[0]):02x}{int(color[1]):02x}{int(color[2]):02x}"
+        ax.scatter(x_values, y_values, s=20, alpha=0.7, c=point_colors, linewidths=0)
+    style_axes(ax, title=title_text, xlabel=x_label, ylabel=y_label)
+    save_figure(fig, plot_path)
 
 
 def _write_distribution_by_servo_plot(

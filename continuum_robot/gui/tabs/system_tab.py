@@ -274,6 +274,14 @@ class SystemTab(QWidget):
         self.telemetry_freshness_spin.setDecimals(3)
         self.telemetry_freshness_spin.setSingleStep(0.05)
         self.telemetry_freshness_spin.valueChanged.connect(self._mark_parameter_dirty)
+        self.figure_quality_combo = NoWheelComboBox()
+        for label, value in (
+            ("Low (120 dpi)", "low"),
+            ("Medium (200 dpi)", "medium"),
+            ("Production (300 dpi)", "production"),
+        ):
+            self.figure_quality_combo.addItem(label, value)
+        self.figure_quality_combo.currentIndexChanged.connect(self._mark_parameter_dirty)
 
         self.save_parameters_button = QPushButton("Save + Apply")
         self.save_parameters_button.setProperty("role", "primary")
@@ -326,6 +334,7 @@ class SystemTab(QWidget):
         settings_advanced_form = QFormLayout()
         settings_advanced_form.setLabelAlignment(Qt.AlignLeft)
         settings_advanced_form.addRow("Hardware profile", self.robot_config_combo)
+        settings_advanced_form.addRow("Figure export quality", self.figure_quality_combo)
         settings_advanced_form.addRow("GUI refresh (Hz)", self.poll_rate_spin)
         settings_advanced_form.addRow("Telemetry stale after (s)", self.telemetry_freshness_spin)
         settings_advanced_form.addRow("Saved overrides", self.saved_path_label)
@@ -540,6 +549,7 @@ class SystemTab(QWidget):
             "openrb_port": self._selected_port(self.openrb_port_combo),
             "baudrate": int(self.baudrate_spin.value()),
             "poll_rate_hz": int(self.poll_rate_spin.value()),
+            "figure_output_quality": str(self.figure_quality_combo.currentData() or "production"),
             "telemetry_freshness_timeout_s": float(self.telemetry_freshness_spin.value()),
         }
         handler = self._apply_runtime_parameters or self.controller.save_runtime_parameters
@@ -816,6 +826,7 @@ class SystemTab(QWidget):
             self.operating_mode_combo,
             self.selected_servo_combo,
             self.active_segment_combo,
+            self.figure_quality_combo,
         )
         return any(bool(getattr(combo, "popup_open", False)) for combo in combos)
 
@@ -861,6 +872,11 @@ class SystemTab(QWidget):
 
             self.baudrate_spin.setValue(int(values["baudrate"]))
             self.poll_rate_spin.setValue(int(values["poll_rate_hz"]))
+            self.figure_quality_combo.blockSignals(True)
+            figure_quality_index = self.figure_quality_combo.findData(str(values["figure_output_quality"]))
+            if figure_quality_index >= 0:
+                self.figure_quality_combo.setCurrentIndex(figure_quality_index)
+            self.figure_quality_combo.blockSignals(False)
             self.telemetry_freshness_spin.setValue(float(values["telemetry_freshness_timeout_s"]))
             self._sync_operating_mode_visibility()
         finally:
@@ -876,6 +892,7 @@ class SystemTab(QWidget):
             "active_segment": str(state.active_segment_key),
             "baudrate": int(state.baudrate),
             "poll_rate_hz": int(state.poll_rate_hz),
+            "figure_output_quality": str(state.figure_output_quality),
             "telemetry_freshness_timeout_s": float(state.telemetry_freshness_timeout_s),
         }
 
@@ -888,6 +905,7 @@ class SystemTab(QWidget):
             "active_segment": str(self.active_segment_combo.currentData() or "").strip(),
             "baudrate": int(self.baudrate_spin.value()),
             "poll_rate_hz": int(self.poll_rate_spin.value()),
+            "figure_output_quality": str(self.figure_quality_combo.currentData() or "production"),
             "telemetry_freshness_timeout_s": float(self.telemetry_freshness_spin.value()),
         }
 

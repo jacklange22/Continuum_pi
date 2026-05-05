@@ -60,6 +60,7 @@ class ConfigLoader:
             robot_config=robot_path.name,
             visualization_mode=str(system_data.get("visualization_mode", "auto")),
             visualization_safe_effects=bool(system_data.get("visualization_safe_effects", True)),
+            figure_output_quality=str(system_data.get("figure_output_quality", "production")),
         )
         robot = self._robot_config_from_data(robot_data)
         serial = SerialConfig(

@@ -22,6 +22,7 @@ from continuum_robot.experiments.critical_experiments import register_critical_e
 from continuum_robot.experiments.calibration_validation import register_calibration_validation_experiments
 from continuum_robot.experiments.modeling_dataset_outputs import write_modeling_dataset_outputs
 from continuum_robot.experiments.pretension_validation_outputs import write_pretension_validation_outputs
+from continuum_robot.experiments.penprobe_chasing_demo import PenprobeChasingDemoExperiment
 from continuum_robot.experiments.servo_tracker_sync_outputs import write_servo_tracker_sync_outputs
 from continuum_robot.experiments.single_segment_repeatability import register_single_segment_repeatability
 from continuum_robot.experiments.tracker_timing_outputs import write_tracker_timing_outputs
@@ -6703,6 +6704,15 @@ def register_builtin_experiments(registry) -> None:
         tags=["Pretension", "Tracking", "Servo"],
         default_config_path="config/experiment_pretension_validation.example.yaml",
         factory=PretensionValidationExperiment.from_dict,
+    )
+    registry.register(
+        name=PenprobeChasingDemoExperiment.name,
+        title="Penprobe Chasing Demo",
+        description=PenprobeChasingDemoExperiment.description,
+        category="demo",
+        tags=["Penprobe", "Tracking", "Servo", "Demo"],
+        default_config_path="config/experiment_penprobe_chasing_demo.example.yaml",
+        factory=PenprobeChasingDemoExperiment.from_dict,
     )
     registry.register(
         name=CollectPoseCommandDatasetExperiment.name,

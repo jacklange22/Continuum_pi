@@ -19,6 +19,7 @@ from continuum_robot.experiments.dataset_io import (
 )
 from continuum_robot.experiments.experiment_models import ExperimentPoint
 from continuum_robot.experiments.framework import ExperimentContext, ExperimentSession
+from continuum_robot.experiments.plotting import set_figure_output_quality
 from continuum_robot.experiments.registry import ExperimentRegistry
 from continuum_robot.experiments.schemas import (
     ExperimentMetadata,
@@ -196,6 +197,7 @@ class ExperimentRunner:
             output_dir_name=output_dir_name,
         )
         try:
+            set_figure_output_quality(getattr(self.settings.runtime, "figure_output_quality", "production"))
             experiment.write_outputs(session, paths, summary)
         except Exception as exc:
             LOG.exception(

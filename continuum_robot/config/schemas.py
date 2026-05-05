@@ -14,6 +14,7 @@ class RuntimeConfig:
     robot_config: str = "robot_8servo.yaml"
     visualization_mode: str = "auto"
     visualization_safe_effects: bool = True
+    figure_output_quality: str = "production"
 
 
 @dataclass

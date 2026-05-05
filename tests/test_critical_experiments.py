@@ -655,8 +655,18 @@ def test_aurora_grid_accuracy_run_saves_captured_point_dataset(tmp_path: Path) -
     assert result.summary.experiment_metrics["position_source_counts"]["tip"] == 6
     assert result.summary.experiment_metrics["alignment_transform_truth_to_measured"] is not None
     plot_path = result.paths.output_dir / "grid_accuracy_alignment.png"
+    dashboard_path = result.paths.output_dir / "aurora_grid_accuracy_dashboard.png"
+    alignment_report_path = result.paths.output_dir / "aurora_grid_alignment_report.png"
+    residuals_report_path = result.paths.output_dir / "aurora_grid_residuals_report.png"
+    spread_report_path = result.paths.output_dir / "aurora_grid_spread_report.png"
     summary_text_path = result.paths.output_dir / "grid_accuracy_summary.txt"
     assert plot_path.exists()
+    assert dashboard_path.exists()
+    assert alignment_report_path.exists()
+    assert residuals_report_path.exists()
+    assert spread_report_path.exists()
+    for report_path in [alignment_report_path, residuals_report_path, spread_report_path]:
+        assert report_path.read_bytes().startswith(b"\x89PNG")
     assert summary_text_path.exists()
     summary_text = summary_text_path.read_text(encoding="utf-8").lower()
     assert "aligned-grid consistency check" in summary_text
@@ -703,7 +713,60 @@ def test_aurora_grid_accuracy_outputs_still_write_when_alignment_is_not_ready(tm
     assert result.success is False
     assert result.summary.experiment_metrics["alignment_ready"] is False
     assert result.paths.output_dir.joinpath("grid_accuracy_alignment.png").exists()
+    assert result.paths.output_dir.joinpath("aurora_grid_accuracy_dashboard.png").exists()
+    assert result.paths.output_dir.joinpath("aurora_grid_alignment_report.png").exists()
+    assert result.paths.output_dir.joinpath("aurora_grid_residuals_report.png").exists()
+    assert result.paths.output_dir.joinpath("aurora_grid_spread_report.png").exists()
     assert result.paths.output_dir.joinpath("grid_accuracy_summary.txt").exists()
+
+
+def test_aurora_grid_report_axes_use_unit_labels(monkeypatch, tmp_path: Path) -> None:
+    from continuum_robot.experiments import grid_accuracy_outputs as outputs
+    from continuum_robot.experiments.plotting import import_matplotlib
+
+    captured = {}
+
+    def _capture(fig, path, *, quality=None):
+        _ = quality
+        captured[Path(path).name] = fig
+        return Path(path)
+
+    monkeypatch.setattr(outputs, "save_figure", _capture)
+    metrics = {
+        "overall_rms_residual_mm": 0.2,
+        "max_residual_mm": 0.4,
+        "per_point_metrics": {
+            "P01": {
+                "label": "P01",
+                "truth_point_mm": [0.0, 0.0, 0.0],
+                "aligned_centroid_truth_mm": [0.1, -0.1, 0.0],
+                "residual_mm": 0.14,
+                "sample_spread_rms_mm": 0.05,
+            },
+            "P02": {
+                "label": "P02",
+                "truth_point_mm": [25.0, 0.0, 0.0],
+                "aligned_centroid_truth_mm": [25.2, 0.1, 0.0],
+                "residual_mm": 0.22,
+                "sample_spread_rms_mm": 0.07,
+            },
+        },
+    }
+    config = {"rows": 1, "cols": 2, "samples_per_point": 3}
+
+    outputs._write_alignment_report(report_path=tmp_path / "aurora_grid_alignment_report.png", metrics=metrics, config_used=config)
+    outputs._write_residuals_report(report_path=tmp_path / "aurora_grid_residuals_report.png", metrics=metrics, config_used=config)
+    outputs._write_spread_report(report_path=tmp_path / "aurora_grid_spread_report.png", metrics=metrics)
+
+    alignment_ax = captured["aurora_grid_alignment_report.png"].axes[0]
+    residual_ax = captured["aurora_grid_residuals_report.png"].axes[0]
+    spread_ax = captured["aurora_grid_spread_report.png"].axes[0]
+    assert alignment_ax.get_xlabel() == "Grid X position (mm)"
+    assert alignment_ax.get_ylabel() == "Grid Y position (mm)"
+    assert residual_ax.get_ylabel() == "Residual error (mm)"
+    assert spread_ax.get_ylabel() == "Within-point RMS spread (mm)"
+
+    import_matplotlib().close("all")
 
 
 def test_aurora_grid_preview_uses_actual_captured_position_source_not_current_tip_config(tmp_path: Path) -> None:

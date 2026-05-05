@@ -27,6 +27,8 @@ mock_mode: false
 poll_rate_hz: 20
 visualization_mode: "auto"
 visualization_safe_effects: true
+# Saved experiment figures: low=120 dpi, medium=200 dpi, production=300 dpi.
+figure_output_quality: "production"
 robot_overrides:
   mode: "single_segment"  # one_servo | single_segment | dual_segment | parallel_single
   selected_servo_id: 1

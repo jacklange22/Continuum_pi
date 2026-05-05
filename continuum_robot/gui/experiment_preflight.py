@@ -29,6 +29,10 @@ from continuum_robot.experiments.single_segment_repeatability import (
     load_repeatability_metrics_from_run,
     repeatability_target_tick_profile,
 )
+from continuum_robot.experiments.penprobe_chasing_demo import (
+    PenprobeChasingDemoConfig,
+    _validate_legacy_mapping_config,
+)
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
 from continuum_robot.experiments.critical_experiments import (
     GridDefinitionConfig,
@@ -1340,6 +1344,92 @@ def evaluate_preflight(
                 "scientific_framing",
                 "Scientific Framing",
                 "This experiment validates host-time alignment and logging usability during motion. It does not claim closed-loop control quality or hardware clock synchronization.",
+            )
+        )
+
+    elif experiment_name == "penprobe_chasing_demo":
+        config = PenprobeChasingDemoConfig.from_dict(payload)
+        operating_context = settings.robot.operating_context()
+        active_ids = [int(value) for value in operating_context.active_segment_servo_ids]
+        if operating_context.operating_mode != "single_segment":
+            checks.append(
+                _blocked(
+                    "operating_mode",
+                    "Operating Mode",
+                    f"Penprobe chasing demo v1 requires single_segment mode. Current mode is {operating_context.operating_mode}.",
+                )
+            )
+        elif len(active_ids) != 4:
+            checks.append(
+                _blocked(
+                    "active_segment",
+                    "Active Segment",
+                    f"Penprobe chasing demo requires exactly four active segment servos; found {active_ids}.",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "active_segment",
+                    "Active Segment",
+                    f"Demo will use {operating_context.active_segment_label} ({operating_context.active_segment_key}): {active_ids}; pairs {operating_context.active_pairs}.",
+                )
+            )
+        if not servo_connected:
+            checks.append(_blocked("servo_service", "Servo Service", "Penprobe chasing requires a connected ServoService."))
+        else:
+            checks.append(_ok("servo_service", "Servo Service", "ServoService is connected."))
+        if int(config.max_tick_delta_from_startup) > int(config.hard_max_tick_delta_from_startup):
+            checks.append(
+                _blocked(
+                    "tick_cap",
+                    "Tick Cap",
+                    f"max_tick_delta_from_startup={int(config.max_tick_delta_from_startup)} exceeds hard cap {int(config.hard_max_tick_delta_from_startup)}.",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "tick_cap",
+                    "Tick Cap",
+                    f"Commands are capped to +/-{int(config.max_tick_delta_from_startup)} ticks from the accepted startup reference.",
+                )
+            )
+        if servo_calibration_summary is None:
+            checks.append(_blocked("pretension", "Startup Reference", "Pretension/startup artifact state is unavailable."))
+        else:
+            checks.append(_pretension_artifact_check(servo_ids=active_ids, servo_calibration_summary=servo_calibration_summary))
+        checks.append(_strict_tool_gate_check(tool_id="0A", snapshot=tracking_snapshot, max_tracker_age_s=float(config.loop_period_s) * 4.0))
+        checks.append(_strict_tool_gate_check(tool_id="0B", snapshot=tracking_snapshot, max_tracker_age_s=float(config.loop_period_s) * 4.0))
+        if tracking_snapshot.registration_state == "loaded" and tracking_snapshot.T_robot_aurora is not None:
+            checks.append(_ok("registration", "Robot Frame", "Accepted base registration is loaded; 0A and 0B will be compared in robot frame."))
+        else:
+            checks.append(
+                _blocked(
+                    "registration",
+                    "Robot Frame",
+                    f"Penprobe chasing requires an accepted robot-frame transform. Registration state is {tracking_snapshot.registration_state}.",
+                )
+            )
+        try:
+            _validate_legacy_mapping_config(config, project_root)
+            if config.mapping_mode == "legacy_polynomial_workspace":
+                checks.append(
+                    _warning(
+                        "mapping",
+                        "Mapping Mode",
+                        "Legacy polynomial workspace files are present, but v1 still runs through the bounded paired-command safety envelope.",
+                    )
+                )
+            else:
+                checks.append(_ok("mapping", "Mapping Mode", "Using bounded paired_xy_proportional fallback mapping."))
+        except Exception as exc:
+            checks.append(_blocked("mapping", "Mapping Mode", str(exc)))
+        checks.append(
+            _info(
+                "control_scope",
+                "Control Scope",
+                "MVP demo controls XY only using 0A coil-as-tip and 0B tool origin. Z is logged but does not drive commands.",
             )
         )
 

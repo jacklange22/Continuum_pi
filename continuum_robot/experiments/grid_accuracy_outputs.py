@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import shutil
 from typing import Any
+
+from continuum_robot.experiments.plotting import add_metric_box, color, create_figure, legend, save_figure, set_equal_xy, style_axes
 
 try:
     from PySide6.QtCore import QPointF, QRectF, Qt
@@ -128,6 +131,10 @@ def write_grid_accuracy_outputs(
     """Write stable figure/text artifacts for one aligned-grid validation run."""
     output_dir = Path(output_dir)
     plot_path = output_dir / "grid_accuracy_alignment.png"
+    dashboard_path = output_dir / "aurora_grid_accuracy_dashboard.png"
+    alignment_report_path = output_dir / "aurora_grid_alignment_report.png"
+    residuals_report_path = output_dir / "aurora_grid_residuals_report.png"
+    spread_report_path = output_dir / "aurora_grid_spread_report.png"
     summary_text_path = output_dir / "grid_accuracy_summary.txt"
     metrics = summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else {}
     config_used = metadata.config_used if isinstance(metadata.config_used, dict) else {}
@@ -138,21 +145,44 @@ def write_grid_accuracy_outputs(
         metrics=metrics,
         config_used=config_used,
     )
+    _write_alignment_report(
+        report_path=alignment_report_path,
+        metrics=metrics,
+        config_used=config_used,
+    )
+    _write_residuals_report(
+        report_path=residuals_report_path,
+        metrics=metrics,
+        config_used=config_used,
+    )
+    _write_spread_report(
+        report_path=spread_report_path,
+        metrics=metrics,
+    )
     if _QT_AVAILABLE:
         _ensure_plot_qt_app()
         _write_alignment_plot(
-            plot_path=plot_path,
+            plot_path=dashboard_path,
             metrics=metrics,
             config_used=config_used,
         )
+        try:
+            shutil.copyfile(dashboard_path, plot_path)
+        except Exception:
+            LOG.exception("Could not write legacy grid dashboard alias %s", plot_path)
     else:
         _write_alignment_plot_placeholder(plot_path=plot_path)
+        _write_alignment_plot_placeholder(plot_path=dashboard_path)
         LOG.warning(
             "Qt plotting backend unavailable; wrote placeholder grid accuracy plot at %s",
             plot_path,
         )
     return {
         "plot_path": plot_path,
+        "dashboard_plot_path": dashboard_path,
+        "alignment_report_path": alignment_report_path,
+        "residuals_report_path": residuals_report_path,
+        "spread_report_path": spread_report_path,
         "summary_text_path": summary_text_path,
     }
 
@@ -312,6 +342,134 @@ def _write_alignment_plot_placeholder(*, plot_path: Path) -> None:
             )
         )
     )
+
+
+def _write_alignment_report(*, report_path: Path, metrics: dict[str, Any], config_used: dict[str, Any]) -> None:
+    entries = _per_point_entries(metrics)
+    truth_points = [entry.get("truth_point_mm") for entry in entries if _has_xy(entry.get("truth_point_mm"))]
+    aligned_points = [
+        entry.get("aligned_centroid_truth_mm")
+        for entry in entries
+        if _has_xy(entry.get("aligned_centroid_truth_mm"))
+    ]
+    fig, ax = create_figure(size="square")
+    if not truth_points and not aligned_points:
+        ax.text(0.5, 0.5, "Alignment is not ready", transform=ax.transAxes, ha="center", va="center")
+    else:
+        if truth_points:
+            ax.scatter(
+                [float(point[0]) for point in truth_points],
+                [float(point[1]) for point in truth_points],
+                marker="s",
+                s=46,
+                color=color("target"),
+                alpha=0.9,
+                label="Truth grid",
+                zorder=3,
+            )
+        if aligned_points:
+            ax.scatter(
+                [float(point[0]) for point in aligned_points],
+                [float(point[1]) for point in aligned_points],
+                marker="o",
+                s=42,
+                color=color("measured"),
+                alpha=0.85,
+                label="Aligned measured centroid",
+                zorder=4,
+            )
+        vector_label_added = False
+        for entry in entries:
+            truth = entry.get("truth_point_mm")
+            aligned = entry.get("aligned_centroid_truth_mm")
+            if not _has_xy(truth) or not _has_xy(aligned):
+                continue
+            ax.annotate(
+                "",
+                xy=(float(aligned[0]), float(aligned[1])),
+                xytext=(float(truth[0]), float(truth[1])),
+                arrowprops={"arrowstyle": "->", "color": color("threshold"), "lw": 1.0, "alpha": 0.75},
+            )
+            if not vector_label_added:
+                ax.plot([], [], color=color("threshold"), lw=1.0, label="Residual vector")
+                vector_label_added = True
+        all_points = [
+            (float(point[0]), float(point[1]))
+            for point in truth_points + aligned_points
+            if _has_xy(point)
+        ]
+        set_equal_xy(
+            ax,
+            x_values=[point[0] for point in all_points],
+            y_values=[point[1] for point in all_points],
+            minimum_span=20.0,
+        )
+    style_axes(
+        ax,
+        title="Aurora Grid Alignment",
+        xlabel="Grid X position (mm)",
+        ylabel="Grid Y position (mm)",
+    )
+    rows, cols = _grid_dimensions(config_used)
+    add_metric_box(
+        ax,
+        [
+            f"RMS residual: {_fmt_float(metrics.get('overall_rms_residual_mm'))} mm",
+            f"Max residual: {_fmt_float(metrics.get('max_residual_mm'))} mm",
+            f"Grid: {rows} x {cols}",
+            f"Samples/point: {int(config_used.get('samples_per_point', 0) or 0)}",
+        ],
+        loc="upper right",
+    )
+    legend(ax, loc="lower right")
+    save_figure(fig, report_path)
+
+
+def _write_residuals_report(*, report_path: Path, metrics: dict[str, Any], config_used: dict[str, Any]) -> None:
+    entries = [entry for entry in _per_point_entries(metrics) if entry.get("residual_mm") is not None]
+    labels = [str(entry.get("label", f"P{index + 1:02d}")) for index, entry in enumerate(entries)]
+    values = [float(entry.get("residual_mm")) for entry in entries]
+    fig, ax = create_figure(size="wide")
+    if not values:
+        ax.text(0.5, 0.5, "No residuals available", transform=ax.transAxes, ha="center", va="center")
+    else:
+        bars = ax.bar(labels, values, color=color("measured"), alpha=0.9)
+        if len(values) <= 16:
+            ax.bar_label(bars, labels=[f"{value:.2f}" for value in values], padding=3, fontsize=8)
+        rms = _as_float(metrics.get("overall_rms_residual_mm"))
+        if rms is not None:
+            ax.axhline(rms, color=color("fit"), lw=1.4, linestyle="--", label=f"RMS = {rms:.2f} mm")
+        threshold = _as_float(config_used.get("max_residual_mm") or config_used.get("max_acceptable_residual_mm"))
+        if threshold is not None:
+            ax.axhline(threshold, color=color("threshold"), lw=1.2, linestyle=":", label=f"Threshold = {threshold:.2f} mm")
+    style_axes(
+        ax,
+        title="Per-Point Grid Residuals",
+        xlabel="Grid point",
+        ylabel="Residual error (mm)",
+    )
+    legend(ax, loc="best")
+    save_figure(fig, report_path)
+
+
+def _write_spread_report(*, report_path: Path, metrics: dict[str, Any]) -> None:
+    entries = [entry for entry in _per_point_entries(metrics) if entry.get("sample_spread_rms_mm") is not None]
+    labels = [str(entry.get("label", f"P{index + 1:02d}")) for index, entry in enumerate(entries)]
+    values = [float(entry.get("sample_spread_rms_mm")) for entry in entries]
+    fig, ax = create_figure(size="wide")
+    if not values:
+        ax.text(0.5, 0.5, "No within-point spread data", transform=ax.transAxes, ha="center", va="center")
+    else:
+        bars = ax.bar(labels, values, color=color("model"), alpha=0.9)
+        if len(values) <= 16:
+            ax.bar_label(bars, labels=[f"{value:.2f}" for value in values], padding=3, fontsize=8)
+    style_axes(
+        ax,
+        title="Within-Point Measurement Spread",
+        xlabel="Grid point",
+        ylabel="Within-point RMS spread (mm)",
+    )
+    save_figure(fig, report_path)
 
 
 def _draw_title_block(painter: QPainter, rect: QRectF) -> None:
@@ -497,6 +655,19 @@ def _draw_arrow_head(painter: QPainter, *, start: QPointF, end: QPointF, color: 
 def _per_point_entries(metrics: dict[str, Any]) -> list[dict[str, Any]]:
     per_point = metrics.get("per_point_metrics", {}) or {}
     return [per_point[label] for label in sorted(per_point, key=_label_sort_key)]
+
+
+def _has_xy(point: Any) -> bool:
+    return isinstance(point, (list, tuple)) and len(point) >= 2
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        if value in (None, ""):
+            return None
+        return float(value)
+    except Exception:
+        return None
 
 
 def _per_point_summary_lines(*, metrics: dict[str, Any], expected_samples: int) -> list[str]:

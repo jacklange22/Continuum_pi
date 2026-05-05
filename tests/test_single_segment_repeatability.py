@@ -41,6 +41,8 @@ from continuum_robot.experiments.single_segment_repeatability import (
     repeatability_target_tick_profile,
     _read_servo_telemetry_payload,
 )
+from continuum_robot.experiments import single_segment_repeatability_outputs as repeatability_outputs
+from continuum_robot.experiments.plotting import import_matplotlib
 from continuum_robot.hardware.mock_dxl_bus import MockDxlBus
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
 from continuum_robot.servos.neutral_calibration_service import NeutralCalibrationService, ServoCalibrationContext
@@ -94,6 +96,91 @@ def test_legacy_revisit_sequence_visits_every_other_target_once_per_target() -> 
         ]
         assert all(visit.repeat_target.target_index == desired_index for visit in rows)
         assert all(visit.approach_target.target_index != desired_index for visit in rows)
+
+
+def test_repeatability_report_figures_use_thesis_labels_and_units(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    if importlib.util.find_spec("matplotlib") is None:
+        pytest.skip("matplotlib is required for report figure rendering")
+    metrics = {
+        "target_count": 3,
+        "valid_repeat_sample_count": 6,
+        "overall_repeatability_rms_mm": 0.42,
+        "overall_max_deviation_mm": 0.91,
+        "thesis_goal_rms_mm": 1.0,
+        "per_target_metrics": {
+            "0": {
+                "target_index": 0,
+                "label": "Center",
+                "ring": "center",
+                "centroid_mm": [0.0, 0.0, 10.0],
+                "spread_rms_mm": 0.20,
+                "max_deviation_mm": 0.35,
+            },
+            "1": {
+                "target_index": 1,
+                "label": "Inner 0",
+                "ring": "inner",
+                "centroid_mm": [4.0, 0.1, 10.0],
+                "spread_rms_mm": 0.45,
+                "max_deviation_mm": 0.70,
+            },
+            "9": {
+                "target_index": 9,
+                "label": "Outer 0",
+                "ring": "outer",
+                "centroid_mm": [8.0, -0.2, 10.0],
+                "spread_rms_mm": 0.62,
+                "max_deviation_mm": 0.91,
+            },
+        },
+        "group_metrics": {
+            "ring": {
+                "center": {"mean_target_rms_mm": 0.20},
+                "inner": {"mean_target_rms_mm": 0.45},
+                "outer": {"mean_target_rms_mm": 0.62},
+            }
+        },
+    }
+    captured: dict[str, list[tuple[str, str, str]]] = {}
+
+    def _capture_save(fig, path: Path, *, quality: str | None = None) -> Path:
+        _ = quality
+        captured[Path(path).name] = [(ax.get_title(), ax.get_xlabel(), ax.get_ylabel()) for ax in fig.axes]
+        Path(path).write_bytes(b"png")
+        import_matplotlib().close(fig)
+        return Path(path)
+
+    monkeypatch.setattr(repeatability_outputs, "save_figure", _capture_save)
+
+    repeatability_outputs._write_cluster_report_figure(
+        clusters_path=tmp_path / "repeatability_clusters_report.png",
+        samples=[],
+        metrics=metrics,
+    )
+    repeatability_outputs._write_error_by_target_report_figure(
+        path=tmp_path / "repeatability_error_by_target_report.png",
+        metrics=metrics,
+    )
+    repeatability_outputs._write_group_summary_report_figure(
+        path=tmp_path / "repeatability_group_summary_report.png",
+        metrics=metrics,
+    )
+
+    assert captured["repeatability_clusters_report.png"][0] == (
+        "Single-Segment Repeatability",
+        "Robot-frame X position (mm)",
+        "Robot-frame Y position (mm)",
+    )
+    assert captured["repeatability_error_by_target_report.png"][0] == (
+        "Repeatability Error by Target",
+        "Target",
+        "Repeatability error (mm)",
+    )
+    assert captured["repeatability_group_summary_report.png"][0] == (
+        "Repeatability by Target Group",
+        "Target group",
+        "Mean repeatability error (mm)",
+    )
 
 
 def test_repeatability_metrics_use_repeat_captures_and_robot_frame() -> None:
@@ -672,6 +759,9 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     assert result.sample_count == LEGACY_CAPTURE_COUNT
     assert result.paths.output_dir.parent.name == "single_segment_repeatability"
     assert (result.paths.output_dir / "repeatability_summary.txt").exists()
+    assert (result.paths.output_dir / "repeatability_clusters_report.png").exists()
+    assert (result.paths.output_dir / "repeatability_error_by_target_report.png").exists()
+    assert (result.paths.output_dir / "repeatability_group_summary_report.png").exists()
     assert (result.paths.output_dir / "repeatability_clusters.png").exists()
     assert (result.paths.output_dir / "tip_pos_clusters.png").exists()
     assert (result.paths.output_dir / "repeatability_legacy_style_comparison.csv").exists()

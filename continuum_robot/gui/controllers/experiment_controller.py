@@ -596,6 +596,7 @@ class ExperimentController:
             )
         preferred_order = [
             "single_segment_repeatability",
+            "penprobe_chasing_demo",
             "collect_pose_command_dataset",
             "registration_validation",
             "pivot_validation",
@@ -985,6 +986,12 @@ class ExperimentController:
                 return f"travel={int(value)} ticks"
             value = metrics.get("trigger_current_ma")
             return f"trigger={float(value):.1f} mA" if value is not None else ""
+        if experiment_name == "penprobe_chasing_demo":
+            value = metrics.get("final_error_norm_mm")
+            if value is not None:
+                return f"final_error={float(value):.2f} mm"
+            reason = metrics.get("stop_reason")
+            return str(reason) if reason else ""
         if experiment_name == "tracker_timing_validation":
             value = metrics.get("unique_frame_rate_hz")
             if value is not None:
@@ -1276,6 +1283,9 @@ class ExperimentController:
             )
 
             metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
+            report_clusters_path = bundle.paths.output_dir / "repeatability_clusters_report.png"
+            report_error_path = bundle.paths.output_dir / "repeatability_error_by_target_report.png"
+            report_group_path = bundle.paths.output_dir / "repeatability_group_summary_report.png"
             clusters_path = bundle.paths.output_dir / "repeatability_clusters.png"
             rmse_path = bundle.paths.output_dir / "repeatability_rmse_summary.png"
             path_path = bundle.paths.output_dir / "repeatability_path_dependence.png"
@@ -1283,6 +1293,9 @@ class ExperimentController:
             pairs.extend(build_single_segment_repeatability_summary_pairs(metrics=metrics))
             pairs.extend(
                 [
+                    ("Clusters Report", str(report_clusters_path) if report_clusters_path.exists() else "not written"),
+                    ("Error Report", str(report_error_path) if report_error_path.exists() else "not written"),
+                    ("Group Report", str(report_group_path) if report_group_path.exists() else "not written"),
                     ("Clusters Plot", str(clusters_path) if clusters_path.exists() else "not written"),
                     ("RMSE Plot", str(rmse_path) if rmse_path.exists() else "not written"),
                     ("Path Plot", str(path_path) if path_path.exists() else "not written"),
@@ -1292,7 +1305,8 @@ class ExperimentController:
             return pairs
         if bundle_experiment_name == "aurora_grid_accuracy":
             metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
-            plot_path = bundle.paths.output_dir / "grid_accuracy_alignment.png"
+            report_path = bundle.paths.output_dir / "aurora_grid_alignment_report.png"
+            dashboard_path = bundle.paths.output_dir / "aurora_grid_accuracy_dashboard.png"
             summary_text_path = bundle.paths.output_dir / "grid_accuracy_summary.txt"
             pairs.extend(
                 [
@@ -1320,7 +1334,8 @@ class ExperimentController:
                         if metrics.get("tip_calibration_used")
                         else ("Fallback Only" if metrics.get("coil_origin_fallback_used") else "No"),
                     ),
-                    ("Alignment Plot", str(plot_path) if plot_path.exists() else "not written"),
+                    ("Alignment Report", str(report_path) if report_path.exists() else "not written"),
+                    ("Dashboard Plot", str(dashboard_path) if dashboard_path.exists() else "not written"),
                     ("Summary Note", str(summary_text_path) if summary_text_path.exists() else "not written"),
                 ]
             )
@@ -1370,6 +1385,9 @@ class ExperimentController:
             metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
             csv_path = bundle.paths.output_dir / "metrics.csv"
             summary_text_path = bundle.paths.output_dir / "registration_validation_summary.txt"
+            origin_report_path = bundle.paths.output_dir / "registration_frame_origins_report.png"
+            fre_report_path = bundle.paths.output_dir / "registration_fre_report.png"
+            spread_report_path = bundle.paths.output_dir / "registration_transform_spread_report.png"
             pairs.extend(
                 [
                     ("Selected Runs", str(int(metrics.get("selected_run_count", 0) or 0))),
@@ -1385,6 +1403,9 @@ class ExperimentController:
                         self._format_metric_value((metrics.get("rotation_delta_to_consensus_summary_deg", {}) or {}).get("mean")),
                     ),
                     ("Metrics CSV", str(csv_path) if csv_path.exists() else "not written"),
+                    ("Origin Report", str(origin_report_path) if origin_report_path.exists() else "not written"),
+                    ("FRE Report", str(fre_report_path) if fre_report_path.exists() else "not written"),
+                    ("Spread Report", str(spread_report_path) if spread_report_path.exists() else "not written"),
                     ("Summary Note", str(summary_text_path) if summary_text_path.exists() else "not written"),
                 ]
             )
@@ -1537,6 +1558,8 @@ class ExperimentController:
             return "backend diagnostic"
         if experiment_name == "servo_tracker_sync_validation":
             return "motion sync validation"
+        if experiment_name == "penprobe_chasing_demo":
+            return "live bounded demo"
         if experiment_name == "pivot_calibration":
             return "offline" if config_payload.get("input_path") else ("dry-run" if bool(config_payload.get("dry_run", False)) else "live")
         return "dry-run" if bool(config_payload.get("dry_run", False)) else "live"
@@ -1604,6 +1627,12 @@ class ExperimentController:
                 f"step {config_payload.get('step_ticks', 'live default')} ticks, "
                 f"max travel {config_payload.get('max_travel_ticks', 'live default')} ticks, "
                 f"tracker={'on' if bool(config_payload.get('include_tracker_displacement', True)) else 'off'}"
+            )
+        if experiment_name == "penprobe_chasing_demo":
+            return (
+                f"0A-to-0B XY chase, cap {int(config_payload.get('max_tick_delta_from_startup', 500) or 500)} ticks, "
+                f"period {float(config_payload.get('loop_period_s', 0.075) or 0.075):.3f}s, "
+                f"mapping {str(config_payload.get('mapping_mode', 'paired_xy_proportional'))}"
             )
         if experiment_name == "tracker_timing_validation":
             tool_ids = ",".join(str(value) for value in (config_payload.get("requested_tool_ids") or ["0A", "0B"]))

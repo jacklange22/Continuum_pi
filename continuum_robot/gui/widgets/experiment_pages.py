@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 import logging
 from pathlib import Path
 import threading
@@ -58,6 +59,11 @@ from continuum_robot.experiments.builtins import (
     PretensionValidationExperimentConfig,
     ServoTrackerSyncValidationConfig,
     TrackerTimingValidationConfig,
+)
+from continuum_robot.experiments.penprobe_chasing_demo import (
+    MAPPING_LEGACY_POLYNOMIAL_WORKSPACE,
+    MAPPING_PAIRED_XY_PROPORTIONAL,
+    PenprobeChasingDemoConfig,
 )
 from continuum_robot.gui.widgets.no_wheel_combo_box import NoWheelComboBox
 from continuum_robot.experiments.calibration_validation import (
@@ -2768,6 +2774,121 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         return "Bounded workspace exploration for first-pass forward-model training."
 
 
+class PenprobeChasingDemoPage(ExperimentPageBase):
+    show_visualization = True
+    defer_visualization_until_data = True
+    visualization_mode_override = VIS_MODE_PROJECTION
+    page_hint = "MVP demo: chase live 0B penprobe XY target with the active single-segment 0A coil-as-tip. Commands stay bounded from the accepted startup reference."
+
+    def __init__(self, controller, experiment_name: str, parent=None) -> None:
+        super().__init__(controller, experiment_name, parent)
+        self.run_button.setText("Start Demo")
+
+    def _build_parameter_sections(self) -> None:
+        control_card = ExperimentCard("Demo Controls", "Keep the envelope conservative while validating 0A-to-0B chasing behavior.")
+        form = QFormLayout()
+        self.max_tick_delta_spin = QSpinBox()
+        self.max_tick_delta_spin.setRange(1, 500)
+        self.max_tick_delta_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_tick_delta_from_startup", int(value))
+        )
+        self.loop_period_spin = QDoubleSpinBox()
+        self.loop_period_spin.setRange(0.05, 1.0)
+        self.loop_period_spin.setDecimals(3)
+        self.loop_period_spin.setSingleStep(0.025)
+        self.loop_period_spin.valueChanged.connect(lambda value: self.controller.set_config_value("loop_period_s", float(value)))
+        self.duration_spin = QDoubleSpinBox()
+        self.duration_spin.setRange(0.0, 300.0)
+        self.duration_spin.setDecimals(1)
+        self.duration_spin.setSingleStep(5.0)
+        self.duration_spin.valueChanged.connect(lambda value: self.controller.set_config_value("max_duration_s", float(value)))
+        self.max_iterations_spin = QSpinBox()
+        self.max_iterations_spin.setRange(1, 20000)
+        self.max_iterations_spin.valueChanged.connect(lambda value: self.controller.set_config_value("max_iterations", int(value)))
+        self.mapping_mode_combo = NoWheelComboBox()
+        self.mapping_mode_combo.addItem("Paired XY Proportional", MAPPING_PAIRED_XY_PROPORTIONAL)
+        self.mapping_mode_combo.addItem("Legacy Polynomial Workspace", MAPPING_LEGACY_POLYNOMIAL_WORKSPACE)
+        self.mapping_mode_combo.currentIndexChanged.connect(
+            lambda _index: self.controller.set_config_value("mapping_mode", str(self.mapping_mode_combo.currentData()))
+        )
+        self.max_radius_spin = QDoubleSpinBox()
+        self.max_radius_spin.setRange(0.0, 300.0)
+        self.max_radius_spin.setDecimals(1)
+        self.max_radius_spin.setSingleStep(5.0)
+        self.max_radius_spin.valueChanged.connect(lambda value: self.controller.set_config_value("max_target_radius_mm", float(value)))
+        self.gain_spin = QDoubleSpinBox()
+        self.gain_spin.setRange(0.0, 0.05)
+        self.gain_spin.setDecimals(4)
+        self.gain_spin.setSingleStep(0.0005)
+        self.gain_spin.valueChanged.connect(lambda value: self.controller.set_config_value("displacement_gain_cm_per_mm", float(value)))
+        self.max_step_spin = QSpinBox()
+        self.max_step_spin.setRange(1, 100)
+        self.max_step_spin.valueChanged.connect(lambda value: self.controller.set_config_value("max_step_ticks", int(value)))
+        form.addRow("Max Delta From Startup (ticks)", self.max_tick_delta_spin)
+        form.addRow("Loop Period (s)", self.loop_period_spin)
+        form.addRow("Max Duration (s)", self.duration_spin)
+        form.addRow("Max Iterations", self.max_iterations_spin)
+        form.addRow("Mapping Mode", self.mapping_mode_combo)
+        form.addRow("Max Target Radius (mm)", self.max_radius_spin)
+        form.addRow("Gain (cm/mm)", self.gain_spin)
+        form.addRow("Max Step (ticks)", self.max_step_spin)
+        control_card.body_layout.addLayout(form)
+
+        status_card = ExperimentCard("Live Status", "Last received sample and active scope for the running demo.")
+        self.demo_status_widget = KeyValueSummaryWidget()
+        status_card.body_layout.addWidget(self.demo_status_widget)
+        self.parameter_layout.addWidget(control_card)
+        self.parameter_layout.addWidget(status_card)
+
+    def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
+        _ = state
+        config = PenprobeChasingDemoConfig.from_dict(self.controller.config_payload())
+        self._set_spin(self.max_tick_delta_spin, int(config.max_tick_delta_from_startup))
+        self._set_double(self.loop_period_spin, float(config.loop_period_s))
+        self._set_double(self.duration_spin, float(config.max_duration_s))
+        self._set_spin(self.max_iterations_spin, int(config.max_iterations))
+        self._set_combo_value(self.mapping_mode_combo, str(config.mapping_mode))
+        self._set_double(self.max_radius_spin, float(config.max_target_radius_mm))
+        self._set_double(self.gain_spin, float(config.displacement_gain_cm_per_mm))
+        self._set_spin(self.max_step_spin, int(config.max_step_ticks))
+        self._sync_demo_status(state=state)
+
+    def _sync_demo_status(self, *, state: ExperimentViewState) -> None:
+        context = self.controller.settings.robot.operating_context()
+        last_sample = None
+        samples = getattr(self.controller, "_live_samples", [])
+        if samples:
+            last_sample = samples[-1]
+        extra = dict(getattr(last_sample, "extra", {}) or {}) if last_sample is not None else {}
+        tip_xy = extra.get("tip_xy_mm")
+        target_xy = extra.get("target_xy_mm")
+        error_norm = extra.get("xy_error_norm_mm")
+        max_delta = extra.get("max_tick_delta_used")
+        pairs = context.active_pairs if context.operating_mode == "single_segment" else {}
+        self.demo_status_widget.set_pairs(
+            [
+                ("Operating Mode", str(context.operating_mode)),
+                ("Active Segment", f"{context.active_segment_label or 'n/a'} ({context.active_segment_key or 'n/a'})"),
+                ("Servo IDs", ", ".join(str(value) for value in context.active_segment_servo_ids) or "n/a"),
+                ("Pairs", str(pairs or "n/a")),
+                ("Tip 0A XY", _format_xy_pair(tip_xy)),
+                ("Target 0B XY", _format_xy_pair(target_xy)),
+                ("XY Error", f"{float(error_norm):.2f} mm" if error_norm is not None else "n/a"),
+                ("Max Delta Used", f"{int(max_delta)} ticks" if max_delta is not None else "n/a"),
+                ("Preflight", state.preflight_report.summary),
+            ]
+        )
+
+    def _parameter_state_fingerprint(self, state: ExperimentViewState) -> tuple[object, ...]:
+        samples = getattr(self.controller, "_live_samples", [])
+        last_sample = samples[-1] if samples else None
+        return (
+            json.dumps(self.controller.config_payload(), sort_keys=True, default=str),
+            getattr(last_sample, "sample_index", None),
+            state.preflight_report.overall_status,
+        )
+
+
 class ReplayRunnerPage(ExperimentPageBase):
     show_visualization = True
     page_hint = "Use this page to reload an existing canonical dataset bundle and run the replay/analysis path without touching live setup workflows."
@@ -3550,6 +3671,7 @@ def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBas
         "tracker_timing_validation": lambda ctrl: TrackerTimingValidationPage(ctrl, "tracker_timing_validation"),
         "servo_tracker_sync_validation": lambda ctrl: ServoTrackerSyncValidationPage(ctrl, "servo_tracker_sync_validation"),
         "pretension_validation": lambda ctrl: PretensionValidationPage(ctrl, "pretension_validation"),
+        "penprobe_chasing_demo": lambda ctrl: PenprobeChasingDemoPage(ctrl, "penprobe_chasing_demo"),
         "command_schedule_validation": lambda ctrl: CommandScheduleValidationPage(ctrl, "command_schedule_validation"),
         "collect_pose_command_dataset": lambda ctrl: CollectPoseCommandDatasetPage(ctrl, "collect_pose_command_dataset"),
         "replay_runner": lambda ctrl: ReplayRunnerPage(ctrl, "replay_runner"),
@@ -3562,6 +3684,15 @@ def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBas
 def _yaml_block(value) -> str:
     rendered = yaml.safe_dump(value if value is not None else [], sort_keys=False)
     return str(rendered or "").strip()
+
+
+def _format_xy_pair(value) -> str:
+    if not isinstance(value, (list, tuple)) or len(value) < 2:
+        return "n/a"
+    try:
+        return f"{float(value[0]):.2f}, {float(value[1]):.2f} mm"
+    except Exception:
+        return "n/a"
 
 
 def _event_type_name(event_type) -> str:

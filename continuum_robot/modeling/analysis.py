@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 
 from continuum_robot.experiments.dataset_io import canonical_timestamped_path
+from continuum_robot.experiments.plotting import add_metric_box, color, create_figure, import_matplotlib, legend, save_figure, set_equal_xy, style_axes
 from continuum_robot.modeling.ann_training import (
     LEGACY_FULL_POSE_INPUT_DIM,
     LEGACY_FULL_POSE_OUTPUT_DIM,
@@ -1156,12 +1157,11 @@ def _write_plots(
         "position_histograms": output_dir / "position_histograms.png",
         "comparison_summary": output_dir / "comparison_summary.png",
     }
-    if _QT_AVAILABLE:
-        _ensure_plot_qt_app()
+    try:
         _write_workspace_plot(plot_paths["workspace_xy"], truths, evaluations)
         _write_histogram_plot(plot_paths["position_histograms"], evaluations)
         _write_comparison_plot(plot_paths["comparison_summary"], evaluations, phases)
-    else:
+    except Exception:
         for path in plot_paths.values():
             _write_plot_placeholder(path)
     return plot_paths
@@ -1174,111 +1174,61 @@ def _ensure_plot_qt_app() -> None:
 
 
 def _write_workspace_plot(path: Path, truths: np.ndarray, evaluations: dict[str, ModelEvaluation]) -> None:
-    image = QImage(1280, 840, QImage.Format_ARGB32)
-    image.fill(QColor("#0b1120"))
-    painter = QPainter(image)
-    painter.setRenderHint(QPainter.Antialiasing, True)
-    plot_rect = QRectF(80.0, 100.0, 840.0, 640.0)
-    summary_rect = QRectF(950.0, 100.0, 250.0, 640.0)
-    _draw_panel(painter, plot_rect, "Workspace XY")
-    _draw_panel(painter, summary_rect, "Legend")
     measured = truths[:, :2] if truths.size else np.zeros((0, 2))
-    series = [("Measured", measured, "#0f766e")]
-    for evaluation, color in zip(
+    fig, ax = create_figure(size="square")
+    if measured.size:
+        ax.scatter(measured[:, 0], measured[:, 1], s=18, color=color("measured"), alpha=0.55, linewidths=0, label="Measured")
+    for evaluation, series_color in zip(
         [value for value in evaluations.values() if value.metrics.status == "completed"],
-        ["#2563eb", "#dc2626", "#a16207"],
+        [color("prediction"), color("fit"), color("target")],
     ):
         points = evaluation.predictions[:, :2] if evaluation.predictions is not None else np.zeros((0, 2))
-        series.append((evaluation.metrics.label, points, color))
-    _draw_xy_series(painter, plot_rect.adjusted(24.0, 40.0, -24.0, -24.0), series)
-    _draw_legend(painter, summary_rect.adjusted(24.0, 40.0, -24.0, -24.0), [(name, color) for name, _points, color in series])
-    painter.end()
-    image.save(str(path))
+        if points.size:
+            ax.scatter(points[:, 0], points[:, 1], s=12, color=series_color, alpha=0.42, linewidths=0, label=evaluation.metrics.label)
+    all_points = [tuple(row) for row in measured.tolist()]
+    for evaluation in evaluations.values():
+        if evaluation.predictions is not None:
+            all_points.extend(tuple(row[:2]) for row in evaluation.predictions.tolist())
+    if all_points:
+        set_equal_xy(ax, x_values=[point[0] for point in all_points], y_values=[point[1] for point in all_points], minimum_span=5.0)
+    else:
+        ax.text(0.5, 0.5, "No model comparison points available", transform=ax.transAxes, ha="center", va="center")
+    style_axes(ax, title="Model Prediction Workspace", xlabel="Robot-frame X position (mm)", ylabel="Robot-frame Y position (mm)")
+    legend(ax, loc="best")
+    save_figure(fig, path)
 
 
 def _write_histogram_plot(path: Path, evaluations: dict[str, ModelEvaluation]) -> None:
-    image = QImage(1280, 900, QImage.Format_ARGB32)
-    image.fill(QColor("#0b1120"))
-    painter = QPainter(image)
-    painter.setRenderHint(QPainter.Antialiasing, True)
     completed = [value for value in evaluations.values() if value.metrics.status == "completed"]
-    panels = [
-        QRectF(50.0, 80.0 + (index * 260.0), 1180.0, 220.0)
-        for index in range(max(1, len(completed)))
-    ]
+    plt = import_matplotlib()
+
+    fig, axes = plt.subplots(max(1, len(completed)), 1, figsize=(7.2, max(3.0, 2.4 * max(1, len(completed)))), constrained_layout=True)
+    if not isinstance(axes, np.ndarray):
+        axes = np.asarray([axes])
     if not completed:
-        _draw_panel(painter, QRectF(50.0, 80.0, 1180.0, 220.0), "No Histograms")
-        painter.setPen(QColor("#cbd5e1"))
-        painter.drawText(QRectF(80.0, 160.0, 1120.0, 80.0), Qt.AlignCenter | Qt.TextWordWrap, "No completed model evaluations were available.")
-    for panel_rect, evaluation in zip(panels, completed):
-        _draw_panel(painter, panel_rect, f"{evaluation.metrics.label} Position Error Histogram")
-        histogram = _histogram(np.asarray(evaluation.position_errors_mm, dtype=float), bins=12)
-        _draw_bar_values(
-            painter,
-            panel_rect.adjusted(24.0, 40.0, -24.0, -24.0),
-            labels=[str(label) for label in histogram["labels"]],
-            values=[float(value) for value in histogram["counts"]],
-            color="#0f766e",
-            y_label="Count",
-        )
-    painter.end()
-    image.save(str(path))
+        axes[0].text(0.5, 0.5, "No completed model evaluations available", transform=axes[0].transAxes, ha="center", va="center")
+        style_axes(axes[0], title="Position Error Distribution", xlabel="Position error (mm)", ylabel="Count")
+    for ax, evaluation in zip(axes, completed):
+        values = np.asarray(evaluation.position_errors_mm, dtype=float)
+        ax.hist(values, bins=12, color=color("measured"), alpha=0.85, edgecolor="white")
+        style_axes(ax, title=f"{evaluation.metrics.label} Position Error", xlabel="Position error (mm)", ylabel="Count")
+        add_metric_box(ax, [f"RMSE: {float(evaluation.metrics.position_rmse_mm or 0.0):.2f} mm"], loc="upper right")
+    save_figure(fig, path)
 
 
 def _write_comparison_plot(path: Path, evaluations: dict[str, ModelEvaluation], phases: list[str]) -> None:
-    image = QImage(1280, 860, QImage.Format_ARGB32)
-    image.fill(QColor("#0b1120"))
-    painter = QPainter(image)
-    painter.setRenderHint(QPainter.Antialiasing, True)
-    top_left = QRectF(40.0, 80.0, 560.0, 300.0)
-    top_right = QRectF(640.0, 80.0, 560.0, 300.0)
-    bottom = QRectF(40.0, 420.0, 1160.0, 360.0)
-    _draw_panel(painter, top_left, "Position RMSE")
-    _draw_panel(painter, top_right, "Mean Tangent Error")
-    _draw_panel(painter, bottom, "Per-Phase Position RMSE")
     completed = [value for value in evaluations.values() if value.metrics.status == "completed"]
     labels = [value.metrics.label for value in completed]
-    _draw_bar_values(
-        painter,
-        top_left.adjusted(24.0, 40.0, -24.0, -24.0),
-        labels=labels,
-        values=[float(value.metrics.position_rmse_mm or 0.0) for value in completed],
-        color="#2563eb",
-        y_label="mm",
-    )
-    _draw_bar_values(
-        painter,
-        top_right.adjusted(24.0, 40.0, -24.0, -24.0),
-        labels=labels,
-        values=[float(value.metrics.tangent_mean_error_deg or 0.0) for value in completed],
-        color="#dc2626",
-        y_label="deg",
-    )
-    phase_labels = sorted({phase for phase in phases if phase})
-    if len(phase_labels) <= 1 or not completed:
-        painter.setPen(QColor("#cbd5e1"))
-        painter.drawText(bottom.adjusted(24.0, 40.0, -24.0, -24.0), Qt.AlignCenter | Qt.TextWordWrap, "Per-phase breakdown becomes informative when the dataset contains multiple phases or blocks.")
-    else:
-        phase_index = {phase: index for index, phase in enumerate(phase_labels)}
-        series = []
-        for evaluation, color in zip(completed, ["#2563eb", "#dc2626", "#a16207"]):
-            points = [
-                (float(phase_index[phase]), float(payload.get("position_rmse_mm", 0.0)))
-                for phase, payload in sorted(
-                    evaluation.metrics.phase_metrics.items(),
-                    key=lambda item: phase_index.get(item[0], 10**6),
-                )
-            ]
-            series.append((evaluation.metrics.label, points, color))
-        _draw_line_series(
-            painter,
-            bottom.adjusted(24.0, 40.0, -24.0, -48.0),
-            series,
-            x_axis_labels=[f"{phase_index[label]}:{label}" for label in phase_labels],
-            y_label="mm",
-        )
-    painter.end()
-    image.save(str(path))
+    plt = import_matplotlib()
+
+    fig, axes = plt.subplots(2, 1, figsize=(7.2, 6.2), constrained_layout=True)
+    axes[0].bar(labels, [float(value.metrics.position_rmse_mm or 0.0) for value in completed], color=color("measured"))
+    style_axes(axes[0], title="Model Position RMSE", xlabel="Model", ylabel="Position RMSE (mm)")
+    axes[1].bar(labels, [float(value.metrics.tangent_mean_error_deg or 0.0) for value in completed], color=color("target"))
+    style_axes(axes[1], title="Mean Tangent Error", xlabel="Model", ylabel="Tangent error (deg)")
+    for ax in axes:
+        ax.tick_params(axis="x", rotation=15)
+    save_figure(fig, path)
 
 
 def _draw_panel(painter: QPainter, rect: QRectF, title: str) -> None:

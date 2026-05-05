@@ -50,6 +50,7 @@ def test_config_loader_reads_runtime_registration_and_experiment_settings(tmp_pa
                 'tracker_type: "aurora"',
                 "mock_mode: true",
                 "poll_rate_hz: 7",
+                "figure_output_quality: medium",
                 "tracker_freshness_timeout_s: 0.75",
                 "tracker_ports_to_probe: [0A, 0B]",
                 "tracker_tool_id_aliases: {PORT1: 0A, PORT2: 0B}",
@@ -134,6 +135,7 @@ def test_config_loader_reads_runtime_registration_and_experiment_settings(tmp_pa
     settings = ConfigLoader(base_dir=config_dir).load_settings()
 
     assert settings.runtime.mock_mode is True
+    assert settings.runtime.figure_output_quality == "medium"
     assert settings.runtime.robot_config == "robot_8servo.yaml"
     assert settings.robot.mode == "8-servo"
     assert settings.robot.servo_ids == [1, 2, 3, 4, 5, 6, 7, 8]

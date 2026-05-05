@@ -82,6 +82,7 @@ class SystemViewState:
     position_max_offset_ticks: int = 600
     software_position_margin_ticks: int = 64
     telemetry_freshness_timeout_s: float = 0.25
+    figure_output_quality: str = "production"
     pretension_threshold_ma: int = 220
     tightening_direction_default: str = "cw"
     bench_debug_text: str = ""
@@ -138,6 +139,7 @@ class SystemController:
             position_max_offset_ticks=settings.safety.position_max_offset_ticks,
             software_position_margin_ticks=settings.safety.software_position_margin_ticks,
             telemetry_freshness_timeout_s=settings.safety.telemetry_stale_after_s,
+            figure_output_quality=str(settings.runtime.figure_output_quality),
             pretension_threshold_ma=settings.safety.default_pretension_current_threshold_ma,
             tightening_direction_default=self._default_tightening_direction(settings),
             config_summary=self._build_config_summary(settings),
@@ -1000,6 +1002,7 @@ class SystemController:
         position_max_offset_ticks: int | None = None,
         software_position_margin_ticks: int | None = None,
         telemetry_freshness_timeout_s: float,
+        figure_output_quality: str | None = None,
         pretension_threshold_ma: int | None = None,
         tightening_direction: str | None = None,
     ) -> str:
@@ -1049,6 +1052,9 @@ class SystemController:
                 raise ValueError("Software position margin must be non-negative.")
             if telemetry_freshness_timeout_s <= 0:
                 raise ValueError("Telemetry freshness timeout must be positive.")
+            resolved_figure_quality = str(figure_output_quality or self.state.figure_output_quality or "production").strip().lower()
+            if resolved_figure_quality not in {"low", "medium", "production"}:
+                raise ValueError("Figure output quality must be low, medium, or production.")
             if resolved_threshold <= 0:
                 raise ValueError("Pretension threshold must be positive.")
             robot = self.config_loader.load_robot_config(robot_config)
@@ -1087,6 +1093,7 @@ class SystemController:
                 "openrb_port": str(openrb_port).strip(),
                 "baudrate": int(baudrate),
                 "poll_rate_hz": int(poll_rate_hz),
+                "figure_output_quality": resolved_figure_quality,
                 "safety_overrides": {
                     "fine_jog_step_ticks": int(resolved_fine_jog),
                     "coarse_jog_step_ticks": int(resolved_coarse_jog),
@@ -1121,6 +1128,7 @@ class SystemController:
             self.state.baudrate = int(baudrate)
             self.state.expected_servo_ids = list(context.expected_servo_ids)
             self.state.poll_rate_hz = int(poll_rate_hz)
+            self.state.figure_output_quality = resolved_figure_quality
             self.state.fine_jog_step_ticks = int(resolved_fine_jog)
             self.state.coarse_jog_step_ticks = int(resolved_coarse_jog)
             self.state.position_min_offset_ticks = int(resolved_min_offset)
@@ -1133,6 +1141,7 @@ class SystemController:
             self.state.status_message = f"Saved runtime parameters to {path}."
             self.state.last_error = None
             self.settings.runtime.robot_config = str(robot_config)
+            self.settings.runtime.figure_output_quality = resolved_figure_quality
             self.settings.robot = robot
             self._apply_robot_config_to_servo_context(robot)
             LOG.info(

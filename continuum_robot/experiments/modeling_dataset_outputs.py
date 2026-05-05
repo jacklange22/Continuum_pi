@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from continuum_robot.experiments.dat_writer import DatRunWriter
+from continuum_robot.experiments.plotting import add_metric_box, color, create_figure, legend, save_figure, set_equal_xy, style_axes
 from continuum_robot.experiments.tracker_timing_outputs import (
     _draw_bar_chart,
     _draw_panel,
@@ -183,12 +184,15 @@ def write_modeling_dataset_outputs(*, output_dir: Path, metadata, summary, sampl
                 rows=rows,
                 filename_stem="modeling_dataset_legacy_compat",
             )
+    try:
+        _write_workspace_plot(workspace_plot_path=workspace_plot_path, export_rows=export_rows, metrics=metrics)
+    except Exception:
+        LOG.exception("Matplotlib workspace plot failed; writing placeholder %s", workspace_plot_path)
+        _write_plot_placeholder(workspace_plot_path)
     if _QT_AVAILABLE:
         _ensure_plot_qt_app()
-        _write_workspace_plot(workspace_plot_path=workspace_plot_path, export_rows=export_rows, metrics=metrics)
         _write_command_plot(command_plot_path=command_plot_path, export_rows=export_rows, metrics=metrics)
     else:
-        _write_plot_placeholder(workspace_plot_path)
         _write_plot_placeholder(command_plot_path)
         LOG.warning("Qt plotting backend unavailable; wrote placeholder modeling plots under %s", output_dir)
     outputs: dict[str, Path] = {
@@ -356,37 +360,54 @@ def _build_legacy_dat_rows(*, export_rows: list[dict[str, Any]]) -> list[dict[st
 
 
 def _write_workspace_plot(*, workspace_plot_path: Path, export_rows: list[dict[str, Any]], metrics: dict[str, Any]) -> None:
-    image = _new_image(1280, 860)
-    painter = QPainter(image)
-    painter.setRenderHint(QPainter.Antialiasing, True)
-    _draw_title(
-        painter,
-        QRectF(34.0, 24.0, 1212.0, 58.0),
-        "MODELING DATASET WORKSPACE COVERAGE",
-        "Accepted robot-frame tip positions for the single-segment Motor Babble dataset.",
-    )
-    scatter_rect = QRectF(36.0, 108.0, 820.0, 700.0)
-    summary_rect = QRectF(888.0, 108.0, 356.0, 700.0)
-    _draw_panel(painter, scatter_rect, "Accepted Tip Positions (XY)")
-    _draw_panel(painter, summary_rect, "Run Summary")
     accepted_rows = [row for row in export_rows if row.get("accepted") and len(row.get("tip_position_xyz_mm", [])) == 3]
     rejected_rows = [row for row in export_rows if not row.get("accepted") and len(row.get("tip_position_xyz_mm", [])) == 3]
-    _draw_xy_scatter(
-        painter,
-        scatter_rect.adjusted(22.0, 42.0, -22.0, -28.0),
-        accepted_points=[(float(row["tip_position_xyz_mm"][0]), float(row["tip_position_xyz_mm"][1])) for row in accepted_rows],
-        rejected_points=[(float(row["tip_position_xyz_mm"][0]), float(row["tip_position_xyz_mm"][1])) for row in rejected_rows],
-        x_label="X (mm)",
-        y_label="Y (mm)",
-        empty_text="No accepted robot-frame tip samples were available.",
+    accepted_points = [(float(row["tip_position_xyz_mm"][0]), float(row["tip_position_xyz_mm"][1])) for row in accepted_rows]
+    rejected_points = [(float(row["tip_position_xyz_mm"][0]), float(row["tip_position_xyz_mm"][1])) for row in rejected_rows]
+    fig, ax = create_figure(size="square")
+    if rejected_points:
+        ax.scatter(
+            [point[0] for point in rejected_points],
+            [point[1] for point in rejected_points],
+            s=18,
+            c=color("rejected"),
+            alpha=0.35,
+            linewidths=0,
+            label="Rejected",
+        )
+    if accepted_points:
+        alpha = 0.65 if len(accepted_points) < 500 else 0.35
+        ax.scatter(
+            [point[0] for point in accepted_points],
+            [point[1] for point in accepted_points],
+            s=16,
+            c=color("measured"),
+            alpha=alpha,
+            linewidths=0,
+            label="Accepted",
+        )
+    if accepted_points or rejected_points:
+        all_points = accepted_points + rejected_points
+        set_equal_xy(ax, x_values=[point[0] for point in all_points], y_values=[point[1] for point in all_points], minimum_span=5.0)
+    else:
+        ax.text(0.5, 0.5, "No robot-frame tip samples available", transform=ax.transAxes, ha="center", va="center")
+    style_axes(
+        ax,
+        title="Motor Babble Workspace Coverage",
+        xlabel="Robot-frame X position (mm)",
+        ylabel="Robot-frame Y position (mm)",
     )
-    _draw_summary_pairs(
-        painter,
-        summary_rect.adjusted(16.0, 38.0, -16.0, -16.0),
-        build_modeling_dataset_summary_pairs(metrics=metrics),
+    add_metric_box(
+        ax,
+        [
+            f"Accepted: {int(metrics.get('accepted_sample_count', len(accepted_points)) or 0)}",
+            f"Rejected: {int(metrics.get('rejected_sample_count', len(rejected_points)) or 0)}",
+            f"Mode: {str(metrics.get('dataset_mode', 'unknown')).replace('_', ' ')}",
+        ],
+        loc="upper right",
     )
-    painter.end()
-    image.save(str(workspace_plot_path))
+    legend(ax, loc="lower right")
+    save_figure(fig, workspace_plot_path)
 
 
 def _write_command_plot(*, command_plot_path: Path, export_rows: list[dict[str, Any]], metrics: dict[str, Any]) -> None:

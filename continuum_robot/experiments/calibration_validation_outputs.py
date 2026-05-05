@@ -8,6 +8,16 @@ from typing import Any
 
 import numpy as np
 
+from continuum_robot.experiments.plotting import (
+    add_metric_box,
+    color,
+    figure_dpi,
+    legend,
+    report_style,
+    save_figure,
+    set_equal_xy,
+    style_axes,
+)
 from continuum_robot.experiments.tracker_timing_outputs import (
     _body_font,
     _body_bold_font,
@@ -37,6 +47,9 @@ def write_registration_validation_outputs(*, output_dir: Path, metadata, summary
     output_dir = Path(output_dir)
     csv_path = output_dir / "metrics.csv"
     text_path = output_dir / "registration_validation_summary.txt"
+    origin_report_path = output_dir / "registration_frame_origins_report.png"
+    fre_report_path = output_dir / "registration_fre_report.png"
+    spread_report_path = output_dir / "registration_transform_spread_report.png"
     fre_plot_path = output_dir / "registration_fre_histogram.png"
     origin_plot_path = output_dir / "registration_frame_origins.png"
     spread_plot_path = output_dir / "registration_transform_spread.png"
@@ -62,6 +75,15 @@ def write_registration_validation_outputs(*, output_dir: Path, metadata, summary
         "\n".join(build_registration_validation_summary_lines(metadata=metadata, summary=summary, metrics=metrics)).strip() + "\n",
         encoding="utf-8",
     )
+    for path, writer in [
+        (origin_report_path, lambda: _write_registration_origin_report(path=origin_report_path, metrics=metrics)),
+        (fre_report_path, lambda: _write_registration_fre_report(path=fre_report_path, metrics=metrics)),
+        (spread_report_path, lambda: _write_registration_transform_spread_report(path=spread_report_path, metrics=metrics)),
+    ]:
+        try:
+            writer()
+        except Exception:
+            _write_plot_placeholder(path)
     if _QT_AVAILABLE:
         _ensure_plot_qt_app()
         _write_registration_fre_histogram(fre_plot_path=fre_plot_path, metrics=metrics)
@@ -74,6 +96,9 @@ def write_registration_validation_outputs(*, output_dir: Path, metadata, summary
     return {
         "metrics_csv_path": csv_path,
         "summary_text_path": text_path,
+        "origin_report_path": origin_report_path,
+        "fre_report_path": fre_report_path,
+        "spread_report_path": spread_report_path,
         "fre_plot_path": fre_plot_path,
         "origin_plot_path": origin_plot_path,
         "spread_plot_path": spread_plot_path,
@@ -156,6 +181,9 @@ def build_registration_validation_summary_lines(*, metadata, summary, metrics: d
         f"Robot-origin XYZ span (mm): x={_fmt(spread.get('span_x_mm'))}, y={_fmt(spread.get('span_y_mm'))}, z={_fmt(spread.get('span_z_mm'))}",
         "",
         "Saved plots:",
+        "- registration_frame_origins_report.png",
+        "- registration_fre_report.png",
+        "- registration_transform_spread_report.png",
         "- registration_fre_histogram.png",
         "- registration_frame_origins.png",
         "- registration_transform_spread.png",
@@ -235,6 +263,169 @@ def _csv_value(value: Any) -> Any:
     if isinstance(value, (list, dict)):
         return str(value)
     return value
+
+
+def _write_registration_origin_report(*, path: Path, metrics: dict[str, Any]) -> None:
+    rows = _registration_rows(metrics)
+    origins = [
+        [float(value) for value in row.get("robot_origin_in_aurora_mm")]
+        for row in rows
+        if isinstance(row.get("robot_origin_in_aurora_mm"), list) and len(row.get("robot_origin_in_aurora_mm")) >= 3
+    ]
+    with report_style() as plt:
+        fig, ax = plt.subplots(figsize=(5.4, 5.0), constrained_layout=True)
+    if not origins:
+        ax.text(0.5, 0.5, "No valid solved frame origins available", transform=ax.transAxes, ha="center", va="center")
+    else:
+        xs = [point[0] for point in origins]
+        ys = [point[1] for point in origins]
+        ax.scatter(xs, ys, s=34, color=color("measured"), alpha=0.78, linewidths=0, label="Solved origins")
+        consensus = metrics.get("consensus_robot_origin_in_aurora_mm")
+        if isinstance(consensus, list) and len(consensus) >= 2:
+            cx = float(consensus[0])
+            cy = float(consensus[1])
+            for x_value, y_value in zip(xs, ys):
+                ax.plot([cx, x_value], [cy, y_value], color=color("neutral"), linewidth=0.7, alpha=0.35)
+            ax.scatter(
+                [cx],
+                [cy],
+                s=70,
+                marker="X",
+                color=color("reference"),
+                edgecolors="white",
+                linewidths=0.8,
+                zorder=4,
+                label="Consensus origin",
+            )
+            xs.append(cx)
+            ys.append(cy)
+        set_equal_xy(ax, x_values=xs, y_values=ys, minimum_span=1.0)
+    style_axes(
+        ax,
+        title="Registration Frame Origin Consistency",
+        xlabel="Aurora X (mm)",
+        ylabel="Aurora Y (mm)",
+    )
+    legend(ax, loc="best")
+    spread = dict(metrics.get("robot_origin_spread_mm", {}) or {})
+    fre_summary = dict(metrics.get("fre_summary_mm", {}) or {})
+    add_metric_box(
+        ax,
+        _compact_metric_lines(
+            [
+                f"Mean FRE: {_fmt(fre_summary.get('mean'))} mm",
+                f"RMS origin spread: {_fmt(spread.get('rms_distance_mm'))} mm",
+                f"Max origin spread: {_fmt(spread.get('max_distance_mm'))} mm",
+                f"Runs: {int(metrics.get('valid_run_count', len(origins)) or 0)}",
+            ]
+        ),
+        loc="upper right",
+    )
+    save_figure(fig, path)
+
+
+def _write_registration_fre_report(*, path: Path, metrics: dict[str, Any]) -> None:
+    values = [
+        float(row.get("fre_mm"))
+        for row in _registration_rows(metrics)
+        if row.get("fre_mm") is not None
+    ]
+    with report_style() as plt:
+        fig, ax = plt.subplots(figsize=(7.2, 4.5), constrained_layout=True)
+    if not values:
+        ax.text(0.5, 0.5, "No valid FRE values available", transform=ax.transAxes, ha="center", va="center")
+    else:
+        bins = max(3, min(10, int(np.ceil(np.sqrt(len(values))))))
+        ax.hist(values, bins=bins, color=color("measured"), edgecolor="white", linewidth=0.8, alpha=0.88)
+        mean_fre = _optional_float((metrics.get("fre_summary_mm") or {}).get("mean"))
+        if mean_fre is not None:
+            ax.axvline(
+                mean_fre,
+                color=color("reference"),
+                linestyle="-",
+                linewidth=1.4,
+                label=f"Mean FRE ({mean_fre:.3f} mm)",
+            )
+            legend(ax, loc="upper right")
+    style_axes(
+        ax,
+        title="Registration FRE Distribution",
+        xlabel="FRE (mm)",
+        ylabel="Run count",
+    )
+    save_figure(fig, path)
+
+
+def _write_registration_transform_spread_report(*, path: Path, metrics: dict[str, Any]) -> None:
+    rows = _registration_rows(metrics)
+    labels = [f"R{index + 1}" for index, _row in enumerate(rows)]
+    translation_values = [
+        float(row.get("translation_delta_to_consensus_mm", 0.0) or 0.0)
+        for row in rows
+    ]
+    rotation_values = [
+        float(row.get("rotation_delta_to_consensus_deg", 0.0) or 0.0)
+        for row in rows
+    ]
+    with report_style() as plt:
+        fig, axes = plt.subplots(2, 1, figsize=(7.2, 5.8), constrained_layout=True, sharex=True)
+    top_ax, bottom_ax = axes
+    if not rows:
+        top_ax.text(0.5, 0.5, "No valid transform spread values available", transform=top_ax.transAxes, ha="center", va="center")
+        bottom_ax.set_visible(False)
+    else:
+        x_positions = list(range(len(rows)))
+        top_bars = top_ax.bar(
+            x_positions,
+            translation_values,
+            color=color("measured"),
+            edgecolor="white",
+            linewidth=0.7,
+        )
+        bottom_bars = bottom_ax.bar(
+            x_positions,
+            rotation_values,
+            color=color("fit"),
+            edgecolor="white",
+            linewidth=0.7,
+        )
+        if len(rows) <= 12:
+            top_ax.bar_label(top_bars, labels=[f"{value:.2f}" for value in translation_values], padding=2, fontsize=8)
+            bottom_ax.bar_label(bottom_bars, labels=[f"{value:.2f}" for value in rotation_values], padding=2, fontsize=8)
+        top_ax.set_ylim(0.0, max(translation_values + [0.0]) * 1.18 + 0.02)
+        bottom_ax.set_ylim(0.0, max(rotation_values + [0.0]) * 1.18 + 0.02)
+        bottom_ax.set_xticks(x_positions)
+        bottom_ax.set_xticklabels(labels)
+    style_axes(
+        top_ax,
+        title="Registration Transform Spread",
+        xlabel="",
+        ylabel="Translation delta (mm)",
+    )
+    style_axes(
+        bottom_ax,
+        title="",
+        xlabel="Registration run",
+        ylabel="Rotation delta (deg)",
+    )
+    save_figure(fig, path)
+
+
+def _registration_rows(metrics: dict[str, Any]) -> list[dict[str, Any]]:
+    return [dict(row) for row in list(metrics.get("per_run_rows") or [])]
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _compact_metric_lines(lines: list[str | None]) -> list[str]:
+    return [str(line) for line in lines if line]
 
 
 def _write_registration_fre_histogram(*, fre_plot_path: Path, metrics: dict[str, Any]) -> None:
@@ -522,8 +713,7 @@ def _draw_projected_scatter(
 
 def _new_publication_image(width: int, height: int):
     image = _new_image(width, height)
-    # 300 dpi export target for thesis-ready raster figures.
-    dots_per_meter = int(round(300.0 / 0.0254))
+    dots_per_meter = int(round(float(figure_dpi()) / 0.0254))
     image.setDotsPerMeterX(dots_per_meter)
     image.setDotsPerMeterY(dots_per_meter)
     return image

@@ -10,6 +10,15 @@ from typing import Any
 import numpy as np
 
 from continuum_robot.experiments.dataset_tools import extract_tip_or_tool_position_mm
+from continuum_robot.experiments.plotting import (
+    add_metric_box,
+    color,
+    create_figure,
+    legend,
+    save_figure,
+    set_equal_xy,
+    style_axes,
+)
 from continuum_robot.experiments.tracker_timing_outputs import (
     _body_font,
     _draw_bar_chart,
@@ -323,6 +332,9 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
     summary_text_path = output_dir / "repeatability_summary.txt"
     diagnostics_csv_path = output_dir / "repeatability_debug_samples.csv"
     legacy_comparison_csv_path = output_dir / "repeatability_legacy_style_comparison.csv"
+    clusters_report_path = output_dir / "repeatability_clusters_report.png"
+    error_by_target_report_path = output_dir / "repeatability_error_by_target_report.png"
+    group_summary_report_path = output_dir / "repeatability_group_summary_report.png"
     clusters_path = output_dir / "repeatability_clusters.png"
     legacy_clusters_path = output_dir / "tip_pos_clusters.png"
     rmse_path = output_dir / "repeatability_rmse_summary.png"
@@ -344,9 +356,35 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
     )
     _write_debug_samples_csv(diagnostics_csv_path, samples=samples)
     _write_legacy_style_comparison_csv(legacy_comparison_csv_path, metrics=metrics)
+    for path, writer in [
+        (
+            clusters_report_path,
+            lambda: _write_cluster_report_figure(clusters_path=clusters_report_path, samples=samples, metrics=metrics),
+        ),
+        (
+            error_by_target_report_path,
+            lambda: _write_error_by_target_report_figure(path=error_by_target_report_path, metrics=metrics),
+        ),
+        (
+            group_summary_report_path,
+            lambda: _write_group_summary_report_figure(path=group_summary_report_path, metrics=metrics),
+        ),
+    ]:
+        try:
+            writer()
+        except Exception:
+            LOG.exception("Repeatability report figure failed: %s", path.name)
+            _write_plot_placeholder(path)
+    try:
+        if _QT_AVAILABLE:
+            _ensure_plot_qt_app()
+            _write_cluster_figure(clusters_path=clusters_path, samples=samples, metrics=metrics)
+        else:
+            _write_plot_placeholder(clusters_path)
+    except Exception:
+        LOG.exception("Repeatability compatibility cluster figure was not written.")
+        _write_plot_placeholder(clusters_path)
     if _QT_AVAILABLE:
-        _ensure_plot_qt_app()
-        _write_cluster_figure(clusters_path=clusters_path, samples=samples, metrics=metrics)
         _write_legacy_tip_clusters_figure(path=legacy_clusters_path, metrics=metrics)
         _write_rmse_figure(rmse_path=rmse_path, metrics=metrics)
         _write_path_dependence_figure(path_dependence_path=path_dependence_path, metrics=metrics)
@@ -356,7 +394,6 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
         _write_provenance_figure(path=provenance_path, metrics=metrics)
     else:
         for path in [
-            clusters_path,
             legacy_clusters_path,
             rmse_path,
             path_dependence_path,
@@ -371,6 +408,9 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
         "summary_text_path": summary_text_path,
         "diagnostics_csv_path": diagnostics_csv_path,
         "legacy_comparison_csv_path": legacy_comparison_csv_path,
+        "clusters_report_path": clusters_report_path,
+        "error_by_target_report_path": error_by_target_report_path,
+        "group_summary_report_path": group_summary_report_path,
         "clusters_path": clusters_path,
         "legacy_clusters_path": legacy_clusters_path,
         "rmse_path": rmse_path,
@@ -574,6 +614,213 @@ def _write_legacy_style_comparison_csv(path: Path, *, metrics: dict[str, Any]) -
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _write_cluster_report_figure(*, clusters_path: Path, samples, metrics: dict[str, Any]) -> None:
+    points = _repeat_points_by_target(samples=samples)
+    centroids = {
+        int(row.get("target_index", -1)): row.get("centroid_mm")
+        for row in _ordered_per_target(metrics)
+        if isinstance(row.get("centroid_mm"), list) and len(row.get("centroid_mm")) >= 2
+    }
+    all_xy: list[tuple[float, float]] = []
+    for target_points in points.values():
+        all_xy.extend((float(point[0]), float(point[1])) for point in target_points)
+    all_xy.extend((float(point[0]), float(point[1])) for point in centroids.values())
+    fig, ax = create_figure(size="square")
+    if not all_xy:
+        ax.text(0.5, 0.5, "No accepted robot-frame repeat captures", transform=ax.transAxes, ha="center", va="center")
+    else:
+        target_ids = sorted(set(points) | set(centroids))
+        palette = [
+            "#2563eb",
+            "#0f766e",
+            "#7c3aed",
+            "#d97706",
+            "#0891b2",
+            "#be123c",
+            "#4f46e5",
+            "#15803d",
+        ]
+        for index, target_index in enumerate(target_ids):
+            target_points = points.get(target_index, [])
+            target_color = palette[index % len(palette)]
+            if target_points:
+                ax.scatter(
+                    [float(point[0]) for point in target_points],
+                    [float(point[1]) for point in target_points],
+                    s=14,
+                    alpha=0.48,
+                    color=target_color,
+                    linewidths=0,
+                    label="Repeat captures" if index == 0 else None,
+                )
+            centroid = centroids.get(target_index)
+            if centroid:
+                ax.scatter(
+                    [float(centroid[0])],
+                    [float(centroid[1])],
+                    s=38,
+                    marker="s",
+                    facecolors="white",
+                    edgecolors=color("reference"),
+                    linewidths=1.1,
+                    zorder=4,
+                    label="Target centroid" if index == 0 else None,
+                )
+        set_equal_xy(
+            ax,
+            x_values=[point[0] for point in all_xy],
+            y_values=[point[1] for point in all_xy],
+            minimum_span=5.0,
+        )
+    style_axes(
+        ax,
+        title="Single-Segment Repeatability",
+        xlabel="Robot-frame X position (mm)",
+        ylabel="Robot-frame Y position (mm)",
+    )
+    legend(ax, loc="lower right")
+    max_deviation = metrics.get("overall_max_deviation_mm")
+    thesis_goal = metrics.get("thesis_goal_rms_mm")
+    add_metric_box(
+        ax,
+        _compact_lines(
+            [
+                f"Overall RMS: {_fmt(metrics.get('overall_repeatability_rms_mm'), suffix=' mm')}",
+                f"Max deviation: {_fmt(max_deviation, suffix=' mm')}" if max_deviation is not None else None,
+                f"Repeat samples: {int(metrics.get('valid_repeat_sample_count', sum(len(v) for v in points.values())) or 0)}",
+                f"Goal: <= {_fmt(thesis_goal, suffix=' mm')}" if thesis_goal is not None else None,
+            ]
+        ),
+        loc="upper right",
+    )
+    save_figure(fig, clusters_path)
+
+
+def _write_error_by_target_report_figure(*, path: Path, metrics: dict[str, Any]) -> None:
+    rows = _ordered_per_target(metrics)
+    labels = [str(row.get("label", f"T{index:02d}")) for index, row in enumerate(rows)]
+    values = [_repeatability_error_value(row) for row in rows]
+    fig, ax = create_figure(size="wide")
+    numeric_values = [float(value) for value in values if value is not None]
+    if not rows or not numeric_values:
+        ax.text(0.5, 0.5, "No per-target repeatability errors available", transform=ax.transAxes, ha="center", va="center")
+    else:
+        x_positions = list(range(len(rows)))
+        bars = ax.bar(
+            x_positions,
+            [float(value) if value is not None else 0.0 for value in values],
+            color=color("measured"),
+            edgecolor="white",
+            linewidth=0.7,
+        )
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels(labels, rotation=45, ha="right")
+        thesis_goal = _optional_float(metrics.get("thesis_goal_rms_mm"))
+        if thesis_goal is not None:
+            ax.axhline(
+                thesis_goal,
+                color=color("threshold"),
+                linestyle="--",
+                linewidth=1.2,
+                label=f"Thesis goal ({thesis_goal:.2f} mm)",
+            )
+        overall = _optional_float(metrics.get("overall_repeatability_rms_mm"))
+        if overall is not None:
+            ax.axhline(
+                overall,
+                color=color("reference"),
+                linestyle="-",
+                linewidth=1.0,
+                alpha=0.75,
+                label=f"Overall RMS ({overall:.2f} mm)",
+            )
+        if len(bars) <= 17:
+            labels_above = [f"{float(value):.2f}" if value is not None else "" for value in values]
+            ax.bar_label(bars, labels=labels_above, padding=2, fontsize=8)
+        legend(ax, loc="upper right")
+        ax.set_ylim(0.0, max(numeric_values + [thesis_goal or 0.0, overall or 0.0]) * 1.18 + 0.02)
+    style_axes(
+        ax,
+        title="Repeatability Error by Target",
+        xlabel="Target",
+        ylabel="Repeatability error (mm)",
+    )
+    save_figure(fig, path)
+
+
+def _write_group_summary_report_figure(*, path: Path, metrics: dict[str, Any]) -> None:
+    rows = _ring_group_rows(metrics)
+    fig, ax = create_figure(size="wide")
+    if not rows:
+        ax.text(0.5, 0.5, "No target-group repeatability data available", transform=ax.transAxes, ha="center", va="center")
+    else:
+        labels = [label.title() for label, _value in rows]
+        values = [float(value) for _label, value in rows]
+        bar_colors = [
+            color("reference") if label == "center" else color("measured") if label == "inner" else color("fit")
+            for label, _value in rows
+        ]
+        bars = ax.bar(labels, values, color=bar_colors, edgecolor="white", linewidth=0.7)
+        ax.bar_label(bars, labels=[f"{value:.2f}" for value in values], padding=3, fontsize=9)
+        thesis_goal = _optional_float(metrics.get("thesis_goal_rms_mm"))
+        if thesis_goal is not None:
+            ax.axhline(
+                thesis_goal,
+                color=color("threshold"),
+                linestyle="--",
+                linewidth=1.2,
+                label=f"Thesis goal ({thesis_goal:.2f} mm)",
+            )
+            legend(ax, loc="upper right")
+        ax.set_ylim(0.0, max(values + [thesis_goal or 0.0]) * 1.2 + 0.02)
+    style_axes(
+        ax,
+        title="Repeatability by Target Group",
+        xlabel="Target group",
+        ylabel="Mean repeatability error (mm)",
+    )
+    save_figure(fig, path)
+
+
+def _repeatability_error_value(row: dict[str, Any]) -> float | None:
+    for key in ("spread_rms_mm", "rmse_mm", "XYZ_RMSE_mm", "XY_RMSE_mm"):
+        value = _optional_float(row.get(key))
+        if value is not None:
+            return value
+    return None
+
+
+def _ring_group_rows(metrics: dict[str, Any]) -> list[tuple[str, float]]:
+    ring_groups = dict((metrics.get("group_metrics", {}) or {}).get("ring", {}) or {})
+    rows: list[tuple[str, float]] = []
+    for label in ["center", "inner", "outer"]:
+        group = dict(ring_groups.get(label, {}) or {})
+        value = _optional_float(group.get("mean_target_rms_mm"))
+        if value is not None:
+            rows.append((label, value))
+    if rows:
+        return rows
+    values_by_ring: dict[str, list[float]] = {}
+    for row in _ordered_per_target(metrics):
+        value = _repeatability_error_value(row)
+        if value is None:
+            continue
+        ring = str(row.get("ring", "") or "")
+        if not ring:
+            target_index = int(row.get("target_index", -1) or -1)
+            ring = "center" if target_index == 0 else "inner" if target_index <= 8 else "outer"
+        values_by_ring.setdefault(ring, []).append(float(value))
+    for label in ["center", "inner", "outer"]:
+        values = values_by_ring.get(label, [])
+        if values:
+            rows.append((label, float(np.mean(values))))
+    return rows
+
+
+def _compact_lines(lines: list[str | None]) -> list[str]:
+    return [str(line) for line in lines if line]
 
 
 def _write_cluster_figure(*, clusters_path: Path, samples, metrics: dict[str, Any]) -> None:

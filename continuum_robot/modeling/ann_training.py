@@ -17,6 +17,7 @@ from typing import Any, Callable
 import numpy as np
 
 from continuum_robot.experiments.dataset_io import canonical_experiment_output_root, canonical_timestamped_path
+from continuum_robot.experiments.plotting import color, create_figure, legend, save_figure, style_axes
 
 try:
     from continuum_robot.gui.experiment_visualization import ChartModel, ChartSeriesModel, VisualizationModel
@@ -1330,76 +1331,21 @@ def _render_summary_text(metadata_payload: dict[str, Any]) -> str:
 
 
 def _write_loss_plot(path: Path, train_losses: list[float], validation_losses: list[float]) -> None:
-    if not _QT_AVAILABLE:
-        _write_plot_placeholder(path)
-        return
-    _ensure_qt_app()
-    width = 1100
-    height = 720
-    image = QImage(width, height, QImage.Format_ARGB32)
-    image.fill(QColor("#0f172a"))
-    painter = QPainter(image)
-    painter.setRenderHint(QPainter.Antialiasing, True)
-    plot_rect = QRectF(90.0, 80.0, width - 160.0, height - 170.0)
-    painter.setPen(QColor("#e2e8f0"))
-    painter.drawText(QRectF(36.0, 26.0, width - 72.0, 28.0), Qt.AlignLeft, "ANN TRAINING LOSS")
-    painter.setPen(QColor("#94a3b8"))
-    painter.drawText(
-        QRectF(36.0, 52.0, width - 72.0, 22.0),
-        Qt.AlignLeft,
-        "Legacy full-pose ANN train and validation loss by epoch.",
-    )
-    painter.setPen(QPen(QColor("#334155"), 1.0))
-    painter.drawRect(plot_rect)
+    fig, ax = create_figure(size="wide")
     values = [float(value) for value in train_losses if not math.isnan(float(value))]
     values.extend(float(value) for value in validation_losses if not math.isnan(float(value)))
     if not values:
-        painter.setPen(QColor("#94a3b8"))
-        painter.drawText(plot_rect, Qt.AlignCenter, "No loss history was saved.")
-        painter.end()
-        image.save(str(path))
+        ax.text(0.5, 0.5, "No loss history was saved", transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, title="ANN Training Loss", xlabel="Epoch", ylabel="Loss")
+        save_figure(fig, path)
         return
-    min_y = min(values)
-    max_y = max(values)
-    if math.isclose(min_y, max_y):
-        min_y -= 1.0
-        max_y += 1.0
-    for fraction in np.linspace(0.0, 1.0, 5):
-        x = plot_rect.left() + (plot_rect.width() * float(fraction))
-        y = plot_rect.bottom() - (plot_rect.height() * float(fraction))
-        painter.setPen(QPen(QColor("#1e293b"), 1.0))
-        painter.drawLine(QPointF(x, plot_rect.top()), QPointF(x, plot_rect.bottom()))
-        painter.drawLine(QPointF(plot_rect.left(), y), QPointF(plot_rect.right(), y))
-    _draw_loss_polyline(
-        painter=painter,
-        plot_rect=plot_rect,
-        values=train_losses,
-        color="#0f766e",
-        min_y=min_y,
-        max_y=max_y,
-    )
-    if any(not math.isnan(float(value)) for value in validation_losses):
-        _draw_loss_polyline(
-            painter=painter,
-            plot_rect=plot_rect,
-            values=validation_losses,
-            color="#2563eb",
-            min_y=min_y,
-            max_y=max_y,
-        )
-    painter.setPen(QColor("#94a3b8"))
-    painter.drawText(QRectF(plot_rect.left(), plot_rect.bottom() + 18.0, plot_rect.width(), 22.0), Qt.AlignCenter, "Epoch")
-    painter.save()
-    painter.translate(plot_rect.left() - 52.0, plot_rect.center().y())
-    painter.rotate(-90.0)
-    painter.drawText(QRectF(-plot_rect.height() / 2.0, -10.0, plot_rect.height(), 20.0), Qt.AlignCenter, "Loss")
-    painter.restore()
-    painter.setPen(QColor("#0f766e"))
-    painter.drawText(QRectF(plot_rect.right() - 170.0, 26.0, 160.0, 20.0), Qt.AlignRight, "Train")
-    painter.setPen(QColor("#2563eb"))
-    painter.drawText(QRectF(plot_rect.right() - 170.0, 48.0, 160.0, 20.0), Qt.AlignRight, "Validation")
-    painter.end()
-    image.save(str(path))
+    if train_losses:
+        ax.plot(range(len(train_losses)), train_losses, color=color("measured"), label="Train")
+    if validation_losses and any(not math.isnan(float(value)) for value in validation_losses):
+        ax.plot(range(len(validation_losses)), validation_losses, color=color("fit"), label="Validation")
+    style_axes(ax, title="ANN Training Loss", xlabel="Epoch", ylabel="Loss")
+    legend(ax, loc="best")
+    save_figure(fig, path)
 
 
 def _draw_loss_polyline(*, painter: QPainter, plot_rect: QRectF, values: list[float], color: str, min_y: float, max_y: float) -> None:
