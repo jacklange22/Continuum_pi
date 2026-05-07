@@ -87,6 +87,7 @@ class ServoCommandResult:
     raw_positions_by_id: dict[int, int] = field(default_factory=dict)
     clamp_reasons_by_id: dict[int, str] = field(default_factory=dict)
     debug_entries_by_id: dict[int, ServoDisplacementDebugEntry] = field(default_factory=dict)
+    command_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -3048,6 +3049,54 @@ class ServoService:
                 )
         return resolved, notes
 
+    def _expand_parallel_single_displacements(
+        self,
+        *,
+        requested_displacements_cm: list[float],
+        servo_ids: list[int],
+        mirror_pairs: dict[int, int],
+    ) -> tuple[list[float], list[str], dict[str, Any]]:
+        requested = [float(value) for value in requested_displacements_cm]
+        if len(requested) != 4:
+            raise ValueError(
+                "parallel_single displacement expansion requires one 4-servo single-segment command vector."
+            )
+        normalized_servo_ids = [int(value) for value in servo_ids]
+        mirrors = {int(source): int(mirror) for source, mirror in dict(mirror_pairs or {}).items()}
+        source_ids = sorted(mirrors)
+        if len(source_ids) != 4:
+            raise ValueError(f"parallel_single requires four source->mirror servo pairs; got {mirrors}.")
+        mirror_ids = [int(mirrors[source]) for source in source_ids]
+        required_ids = set(source_ids + mirror_ids)
+        missing = sorted(required_ids.difference(normalized_servo_ids))
+        if missing:
+            raise ValueError(
+                "parallel_single command requires all source and mirrored servo IDs; "
+                f"missing {missing} from command servo_ids {normalized_servo_ids}."
+            )
+        resolved_source, pair_notes = self._project_single_segment_antagonistic_pairs(requested)
+        displacement_by_servo = {
+            int(source): float(value)
+            for source, value in zip(source_ids, resolved_source)
+        }
+        for source, mirror in mirrors.items():
+            displacement_by_servo[int(mirror)] = float(displacement_by_servo[int(source)])
+        expanded = [float(displacement_by_servo.get(int(servo_id), 0.0)) for servo_id in normalized_servo_ids]
+        metadata = {
+            "operating_mode": "parallel_single",
+            "mirrored_parallel": True,
+            "input_command_servo_ids": list(source_ids),
+            "mirror_pairs": {str(source): int(mirror) for source, mirror in sorted(mirrors.items())},
+            "expanded_command_servo_ids": list(normalized_servo_ids),
+            "source_resolved_displacements_cm": list(resolved_source),
+        }
+        notes = list(pair_notes)
+        notes.append(
+            "parallel_single mirrored source servos "
+            + ", ".join(f"{source}->{mirrors[source]}" for source in source_ids)
+        )
+        return expanded, notes, metadata
+
     @staticmethod
     def _format_servo_positions_by_id(positions_by_id: dict[int, int]) -> str:
         return ", ".join(f"{int(servo_id)}:{int(goal)}" for servo_id, goal in sorted(positions_by_id.items()))
@@ -3106,7 +3155,7 @@ class ServoService:
         )
         detail = joined or str(assessment.reason).strip() or "unknown motion block"
         lowered = detail.lower()
-        if "current threshold exceeded" in lowered:
+        if "current threshold exceeded" in lowered or "current magnitude threshold exceeded" in lowered:
             return (
                 f"servo {servo_id} current/jam protection blocked motion: {detail}"
             )
@@ -3147,7 +3196,7 @@ class ServoService:
             return f"wrong operating mode: servo {servo_id} is not in Position Control Mode: {detail}"
         if "torque enable" in lowered or "torque state" in lowered:
             return f"torque off/unavailable: servo {servo_id} blocked motion: {detail}"
-        if "current threshold exceeded" in lowered:
+        if "current threshold exceeded" in lowered or "current magnitude threshold exceeded" in lowered:
             return f"overcurrent/jam protection: servo {servo_id} blocked motion: {detail}"
         if "input voltage" in lowered:
             return f"unsafe voltage: servo {servo_id} blocked motion: {detail}"
@@ -3286,7 +3335,9 @@ class ServoService:
         raw_goals: list[int],
         pair_notes: list[str],
         motion_profile: SingleSegmentMotionProfile,
+        command_metadata: dict[str, Any] | None = None,
     ) -> ServoCommandResult:
+        command_metadata = dict(command_metadata or {})
         raw_goals_by_servo = {
             int(servo_id): int(goal_tick)
             for servo_id, goal_tick in zip(servo_ids, raw_goals)
@@ -3416,10 +3467,12 @@ class ServoService:
                 raise RuntimeError(str(exc)) from exc
 
         message_parts = [
-            "Commanded 4-servo single-segment experiment displacement with the simple Position-control path.",
+            f"Commanded {len(payload)} servo(s) with the simple Position-control path for single-segment motion.",
             "Position Control Mode only; no Goal Current writes in ordinary experiment motion.",
             "Simple experiment motion enforces hardware-informed bounds only.",
         ]
+        if command_metadata.get("mirrored_parallel"):
+            message_parts.append("parallel_single mirrored command expanded to all configured source/mirror servos.")
         if pair_notes:
             message_parts.append(f"Antagonistic-pair projection applied: {'; '.join(pair_notes)}.")
         message_parts.append(
@@ -3451,6 +3504,7 @@ class ServoService:
             raw_positions_by_id=dict(raw_goals_by_servo),
             clamp_reasons_by_id=clamp_reasons,
             debug_entries_by_id=debug_entries,
+            command_metadata=command_metadata,
         )
 
     def command_displacement(
@@ -3460,6 +3514,7 @@ class ServoService:
         servo_ids: list[int],
         *,
         motion_workflow: str = SINGLE_SEGMENT_WORKFLOW_EXPERIMENT,
+        parallel_mirror_pairs: dict[int, int] | None = None,
     ) -> ServoCommandResult:
         """Compute and send safe goal position ticks.
 
@@ -3469,13 +3524,24 @@ class ServoService:
         if len(servo_ids) != len(neutral_ticks):
             raise ValueError("Servo ID list and neutral setpoint list length mismatch")
         requested_displacements = [float(value) for value in tendon_displacements_cm]
+        command_metadata: dict[str, Any] = {}
+        pre_projected_pair_notes: list[str] = []
+        if parallel_mirror_pairs:
+            requested_displacements, pre_projected_pair_notes, command_metadata = self._expand_parallel_single_displacements(
+                requested_displacements_cm=requested_displacements,
+                servo_ids=list(servo_ids),
+                mirror_pairs=dict(parallel_mirror_pairs),
+            )
         using_single_segment_envelope = self._uses_single_segment_displacement_envelope(
             tendon_displacements_cm=requested_displacements,
             neutral_ticks=neutral_ticks,
             servo_ids=servo_ids,
-        )
+        ) or bool(command_metadata.get("mirrored_parallel"))
         motion_profile = self._resolved_single_segment_motion_profile(workflow=motion_workflow)
-        if using_single_segment_envelope:
+        if command_metadata.get("mirrored_parallel"):
+            resolved_displacements = list(requested_displacements)
+            pair_notes = list(pre_projected_pair_notes)
+        elif using_single_segment_envelope:
             resolved_displacements, pair_notes = self._project_single_segment_antagonistic_pairs(requested_displacements)
         else:
             resolved_displacements = list(requested_displacements)
@@ -3489,6 +3555,7 @@ class ServoService:
                 raw_goals=raw_goals,
                 pair_notes=pair_notes,
                 motion_profile=motion_profile,
+                command_metadata=command_metadata,
             )
         configuration_notes: list[str] = []
         configuration_summary: SingleSegmentMotionConfigurationSummary | None = None
@@ -3691,6 +3758,7 @@ class ServoService:
             raw_positions_by_id={int(servo_id): int(goal) for servo_id, goal in zip(servo_ids, raw_goals)},
             clamp_reasons_by_id=clamp_reasons,
             debug_entries_by_id=debug_entries,
+            command_metadata=command_metadata,
         )
 
     def save_startup_calibration(

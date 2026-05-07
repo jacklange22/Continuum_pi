@@ -21,6 +21,40 @@ from continuum_robot.servos.servo_service import (
 )
 
 
+def test_safety_guard_current_limit_uses_absolute_magnitude_positive_and_negative() -> None:
+    guard = SafetyGuard(
+        min_offset_ticks=-600,
+        max_offset_ticks=600,
+        max_current_ma=850,
+        servo_model="XC330-M288-T",
+        servo_reported_current_hard_limit_ma=850,
+        current_safety_basis="unit-test basis",
+    )
+
+    guard.validate_currents([849, -849], require_present=True)
+    with pytest.raises(ValueError, match="\\|851\\|=851 mA > 850 mA"):
+        guard.validate_currents([851], require_present=True)
+    with pytest.raises(ValueError, match="\\|-851\\|=851 mA > 850 mA"):
+        guard.validate_currents([-851], require_present=True)
+
+
+def test_safety_guard_missing_current_policy_is_unchanged() -> None:
+    guard = SafetyGuard(min_offset_ticks=-600, max_offset_ticks=600, max_current_ma=850)
+
+    guard.validate_currents([None], require_present=False)
+    with pytest.raises(ValueError, match="Current telemetry is unavailable"):
+        guard.validate_currents([None], require_present=True)
+
+
+def test_pretension_current_balance_uses_absolute_current_proxy() -> None:
+    result = PretensionValidationService().validate_current_balance([-30, 20, -25, 24], tolerance_ma=12)
+
+    assert result.currents_ma == [30, 20, 25, 24]
+    assert result.spread_ma == 10
+    assert result.passed is True
+    assert "Load-proxy balance" in result.message
+
+
 class _PretensionBus(MockDxlBus):
     def __init__(self, *, current_sequence: list[int | None], max_limit: int = 4095) -> None:
         super().__init__([1])
@@ -294,7 +328,45 @@ def test_servo_service_single_segment_displacement_projects_antagonistic_pairs(t
     assert result.resolved_displacements_cm == pytest.approx([0.5, 0.0, -0.5, 0.0])
     assert result.positions_by_id[1] == neutral[1] + projected_ticks
     assert result.positions_by_id[3] == neutral[3] - projected_ticks
+
+
+def test_parallel_single_displacement_expands_to_all_8_servo_goals(tmp_path: Path) -> None:
+    bus = MockDxlBus([1, 2, 3, 4, 5, 6, 7, 8])
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1, 2, 3, 4, 5, 6, 7, 8])
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([1, 2, 3, 4, 5, 6, 7, 8])
+    servo_ids = [1, 2, 3, 4, 5, 6, 7, 8]
+
+    result = service.command_displacement(
+        tendon_displacements_cm=[0.2, -0.1, -0.2, 0.1],
+        neutral_ticks=[neutral[servo_id] for servo_id in servo_ids],
+        servo_ids=servo_ids,
+        parallel_mirror_pairs={1: 5, 2: 6, 3: 7, 4: 8},
+    )
+
+    assert sorted(result.positions_by_id) == servo_ids
+    for source, mirror in {1: 5, 2: 6, 3: 7, 4: 8}.items():
+        assert result.positions_by_id[source] - neutral[source] == result.positions_by_id[mirror] - neutral[mirror]
+    assert result.command_metadata["mirrored_parallel"] is True
+    assert result.command_metadata["mirror_pairs"] == {"1": 5, "2": 6, "3": 7, "4": 8}
     assert "Antagonistic-pair projection applied" in result.message
+    assert "parallel_single mirrored command expanded" in result.message
+
+
+def test_parallel_single_displacement_missing_mirrored_servo_fails_clearly(tmp_path: Path) -> None:
+    bus = MockDxlBus([1, 2, 3, 4, 6, 7, 8])
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1, 2, 3, 4, 6, 7, 8])
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([1, 2, 3, 4, 6, 7, 8])
+    servo_ids = [1, 2, 3, 4, 6, 7, 8]
+
+    with pytest.raises(ValueError, match="missing \\[5\\]"):
+        service.command_displacement(
+            tendon_displacements_cm=[0.2, -0.1, -0.2, 0.1],
+            neutral_ticks=[neutral[servo_id] for servo_id in servo_ids],
+            servo_ids=servo_ids,
+            parallel_mirror_pairs={1: 5, 2: 6, 3: 7, 4: 8},
+        )
 
 
 def test_servo_service_single_segment_displacement_uses_position_mode_for_experiment_motion(tmp_path: Path) -> None:

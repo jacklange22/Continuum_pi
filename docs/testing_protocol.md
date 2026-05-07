@@ -3,7 +3,7 @@
 This is the shortest reliable validation sequence for the current repo. Use the unified wrapper first:
 
 ```bash
-python scripts/run_lab_workflow.py list
+.venv/bin/python scripts/run_lab_workflow.py list
 ```
 
 ## 1. Environment And Config
@@ -12,22 +12,23 @@ python scripts/run_lab_workflow.py list
    `PYTHON_BIN=python3 scripts/bootstrap.sh`
 2. Copy local machine config if needed:
    `cp config/system.local.example.yaml config/system.local.yaml`
-3. Confirm the intended `mock_mode`, `aurora_port`, `openrb_port`, and `robot_config`.
+3. Confirm the intended `mock_mode`, `aurora_port`, `openrb_port`, hardware profile, and operating mode.
 
 Pass criteria:
 
 - `.venv` exists
 - `config/system.local.yaml` matches the current machine
-- `./.venv/bin/pytest -q` passes before hardware testing
+- `scripts/run_tests.sh quick` passes before hardware testing
+- `scripts/run_tests.sh hardware-safe` passes before hardware-focused changes
 
 ## 2. Tracker Bring-Up
 
 1. Run doctor:
-   `python scripts/run_lab_workflow.py tracker-doctor`
+   `.venv/bin/python scripts/run_lab_workflow.py tracker-doctor`
 2. Run smoke:
-   `python scripts/run_lab_workflow.py tracker-smoke -- --tracker-port /dev/ttyUSB0`
+   `.venv/bin/python scripts/run_lab_workflow.py tracker-smoke -- --tracker-port /dev/ttyUSB0`
 3. Run benchmark:
-   `python scripts/run_lab_workflow.py tracker-benchmark -- --tracker-port /dev/ttyUSB0`
+   `.venv/bin/python scripts/run_lab_workflow.py tracker-benchmark -- --tracker-port /dev/ttyUSB0`
 
 Pass criteria:
 
@@ -39,8 +40,8 @@ Pass criteria:
 ## 3. OpenRB / Servo Bring-Up
 
 1. Launch the GUI:
-   `python scripts/run_lab_workflow.py gui`
-2. In `System`, save runtime parameters for the active robot config and OpenRB port.
+   `.venv/bin/python scripts/run_lab_workflow.py gui`
+2. In `System`, save runtime parameters for the active hardware profile, operating mode, and OpenRB port.
 3. Connect OpenRB, then scan one servo in `Servos`.
 4. Verify telemetry before motion.
 5. Use fine jog only first.
@@ -55,7 +56,7 @@ Pass criteria:
 ## 4. Startup Calibration And Pretension
 
 1. Capture neutral setpoints in `Servos`.
-2. Save startup calibration for the active servo.
+2. Save startup/startup-reference calibration for the selected servo or active segment.
 3. Run pretension cautiously and accept only the reviewed result.
 
 Pass criteria:
@@ -67,11 +68,11 @@ Pass criteria:
 ## 5. Registration Validation
 
 1. Validate existing saved registration output:
-   `python scripts/run_lab_workflow.py registration-runtime-sanity -- --live --tracker-port /dev/ttyUSB0`
+   `.venv/bin/python scripts/run_lab_workflow.py registration-runtime-sanity -- --live --tracker-port /dev/ttyUSB0`
 2. Validate legacy CSV or session artifacts when comparing workflows:
-   `python scripts/run_lab_workflow.py registration-validation -- --session-json path/to/session.json`
+   `.venv/bin/python scripts/run_lab_workflow.py registration-validation -- --session-json path/to/session.json`
 3. Solve from CSV if needed:
-   `python scripts/run_lab_workflow.py registration-from-csv -- path/to/registration.csv`
+   `.venv/bin/python scripts/run_lab_workflow.py registration-from-csv -- path/to/registration.csv`
 
 Pass criteria:
 
@@ -82,7 +83,7 @@ Pass criteria:
 ## 6. Experiment Runs
 
 1. Use the GUI for operator-led runs, or the CLI for scripted runs:
-   `python scripts/run_lab_workflow.py experiment -- --help`
+   `.venv/bin/python scripts/run_lab_workflow.py experiment -- --help`
 2. Run `pivot_calibration` before live registration when the tip file changes.
 3. Run `aurora_grid_accuracy` before full robot experiments if tracker quality is in doubt.
 4. Run `single_segment_repeatability` only after tracker, pivot tip, registration, runtime tip calibration, and pretension are clean.
@@ -100,13 +101,13 @@ Pass criteria:
 Run this before and after hardware-focused edits:
 
 ```bash
-./.venv/bin/pytest -q
+scripts/run_tests.sh hardware-safe
 ```
 
 For GUI-specific work:
 
 ```bash
-./.venv/bin/pytest -q tests/test_gui_controllers.py tests/test_gui_bootstrap.py
+scripts/run_tests.sh gui
 ```
 
 ## Notes

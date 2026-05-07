@@ -210,7 +210,8 @@ def evaluate_runtime_tip_trust(
             uses_identity_transform=True,
             intended_use=intended_use,
             status_message=(
-                "Coil-as-tip is active: identity T_coil_tip, the 0A coil pose is shown directly as the tip."
+                "Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. "
+                "This does not apply an additional calibrated physical tip offset."
             ),
             reasons=reasons,
             warnings=warnings,

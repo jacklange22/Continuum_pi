@@ -1156,11 +1156,15 @@ def _write_plots(
         "workspace_xy": output_dir / "workspace_xy.png",
         "position_histograms": output_dir / "position_histograms.png",
         "comparison_summary": output_dir / "comparison_summary.png",
+        "model_workspace_prediction_report": output_dir / "model_workspace_prediction_report.png",
+        "model_comparison_summary_report": output_dir / "model_comparison_summary_report.png",
     }
     try:
         _write_workspace_plot(plot_paths["workspace_xy"], truths, evaluations)
         _write_histogram_plot(plot_paths["position_histograms"], evaluations)
         _write_comparison_plot(plot_paths["comparison_summary"], evaluations, phases)
+        _write_workspace_plot(plot_paths["model_workspace_prediction_report"], truths, evaluations)
+        _write_comparison_plot(plot_paths["model_comparison_summary_report"], evaluations, phases)
     except Exception:
         for path in plot_paths.values():
             _write_plot_placeholder(path)

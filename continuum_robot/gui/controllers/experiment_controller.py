@@ -603,6 +603,7 @@ class ExperimentController:
             "aurora_grid_accuracy",
             "tracker_timing_validation",
             "servo_tracker_sync_validation",
+            "two_segment_startup_validation",
             "pretension_validation",
             "command_schedule_validation",
             "replay_runner",
@@ -986,6 +987,10 @@ class ExperimentController:
                 return f"travel={int(value)} ticks"
             value = metrics.get("trigger_current_ma")
             return f"trigger={float(value):.1f} mA" if value is not None else ""
+        if experiment_name == "two_segment_startup_validation":
+            completion = dict(metrics.get("stage_completion", {}) or {})
+            completed = sum(1 for value in completion.values() if bool(value))
+            return f"stages={completed}/5"
         if experiment_name == "penprobe_chasing_demo":
             value = metrics.get("final_error_norm_mm")
             if value is not None:
@@ -1358,6 +1363,25 @@ class ExperimentController:
                     ("Max Displacement", self._format_metric_value(metrics.get("max_observed_displacement_mm"))),
                     ("Response Plot", str(plot_path) if plot_path.exists() else "not written"),
                     ("Summary Note", str(summary_text_path) if summary_text_path.exists() else "not written"),
+                ]
+            )
+            return pairs
+        if bundle_experiment_name == "two_segment_startup_validation":
+            metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
+            completion = dict(metrics.get("stage_completion", {}) or {})
+            completed = sum(1 for value in completion.values() if bool(value))
+            pairs.extend(
+                [
+                    ("Startup Type", str(metrics.get("startup_type", "manual_two_segment_startup"))),
+                    ("Stages Complete", f"{completed} / 5"),
+                    ("Captured This Run", ", ".join(str(value) for value in list(metrics.get("captured_this_run", []) or [])) or "n/a"),
+                    ("Final Accepted", "Yes" if metrics.get("final_accepted") else "No"),
+                    ("Startup Artifact", str(metrics.get("final_startup_artifact_path") or "not written")),
+                    ("Workflow State", str(metrics.get("workflow_state_path") or "n/a")),
+                    ("Summary Note", str(bundle.paths.output_dir / "two_segment_startup_summary.txt")),
+                    ("Positions Report", str(bundle.paths.output_dir / "two_segment_startup_positions_report.png")),
+                    ("Load Proxy Report", str(bundle.paths.output_dir / "two_segment_startup_load_proxy_report.png")),
+                    ("Stage Drift Report", str(bundle.paths.output_dir / "two_segment_startup_stage_drift_report.png")),
                 ]
             )
             return pairs

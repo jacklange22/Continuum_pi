@@ -1,0 +1,16 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from continuum_robot.diagnostics.prehardware_dry_run import render_dry_run_report, run_prehardware_dry_run
+
+
+def test_prehardware_dry_run_command_checks_core_paths(tmp_path: Path) -> None:
+    report = run_prehardware_dry_run(project_root=tmp_path, output_root=tmp_path / "dry_run")
+    text = render_dry_run_report(report)
+
+    assert report.passed
+    assert "Config / operating modes" in text
+    assert "Export bundle" in text
+    assert (report.output_dir / "prehardware_dry_run_summary.json").exists()
+    assert list((report.output_dir / "exports_no_samples").glob("*.zip"))

@@ -9,6 +9,7 @@ from continuum_robot.config.schemas import (
     ExperimentConfig,
     RegistrationWorkflowConfig,
     RobotConfig,
+    RobotSegmentConfig,
     RuntimeConfig,
     SafetyConfig,
     SerialConfig,
@@ -105,6 +106,65 @@ def _settings_4servo() -> Settings:
         serial=SerialConfig(
             aurora_port="/dev/mock-aurora",
             openrb_port="/dev/ttyACM0",
+            baudrate=57600,
+        ),
+        safety=SafetyConfig(
+            position_min_offset_ticks=-600,
+            position_max_offset_ticks=600,
+            max_current_ma=850,
+            default_pretension_current_threshold_ma=220,
+            pretension_current_balance_tolerance_ma=120,
+            fine_jog_step_ticks=5,
+            coarse_jog_step_ticks=25,
+            software_position_margin_ticks=64,
+            telemetry_stale_after_s=0.25,
+            pretension_step_ticks=2,
+            pretension_timeout_s=2.0,
+            pretension_settle_time_s=0.0,
+            max_temperature_c=70,
+            min_input_voltage_mv=4000,
+        ),
+        registration=RegistrationWorkflowConfig(),
+        experiment=ExperimentConfig(),
+        calibration=CalibrationConfig(
+            neutral_setpoints_path="config/neutral_setpoints.json",
+            latest_registration_path="data/registrations/latest_registration.json",
+        ),
+    )
+
+
+def _settings_dual_segment() -> Settings:
+    return Settings(
+        runtime=RuntimeConfig(mock_mode=True, robot_config="robot_8servo.yaml"),
+        robot=RobotConfig(
+            mode="dual_segment",
+            servo_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+            tendon_to_servo=[1, 2, 3, 4, 5, 6, 7, 8],
+            tightening_rotation_by_servo={servo_id: "cw" for servo_id in range(1, 9)},
+            segments={
+                "segment_a": RobotSegmentConfig(
+                    key="segment_a",
+                    label="Spine 1",
+                    segment_label="Segment A",
+                    segment_role="proximal",
+                    segment_order_index=0,
+                    servo_ids=[1, 2, 3, 4],
+                    pairs={"axis_a": [1, 3], "axis_b": [2, 4]},
+                ),
+                "segment_b": RobotSegmentConfig(
+                    key="segment_b",
+                    label="Spine 2",
+                    segment_label="Segment B",
+                    segment_role="distal",
+                    segment_order_index=1,
+                    servo_ids=[5, 6, 7, 8],
+                    pairs={"axis_a": [5, 7], "axis_b": [6, 8]},
+                ),
+            },
+        ),
+        serial=SerialConfig(
+            aurora_port="/dev/mock-aurora",
+            openrb_port="/dev/mock-openrb",
             baudrate=57600,
         ),
         safety=SafetyConfig(
@@ -463,6 +523,70 @@ def test_servos_controller_capture_neutral_status_explains_metadata_scope(tmp_pa
     assert "Captured neutral metadata" in controller.state.status_message
     assert "raw 0..4095 range" in controller.state.status_message
     assert controller.state.neutral_setpoints
+
+
+def test_servos_controller_dual_segment_groups_all_8_readiness_by_segment(tmp_path: Path) -> None:
+    settings = _settings_dual_segment()
+    context = settings.robot.operating_context()
+    servo_service = _servo_service(
+        tmp_path,
+        dxl_bus=MockDxlBus([1, 2, 3, 4, 5, 6, 7]),
+        context_servo_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+        robot_mode="dual_segment",
+    )
+    calibration_context = servo_service.neutral_calibration.context
+    calibration_context.expected_servo_ids = list(context.expected_servo_ids)
+    calibration_context.commanded_servo_ids = list(context.commanded_servo_ids)
+    calibration_context.segments = settings.robot.segment_metadata()
+    calibration_context.segment_order = settings.robot.segment_order()
+    calibration_context.mode_profile = context.mode_profile
+    calibration_context.mode_capabilities = context.mode_capabilities
+    calibration_context.mode_notes = context.mode_notes
+    servo_service.connect("/dev/mock-openrb", 57600)
+
+    controller = ServosController(servo_service, settings)
+
+    assert controller.state.expected_servo_ids == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert controller.state.segment_order == ["segment_a", "segment_b"]
+    assert "Segment A / proximal: 1, 2, 3, 4 (ready)" in controller.state.segment_readiness_summary
+    assert "Segment B / distal: 5, 6, 7, 8 (missing 8)" in controller.state.segment_readiness_summary
+    assert controller.state.missing_servo_ids == [8]
+    assert "missing 8" in controller.state.all_8_readiness_summary
+    assert controller.state.selected_servo_segment_label == "Segment A / proximal"
+    controller.set_selected_servo(6)
+    controller.refresh_selected_servo()
+    assert controller.state.selected_servo_segment_label == "Segment B / distal"
+
+
+def test_dual_segment_manual_capture_reads_and_saves_all_8_servo_state(tmp_path: Path) -> None:
+    settings = _settings_dual_segment()
+    operating_context = settings.robot.operating_context()
+    servo_service = _servo_service(
+        tmp_path,
+        dxl_bus=MockDxlBus([1, 2, 3, 4, 5, 6, 7, 8]),
+        context_servo_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+        robot_mode="dual_segment",
+    )
+    calibration_context = servo_service.neutral_calibration.context
+    calibration_context.expected_servo_ids = list(operating_context.expected_servo_ids)
+    calibration_context.commanded_servo_ids = list(operating_context.commanded_servo_ids)
+    calibration_context.segments = settings.robot.segment_metadata()
+    calibration_context.segment_order = settings.robot.segment_order()
+    calibration_context.mode_profile = operating_context.mode_profile
+    calibration_context.mode_capabilities = operating_context.mode_capabilities
+    calibration_context.mode_notes = operating_context.mode_notes
+    servo_service.connect("/dev/mock-openrb", 57600)
+
+    entries = servo_service.capture_manual_pretension_state(note="manual all-8 startup")
+
+    assert sorted(entries) == [1, 2, 3, 4, 5, 6, 7, 8]
+    artifact = servo_service.neutral_calibration.load_calibration_artifact()
+    assert artifact.robot["startup_artifact_scope"] == "dual_segment_all_8_manual_startup_foundation"
+    assert artifact.robot["segments"]["segment_a"]["servo_ids"] == [1, 2, 3, 4]
+    assert artifact.robot["segments"]["segment_b"]["servo_ids"] == [5, 6, 7, 8]
+    assert artifact.servos[1].pretension_result_status == "manual_captured"
+    assert artifact.servos[8].pretension_final_position_tick is not None
+    assert artifact.servos[8].last_measured_current_ma is not None
 
 
 def test_system_controller_syncs_servo_summary_from_servos_state(tmp_path: Path) -> None:

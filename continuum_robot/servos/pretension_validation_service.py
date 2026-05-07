@@ -40,22 +40,31 @@ class PretensionValidationService:
         currents_ma: list[int | None],
         tolerance_ma: int,
     ) -> PretensionValidationResult:
-        """Return a rich result describing current balance."""
-        values = [int(current) for current in currents_ma if current is not None]
+        """Return a rich result describing servo-reported current magnitude balance.
+
+        This helper does not have a per-servo baseline, so it treats the
+        absolute servo-reported current magnitude as a low-confidence load
+        proxy. The staged pretension experiment uses
+        abs(current_ma - baseline_current_ma) when a baseline is available.
+        """
+        values = [abs(int(current)) for current in currents_ma if current is not None]
         if not values:
             return PretensionValidationResult(
                 passed=False,
                 currents_ma=[],
                 spread_ma=None,
-                message="Current balance unavailable because no servo currents were readable.",
+                message="Load-proxy balance unavailable because no servo-reported currents were readable.",
             )
 
         spread = max(values) - min(values)
         passed = spread <= tolerance_ma
         if passed:
-            message = f"Current balance passed with spread {spread} mA."
+            message = f"Load-proxy balance passed with absolute-current spread {spread} mA."
         else:
-            message = f"Current balance failed with spread {spread} mA (limit {tolerance_ma} mA)."
+            message = (
+                f"Load-proxy balance failed with absolute-current spread {spread} mA "
+                f"(workflow limit {tolerance_ma} mA)."
+            )
         return PretensionValidationResult(
             passed=passed,
             currents_ma=values,

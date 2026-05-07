@@ -333,6 +333,8 @@ def test_tracker_loss_stops_and_records_failure_metrics() -> None:
     assert servo.commanded_servo_ids == [5, 6, 7, 8]
     assert session.metrics["stop_reason"] == "tracker_stale"
     assert session.metrics["active_segment_key"] == "segment_b"
+    assert session.metrics["controlled_point_source"] == "0A coil origin in robot frame"
+    assert "0B tool origin" in session.metrics["target_point_source"]
     assert session.metrics["operating_context"]["active_segment"]["servo_ids"] == [5, 6, 7, 8]
     assert session.samples
 

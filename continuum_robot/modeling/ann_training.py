@@ -646,6 +646,7 @@ def train_legacy_ann(
         checkpoints_dir.mkdir(parents=True, exist_ok=True)
     loss_history_path = artifact_dir / "loss_history.csv"
     loss_plot_path = artifact_dir / "loss_curve.png"
+    loss_report_plot_path = artifact_dir / "ann_loss_curve_report.png"
     metadata_path = artifact_dir / "training_metadata.json"
     config_path = artifact_dir / "training_config.json"
     split_manifest_path = artifact_dir / "split_manifest.json"
@@ -775,6 +776,7 @@ def train_legacy_ann(
     )
     _write_loss_history_csv(loss_history_path, epoch_rows)
     _write_loss_plot(loss_plot_path, train_losses, validation_losses)
+    _write_loss_plot(loss_report_plot_path, train_losses, validation_losses)
     split_manifest = {
         "schema_version": TRAINING_SCHEMA_VERSION,
         "strategy": split.strategy,
@@ -844,6 +846,7 @@ def train_legacy_ann(
             "model_path": (str(model_path) if model_path.exists() else None),
             "loss_history_path": str(loss_history_path),
             "loss_plot_path": str(loss_plot_path),
+            "loss_report_plot_path": str(loss_report_plot_path),
             "split_manifest_path": str(split_manifest_path),
             "summary_text_path": str(summary_text_path),
         },

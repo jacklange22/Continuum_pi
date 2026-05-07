@@ -33,6 +33,7 @@ from continuum_robot.experiments.penprobe_chasing_demo import (
     PenprobeChasingDemoConfig,
     _validate_legacy_mapping_config,
 )
+from continuum_robot.experiments.two_segment_startup_validation import DUAL_SEGMENT_BLOCK_MESSAGE
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
 from continuum_robot.experiments.critical_experiments import (
     GridDefinitionConfig,
@@ -968,6 +969,64 @@ def evaluate_preflight(
         checks.append(_info("mode", "Run Mode", "Replay runner is an offline analysis workflow."))
         checks.append(_info("registration", "Registration", "Replay runner uses the saved dataset state."))
 
+    elif experiment_name == "two_segment_startup_validation":
+        operating_context = settings.robot.operating_context()
+        expected_ids = [int(value) for value in getattr(operating_context, "expected_servo_ids", [])]
+        commanded_ids = [int(value) for value in getattr(operating_context, "commanded_servo_ids", [])]
+        if operating_context.operating_mode != "dual_segment":
+            checks.append(_blocked("operating_mode", "Operating Mode", DUAL_SEGMENT_BLOCK_MESSAGE))
+        else:
+            checks.append(_ok("operating_mode", "Operating Mode", "dual_segment all-8 manual startup validation is selected."))
+        if not servo_connected:
+            checks.append(_blocked("servo_service", "Servo Service", "Two-segment startup validation requires a connected ServoService."))
+        else:
+            checks.append(_ok("servo_service", "Servo Service", "ServoService is connected for all-8 telemetry capture."))
+        if expected_ids != [1, 2, 3, 4, 5, 6, 7, 8] or commanded_ids != expected_ids:
+            checks.append(
+                _blocked(
+                    "servo_ids",
+                    "All-8 Servo IDs",
+                    f"Expected/commanded IDs must both be [1,2,3,4,5,6,7,8]; resolved expected={expected_ids}, commanded={commanded_ids}.",
+                )
+            )
+        else:
+            checks.append(_ok("servo_ids", "All-8 Servo IDs", "All 8 expected/commanded servo IDs are present in the operating context."))
+        segments = dict(operating_context.metadata().get("segments", {}) or {})
+        segment_a = dict(segments.get("segment_a", {}) or {})
+        segment_b = dict(segments.get("segment_b", {}) or {})
+        if [int(value) for value in segment_a.get("servo_ids", [])] == [1, 2, 3, 4]:
+            checks.append(_ok("segment_a", "Segment A", "Segment A/proximal uses servos [1,2,3,4] with configured pairs."))
+        else:
+            checks.append(_blocked("segment_a", "Segment A", f"Segment A/proximal must use servos [1,2,3,4]; resolved {segment_a.get('servo_ids')}."))
+        if [int(value) for value in segment_b.get("servo_ids", [])] == [5, 6, 7, 8]:
+            checks.append(_ok("segment_b", "Segment B", "Segment B/distal uses servos [5,6,7,8] with configured pairs."))
+        else:
+            checks.append(_blocked("segment_b", "Segment B", f"Segment B/distal must use servos [5,6,7,8]; resolved {segment_b.get('servo_ids')}."))
+        checks.append(
+            _info(
+                "telemetry_capture",
+                "Telemetry Capture",
+                "Live position freshness is checked at each stage. Missing positions block capture; missing current estimates warn by default.",
+            )
+        )
+        if tracker_ready:
+            checks.append(_ok("tracking", "Tracking", f"Tracker is available via {backend_name}. Pose snapshots will be recorded when exposed by the backend."))
+        else:
+            checks.append(
+                _warning(
+                    "tracking",
+                    "Tracking",
+                    "Tracker is optional for this workflow. The run remains servo/current-only and lower-trust for pose if no tracker snapshot is available.",
+                )
+            )
+        checks.append(
+            _info(
+                "motion_scope",
+                "Motion Scope",
+                "This workflow records manual all-8 startup stages and does not command automatic two-segment pretension/control.",
+            )
+        )
+
     elif experiment_name == "pretension_validation":
         config = PretensionValidationExperimentConfig.from_dict(payload)
         if not servo_connected:
@@ -990,12 +1049,21 @@ def evaluate_preflight(
             checks.append(_ok("servo_id", "Servo ID", f"Pretension validation will target servo {config.servo_id}."))
         if config.mode in {"single_segment_staged", "single_segment_characterization", "staged", "four_servo_staged"}:
             selected_ids = staged_ids or active_ids
-            if operating_context.operating_mode not in {"single_segment", "parallel_single"}:
+            if operating_context.operating_mode != "single_segment":
+                message = (
+                    "dual_segment currently supports all-8 readiness and manual startup capture. "
+                    "Automatic two-segment pretension/control is not implemented yet."
+                    if operating_context.operating_mode == "dual_segment"
+                    else (
+                        "Automatic staged pretension currently requires operating_mode=single_segment. "
+                        "Select Segment A or Segment B."
+                    )
+                )
                 checks.append(
                     _blocked(
                         "active_segment",
                         "Active Segment",
-                        f"Staged pretension requires single_segment mode; current operating mode is {operating_context.operating_mode}.",
+                        message,
                     )
                 )
             elif len(selected_ids) != 4:

@@ -21,6 +21,7 @@ from continuum_robot.experiments.tracker_timing_outputs import (
     _fmt,
     _fmt_number,
     _new_image,
+    _qt_plotting_is_safe,
 )
 try:
     from continuum_robot.gui.theme import COLORS
@@ -155,7 +156,7 @@ def write_servo_tracker_sync_outputs(*, output_dir: Path, metadata, summary, sam
         + "\n",
         encoding="utf-8",
     )
-    if _QT_AVAILABLE:
+    if _qt_plotting_is_safe():
         _ensure_plot_qt_app()
         _write_offset_histogram(histogram_path=histogram_path, metrics=metrics)
         _write_offset_timeseries(timeseries_path=timeseries_path, metrics=metrics)

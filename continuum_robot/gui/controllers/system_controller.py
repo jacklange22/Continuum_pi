@@ -1175,10 +1175,15 @@ class SystemController:
         context.active_segment_label = robot.active_segment_label()
         context.active_segment_servo_ids = robot.active_segment_servo_ids()
         context.active_segment_pairs = robot.active_segment_pairs()
+        context.segments = robot.segment_metadata()
+        context.segment_order = robot.segment_order()
         context.selected_servo_id = robot.selected_servo_id
         context.expected_servo_ids = list(resolved.expected_servo_ids)
         context.commanded_servo_ids = list(resolved.commanded_servo_ids)
         context.mirror_pairs = dict(resolved.mirror_pairs)
+        context.mode_profile = resolved.mode_profile
+        context.mode_capabilities = dict(resolved.mode_capabilities)
+        context.mode_notes = list(resolved.mode_notes)
 
     @staticmethod
     def _segment_options(robot) -> list[dict[str, object]]:

@@ -1185,6 +1185,10 @@ def test_pretension_validation_single_segment_staged_writes_units_metrics_and_pl
     assert result.paths.output_dir.joinpath("pretension_summary.txt").exists()
     assert result.paths.output_dir.joinpath("pretension_current_vs_position.png").exists()
     assert result.paths.output_dir.joinpath("pretension_tip_xy_path.png").exists()
+    assert result.paths.output_dir.joinpath("pretension_tip_xy_path_report.png").exists()
+    assert result.paths.output_dir.joinpath("pretension_load_proxy_by_servo_report.png").exists()
+    assert result.paths.output_dir.joinpath("pretension_tendon_displacement_vs_load_proxy_report.png").exists()
+    assert result.paths.output_dir.joinpath("pretension_final_state_report.png").exists()
     assert result.paths.output_dir.joinpath("pretension_final_current_distribution.png").exists()
     assert result.paths.output_dir.joinpath("pretension_repeatability_summary.png").exists()
 
@@ -1303,6 +1307,8 @@ def test_collect_pose_command_dataset_records_full_pose_when_registration_exists
     assert bundle.paths.output_dir.joinpath("modeling_dataset_summary.txt").exists()
     assert bundle.paths.output_dir.joinpath("modeling_dataset_export.jsonl").exists()
     assert bundle.paths.output_dir.joinpath("modeling_workspace_coverage.png").exists()
+    assert bundle.paths.output_dir.joinpath("modeling_workspace_coverage_report.png").exists()
+    assert bundle.paths.output_dir.joinpath("commanded_tendon_space_report.png").exists()
     assert bundle.paths.output_dir.joinpath("modeling_command_distribution.png").exists()
     assert bundle.paths.output_dir.joinpath("modeling_dataset_legacy_compat.dat").exists()
     metrics = bundle.summary.experiment_metrics
@@ -1348,8 +1354,13 @@ def test_collect_pose_command_dataset_runs_servo_only_without_tracker_when_expli
     )
 
     assert result.success is True
+    assert result.metadata.trust_info["run_trust_mode"] == "servo_only"
+    assert result.metadata.trust_info["valid_for_model_training"] is False
+    assert result.metadata.provenance_info["hardware_profile"] == settings.runtime.robot_config
+    assert result.metadata.provenance_info["expected_servo_ids"] == settings.robot.expected_servo_ids()
     metrics = result.summary.experiment_metrics
     assert metrics["run_trust_mode"] == "servo_only"
+    assert metrics["run_trust"]["valid_for_model_training"] is False
     assert metrics["valid_for_model_training"] is False
     assert metrics["valid_for_thesis_repeatability"] is False
     assert metrics["legacy_export_enabled"] is False

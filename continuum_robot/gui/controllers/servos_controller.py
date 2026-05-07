@@ -25,6 +25,13 @@ class ServosViewState:
     active_segment_label: str = "Spine 1"
     active_segment_servo_ids: list[int] = field(default_factory=list)
     active_segment_pairs: dict[str, list[int]] = field(default_factory=dict)
+    segment_order: list[str] = field(default_factory=list)
+    segment_definitions: dict[str, dict] = field(default_factory=dict)
+    segment_readiness_summary: str = ""
+    all_8_readiness_summary: str = ""
+    selected_servo_segment_label: str = "Unknown segment"
+    manual_pretension_sequence_hint: str = ""
+    dual_segment_foundation_note: str = ""
     servo_ids: list[int] = field(default_factory=list)
     detected_servo_ids: list[int] = field(default_factory=list)
     missing_servo_ids: list[int] = field(default_factory=list)
@@ -109,6 +116,13 @@ class ServosController:
             active_segment_label=settings.robot.active_segment_label(),
             active_segment_servo_ids=settings.robot.active_segment_servo_ids(),
             active_segment_pairs=settings.robot.active_segment_pairs(),
+            segment_order=list(operating_context.segment_order),
+            segment_definitions=dict(operating_context.metadata().get("segments", {})),
+            dual_segment_foundation_note=(
+                operating_context.mode_notes[0]
+                if operating_context.operating_mode == "dual_segment" and operating_context.mode_notes
+                else ""
+            ),
             servo_ids=list(operating_context.expected_servo_ids),
             tendon_displacements_cm=[0.0] * len(settings.robot.tendon_to_servo),
             fine_jog_step_ticks=settings.safety.fine_jog_step_ticks,
@@ -132,16 +146,7 @@ class ServosController:
     def refresh(self) -> ServosViewState:
         self.state.connected = self.servo_service.is_connected
         operating_context = self.settings.robot.operating_context()
-        self.state.robot_mode = operating_context.operating_mode
-        self.state.expected_servo_ids = list(operating_context.expected_servo_ids)
-        self.state.active_segment_key = self.settings.robot.active_segment_key()
-        self.state.active_segment_label = self.settings.robot.active_segment_label()
-        self.state.active_segment_servo_ids = self.settings.robot.active_segment_servo_ids()
-        self.state.active_segment_pairs = self.settings.robot.active_segment_pairs()
-        self.state.active_segment_key = self.settings.robot.active_segment_key()
-        self.state.active_segment_label = self.settings.robot.active_segment_label()
-        self.state.active_segment_servo_ids = self.settings.robot.active_segment_servo_ids()
-        self.state.active_segment_pairs = self.settings.robot.active_segment_pairs()
+        self._sync_operating_context_fields(operating_context)
         self.state.single_servo_mode = operating_context.operating_mode == "one_servo"
         self._refresh_single_segment_motion_diagnostics()
         self._refresh_calibration_summary()
@@ -156,6 +161,7 @@ class ServosController:
             if self.state.discovery_status == "idle":
                 self.state.discovery_message = "Connect OpenRB and the DYNAMIXEL bus before discovery."
             self._sync_selected_servo_motion_state()
+            self._sync_segment_readiness_summary()
             return self.state
         if self.state.single_servo_mode:
             return self._refresh_single_servo_state()
@@ -166,6 +172,7 @@ class ServosController:
             self.state.selected_servo_external_power_ready = None
             self.state.bench_debug_text = self._build_disconnected_bench_debug_text()
             self._sync_selected_servo_motion_state()
+            self._sync_segment_readiness_summary()
             return self.state
         if self.state.servo_ids:
             try:
@@ -175,6 +182,7 @@ class ServosController:
                 self.state.last_error = None
                 self.state.bench_debug_text = self._build_multi_servo_bench_debug_text()
                 self._sync_selected_servo_motion_state()
+                self._sync_segment_readiness_summary()
                 return self.state
             except Exception as exc:
                 self.state.last_error = str(exc)
@@ -182,6 +190,7 @@ class ServosController:
                 self.state.telemetry = {}
                 self.state.bench_debug_text = self._build_disconnected_bench_debug_text(extra_error=str(exc))
                 self._sync_selected_servo_motion_state()
+                self._sync_segment_readiness_summary()
                 return self.state
             if self.state.selected_servo_id not in self.state.servo_ids and self.state.servo_ids:
                 self.state.selected_servo_id = int(self.state.servo_ids[0])
@@ -193,6 +202,7 @@ class ServosController:
             self._refresh_single_segment_motion_diagnostics()
             self.state.bench_debug_text = self._build_multi_servo_bench_debug_text()
             self._sync_selected_servo_motion_state()
+            self._sync_segment_readiness_summary()
         return self.state
 
     def scan(self) -> list[int]:
@@ -486,7 +496,7 @@ class ServosController:
             entries = self.servo_service.capture_manual_pretension_state(note=note)
             captured_ids = sorted(int(servo_id) for servo_id in entries)
             self.state.status_message = (
-                "Captured current 4-servo state as pending manual pretension for servo IDs "
+                f"Captured current {len(captured_ids)}-servo state as pending manual pretension/startup for servo IDs "
                 + ", ".join(str(value) for value in captured_ids)
                 + ". Review and accept it before running experiments."
             )
@@ -560,8 +570,7 @@ class ServosController:
     def refresh_selected_servo(self) -> ServosViewState:
         self.state.connected = self.servo_service.is_connected
         operating_context = self.settings.robot.operating_context()
-        self.state.robot_mode = operating_context.operating_mode
-        self.state.expected_servo_ids = list(operating_context.expected_servo_ids)
+        self._sync_operating_context_fields(operating_context)
         self.state.single_servo_mode = operating_context.operating_mode == "one_servo"
         self._refresh_calibration_summary()
         self._sync_active_neutral_setpoints()
@@ -573,6 +582,7 @@ class ServosController:
             self.state.selected_servo_external_power_ready = None
             self.state.bench_debug_text = self._build_disconnected_bench_debug_text()
             self._sync_selected_servo_motion_state()
+            self._sync_segment_readiness_summary()
             return self.state
         if self.state.single_servo_mode:
             return self.refresh()
@@ -580,6 +590,7 @@ class ServosController:
         if self.state.selected_servo_id not in self.state.servo_ids and self.state.servo_ids:
             self.state.selected_servo_id = int(self.state.servo_ids[0])
         self._refresh_selected_servo_live()
+        self._sync_segment_readiness_summary()
         return self.state
 
     def _run_jog_action(self, servo_id: int, action: str) -> None:
@@ -726,10 +737,16 @@ class ServosController:
                 for servo_id, position in sorted(positions_by_servo.items())
             )
             if self.state.manual_pretension_can_accept:
-                summary_text = (
-                    "Pending manual pretension capture is saved for active segment "
-                    f"{self.state.active_segment_label} ({', '.join(str(value) for value in configured_servo_ids)})."
-                )
+                if self.state.robot_mode == "dual_segment":
+                    summary_text = (
+                        "Pending manual pretension/startup capture is saved for the all-8 dual_segment "
+                        f"foundation ({', '.join(str(value) for value in configured_servo_ids)})."
+                    )
+                else:
+                    summary_text = (
+                        "Pending manual pretension capture is saved for active segment "
+                        f"{self.state.active_segment_label} ({', '.join(str(value) for value in configured_servo_ids)})."
+                    )
                 self.state.pretension_source_type = "manual_pending"
             elif self.state.manual_pretension_can_clear and not source_summary.usable:
                 summary_text = "Manual pretension capture exists, but it is incomplete or not accepted yet."
@@ -837,6 +854,88 @@ class ServosController:
             self.state.unexpected_servo_ids = list(snapshot.unexpected_servo_ids)
         return assessments
 
+    def _sync_operating_context_fields(self, operating_context) -> None:
+        metadata = operating_context.metadata()
+        self.state.robot_mode = operating_context.operating_mode
+        self.state.expected_servo_ids = list(operating_context.expected_servo_ids)
+        self.state.active_segment_key = self.settings.robot.active_segment_key()
+        self.state.active_segment_label = self.settings.robot.active_segment_label()
+        self.state.active_segment_servo_ids = self.settings.robot.active_segment_servo_ids()
+        self.state.active_segment_pairs = self.settings.robot.active_segment_pairs()
+        self.state.segment_order = list(operating_context.segment_order)
+        self.state.segment_definitions = dict(metadata.get("segments", {}) or {})
+        self.state.dual_segment_foundation_note = (
+            operating_context.mode_notes[0]
+            if operating_context.operating_mode == "dual_segment" and operating_context.mode_notes
+            else ""
+        )
+        self.state.manual_pretension_sequence_hint = (
+            "Manual sequence: pretension Segment A / proximal, pretension Segment B / distal, "
+            "re-check Segment A, then save the all-8 startup artifact."
+            if operating_context.operating_mode == "dual_segment"
+            else ""
+        )
+
+    def _sync_segment_readiness_summary(self) -> None:
+        summaries = []
+        selected_segment_label = "Unknown segment"
+        expected = [int(value) for value in self.state.expected_servo_ids]
+        detected = {int(value) for value in self.state.detected_servo_ids}
+        missing_global = {int(value) for value in self.state.missing_servo_ids}
+        if not detected and self.state.telemetry:
+            detected = {
+                int(servo_id)
+                for servo_id, row in self.state.telemetry.items()
+                if row.get("position") is not None or row.get("telemetry_status") not in {"Unreadable", "Missing"}
+            }
+        for key in self.state.segment_order or sorted(self.state.segment_definitions):
+            data = dict(self.state.segment_definitions.get(str(key), {}) or {})
+            servo_ids = [int(value) for value in data.get("servo_ids", [])]
+            relevant_ids = [servo_id for servo_id in servo_ids if servo_id in expected or not expected]
+            missing = sorted({servo_id for servo_id in relevant_ids if servo_id in missing_global or servo_id not in detected})
+            stale = sorted(
+                servo_id
+                for servo_id in relevant_ids
+                if servo_id in self.state.telemetry and self.state.telemetry[servo_id].get("telemetry_fresh") is False
+            )
+            errors = sorted(
+                servo_id
+                for servo_id in relevant_ids
+                if servo_id in self.state.telemetry and self.state.telemetry[servo_id].get("error")
+            )
+            label = str(data.get("segment_label") or data.get("label") or key)
+            role = str(data.get("segment_role") or "").strip()
+            display = f"{label} / {role}" if role else label
+            if self.state.selected_servo_id in relevant_ids:
+                selected_segment_label = display
+            if not relevant_ids:
+                status = "no configured IDs"
+            elif missing:
+                status = "missing " + ", ".join(str(value) for value in missing)
+            elif stale:
+                status = "stale " + ", ".join(str(value) for value in stale)
+            elif errors:
+                status = "hardware/telemetry issue " + ", ".join(str(value) for value in errors)
+            else:
+                status = "ready"
+            summaries.append(
+                f"{display}: {', '.join(str(value) for value in relevant_ids) or 'none'} ({status})"
+            )
+        self.state.segment_readiness_summary = "; ".join(summaries)
+        self.state.selected_servo_segment_label = selected_segment_label
+        if self.state.robot_mode == "dual_segment":
+            missing = sorted(int(value) for value in self.state.missing_servo_ids)
+            if not self.state.connected:
+                self.state.all_8_readiness_summary = "Disconnected: all 8 expected servos are unread."
+            elif missing:
+                self.state.all_8_readiness_summary = "All-8 readiness incomplete; missing " + ", ".join(str(value) for value in missing) + "."
+            elif len(expected) == 8:
+                self.state.all_8_readiness_summary = "All-8 readiness: all expected servos are readable."
+            else:
+                self.state.all_8_readiness_summary = f"dual_segment expects 8 IDs; current context has {expected}."
+        else:
+            self.state.all_8_readiness_summary = ""
+
     def _refresh_selected_servo_live(self) -> None:
         if not self.state.connected or self.state.selected_servo_id is None:
             self._sync_selected_servo_motion_state()
@@ -848,11 +947,13 @@ class ServosController:
             self.state.last_error = None
             self.state.bench_debug_text = self._build_multi_servo_bench_debug_text()
             self._sync_selected_servo_motion_state()
+            self._sync_segment_readiness_summary()
             return
         except Exception as exc:
             self.state.last_error = str(exc)
             self.state.status_message = f"Selected-servo refresh failed: {exc}"
             self._sync_selected_servo_motion_state()
+            self._sync_segment_readiness_summary()
             return
         selected = assessments.get(int(self.state.selected_servo_id))
         if selected is not None:
@@ -861,6 +962,7 @@ class ServosController:
         self.state.last_error = None
         self.state.bench_debug_text = self._build_multi_servo_bench_debug_text()
         self._sync_selected_servo_motion_state()
+        self._sync_segment_readiness_summary()
 
     def _telemetry_row_from_live_item(
         self,
@@ -981,6 +1083,7 @@ class ServosController:
         if snapshot.expected_servo_id is not None:
             self.state.telemetry[servo_id] = self._telemetry_row_from_snapshot(snapshot, servo_id)
         self._sync_selected_servo_motion_state()
+        self._sync_segment_readiness_summary()
         return self.state
 
     def _telemetry_row_from_snapshot(self, snapshot, servo_id: int) -> dict:

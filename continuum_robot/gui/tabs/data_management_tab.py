@@ -8,6 +8,7 @@ from PySide6.QtCore import QSignalBlocker, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFrame,
     QHBoxLayout,
@@ -28,6 +29,7 @@ from continuum_robot.gui.controllers.data_management_controller import (
     DataManagementViewState,
 )
 from continuum_robot.gui.theme import COLORS, grouped_workspace_stylesheet
+from continuum_robot.data.run_management import summarize_run
 
 
 class DataManagementTab(QWidget):
@@ -41,7 +43,7 @@ class DataManagementTab(QWidget):
         ("Diagnostics", "diagnostics"),
     ]
 
-    COLUMN_LABELS = ["Timestamp", "Category", "Name", "Type", "Flags", "Path"]
+    COLUMN_LABELS = ["Timestamp", "Experiment", "Run", "Validation", "Trust", "Mode / Segment", "Flags", "Path"]
 
     def __init__(self, controller: DataManagementController, parent=None) -> None:
         super().__init__(parent)
@@ -112,9 +114,11 @@ class DataManagementTab(QWidget):
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(7, QHeaderView.Stretch)
         self.table.itemSelectionChanged.connect(self._sync_selection_from_table)
         filters_card.body_layout.addWidget(self.table)
         root.addWidget(filters_card)
@@ -145,6 +149,92 @@ class DataManagementTab(QWidget):
         action_row.addWidget(self.delete_button)
         action_row.addStretch(1)
         actions_card.body_layout.addLayout(action_row)
+        export_row = QHBoxLayout()
+        export_row.setContentsMargins(0, 0, 0, 0)
+        export_row.setSpacing(10)
+        self.export_selected_button = QPushButton("Export Selected Run")
+        self.export_selected_button.clicked.connect(self._export_selected_run)
+        self.export_latest_button = QPushButton("Export Latest Run")
+        self.export_latest_button.setProperty("variant", "ghost")
+        self.export_latest_button.clicked.connect(self._export_latest_run)
+        self.include_samples_checkbox = QCheckBox("Include samples")
+        self.include_debug_checkbox = QCheckBox("Include debug")
+        self.zip_export_checkbox = QCheckBox("Zip")
+        self.zip_export_checkbox.setChecked(True)
+        export_row.addWidget(self.export_selected_button)
+        export_row.addWidget(self.export_latest_button)
+        export_row.addWidget(self.include_samples_checkbox)
+        export_row.addWidget(self.include_debug_checkbox)
+        export_row.addWidget(self.zip_export_checkbox)
+        export_row.addStretch(1)
+        actions_card.body_layout.addLayout(export_row)
+        export_copy_row = QHBoxLayout()
+        export_copy_row.setContentsMargins(0, 0, 0, 0)
+        export_copy_row.setSpacing(10)
+        self.copy_export_path_button = QPushButton("Copy Export Path")
+        self.copy_export_path_button.setProperty("variant", "ghost")
+        self.copy_export_path_button.clicked.connect(self._copy_export_path)
+        self.copy_transfer_command_button = QPushButton("Copy Transfer Command")
+        self.copy_transfer_command_button.setProperty("variant", "ghost")
+        self.copy_transfer_command_button.clicked.connect(self._copy_transfer_command)
+        self.open_exports_folder_button = QPushButton("Open Exports Folder")
+        self.open_exports_folder_button.setProperty("variant", "ghost")
+        self.open_exports_folder_button.clicked.connect(self._open_exports_folder)
+        export_copy_row.addWidget(self.copy_export_path_button)
+        export_copy_row.addWidget(self.copy_transfer_command_button)
+        export_copy_row.addWidget(self.open_exports_folder_button)
+        export_copy_row.addStretch(1)
+        actions_card.body_layout.addLayout(export_copy_row)
+        validation_row = QHBoxLayout()
+        validation_row.setContentsMargins(0, 0, 0, 0)
+        validation_row.setSpacing(10)
+        self.validate_selected_button = QPushButton("Validate Selected Run")
+        self.validate_selected_button.clicked.connect(self._validate_selected_run)
+        self.validate_latest_button = QPushButton("Validate Latest Run")
+        self.validate_latest_button.setProperty("variant", "ghost")
+        self.validate_latest_button.clicked.connect(self._validate_latest_run)
+        self.validate_experiment_button = QPushButton("Validate Experiment Runs")
+        self.validate_experiment_button.setProperty("variant", "ghost")
+        self.validate_experiment_button.clicked.connect(self._validate_experiment_runs)
+        validation_row.addWidget(self.validate_selected_button)
+        validation_row.addWidget(self.validate_latest_button)
+        validation_row.addWidget(self.validate_experiment_button)
+        validation_row.addStretch(1)
+        actions_card.body_layout.addLayout(validation_row)
+        review_row = QHBoxLayout()
+        review_row.setContentsMargins(0, 0, 0, 0)
+        review_row.setSpacing(10)
+        self.review_status_combo = QComboBox()
+        for status in controller.state.review_status_options:
+            self.review_status_combo.addItem(status, status)
+        self.review_notes_input = QLineEdit()
+        self.review_notes_input.setPlaceholderText("Review notes")
+        self.include_evidence_checkbox = QCheckBox("Evidence index")
+        self.save_review_button = QPushButton("Save Review")
+        self.save_review_button.clicked.connect(self._save_review)
+        review_row.addWidget(QLabel("Mark"))
+        review_row.addWidget(self.review_status_combo)
+        review_row.addWidget(self.review_notes_input, 1)
+        review_row.addWidget(self.include_evidence_checkbox)
+        review_row.addWidget(self.save_review_button)
+        actions_card.body_layout.addLayout(review_row)
+        lifecycle_row = QHBoxLayout()
+        lifecycle_row.setContentsMargins(0, 0, 0, 0)
+        lifecycle_row.setSpacing(10)
+        self.archive_run_button = QPushButton("Archive Selected Run")
+        self.archive_run_button.setProperty("variant", "ghost")
+        self.archive_run_button.clicked.connect(self._archive_selected_run)
+        self.trash_run_button = QPushButton("Move Run to Trash")
+        self.trash_run_button.setProperty("variant", "danger")
+        self.trash_run_button.clicked.connect(self._trash_selected_run)
+        self.build_evidence_index_button = QPushButton("Build Evidence Index")
+        self.build_evidence_index_button.setProperty("variant", "ghost")
+        self.build_evidence_index_button.clicked.connect(self._build_evidence_index)
+        lifecycle_row.addWidget(self.archive_run_button)
+        lifecycle_row.addWidget(self.trash_run_button)
+        lifecycle_row.addWidget(self.build_evidence_index_button)
+        lifecycle_row.addStretch(1)
+        actions_card.body_layout.addLayout(lifecycle_row)
         self.status_label = QLabel("Browse saved calibration, experiment, modeling, and diagnostic artifacts.")
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(f"color: {COLORS.text_primary};")
@@ -191,6 +281,19 @@ class DataManagementTab(QWidget):
         self.preview_migration_button.setEnabled(state.can_preview_migration)
         self.apply_migration_button.setEnabled(state.can_apply_migration)
         self.open_migration_report_button.setEnabled(bool(state.last_migration_report_path))
+        self.export_selected_button.setEnabled(state.can_export_selected)
+        self.export_latest_button.setEnabled(state.can_export_latest)
+        self.copy_export_path_button.setEnabled(state.can_copy_export_path)
+        self.copy_transfer_command_button.setEnabled(state.can_copy_transfer_command)
+        self.open_exports_folder_button.setEnabled(True)
+        self.validate_selected_button.setEnabled(state.can_validate_selected_run)
+        self.validate_latest_button.setEnabled(state.can_validate_latest_run)
+        self.validate_experiment_button.setEnabled(state.can_validate_experiment_runs)
+        self.save_review_button.setEnabled(state.can_mark_selected_run)
+        self.archive_run_button.setEnabled(state.can_archive_selected_run)
+        self.trash_run_button.setEnabled(state.can_trash_selected_run)
+        self.build_evidence_index_button.setEnabled(state.can_build_evidence_index)
+        self._sync_review_controls()
         if state.selected_delete_summary:
             self.delete_button.setToolTip(state.selected_delete_summary)
         else:
@@ -219,18 +322,11 @@ class DataManagementTab(QWidget):
             with QSignalBlocker(self.table):
                 self.table.setRowCount(len(state.filtered_items))
                 for row, item in enumerate(state.filtered_items):
-                    values = [
-                        item.timestamp_label,
-                        item.category_label,
-                        item.readable_name,
-                        item.item_type,
-                        item.display_status,
-                        _relative_path(item.path, self.controller.project_root),
-                    ]
+                    values = _table_values(item, self.controller.project_root)
                     for column, value in enumerate(values):
                         cell = QTableWidgetItem(str(value))
                         cell.setData(Qt.UserRole, str(item.path))
-                        if column == 5:
+                        if column == 7:
                             cell.setToolTip(str(item.path))
                         self.table.setItem(row, column, cell)
         with QSignalBlocker(self.table):
@@ -273,6 +369,167 @@ class DataManagementTab(QWidget):
         if clipboard is not None:
             clipboard.setText(text)
         self.status_label.setText(f"Copied {len(selected)} path(s) to the clipboard.")
+
+    def _export_selected_run(self) -> None:
+        self._run_export(selected=True)
+
+    def _export_latest_run(self) -> None:
+        self._run_export(selected=False)
+
+    def _run_export(self, *, selected: bool) -> None:
+        try:
+            if selected:
+                result = self.controller.export_selected(
+                    include_samples=self.include_samples_checkbox.isChecked(),
+                    include_debug=self.include_debug_checkbox.isChecked(),
+                    make_zip=self.zip_export_checkbox.isChecked(),
+                )
+            else:
+                result = self.controller.export_latest_visible(
+                    include_samples=self.include_samples_checkbox.isChecked(),
+                    include_debug=self.include_debug_checkbox.isChecked(),
+                    make_zip=self.zip_export_checkbox.isChecked(),
+                )
+        except Exception as exc:
+            self.status_label.setText(f"Export failed: {exc}")
+            return
+        self.update(self.controller.refresh())
+        self.status_label.setText(
+            f"Exported {len(result.entries)} file(s) to {result.final_path} "
+            f"({result.total_size_bytes} bytes)."
+        )
+
+    def _copy_export_path(self) -> None:
+        state = self.controller.refresh()
+        if not state.last_export_path:
+            return
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(state.last_export_path)
+        self.status_label.setText("Copied export path to the clipboard.")
+
+    def _copy_transfer_command(self) -> None:
+        state = self.controller.refresh()
+        if not state.last_transfer_command:
+            return
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(state.last_transfer_command)
+        self.status_label.setText("Copied transfer command template to the clipboard.")
+
+    def _open_exports_folder(self) -> None:
+        folder = self.controller.exports_folder()
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
+
+    def _validate_selected_run(self) -> None:
+        self._run_text_action(self.controller.validate_selected_run)
+
+    def _validate_latest_run(self) -> None:
+        self._run_text_action(self.controller.validate_latest_visible_run)
+
+    def _validate_experiment_runs(self) -> None:
+        self._run_text_action(self.controller.validate_visible_experiment_runs)
+
+    def _save_review(self) -> None:
+        try:
+            self.controller.mark_selected_run(
+                status=str(self.review_status_combo.currentData() or "debug"),
+                notes=self.review_notes_input.text(),
+                include_in_evidence_index=self.include_evidence_checkbox.isChecked(),
+            )
+        except Exception as exc:
+            self.status_label.setText(f"Review save failed: {exc}")
+            return
+        self.update(self.controller.refresh())
+
+    def _archive_selected_run(self) -> None:
+        self._move_selected_run(action="archive")
+
+    def _trash_selected_run(self) -> None:
+        self._move_selected_run(action="trash")
+
+    def _move_selected_run(self, *, action: str) -> None:
+        selected = self.controller.selected_items()
+        if not selected:
+            return
+        verb = "Archive" if action == "archive" else "Move to Trash"
+        choice = QMessageBox.question(
+            self,
+            f"{verb} Run",
+            f"{verb} the selected run?\n\nThis moves the folder out of active data/experiments; it does not delete exports.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if choice != QMessageBox.Yes:
+            return
+        try:
+            result = self.controller.archive_selected_run() if action == "archive" else self.controller.trash_selected_run()
+        except ValueError as exc:
+            force_choice = QMessageBox.question(
+                self,
+                f"Protected Run: {verb}",
+                f"{exc}\n\nProceed anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if force_choice != QMessageBox.Yes:
+                self.status_label.setText(str(exc))
+                return
+            try:
+                result = (
+                    self.controller.archive_selected_run(force=True)
+                    if action == "archive"
+                    else self.controller.trash_selected_run(force=True)
+                )
+            except Exception as final_exc:
+                self.status_label.setText(f"{verb} failed: {final_exc}")
+                return
+        except Exception as exc:
+            self.status_label.setText(f"{verb} failed: {exc}")
+            return
+        self.update(self.controller.refresh())
+        self.status_label.setText(f"{verb} complete: {result.destination_path}")
+
+    def _build_evidence_index(self) -> None:
+        try:
+            output_dir = self.controller.build_evidence_index()
+        except Exception as exc:
+            self.status_label.setText(f"Evidence index failed: {exc}")
+            return
+        self.update(self.controller.refresh())
+        self.status_label.setText(f"Evidence index built at {output_dir}")
+
+    def _run_text_action(self, action) -> None:
+        try:
+            text = action()
+        except Exception as exc:
+            self.status_label.setText(f"Action failed: {exc}")
+            return
+        self.update(self.controller.refresh())
+        self.status_label.setText(text)
+
+    def _sync_review_controls(self) -> None:
+        selected = self.controller.selected_items()
+        if len(selected) != 1:
+            return
+        run_dir = _run_dir_for_item(selected[0])
+        if run_dir is None:
+            return
+        try:
+            review = summarize_run(run_dir).review
+        except Exception:
+            return
+        index = self.review_status_combo.findData(review.review_status)
+        if index >= 0 and self.review_status_combo.currentIndex() != index:
+            with QSignalBlocker(self.review_status_combo):
+                self.review_status_combo.setCurrentIndex(index)
+        if not self.review_notes_input.hasFocus() and self.review_notes_input.text() != review.notes:
+            with QSignalBlocker(self.review_notes_input):
+                self.review_notes_input.setText(review.notes)
+        if self.include_evidence_checkbox.isChecked() != review.include_in_evidence_index:
+            with QSignalBlocker(self.include_evidence_checkbox):
+                self.include_evidence_checkbox.setChecked(review.include_in_evidence_index)
 
     def _delete_selected(self) -> None:
         selected = self.controller.selected_items()
@@ -393,3 +650,55 @@ def _relative_path(path: Path, project_root: Path) -> str:
         return str(Path(path).relative_to(project_root))
     except ValueError:
         return str(path)
+
+
+def _table_values(item, project_root: Path) -> list[str]:
+    run_dir = _run_dir_for_item(item)
+    if run_dir is not None:
+        try:
+            summary = summarize_run(run_dir)
+            mode_segment = summary.operating_mode
+            if summary.active_segment:
+                mode_segment = f"{mode_segment} / {summary.active_segment}"
+            flags = " | ".join(
+                value
+                for value in [
+                    item.display_status,
+                    f"model={summary.valid_for_model_training}",
+                    f"thesis={summary.valid_for_thesis_repeatability}",
+                    summary.stop_or_failure_reason,
+                    f"review={summary.review.review_status}",
+                ]
+                if value
+            )
+            return [
+                summary.timestamp_label,
+                summary.experiment_name,
+                summary.run_id,
+                summary.validation_status,
+                summary.run_trust_mode,
+                mode_segment,
+                flags,
+                _relative_path(item.path, project_root),
+            ]
+        except Exception:
+            pass
+    return [
+        item.timestamp_label,
+        item.category_label,
+        item.readable_name,
+        item.item_type,
+        item.status or item.display_status,
+        "",
+        item.display_status,
+        _relative_path(item.path, project_root),
+    ]
+
+
+def _run_dir_for_item(item) -> Path | None:
+    if item.category_key not in {"experiments", "modeling", "diagnostics"}:
+        return None
+    path = item.path if item.path.is_dir() else item.path.parent
+    if (path / "summary.json").exists() or (path / "metadata.json").exists() or (path / "evaluation_metadata.json").exists():
+        return path
+    return None

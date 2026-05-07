@@ -1,0 +1,289 @@
+"""Validate run-folder trust/provenance completeness without changing metrics."""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass, field
+import json
+from pathlib import Path
+import sys
+from typing import Any
+
+
+EXPECTED_REPORT_FIGURES = {
+    "aurora_grid_accuracy": [
+        "aurora_grid_alignment_report.png",
+        "aurora_grid_residuals_report.png",
+    ],
+    "pivot_validation": [
+        "pivot_tip_offsets_report.png",
+        "pivot_rmse_report.png",
+        "pivot_axis_spread_report.png",
+    ],
+    "registration_validation": [
+        "registration_frame_origins_report.png",
+        "registration_fre_report.png",
+        "registration_transform_spread_report.png",
+    ],
+    "single_segment_repeatability": [
+        "repeatability_clusters_report.png",
+        "repeatability_error_by_target_report.png",
+    ],
+    "pretension_validation": [
+        "pretension_tip_xy_path_report.png",
+        "pretension_load_proxy_by_servo_report.png",
+        "pretension_tendon_displacement_vs_load_proxy_report.png",
+        "pretension_final_state_report.png",
+    ],
+    "collect_pose_command_dataset": [
+        "modeling_workspace_coverage_report.png",
+        "commanded_tendon_space_report.png",
+    ],
+    "two_segment_startup_validation": [
+        "two_segment_startup_positions_report.png",
+        "two_segment_startup_load_proxy_report.png",
+        "two_segment_startup_stage_drift_report.png",
+    ],
+}
+
+TWO_SEGMENT_STARTUP_REQUIRED_STAGES = [
+    "baseline",
+    "segment_a_pretensioned",
+    "segment_b_pretensioned",
+    "segment_a_recheck",
+    "final_accept",
+]
+
+
+@dataclass(frozen=True)
+class RunValidationIssue:
+    level: str
+    message: str
+
+
+@dataclass(frozen=True)
+class RunValidationReport:
+    run_dir: Path
+    experiment_name: str
+    status: str
+    trust_interpretation: str
+    issues: list[RunValidationIssue] = field(default_factory=list)
+
+    @property
+    def passed(self) -> bool:
+        return self.status == "PASS"
+
+
+def validate_run_folder(run_dir: Path) -> RunValidationReport:
+    """Return a PASS/WARN/FAIL report for output completeness and trust metadata."""
+    run_dir = Path(run_dir)
+    issues: list[RunValidationIssue] = []
+    summary_path = run_dir / "summary.json"
+    metadata_path = run_dir / "metadata.json"
+    summary = _read_json(summary_path, issues, required=True)
+    metadata = _read_json(metadata_path, issues, required=False)
+    experiment_name = str(
+        metadata.get("experiment_name")
+        or summary.get("experiment_name")
+        or _infer_experiment_name(run_dir)
+        or "unknown"
+    )
+    metrics = summary.get("experiment_metrics") if isinstance(summary.get("experiment_metrics"), dict) else {}
+    metadata_trust = metadata.get("trust_info") if isinstance(metadata.get("trust_info"), dict) else {}
+    metadata_provenance = metadata.get("provenance_info") if isinstance(metadata.get("provenance_info"), dict) else {}
+    run_trust = metrics.get("run_trust") if isinstance(metrics.get("run_trust"), dict) else {}
+    run_provenance = metrics.get("run_provenance") if isinstance(metrics.get("run_provenance"), dict) else {}
+
+    if summary_path.exists() and not summary:
+        issues.append(RunValidationIssue("FAIL", "summary.json exists but could not be read as an object."))
+    if not metadata_path.exists():
+        issues.append(RunValidationIssue("WARN", "metadata.json is missing; provenance may be incomplete."))
+
+    _check_any_field(
+        issues,
+        "run_trust_mode",
+        metrics.get("run_trust_mode"),
+        run_trust.get("run_trust_mode"),
+        metadata_trust.get("run_trust_mode"),
+    )
+    _check_any_field(issues, "operating_mode", run_provenance.get("operating_mode"), metadata_provenance.get("operating_mode"))
+    _check_any_field(issues, "hardware_profile", run_provenance.get("hardware_profile"), metadata_provenance.get("hardware_profile"))
+    operating_mode = run_provenance.get("operating_mode") or metadata_provenance.get("operating_mode")
+    two_segment_foundation = (
+        run_provenance.get("two_segment_foundation")
+        if isinstance(run_provenance.get("two_segment_foundation"), dict)
+        else metadata_provenance.get("two_segment_foundation")
+    )
+    if operating_mode == "dual_segment":
+        _check_any_field(issues, "two_segment_foundation", two_segment_foundation)
+    if isinstance(two_segment_foundation, dict) and two_segment_foundation:
+        _check_any_field(issues, "two_segment command schema", _nested(two_segment_foundation, "command_schema", "schema_version"))
+        _check_any_field(issues, "two_segment pose schema", _nested(two_segment_foundation, "pose_schema", "schema_version"))
+    if experiment_name == "two_segment_startup_validation":
+        _check_two_segment_startup_validation(issues, run_dir=run_dir, metrics=metrics)
+    _check_any_field(
+        issues,
+        "valid_for_model_training",
+        metrics.get("valid_for_model_training"),
+        run_trust.get("valid_for_model_training"),
+        metadata_trust.get("valid_for_model_training"),
+    )
+    _check_any_field(
+        issues,
+        "valid_for_thesis_repeatability",
+        metrics.get("valid_for_thesis_repeatability"),
+        run_trust.get("valid_for_thesis_repeatability"),
+        metadata_trust.get("valid_for_thesis_repeatability"),
+    )
+    if experiment_name in {"single_segment_repeatability", "collect_pose_command_dataset", "pretension_validation"}:
+        _check_any_field(
+            issues,
+            "runtime_tip info",
+            _nested(run_provenance, "runtime_tip_calibration", "mode"),
+            _nested(metadata_provenance, "runtime_tip_calibration", "mode"),
+            metrics.get("runtime_tip_mode_used"),
+        )
+    if operating_mode == "single_segment":
+        _check_any_field(
+            issues,
+            "active_segment",
+            run_provenance.get("active_segment"),
+            metadata_provenance.get("active_segment"),
+            _nested(run_provenance, "operating_context", "active_segment"),
+        )
+    if str(summary.get("status", "")).lower() in {"failed", "error", "partial_success"} or not bool(summary.get("success", True)):
+        _check_any_field(issues, "stop/failure reason", metrics.get("stop_reason"), metrics.get("failure_reason"), summary.get("failure_reason"))
+
+    expected = EXPECTED_REPORT_FIGURES.get(experiment_name, [])
+    for filename in expected:
+        if not (run_dir / filename).exists():
+            issues.append(RunValidationIssue("WARN", f"Expected report figure is missing: {filename}"))
+
+    trust_mode = (
+        metrics.get("run_trust_mode")
+        or run_trust.get("run_trust_mode")
+        or metadata_trust.get("run_trust_mode")
+        or "unknown"
+    )
+    model_valid = (
+        metrics.get("valid_for_model_training")
+        if metrics.get("valid_for_model_training") is not None
+        else run_trust.get("valid_for_model_training", metadata_trust.get("valid_for_model_training"))
+    )
+    thesis_valid = (
+        metrics.get("valid_for_thesis_repeatability")
+        if metrics.get("valid_for_thesis_repeatability") is not None
+        else run_trust.get("valid_for_thesis_repeatability", metadata_trust.get("valid_for_thesis_repeatability"))
+    )
+    trust_interpretation = (
+        f"run_trust_mode={trust_mode}; valid_for_model_training={model_valid}; "
+        f"valid_for_thesis_repeatability={thesis_valid}"
+    )
+    if any(issue.level == "FAIL" for issue in issues):
+        status = "FAIL"
+    elif issues:
+        status = "WARN"
+    else:
+        status = "PASS"
+    return RunValidationReport(
+        run_dir=run_dir,
+        experiment_name=experiment_name,
+        status=status,
+        trust_interpretation=trust_interpretation,
+        issues=issues,
+    )
+
+
+def render_validation_report(report: RunValidationReport) -> str:
+    lines = [
+        f"{report.status}: {report.run_dir}",
+        f"Experiment: {report.experiment_name}",
+        f"Trust: {report.trust_interpretation}",
+    ]
+    if report.issues:
+        lines.append("Issues:")
+        for issue in report.issues:
+            lines.append(f"- {issue.level}: {issue.message}")
+    else:
+        lines.append("No completeness issues found.")
+    return "\n".join(lines)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Validate one run folder for trust/provenance completeness.")
+    parser.add_argument("run_dir", help="Experiment run directory to validate.")
+    args = parser.parse_args(argv)
+    report = validate_run_folder(Path(args.run_dir))
+    print(render_validation_report(report))
+    return 1 if report.status == "FAIL" else 0
+
+
+def _read_json(path: Path, issues: list[RunValidationIssue], *, required: bool) -> dict[str, Any]:
+    if not path.exists():
+        if required:
+            issues.append(RunValidationIssue("FAIL", f"Required file is missing: {path.name}"))
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        issues.append(RunValidationIssue("FAIL", f"Could not read {path.name}: {exc}"))
+        return {}
+    if not isinstance(payload, dict):
+        issues.append(RunValidationIssue("FAIL", f"{path.name} is not a JSON object."))
+        return {}
+    return payload
+
+
+def _check_any_field(issues: list[RunValidationIssue], label: str, *values: Any) -> None:
+    if not any(value not in (None, "", {}) for value in values):
+        issues.append(RunValidationIssue("WARN", f"Missing expected field: {label}"))
+
+
+def _nested(payload: dict[str, Any], *keys: str) -> Any:
+    current: Any = payload
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _check_two_segment_startup_validation(
+    issues: list[RunValidationIssue],
+    *,
+    run_dir: Path,
+    metrics: dict[str, Any],
+) -> None:
+    snapshots = metrics.get("stage_snapshots") if isinstance(metrics.get("stage_snapshots"), list) else []
+    captured = {str(dict(stage or {}).get("stage")) for stage in snapshots if isinstance(stage, dict)}
+    missing_stages = [stage for stage in TWO_SEGMENT_STARTUP_REQUIRED_STAGES if stage not in captured]
+    if missing_stages:
+        issues.append(RunValidationIssue("WARN", f"Missing two-segment startup stage snapshot(s): {missing_stages}"))
+    stage_order = [str(value) for value in metrics.get("stage_order", [])] if isinstance(metrics.get("stage_order"), list) else []
+    if stage_order != TWO_SEGMENT_STARTUP_REQUIRED_STAGES:
+        issues.append(RunValidationIssue("WARN", f"Unexpected two-segment startup stage order: {stage_order}"))
+    if metrics.get("final_accepted") is True:
+        artifact_path = str(metrics.get("final_startup_artifact_path") or "")
+        if not artifact_path:
+            issues.append(RunValidationIssue("WARN", "Final startup was accepted but final_startup_artifact_path is missing."))
+        elif not Path(artifact_path).exists():
+            issues.append(RunValidationIssue("WARN", f"Final startup artifact path does not exist: {artifact_path}"))
+    if metrics.get("automatic_two_segment_pretension_validated") is not False:
+        issues.append(RunValidationIssue("WARN", "automatic_two_segment_pretension_validated should be false for this scaffold."))
+    if metrics.get("two_segment_control_validated") is not False:
+        issues.append(RunValidationIssue("WARN", "two_segment_control_validated should be false for this scaffold."))
+    artifact_metadata = run_dir / "two_segment_startup_artifact_metadata.json"
+    summary_text = run_dir / "two_segment_startup_summary.txt"
+    _check_any_field(issues, "two-segment startup artifact metadata", str(artifact_metadata) if artifact_metadata.exists() else None)
+    _check_any_field(issues, "two-segment startup summary text", str(summary_text) if summary_text.exists() else None)
+
+
+def _infer_experiment_name(run_dir: Path) -> str:
+    if run_dir.parent.name and run_dir.parent.name != "experiments":
+        return run_dir.parent.name
+    parts = run_dir.name.split("_", 2)
+    return parts[2] if len(parts) >= 3 else run_dir.name
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

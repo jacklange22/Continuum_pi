@@ -94,6 +94,7 @@ Runtime config:
 
 - `config/system.yaml`
 - `config/system.local.yaml`
+- `config/robot_8servo.yaml` for the normal full-platform hardware profile
 - `config/robot_4servo.yaml`
 - `config/safety.yaml`
 - `config/registration.yaml`

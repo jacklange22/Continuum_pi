@@ -35,6 +35,14 @@ def test_data_management_tab_updates_from_controller_state(tmp_path) -> None:
 
     tab.update(controller.refresh())
 
-    assert tab.table.columnCount() == 6
+    assert tab.table.columnCount() == 8
     assert tab.delete_button.isEnabled() is False
     assert tab.preview_migration_button.isEnabled() is False
+    assert tab.export_selected_button.isEnabled() is False
+    assert tab.export_latest_button.isEnabled() is False
+    assert tab.validate_selected_button.isEnabled() is False
+    assert tab.save_review_button.isEnabled() is False
+    assert tab.archive_run_button.isEnabled() is False
+    assert tab.trash_run_button.isEnabled() is False
+    assert tab.build_evidence_index_button.isEnabled() is True
+    assert tab.zip_export_checkbox.isChecked() is True

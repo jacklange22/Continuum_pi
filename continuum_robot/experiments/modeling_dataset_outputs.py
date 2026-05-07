@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,7 @@ except Exception:
 try:
     from PySide6.QtCore import QPointF, QRectF, Qt
     from PySide6.QtGui import QColor, QPainter, QPen
+    from PySide6.QtWidgets import QApplication
 
     _QT_AVAILABLE = True
 except ModuleNotFoundError:
@@ -158,6 +161,8 @@ def write_modeling_dataset_outputs(*, output_dir: Path, metadata, summary, sampl
     legacy_dat_path = output_dir / "modeling_dataset_legacy_compat.dat"
     workspace_plot_path = output_dir / "modeling_workspace_coverage.png"
     command_plot_path = output_dir / "modeling_command_distribution.png"
+    workspace_report_path = output_dir / "modeling_workspace_coverage_report.png"
+    commanded_tendon_report_path = output_dir / "commanded_tendon_space_report.png"
 
     summary_text_path.write_text(
         "\n".join(
@@ -186,10 +191,22 @@ def write_modeling_dataset_outputs(*, output_dir: Path, metadata, summary, sampl
             )
     try:
         _write_workspace_plot(workspace_plot_path=workspace_plot_path, export_rows=export_rows, metrics=metrics)
+        _write_workspace_report_plot(
+            workspace_plot_path=workspace_report_path,
+            export_rows=export_rows,
+            metrics=metrics,
+        )
+        _write_commanded_tendon_space_report(
+            plot_path=commanded_tendon_report_path,
+            export_rows=export_rows,
+            metrics=metrics,
+        )
     except Exception:
         LOG.exception("Matplotlib workspace plot failed; writing placeholder %s", workspace_plot_path)
         _write_plot_placeholder(workspace_plot_path)
-    if _QT_AVAILABLE:
+        _write_plot_placeholder(workspace_report_path)
+        _write_plot_placeholder(commanded_tendon_report_path)
+    if _qt_plotting_is_safe():
         _ensure_plot_qt_app()
         _write_command_plot(command_plot_path=command_plot_path, export_rows=export_rows, metrics=metrics)
     else:
@@ -200,6 +217,8 @@ def write_modeling_dataset_outputs(*, output_dir: Path, metadata, summary, sampl
         "export_jsonl_path": export_jsonl_path,
         "workspace_plot_path": workspace_plot_path,
         "command_plot_path": command_plot_path,
+        "workspace_report_path": workspace_report_path,
+        "commanded_tendon_space_report_path": commanded_tendon_report_path,
     }
     if legacy_written_path is not None:
         outputs["legacy_dat_path"] = legacy_written_path
@@ -282,6 +301,22 @@ def _write_plot_placeholder(path: Path) -> None:
             )
         )
     )
+
+
+def _qt_plotting_is_safe() -> bool:
+    """Return whether creating a Qt plotting application is safe in this process."""
+    if not _QT_AVAILABLE:
+        return False
+    if QApplication.instance() is not None:
+        return True
+    if os.environ.get("QT_QPA_PLATFORM"):
+        return True
+    if sys.platform.startswith("linux") and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        return False
+    if sys.platform == "darwin" and not os.environ.get("DISPLAY"):
+        # Headless macOS pytest sessions can abort at QApplication construction.
+        return False
+    return True
 
 
 def _build_export_rows(*, samples) -> list[dict[str, Any]]:
@@ -408,6 +443,134 @@ def _write_workspace_plot(*, workspace_plot_path: Path, export_rows: list[dict[s
     )
     legend(ax, loc="lower right")
     save_figure(fig, workspace_plot_path)
+
+
+def _write_workspace_report_plot(*, workspace_plot_path: Path, export_rows: list[dict[str, Any]], metrics: dict[str, Any]) -> None:
+    accepted_rows = [row for row in export_rows if row.get("accepted") and len(row.get("tip_position_xyz_mm", [])) == 3]
+    rejected_rows = [row for row in export_rows if not row.get("accepted") and len(row.get("tip_position_xyz_mm", [])) == 3]
+    accepted_points = [(float(row["tip_position_xyz_mm"][0]), float(row["tip_position_xyz_mm"][1])) for row in accepted_rows]
+    rejected_points = [(float(row["tip_position_xyz_mm"][0]), float(row["tip_position_xyz_mm"][1])) for row in rejected_rows]
+    trust_info = (
+        dict(metrics.get("run_trust"))
+        if isinstance(metrics.get("run_trust"), dict)
+        else (dict(metrics.get("run_trust_info")) if isinstance(metrics.get("run_trust_info"), dict) else {})
+    )
+    trust_mode = str(
+        metrics.get("run_trust_mode")
+        or trust_info.get("run_trust_mode")
+        or metrics.get("dataset_mode")
+        or "unknown"
+    )
+    valid_for_training = bool(
+        metrics.get("valid_for_model_training")
+        if metrics.get("valid_for_model_training") is not None
+        else trust_info.get("valid_for_model_training", bool(accepted_points))
+    )
+    fig, ax = create_figure(size="square")
+    if rejected_points:
+        ax.scatter(
+            [point[0] for point in rejected_points],
+            [point[1] for point in rejected_points],
+            s=18,
+            c=color("rejected"),
+            alpha=0.30,
+            linewidths=0,
+            label="Rejected",
+        )
+    if accepted_points:
+        alpha = 0.70 if len(accepted_points) < 500 else 0.40
+        ax.scatter(
+            [point[0] for point in accepted_points],
+            [point[1] for point in accepted_points],
+            s=16,
+            c=color("measured"),
+            alpha=alpha,
+            linewidths=0,
+            label="Accepted",
+        )
+    if accepted_points or rejected_points:
+        all_points = accepted_points + rejected_points
+        set_equal_xy(ax, x_values=[point[0] for point in all_points], y_values=[point[1] for point in all_points], minimum_span=5.0)
+    else:
+        ax.text(
+            0.5,
+            0.5,
+            "Servo-only run: no robot-frame tip labels\nnot valid for model training",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+        )
+        set_equal_xy(ax, x_values=[-1.0, 1.0], y_values=[-1.0, 1.0], minimum_span=5.0)
+    metric_lines = [
+        f"Accepted: {int(metrics.get('accepted_sample_count', len(accepted_points)) or 0)}",
+        f"Rejected: {int(metrics.get('rejected_sample_count', len(rejected_points)) or 0)}",
+        f"Trust: {trust_mode.replace('_', ' ')}",
+        f"Training valid: {'yes' if valid_for_training else 'no'}",
+    ]
+    add_metric_box(ax, metric_lines, loc="upper right")
+    style_axes(
+        ax,
+        title="Modeling Workspace Coverage",
+        xlabel="Robot-frame X position (mm)",
+        ylabel="Robot-frame Y position (mm)",
+    )
+    legend(ax, loc="lower right")
+    save_figure(fig, workspace_plot_path)
+
+
+def _write_commanded_tendon_space_report(*, plot_path: Path, export_rows: list[dict[str, Any]], metrics: dict[str, Any]) -> None:
+    accepted_points = [
+        (float(row["resolved_pair_command_cm"][0]), float(row["resolved_pair_command_cm"][1]))
+        for row in export_rows
+        if row.get("accepted") and len(row.get("resolved_pair_command_cm", [])) == 2
+    ]
+    rejected_points = [
+        (float(row["resolved_pair_command_cm"][0]), float(row["resolved_pair_command_cm"][1]))
+        for row in export_rows
+        if not row.get("accepted") and len(row.get("resolved_pair_command_cm", [])) == 2
+    ]
+    fig, ax = create_figure(size="square")
+    if rejected_points:
+        ax.scatter(
+            [point[0] for point in rejected_points],
+            [point[1] for point in rejected_points],
+            s=18,
+            color=color("rejected"),
+            alpha=0.30,
+            linewidths=0,
+            label="Rejected",
+        )
+    if accepted_points:
+        ax.scatter(
+            [point[0] for point in accepted_points],
+            [point[1] for point in accepted_points],
+            s=18,
+            color=color("measured"),
+            alpha=0.60,
+            linewidths=0,
+            label="Accepted",
+        )
+    if accepted_points or rejected_points:
+        all_points = accepted_points + rejected_points
+        set_equal_xy(ax, x_values=[point[0] for point in all_points], y_values=[point[1] for point in all_points], minimum_span=0.2)
+    else:
+        ax.text(0.5, 0.5, "No pair-command rows available", transform=ax.transAxes, ha="center", va="center")
+    add_metric_box(
+        ax,
+        [
+            f"Commands: {int(metrics.get('command_step_count', 0) or 0)}",
+            f"Mode: {str(metrics.get('dataset_mode', 'unknown')).replace('_', ' ')}",
+        ],
+        loc="upper right",
+    )
+    style_axes(
+        ax,
+        title="Commanded Tendon Space",
+        xlabel="Axis A pair command (cm)",
+        ylabel="Axis B pair command (cm)",
+    )
+    legend(ax, loc="best")
+    save_figure(fig, plot_path)
 
 
 def _write_command_plot(*, command_plot_path: Path, export_rows: list[dict[str, Any]], metrics: dict[str, Any]) -> None:

@@ -1,6 +1,6 @@
 # Continuum Robot Platform Plan
 
-Last updated: 2026-04-25
+Last updated: 2026-05-07
 
 This is the living execution plan for the continuum robot operator platform. It is deliberately more candid than the README: it should help choose the next slice of work, reject distractions, and keep the research validation ladder intact.
 
@@ -22,7 +22,7 @@ The system exists to improve on the prior architecture by:
 - synchronizing servo commands, telemetry, tracker samples, and registration provenance
 - producing datasets that can support repeatability, hysteresis, and model-learning claims
 
-The near-term thesis target is the 4-servo single-segment robot. Two-segment scaling is a later milestone, not the current critical path.
+The near-term thesis target remains validated single-segment repeatability and startup-state characterization. The platform now supports Segment A `[1,2,3,4]` and Segment B `[5,6,7,8]` as selectable single segments, plus all-8 readiness/manual-startup foundation work. Full two-segment kinematics/control/modeling are still later milestones, not the current critical path.
 
 ## Core Hypothesis
 
@@ -98,7 +98,7 @@ The project should move up this ladder in order. A later rung is lower-trust if 
     Done when repeatability has established a trusted baseline and `collect_pose_command_dataset` can collect model-training data with provenance good enough to compare against repeatability/hysteresis observations.
 
 11. Two-segment scaling
-    Done only after the single-segment ladder is credible. Scaling should reuse the same validation gates rather than adding a parallel architecture.
+    Current status is foundation only: `dual_segment` exposes all-8 readiness, segment metadata, and manual startup artifact scope. Full two-segment control, modeling, penprobe chasing, and automatic two-segment pretension remain intentionally blocked until the single-segment ladder is credible.
 
 ## Current Status By Subsystem
 
@@ -120,12 +120,17 @@ Servo and hardware:
 
 - OpenRB port validation and DYNAMIXEL SDK transport are implemented in current code.
 - One-servo bring-up, scan, telemetry, ID assignment, mode writes, goal writes, neutral capture, and conservative jogging have service/GUI paths.
+- Operating modes are explicit: `one_servo`, `single_segment`, `dual_segment`, and `parallel_single`.
+- `single_segment` can use Segment A/proximal `[1,2,3,4]` or Segment B/distal `[5,6,7,8]`.
+- `dual_segment` is all-8 readiness/manual startup foundation only; it is not full two-segment control.
+- `parallel_single` is mirrored single-segment babble/testing only; it is not two-segment kinematics.
 - Safety is much stronger than the early plan: telemetry freshness, current/voltage/temperature, operating mode, hardware errors, and safe bounds are represented.
 - Real hardware behavior still must be treated as bench-validated only when actually run on the rig.
 
 Pretension:
 
-- Pretension validation, current/travel capture, automatic threshold stepping, manual startup-state capture, acceptance, and calibration-artifact integration exist.
+- Pretension validation, current/travel capture, conservative staged automatic single-segment pretension, manual startup-state capture, acceptance, and calibration-artifact integration exist.
+- Automatic pretension is single-segment only for now. `dual_segment` and `parallel_single` automatic pretension are explicitly blocked.
 - The hard research problem remains open: choosing and validating a pretension/startup policy that is repeatable and does not mask hysteresis.
 - Pretension should be described as startup-state control/characterization, not true tendon-force measurement.
 
@@ -135,6 +140,7 @@ Experiments:
 - Important current experiments include `aurora_grid_accuracy`, `pivot_validation`, `registration_validation`, `tracker_timing_validation`, `servo_tracker_sync_validation`, `pretension_validation`, `single_segment_repeatability`, and `collect_pose_command_dataset`.
 - `single_segment_repeatability` is now the central live thesis experiment and includes strict preflight/provenance expectations.
 - Older `repeatability_dataset` remains hidden compatibility infrastructure.
+- Thesis-facing report figures are now split from dashboard/debug figures for the major validation and repeatability paths. Polished figures do not replace trust/provenance checks.
 
 GUI:
 
@@ -145,7 +151,12 @@ GUI:
 Data and docs:
 
 - Runtime data is now organized under `data/` with experiment, diagnostic, calibration, registration, runtime-tip, log, model, and modeling-result roots.
-- The `Data` tab and migration tools exist because historical data layout has been messy.
+- The `Data` tab now manages run review, validation, export bundles, archive/trash lifecycle, and thesis evidence indexing.
+- `run_review.json` sidecars mark runs as `keep`, `thesis_candidate`, `advisor_share`, `debug`, `garbage`, or `archived` without changing raw experiment outputs.
+- Important curated runs under `data/experiments/` and `data/experiments_archived/` are trackable for GitHub handoff. Generated exports, trash, logs, temporary diagnostics, and archive bundles stay ignored.
+- `scripts/check_data_for_git.py` is the pre-commit data hygiene check for large files, unreviewed runs, and generated artifacts.
+- Export bundles and the thesis evidence index exist for advisor/Mac/ChatGPT handoff and review.
+- The prehardware dry run exists to smoke-test software readiness without bench hardware.
 - Some docs are phase-specific traces/runbooks; they should be maintained or retired as the top-level strategy changes.
 
 ## Top Risks
@@ -198,10 +209,15 @@ Priority 4: Tighten provenance and logging.
 - Ensure each experiment output carries registration/runtime-tip/calibration/pretension/backend context.
 - Keep session logs discoverable.
 - Keep `data/` migration and cleanup conservative.
+- Use the Data tab to classify runs before deletion/archive/export.
+- Keep thesis/advisor candidate runs trackable; keep generated exports, trash, logs, and dry-run diagnostics out of Git.
+- Run the data hygiene checker before committing experiment data.
 
-Priority 5: Defer two-segment and extra UI polish.
+Priority 5: Maintain the two-segment foundation without overclaiming it.
 
-- Two-segment support should stay compatible but not become the main branch of work yet.
+- `dual_segment` should stay scoped to all-8 readiness/manual startup until hardware validates the foundation.
+- `parallel_single` should stay mirrored single-segment testing only.
+- Two-segment pretension, datasets, kinematics, and modeling should begin only after the data structures, metadata, and single-segment validation ladder are solid.
 - GUI additions should directly improve calibration, validation, preflight, or run interpretation.
 
 ## Near-Term Milestones
@@ -241,7 +257,9 @@ Milestone D: Error-source attribution
 2. Add or refine hysteresis-specific schedules only after the repeatability baseline is trusted.
 3. Use `collect_pose_command_dataset` for model-learning datasets once provenance and startup state are reliable.
 4. Improve analysis outputs that connect per-target repeatability, approach history, and servo telemetry.
-5. Promote two-segment configuration only after single-segment validation gates are reusable and documented.
+5. Keep building two-segment metadata/data structures without enabling unvalidated control.
+6. Validate all-8 manual startup/readiness artifacts in `dual_segment`.
+7. Add two-segment pretension/dataset/modeling only after single-segment validation gates are reusable and documented.
 
 ## Scope Guardrails
 
@@ -259,7 +277,7 @@ Do not:
 - Move primary workflows into `references/` or `tools/`.
 - Treat mock-mode success as hardware validation.
 - Add a second experiment framework.
-- Start two-segment work before the 4-servo validation ladder is credible.
+- Start full two-segment control/modeling before the single-segment validation ladder is credible.
 - Polish visualization while pretension, repeatability, or provenance is ambiguous.
 - Delete or reorganize runtime data manually when the `Data` tab/migration tooling can represent it safely.
 

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 import shutil
+import sys
 from typing import Any
 
 from continuum_robot.experiments.plotting import add_metric_box, color, create_figure, legend, save_figure, set_equal_xy, style_axes
@@ -159,7 +161,7 @@ def write_grid_accuracy_outputs(
         report_path=spread_report_path,
         metrics=metrics,
     )
-    if _QT_AVAILABLE:
+    if _qt_plotting_is_safe():
         _ensure_plot_qt_app()
         _write_alignment_plot(
             plot_path=dashboard_path,
@@ -197,6 +199,20 @@ def _ensure_plot_qt_app() -> QApplication:
     if _PLOT_QT_APP is None:
         _PLOT_QT_APP = QApplication([])
     return _PLOT_QT_APP
+
+
+def _qt_plotting_is_safe() -> bool:
+    if not _QT_AVAILABLE:
+        return False
+    if QApplication.instance() is not None:
+        return True
+    if os.environ.get("QT_QPA_PLATFORM"):
+        return True
+    if sys.platform.startswith("linux") and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        return False
+    if sys.platform == "darwin" and not os.environ.get("DISPLAY"):
+        return False
+    return True
 
 
 def _write_summary_text(

@@ -29,6 +29,7 @@ from continuum_robot.experiments.tracker_timing_outputs import (
     _ensure_plot_qt_app,
     _new_image,
     _panel_font,
+    _qt_plotting_is_safe,
     _write_plot_placeholder,
 )
 
@@ -84,7 +85,7 @@ def write_registration_validation_outputs(*, output_dir: Path, metadata, summary
             writer()
         except Exception:
             _write_plot_placeholder(path)
-    if _QT_AVAILABLE:
+    if _qt_plotting_is_safe():
         _ensure_plot_qt_app()
         _write_registration_fre_histogram(fre_plot_path=fre_plot_path, metrics=metrics)
         _write_registration_origin_plot(origin_plot_path=origin_plot_path, metrics=metrics)
@@ -111,6 +112,9 @@ def write_pivot_validation_outputs(*, output_dir: Path, metadata, summary) -> di
     output_dir = Path(output_dir)
     csv_path = output_dir / "metrics.csv"
     text_path = output_dir / "pivot_validation_summary.txt"
+    tip_offsets_report_path = output_dir / "pivot_tip_offsets_report.png"
+    rmse_report_path = output_dir / "pivot_rmse_report.png"
+    axis_spread_report_path = output_dir / "pivot_axis_spread_report.png"
     scatter_plot_path = output_dir / "pivot_tip_scatter.png"
     axis_plot_path = output_dir / "pivot_axis_histograms.png"
     quality_plot_path = output_dir / "pivot_quality_summary.png"
@@ -138,7 +142,16 @@ def write_pivot_validation_outputs(*, output_dir: Path, metadata, summary) -> di
         "\n".join(build_pivot_validation_summary_lines(metadata=metadata, summary=summary, metrics=metrics)).strip() + "\n",
         encoding="utf-8",
     )
-    if _QT_AVAILABLE:
+    for path, writer in [
+        (tip_offsets_report_path, lambda: _write_pivot_tip_offsets_report(path=tip_offsets_report_path, metrics=metrics)),
+        (rmse_report_path, lambda: _write_pivot_rmse_report(path=rmse_report_path, metrics=metrics)),
+        (axis_spread_report_path, lambda: _write_pivot_axis_spread_report(path=axis_spread_report_path, metrics=metrics)),
+    ]:
+        try:
+            writer()
+        except Exception:
+            _write_plot_placeholder(path)
+    if _qt_plotting_is_safe():
         _ensure_plot_qt_app()
         _write_pivot_scatter_plot(scatter_plot_path=scatter_plot_path, metrics=metrics)
         _write_pivot_axis_histograms(axis_plot_path=axis_plot_path, metrics=metrics)
@@ -150,6 +163,9 @@ def write_pivot_validation_outputs(*, output_dir: Path, metadata, summary) -> di
     return {
         "metrics_csv_path": csv_path,
         "summary_text_path": text_path,
+        "tip_offsets_report_path": tip_offsets_report_path,
+        "rmse_report_path": rmse_report_path,
+        "axis_spread_report_path": axis_spread_report_path,
         "scatter_plot_path": scatter_plot_path,
         "axis_plot_path": axis_plot_path,
         "quality_plot_path": quality_plot_path,
@@ -220,6 +236,9 @@ def build_pivot_validation_summary_lines(*, metadata, summary, metrics: dict[str
         "",
         "Saved plots:",
         "- pivot_tip_scatter.png",
+        "- pivot_tip_offsets_report.png",
+        "- pivot_rmse_report.png",
+        "- pivot_axis_spread_report.png",
         "- pivot_axis_histograms.png",
         "- pivot_quality_summary.png",
     ]
@@ -408,6 +427,91 @@ def _write_registration_transform_spread_report(*, path: Path, metrics: dict[str
         xlabel="Registration run",
         ylabel="Rotation delta (deg)",
     )
+    save_figure(fig, path)
+
+
+def _pivot_rows(metrics: dict[str, Any]) -> list[dict[str, Any]]:
+    return [dict(row) for row in list(metrics.get("per_run_rows") or [])]
+
+
+def _write_pivot_tip_offsets_report(*, path: Path, metrics: dict[str, Any]) -> None:
+    rows = _pivot_rows(metrics)
+    points = [
+        [float(value) for value in row.get("tip_vector_local_mm")]
+        for row in rows
+        if isinstance(row.get("tip_vector_local_mm"), list) and len(row.get("tip_vector_local_mm")) >= 3
+    ]
+    with report_style() as plt:
+        fig, ax = plt.subplots(figsize=(5.4, 5.0), constrained_layout=True)
+    if not points:
+        ax.text(0.5, 0.5, "No valid pivot tip-offset vectors available", transform=ax.transAxes, ha="center", va="center")
+    else:
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        ax.scatter(xs, ys, s=34, color=color("measured"), alpha=0.78, linewidths=0, label="Solved offsets")
+        consensus = metrics.get("consensus_tip_vector_local_mm")
+        if isinstance(consensus, list) and len(consensus) >= 2:
+            cx = float(consensus[0])
+            cy = float(consensus[1])
+            for x_value, y_value in zip(xs, ys):
+                ax.plot([cx, x_value], [cy, y_value], color=color("neutral"), linewidth=0.7, alpha=0.35)
+            ax.scatter([cx], [cy], s=70, marker="X", color=color("reference"), edgecolors="white", linewidths=0.8, zorder=4, label="Consensus offset")
+            xs.append(cx)
+            ys.append(cy)
+        set_equal_xy(ax, x_values=xs, y_values=ys, minimum_span=1.0)
+    style_axes(ax, title="Pivot Tip-Offset Consistency", xlabel="Tool-local X offset (mm)", ylabel="Tool-local Y offset (mm)")
+    legend(ax, loc="best")
+    distance_summary = dict(metrics.get("distance_to_consensus_summary_mm", {}) or {})
+    rmse_summary = dict(metrics.get("rmse_summary_mm", {}) or {})
+    add_metric_box(
+        ax,
+        _compact_metric_lines(
+            [
+                f"Mean RMSE: {_fmt(rmse_summary.get('mean'))} mm",
+                f"Mean offset spread: {_fmt(distance_summary.get('mean'))} mm",
+                f"Max offset spread: {_fmt(distance_summary.get('max'))} mm",
+                f"Runs: {int(metrics.get('valid_run_count', len(points)) or 0)}",
+            ]
+        ),
+        loc="upper right",
+    )
+    save_figure(fig, path)
+
+
+def _write_pivot_rmse_report(*, path: Path, metrics: dict[str, Any]) -> None:
+    rows = _pivot_rows(metrics)
+    values = [float(row.get("rmse_mm")) for row in rows if row.get("rmse_mm") is not None]
+    labels = [f"R{index + 1}" for index, _row in enumerate(rows) if _row.get("rmse_mm") is not None]
+    with report_style() as plt:
+        fig, ax = plt.subplots(figsize=(7.2, 4.2), constrained_layout=True)
+    if not values:
+        ax.text(0.5, 0.5, "No valid pivot RMSE values available", transform=ax.transAxes, ha="center", va="center")
+    else:
+        x_positions = list(range(len(values)))
+        bars = ax.bar(x_positions, values, color=color("measured"), edgecolor="white", linewidth=0.7)
+        mean_rmse = _optional_float((metrics.get("rmse_summary_mm") or {}).get("mean"))
+        if mean_rmse is not None:
+            ax.axhline(mean_rmse, color=color("reference"), linewidth=1.3, label=f"Mean RMSE ({mean_rmse:.3f} mm)")
+            legend(ax, loc="upper right")
+        if len(values) <= 12:
+            ax.bar_label(bars, labels=[f"{value:.2f}" for value in values], padding=2, fontsize=8)
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels(labels)
+        ax.set_ylim(0.0, max(values + [0.0]) * 1.2 + 0.02)
+    style_axes(ax, title="Pivot RMSE by Run", xlabel="Pivot run", ylabel="Pivot RMSE (mm)")
+    save_figure(fig, path)
+
+
+def _write_pivot_axis_spread_report(*, path: Path, metrics: dict[str, Any]) -> None:
+    per_axis = dict(metrics.get("per_axis_summary_mm", {}) or {})
+    axes = ["x", "y", "z"]
+    std_values = [float((per_axis.get(axis) or {}).get("std", 0.0) or 0.0) for axis in axes]
+    with report_style() as plt:
+        fig, ax = plt.subplots(figsize=(6.4, 4.2), constrained_layout=True)
+    bars = ax.bar([axis.upper() for axis in axes], std_values, color=color("fit"), edgecolor="white", linewidth=0.7)
+    ax.bar_label(bars, labels=[f"{value:.2f}" for value in std_values], padding=2, fontsize=8)
+    ax.set_ylim(0.0, max(std_values + [0.0]) * 1.25 + 0.02)
+    style_axes(ax, title="Pivot Tip-Offset Axis Spread", xlabel="Tool-local axis", ylabel="Standard deviation (mm)")
     save_figure(fig, path)
 
 

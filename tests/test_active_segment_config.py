@@ -80,12 +80,18 @@ def _settings(active_segment: str = "segment_a", *, mode: str = "single_segment"
             "segment_a": RobotSegmentConfig(
                 key="segment_a",
                 label="Spine 1",
+                segment_label="Segment A",
+                segment_role="proximal",
+                segment_order_index=0,
                 servo_ids=[1, 2, 3, 4],
                 pairs={"axis_a": [1, 3], "axis_b": [2, 4]},
             ),
             "segment_b": RobotSegmentConfig(
                 key="segment_b",
                 label="Spine 2",
+                segment_label="Segment B",
+                segment_role="distal",
+                segment_order_index=1,
                 servo_ids=[5, 6, 7, 8],
                 pairs={"axis_a": [5, 7], "axis_b": [6, 8]},
             ),
@@ -124,6 +130,28 @@ def test_operating_context_resolves_all_modes() -> None:
     parallel = _settings(mode="parallel_single").robot.operating_context()
     assert parallel.expected_servo_ids == [1, 2, 3, 4, 5, 6, 7, 8]
     assert parallel.mirror_pairs == {1: 5, 2: 6, 3: 7, 4: 8}
+
+
+def test_dual_segment_context_records_segment_order_roles_and_pairs() -> None:
+    context = _settings(mode="dual_segment").robot.operating_context()
+    metadata = context.metadata()
+
+    assert context.expected_servo_ids == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert context.commanded_servo_ids == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert context.segment_order == ["segment_a", "segment_b"]
+    assert metadata["segments"]["segment_a"]["segment_label"] == "Segment A"
+    assert metadata["segments"]["segment_a"]["segment_role"] == "proximal"
+    assert metadata["segments"]["segment_a"]["segment_order_index"] == 0
+    assert metadata["segments"]["segment_a"]["servo_ids"] == [1, 2, 3, 4]
+    assert metadata["segments"]["segment_a"]["pairs"] == {"axis_a": [1, 3], "axis_b": [2, 4]}
+    assert metadata["segments"]["segment_b"]["segment_label"] == "Segment B"
+    assert metadata["segments"]["segment_b"]["segment_role"] == "distal"
+    assert metadata["segments"]["segment_b"]["segment_order_index"] == 1
+    assert metadata["segments"]["segment_b"]["servo_ids"] == [5, 6, 7, 8]
+    assert metadata["segments"]["segment_b"]["pairs"] == {"axis_a": [5, 7], "axis_b": [6, 8]}
+    assert metadata["mode_profile"] == "all_8_readiness_manual_startup_foundation"
+    assert metadata["mode_capabilities"]["manual_startup_capture"] is True
+    assert metadata["mode_capabilities"]["two_segment_kinematics_control"] is False
 
 
 def test_single_segment_workflow_helpers_use_active_segment_ids() -> None:
@@ -196,6 +224,73 @@ def test_manual_startup_artifact_is_segment_scoped(tmp_path: Path) -> None:
     assert "5" in summary_b.message
 
 
+def test_dual_segment_manual_startup_artifact_records_all_8_scope(tmp_path: Path) -> None:
+    path = tmp_path / "neutral.json"
+    settings = _settings(mode="dual_segment")
+    operating_context = settings.robot.operating_context()
+    context = ServoCalibrationContext(
+        robot_mode="dual_segment",
+        robot_config_name="robot_8servo.yaml",
+        servo_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+        tendon_to_servo=[1, 2, 3, 4, 5, 6, 7, 8],
+        segments=settings.robot.segment_metadata(),
+        segment_order=settings.robot.segment_order(),
+        expected_servo_ids=list(operating_context.expected_servo_ids),
+        commanded_servo_ids=list(operating_context.commanded_servo_ids),
+        mode_profile=operating_context.mode_profile,
+        mode_capabilities=operating_context.mode_capabilities,
+        mode_notes=operating_context.mode_notes,
+    )
+    service = NeutralCalibrationService(path=path, context=context)
+    service.save_manual_pretension_state(
+        states_by_servo={
+            servo_id: {
+                "servo_id": servo_id,
+                "measured_position_tick": 2100 + servo_id,
+                "measured_current_ma": 20 + servo_id,
+            }
+            for servo_id in range(1, 9)
+        },
+        note="all-8 startup",
+        accepted=True,
+    )
+
+    summary = service.get_calibration_summary()
+    assert summary.compatible is True
+    source = summary.pretension_source_summary([1, 2, 3, 4, 5, 6, 7, 8])
+    assert source.usable is True
+    artifact = service.load_calibration_artifact()
+    assert sorted(artifact.servos) == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert artifact.robot["robot_mode"] == "dual_segment"
+    assert artifact.robot["startup_artifact_scope"] == "dual_segment_all_8_manual_startup_foundation"
+    assert artifact.robot["expected_servo_ids"] == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert artifact.robot["commanded_servo_ids"] == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert artifact.robot["segment_order"] == ["segment_a", "segment_b"]
+    assert artifact.robot["segments"]["segment_a"]["segment_role"] == "proximal"
+    assert artifact.robot["segments"]["segment_b"]["segment_role"] == "distal"
+    assert artifact.servos[8].last_measured_current_ma == 28
+    latest_run = artifact.servos[1].latest_pretension_run
+    assert latest_run["startup_artifact_scope"] == "dual_segment_all_8_manual_startup_foundation"
+    assert latest_run["segment_order"] == ["segment_a", "segment_b"]
+    assert latest_run["segments"]["segment_a"]["pairs"] == {"axis_a": [1, 3], "axis_b": [2, 4]}
+
+    single_context = ServoCalibrationContext(
+        robot_mode="single_segment",
+        robot_config_name="robot_8servo.yaml",
+        servo_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+        tendon_to_servo=[1, 2, 3, 4, 5, 6, 7, 8],
+        active_segment_key="segment_a",
+        active_segment_label="Spine 1",
+        active_segment_servo_ids=[1, 2, 3, 4],
+        active_segment_pairs={"axis_a": [1, 3], "axis_b": [2, 4]},
+        expected_servo_ids=[1, 2, 3, 4],
+        commanded_servo_ids=[1, 2, 3, 4],
+    )
+    single_summary = NeutralCalibrationService(path=path, context=single_context).get_calibration_summary()
+    assert single_summary.compatible is False
+    assert "does not match current mode single_segment" in single_summary.message
+
+
 def test_system_controller_applies_active_segment_to_live_servo_context(tmp_path) -> None:
     settings = _settings("segment_b")
     context = ServoCalibrationContext(
@@ -224,6 +319,9 @@ def test_system_controller_applies_active_segment_to_live_servo_context(tmp_path
     assert context.active_segment_label == "Spine 2"
     assert context.active_segment_servo_ids == [5, 6, 7, 8]
     assert context.active_segment_pairs == {"axis_a": [5, 7], "axis_b": [6, 8]}
+    assert context.segment_order == ["segment_a", "segment_b"]
+    assert context.segments["segment_a"]["segment_role"] == "proximal"
+    assert context.segments["segment_b"]["segment_role"] == "distal"
 
 
 def test_system_controller_saves_mode_scope_without_stale_servo_membership(tmp_path: Path) -> None:
@@ -314,3 +412,39 @@ def test_segment_b_pretension_preflight_names_active_ids_without_tracker(tmp_pat
     tracking_check = next(check for check in report.checks if check.key == "tracking_state")
     assert tracking_check.status == "warning"
     assert "current-only" in tracking_check.message
+
+
+def test_dual_segment_pretension_preflight_blocks_automatic_two_segment_pretension(tmp_path: Path) -> None:
+    settings = _settings(mode="dual_segment")
+    snapshot = SimpleNamespace(
+        selected_backend_name="none",
+        backend_identity="none",
+        canonical_state="disconnected",
+    )
+
+    report = evaluate_preflight(
+        experiment_name="pretension_validation",
+        config_payload={
+            "mode": "single_segment_staged",
+            "servo_ids": [],
+            "include_tracker_displacement": False,
+            "allow_no_tracker_test_run": True,
+            "allow_current_only_when_tracker_missing": True,
+            "run_trust_mode": "current_only",
+        },
+        config_error=None,
+        settings=settings,
+        tracking_snapshot=snapshot,
+        servo_connected=True,
+        neutral_setpoints={servo_id: 2048 for servo_id in range(1, 9)},
+        registration_path=tmp_path / "latest_registration.json",
+        output_root=tmp_path / "data" / "experiments",
+        planned_output_dir=tmp_path / "data" / "experiments" / "pretension_validation" / "run",
+        project_root=tmp_path,
+        servo_calibration_summary=None,
+    )
+
+    active_check = next(check for check in report.checks if check.key == "active_segment")
+    assert active_check.status == "blocked"
+    assert "all-8 readiness and manual startup capture" in active_check.message
+    assert "Automatic two-segment pretension/control is not implemented yet" in active_check.message

@@ -67,7 +67,7 @@ class ServosTab(QWidget):
         self.workflow_hint = QLabel(
             "Use this workspace for servo bring-up and practical manual startup-state capture. "
             "Refresh readiness, verify the expected servos, jog the configured servos to the desired startup pose, "
-            "then capture that 4-servo state as manual pretension if needed. "
+            "then capture the configured 4-servo or all-8 state as manual pretension if needed. "
             "Use Servo Settings here for jog-step tuning. "
             "Use the Pretension tab for feedback-based algorithm development, tuning, and validation."
         )
@@ -86,6 +86,14 @@ class ServosTab(QWidget):
         self.missing_ids_label.setWordWrap(True)
         self.unexpected_ids_label = QLabel()
         self.unexpected_ids_label.setWordWrap(True)
+        self.segment_readiness_label = QLabel()
+        self.segment_readiness_label.setWordWrap(True)
+        self.all_8_readiness_label = QLabel()
+        self.all_8_readiness_label.setWordWrap(True)
+        self.dual_segment_note_label = QLabel()
+        self.dual_segment_note_label.setWordWrap(True)
+        self.manual_sequence_label = QLabel()
+        self.manual_sequence_label.setWordWrap(True)
         self.selected_label = QLabel()
         self.selected_label.setWordWrap(True)
         self.discovery_label = QLabel()
@@ -107,6 +115,8 @@ class ServosTab(QWidget):
         self.calibration_message_label.setProperty("role", "hint")
 
         self.selected_servo_id_value_label = QLabel("—")
+        self.selected_servo_segment_label = QLabel("—")
+        self.selected_servo_segment_label.setWordWrap(True)
         self.selected_servo_torque_label = QLabel("—")
         self.selected_servo_position_label = QLabel("—")
         self.selected_servo_current_draw_label = QLabel("—")
@@ -239,6 +249,10 @@ class ServosTab(QWidget):
         self.summary_layout.addRow("Detected servo IDs", self.detected_ids_label)
         self.summary_layout.addRow("Missing expected", self.missing_ids_label)
         self.summary_layout.addRow("Unexpected found", self.unexpected_ids_label)
+        self.summary_layout.addRow("Segment readiness", self.segment_readiness_label)
+        self.summary_layout.addRow("All-8 readiness", self.all_8_readiness_label)
+        self.summary_layout.addRow("dual_segment scope", self.dual_segment_note_label)
+        self.summary_layout.addRow("Manual sequence", self.manual_sequence_label)
         self.summary_layout.addRow("Discovery", self.discovery_label)
         self.summary_layout.addRow("Neutral metadata", self.neutral_label)
         self.summary_layout.addRow("Block reason", self.blocking_label)
@@ -289,6 +303,7 @@ class ServosTab(QWidget):
         jog_layout.addLayout(selector_row)
         jog_form = QFormLayout()
         jog_form.addRow("Servo ID", self.selected_servo_id_value_label)
+        jog_form.addRow("Segment", self.selected_servo_segment_label)
         jog_form.addRow("Torque", self.selected_servo_torque_label)
         jog_form.addRow("Position (tick)", self.selected_servo_position_label)
         jog_form.addRow("Current draw (mA)", self.selected_servo_current_draw_label)
@@ -493,6 +508,10 @@ class ServosTab(QWidget):
         self.detected_ids_label.setText(", ".join(str(sid) for sid in state.detected_servo_ids) or "none")
         self.missing_ids_label.setText(", ".join(str(sid) for sid in state.missing_servo_ids))
         self.unexpected_ids_label.setText(", ".join(str(sid) for sid in state.unexpected_servo_ids))
+        self.segment_readiness_label.setText(state.segment_readiness_summary or "not available")
+        self.all_8_readiness_label.setText(state.all_8_readiness_summary)
+        self.dual_segment_note_label.setText(state.dual_segment_foundation_note)
+        self.manual_sequence_label.setText(state.manual_pretension_sequence_hint)
         self.discovery_label.setText(state.discovery_message)
         self.neutral_label.setText(
             ", ".join(f"{sid}:{tick}" for sid, tick in sorted(state.neutral_setpoints.items())) or "not saved"
@@ -526,6 +545,7 @@ class ServosTab(QWidget):
         freshness_limit_text = f"{float(state.telemetry_freshness_threshold_s):.3f} s"
         self.selected_servo_position_label.setText(str(current_position if current_position is not None else "—"))
         self.selected_servo_id_value_label.setText(str(selected_servo_id) if selected_servo_id is not None else "—")
+        self.selected_servo_segment_label.setText(state.selected_servo_segment_label or "—")
         self.selected_servo_torque_label.setText("On" if state.selected_servo_torque_enabled else ("Off" if state.selected_servo_torque_enabled is False else "—"))
         self.selected_servo_current_draw_label.setText(self._display_value(state.selected_servo_current_ma))
         self.selected_servo_voltage_label.setText(self._display_value(state.selected_servo_voltage_mv))
@@ -568,6 +588,21 @@ class ServosTab(QWidget):
         motion_allowed = state.connected and any_servo and state.selected_servo_motion_ready
         self._set_form_row_visible(self.summary_layout, self.missing_ids_label, bool(state.missing_servo_ids))
         self._set_form_row_visible(self.summary_layout, self.unexpected_ids_label, bool(state.unexpected_servo_ids))
+        self._set_form_row_visible(
+            self.summary_layout,
+            self.all_8_readiness_label,
+            state.robot_mode == "dual_segment",
+        )
+        self._set_form_row_visible(
+            self.summary_layout,
+            self.dual_segment_note_label,
+            state.robot_mode == "dual_segment" and bool(state.dual_segment_foundation_note),
+        )
+        self._set_form_row_visible(
+            self.summary_layout,
+            self.manual_sequence_label,
+            state.robot_mode == "dual_segment" and bool(state.manual_pretension_sequence_hint),
+        )
         self._set_form_row_visible(self.summary_layout, self.blocking_label, bool(state.blocking_reasons))
         self._set_form_row_visible(
             self.summary_layout,
@@ -664,6 +699,10 @@ class ServosTab(QWidget):
             f"Last action: {self.selected_servo_action_label.text()} | Result: {self.selected_servo_result_label.text()}",
         ]
         if not state.single_servo_mode:
+            if state.robot_mode == "dual_segment" and state.all_8_readiness_summary:
+                operator_lines.append(state.all_8_readiness_summary)
+            if state.segment_readiness_summary:
+                operator_lines.append(f"Segments: {state.segment_readiness_summary}")
             operator_lines.append(f"Active pretension source: {state.pretension_source_summary}")
             if state.single_segment_reference_summary:
                 operator_lines.append(f"Experiment reference: {state.single_segment_reference_summary}")

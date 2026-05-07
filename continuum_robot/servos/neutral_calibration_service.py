@@ -30,10 +30,15 @@ class ServoCalibrationContext:
     active_segment_label: str | None = None
     active_segment_servo_ids: list[int] = field(default_factory=list)
     active_segment_pairs: dict[str, list[int]] = field(default_factory=dict)
+    segments: dict[str, dict[str, Any]] = field(default_factory=dict)
+    segment_order: list[str] = field(default_factory=list)
     selected_servo_id: int | None = None
     expected_servo_ids: list[int] = field(default_factory=list)
     commanded_servo_ids: list[int] = field(default_factory=list)
     mirror_pairs: dict[int, int] = field(default_factory=dict)
+    mode_profile: str | None = None
+    mode_capabilities: dict[str, bool] = field(default_factory=dict)
+    mode_notes: list[str] = field(default_factory=list)
     ticks_per_revolution: int | None = None
     spool_diameter_cm: float | None = None
     position_min_offset_ticks: int | None = None
@@ -465,7 +470,13 @@ class NeutralCalibrationService:
                         str(key): [int(value) for value in values]
                         for key, values in dict(self.context.active_segment_pairs or {}).items()
                     },
+                    "segments": self._segment_metadata(),
+                    "segment_order": list(self.context.segment_order),
                     "operating_mode": self.context.robot_mode,
+                    "mode_profile": self.context.mode_profile,
+                    "mode_capabilities": dict(self.context.mode_capabilities),
+                    "mode_notes": list(self.context.mode_notes),
+                    "startup_artifact_scope": self._startup_artifact_scope(),
                     "selected_servo_id": self.context.selected_servo_id,
                     "expected_servo_ids": list(self.context.expected_servo_ids),
                     "commanded_servo_ids": list(self.context.commanded_servo_ids),
@@ -821,23 +832,27 @@ class NeutralCalibrationService:
     def _sanitize_run_record(run_record: Any) -> dict[str, Any] | None:
         if not isinstance(run_record, dict):
             return None
-        clean: dict[str, Any] = {}
-        for key, value in run_record.items():
-            if value is None or isinstance(value, (str, int, float, bool)):
-                clean[str(key)] = value
-                continue
-            if isinstance(value, dict):
-                clean[str(key)] = {
-                    str(child_key): child_value
-                    for child_key, child_value in value.items()
-                    if child_value is None or isinstance(child_value, (str, int, float, bool))
-                }
-                continue
-            if isinstance(value, (list, tuple)):
-                clean[str(key)] = [
-                    item for item in value if item is None or isinstance(item, (str, int, float, bool))
-                ]
-        return clean or None
+        clean = NeutralCalibrationService._sanitize_value(run_record)
+        return clean if isinstance(clean, dict) and clean else None
+
+    @staticmethod
+    def _sanitize_value(value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            clean: dict[str, Any] = {}
+            for child_key, child_value in value.items():
+                sanitized = NeutralCalibrationService._sanitize_value(child_value)
+                if sanitized is not None or child_value is None:
+                    clean[str(child_key)] = sanitized
+            return clean
+        if isinstance(value, (list, tuple)):
+            return [
+                sanitized
+                for item in value
+                if (sanitized := NeutralCalibrationService._sanitize_value(item)) is not None or item is None
+            ]
+        return None
 
     def _mark_run_record_accepted(self, run_record: dict[str, Any] | None) -> dict[str, Any] | None:
         clean = self._sanitize_run_record(run_record)
@@ -860,10 +875,19 @@ class NeutralCalibrationService:
                 str(key): [int(value) for value in values]
                 for key, values in dict(self.context.active_segment_pairs or {}).items()
             },
+            "segments": self._segment_metadata(),
+            "segment_order": list(self.context.segment_order),
             "selected_servo_id": self.context.selected_servo_id,
             "expected_servo_ids": list(self.context.expected_servo_ids),
             "commanded_servo_ids": list(self.context.commanded_servo_ids),
             "mirror_pairs": {str(key): int(value) for key, value in dict(self.context.mirror_pairs or {}).items()},
+            "mode_profile": self.context.mode_profile,
+            "mode_capabilities": dict(self.context.mode_capabilities),
+            "mode_notes": list(self.context.mode_notes),
+            "startup_artifact_scope": self._startup_artifact_scope(),
+            "dual_segment_foundation_only": self.context.robot_mode == "dual_segment",
+            "automatic_two_segment_pretension_validated": False,
+            "two_segment_kinematics_control_validated": False,
             "ticks_per_revolution": self.context.ticks_per_revolution,
             "spool_diameter_cm": self.context.spool_diameter_cm,
             "position_min_offset_ticks": self.context.position_min_offset_ticks,
@@ -874,6 +898,37 @@ class NeutralCalibrationService:
                 for servo_id, rotation in sorted(self.context.tightening_rotation_by_servo.items())
             },
         }
+
+    def _segment_metadata(self) -> dict[str, dict[str, Any]]:
+        clean: dict[str, dict[str, Any]] = {}
+        for key, value in dict(self.context.segments or {}).items():
+            data = dict(value or {})
+            clean[str(key)] = {
+                "key": str(data.get("key", key)),
+                "label": str(data.get("label", key)),
+                "segment_label": str(data.get("segment_label", data.get("label", key))),
+                "segment_role": str(data.get("segment_role", "")),
+                "segment_order_index": (
+                    int(data["segment_order_index"])
+                    if data.get("segment_order_index") is not None
+                    else None
+                ),
+                "servo_ids": [int(item) for item in list(data.get("servo_ids", []) or [])],
+                "pairs": {
+                    str(pair_key): [int(item) for item in list(pair_values or [])]
+                    for pair_key, pair_values in dict(data.get("pairs", {}) or {}).items()
+                },
+            }
+        return clean
+
+    def _startup_artifact_scope(self) -> str:
+        if self.context.robot_mode == "dual_segment":
+            return "dual_segment_all_8_manual_startup_foundation"
+        if self.context.robot_mode == "parallel_single":
+            return "parallel_single_mirrored_manual_startup"
+        if self.context.robot_mode == "single_segment":
+            return "single_segment_manual_startup"
+        return str(self.context.robot_mode or "unknown")
 
     def _compatibility_check(self, artifact: ServoCalibrationArtifact) -> tuple[bool, str]:
         if not artifact.servos:
@@ -899,6 +954,30 @@ class NeutralCalibrationService:
                     f"Calibration servo IDs {saved_ids} do not match current active segment IDs {required_servo_ids} "
                     f"or configured IDs {self.context.servo_ids}."
                 )
+            if self.context.robot_mode == "dual_segment":
+                saved_expected_ids = [
+                    int(value) for value in robot.get("expected_servo_ids", []) if value is not None
+                ]
+                saved_commanded_ids = [
+                    int(value) for value in robot.get("commanded_servo_ids", []) if value is not None
+                ]
+                if saved_expected_ids and saved_expected_ids != required_servo_ids:
+                    return False, (
+                        f"Dual-segment startup artifact expected IDs {saved_expected_ids} do not match "
+                        f"current all-8 expected IDs {required_servo_ids}."
+                    )
+                if saved_commanded_ids and saved_commanded_ids != required_servo_ids:
+                    return False, (
+                        f"Dual-segment startup artifact commanded IDs {saved_commanded_ids} do not match "
+                        f"current all-8 commanded IDs {required_servo_ids}."
+                    )
+                saved_segment_order = [str(value) for value in robot.get("segment_order", []) if value is not None]
+                current_segment_order = [str(value) for value in self.context.segment_order]
+                if saved_segment_order and current_segment_order and saved_segment_order != current_segment_order:
+                    return False, (
+                        f"Dual-segment startup artifact segment order {saved_segment_order} does not match "
+                        f"current segment order {current_segment_order}."
+                    )
             missing = [servo_id for servo_id in required_servo_ids if servo_id not in artifact.servos]
             if missing:
                 return False, f"Calibration is missing servo entries for {missing}."

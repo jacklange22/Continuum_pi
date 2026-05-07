@@ -29,6 +29,7 @@ from continuum_robot.experiments.schemas import (
 from continuum_robot.experiments.transform_chain_outputs import write_transform_chain_outputs
 from continuum_robot.experiments.validation import STATUS_PARTIAL_SUCCESS, STATUS_SUCCESS, classify_summary_status
 from continuum_robot.tracking.runtime_tip_policy import evaluate_runtime_tip_trust
+from continuum_robot.two_segment import build_two_segment_foundation_metadata
 
 
 LOG = logging.getLogger(__name__)
@@ -335,8 +336,11 @@ class ExperimentRunner:
                     }
             except Exception as exc:
                 pretension_source_info = {"error": str(exc)}
+        operating_context = self.settings.robot.operating_context()
+        two_segment_foundation = build_two_segment_foundation_metadata(operating_context)
         backend_info = {
             "mock_mode": bool(self.settings.runtime.mock_mode),
+            "hardware_profile": self.settings.runtime.robot_config,
             "tracking_backend_configured": getattr(self.settings.serial, "tracker_backend", ""),
             "tracking_backend_selected": (
                 tracking_snapshot.selected_backend_name if tracking_snapshot is not None else ""
@@ -348,7 +352,8 @@ class ExperimentRunner:
             "servo_connected": bool(getattr(self.servo_service, "is_connected", False)),
             "pretension_source": pretension_source_info,
             "robot_mode": self.settings.robot.operating_mode(),
-            "operating_context": self.settings.robot.operating_context().metadata(),
+            "operating_context": operating_context.metadata(),
+            "two_segment_foundation": two_segment_foundation,
             "active_segment": {
                 "key": self.settings.robot.active_segment_key(),
                 "label": self.settings.robot.active_segment_label(),
@@ -369,11 +374,26 @@ class ExperimentRunner:
             ),
             pretension_source_info.get("source_type", "unknown"),
         )
-        runtime_tip_policy = (
-            evaluate_runtime_tip_trust(snapshot=tracking_snapshot).to_dict()
-            if tracking_snapshot is not None
-            else evaluate_runtime_tip_trust().to_dict()
-        )
+        try:
+            runtime_tip_policy = (
+                evaluate_runtime_tip_trust(
+                    snapshot=tracking_snapshot,
+                    workflow=experiment_name,
+                    allow_lower_trust=bool(config_used.get("allow_lower_trust_runtime_tip", False)),
+                ).to_dict()
+                if tracking_snapshot is not None
+                else evaluate_runtime_tip_trust(
+                    workflow=experiment_name,
+                    allow_lower_trust=bool(config_used.get("allow_lower_trust_runtime_tip", False)),
+                ).to_dict()
+            )
+        except ValueError as exc:
+            runtime_tip_policy = evaluate_runtime_tip_trust(
+                snapshot=tracking_snapshot,
+                workflow=None,
+                allow_lower_trust=bool(config_used.get("allow_lower_trust_runtime_tip", False)),
+            ).to_dict()
+            runtime_tip_policy.setdefault("warnings", []).append(str(exc))
         registration_info = {
             "path": str(self.registration_path),
             "exists": self.registration_path.exists(),
@@ -404,6 +424,61 @@ class ExperimentRunner:
             "runtime_tip_policy": runtime_tip_policy,
             "thesis_trusted_runtime_tip": bool(runtime_tip_policy.get("thesis_trusted", False)),
         }
+        config_trust_mode = str(config_used.get("run_trust_mode", "") or "").strip().lower()
+        if not config_trust_mode:
+            config_trust_mode = "thesis_trusted"
+        tracker_state = str(backend_info.get("tracking_state", "") or "")
+        tracker_connected = tracker_state not in {"", "disabled", "disconnected", "missing", "none"}
+        lower_trust_modes = {"servo_only", "current_only", "lower_trust", "debug_only", "debug"}
+        data_quality_warnings: list[str] = []
+        if config_trust_mode in lower_trust_modes:
+            data_quality_warnings.append(f"run_trust_mode={config_trust_mode}")
+        if config_used.get("allow_no_tracker_test_run") and not tracker_connected:
+            data_quality_warnings.append("no_tracker_test_run")
+        if not bool(runtime_tip_policy.get("thesis_trusted", False)):
+            data_quality_warnings.append("runtime_tip_not_thesis_trusted")
+        experiment_lower = str(experiment_name).strip().lower()
+        valid_for_model_training = bool(
+            experiment_lower == "collect_pose_command_dataset"
+            and config_trust_mode not in lower_trust_modes
+            and not bool(config_used.get("allow_no_tracker_test_run") and not tracker_connected)
+            and bool(runtime_tip_policy.get("allowed_for_workflow", runtime_tip_policy.get("thesis_trusted", False)))
+        )
+        valid_for_thesis_repeatability = bool(
+            experiment_lower == "single_segment_repeatability"
+            and config_trust_mode not in lower_trust_modes
+            and bool(runtime_tip_policy.get("thesis_trusted", False))
+        )
+        if experiment_lower not in {"collect_pose_command_dataset", "single_segment_repeatability"}:
+            valid_for_thesis_repeatability = bool(
+                config_trust_mode not in lower_trust_modes and bool(runtime_tip_policy.get("thesis_trusted", False))
+            )
+        provenance_info = {
+            "hardware_profile": self.settings.runtime.robot_config,
+            "operating_mode": operating_context.operating_mode,
+            "expected_servo_ids": list(operating_context.expected_servo_ids),
+            "commanded_servo_ids": list(operating_context.commanded_servo_ids),
+            "active_segment": operating_context.metadata().get("active_segment"),
+            "segments": dict(operating_context.metadata().get("segments") or {}),
+            "segment_order": list(operating_context.metadata().get("segment_order") or []),
+            "two_segment_foundation": two_segment_foundation,
+            "mirror_mapping": dict(operating_context.metadata().get("mirror_pairs") or {}),
+            "tracker_backend": backend_info.get("tracking_backend_selected") or backend_info.get("tracking_backend_configured"),
+            "registration_artifact": str(self.registration_path),
+            "registration_status": registration_info.get("tracking_registration_state"),
+            "runtime_tip_mode": registration_info.get("runtime_tip_mode"),
+            "runtime_tip_trust_status": registration_info.get("runtime_tip_trust_level"),
+            "startup_pretension_artifact": pretension_source_info,
+            "mock_mode": bool(self.settings.runtime.mock_mode),
+        }
+        trust_info = {
+            "run_trust_mode": config_trust_mode,
+            "valid_for_model_training": bool(valid_for_model_training),
+            "valid_for_thesis_repeatability": bool(valid_for_thesis_repeatability),
+            "data_quality_warnings": sorted(set(data_quality_warnings)),
+            "runtime_tip_policy": runtime_tip_policy,
+            "success_does_not_imply_thesis_validity": True,
+        }
         return ExperimentMetadata(
             schema_version=self.SCHEMA_VERSION,
             experiment_name=experiment_name,
@@ -414,6 +489,8 @@ class ExperimentRunner:
             registration_info=registration_info,
             config_used=config_used,
             operator_notes=operator_notes,
+            provenance_info=provenance_info,
+            trust_info=trust_info,
         )
 
     def _build_summary(
@@ -436,6 +513,24 @@ class ExperimentRunner:
             if any(state == "invalid" for state in sample.transform_validity.values()):
                 invalid_transforms += 1
         metrics = dict(session.metrics)
+        metrics.setdefault("run_provenance", dict(session.metadata.provenance_info or {}))
+        metrics.setdefault("run_trust", dict(session.metadata.trust_info or {}))
+        metrics.setdefault("run_trust_mode", (session.metadata.trust_info or {}).get("run_trust_mode", "thesis_trusted"))
+        metrics.setdefault(
+            "valid_for_model_training",
+            bool((session.metadata.trust_info or {}).get("valid_for_model_training", False)),
+        )
+        metrics.setdefault(
+            "valid_for_thesis_repeatability",
+            bool((session.metadata.trust_info or {}).get("valid_for_thesis_repeatability", False)),
+        )
+        metrics.setdefault(
+            "data_quality_warnings",
+            list((session.metadata.trust_info or {}).get("data_quality_warnings", [])),
+        )
+        if session.error_messages:
+            metrics.setdefault("failure_reason", str(session.error_messages[-1]))
+            metrics.setdefault("stop_reason", str(session.error_messages[-1]))
         if session.stage_messages:
             metrics["stage_messages"] = dict(session.stage_messages)
         requirements = dict(metrics.get("summary_requirements", {}))

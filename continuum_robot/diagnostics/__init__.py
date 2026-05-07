@@ -1,0 +1,2 @@
+"""Operator-facing diagnostic commands."""
+

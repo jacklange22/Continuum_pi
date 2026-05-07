@@ -351,6 +351,104 @@ def test_data_management_controller_filters_and_deletes_selected_items(tmp_path:
     assert all(item.path != record_path for item in state.items)
 
 
+def test_data_management_controller_exports_selected_run(tmp_path: Path) -> None:
+    run_dir = tmp_path / "data" / "experiments" / "collect_pose_command_dataset" / "20260102_000000_collect_pose_command_dataset"
+    run_dir.mkdir(parents=True)
+    (run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "experiment_name": "collect_pose_command_dataset",
+                "trust_info": {"run_trust_mode": "servo_only", "valid_for_model_training": False},
+                "provenance_info": {"hardware_profile": "robot_8servo.yaml", "operating_mode": "single_segment"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "experiment_name": "collect_pose_command_dataset",
+                "status": "success",
+                "experiment_metrics": {
+                    "run_trust_mode": "servo_only",
+                    "valid_for_model_training": False,
+                    "run_provenance": {"hardware_profile": "robot_8servo.yaml", "operating_mode": "single_segment"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "modeling_workspace_coverage_report.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    controller = DataManagementController(project_root=tmp_path)
+    state = controller.refresh()
+    item = next(entry for entry in state.items if entry.path == run_dir)
+
+    controller.set_selected_paths([str(item.path)])
+    result = controller.export_selected(make_zip=True)
+
+    assert result.final_path.exists()
+    assert controller.state.last_export_path == str(result.final_path)
+    assert "rsync -av" in controller.state.last_transfer_command
+
+
+def test_data_management_controller_validates_marks_and_trashes_selected_run(tmp_path: Path) -> None:
+    run_dir = tmp_path / "data" / "experiments" / "collect_pose_command_dataset" / "20260102_000000_collect_pose_command_dataset"
+    run_dir.mkdir(parents=True)
+    (run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "experiment_name": "collect_pose_command_dataset",
+                "run_id": "run-1",
+                "trust_info": {"run_trust_mode": "servo_only", "valid_for_model_training": False},
+                "provenance_info": {
+                    "hardware_profile": "robot_8servo.yaml",
+                    "operating_mode": "single_segment",
+                    "active_segment": {"key": "segment_a"},
+                    "runtime_tip_calibration": {"mode": "coil_as_tip"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "experiment_name": "collect_pose_command_dataset",
+                "success": True,
+                "status": "success",
+                "experiment_metrics": {
+                    "run_trust_mode": "servo_only",
+                    "valid_for_model_training": False,
+                    "valid_for_thesis_repeatability": False,
+                    "run_provenance": {
+                        "hardware_profile": "robot_8servo.yaml",
+                        "operating_mode": "single_segment",
+                        "active_segment": {"key": "segment_a"},
+                        "runtime_tip_calibration": {"mode": "coil_as_tip"},
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "modeling_workspace_coverage_report.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (run_dir / "commanded_tendon_space_report.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    controller = DataManagementController(project_root=tmp_path)
+    state = controller.refresh()
+    item = next(entry for entry in state.items if entry.path == run_dir)
+
+    controller.set_selected_paths([str(item.path)])
+    validation_text = controller.validate_selected_run()
+    review = controller.mark_selected_run(status="garbage", notes="bad hardware test")
+    trash_result = controller.trash_selected_run()
+
+    assert "PASS:" in validation_text
+    assert review.review_status == "garbage"
+    assert run_dir.exists() is False
+    assert trash_result.destination_path.exists()
+    assert controller.state.selected_paths == []
+
+
 def test_preview_migration_detects_legacy_candidates_and_writes_ledger(tmp_path: Path) -> None:
     legacy_path = tmp_path / "data" / "registrations" / "registration_20260422T160000_000001Z.json"
     legacy_path.parent.mkdir(parents=True)

@@ -23,8 +23,11 @@ class RobotSegmentConfig:
 
     key: str
     label: str
+    segment_label: str = ""
     servo_ids: list[int] = field(default_factory=list)
     pairs: dict[str, list[int]] = field(default_factory=dict)
+    segment_role: str = ""
+    segment_order_index: int | None = None
 
 
 @dataclass
@@ -41,8 +44,12 @@ class RobotOperatingContext:
     active_segment_label: str | None = None
     active_segment_servo_ids: list[int] = field(default_factory=list)
     active_pairs: dict[str, list[int]] = field(default_factory=dict)
+    segment_order: list[str] = field(default_factory=list)
     mirror_pairs: dict[int, int] = field(default_factory=dict)
     readiness_scope: str = "expected"
+    mode_profile: str = ""
+    mode_capabilities: dict[str, bool] = field(default_factory=dict)
+    mode_notes: list[str] = field(default_factory=list)
 
     def metadata(self) -> dict:
         return {
@@ -50,6 +57,7 @@ class RobotOperatingContext:
             "expected_servo_ids": list(self.expected_servo_ids),
             "commanded_servo_ids": list(self.commanded_servo_ids),
             "selected_servo_id": self.selected_servo_id,
+            "segment_order": list(self.segment_order),
             "active_segment": (
                 {
                     "key": self.active_segment_key,
@@ -59,6 +67,16 @@ class RobotOperatingContext:
                         str(key): [int(value) for value in values]
                         for key, values in dict(self.active_pairs or {}).items()
                     },
+                    "segment_role": (
+                        self.segments[self.active_segment_key].segment_role
+                        if self.active_segment_key in self.segments
+                        else ""
+                    ),
+                    "segment_order_index": (
+                        self.segments[self.active_segment_key].segment_order_index
+                        if self.active_segment_key in self.segments
+                        else None
+                    ),
                 }
                 if self.active_segment_key
                 else None
@@ -67,7 +85,10 @@ class RobotOperatingContext:
                 str(key): {
                     "key": str(segment.key),
                     "label": str(segment.label),
+                    "segment_label": str(segment.segment_label or segment.label),
                     "servo_ids": [int(value) for value in segment.servo_ids],
+                    "segment_role": str(segment.segment_role or ""),
+                    "segment_order_index": segment.segment_order_index,
                     "pairs": {
                         str(pair_key): [int(value) for value in pair_values]
                         for pair_key, pair_values in dict(segment.pairs or {}).items()
@@ -82,6 +103,9 @@ class RobotOperatingContext:
                 if self.operating_mode == "parallel_single"
                 else ("dual_segment" if self.operating_mode == "dual_segment" else self.operating_mode)
             ),
+            "mode_profile": self.mode_profile or self.operating_mode,
+            "mode_capabilities": dict(self.mode_capabilities),
+            "mode_notes": list(self.mode_notes),
         }
 
 
@@ -98,6 +122,24 @@ class RobotConfig:
     active_segment: str = "segment_a"
     selected_servo_id: int = 1
     segments: dict[str, RobotSegmentConfig] = field(default_factory=dict)
+
+    @staticmethod
+    def default_segment_role(key: str) -> str:
+        normalized = str(key or "").strip().lower()
+        if normalized == "segment_a":
+            return "proximal"
+        if normalized == "segment_b":
+            return "distal"
+        return ""
+
+    @staticmethod
+    def default_segment_order_index(key: str) -> int | None:
+        normalized = str(key or "").strip().lower()
+        if normalized == "segment_a":
+            return 0
+        if normalized == "segment_b":
+            return 1
+        return None
 
     def operating_mode(self) -> str:
         raw = str(self.mode or "single_segment").strip().lower().replace("-", "_")
@@ -116,7 +158,30 @@ class RobotConfig:
 
     def segment_map(self) -> dict[str, RobotSegmentConfig]:
         if self.segments:
-            return dict(self.segments)
+            normalized: dict[str, RobotSegmentConfig] = {}
+            for key, segment in dict(self.segments).items():
+                segment_key = str(segment.key or key)
+                servo_ids = [int(value) for value in segment.servo_ids]
+                pairs = {
+                    str(pair_key): [int(value) for value in pair_values]
+                    for pair_key, pair_values in dict(segment.pairs or {}).items()
+                }
+                if not pairs and len(servo_ids) >= 4:
+                    pairs = {"axis_a": [servo_ids[0], servo_ids[2]], "axis_b": [servo_ids[1], servo_ids[3]]}
+                normalized[str(key)] = RobotSegmentConfig(
+                    key=segment_key,
+                    label=str(segment.label or key),
+                    segment_label=str(segment.segment_label or segment.label or key),
+                    servo_ids=servo_ids,
+                    pairs=pairs,
+                    segment_role=str(segment.segment_role or self.default_segment_role(key)),
+                    segment_order_index=(
+                        segment.segment_order_index
+                        if segment.segment_order_index is not None
+                        else self.default_segment_order_index(key)
+                    ),
+                )
+            return normalized
         ids = [int(value) for value in (self.tendon_to_servo or self.servo_ids or [])]
         pairs = {}
         if len(ids) >= 4:
@@ -125,10 +190,46 @@ class RobotConfig:
             "segment_a": RobotSegmentConfig(
                 key="segment_a",
                 label="Spine 1",
+                segment_label="Segment A",
                 servo_ids=list(ids[:4]),
                 pairs=pairs,
+                segment_role="proximal",
+                segment_order_index=0,
             )
         }
+
+    def segment_order(self) -> list[str]:
+        segments = self.segment_map()
+
+        def _sort_key(item: tuple[str, RobotSegmentConfig]) -> tuple[int, str]:
+            key, segment = item
+            index = segment.segment_order_index
+            if index is None:
+                default_index = self.default_segment_order_index(key)
+                index = default_index if default_index is not None else 1000
+            return (int(index), str(key))
+
+        return [str(key) for key, _segment in sorted(segments.items(), key=_sort_key)]
+
+    def segment_metadata(self) -> dict[str, dict]:
+        metadata: dict[str, dict] = {}
+        for key in self.segment_order():
+            segment = self.segment_map()[key]
+            pairs = {str(pair_key): [int(value) for value in values] for pair_key, values in dict(segment.pairs or {}).items()}
+            metadata[str(key)] = {
+                "key": str(segment.key),
+                "label": str(segment.label),
+                "segment_label": str(segment.segment_label or segment.label),
+                "segment_role": str(segment.segment_role or self.default_segment_role(key)),
+                "segment_order_index": (
+                    segment.segment_order_index
+                    if segment.segment_order_index is not None
+                    else self.default_segment_order_index(key)
+                ),
+                "servo_ids": [int(value) for value in segment.servo_ids],
+                "pairs": pairs,
+            }
+        return metadata
 
     def active_segment_config(self) -> RobotSegmentConfig:
         segments = self.segment_map()
@@ -156,7 +257,9 @@ class RobotConfig:
 
     def all_segment_servo_ids(self) -> list[int]:
         ids: list[int] = []
-        for segment in self.segment_map().values():
+        segments = self.segment_map()
+        for key in self.segment_order():
+            segment = segments[key]
             for servo_id in segment.servo_ids:
                 sid = int(servo_id)
                 if sid not in ids:
@@ -176,10 +279,15 @@ class RobotConfig:
     def operating_context(self) -> RobotOperatingContext:
         mode = self.operating_mode()
         segments = self.segment_map()
+        segment_order = self.segment_order()
         all_ids = self.all_segment_servo_ids()
         active = self.active_segment_config()
         active_ids = [int(value) for value in active.servo_ids]
         active_pairs = self.active_segment_pairs()
+        dual_segment_note = (
+            "dual_segment currently supports all-8 readiness and manual startup capture; "
+            "full two-segment kinematics/control and automatic two-segment pretension are not implemented."
+        )
         if mode == "one_servo":
             selected = int(self.selected_servo_id or (all_ids[0] if all_ids else 1))
             return RobotOperatingContext(
@@ -189,7 +297,15 @@ class RobotConfig:
                 all_configured_servo_ids=list(all_ids),
                 segments=segments,
                 selected_servo_id=selected,
+                segment_order=list(segment_order),
                 readiness_scope="selected_servo",
+                mode_profile="one_servo_bringup",
+                mode_capabilities={
+                    "manual_jog": True,
+                    "manual_startup_capture": False,
+                    "automatic_single_segment_pretension": False,
+                    "two_segment_kinematics_control": False,
+                },
             )
         if mode == "dual_segment":
             return RobotOperatingContext(
@@ -198,7 +314,21 @@ class RobotConfig:
                 commanded_servo_ids=list(all_ids),
                 all_configured_servo_ids=list(all_ids),
                 segments=segments,
+                segment_order=list(segment_order),
                 readiness_scope="all_segments",
+                mode_profile="all_8_readiness_manual_startup_foundation",
+                mode_capabilities={
+                    "all_8_readiness": True,
+                    "all_8_telemetry": True,
+                    "manual_jog": True,
+                    "manual_startup_capture": True,
+                    "automatic_single_segment_pretension": False,
+                    "automatic_two_segment_pretension": False,
+                    "two_segment_kinematics_control": False,
+                    "two_segment_modeling": False,
+                    "penprobe_chasing": False,
+                },
+                mode_notes=[dual_segment_note],
             )
         if mode == "parallel_single":
             return RobotOperatingContext(
@@ -211,8 +341,18 @@ class RobotConfig:
                 active_segment_label=str(active.label),
                 active_segment_servo_ids=list(active_ids),
                 active_pairs=active_pairs,
+                segment_order=list(segment_order),
                 mirror_pairs=self.parallel_mirror_pairs(),
                 readiness_scope="mirrored_segments",
+                mode_profile="mirrored_single_segment_testing",
+                mode_capabilities={
+                    "all_8_readiness": True,
+                    "manual_jog": True,
+                    "manual_startup_capture": True,
+                    "mirrored_single_segment_commands": True,
+                    "two_segment_kinematics_control": False,
+                },
+                mode_notes=["parallel_single is mirrored single-segment command testing, not two-segment control."],
             )
         return RobotOperatingContext(
             operating_mode="single_segment",
@@ -224,7 +364,15 @@ class RobotConfig:
             active_segment_label=str(active.label),
             active_segment_servo_ids=list(active_ids),
             active_pairs=active_pairs,
+            segment_order=list(segment_order),
             readiness_scope="active_segment",
+            mode_profile="single_segment",
+            mode_capabilities={
+                "manual_jog": True,
+                "manual_startup_capture": True,
+                "automatic_single_segment_pretension": True,
+                "two_segment_kinematics_control": False,
+            },
         )
 
     def expected_servo_ids(self) -> list[int]:
@@ -273,6 +421,12 @@ class SafetyConfig:
     position_min_offset_ticks: int = -600
     position_max_offset_ticks: int = 600
     max_current_ma: int = 850
+    servo_model: str = "XC330-M288-T"
+    servo_reported_current_hard_limit_ma: int = 850
+    servo_reported_current_warning_ma: int | None = None
+    current_safety_basis: str = (
+        "XC330-M288-T servo-reported input-current estimate; hard safety uses absolute current magnitude."
+    )
     default_pretension_current_threshold_ma: int = 220
     pretension_current_balance_tolerance_ma: int = 120
     fine_jog_step_ticks: int = 5

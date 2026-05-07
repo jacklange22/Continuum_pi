@@ -3,6 +3,17 @@
 position_min_offset_ticks: -600
 position_max_offset_ticks: 600
 max_current_ma: 850
+servo_model: XC330-M288-T
+# Hard current safety is intentionally separate from pretension tuning
+# thresholds. DYNAMIXEL present current is a servo-reported input-current
+# estimate, not calibrated tendon force. XC330-M288-T documentation lists
+# recommended 5 V operation, approximate 1.8 A stall current at 5 V, and a
+# Current Limit(38) control-table item/range that should be respected where
+# configured by firmware. This software limit stays conservative and checks
+# absolute current magnitude so negative reported current cannot bypass safety.
+servo_reported_current_hard_limit_ma: 850
+servo_reported_current_warning_ma: 650
+current_safety_basis: "XC330-M288-T servo-reported input-current estimate; absolute magnitude limit below approximate 5 V stall current; Current Limit(38) should also be respected where configured/read."
 default_pretension_current_threshold_ma: 220
 pretension_current_balance_tolerance_ma: 120
 fine_jog_step_ticks: 5

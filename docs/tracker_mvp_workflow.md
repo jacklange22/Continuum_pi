@@ -29,7 +29,7 @@ The canonical GUI homes are now:
 The focused GUI launcher is:
 
 ```bash
-python scripts/run_tracker_mvp.py
+.venv/bin/python scripts/run_tracker_mvp.py
 ```
 
 That launcher now opens the consolidated `Tracking` tab directly.
@@ -37,7 +37,7 @@ That launcher now opens the consolidated `Tracking` tab directly.
 Or through the workflow wrapper:
 
 ```bash
-python scripts/run_lab_workflow.py tracker-mvp
+.venv/bin/python scripts/run_lab_workflow.py tracker-mvp
 ```
 
 ## What Gets Saved

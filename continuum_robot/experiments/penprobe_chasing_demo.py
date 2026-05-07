@@ -79,10 +79,10 @@ class ChasingPose:
 
 
 class PenprobeChasingDemoExperiment(BaseExperiment):
-    """Move one active segment toward the live 0B penprobe target using bounded paired commands."""
+    """Move one active segment toward the live 0B tool-origin target using bounded paired commands."""
 
     name = "penprobe_chasing_demo"
-    description = "MVP demo: chase live 0B penprobe XY target with active single-segment 0A coil-as-tip."
+    description = "MVP demo: chase live 0B tool-origin XY target with active single-segment 0A coil-origin path."
     hardware_requirements = ExperimentHardwareRequirements(
         tracking_required=True,
         servo_required=True,
@@ -281,7 +281,7 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
             f"Max tick delta used: {summary.experiment_metrics.get('max_tick_delta_used')}",
             f"Final XY error mm: {summary.experiment_metrics.get('final_error_norm_mm')}",
             "",
-            "This MVP uses 0A coil origin as the robot tip and 0B robot-frame tool origin as the penprobe target.",
+            "This MVP uses the 0A coil origin in robot frame as the controlled point and the 0B robot-frame tool origin as the target. It does not claim a physical pen tip unless a pivot-calibrated 0B tip offset is explicitly applied.",
         ]
         (paths.output_dir / "penprobe_chasing_summary.txt").write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
@@ -294,6 +294,8 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
         session.set_metric("active_segment_label", context.active_segment_label)
         session.set_metric("active_servo_ids", [int(value) for value in servo_ids])
         session.set_metric("active_pairs", {str(key): [int(value) for value in values] for key, values in dict(pairs).items()})
+        session.set_metric("controlled_point_source", "0A coil origin in robot frame")
+        session.set_metric("target_point_source", "0B tool origin in robot frame; not pivot-corrected physical pen tip")
         session.set_metric("startup_reference_by_servo", {str(k): int(v) for k, v in self._startup_reference_by_servo.items()})
         session.set_metric("max_tick_delta_from_startup", int(self.config.max_tick_delta_from_startup))
         session.set_metric(
@@ -561,6 +563,8 @@ def _build_chasing_sample(
         pose_in_tracker_frame={},
         pose_in_robot_frame={
             "tip_0A_coil": {"translation_mm": list(tip.position_mm), "source": "0A_coil_as_tip"},
+            "controlled_0A_coil_origin": {"translation_mm": list(tip.position_mm), "source": "0A_coil_origin_robot_frame"},
+            "target_0B_tool_origin": {"translation_mm": list(target.position_mm), "source": "0B_tool_origin_robot_frame"},
             "target_0B_penprobe": {"translation_mm": list(target.position_mm), "source": "0B_tool_origin"},
         },
         freshness_s=getattr(snapshot, "tracker_data_age_s", None),
@@ -584,6 +588,8 @@ def _build_chasing_sample(
             "max_tick_delta_used": int(max_tick_delta_used),
             "loop_dt_s": float(loop_dt_s),
             "mapping_mode": str(mapping_mode_used),
+            "controlled_point_source": "0A coil origin in robot frame",
+            "target_point_source": "0B tool origin in robot frame; not pivot-corrected physical pen tip",
             "mapping_debug": dict(mapping_debug),
             "telemetry_age_s_by_servo": {
                 str(servo_id): (

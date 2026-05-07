@@ -97,6 +97,10 @@ def _write_staged_pretension_outputs(
     quality_dist_path = output_dir / "pretension_quality_score_distribution.png"
     repeatability_path = output_dir / "pretension_repeatability_summary.png"
     response_alias_path = output_dir / "pretension_response.png"
+    tip_xy_path_report = output_dir / "pretension_tip_xy_path_report.png"
+    load_proxy_report = output_dir / "pretension_load_proxy_by_servo_report.png"
+    tendon_vs_load_proxy_report = output_dir / "pretension_tendon_displacement_vs_load_proxy_report.png"
+    final_state_report = output_dir / "pretension_final_state_report.png"
 
     run_rows = list(metrics.get("run_rows") or [])
     trace_rows = list(metrics.get("trace_rows") or [])
@@ -118,6 +122,10 @@ def _write_staged_pretension_outputs(
     _write_staged_final_position_distribution_plot(plot_path=final_position_dist_path, run_rows=run_rows)
     _write_staged_quality_distribution_plot(plot_path=quality_dist_path, run_rows=run_rows)
     _write_staged_repeatability_plot(repeatability_path=repeatability_path, metrics=metrics)
+    _write_pretension_tip_xy_path_report(plot_path=tip_xy_path_report, trace_rows=trace_rows, run_rows=run_rows)
+    _write_pretension_load_proxy_by_servo_report(plot_path=load_proxy_report, trace_rows=trace_rows, run_rows=run_rows)
+    _write_pretension_tendon_vs_load_proxy_report(plot_path=tendon_vs_load_proxy_report, trace_rows=trace_rows, run_rows=run_rows)
+    _write_pretension_final_state_report(plot_path=final_state_report, run_rows=run_rows, metrics=metrics)
     if current_vs_position_path.exists():
         response_alias_path.write_bytes(current_vs_position_path.read_bytes())
     return {
@@ -134,6 +142,10 @@ def _write_staged_pretension_outputs(
         "final_position_distribution_plot_path": final_position_dist_path,
         "quality_score_distribution_plot_path": quality_dist_path,
         "repeatability_plot_path": repeatability_path,
+        "tip_xy_path_report_path": tip_xy_path_report,
+        "load_proxy_by_servo_report_path": load_proxy_report,
+        "tendon_displacement_vs_load_proxy_report_path": tendon_vs_load_proxy_report,
+        "final_state_report_path": final_state_report,
         "plot_path": response_alias_path,
     }
 
@@ -364,8 +376,237 @@ def _write_staged_summary_text(
         "- pretension_final_position_distribution.png",
         "- pretension_quality_score_distribution.png",
         "- pretension_repeatability_summary.png",
+        "- pretension_tip_xy_path_report.png",
+        "- pretension_load_proxy_by_servo_report.png",
+        "- pretension_tendon_displacement_vs_load_proxy_report.png",
+        "- pretension_final_state_report.png",
     ]
     summary_text_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+
+
+def _write_pretension_tip_xy_path_report(
+    *,
+    plot_path: Path,
+    trace_rows: list[dict[str, Any]],
+    run_rows: list[dict[str, Any]],
+) -> None:
+    points: list[tuple[float, float]] = []
+    for row in trace_rows:
+        xy = _extract_tip_xy(row)
+        if xy is not None:
+            points.append(xy)
+    for row in run_rows:
+        xy = _extract_tip_xy(row)
+        if xy is not None:
+            points.append(xy)
+    fig, ax = create_figure(size="square")
+    ax.scatter([0.0], [0.0], marker="+", s=120, color=color("target"), label="Target center", zorder=4)
+    if points:
+        ax.plot([point[0] for point in points], [point[1] for point in points], color=color("measured"), alpha=0.65, label="Tip path")
+        ax.scatter([points[0][0]], [points[0][1]], s=42, color=color("reference"), label="Start", zorder=5)
+        ax.scatter([points[-1][0]], [points[-1][1]], s=54, color=color("accepted"), label="End", zorder=5)
+        all_points = points + [(0.0, 0.0)]
+        set_equal_xy(ax, x_values=[point[0] for point in all_points], y_values=[point[1] for point in all_points], minimum_span=3.0)
+        final_error = ((points[-1][0] ** 2) + (points[-1][1] ** 2)) ** 0.5
+        add_metric_box(ax, [f"Final XY error: {final_error:.2f} mm", f"Samples: {len(points)}"], loc="upper right")
+    else:
+        ax.text(0.5, 0.5, "No robot-frame 0A XY samples available", transform=ax.transAxes, ha="center", va="center")
+        set_equal_xy(ax, x_values=[-1.0, 1.0], y_values=[-1.0, 1.0], minimum_span=3.0)
+    style_axes(
+        ax,
+        title="Pretension Tip XY Path",
+        xlabel="Robot-frame 0A X position (mm)",
+        ylabel="Robot-frame 0A Y position (mm)",
+    )
+    legend(ax, loc="best")
+    save_figure(fig, plot_path)
+
+
+def _write_pretension_load_proxy_by_servo_report(
+    *,
+    plot_path: Path,
+    trace_rows: list[dict[str, Any]],
+    run_rows: list[dict[str, Any]],
+) -> None:
+    grouped: dict[int, list[tuple[int, float]]] = {}
+    sample_index = 0
+    for row in trace_rows:
+        for servo_id, value in _extract_load_proxy_map(row).items():
+            grouped.setdefault(int(servo_id), []).append((sample_index, float(value)))
+        sample_index += 1
+    for row in run_rows:
+        for servo_id, value in _extract_load_proxy_map(row).items():
+            grouped.setdefault(int(servo_id), []).append((sample_index, float(value)))
+        sample_index += 1
+    fig, ax = create_figure(size="wide")
+    if not grouped:
+        ax.text(0.5, 0.5, "No load-proxy current data available", transform=ax.transAxes, ha="center", va="center")
+    for index, servo_id in enumerate(sorted(grouped)):
+        points = grouped[servo_id]
+        ax.plot(
+            [point[0] for point in points],
+            [point[1] for point in points],
+            marker="o",
+            markersize=3.5,
+            color=_servo_color(index),
+            alpha=0.85,
+            label=f"Servo {servo_id}",
+        )
+    style_axes(
+        ax,
+        title="Pretension Load Proxy by Servo",
+        xlabel="Pretension sample index",
+        ylabel="Load proxy current (mA)",
+    )
+    legend(ax, loc="best", ncol=2)
+    save_figure(fig, plot_path)
+
+
+def _write_pretension_tendon_vs_load_proxy_report(
+    *,
+    plot_path: Path,
+    trace_rows: list[dict[str, Any]],
+    run_rows: list[dict[str, Any]],
+) -> None:
+    grouped: dict[int, list[tuple[float, float]]] = {}
+    for row in [*trace_rows, *run_rows]:
+        load_map = _extract_load_proxy_map(row)
+        tendon_map = _extract_tendon_displacement_map(row)
+        for servo_id, load_proxy in load_map.items():
+            tendon = tendon_map.get(int(servo_id))
+            if tendon is None:
+                continue
+            grouped.setdefault(int(servo_id), []).append((float(tendon), float(load_proxy)))
+    fig, ax = create_figure(size="wide")
+    if not grouped:
+        ax.text(0.5, 0.5, "No tendon displacement/load-proxy data available", transform=ax.transAxes, ha="center", va="center")
+    for index, servo_id in enumerate(sorted(grouped)):
+        points = grouped[servo_id]
+        ax.scatter(
+            [point[0] for point in points],
+            [point[1] for point in points],
+            s=24,
+            alpha=0.72,
+            color=_servo_color(index),
+            linewidths=0,
+            label=f"Servo {servo_id}",
+        )
+    style_axes(
+        ax,
+        title="Tendon Displacement vs Load Proxy",
+        xlabel="Tendon displacement relative to startup (mm)",
+        ylabel="Load proxy current (mA)",
+    )
+    legend(ax, loc="best", ncol=2)
+    save_figure(fig, plot_path)
+
+
+def _write_pretension_final_state_report(
+    *,
+    plot_path: Path,
+    run_rows: list[dict[str, Any]],
+    metrics: dict[str, Any],
+) -> None:
+    final_row = run_rows[-1] if run_rows else {}
+    load_map = _extract_load_proxy_map(final_row)
+    servo_ids = sorted(load_map)
+    fig, ax = create_figure(size="wide")
+    if servo_ids:
+        ax.bar([f"S{servo_id}" for servo_id in servo_ids], [float(load_map[servo_id]) for servo_id in servo_ids], color=color("measured"))
+    else:
+        ax.text(0.5, 0.5, "No final load-proxy data available", transform=ax.transAxes, ha="center", va="center")
+    quality = _as_float(final_row.get("quality_score_0_100"))
+    if quality is None:
+        quality = _as_float(metrics.get("quality_score_mean_0_100"))
+    flags = [str(flag) for flag in (final_row.get("quality_flags") or [])]
+    metric_lines = [
+        f"Final XY error: {_fmt_float(final_row.get('final_tip_xy_offset_mm'))} mm",
+        f"Load spread: {_fmt_float(final_row.get('load_balance_error_ma'))} mA",
+        f"Pair balance: {_fmt_float(final_row.get('pair_balance_error_ma'))} mA",
+        f"Quality: {_fmt_float(quality)} / 100",
+    ]
+    if flags:
+        metric_lines.append("Flags: " + ", ".join(flags[:3]))
+    add_metric_box(ax, metric_lines, loc="upper right")
+    style_axes(
+        ax,
+        title="Pretension Final State",
+        xlabel="Servo",
+        ylabel="Final load proxy current (mA)",
+    )
+    save_figure(fig, plot_path)
+
+
+def _extract_tip_xy(row: dict[str, Any]) -> tuple[float, float] | None:
+    for key in ("tip_xy_mm", "tip_xy", "target_tip_xy_mm"):
+        value = row.get(key)
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            x = _as_float(value[0])
+            y = _as_float(value[1])
+            if x is not None and y is not None:
+                return (float(x), float(y))
+    for key in ("tip_xyz_mm", "tip_position_mm", "final_tip_xyz_mm"):
+        value = row.get(key)
+        if isinstance(value, (list, tuple)) and len(value) >= 2:
+            x = _as_float(value[0])
+            y = _as_float(value[1])
+            if x is not None and y is not None:
+                return (float(x), float(y))
+    raw_x = row.get("tip_x_mm") if row.get("tip_x_mm") is not None else row.get("final_tip_x_mm")
+    raw_y = row.get("tip_y_mm") if row.get("tip_y_mm") is not None else row.get("final_tip_y_mm")
+    x = _as_float(raw_x)
+    y = _as_float(raw_y)
+    if x is not None and y is not None:
+        return (float(x), float(y))
+    return None
+
+
+def _extract_load_proxy_map(row: dict[str, Any]) -> dict[int, float]:
+    for key in (
+        "load_proxy_current_ma_by_servo",
+        "load_proxy_current_ma",
+        "current_above_baseline_ma_by_servo",
+        "current_above_baseline_ma",
+    ):
+        value = row.get(key)
+        if not isinstance(value, dict):
+            continue
+        extracted: dict[int, float] = {}
+        for raw_servo_id, raw_value in value.items():
+            parsed_value = _as_float(raw_value)
+            if parsed_value is None:
+                continue
+            try:
+                extracted[int(raw_servo_id)] = abs(float(parsed_value))
+            except Exception:
+                continue
+        if extracted:
+            return extracted
+    return {}
+
+
+def _extract_tendon_displacement_map(row: dict[str, Any]) -> dict[int, float]:
+    for key in (
+        "tendon_displacement_mm_by_servo",
+        "final_tendon_displacement_mm_by_servo",
+        "tendon_displacement_mm",
+        "travel_used_mm_by_servo",
+    ):
+        value = row.get(key)
+        if not isinstance(value, dict):
+            continue
+        extracted: dict[int, float] = {}
+        for raw_servo_id, raw_value in value.items():
+            parsed_value = _as_float(raw_value)
+            if parsed_value is None:
+                continue
+            try:
+                extracted[int(raw_servo_id)] = float(parsed_value)
+            except Exception:
+                continue
+        if extracted:
+            return extracted
+    return {}
 
 
 def _write_staged_current_vs_position_plot(*, current_vs_position_path: Path, trace_rows: list[dict[str, Any]]) -> None:
@@ -718,9 +959,9 @@ def _pretension_scatter_labels(*, title: str, subtitle: str) -> tuple[str, str, 
     if "TENDON DISPLACEMENT VS TIP" in title_key:
         return "Tendon Displacement vs Tip Error", "Tendon displacement or travel (mm; ticks fallback)", "Tip XY error (mm)"
     if "TENDON DISPLACEMENT VS CURRENT" in title_key:
-        return "Tendon Displacement vs Current", "Tendon displacement or travel (mm; ticks fallback)", "Servo-reported current estimate (mA)"
+        return "Tendon Displacement vs Load Proxy", "Tendon displacement or travel (mm; ticks fallback)", "Load proxy current (mA)"
     if "CURRENT VS TIP" in title_key:
-        return "Current vs Tip Error", "Servo-reported current estimate (mA)", "Tip XY error (mm)"
+        return "Load Proxy vs Tip Error", "Load proxy current (mA)", "Tip XY error (mm)"
     if "BALANCE" in title_key:
         return "Load Balance Over Pretension Stages", "Stage sample index", "Balance error (mA)"
     parts = str(subtitle).split("/")

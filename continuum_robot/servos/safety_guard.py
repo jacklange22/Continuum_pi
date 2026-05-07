@@ -14,6 +14,12 @@ class SafetyGuard:
         max_offset_ticks: int,
         max_current_ma: int,
         *,
+        servo_model: str = "XC330-M288-T",
+        servo_reported_current_hard_limit_ma: int | None = None,
+        servo_reported_current_warning_ma: int | None = None,
+        current_safety_basis: str = (
+            "servo-reported input-current estimate; hard safety uses absolute current magnitude"
+        ),
         default_pretension_current_threshold_ma: int = 220,
         fine_jog_step_ticks: int = 5,
         coarse_jog_step_ticks: int = 25,
@@ -37,7 +43,21 @@ class SafetyGuard:
     ) -> None:
         self.min_offset_ticks = min_offset_ticks
         self.max_offset_ticks = max_offset_ticks
-        self.max_current_ma = max_current_ma
+        self.servo_model = str(servo_model or "unknown")
+        self.servo_reported_current_hard_limit_ma = (
+            int(max_current_ma)
+            if servo_reported_current_hard_limit_ma in (None, "")
+            else int(servo_reported_current_hard_limit_ma)
+        )
+        self.servo_reported_current_warning_ma = (
+            None
+            if servo_reported_current_warning_ma in (None, "")
+            else int(servo_reported_current_warning_ma)
+        )
+        self.current_safety_basis = str(current_safety_basis or "").strip() or (
+            "servo-reported input-current estimate; hard safety uses absolute current magnitude"
+        )
+        self.max_current_ma = self.servo_reported_current_hard_limit_ma
         self.default_pretension_current_threshold_ma = default_pretension_current_threshold_ma
         self.fine_jog_step_ticks = fine_jog_step_ticks
         self.coarse_jog_step_ticks = coarse_jog_step_ticks
@@ -71,14 +91,21 @@ class SafetyGuard:
                 raise ValueError(f"Unsafe position offset: {delta}")
 
     def validate_currents(self, currents_ma: list[int | None], *, require_present: bool = False) -> None:
-        """Raise ValueError when any current exceeds threshold."""
+        """Raise ValueError when any current magnitude exceeds the configured hard limit."""
         for current in currents_ma:
             if current is None:
                 if require_present:
                     raise ValueError("Current telemetry is unavailable.")
                 continue
-            if current > self.max_current_ma:
-                raise ValueError(f"Current threshold exceeded: {current} mA")
+            current_ma = int(current)
+            magnitude_ma = abs(current_ma)
+            if magnitude_ma > int(self.servo_reported_current_hard_limit_ma):
+                raise ValueError(
+                    "Servo-reported current magnitude threshold exceeded: "
+                    f"|{current_ma}|={magnitude_ma} mA > "
+                    f"{self.servo_reported_current_hard_limit_ma} mA "
+                    f"(model={self.servo_model}; basis={self.current_safety_basis})."
+                )
 
     def validate_temperature(self, temperature_c: int | None, *, require_present: bool = False) -> None:
         """Raise ValueError when temperature telemetry is missing or too high."""

@@ -8,7 +8,7 @@ The project is a research and thesis platform, not just a control GUI. Its centr
 
 The previous architecture depended on scattered scripts, legacy bridge paths, weak validation boundaries, and startup assumptions that made it hard to know where error entered the system. This repo moves the workflow into one Python application with explicit services, repeatable calibration artifacts, GUI-guided operator steps, canonical experiment datasets, and validation outputs.
 
-The immediate research focus is the 4-servo single-segment robot. The system keeps 8-servo/two-segment configuration support as a future-compatible path, but current validation should prioritize the single-segment repeatability ladder before broader scaling.
+The immediate research focus is validated single-segment repeatability and startup-state characterization. The system supports Segment A `[1,2,3,4]`, Segment B `[5,6,7,8]`, and all-8 readiness/manual-startup foundation work, but current validation should prioritize the single-segment ladder before full two-segment control.
 
 ## System At A Glance
 
@@ -66,7 +66,7 @@ In-progress or still bench-sensitive workflows:
 - Pretension is central but still being characterized. It should be treated as a measured startup-state workflow, not solved tendon-force sensing.
 - Single-segment repeatability is the main thesis experiment, but run quality depends on accepted registration, the shared runtime tip trust policy, servo calibration, pretension state, and live tracker freshness.
 - Modeling/babble dataset collection exists, but it should follow repeatability and pretension validation rather than displace them.
-- 8-servo/two-segment operation is configuration-supported but not the current validation target.
+- `dual_segment` is currently all-8 readiness/manual-startup foundation only; it is not full two-segment control. `parallel_single` is mirrored single-segment testing only.
 
 Legacy/reference paths:
 
@@ -181,7 +181,7 @@ Useful local config fields:
 
 ```yaml
 mock_mode: false
-robot_config: "robot_4servo.yaml"
+robot_config: "robot_8servo.yaml"
 aurora_port: "/dev/ttyUSB0"
 openrb_port: "/dev/ttyACM0"
 tracker_backend: "ndi"
@@ -194,7 +194,7 @@ tracker_tool_id_aliases:
 List common workflows:
 
 ```bash
-python scripts/run_lab_workflow.py list
+.venv/bin/python scripts/run_lab_workflow.py list
 ```
 
 Launch the full GUI:
@@ -206,28 +206,89 @@ scripts/run_gui.sh
 Launch the focused tracker-first workflow:
 
 ```bash
-python scripts/run_lab_workflow.py tracker-mvp
+.venv/bin/python scripts/run_lab_workflow.py tracker-mvp
 ```
 
 Run tracker diagnostics:
 
 ```bash
-python scripts/run_lab_workflow.py tracker-doctor -- --tracker-port /dev/ttyUSB0
-python scripts/run_lab_workflow.py tracker-smoke -- --tracker-port /dev/ttyUSB0
-python scripts/run_lab_workflow.py tracker-benchmark -- --tracker-port /dev/ttyUSB0 --duration-s 5
+.venv/bin/python scripts/run_lab_workflow.py tracker-doctor -- --tracker-port /dev/ttyUSB0
+.venv/bin/python scripts/run_lab_workflow.py tracker-smoke -- --tracker-port /dev/ttyUSB0
+.venv/bin/python scripts/run_lab_workflow.py tracker-benchmark -- --tracker-port /dev/ttyUSB0 --duration-s 5
 ```
 
 Run an experiment from the CLI:
 
 ```bash
-python scripts/run_lab_workflow.py experiment -- --experiment single_segment_repeatability --config config/experiment_single_segment_repeatability.example.yaml
+.venv/bin/python scripts/run_lab_workflow.py experiment -- --experiment single_segment_repeatability --config config/experiment_single_segment_repeatability.example.yaml
 ```
 
 Run tests:
 
 ```bash
-pytest
+scripts/run_tests.sh quick
 ```
+
+Use the canonical runner instead of bare `pytest` so the active `.venv` Python is used and Python-version skips are not missed. It requires Python 3.10+; Python 3.11+ is recommended. Useful modes are `quick`, `hardware-safe`, `full-nongui`, and `gui`.
+
+Run the no-hardware operator readiness check before a bench session:
+
+```bash
+.venv/bin/python -m continuum_robot.diagnostics.prehardware_dry_run
+```
+
+Use `docs/hardware_day_runbook.md` as the concise bench-session checklist.
+
+### Thesis data export workflow
+
+Experiment run folders under `data/experiments/<experiment>/...` are the canonical source of summaries, metrics, figures, samples, and provenance. To package one run for a Mac, ChatGPT review, or advisor handoff, use the bounded exporter instead of copying the whole `data/` tree:
+
+```bash
+.venv/bin/python -m continuum_robot.data.export_run_bundle --latest single_segment_repeatability --zip
+.venv/bin/python -m continuum_robot.data.export_run_bundle --latest pretension_validation --include-samples --zip
+.venv/bin/python -m continuum_robot.data.export_run_bundle --run-dir data/experiments/registration_validation/<run_folder> --zip
+```
+
+The wrapper script is equivalent:
+
+```bash
+scripts/export_run_bundle.py --latest collect_pose_command_dataset --zip
+```
+
+Bundles are written to `data/exports/` by default. They include summaries, trust/provenance metadata, report figures, metrics, config snapshots, a manifest with checksums, and a short README. Raw `samples.jsonl` files are excluded unless `--include-samples` is passed, and debug-heavy files are excluded unless `--include-debug` is passed.
+
+To transfer from the Pi to a Mac, run from the Mac and replace the host/path:
+
+```bash
+rsync -av pi@<pi-host>:/home/pi/Continuum/pi_code/data/exports/<bundle>.zip ~/Downloads/
+```
+
+Before using a run in thesis/modeling work, inspect `trust_provenance.json` or `summary.json` for `run_trust_mode`, `valid_for_model_training`, `valid_for_thesis_repeatability`, and any `data_quality_warnings`. A successful run status is not by itself a thesis-valid label.
+
+You can also validate an existing run folder directly:
+
+```bash
+.venv/bin/python -m continuum_robot.data.validate_run_bundle data/experiments/<experiment>/<run_folder>
+```
+
+Use the Data tab, or the CLI below, to review runs without modifying raw experiment files. Review state is stored in a small `run_review.json` sidecar:
+
+```bash
+.venv/bin/python -m continuum_robot.data.manage_runs --mark data/experiments/<experiment>/<run_folder> --status thesis_candidate --notes "Good registration and repeatability run"
+.venv/bin/python -m continuum_robot.data.manage_runs --archive data/experiments/<experiment>/<run_folder>
+.venv/bin/python -m continuum_robot.data.manage_runs --trash data/experiments/<experiment>/<run_folder>
+.venv/bin/python -m continuum_robot.data.build_thesis_evidence_index
+```
+
+Archive moves runs to `data/experiments_archived/`; trash moves runs to `data/trash/`. Neither action deletes exported bundles, and protected review statuses (`keep`, `thesis_candidate`, `advisor_share`) require explicit force/confirmation before moving. Important curated runs under `data/experiments/` and `data/experiments_archived/` are intentionally trackable so they can move through GitHub when needed. Generated exports, trash, logs, temporary diagnostics, caches, and archive bundles stay ignored.
+
+Before committing experiment data, run the data hygiene checker:
+
+```bash
+scripts/check_data_for_git.py
+```
+
+The checker reports unreviewed runs, review statuses, thesis candidates missing report/trust evidence, export/trash artifacts that should not be committed, and large files. GitHub rejects normal Git files over 100 MB; use Git LFS or a separate transfer method for large raw artifacts. Export bundles are convenient for handoff, but they should generally stay out of source control unless intentionally small and explicitly reviewed.
 
 ## Current Project Status
 

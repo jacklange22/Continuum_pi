@@ -2035,6 +2035,118 @@ class ServoTrackerSyncValidationPage(ExperimentPageBase):
         self.controller.set_config_value("requested_tool_ids", requested_tool_ids)
 
 
+class TwoSegmentStartupValidationPage(ExperimentPageBase):
+    show_visualization = False
+    refresh_policy = "manual"
+    page_hint = (
+        "Manual dual-segment startup scaffold. Use the Servos page to jog and pretension; "
+        "each checkpoint records all-8 telemetry without commanding motion."
+    )
+
+    def __init__(self, controller, experiment_name: str, parent=None) -> None:
+        self.stage_summary_widget = None
+        self.workflow_summary_widget = None
+        super().__init__(controller, experiment_name, parent)
+        self.run_button.setText("Capture Full Stage Sequence")
+        self.stop_button.hide()
+
+    def _build_parameter_sections(self) -> None:
+        workflow_card = ExperimentCard(
+            "Manual Stages",
+            "Capture one checkpoint after each manual operator action, then use Final / Accept Startup to write the all-8 artifact.",
+        )
+        self.stage_summary_widget = KeyValueSummaryWidget()
+        workflow_card.body_layout.addWidget(self.stage_summary_widget)
+        for stage, label in [
+            ("baseline", "Capture Baseline"),
+            ("segment_a_pretensioned", "Capture Segment A Pretensioned"),
+            ("segment_b_pretensioned", "Capture Segment B Pretensioned"),
+            ("segment_a_recheck", "Capture Segment A Recheck"),
+            ("final_accept", "Capture Final / Accept Startup"),
+        ]:
+            button = QPushButton(label)
+            button.clicked.connect(lambda checked=False, stage=stage: self._capture_stage(stage))
+            workflow_card.body_layout.addWidget(button)
+        self.parameter_layout.addWidget(workflow_card)
+
+        options_card = ExperimentCard("Capture Options", "Settings used by each manual checkpoint capture.")
+        options_form = QFormLayout()
+        self.workflow_state_edit = QLineEdit("data/two_segment_startup_validation/current_workflow_state.json")
+        self.workflow_state_edit.editingFinished.connect(
+            lambda: self.controller.set_config_value("workflow_state_path", self.workflow_state_edit.text())
+        )
+        self.allow_missing_current_check = QCheckBox("Allow missing current estimate")
+        self.allow_missing_current_check.toggled.connect(
+            lambda value: self.controller.set_config_value("allow_missing_current", bool(value))
+        )
+        self.capture_tracker_check = QCheckBox("Capture tracker snapshot when available")
+        self.capture_tracker_check.toggled.connect(
+            lambda value: self.controller.set_config_value("capture_tracker_snapshot", bool(value))
+        )
+        self.workflow_summary_widget = KeyValueSummaryWidget()
+        options_form.addRow("Workflow State", self.workflow_state_edit)
+        options_form.addRow("Current", self.allow_missing_current_check)
+        options_form.addRow("Tracking", self.capture_tracker_check)
+        options_card.body_layout.addLayout(options_form)
+        options_card.body_layout.addWidget(self.workflow_summary_widget)
+        self.parameter_layout.addWidget(options_card)
+
+    def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
+        _ = state
+        self._set_line_text(
+            self.workflow_state_edit,
+            str(self.controller.get_config_value("workflow_state_path", "data/two_segment_startup_validation/current_workflow_state.json")),
+        )
+        self._set_checkbox(self.allow_missing_current_check, bool(self.controller.get_config_value("allow_missing_current", True)))
+        self._set_checkbox(self.capture_tracker_check, bool(self.controller.get_config_value("capture_tracker_snapshot", True)))
+        context = self.controller.settings.robot.operating_context()
+        segments = dict(context.metadata().get("segments", {}) or {})
+        stage_completion = self._stage_completion_from_state_path()
+        self.stage_summary_widget.set_pairs(
+            [
+                ("Baseline", _stage_done(stage_completion, "baseline")),
+                ("Segment A Pretensioned", _stage_done(stage_completion, "segment_a_pretensioned")),
+                ("Segment B Pretensioned", _stage_done(stage_completion, "segment_b_pretensioned")),
+                ("Segment A Recheck", _stage_done(stage_completion, "segment_a_recheck")),
+                ("Final Accept", _stage_done(stage_completion, "final_accept")),
+            ]
+        )
+        self.workflow_summary_widget.set_pairs(
+            [
+                ("Operating Mode", str(context.operating_mode)),
+                ("Segment A", _segment_display(segments.get("segment_a"))),
+                ("Segment B", _segment_display(segments.get("segment_b"))),
+                ("Motion", "manual jog only; no automatic two-segment pretension/control"),
+            ]
+        )
+
+    def _parameter_state_fingerprint(self, state: ExperimentViewState) -> tuple[object, ...]:
+        _ = state
+        return (
+            str(self.controller.get_config_value("workflow_state_path", "")),
+            bool(self.controller.get_config_value("allow_missing_current", True)),
+            bool(self.controller.get_config_value("capture_tracker_snapshot", True)),
+            str(self.controller.get_config_value("capture_stage", "")),
+        )
+
+    def _capture_stage(self, stage: str) -> None:
+        self.controller.set_config_value("capture_stage", stage)
+        self.controller.set_config_value("reset_workflow_state", stage == "baseline")
+        self.controller.set_config_value("final_accept", stage == "final_accept")
+        self._run()
+
+    def _stage_completion_from_state_path(self) -> dict[str, bool]:
+        raw_path = str(self.controller.get_config_value("workflow_state_path", "data/two_segment_startup_validation/current_workflow_state.json") or "")
+        path = Path(raw_path)
+        if not path.is_absolute():
+            path = Path(self.controller.project_root) / path
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return {str(key): bool(value) for key, value in dict(payload.get("stage_completion", {}) or {}).items()}
+
+
 class PretensionValidationPage(ExperimentPageBase):
     refresh_policy = "manual"
     page_hint = (
@@ -3670,6 +3782,7 @@ def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBas
         "aurora_grid_accuracy": lambda ctrl: AuroraGridAccuracyPage(ctrl, "aurora_grid_accuracy"),
         "tracker_timing_validation": lambda ctrl: TrackerTimingValidationPage(ctrl, "tracker_timing_validation"),
         "servo_tracker_sync_validation": lambda ctrl: ServoTrackerSyncValidationPage(ctrl, "servo_tracker_sync_validation"),
+        "two_segment_startup_validation": lambda ctrl: TwoSegmentStartupValidationPage(ctrl, "two_segment_startup_validation"),
         "pretension_validation": lambda ctrl: PretensionValidationPage(ctrl, "pretension_validation"),
         "penprobe_chasing_demo": lambda ctrl: PenprobeChasingDemoPage(ctrl, "penprobe_chasing_demo"),
         "command_schedule_validation": lambda ctrl: CommandScheduleValidationPage(ctrl, "command_schedule_validation"),
@@ -3684,6 +3797,20 @@ def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBas
 def _yaml_block(value) -> str:
     rendered = yaml.safe_dump(value if value is not None else [], sort_keys=False)
     return str(rendered or "").strip()
+
+
+def _stage_done(stage_completion: dict[str, bool], stage: str) -> str:
+    return "captured" if bool(stage_completion.get(stage)) else "pending"
+
+
+def _segment_display(value) -> str:
+    data = dict(value or {})
+    label = str(data.get("segment_label") or data.get("label") or "")
+    role = str(data.get("segment_role") or "")
+    ids = data.get("servo_ids") or []
+    pairs = data.get("pairs") or data.get("pair_mapping") or {}
+    pieces = [part for part in [label, role, str(ids), str(pairs)] if part]
+    return " | ".join(pieces) if pieces else "n/a"
 
 
 def _format_xy_pair(value) -> str:

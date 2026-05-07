@@ -20,6 +20,8 @@ class ExperimentMetadata:
     registration_info: dict[str, Any]
     config_used: dict[str, Any]
     operator_notes: str = ""
+    provenance_info: dict[str, Any] = field(default_factory=dict)
+    trust_info: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert metadata into a JSON-serializable dictionary."""
@@ -46,11 +48,13 @@ class ExperimentTimeseriesSample:
     approach_index: int | None = None
     commanded_motor_values: dict[str, int | float | None] = field(default_factory=dict)
     commanded_cable_deltas_cm: list[float] = field(default_factory=list)
+    two_segment_command: dict[str, Any] = field(default_factory=dict)
     tracker_frame_id: int | None = None
     tool_ids_seen: list[str] = field(default_factory=list)
     transform_validity: dict[str, str] = field(default_factory=dict)
     pose_in_tracker_frame: dict[str, Any] = field(default_factory=dict)
     pose_in_robot_frame: dict[str, Any] = field(default_factory=dict)
+    two_segment_pose: dict[str, Any] = field(default_factory=dict)
     freshness_s: float | None = None
     latency_s: float | None = None
     status_flags: list[str] = field(default_factory=list)

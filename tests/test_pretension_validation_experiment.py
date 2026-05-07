@@ -230,6 +230,69 @@ def test_pretension_validation_config_uses_adjustable_advanced_tolerances() -> N
     assert config.accept_max_pair_balance_error_ma == 6.0
 
 
+def test_conservative_staged_strategy_is_default() -> None:
+    config = PretensionValidationExperimentConfig.from_dict({"mode": "single_segment_staged"})
+
+    assert config.staged_strategy == "conservative_startup"
+    assert config.allow_legacy_staged_strategy is False
+    assert config.takeup_target_load_proxy_ma == pytest.approx(25.0)
+    assert config.high_load_proxy_ma == pytest.approx(40.0)
+    assert config.tip_center_tolerance_mm == pytest.approx(1.0)
+
+
+def test_legacy_staged_strategy_blocks_without_developer_override(tmp_path: Path) -> None:
+    service = _servo_service(tmp_path)
+    runner = _runner(tmp_path, service)
+    config = _advanced_config()
+    config["mode"] = "single_segment_staged"
+    config["staged_strategy"] = "legacy"
+    config["include_tracker_displacement"] = False
+    config["allow_current_only_when_tracker_missing"] = True
+
+    result = runner.run_experiment("pretension_validation", config=config)
+
+    assert result.success is False
+    assert "Legacy staged pretension is disabled for normal operation" in result.message
+
+
+@pytest.mark.parametrize("operating_mode", ["one_servo", "dual_segment", "parallel_single"])
+def test_automatic_staged_pretension_blocks_non_single_segment_modes(tmp_path: Path, operating_mode: str) -> None:
+    service = _servo_service(tmp_path)
+    runner = _runner(tmp_path, service)
+    runner.settings.robot.mode = operating_mode
+    config = _advanced_config()
+    config["mode"] = "single_segment_staged"
+    config["staged_strategy"] = "conservative_startup"
+    config["include_tracker_displacement"] = False
+    config["allow_current_only_when_tracker_missing"] = True
+
+    result = runner.run_experiment("pretension_validation", config=config)
+
+    assert result.success is False
+    if operating_mode == "dual_segment":
+        assert "all-8 readiness and manual startup capture" in result.message
+        assert "Automatic two-segment pretension/control is not implemented yet" in result.message
+    else:
+        assert "requires operating_mode=single_segment" in result.message
+
+
+def test_current_only_staged_pretension_requires_explicit_lower_trust_override(tmp_path: Path) -> None:
+    service = _servo_service(tmp_path)
+    runner = _runner(tmp_path, service)
+    config = _advanced_config()
+    config["mode"] = "single_segment_staged"
+    config["staged_strategy"] = "conservative_startup"
+    config["include_tracker_displacement"] = False
+    config["allow_current_only_when_tracker_missing"] = False
+    config["allow_no_tracker_test_run"] = False
+    config["run_trust_mode"] = "thesis_trusted"
+
+    result = runner.run_experiment("pretension_validation", config=config)
+
+    assert result.success is False
+    assert "requires an explicit lower-trust/current-only override" in result.message
+
+
 def test_advanced_pretension_staged_run_saves_quality_pairing_and_plots(tmp_path: Path) -> None:
     service = _servo_service(tmp_path)
     runner = _runner(tmp_path, service)
@@ -264,6 +327,10 @@ def test_advanced_pretension_staged_run_saves_quality_pairing_and_plots(tmp_path
         "pretension_final_current_distribution.png",
         "pretension_final_position_distribution.png",
         "pretension_quality_score_distribution.png",
+        "pretension_tip_xy_path_report.png",
+        "pretension_load_proxy_by_servo_report.png",
+        "pretension_tendon_displacement_vs_load_proxy_report.png",
+        "pretension_final_state_report.png",
     ]
     for filename in expected_plots:
         assert (result.paths.output_dir / filename).exists()
@@ -407,6 +474,7 @@ def test_staged_measurement_retries_one_missed_packet_and_logs(tmp_path: Path) -
     assert measurement["telemetry_fail_closed_reason"] is None
     assert measurement["packet_retry_count"] == 1
     assert measurement["telemetry_event_counts"]["missing_current"] == 1
+    assert measurement["current_validity"][1] == "valid_after_retry"
 
 
 def test_staged_measurement_repeated_packet_misses_fail_closed(tmp_path: Path) -> None:

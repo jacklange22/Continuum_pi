@@ -35,6 +35,9 @@ def test_config_loader_defaults_to_full_platform_profile_when_available(tmp_path
     assert settings.runtime.robot_config == "robot_8servo.yaml"
     assert settings.robot.all_segment_servo_ids() == [1, 2, 3, 4, 5, 6, 7, 8]
     assert sorted(settings.robot.segment_map()) == ["segment_a", "segment_b"]
+    assert settings.robot.segment_order() == ["segment_a", "segment_b"]
+    assert settings.robot.segment_metadata()["segment_a"]["segment_role"] == "proximal"
+    assert settings.robot.segment_metadata()["segment_b"]["segment_role"] == "distal"
 
 
 def test_config_loader_reads_runtime_registration_and_experiment_settings(tmp_path: Path) -> None:
@@ -74,10 +77,16 @@ def test_config_loader_reads_runtime_registration_and_experiment_settings(tmp_pa
                 "segments:",
                 "  segment_a:",
                 "    label: Spine 1",
+                "    segment_label: Segment A",
+                "    segment_role: proximal",
+                "    segment_order_index: 0",
                 "    servo_ids: [1, 2, 3, 4]",
                 "    pairs: {axis_a: [1, 3], axis_b: [2, 4]}",
                 "  segment_b:",
                 "    label: Spine 2",
+                "    segment_label: Segment B",
+                "    segment_role: distal",
+                "    segment_order_index: 1",
                 "    servo_ids: [5, 6, 7, 8]",
                 "    pairs: {axis_a: [5, 7], axis_b: [6, 8]}",
             ]
@@ -143,6 +152,11 @@ def test_config_loader_reads_runtime_registration_and_experiment_settings(tmp_pa
     assert settings.robot.active_segment_label() == "Spine 2"
     assert settings.robot.active_segment_servo_ids() == [5, 6, 7, 8]
     assert settings.robot.active_segment_pairs() == {"axis_a": [5, 7], "axis_b": [6, 8]}
+    assert settings.robot.segment_order() == ["segment_a", "segment_b"]
+    assert settings.robot.segment_metadata()["segment_a"]["segment_label"] == "Segment A"
+    assert settings.robot.segment_metadata()["segment_a"]["segment_role"] == "proximal"
+    assert settings.robot.segment_metadata()["segment_b"]["segment_label"] == "Segment B"
+    assert settings.robot.segment_metadata()["segment_b"]["segment_role"] == "distal"
     assert settings.serial.tracker_backend == "ndi"
     assert settings.serial.tracker_type == "aurora"
     assert settings.serial.tracker_freshness_timeout_s == 0.75
@@ -196,11 +210,67 @@ def test_robot_overrides_do_not_stale_servo_membership(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    settings = ConfigLoader(base_dir=config_dir).load_settings()
+    loader = ConfigLoader(base_dir=config_dir)
+    settings = loader.load_settings()
 
     assert settings.robot.servo_ids == [1, 2, 3, 4, 5, 6, 7, 8]
     assert settings.robot.operating_context().operating_mode == "dual_segment"
     assert settings.robot.operating_context().expected_servo_ids == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert any("robot_overrides.servo_ids" in warning for warning in loader.last_warnings)
+    assert any("robot_overrides.tendon_to_servo" in warning for warning in loader.last_warnings)
+
+
+def test_system_local_nested_config_deep_merge_preserves_defaults(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "system.yaml").write_text(
+        "\n".join(
+            [
+                'robot_config: "robot_8servo.yaml"',
+                "tracker_settings_overrides:",
+                "  ndi:",
+                "    rom_paths: [a.rom]",
+                "    serial_port: /dev/ttyUSB0",
+                "dynamixel_settings:",
+                "  protocol_version: 2.0",
+                "  control_table:",
+                "    present_position: 132",
+                "    present_current: 126",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (config_dir / "system.local.yaml").write_text(
+        "\n".join(
+            [
+                "tracker_settings_overrides:",
+                "  ndi:",
+                "    serial_port: /dev/ttyUSB1",
+                "dynamixel_settings:",
+                "  control_table:",
+                "    present_current: 127",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (config_dir / "robot_8servo.yaml").write_text(
+        "\n".join(
+            [
+                "mode: single_segment",
+                "servo_ids: [1, 2, 3, 4, 5, 6, 7, 8]",
+                "tendon_to_servo: [1, 2, 3, 4, 5, 6, 7, 8]",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = ConfigLoader(base_dir=config_dir).load_settings()
+
+    assert settings.serial.tracker_settings_overrides["ndi"]["rom_paths"] == ["a.rom"]
+    assert settings.serial.tracker_settings_overrides["ndi"]["serial_port"] == "/dev/ttyUSB1"
+    assert settings.serial.dynamixel_settings["protocol_version"] == 2.0
+    assert settings.serial.dynamixel_settings["control_table"]["present_position"] == 132
+    assert settings.serial.dynamixel_settings["control_table"]["present_current"] == 127
 
 
 def test_config_loader_can_save_local_overrides_and_load_robot_config(tmp_path: Path) -> None:

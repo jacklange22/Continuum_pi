@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 import yaml
 
 from continuum_robot.config.schemas import (
@@ -20,6 +21,7 @@ from continuum_robot.config.settings import Settings
 
 
 DEFAULT_ROBOT_CONFIG = "robot_8servo.yaml"
+LOG = logging.getLogger(__name__)
 
 
 class ConfigLoader:
@@ -28,12 +30,16 @@ class ConfigLoader:
     def __init__(self, base_dir: Path | None = None) -> None:
         project_root = Path(__file__).resolve().parents[2]
         self.base_dir = base_dir or (project_root / "config")
+        self.last_warnings: list[str] = []
 
     def load_settings(self) -> Settings:
         """Load core configs from template files."""
+        self.last_warnings = []
+        system_base = self._read_yaml(self.base_dir / "system.yaml")
+        system_local = self._read_yaml(self.base_dir / "system.local.yaml")
         system_data = self._merge_dicts(
-            self._read_yaml(self.base_dir / "system.yaml"),
-            self._read_yaml(self.base_dir / "system.local.yaml"),
+            system_base,
+            system_local,
         )
         robot_config_name = str(system_data.get("robot_config") or self._default_robot_config_name())
         robot_path = self.base_dir / robot_config_name
@@ -41,8 +47,16 @@ class ConfigLoader:
         # Servo membership belongs to the selected robot profile/segment map. Older
         # local override files may contain stale servo_ids=[1] from one-servo
         # testing; dropping those here keeps operating mode and expected IDs coherent.
-        robot_overrides.pop("servo_ids", None)
-        robot_overrides.pop("tendon_to_servo", None)
+        for stale_key in ("servo_ids", "tendon_to_servo"):
+            if stale_key in robot_overrides:
+                robot_overrides.pop(stale_key, None)
+                self._record_warning(
+                    f"Ignored stale robot_overrides.{stale_key}; servo membership is resolved from {robot_path.name}."
+                )
+            if stale_key in system_local:
+                self._record_warning(
+                    f"Ignored stale top-level {stale_key} in system.local.yaml; servo membership is resolved from {robot_path.name}."
+                )
         robot_data = self._merge_dicts(
             self._read_yaml(robot_path),
             robot_overrides,
@@ -98,6 +112,22 @@ class ConfigLoader:
             position_min_offset_ticks=int(safety_data.get("position_min_offset_ticks", -600)),
             position_max_offset_ticks=int(safety_data.get("position_max_offset_ticks", 600)),
             max_current_ma=int(safety_data.get("max_current_ma", 850)),
+            servo_model=str(safety_data.get("servo_model", "XC330-M288-T")),
+            servo_reported_current_hard_limit_ma=int(
+                safety_data.get(
+                    "servo_reported_current_hard_limit_ma",
+                    safety_data.get("max_current_ma", 850),
+                )
+            ),
+            servo_reported_current_warning_ma=self._maybe_int(
+                safety_data.get("servo_reported_current_warning_ma")
+            ),
+            current_safety_basis=str(
+                safety_data.get(
+                    "current_safety_basis",
+                    "XC330-M288-T servo-reported input-current estimate; hard safety uses absolute current magnitude.",
+                )
+            ),
             default_pretension_current_threshold_ma=int(
                 safety_data.get("default_pretension_current_threshold_ma", 220)
             ),
@@ -228,6 +258,10 @@ class ConfigLoader:
             calibration=calibration,
         )
 
+    def _record_warning(self, message: str) -> None:
+        self.last_warnings.append(str(message))
+        LOG.warning("%s", message)
+
     def _robot_config_from_data(self, robot_data: dict) -> RobotConfig:
         servo_ids = [int(v) for v in robot_data.get("servo_ids", [1, 2, 3, 4])]
         tendon_to_servo = [int(v) for v in robot_data.get("tendon_to_servo", servo_ids or [1, 2, 3, 4])]
@@ -246,8 +280,19 @@ class ConfigLoader:
             segments[str(key)] = RobotSegmentConfig(
                 key=str(key),
                 label=str(data.get("label", key)),
+                segment_label=str(data.get("segment_label", data.get("label", key))),
                 servo_ids=segment_ids,
                 pairs=pairs,
+                segment_role=str(
+                    data.get("segment_role")
+                    or data.get("role")
+                    or RobotConfig.default_segment_role(str(key))
+                ),
+                segment_order_index=(
+                    int(data["segment_order_index"])
+                    if data.get("segment_order_index") is not None
+                    else RobotConfig.default_segment_order_index(str(key))
+                ),
             )
         return RobotConfig(
             mode=str(robot_data.get("operating_mode", robot_data.get("mode", "single_segment"))),
@@ -334,9 +379,7 @@ class ConfigLoader:
 
     @staticmethod
     def _merge_dicts(base: dict, override: dict) -> dict:
-        merged = dict(base)
-        merged.update(override)
-        return merged
+        return ConfigLoader._deep_merge(dict(base or {}), dict(override or {}))
 
     @classmethod
     def _deep_merge(cls, base: dict, override: dict) -> dict:

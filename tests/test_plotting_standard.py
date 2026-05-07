@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from continuum_robot.experiments.modeling_dataset_outputs import _write_workspace_plot
+from continuum_robot.experiments.modeling_dataset_outputs import _write_workspace_report_plot
 from continuum_robot.experiments.plotting import (
     FIGURE_QUALITY_DPI,
     create_figure,
@@ -46,9 +46,9 @@ def test_modeling_workspace_report_plot_uses_expected_output_path(tmp_path) -> N
         "rejected_sample_count": 1,
         "dataset_mode": "workspace_coverage",
     }
-    output = tmp_path / "modeling_workspace_coverage.png"
+    output = tmp_path / "modeling_workspace_coverage_report.png"
 
-    _write_workspace_plot(workspace_plot_path=output, export_rows=rows, metrics=metrics)
+    _write_workspace_report_plot(workspace_plot_path=output, export_rows=rows, metrics=metrics)
 
     assert output.exists()
     assert output.read_bytes().startswith(b"\x89PNG")

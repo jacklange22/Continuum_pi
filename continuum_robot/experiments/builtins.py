@@ -26,6 +26,9 @@ from continuum_robot.experiments.penprobe_chasing_demo import PenprobeChasingDem
 from continuum_robot.experiments.servo_tracker_sync_outputs import write_servo_tracker_sync_outputs
 from continuum_robot.experiments.single_segment_repeatability import register_single_segment_repeatability
 from continuum_robot.experiments.tracker_timing_outputs import write_tracker_timing_outputs
+from continuum_robot.experiments.two_segment_startup_validation import (
+    TwoSegmentStartupValidationExperiment,
+)
 from continuum_robot.experiments.schedules import (
     CommandScheduleConfig,
     command_schedule_checksum,
@@ -237,6 +240,7 @@ class PretensionValidationExperimentConfig:
 
     mode: str = "single_servo_trace"
     staged_strategy: str = "conservative_startup"
+    allow_legacy_staged_strategy: bool = False
     servo_id: int = 1
     servo_ids: list[int] = field(default_factory=list)
     repeat_runs: int = 1
@@ -246,9 +250,9 @@ class PretensionValidationExperimentConfig:
     allow_no_tracker_test_run: bool = False
     run_trust_mode: str = "thesis_trusted"
     enable_tip_centering: bool = True
-    tip_center_tolerance_mm: float = 3.0
+    tip_center_tolerance_mm: float = 1.0
     tip_center_max_iterations: int = 16
-    tip_center_step_ticks: int = 2
+    tip_center_step_ticks: int = 10
     tip_center_x_sign: int = 1
     tip_center_y_sign: int = 1
     tip_target_xy_mm: list[float] = field(default_factory=lambda: [0.0, 0.0])
@@ -257,12 +261,14 @@ class PretensionValidationExperimentConfig:
     equalization_step_ticks: int = 2
     equalization_max_iterations: int = 24
     conservative_max_iterations: int = 24
-    conservative_step_ticks: int = 1
+    conservative_step_ticks: int = 10
     conservative_max_cumulative_travel_ticks: int = 80
-    soft_release_step_ticks: int = 2
+    coarse_slack_step_ticks: int = 50
+    soft_release_step_ticks: int = 50
     soft_release_max_travel_ticks: int = 40
     soft_release_current_target_ma: float = 10.0
-    takeup_target_load_proxy_ma: float = 4.0
+    takeup_target_load_proxy_ma: float = 25.0
+    high_load_proxy_ma: float = 40.0
     takeup_max_iterations: int = 16
     staged_packet_retry_budget: int = 3
     characterization_step_ticks: int = 1
@@ -270,12 +276,13 @@ class PretensionValidationExperimentConfig:
     current_characterization_sample_count: int = 20
     current_noise_multiplier: float = 3.0
     min_meaningful_current_delta_ma: float = 2.0
-    load_balance_tolerance_ma: float = 6.0
-    pair_balance_tolerance_ma: float = 6.0
+    load_balance_tolerance_ma: float = 10.0
+    pair_balance_tolerance_ma: float = 10.0
     settle_verify_time_s: float = 0.2
-    accept_max_load_balance_error_ma: float = 6.0
-    accept_max_pair_balance_error_ma: float = 6.0
+    accept_max_load_balance_error_ma: float = 30.0
+    accept_max_pair_balance_error_ma: float = 30.0
     accept_max_final_tip_xy_offset_mm: float = 3.0
+    max_runtime_s: float = 60.0
     tracker_tool_id: str = "0A"
     pretension_start_mode: str | None = None
     untensioned_reference_tick: int | None = None
@@ -318,6 +325,7 @@ class PretensionValidationExperimentConfig:
         return cls(
             mode=str(payload.get("mode", "single_servo_trace") or "single_servo_trace").strip().lower(),
             staged_strategy=str(payload.get("staged_strategy", "conservative_startup") or "conservative_startup").strip().lower(),
+            allow_legacy_staged_strategy=bool(payload.get("allow_legacy_staged_strategy", False)),
             servo_id=int(payload.get("servo_id", 1)),
             servo_ids=servo_ids,
             repeat_runs=max(1, int(payload.get("repeat_runs", 1))),
@@ -327,9 +335,9 @@ class PretensionValidationExperimentConfig:
             allow_no_tracker_test_run=bool(payload.get("allow_no_tracker_test_run", False)),
             run_trust_mode=str(payload.get("run_trust_mode", "thesis_trusted") or "thesis_trusted").strip().lower(),
             enable_tip_centering=bool(payload.get("enable_tip_centering", True)),
-            tip_center_tolerance_mm=max(0.0, float(payload.get("tip_center_tolerance_mm", 3.0))),
+            tip_center_tolerance_mm=max(0.0, float(payload.get("tip_center_tolerance_mm", 1.0))),
             tip_center_max_iterations=max(0, int(payload.get("tip_center_max_iterations", 16))),
-            tip_center_step_ticks=max(1, int(payload.get("tip_center_step_ticks", 2))),
+            tip_center_step_ticks=max(1, int(payload.get("tip_center_step_ticks", 10))),
             tip_center_x_sign=(1 if int(payload.get("tip_center_x_sign", 1)) >= 0 else -1),
             tip_center_y_sign=(1 if int(payload.get("tip_center_y_sign", 1)) >= 0 else -1),
             tip_target_xy_mm=raw_target_xy,
@@ -338,15 +346,20 @@ class PretensionValidationExperimentConfig:
             equalization_step_ticks=max(1, int(payload.get("equalization_step_ticks", 2))),
             equalization_max_iterations=max(0, int(payload.get("equalization_max_iterations", 24))),
             conservative_max_iterations=max(0, int(payload.get("conservative_max_iterations", 24))),
-            conservative_step_ticks=max(1, int(payload.get("conservative_step_ticks", payload.get("tip_center_step_ticks", 1)))),
+            conservative_step_ticks=max(1, int(payload.get("conservative_step_ticks", payload.get("tip_center_step_ticks", 10)))),
             conservative_max_cumulative_travel_ticks=max(
                 0,
                 int(payload.get("conservative_max_cumulative_travel_ticks", 80)),
             ),
-            soft_release_step_ticks=max(1, int(payload.get("soft_release_step_ticks", 2))),
+            coarse_slack_step_ticks=max(1, int(payload.get("coarse_slack_step_ticks", 50))),
+            soft_release_step_ticks=max(1, int(payload.get("soft_release_step_ticks", payload.get("coarse_slack_step_ticks", 50)))),
             soft_release_max_travel_ticks=max(0, int(payload.get("soft_release_max_travel_ticks", 40))),
             soft_release_current_target_ma=max(0.0, float(payload.get("soft_release_current_target_ma", 10.0))),
-            takeup_target_load_proxy_ma=max(0.0, float(payload.get("takeup_target_load_proxy_ma", 4.0))),
+            takeup_target_load_proxy_ma=max(
+                0.0,
+                float(payload.get("takeup_target_load_proxy_ma", payload.get("engaged_load_proxy_target_ma", 25.0))),
+            ),
+            high_load_proxy_ma=max(0.0, float(payload.get("high_load_proxy_ma", 40.0))),
             takeup_max_iterations=max(0, int(payload.get("takeup_max_iterations", 16))),
             staged_packet_retry_budget=max(1, int(payload.get("staged_packet_retry_budget", 3))),
             characterization_step_ticks=max(1, int(payload.get("characterization_step_ticks", 1))),
@@ -354,12 +367,13 @@ class PretensionValidationExperimentConfig:
             current_characterization_sample_count=max(2, int(payload.get("current_characterization_sample_count", 20))),
             current_noise_multiplier=max(1.0, float(payload.get("current_noise_multiplier", 3.0))),
             min_meaningful_current_delta_ma=max(0.0, float(payload.get("min_meaningful_current_delta_ma", 2.0))),
-            load_balance_tolerance_ma=max(0.0, float(payload.get("load_balance_tolerance_ma", 6.0))),
-            pair_balance_tolerance_ma=max(0.0, float(payload.get("pair_balance_tolerance_ma", 6.0))),
+            load_balance_tolerance_ma=max(0.0, float(payload.get("load_balance_tolerance_ma", 10.0))),
+            pair_balance_tolerance_ma=max(0.0, float(payload.get("pair_balance_tolerance_ma", 10.0))),
             settle_verify_time_s=max(0.0, float(payload.get("settle_verify_time_s", 0.2))),
-            accept_max_load_balance_error_ma=max(0.0, float(payload.get("accept_max_load_balance_error_ma", 6.0))),
-            accept_max_pair_balance_error_ma=max(0.0, float(payload.get("accept_max_pair_balance_error_ma", 6.0))),
+            accept_max_load_balance_error_ma=max(0.0, float(payload.get("accept_max_load_balance_error_ma", 30.0))),
+            accept_max_pair_balance_error_ma=max(0.0, float(payload.get("accept_max_pair_balance_error_ma", 30.0))),
             accept_max_final_tip_xy_offset_mm=max(0.0, float(payload.get("accept_max_final_tip_xy_offset_mm", 3.0))),
+            max_runtime_s=max(1.0, float(payload.get("max_runtime_s", 60.0))),
             tracker_tool_id=str(payload.get("tracker_tool_id", "0A")),
             pretension_start_mode=(
                 str(payload.get("pretension_start_mode")).strip().lower()
@@ -1973,9 +1987,15 @@ class PretensionValidationExperiment(BaseExperiment):
         }
 
     def _execute_single_segment_staged(self, session: ExperimentSession) -> None:
-        if str(getattr(self.config, "staged_strategy", "conservative_startup") or "").strip().lower() != "legacy":
+        strategy = str(getattr(self.config, "staged_strategy", "conservative_startup") or "").strip().lower()
+        if strategy != "legacy":
             self._execute_reliable_staged_pretension(session)
             return
+        if not bool(getattr(self.config, "allow_legacy_staged_strategy", False)):
+            raise RuntimeError(
+                "Legacy staged pretension is disabled for normal operation because it can create "
+                "one-sided tendon loading. Use conservative staged pretension or manual startup."
+            )
         self._execute_legacy_single_segment_staged(session)
 
     def _execute_reliable_staged_pretension(self, session: ExperimentSession) -> None:
@@ -1987,7 +2007,23 @@ class PretensionValidationExperiment(BaseExperiment):
         """
         servo_service = session.context.servo_service
         tracker_service = session.context.tracking_service
+        operating_context = session.context.settings.robot.operating_context()
+        if operating_context.operating_mode != "single_segment":
+            if operating_context.operating_mode == "dual_segment":
+                raise RuntimeError(
+                    "dual_segment currently supports all-8 readiness and manual startup capture. "
+                    "Automatic two-segment pretension/control is not implemented yet."
+                )
+            raise RuntimeError(
+                "Automatic staged pretension currently requires operating_mode=single_segment. "
+                "Select Segment A or Segment B."
+            )
         include_tracker = bool(self.config.include_tracker_displacement and tracker_service is not None)
+        if not bool(self.config.include_tracker_displacement) and not _pretension_current_only_explicit(self.config):
+            raise RuntimeError(
+                "Current-only staged pretension requires an explicit lower-trust/current-only override. "
+                "Enable allow_current_only_when_tracker_missing or set run_trust_mode=current_only."
+            )
         if include_tracker:
             tracker_snapshot = _optional_tracking_snapshot(tracker_service)
             if tracker_snapshot is None or str(getattr(tracker_snapshot, "canonical_state", "") or "") not in {"mock", "connected", "streaming_healthy", "streaming_degraded"}:
@@ -2047,6 +2083,10 @@ class PretensionValidationExperiment(BaseExperiment):
                 packet_retry_count = 0
                 fail_closed_stop_reason: str | None = None
                 trace_start_index = len(trace_rows)
+                run_deadline_monotonic = (
+                    float(session.context.monotonic_fn())
+                    + max(1.0, float(getattr(self.config, "max_runtime_s", 60.0)))
+                )
 
                 initial = self._advanced_measurement(
                     servo_service=servo_service,
@@ -2101,6 +2141,7 @@ class PretensionValidationExperiment(BaseExperiment):
                         startup_reference_ticks_by_servo=startup_reference_ticks,
                         mode_kind=mode_kind,
                         trace_rows=trace_rows,
+                        deadline_monotonic=run_deadline_monotonic,
                     )
                 clipped_move_count += int(start_result.get("clipped_move_count", 0))
                 correction_move_count += int(start_result.get("move_count", 0))
@@ -2191,6 +2232,7 @@ class PretensionValidationExperiment(BaseExperiment):
                         baseline_current_ma_by_servo=baseline_current_ma_by_servo,
                         trace_rows=trace_rows,
                         startup_reference_ticks_by_servo=startup_reference_ticks,
+                        deadline_monotonic=run_deadline_monotonic,
                     )
                     clipped_move_count += int(mode_result.get("clipped_move_count", 0))
                     correction_move_count += int(mode_result.get("move_count", 0))
@@ -2209,13 +2251,20 @@ class PretensionValidationExperiment(BaseExperiment):
                         startup_reference_ticks_by_servo=startup_reference_ticks,
                         effective_load_tolerance_ma=effective_load_tolerance_ma,
                         trace_rows=trace_rows,
+                        deadline_monotonic=run_deadline_monotonic,
                     )
                     clipped_move_count += int(takeup_result.get("clipped_move_count", 0))
                     correction_move_count += int(takeup_result.get("move_count", 0))
                     correction_travel_ticks += int(takeup_result.get("travel_ticks", 0))
                     self._merge_event_counts(telemetry_event_counts, takeup_result.get("telemetry_event_counts"))
                     packet_retry_count += int(takeup_result.get("packet_retry_count", 0) or 0)
-                    if takeup_result.get("stop_reason") not in (None, "", "takeup_complete", "within_load_target"):
+                    if takeup_result.get("stop_reason") not in (
+                        None,
+                        "",
+                        "takeup_complete",
+                        "within_load_target",
+                        "high_load_transition_to_trim",
+                    ):
                         reject_reasons.append(str(takeup_result["stop_reason"]))
                     mode_result = self._run_conservative_startup_sequence(
                         session=session,
@@ -2228,6 +2277,7 @@ class PretensionValidationExperiment(BaseExperiment):
                         effective_load_tolerance_ma=effective_load_tolerance_ma,
                         trace_rows=trace_rows,
                         startup_reference_ticks_by_servo=startup_reference_ticks,
+                        deadline_monotonic=run_deadline_monotonic,
                     )
                     clipped_move_count += int(mode_result.get("clipped_move_count", 0))
                     correction_move_count += int(mode_result.get("move_count", 0))
@@ -2360,9 +2410,14 @@ class PretensionValidationExperiment(BaseExperiment):
                     "quality_score_0_100": float(quality_score),
                     "quality_components": dict(quality_components),
                     "quality_flags": sorted(set(quality_flags)),
+                    "good_but_flagged_reasons": (
+                        sorted(set(quality_flags)) if accepted and quality_flags else []
+                    ),
                     "missing_fields": sorted(set(missing_fields)),
                     "telemetry_event_counts": dict(sorted(telemetry_event_counts.items())),
                     "packet_retry_count": int(packet_retry_count),
+                    "sign_flip_count": int(mode_result.get("sign_flip_count", 0) or 0),
+                    "sign_flip_used_by_axis": dict(mode_result.get("sign_flip_used_by_axis") or {}),
                     "trust_status": "runtime_tip" if include_tracker else "current_only_lower_trust",
                     "startup_source": start_mode_used,
                     "trace_sample_count": len(run_trace_rows),
@@ -2380,10 +2435,13 @@ class PretensionValidationExperiment(BaseExperiment):
                         "quality_score_0_100": float(quality_score),
                         "quality_components": dict(quality_components),
                         "quality_flags": sorted(set(quality_flags)),
+                        "good_but_flagged_reasons": run_row["good_but_flagged_reasons"],
                         "settle_tip_drift_mm": settle_tip_drift_mm,
                         "stop_reason": run_row["stop_reason"],
                         "telemetry_event_counts": dict(sorted(telemetry_event_counts.items())),
                         "packet_retry_count": int(packet_retry_count),
+                        "sign_flip_count": int(run_row["sign_flip_count"]),
+                        "sign_flip_used_by_axis": dict(run_row["sign_flip_used_by_axis"]),
                     },
                 )
                 trace_rows.append(row)
@@ -3711,6 +3769,7 @@ class PretensionValidationExperiment(BaseExperiment):
         startup_reference_ticks_by_servo: dict[int, int | None],
         mode_kind: str,
         trace_rows: list[dict[str, Any]],
+        deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
         result = {
             "stop_reason": "soft_release_complete",
@@ -3731,6 +3790,9 @@ class PretensionValidationExperiment(BaseExperiment):
         iterations = max(1, int(math.ceil(max_travel / float(step))))
         for iteration in range(iterations):
             session.raise_if_stop_requested()
+            if deadline_monotonic is not None and float(session.context.monotonic_fn()) > float(deadline_monotonic):
+                result["stop_reason"] = "runtime_budget_exhausted"
+                return result
             measurement = self._advanced_measurement(
                 servo_service=servo_service,
                 tracker_service=tracker_service,
@@ -3886,13 +3948,20 @@ class PretensionValidationExperiment(BaseExperiment):
         startup_reference_ticks_by_servo: dict[int, int | None],
         effective_load_tolerance_ma: float,
         trace_rows: list[dict[str, Any]],
+        deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
         result = {"move_count": 0, "travel_ticks": 0, "clipped_move_count": 0, "stop_reason": "takeup_complete", "packet_retry_count": 0, "telemetry_event_counts": {}}
-        step = max(1, int(self.config.conservative_step_ticks))
+        refine_step = max(1, int(self.config.conservative_step_ticks))
+        coarse_step = max(refine_step, int(getattr(self.config, "coarse_slack_step_ticks", 50)))
         target_load = max(float(self.config.takeup_target_load_proxy_ma), float(effective_load_tolerance_ma) * 0.5)
+        high_load = max(target_load, float(getattr(self.config, "high_load_proxy_ma", 40.0)))
+        slack_threshold = max(float(self.config.min_meaningful_current_delta_ma), target_load * 0.25)
         max_travel = max(0, int(self.config.conservative_max_cumulative_travel_ticks))
         for iteration in range(max(0, int(self.config.takeup_max_iterations))):
             session.raise_if_stop_requested()
+            if deadline_monotonic is not None and float(session.context.monotonic_fn()) > float(deadline_monotonic):
+                result["stop_reason"] = "runtime_budget_exhausted"
+                return result
             measurement = self._advanced_measurement(
                 servo_service=servo_service,
                 tracker_service=tracker_service,
@@ -3912,9 +3981,13 @@ class PretensionValidationExperiment(BaseExperiment):
             if len(valid_loads) == len(servo_ids) and min(valid_loads) >= target_load:
                 result["stop_reason"] = "within_load_target"
                 return result
+            if len(valid_loads) == len(servo_ids) and max(valid_loads) >= high_load:
+                result["stop_reason"] = "high_load_transition_to_trim"
+                return result
             if max_travel > 0 and int(result["travel_ticks"]) >= max_travel:
                 result["stop_reason"] = "travel_budget_exhausted"
                 return result
+            step = coarse_step if (valid_loads and max(valid_loads) <= slack_threshold) else refine_step
             telemetry, policy = self._read_live_telemetry_with_policy(servo_service, servo_ids)
             self._merge_event_counts(result["telemetry_event_counts"], policy.get("event_counts"))
             result["packet_retry_count"] += int(policy.get("packet_retry_count", 0) or 0)
@@ -3959,6 +4032,9 @@ class PretensionValidationExperiment(BaseExperiment):
                 extra={
                     "iteration": int(iteration + 1),
                     "takeup_target_load_proxy_ma": float(target_load),
+                    "high_load_proxy_ma": float(high_load),
+                    "slack_threshold_load_proxy_ma": float(slack_threshold),
+                    "step_ticks": int(step),
                     "move": move,
                 },
             )
@@ -4064,6 +4140,8 @@ class PretensionValidationExperiment(BaseExperiment):
                 missing_fields.append(f"servo_{int(servo_id)}_present_current_ma")
             elif entry.telemetry_error:
                 current_validity[int(servo_id)] = self._classify_telemetry_error(entry.telemetry_error) or "telemetry_error"
+            elif int(telemetry_policy.get("packet_retry_count", 0) or 0) > 0:
+                current_validity[int(servo_id)] = "valid_after_retry"
             else:
                 current_validity[int(servo_id)] = "valid"
             if entry.present_position is None:
@@ -4142,6 +4220,10 @@ class PretensionValidationExperiment(BaseExperiment):
             "run_index": int(run_index),
             "stage": str(stage),
             "mode": str(mode_kind),
+            "servo_ids": [
+                int(servo_id)
+                for servo_id in sorted((measurement.get("measured_positions_ticks") or {}).keys())
+            ],
             "target_xy_mm": list(target_xy_mm),
             "tip_xy_mm": measurement.get("tip_xy_mm"),
             "tip_xyz_mm": measurement.get("tip_xyz_mm"),
@@ -4308,6 +4390,7 @@ class PretensionValidationExperiment(BaseExperiment):
         baseline_current_ma_by_servo: dict[int, float],
         trace_rows: list[dict[str, Any]],
         startup_reference_ticks_by_servo: dict[int, int | None] | None = None,
+        deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
         total = {"move_count": 0, "travel_ticks": 0, "clipped_move_count": 0, "stop_reason": ""}
         step = max(1, int(self.config.characterization_step_ticks))
@@ -4321,6 +4404,9 @@ class PretensionValidationExperiment(BaseExperiment):
         for cycle_index in range(cycles):
             for label, sid_a, delta_a, sid_b, delta_b in commands:
                 session.raise_if_stop_requested()
+                if deadline_monotonic is not None and float(session.context.monotonic_fn()) > float(deadline_monotonic):
+                    total["stop_reason"] = "runtime_budget_exhausted"
+                    return total
                 before = self._advanced_measurement(
                     servo_service=servo_service,
                     tracker_service=tracker_service,
@@ -4407,14 +4493,29 @@ class PretensionValidationExperiment(BaseExperiment):
         effective_load_tolerance_ma: float,
         trace_rows: list[dict[str, Any]],
         startup_reference_ticks_by_servo: dict[int, int | None] | None = None,
+        deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
-        result = {"move_count": 0, "travel_ticks": 0, "clipped_move_count": 0, "stop_reason": "", "converged": False, "packet_retry_count": 0, "telemetry_event_counts": {}}
+        result = {
+            "move_count": 0,
+            "travel_ticks": 0,
+            "clipped_move_count": 0,
+            "stop_reason": "",
+            "converged": False,
+            "packet_retry_count": 0,
+            "telemetry_event_counts": {},
+            "sign_flip_count": 0,
+            "sign_flip_used_by_axis": {"x": False, "y": False},
+        }
         step = max(1, int(self.config.conservative_step_ticks))
         best_error = math.inf
         worse_count = 0
         wrong_direction_count = 0
+        axis_sign_correction = {"x": 1, "y": 1}
         for iteration in range(max(0, int(self.config.conservative_max_iterations))):
             session.raise_if_stop_requested()
+            if deadline_monotonic is not None and float(session.context.monotonic_fn()) > float(deadline_monotonic):
+                result["stop_reason"] = "runtime_budget_exhausted"
+                break
             measurement = self._advanced_measurement(
                 servo_service=servo_service,
                 tracker_service=tracker_service,
@@ -4467,10 +4568,20 @@ class PretensionValidationExperiment(BaseExperiment):
                 x_error = float(tip_xy[0]) - float(target_xy_mm[0])
                 y_error = float(tip_xy[1]) - float(target_xy_mm[1])
                 if abs(x_error) > float(self.config.tip_center_tolerance_mm) * 0.5:
-                    x_delta = step * (1 if x_error < 0.0 else -1) * int(self.config.tip_center_x_sign or 1)
+                    x_delta = (
+                        step
+                        * (1 if x_error < 0.0 else -1)
+                        * int(self.config.tip_center_x_sign or 1)
+                        * int(axis_sign_correction["x"])
+                    )
                     commands.append(("center_pair_1_3", int(servo_ids[0]), -int(x_delta), int(servo_ids[2]), int(x_delta)))
                 if abs(y_error) > float(self.config.tip_center_tolerance_mm) * 0.5:
-                    y_delta = step * (1 if y_error < 0.0 else -1) * int(self.config.tip_center_y_sign or 1)
+                    y_delta = (
+                        step
+                        * (1 if y_error < 0.0 else -1)
+                        * int(self.config.tip_center_y_sign or 1)
+                        * int(axis_sign_correction["y"])
+                    )
                     commands.append(("center_pair_2_4", int(servo_ids[1]), -int(y_delta), int(servo_ids[3]), int(y_delta)))
             elif pair_error is not None and float(pair_error) > float(effective_load_tolerance_ma):
                 loads = measurement.get("current_above_baseline_ma") or {}
@@ -4520,8 +4631,26 @@ class PretensionValidationExperiment(BaseExperiment):
             after_tip_error = after.get("tip_xy_error_mm")
             if tip_error is not None and after_tip_error is not None and iteration_moves:
                 if float(after_tip_error) > float(tip_error) + float(self.config.tip_divergence_stop_mm):
-                    wrong_direction_count += 1
-                    if wrong_direction_count >= 2:
+                    moved_axes = []
+                    for move_entry in iteration_moves:
+                        label = str(move_entry.get("pair_label", ""))
+                        if label == "center_pair_1_3" and "x" not in moved_axes:
+                            moved_axes.append("x")
+                        if label == "center_pair_2_4" and "y" not in moved_axes:
+                            moved_axes.append("y")
+                    axes_to_flip = [
+                        axis
+                        for axis in moved_axes
+                        if not bool(result["sign_flip_used_by_axis"].get(axis))
+                    ]
+                    if axes_to_flip:
+                        for axis in axes_to_flip:
+                            axis_sign_correction[axis] *= -1
+                            result["sign_flip_used_by_axis"][axis] = True
+                            result["sign_flip_count"] += 1
+                        wrong_direction_count = 0
+                    else:
+                        wrong_direction_count += 1
                         result["stop_reason"] = "tip_response_wrong_direction"
                 else:
                     wrong_direction_count = 0
@@ -4535,6 +4664,9 @@ class PretensionValidationExperiment(BaseExperiment):
                     "iteration": int(iteration + 1),
                     "effective_load_tolerance_ma": float(effective_load_tolerance_ma),
                     "moves": iteration_moves,
+                    "sign_flip_count": int(result["sign_flip_count"]),
+                    "sign_flip_used_by_axis": dict(result["sign_flip_used_by_axis"]),
+                    "axis_sign_correction": dict(axis_sign_correction),
                     "partial_quality_components": {
                         "tip_centering": self._bounded_score(after.get("tip_xy_error_mm"), float(self.config.accept_max_final_tip_xy_offset_mm), missing_score=45.0),
                         "pair_balance": self._bounded_score(after.get("pair_balance_error_ma"), float(effective_load_tolerance_ma), missing_score=55.0),
@@ -5294,13 +5426,24 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         )
         command_servo_ids = list(servo_ids)
         command_neutral_ticks = list(neutral_ticks)
+        parallel_command_metadata: dict[str, Any] = {}
+        parallel_mirror_pairs: dict[int, int] = {}
         if _collect_pose_parallel_single_mode(session) and len(requested_cable_command_cm) == 4:
-            requested_cable_command_cm = _mirror_parallel_single_displacements(
-                requested_cable_command_cm,
-                servo_ids=command_servo_ids,
-                context=session.context.settings.robot.operating_context(),
-            )
-            requested_pair_command_cm = _pair_command_from_cable_deltas(requested_cable_command_cm[:4])
+            context = session.context.settings.robot.operating_context()
+            parallel_mirror_pairs = {int(k): int(v) for k, v in dict(context.mirror_pairs or {}).items()}
+            parallel_command_metadata = {
+                "operating_mode": "parallel_single",
+                "mirrored_parallel": True,
+                "mirror_pairs": {str(k): int(v) for k, v in sorted(parallel_mirror_pairs.items())},
+                "commanded_servo_ids": list(command_servo_ids),
+            }
+            if self.config.dry_run or not servo_service.is_connected:
+                requested_cable_command_cm = _mirror_parallel_single_displacements(
+                    requested_cable_command_cm,
+                    servo_ids=command_servo_ids,
+                    context=context,
+                )
+                requested_pair_command_cm = _pair_command_from_cable_deltas(requested_cable_command_cm[:4])
         if self.config.dry_run or not servo_service.is_connected:
             if len(command_neutral_ticks) != len(requested_cable_command_cm):
                 raise RuntimeError("Dry-run modeling command dimensions do not match the configured servo set.")
@@ -5317,6 +5460,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 "clamp_reasons_by_servo": {},
                 "servo_debug": {},
                 "servo_feedback": {},
+                "command_metadata": dict(parallel_command_metadata),
                 "message": "Dry-run command resolved through the tendon-displacement mapper only.",
                 "motion_profile": {
                     "operating_mode_label": "dry_run",
@@ -5332,6 +5476,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 neutral_ticks=command_neutral_ticks,
                 servo_ids=command_servo_ids,
                 motion_workflow="experiment_motion",
+                parallel_mirror_pairs=parallel_mirror_pairs or None,
             )
         except Exception as exc:
             LOG.exception(
@@ -5374,6 +5519,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             },
             "servo_debug": _servo_debug_payload(command),
             "servo_feedback": _servo_feedback_payload(command.telemetry_by_id, servo_service=servo_service),
+            "command_metadata": dict(command.command_metadata or parallel_command_metadata),
             "message": str(command.message or ""),
             "motion_profile": motion_profile,
         }
@@ -5459,6 +5605,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 "final_goal_ticks_by_servo": dict(command_result.get("final_goal_ticks_by_servo", {}) or {}),
                 "clamp_reasons_by_servo": dict(command_result.get("clamp_reasons_by_servo", {}) or {}),
                 "motion_profile": dict(command_result.get("motion_profile", {}) or {}),
+                "command_metadata": dict(command_result.get("command_metadata", {}) or {}),
                 "servo_feedback_at_command": dict(command_result.get("servo_feedback", {}) or {}),
                 "servo_feedback_at_capture": dict(live_servo_feedback),
                 "servo_debug": dict(command_result.get("servo_debug", {}) or {}),
@@ -5559,6 +5706,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 "final_goal_ticks_by_servo": dict(command_result.get("final_goal_ticks_by_servo", {}) or {}),
                 "clamp_reasons_by_servo": dict(command_result.get("clamp_reasons_by_servo", {}) or {}),
                 "motion_profile": dict(command_result.get("motion_profile", {}) or {}),
+                "command_metadata": dict(command_result.get("command_metadata", {}) or {}),
                 "servo_feedback_at_command": dict(command_result.get("servo_feedback", {}) or {}),
                 "servo_feedback_at_capture": dict(live_servo_feedback),
                 "servo_debug": dict(command_result.get("servo_debug", {}) or {}),
@@ -6676,6 +6824,14 @@ def register_builtin_experiments(registry) -> None:
         tags=["Replay", "Offline"],
         default_config_path="config/experiment_replay_runner.example.yaml",
         factory=ReplayRunnerExperiment.from_dict,
+    )
+    registry.register(
+        name=TwoSegmentStartupValidationExperiment.name,
+        title="Two-Segment Startup Validation",
+        description=TwoSegmentStartupValidationExperiment.description,
+        category="validation",
+        tags=["Two Segment", "Startup", "Manual Pretension", "Servo"],
+        factory=TwoSegmentStartupValidationExperiment.from_dict,
     )
     registry.register(
         name=TrackerTimingValidationExperiment.name,

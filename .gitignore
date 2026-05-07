@@ -1,6 +1,7 @@
 # Python / environment
 __pycache__/
 *.py[cod]
+*.egg-info/
 .venv/
 .env
 
@@ -32,6 +33,7 @@ config/*.local.yaml
 bin/
 
 # Runtime data
+data/trash/**
 data/calibrations/*
 !data/calibrations/.gitkeep
 data/logs/*
@@ -40,3 +42,10 @@ data/registrations/*
 !data/registrations/.gitkeep
 data/tracker_captures/*
 !data/tracker_captures/.gitkeep
+
+# Generated operator-readiness/export bundles
+data/diagnostics/prehardware_dry_run/**
+data/exports/**
+data/**/*.zip
+data/**/*.tar
+data/**/*.tar.gz

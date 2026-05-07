@@ -28,6 +28,7 @@ from continuum_robot.experiments.tracker_timing_outputs import (
     _ensure_plot_qt_app,
     _fmt,
     _new_image,
+    _qt_plotting_is_safe,
 )
 try:
     from continuum_robot.gui.theme import COLORS
@@ -376,7 +377,7 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
             LOG.exception("Repeatability report figure failed: %s", path.name)
             _write_plot_placeholder(path)
     try:
-        if _QT_AVAILABLE:
+        if _qt_plotting_is_safe():
             _ensure_plot_qt_app()
             _write_cluster_figure(clusters_path=clusters_path, samples=samples, metrics=metrics)
         else:
@@ -384,7 +385,8 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
     except Exception:
         LOG.exception("Repeatability compatibility cluster figure was not written.")
         _write_plot_placeholder(clusters_path)
-    if _QT_AVAILABLE:
+    if _qt_plotting_is_safe():
+        _ensure_plot_qt_app()
         _write_legacy_tip_clusters_figure(path=legacy_clusters_path, metrics=metrics)
         _write_rmse_figure(rmse_path=rmse_path, metrics=metrics)
         _write_path_dependence_figure(path_dependence_path=path_dependence_path, metrics=metrics)

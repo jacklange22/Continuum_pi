@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
+import sys
 from typing import Any
 
 try:
@@ -171,7 +173,7 @@ def write_tracker_timing_outputs(*, output_dir: Path, metadata, summary, samples
     tracker_records = extract_tracker_timing_records(samples)
     servo_records = extract_servo_timing_records(samples)
     _write_summary_text(summary_text_path=summary_text_path, metadata=metadata, summary=summary, metrics=metrics)
-    if _QT_AVAILABLE:
+    if _qt_plotting_is_safe():
         _ensure_plot_qt_app()
         _write_histogram_plot(histogram_path=histogram_path, tracker_records=tracker_records, metrics=metrics)
         _write_breakdown_plot(breakdown_path=breakdown_path, metrics=metrics)
@@ -188,7 +190,8 @@ def write_tracker_timing_outputs(*, output_dir: Path, metadata, summary, samples
         "summary_text_path": summary_text_path,
     }
     if metrics.get("servo_sync", {}).get("enabled"):
-        if _QT_AVAILABLE:
+        if _qt_plotting_is_safe():
+            _ensure_plot_qt_app()
             _write_sync_plot(sync_plot_path=sync_plot_path, metrics=metrics, servo_records=servo_records)
         else:
             _write_plot_placeholder(sync_plot_path)
@@ -206,6 +209,21 @@ def _ensure_plot_qt_app() -> QApplication:
     if _PLOT_QT_APP is None:
         _PLOT_QT_APP = QApplication([])
     return _PLOT_QT_APP
+
+
+def _qt_plotting_is_safe() -> bool:
+    """Return whether this process can safely construct Qt plot images."""
+    if not _QT_AVAILABLE:
+        return False
+    if QApplication.instance() is not None:
+        return True
+    if os.environ.get("QT_QPA_PLATFORM"):
+        return True
+    if sys.platform.startswith("linux") and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        return False
+    if sys.platform == "darwin" and not os.environ.get("DISPLAY"):
+        return False
+    return True
 
 
 def _write_summary_text(*, summary_text_path: Path, metadata, summary, metrics: dict[str, Any]) -> None:
