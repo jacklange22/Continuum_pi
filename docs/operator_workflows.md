@@ -192,7 +192,39 @@ Target acceptance:
 - robot-frame tip pose includes tangent/orientation when trusted
 - saved output is ready for later offline ANN / state-aware model training
 
-## Workflow 8: Two-Segment Modeling Analysis
+## Workflow 8: Two-Segment Startup And Dataset Foundation
+
+Applies in `dual_segment` mode only. This is pre-control foundation work.
+
+1. Select `dual_segment` in System.
+2. Use Servos to confirm all 8 servos are visible:
+   - Segment A / proximal: `[1, 2, 3, 4]`
+   - Segment B / distal: `[5, 6, 7, 8]`
+3. Run `two_segment_startup_validation`.
+4. Capture the staged manual workflow:
+   - baseline
+   - Segment A pretensioned
+   - Segment B pretensioned
+   - Segment A recheck
+   - final accept
+5. Save the all-8 manual startup artifact.
+6. Run `two_segment_collect_pose_command_dataset` only after the all-8 startup artifact exists.
+
+Trust rules:
+
+- Servo-only/dry-run two-segment datasets are useful for software rehearsal, but are not model-training valid.
+- Trusted two-segment modeling data needs an accepted all-8 startup artifact and a robot-frame `distal_tip` pose label.
+- Missing orientation/tangent labels do not block XYZ position modeling.
+- Missing `distal_tip` labels block trusted model-training use.
+
+Current limitations:
+
+- No automatic two-segment pretension.
+- No live two-segment control.
+- No two-segment penprobe chasing.
+- Mike/Camarillo comparison models remain scaffolded until active two-segment physics adapters are validated.
+
+## Workflow 9: Two-Segment Modeling Analysis
 
 Applies after `two_segment_collect_pose_command_dataset` has produced trusted labeled samples.
 This workflow is offline data analysis only. It does not enable live two-segment control,
@@ -262,7 +294,8 @@ Model status:
 8. startup calibration and pretension
 9. single-segment repeatability
 10. Motor Babble modeling dataset collection
-11. Two-segment modeling analysis only after trusted two-segment dataset labels exist
+11. Two-segment startup validation and dataset collection
+12. Two-segment modeling analysis only after trusted two-segment dataset labels exist
 
 ## Tracker Verdicts
 
