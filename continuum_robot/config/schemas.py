@@ -459,6 +459,36 @@ class RegistrationLandmarkConfig:
 
 
 @dataclass
+class TwoSegmentTrackingRoleConfig:
+    """Configured Aurora tool role for future two-segment pose labels."""
+
+    role_name: str
+    tool_id: str = ""
+    physical_meaning: str = ""
+    pose_kind: str = "coil_origin"
+    required_for_two_segment_model_training: bool = False
+    required_for_control: bool = False
+    trust_level: str = "configured"
+    source: str = "config"
+    max_age_s: float | None = None
+    enabled: bool = True
+
+    def to_dict(self) -> dict:
+        return {
+            "role_name": str(self.role_name),
+            "tool_id": str(self.tool_id),
+            "physical_meaning": str(self.physical_meaning),
+            "pose_kind": str(self.pose_kind),
+            "required_for_two_segment_model_training": bool(self.required_for_two_segment_model_training),
+            "required_for_control": bool(self.required_for_control),
+            "trust_level": str(self.trust_level),
+            "source": str(self.source),
+            "max_age_s": self.max_age_s,
+            "enabled": bool(self.enabled),
+        }
+
+
+@dataclass
 class RegistrationWorkflowConfig:
     """Registration workflow defaults."""
 
@@ -485,6 +515,7 @@ class RegistrationWorkflowConfig:
     runtime_tip_coil_sample_interval_s: float = 0.02
     runtime_tip_max_hat_rmse_mm: float | None = 2.0
     runtime_tip_setup_id: str | None = None
+    two_segment_tracking_roles: dict[str, TwoSegmentTrackingRoleConfig] = field(default_factory=dict)
 
 
 @dataclass

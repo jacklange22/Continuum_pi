@@ -25,6 +25,47 @@ runtime_tip_coil_sample_count: 50
 runtime_tip_coil_sample_interval_s: 0.02
 runtime_tip_max_hat_rmse_mm: 2.0
 runtime_tip_setup_id: ""
+two_segment_tracking_roles:
+  registration_probe:
+    tool_id: "0B"
+    physical_meaning: "Pivot-calibrated registration/pen probe used for registration and pivot workflows."
+    pose_kind: "calibrated_tip"
+    required_for_two_segment_model_training: false
+    required_for_control: false
+    trust_level: "registration_workflow"
+    source: "registration.yaml"
+    max_age_s:
+    enabled: true
+  distal_tip:
+    tool_id: "0A"
+    physical_meaning: "Distal/top robot coil or calibrated physical distal tip used as the primary two-segment output label."
+    pose_kind: "calibrated_tip"
+    required_for_two_segment_model_training: true
+    required_for_control: false
+    trust_level: "runtime_tip_policy"
+    source: "registration.yaml"
+    max_age_s: 0.15
+    enabled: true
+  intermediate_segment:
+    tool_id: ""
+    physical_meaning: "Optional Segment A distal end / intermediate joint coil."
+    pose_kind: "coil_origin"
+    required_for_two_segment_model_training: false
+    required_for_control: false
+    trust_level: "optional"
+    source: "registration.yaml"
+    max_age_s: 0.15
+    enabled: false
+  debug_tool:
+    tool_id: ""
+    physical_meaning: "Optional tracked tool recorded for diagnostics only."
+    pose_kind: "coil_origin"
+    required_for_two_segment_model_training: false
+    required_for_control: false
+    trust_level: "debug_only"
+    source: "registration.yaml"
+    max_age_s:
+    enabled: false
 # Candidate landmarks derived from the protected SolidWorks registration model
 # points under tools/12_model_registration_points_in_sw transformed by
 # tools/T_sw_2_model into the robot/body frame. The operator still chooses the

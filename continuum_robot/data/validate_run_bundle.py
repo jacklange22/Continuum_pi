@@ -44,6 +44,12 @@ EXPECTED_REPORT_FIGURES = {
         "two_segment_startup_load_proxy_report.png",
         "two_segment_startup_stage_drift_report.png",
     ],
+    "two_segment_collect_pose_command_dataset": [
+        "two_segment_command_coverage_report.png",
+        "two_segment_servo_position_coverage_report.png",
+        "two_segment_pose_coverage_report.png",
+        "two_segment_dataset_quality_report.png",
+    ],
 }
 
 TWO_SEGMENT_STARTUP_REQUIRED_STAGES = [
@@ -121,6 +127,8 @@ def validate_run_folder(run_dir: Path) -> RunValidationReport:
         _check_any_field(issues, "two_segment pose schema", _nested(two_segment_foundation, "pose_schema", "schema_version"))
     if experiment_name == "two_segment_startup_validation":
         _check_two_segment_startup_validation(issues, run_dir=run_dir, metrics=metrics)
+    if experiment_name == "two_segment_collect_pose_command_dataset":
+        _check_two_segment_collect_pose_dataset(issues, run_dir=run_dir, metrics=metrics)
     _check_any_field(
         issues,
         "valid_for_model_training",
@@ -276,6 +284,47 @@ def _check_two_segment_startup_validation(
     summary_text = run_dir / "two_segment_startup_summary.txt"
     _check_any_field(issues, "two-segment startup artifact metadata", str(artifact_metadata) if artifact_metadata.exists() else None)
     _check_any_field(issues, "two-segment startup summary text", str(summary_text) if summary_text.exists() else None)
+
+
+def _check_two_segment_collect_pose_dataset(
+    issues: list[RunValidationIssue],
+    *,
+    run_dir: Path,
+    metrics: dict[str, Any],
+) -> None:
+    _check_any_field(issues, "two-segment dataset command schema", _nested(metrics, "two_segment_command_schema", "schema_version"))
+    _check_any_field(issues, "two-segment startup artifact provenance", metrics.get("startup_artifact_provenance"))
+    _check_any_field(issues, "two-segment tracking role config", metrics.get("two_segment_tracking_role_config"))
+    if "valid_for_two_segment_model_training" not in metrics:
+        issues.append(RunValidationIssue("WARN", "Missing expected field: valid_for_two_segment_model_training"))
+    pose_summary = metrics.get("pose_label_summary") if isinstance(metrics.get("pose_label_summary"), dict) else {}
+    missing_required = list(pose_summary.get("missing_required_roles", []) or [])
+    if metrics.get("valid_for_two_segment_model_training") is True and missing_required:
+        issues.append(RunValidationIssue("FAIL", f"Run is marked training-valid but required pose roles are missing: {missing_required}"))
+    if metrics.get("valid_for_model_training") is not False:
+        issues.append(RunValidationIssue("WARN", "MVP two-segment dataset should not set generic valid_for_model_training=true."))
+    if metrics.get("valid_for_thesis_repeatability") is not False:
+        issues.append(RunValidationIssue("WARN", "MVP two-segment dataset should not set valid_for_thesis_repeatability=true."))
+    if not (run_dir / "two_segment_dataset_summary.txt").exists():
+        issues.append(RunValidationIssue("WARN", "two_segment_dataset_summary.txt is missing."))
+    if not (run_dir / "two_segment_tracking_role_provenance.json").exists():
+        issues.append(RunValidationIssue("WARN", "two_segment_tracking_role_provenance.json is missing."))
+    samples_path = run_dir / "samples.jsonl"
+    if not samples_path.exists():
+        issues.append(RunValidationIssue("FAIL", "samples.jsonl is missing."))
+        return
+    try:
+        first_line = next((line for line in samples_path.read_text(encoding="utf-8").splitlines() if line.strip()), "")
+        first = json.loads(first_line) if first_line else {}
+    except Exception as exc:
+        issues.append(RunValidationIssue("FAIL", f"Could not inspect samples.jsonl: {exc}"))
+        return
+    command = first.get("two_segment_command") if isinstance(first.get("two_segment_command"), dict) else {}
+    if not command.get("segments") or not command.get("flat_command_cm"):
+        issues.append(RunValidationIssue("WARN", "First sample does not include structured two_segment_command with segment and ordered vector fields."))
+    extra = first.get("extra") if isinstance(first.get("extra"), dict) else {}
+    if "role_observations" not in extra or "missing_required_pose_roles" not in extra:
+        issues.append(RunValidationIssue("WARN", "First sample is missing two-segment pose role observation metadata."))
 
 
 def _infer_experiment_name(run_dir: Path) -> str:

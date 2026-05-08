@@ -34,6 +34,14 @@ from continuum_robot.experiments.penprobe_chasing_demo import (
     _validate_legacy_mapping_config,
 )
 from continuum_robot.experiments.two_segment_startup_validation import DUAL_SEGMENT_BLOCK_MESSAGE
+from continuum_robot.experiments.two_segment_collect_pose_dataset import (
+    BLOCK_MESSAGE as TWO_SEGMENT_DATASET_BLOCK_MESSAGE,
+    TwoSegmentCollectPoseDatasetConfig,
+)
+from continuum_robot.tracking.two_segment_roles import (
+    resolve_two_segment_tracking_roles,
+    two_segment_role_readiness_rows,
+)
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
 from continuum_robot.experiments.critical_experiments import (
     GridDefinitionConfig,
@@ -1024,6 +1032,113 @@ def evaluate_preflight(
                 "motion_scope",
                 "Motion Scope",
                 "This workflow records manual all-8 startup stages and does not command automatic two-segment pretension/control.",
+            )
+        )
+
+    elif experiment_name == "two_segment_collect_pose_command_dataset":
+        config = TwoSegmentCollectPoseDatasetConfig.from_dict(payload)
+        operating_context = settings.robot.operating_context()
+        expected_ids = [int(value) for value in getattr(operating_context, "expected_servo_ids", [])]
+        commanded_ids = [int(value) for value in getattr(operating_context, "commanded_servo_ids", [])]
+        servo_only_override = bool(
+            config.dry_run
+            or config.allow_servo_only_test_run
+            or str(config.run_trust_mode or "").strip().lower() == "servo_only"
+        )
+        if operating_context.operating_mode != "dual_segment":
+            checks.append(_blocked("operating_mode", "Operating Mode", TWO_SEGMENT_DATASET_BLOCK_MESSAGE))
+        else:
+            checks.append(_ok("operating_mode", "Operating Mode", "dual_segment two-segment dataset mode is selected."))
+        if expected_ids != [1, 2, 3, 4, 5, 6, 7, 8] or commanded_ids != expected_ids:
+            checks.append(
+                _blocked(
+                    "servo_ids",
+                    "All-8 Servo IDs",
+                    f"Expected/commanded IDs must both be [1,2,3,4,5,6,7,8]; resolved expected={expected_ids}, commanded={commanded_ids}.",
+                )
+            )
+        else:
+            checks.append(_ok("servo_ids", "All-8 Servo IDs", "All 8 expected/commanded servo IDs are present."))
+        if not servo_connected and not config.dry_run:
+            checks.append(_blocked("servo_service", "Servo Service", "Live two-segment dataset collection requires a connected ServoService."))
+        elif servo_connected:
+            checks.append(_ok("servo_service", "Servo Service", "ServoService is connected for all-8 telemetry/command checks."))
+        else:
+            checks.append(_warning("servo_service", "Servo Service", "Dry-run mode can resolve commands without connected hardware."))
+        if float(config.max_segment_displacement_mm) <= 0.0 and config.schedule_type != "zero":
+            checks.append(_blocked("command_limits", "Command Limits", "max_segment_displacement_mm must be greater than zero unless using schedule_type=zero."))
+        elif int(config.max_tick_delta_from_startup) <= 0:
+            checks.append(_blocked("command_limits", "Command Limits", "max_tick_delta_from_startup must be greater than zero."))
+        else:
+            checks.append(
+                _ok(
+                    "command_limits",
+                    "Command Limits",
+                    f"Commands are bounded to <= {float(config.max_segment_displacement_mm):.3f} mm/segment and <= {int(config.max_tick_delta_from_startup)} ticks from startup.",
+                )
+            )
+        if servo_calibration_summary is None:
+            if servo_only_override:
+                checks.append(_warning("startup_artifact", "Startup Artifact", "Startup artifact state is unavailable; servo-only/dry-run output will be marked not trainable."))
+            else:
+                checks.append(_blocked("startup_artifact", "Startup Artifact", "Trusted two-segment dataset collection requires an accepted all-8 startup artifact."))
+        else:
+            startup = servo_calibration_summary.pretension_source_summary(expected_ids)
+            if startup.accepted and startup.usable:
+                checks.append(_ok("startup_artifact", "Startup Artifact", startup.message))
+            elif servo_only_override:
+                checks.append(_warning("startup_artifact", "Startup Artifact", startup.message + " Servo-only/dry-run output will be marked not trainable."))
+            else:
+                checks.append(_blocked("startup_artifact", "Startup Artifact", startup.message))
+        if tracker_ready:
+            role_resolution = resolve_two_segment_tracking_roles(
+                snapshot=tracking_snapshot,
+                role_configs=getattr(settings.registration, "two_segment_tracking_roles", {}),
+                require_model_training_roles=not servo_only_override,
+            )
+            missing_required = list(role_resolution.get("missing_required_roles", []) or [])
+            if missing_required and not servo_only_override:
+                checks.append(
+                    _blocked(
+                        "tracking_roles",
+                        "Two-Segment Pose Roles",
+                        f"Missing required two-segment pose role(s): {missing_required}. Configure/live-track distal_tip before a training-intended run.",
+                    )
+                )
+            elif missing_required:
+                checks.append(
+                    _warning(
+                        "tracking_roles",
+                        "Two-Segment Pose Roles",
+                        f"Missing required role(s) {missing_required}; servo-only/dry-run output will be marked not trainable.",
+                    )
+                )
+            else:
+                checks.append(_ok("tracking_roles", "Two-Segment Pose Roles", "Required two-segment pose roles are live and fresh."))
+            role_rows = two_segment_role_readiness_rows(
+                snapshot=tracking_snapshot,
+                role_configs=getattr(settings.registration, "two_segment_tracking_roles", {}),
+            )
+            role_text = "; ".join(
+                f"{row['role']}={row['tool_id']}:{row['status']}"
+                for row in role_rows
+            )
+            checks.append(_ok("tracking", "Tracking", f"Tracker is available via {backend_name}. Roles: {role_text}"))
+        elif servo_only_override:
+            checks.append(
+                _warning(
+                    "tracking",
+                    "Tracking",
+                    "No tracker labels are required for explicit servo-only/dry-run collection. The run will be marked not valid for two-segment model training.",
+                )
+            )
+        else:
+            checks.append(_blocked("tracking", "Tracking", "Trusted two-segment model-training data requires tracker pose labels."))
+        checks.append(
+            _info(
+                "scope",
+                "Scope",
+                "This experiment records structured two-segment command/pose data only; no kinematics, control, chasing, or automatic pretension is implemented.",
             )
         )
 

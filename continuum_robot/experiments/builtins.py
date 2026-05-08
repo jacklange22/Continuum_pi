@@ -29,6 +29,9 @@ from continuum_robot.experiments.tracker_timing_outputs import write_tracker_tim
 from continuum_robot.experiments.two_segment_startup_validation import (
     TwoSegmentStartupValidationExperiment,
 )
+from continuum_robot.experiments.two_segment_collect_pose_dataset import (
+    TwoSegmentCollectPoseCommandDatasetExperiment,
+)
 from continuum_robot.experiments.schedules import (
     CommandScheduleConfig,
     command_schedule_checksum,
@@ -6832,6 +6835,14 @@ def register_builtin_experiments(registry) -> None:
         category="validation",
         tags=["Two Segment", "Startup", "Manual Pretension", "Servo"],
         factory=TwoSegmentStartupValidationExperiment.from_dict,
+    )
+    registry.register(
+        name=TwoSegmentCollectPoseCommandDatasetExperiment.name,
+        title="Two-Segment Collect-Pose Dataset",
+        description=TwoSegmentCollectPoseCommandDatasetExperiment.description,
+        category="validation",
+        tags=["Two Segment", "Dataset", "Commands", "Pose"],
+        factory=TwoSegmentCollectPoseCommandDatasetExperiment.from_dict,
     )
     registry.register(
         name=TrackerTimingValidationExperiment.name,

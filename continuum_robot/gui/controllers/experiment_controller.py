@@ -604,6 +604,7 @@ class ExperimentController:
             "tracker_timing_validation",
             "servo_tracker_sync_validation",
             "two_segment_startup_validation",
+            "two_segment_collect_pose_command_dataset",
             "pretension_validation",
             "command_schedule_validation",
             "replay_runner",
@@ -991,6 +992,10 @@ class ExperimentController:
             completion = dict(metrics.get("stage_completion", {}) or {})
             completed = sum(1 for value in completion.values() if bool(value))
             return f"stages={completed}/5"
+        if experiment_name == "two_segment_collect_pose_command_dataset":
+            accepted = metrics.get("accepted_sample_count")
+            valid = metrics.get("valid_for_two_segment_model_training")
+            return f"accepted={int(accepted or 0)} | two_seg_train={valid}"
         if experiment_name == "penprobe_chasing_demo":
             value = metrics.get("final_error_norm_mm")
             if value is not None:
@@ -1382,6 +1387,31 @@ class ExperimentController:
                     ("Positions Report", str(bundle.paths.output_dir / "two_segment_startup_positions_report.png")),
                     ("Load Proxy Report", str(bundle.paths.output_dir / "two_segment_startup_load_proxy_report.png")),
                     ("Stage Drift Report", str(bundle.paths.output_dir / "two_segment_startup_stage_drift_report.png")),
+                ]
+            )
+            return pairs
+        if bundle_experiment_name == "two_segment_collect_pose_command_dataset":
+            metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
+            pose = dict(metrics.get("pose_label_summary", {}) or {})
+            missing_required = ", ".join(str(value) for value in list(pose.get("missing_required_roles", []) or [])) or "none"
+            available_roles = ", ".join(str(value) for value in list(pose.get("available_roles", []) or [])) or "none"
+            pairs.extend(
+                [
+                    ("Dataset Type", str(metrics.get("dataset_type", "two_segment_collect_pose_command_dataset"))),
+                    ("Schedule", str(metrics.get("schedule_type", "n/a"))),
+                    ("Accepted / Rejected", f"{metrics.get('accepted_sample_count', 0)} / {metrics.get('rejected_sample_count', 0)}"),
+                    ("Trust Mode", str(metrics.get("run_trust_mode", "unknown"))),
+                    ("Two-Segment Model Training Valid", str(metrics.get("valid_for_two_segment_model_training"))),
+                    ("Generic Model Training Valid", str(metrics.get("valid_for_model_training"))),
+                    ("Pose Samples", str(pose.get("pose_observation_sample_count", 0))),
+                    ("Available Pose Roles", available_roles),
+                    ("Missing Required Roles", missing_required),
+                    ("Distal Only", str(metrics.get("distal_only"))),
+                    ("Includes Intermediate Pose", str(metrics.get("includes_intermediate_pose"))),
+                    ("Summary Note", str(bundle.paths.output_dir / "two_segment_dataset_summary.txt")),
+                    ("Command Report", str(bundle.paths.output_dir / "two_segment_command_coverage_report.png")),
+                    ("Servo Report", str(bundle.paths.output_dir / "two_segment_servo_position_coverage_report.png")),
+                    ("Pose Report", str(bundle.paths.output_dir / "two_segment_pose_coverage_report.png")),
                 ]
             )
             return pairs

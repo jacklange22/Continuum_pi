@@ -16,6 +16,7 @@ from continuum_robot.config.schemas import (
     RuntimeConfig,
     SafetyConfig,
     SerialConfig,
+    TwoSegmentTrackingRoleConfig,
 )
 from continuum_robot.config.settings import Settings
 
@@ -228,6 +229,7 @@ class ConfigLoader:
                 if registration_data.get("runtime_tip_setup_id") not in (None, "")
                 else None
             ),
+            two_segment_tracking_roles=self._load_two_segment_tracking_roles(registration_data),
         )
         experiment = ExperimentConfig(
             default_settle_time_s=float(experiment_data.get("default_settle_time_s", 2.0)),
@@ -417,3 +419,77 @@ class ConfigLoader:
                 )
             )
         return landmarks
+
+    @staticmethod
+    def _load_two_segment_tracking_roles(payload: dict) -> dict[str, TwoSegmentTrackingRoleConfig]:
+        defaults = {
+            "registration_probe": {
+                "tool_id": str(payload.get("capture_tool_id", "0B") or "0B"),
+                "physical_meaning": "Pivot-calibrated registration/pen probe used for registration workflows.",
+                "pose_kind": "calibrated_tip",
+                "required_for_two_segment_model_training": False,
+                "required_for_control": False,
+                "trust_level": "registration_workflow",
+                "source": "registration.capture_tool_id",
+                "max_age_s": None,
+                "enabled": True,
+            },
+            "distal_tip": {
+                "tool_id": str(payload.get("coil_tool_id", "0A") or "0A"),
+                "physical_meaning": "Distal/top robot coil or calibrated physical distal tip.",
+                "pose_kind": "calibrated_tip",
+                "required_for_two_segment_model_training": True,
+                "required_for_control": False,
+                "trust_level": "runtime_tip_policy",
+                "source": "registration.coil_tool_id",
+                "max_age_s": None,
+                "enabled": True,
+            },
+            "intermediate_segment": {
+                "tool_id": "",
+                "physical_meaning": "Optional Segment A distal end / intermediate joint coil.",
+                "pose_kind": "coil_origin",
+                "required_for_two_segment_model_training": False,
+                "required_for_control": False,
+                "trust_level": "optional",
+                "source": "config",
+                "max_age_s": None,
+                "enabled": False,
+            },
+            "debug_tool": {
+                "tool_id": "",
+                "physical_meaning": "Optional tracked tool recorded for diagnostics only.",
+                "pose_kind": "coil_origin",
+                "required_for_two_segment_model_training": False,
+                "required_for_control": False,
+                "trust_level": "debug_only",
+                "source": "config",
+                "max_age_s": None,
+                "enabled": False,
+            },
+        }
+        raw_roles = dict(payload.get("two_segment_tracking_roles", {}) or {})
+        merged: dict[str, dict] = {key: dict(value) for key, value in defaults.items()}
+        for key, raw_value in raw_roles.items():
+            role_key = str(key)
+            merged.setdefault(role_key, {})
+            merged[role_key].update(dict(raw_value or {}))
+        roles: dict[str, TwoSegmentTrackingRoleConfig] = {}
+        for key, data in merged.items():
+            role_name = str(data.get("role_name") or key)
+            max_age = data.get("max_age_s")
+            roles[role_name] = TwoSegmentTrackingRoleConfig(
+                role_name=role_name,
+                tool_id=str(data.get("tool_id", "") or "").strip().upper(),
+                physical_meaning=str(data.get("physical_meaning", "") or ""),
+                pose_kind=str(data.get("pose_kind", "coil_origin") or "coil_origin"),
+                required_for_two_segment_model_training=bool(
+                    data.get("required_for_two_segment_model_training", False)
+                ),
+                required_for_control=bool(data.get("required_for_control", False)),
+                trust_level=str(data.get("trust_level", "configured") or "configured"),
+                source=str(data.get("source", "config") or "config"),
+                max_age_s=(float(max_age) if max_age not in (None, "") else None),
+                enabled=bool(data.get("enabled", True)),
+            )
+        return roles

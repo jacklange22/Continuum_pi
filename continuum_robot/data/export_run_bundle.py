@@ -30,6 +30,8 @@ CORE_FILENAMES = {
     "pretension_summary.txt",
     "two_segment_startup_summary.txt",
     "two_segment_startup_artifact_metadata.json",
+    "two_segment_dataset_summary.txt",
+    "two_segment_tracking_role_provenance.json",
     "registration_validation_summary.txt",
     "pivot_validation_summary.txt",
     "repeatability_summary.txt",

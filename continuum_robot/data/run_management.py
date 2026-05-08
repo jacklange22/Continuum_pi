@@ -56,11 +56,13 @@ class ManagedRunSummary:
     stop_or_failure_reason: str = ""
     run_trust_mode: str = "unknown"
     valid_for_model_training: Any = None
+    valid_for_two_segment_model_training: Any = None
     valid_for_thesis_repeatability: Any = None
     data_quality_warnings: list[str] = field(default_factory=list)
     operating_mode: str = "unknown"
     active_segment: str = ""
     two_segment_summary: str = ""
+    two_segment_pose_summary: str = ""
     hardware_profile: str = "unknown"
     runtime_tip_mode: str = ""
     runtime_tip_trust_status: str = ""
@@ -230,6 +232,11 @@ def summarize_run(run_dir: Path) -> ManagedRunSummary:
             run_trust.get("valid_for_model_training"),
             metadata_trust.get("valid_for_model_training"),
         ),
+        valid_for_two_segment_model_training=_first_value(
+            metrics.get("valid_for_two_segment_model_training"),
+            run_trust.get("valid_for_two_segment_model_training"),
+            metadata_trust.get("valid_for_two_segment_model_training"),
+        ),
         valid_for_thesis_repeatability=_first_value(
             metrics.get("valid_for_thesis_repeatability"),
             run_trust.get("valid_for_thesis_repeatability"),
@@ -243,6 +250,7 @@ def summarize_run(run_dir: Path) -> ManagedRunSummary:
         ),
         active_segment=active_segment,
         two_segment_summary=_format_two_segment_foundation(two_segment_foundation),
+        two_segment_pose_summary=_format_two_segment_pose_summary(metrics),
         hardware_profile=str(
             _first_value(run_provenance.get("hardware_profile"), metadata_provenance.get("hardware_profile"), "unknown")
         ),
@@ -277,11 +285,13 @@ def detail_pairs_for_run(summary: ManagedRunSummary, *, project_root: Path | Non
         ("Stop / Failure", summary.stop_or_failure_reason or "n/a"),
         ("Trust Mode", summary.run_trust_mode),
         ("Model Training Valid", _display_value(summary.valid_for_model_training)),
+        ("Two-Segment Model Training Valid", _display_value(summary.valid_for_two_segment_model_training)),
         ("Thesis Repeatability Valid", _display_value(summary.valid_for_thesis_repeatability)),
         ("Warnings", "; ".join(summary.data_quality_warnings) or "none"),
         ("Operating Mode", summary.operating_mode),
         ("Active Segment", summary.active_segment or "n/a"),
         ("Two-Segment Foundation", summary.two_segment_summary or "n/a"),
+        ("Two-Segment Pose Roles", summary.two_segment_pose_summary or "n/a"),
         ("Hardware Profile", summary.hardware_profile),
         ("Runtime Tip", _join_nonempty([summary.runtime_tip_mode, summary.runtime_tip_trust_status]) or "n/a"),
         ("Registration", summary.registration_summary or "n/a"),
@@ -417,6 +427,26 @@ def _format_two_segment_foundation(value: dict[str, Any]) -> str:
     if ordered_segments:
         pieces.append("; ".join(ordered_segments))
     return _join_nonempty(pieces)
+
+
+def _format_two_segment_pose_summary(metrics: dict[str, Any]) -> str:
+    if str(metrics.get("dataset_type") or "") != "two_segment_collect_pose_command_dataset":
+        return ""
+    pose = _as_dict(metrics.get("pose_label_summary"))
+    role_config = _as_dict(metrics.get("two_segment_tracking_role_config"))
+    required = [
+        role
+        for role, data in role_config.items()
+        if bool(_as_dict(data).get("required_for_two_segment_model_training", False))
+    ]
+    return _join_nonempty(
+        [
+            f"available={pose.get('available_roles', [])}",
+            f"missing_required={pose.get('missing_required_roles', required)}",
+            f"distal_only={bool(metrics.get('distal_only'))}",
+            f"includes_intermediate={bool(metrics.get('includes_intermediate_pose'))}",
+        ]
+    )
 
 
 def _format_registration(value: dict[str, Any]) -> str:

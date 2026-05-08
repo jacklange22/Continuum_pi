@@ -65,6 +65,9 @@ from continuum_robot.experiments.penprobe_chasing_demo import (
     MAPPING_PAIRED_XY_PROPORTIONAL,
     PenprobeChasingDemoConfig,
 )
+from continuum_robot.experiments.two_segment_collect_pose_dataset import (
+    TwoSegmentCollectPoseDatasetConfig,
+)
 from continuum_robot.gui.widgets.no_wheel_combo_box import NoWheelComboBox
 from continuum_robot.experiments.calibration_validation import (
     list_pivot_validation_candidates,
@@ -2147,6 +2150,145 @@ class TwoSegmentStartupValidationPage(ExperimentPageBase):
         return {str(key): bool(value) for key, value in dict(payload.get("stage_completion", {}) or {}).items()}
 
 
+class TwoSegmentCollectPoseDatasetPage(ExperimentPageBase):
+    show_visualization = False
+    refresh_policy = "manual"
+    page_hint = (
+        "Collect conservative two-segment command/pose data in dual_segment mode. "
+        "Servo-only or dry-run output is explicitly lower-trust and not model-training valid."
+    )
+
+    def __init__(self, controller, experiment_name: str, parent=None) -> None:
+        self.summary_widget = None
+        super().__init__(controller, experiment_name, parent)
+        self.run_button.setText("Run Two-Segment Dataset")
+
+    def _build_parameter_sections(self) -> None:
+        schedule_card = ExperimentCard("Schedule", "Bounded open-loop command patterns around the accepted all-8 startup state.")
+        form = QFormLayout()
+        self.schedule_combo = NoWheelComboBox()
+        for label, value in [
+            ("Single Axis Micro", "single_axis_micro"),
+            ("Zero", "zero"),
+            ("Segment Isolation", "segment_isolation"),
+            ("Small Combined", "small_combined"),
+        ]:
+            self.schedule_combo.addItem(label, value)
+        self.schedule_combo.currentIndexChanged.connect(
+            lambda _index: self.controller.set_config_value("schedule_type", self.schedule_combo.currentData())
+        )
+        self.max_disp_spin = QDoubleSpinBox()
+        self.max_disp_spin.setRange(0.0, 5.0)
+        self.max_disp_spin.setDecimals(3)
+        self.max_disp_spin.setSingleStep(0.1)
+        self.max_disp_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_segment_displacement_mm", float(value))
+        )
+        self.max_tick_spin = QSpinBox()
+        self.max_tick_spin.setRange(1, 200)
+        self.max_tick_spin.valueChanged.connect(lambda value: self.controller.set_config_value("max_tick_delta_from_startup", int(value)))
+        self.samples_spin = QSpinBox()
+        self.samples_spin.setRange(1, 20)
+        self.samples_spin.valueChanged.connect(lambda value: self.controller.set_config_value("samples_per_pattern", int(value)))
+        self.repeats_spin = QSpinBox()
+        self.repeats_spin.setRange(1, 20)
+        self.repeats_spin.valueChanged.connect(lambda value: self.controller.set_config_value("capture_repeats", int(value)))
+        self.settle_spin = QDoubleSpinBox()
+        self.settle_spin.setRange(0.0, 10.0)
+        self.settle_spin.setDecimals(3)
+        self.settle_spin.setSingleStep(0.05)
+        self.settle_spin.valueChanged.connect(lambda value: self.controller.set_config_value("settle_time_s", float(value)))
+        form.addRow("Schedule Type", self.schedule_combo)
+        form.addRow("Max Displacement (mm)", self.max_disp_spin)
+        form.addRow("Max Tick Delta", self.max_tick_spin)
+        form.addRow("Samples / Pattern", self.samples_spin)
+        form.addRow("Repeats", self.repeats_spin)
+        form.addRow("Settle Time (s)", self.settle_spin)
+        schedule_card.body_layout.addLayout(form)
+        self.parameter_layout.addWidget(schedule_card)
+
+        trust_card = ExperimentCard("Trust", "Trusted hardware runs require startup and tracking readiness; servo-only runs remain explicitly not trainable.")
+        trust_form = QFormLayout()
+        self.dry_run_check = QCheckBox("Dry run")
+        self.dry_run_check.toggled.connect(lambda value: self.controller.set_config_value("dry_run", bool(value)))
+        self.servo_only_check = QCheckBox("Allow servo-only test run")
+        self.servo_only_check.toggled.connect(lambda value: self.controller.set_config_value("allow_servo_only_test_run", bool(value)))
+        self.run_trust_combo = NoWheelComboBox()
+        for label, value in [("Servo Only", "servo_only"), ("Lower Trust", "lower_trust"), ("Thesis Trusted", "thesis_trusted")]:
+            self.run_trust_combo.addItem(label, value)
+        self.run_trust_combo.currentIndexChanged.connect(
+            lambda _index: self.controller.set_config_value("run_trust_mode", self.run_trust_combo.currentData())
+        )
+        self.tool_roles_edit = QPlainTextEdit()
+        self.tool_roles_edit.setPlaceholderText("0A: distal_tip\n0C: intermediate")
+        self.tool_roles_edit.setMinimumHeight(72)
+        self.tool_roles_edit.setMaximumHeight(96)
+        self.tool_roles_edit.textChanged.connect(self._on_tool_roles_changed)
+        self.summary_widget = KeyValueSummaryWidget()
+        trust_form.addRow("Mode", self.dry_run_check)
+        trust_form.addRow("Servo Only", self.servo_only_check)
+        trust_form.addRow("Run Trust", self.run_trust_combo)
+        trust_form.addRow("Tool Roles", self.tool_roles_edit)
+        trust_card.body_layout.addLayout(trust_form)
+        trust_card.body_layout.addWidget(self.summary_widget)
+        self.parameter_layout.addWidget(trust_card)
+
+    def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
+        _ = state
+        config = TwoSegmentCollectPoseDatasetConfig.from_dict(self.controller.config_payload())
+        self._set_combo_value(self.schedule_combo, config.schedule_type)
+        self._set_double(self.max_disp_spin, float(config.max_segment_displacement_mm))
+        self._set_spin(self.max_tick_spin, int(config.max_tick_delta_from_startup))
+        self._set_spin(self.samples_spin, int(config.samples_per_pattern))
+        self._set_spin(self.repeats_spin, int(config.capture_repeats))
+        self._set_double(self.settle_spin, float(config.settle_time_s))
+        self._set_checkbox(self.dry_run_check, bool(config.dry_run))
+        self._set_checkbox(self.servo_only_check, bool(config.allow_servo_only_test_run))
+        self._set_combo_value(self.run_trust_combo, config.run_trust_mode)
+        self._set_plain_text(self.tool_roles_edit, _yaml_block(config.requested_tool_roles or {}))
+        context = self.controller.settings.robot.operating_context()
+        role_configs = getattr(self.controller.settings.registration, "two_segment_tracking_roles", {}) or {}
+        role_summary = "; ".join(
+            f"{role}={getattr(config, 'tool_id', '') or 'unconfigured'} "
+            f"({'required' if getattr(config, 'required_for_two_segment_model_training', False) else 'optional'}, "
+            f"{getattr(config, 'pose_kind', 'coil_origin')})"
+            for role, config in sorted(dict(role_configs).items())
+        )
+        self.summary_widget.set_pairs(
+            [
+                ("Operating Mode", str(context.operating_mode)),
+                ("Commanded IDs", str(list(context.commanded_servo_ids))),
+                ("Tracking Roles", role_summary or "n/a"),
+                ("Schedule", str(config.schedule_type)),
+                ("Training Validity", "false unless accepted startup and real pose labels are present"),
+            ]
+        )
+
+    def _parameter_state_fingerprint(self, state: ExperimentViewState) -> tuple[object, ...]:
+        _ = state
+        config = TwoSegmentCollectPoseDatasetConfig.from_dict(self.controller.config_payload())
+        return (
+            config.schedule_type,
+            config.dry_run,
+            config.max_segment_displacement_mm,
+            config.max_tick_delta_from_startup,
+            config.samples_per_pattern,
+            config.capture_repeats,
+            config.settle_time_s,
+            config.allow_servo_only_test_run,
+            config.run_trust_mode,
+            tuple(sorted(config.requested_tool_roles.items())),
+        )
+
+    def _on_tool_roles_changed(self) -> None:
+        try:
+            parsed = yaml.safe_load(self.tool_roles_edit.toPlainText()) or {}
+        except Exception:
+            return
+        if isinstance(parsed, dict):
+            self.controller.set_config_value("requested_tool_roles", {str(key): str(value) for key, value in parsed.items()})
+
+
 class PretensionValidationPage(ExperimentPageBase):
     refresh_policy = "manual"
     page_hint = (
@@ -3783,6 +3925,7 @@ def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBas
         "tracker_timing_validation": lambda ctrl: TrackerTimingValidationPage(ctrl, "tracker_timing_validation"),
         "servo_tracker_sync_validation": lambda ctrl: ServoTrackerSyncValidationPage(ctrl, "servo_tracker_sync_validation"),
         "two_segment_startup_validation": lambda ctrl: TwoSegmentStartupValidationPage(ctrl, "two_segment_startup_validation"),
+        "two_segment_collect_pose_command_dataset": lambda ctrl: TwoSegmentCollectPoseDatasetPage(ctrl, "two_segment_collect_pose_command_dataset"),
         "pretension_validation": lambda ctrl: PretensionValidationPage(ctrl, "pretension_validation"),
         "penprobe_chasing_demo": lambda ctrl: PenprobeChasingDemoPage(ctrl, "penprobe_chasing_demo"),
         "command_schedule_validation": lambda ctrl: CommandScheduleValidationPage(ctrl, "command_schedule_validation"),
