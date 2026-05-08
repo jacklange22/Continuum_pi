@@ -63,6 +63,7 @@ class ManagedRunSummary:
     active_segment: str = ""
     two_segment_summary: str = ""
     two_segment_pose_summary: str = ""
+    two_segment_modeling_summary: str = ""
     hardware_profile: str = "unknown"
     runtime_tip_mode: str = ""
     runtime_tip_trust_status: str = ""
@@ -251,6 +252,7 @@ def summarize_run(run_dir: Path) -> ManagedRunSummary:
         active_segment=active_segment,
         two_segment_summary=_format_two_segment_foundation(two_segment_foundation),
         two_segment_pose_summary=_format_two_segment_pose_summary(metrics),
+        two_segment_modeling_summary=_format_two_segment_modeling_summary(metrics),
         hardware_profile=str(
             _first_value(run_provenance.get("hardware_profile"), metadata_provenance.get("hardware_profile"), "unknown")
         ),
@@ -292,6 +294,7 @@ def detail_pairs_for_run(summary: ManagedRunSummary, *, project_root: Path | Non
         ("Active Segment", summary.active_segment or "n/a"),
         ("Two-Segment Foundation", summary.two_segment_summary or "n/a"),
         ("Two-Segment Pose Roles", summary.two_segment_pose_summary or "n/a"),
+        ("Two-Segment Modeling", summary.two_segment_modeling_summary or "n/a"),
         ("Hardware Profile", summary.hardware_profile),
         ("Runtime Tip", _join_nonempty([summary.runtime_tip_mode, summary.runtime_tip_trust_status]) or "n/a"),
         ("Registration", summary.registration_summary or "n/a"),
@@ -445,6 +448,31 @@ def _format_two_segment_pose_summary(metrics: dict[str, Any]) -> str:
             f"missing_required={pose.get('missing_required_roles', required)}",
             f"distal_only={bool(metrics.get('distal_only'))}",
             f"includes_intermediate={bool(metrics.get('includes_intermediate_pose'))}",
+        ]
+    )
+
+
+def _format_two_segment_modeling_summary(metrics: dict[str, Any]) -> str:
+    if str(metrics.get("dataset_type") or "") != "two_segment_modeling":
+        return ""
+    models = _as_dict(metrics.get("models"))
+    completed = [
+        key
+        for key, value in models.items()
+        if str(_as_dict(value).get("status") or "") == "completed"
+    ]
+    unavailable = [
+        key
+        for key, value in models.items()
+        if str(_as_dict(value).get("status") or "") == "unavailable"
+    ]
+    return _join_nonempty(
+        [
+            f"samples={metrics.get('accepted_sample_count')}",
+            f"split={metrics.get('split_method')}",
+            f"completed={completed}",
+            f"unavailable={unavailable}",
+            f"orientation_available={bool(metrics.get('orientation_available'))}",
         ]
     )
 

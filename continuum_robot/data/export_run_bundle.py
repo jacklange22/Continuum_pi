@@ -32,6 +32,14 @@ CORE_FILENAMES = {
     "two_segment_startup_artifact_metadata.json",
     "two_segment_dataset_summary.txt",
     "two_segment_tracking_role_provenance.json",
+    "two_segment_modeling_summary.txt",
+    "model_config.yaml",
+    "feature_metadata.json",
+    "label_metadata.json",
+    "train_test_split.json",
+    "rejected_samples.jsonl",
+    "predictions.csv",
+    "run_provenance.json",
     "registration_validation_summary.txt",
     "pivot_validation_summary.txt",
     "repeatability_summary.txt",
@@ -272,6 +280,8 @@ def _is_export_artifact(path: Path) -> bool:
     if name in CORE_FILENAMES or name in OPTIONAL_LARGE_FILENAMES:
         return True
     if suffix == ".png":
+        return True
+    if suffix in {".json", ".pt"} and "models" in [part.lower() for part in path.parts]:
         return True
     if suffix in {".json", ".csv", ".txt", ".yaml", ".yml"} and "debug" in str(path.parent).lower():
         return True

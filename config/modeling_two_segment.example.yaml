@@ -1,0 +1,57 @@
+# Example offline configuration for two-segment modeling analysis.
+# This is data-analysis only; it does not enable live control, chasing, or automatic pretension.
+
+strict_trainability: true
+allow_lower_trust: false
+input_units: tendon_displacement_mm
+output_target: distal_tip_xyz
+include_orientation_if_available: true
+
+models:
+  enabled:
+    - linear_baseline
+    - camarillo
+    - mike_constant_curvature
+    - ann
+
+split:
+  method: auto
+  test_fraction: 0.25
+  seed: 42
+
+linear_baseline:
+  ridge_alpha: 1.0e-6
+
+ann:
+  hidden_layers: [128, 128]
+  epochs: 200
+  batch_size: 64
+  learning_rate: 0.001
+  patience: 20
+
+physics_models:
+  # Placeholders for future active-code adapters. Missing or unvalidated values
+  # should keep the Camarillo/Mike adapters unavailable rather than producing
+  # fake predictions.
+  segment_lengths_mm:
+    segment_a: null
+    segment_b: null
+  cable_positions_mm:
+    segment_a:
+      - [4.0, 0.0]
+      - [0.0, 4.0]
+      - [-4.0, 0.0]
+      - [0.0, -4.0]
+    segment_b:
+      - [4.0, 0.0]
+      - [0.0, 4.0]
+      - [-4.0, 0.0]
+      - [0.0, -4.0]
+  stiffness_values:
+    ka: null
+    kb: null
+    kt: null
+  additional_cable_length_mm: null
+
+output:
+  figure_quality: production

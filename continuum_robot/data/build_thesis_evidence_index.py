@@ -108,8 +108,28 @@ def _extract_key_metrics(run_dir: Path) -> dict[str, Any]:
         "angular_rmse_deg",
         "sample_count",
         "valid_sample_count",
+        "accepted_sample_count",
+        "rejected_sample_count",
+        "source_dataset_run_ids",
+        "best_model_by_xyz_rmse",
+        "orientation_available",
+        "distal_only",
+        "includes_intermediate_pose",
     ]
-    return {key: metrics[key] for key in useful_keys if key in metrics}
+    extracted = {key: metrics[key] for key in useful_keys if key in metrics}
+    if str(metrics.get("dataset_type") or "") == "two_segment_modeling":
+        best = metrics.get("best_model_by_xyz_rmse") if isinstance(metrics.get("best_model_by_xyz_rmse"), dict) else {}
+        extracted["two_segment_modeling"] = {
+            "input_dataset_run_ids": metrics.get("source_dataset_run_ids", []),
+            "accepted_sample_count": metrics.get("accepted_sample_count"),
+            "rejected_sample_count": metrics.get("rejected_sample_count"),
+            "best_model": best.get("model_key"),
+            "best_xyz_rmse_mm": best.get("xyz_rmse_mm"),
+            "best_orientation_mean_error_deg": best.get("orientation_mean_error_deg"),
+            "lower_trust_warning": "allow_lower_trust_used_outputs_not_thesis_trusted"
+            in list(metrics.get("data_quality_warnings", []) or []),
+        }
+    return extracted
 
 
 def _render_markdown(payload: dict[str, Any]) -> str:
@@ -175,4 +195,3 @@ def _collision_safe_dir(path: Path) -> Path:
 
 if __name__ == "__main__":  # pragma: no cover
     sys.exit(main())
-

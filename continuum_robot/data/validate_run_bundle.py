@@ -50,6 +50,12 @@ EXPECTED_REPORT_FIGURES = {
         "two_segment_pose_coverage_report.png",
         "two_segment_dataset_quality_report.png",
     ],
+    "two_segment_modeling": [
+        "two_segment_model_comparison_report.png",
+        "two_segment_measured_vs_predicted_xy_report.png",
+        "two_segment_position_error_distribution_report.png",
+        "two_segment_axis_error_report.png",
+    ],
 }
 
 TWO_SEGMENT_STARTUP_REQUIRED_STAGES = [
@@ -129,6 +135,8 @@ def validate_run_folder(run_dir: Path) -> RunValidationReport:
         _check_two_segment_startup_validation(issues, run_dir=run_dir, metrics=metrics)
     if experiment_name == "two_segment_collect_pose_command_dataset":
         _check_two_segment_collect_pose_dataset(issues, run_dir=run_dir, metrics=metrics)
+    if experiment_name == "two_segment_modeling":
+        _check_two_segment_modeling(issues, run_dir=run_dir, metrics=metrics)
     _check_any_field(
         issues,
         "valid_for_model_training",
@@ -325,6 +333,44 @@ def _check_two_segment_collect_pose_dataset(
     extra = first.get("extra") if isinstance(first.get("extra"), dict) else {}
     if "role_observations" not in extra or "missing_required_pose_roles" not in extra:
         issues.append(RunValidationIssue("WARN", "First sample is missing two-segment pose role observation metadata."))
+
+
+def _check_two_segment_modeling(
+    issues: list[RunValidationIssue],
+    *,
+    run_dir: Path,
+    metrics: dict[str, Any],
+) -> None:
+    if str(metrics.get("dataset_type") or "") != "two_segment_modeling":
+        issues.append(RunValidationIssue("WARN", "Two-segment modeling summary should set dataset_type=two_segment_modeling."))
+    if int(metrics.get("accepted_sample_count", 0) or 0) <= 0:
+        issues.append(RunValidationIssue("FAIL", "Two-segment modeling run has no accepted modeling samples."))
+    models = metrics.get("models") if isinstance(metrics.get("models"), dict) else {}
+    if not models:
+        issues.append(RunValidationIssue("WARN", "Two-segment modeling run has no model result summaries."))
+    if "linear_baseline" not in models:
+        issues.append(RunValidationIssue("WARN", "Two-segment modeling run is missing the linear_baseline result."))
+    for model_key, model_payload in models.items():
+        model_data = model_payload if isinstance(model_payload, dict) else {}
+        if model_data.get("status") != "completed":
+            continue
+        model_dir = run_dir / "models" / str(model_key)
+        if not model_dir.exists() or not any(path.is_file() for path in model_dir.iterdir()):
+            issues.append(RunValidationIssue("WARN", f"Completed model is missing artifact files: {model_key}"))
+    for filename in [
+        "predictions.csv",
+        "feature_metadata.json",
+        "label_metadata.json",
+        "train_test_split.json",
+        "rejected_samples.jsonl",
+        "two_segment_modeling_summary.txt",
+        "run_provenance.json",
+    ]:
+        if not (run_dir / filename).exists():
+            issues.append(RunValidationIssue("WARN", f"Expected two-segment modeling artifact is missing: {filename}"))
+    warnings = list(metrics.get("data_quality_warnings", []) or [])
+    if metrics.get("valid_for_two_segment_model_training") is True and "allow_lower_trust_used_outputs_not_thesis_trusted" in warnings:
+        issues.append(RunValidationIssue("FAIL", "Lower-trust modeling output cannot be marked valid_for_two_segment_model_training=true."))
 
 
 def _infer_experiment_name(run_dir: Path) -> str:

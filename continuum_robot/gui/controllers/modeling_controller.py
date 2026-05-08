@@ -7,6 +7,7 @@ from pathlib import Path
 import threading
 
 from continuum_robot.gui.experiment_visualization import VisualizationModel
+from continuum_robot.data.run_management import discover_experiment_run_dirs
 from continuum_robot.modeling import (
     ArtifactDetails,
     ModelingDatasetSummary,
@@ -24,6 +25,7 @@ from continuum_robot.modeling import (
     evaluate_models,
     load_trained_artifact_details,
 )
+from continuum_robot.modeling.two_segment import load_two_segment_modeling_dataset
 
 
 @dataclass
@@ -95,9 +97,9 @@ class ModelingController:
                 selected_artifact_path = str(artifacts[0].path)
             selected_dataset_summary = self._resolve_dataset_summary(selected_dataset_path, datasets)
             selected_artifact_details = self._resolve_artifact_details(selected_artifact_path, artifacts)
-        elif selected_dataset_summary is None and selected_dataset_path:
+        if (not catalog_dirty) and selected_dataset_summary is None and selected_dataset_path:
             selected_dataset_summary = self._resolve_dataset_summary(selected_dataset_path, datasets)
-        elif selected_artifact_details is None and selected_artifact_path:
+        if (not catalog_dirty) and selected_artifact_details is None and selected_artifact_path:
             selected_artifact_details = self._resolve_artifact_details(selected_artifact_path, artifacts)
 
         can_evaluate = bool(selected_dataset_summary) and (
@@ -160,6 +162,32 @@ class ModelingController:
         with self._lock:
             self.artifact_root = Path(path)
             self._catalog_dirty = True
+
+    def discover_two_segment_dataset_runs(self) -> list[Path]:
+        """Return two-segment collect-pose runs for future GUI integration."""
+        return discover_experiment_run_dirs(
+            self.project_root,
+            experiment_name="two_segment_collect_pose_command_dataset",
+        )
+
+    def validate_two_segment_modeling_trainability(
+        self,
+        run_dirs: list[Path],
+        *,
+        allow_lower_trust: bool = False,
+    ) -> dict[str, object]:
+        """Return a controller-level trainability summary without running models."""
+        dataset = load_two_segment_modeling_dataset(run_dirs, allow_lower_trust=bool(allow_lower_trust))
+        return {
+            "runs_scanned": len(run_dirs),
+            "samples_scanned": dataset.accepted_count + dataset.rejected_count,
+            "samples_accepted": dataset.accepted_count,
+            "samples_rejected": dataset.rejected_count,
+            "rejection_reasons": dataset.rejection_counts(),
+            "trainable": dataset.accepted_count >= 2,
+            "orientation_available": dataset.orientation_available,
+            "includes_intermediate_pose": dataset.includes_intermediate_pose,
+        }
 
     def evaluate(self) -> None:
         with self._lock:

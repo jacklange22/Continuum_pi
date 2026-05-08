@@ -1,0 +1,36 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "two_segment_collect_pose_command_dataset",
+  "run_id": "fixture-two-segment-trainable",
+  "success": true,
+  "status": "success",
+  "sample_counts": {"total": 6},
+  "experiment_metrics": {
+    "dataset_type": "two_segment_collect_pose_command_dataset",
+    "run_trust_mode": "thesis_trusted",
+    "valid_for_model_training": false,
+    "valid_for_two_segment_model_training": true,
+    "valid_for_thesis_repeatability": false,
+    "accepted_sample_count": 6,
+    "rejected_sample_count": 0,
+    "startup_artifact_provenance": {
+      "accepted_all_8_startup": true,
+      "artifact_path": "fixture_all8_startup.json",
+      "artifact_sha256": "fixture-sha256"
+    },
+    "pose_label_summary": {
+      "available_roles": ["distal_tip"],
+      "missing_required_roles": [],
+      "distal_pose_sample_count": 6,
+      "intermediate_pose_sample_count": 0
+    },
+    "run_provenance": {
+      "operating_mode": "dual_segment",
+      "hardware_profile": "robot_8servo.yaml",
+      "two_segment_foundation": {
+        "command_schema": {"schema_version": "two_segment_command_v1"},
+        "pose_schema": {"schema_version": "two_segment_pose_observation_v1"}
+      }
+    }
+  }
+}

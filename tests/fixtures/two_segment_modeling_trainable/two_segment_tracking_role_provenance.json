@@ -1,0 +1,15 @@
+{
+  "two_segment_tracking_role_config": {
+    "distal_tip": {
+      "role_name": "distal_tip",
+      "tool_id": "0A",
+      "pose_kind": "calibrated_tip",
+      "required_for_two_segment_model_training": true
+    }
+  },
+  "pose_label_summary": {
+    "available_roles": ["distal_tip"],
+    "missing_required_roles": [],
+    "distal_pose_sample_count": 6
+  }
+}

@@ -1,0 +1,4 @@
+robot:
+  mode: dual_segment
+dataset:
+  fixture: two_segment_modeling_trainable
