@@ -192,6 +192,64 @@ Target acceptance:
 - robot-frame tip pose includes tangent/orientation when trusted
 - saved output is ready for later offline ANN / state-aware model training
 
+## Workflow 8: Two-Segment Modeling Analysis
+
+Applies after `two_segment_collect_pose_command_dataset` has produced trusted labeled samples.
+This workflow is offline data analysis only. It does not enable live two-segment control,
+penprobe chasing, or automatic two-segment pretension.
+
+Required input data:
+
+- `operating_mode=dual_segment`
+- accepted all-8 manual startup provenance
+- successful accepted commands
+- non-servo-only trusted samples by default
+- `distal_tip` pose role in robot frame
+- `valid_for_two_segment_model_training=true`
+
+Servo-only or dry-run data is rejected by default because it has no robot-frame distal-tip
+pose label to train against. Use lower-trust analysis only for debugging labeled data that
+does not meet the trusted-run criteria.
+
+CLI:
+
+```bash
+.venv/bin/python -m continuum_robot.modeling.two_segment.cli \
+  --latest \
+  --config config/modeling_two_segment.example.yaml \
+  --models linear_baseline ann camarillo mike_constant_curvature
+```
+
+GUI:
+
+1. Open the Modeling workspace.
+2. Use the `Two-Segment Modeling` section.
+3. Select one or more `two_segment_collect_pose_command_dataset` runs.
+4. Check trainability status: accepted/rejected samples, rejection reasons, and orientation availability.
+5. Keep `Strict` enabled for thesis-facing work.
+6. Choose model families and run analysis.
+7. Open or export the output bundle.
+
+Data tab shortcut:
+
+1. Select a `two_segment_collect_pose_command_dataset` run.
+2. Click `Run Two-Segment Modeling` for a quick linear-baseline analysis.
+3. Select the resulting `two_segment_modeling` run to open its summary or export the bundle.
+
+Outputs:
+
+- `two_segment_model_comparison_report.png`: model XYZ RMSE comparison
+- `two_segment_measured_vs_predicted_xy_report.png`: distal-tip XY measured vs predicted
+- `two_segment_position_error_distribution_report.png`: position error distribution in mm
+- `two_segment_axis_error_report.png`: X/Y/Z RMSE
+- `two_segment_orientation_error_report.png`: angular tangent/orientation error when explicit tangent labels exist
+
+Model status:
+
+- `linear_baseline` is implemented and should be used as the first sanity check.
+- `ann` runs when PyTorch is available; otherwise it is reported as unavailable and analysis continues.
+- `mike_constant_curvature` and `camarillo` are scaffolded/unavailable until active, validated two-segment adapters and parameters exist.
+
 ## Recommended Lab Order
 
 1. tracker doctor / smoke
@@ -204,6 +262,7 @@ Target acceptance:
 8. startup calibration and pretension
 9. single-segment repeatability
 10. Motor Babble modeling dataset collection
+11. Two-segment modeling analysis only after trusted two-segment dataset labels exist
 
 ## Tracker Verdicts
 

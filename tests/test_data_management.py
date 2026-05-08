@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 
 import numpy as np
 
@@ -22,6 +23,9 @@ from continuum_robot.registration.runtime_tip_repository import (
     RuntimeTipCalibrationRecord,
     RuntimeTipCalibrationRepository,
 )
+
+
+TWO_SEGMENT_FIXTURE = Path(__file__).parent / "fixtures" / "two_segment_modeling_trainable"
 from continuum_robot.servos.neutral_calibration_service import (
     NeutralCalibrationService,
     ServoCalibrationContext,
@@ -389,6 +393,32 @@ def test_data_management_controller_exports_selected_run(tmp_path: Path) -> None
     assert result.final_path.exists()
     assert controller.state.last_export_path == str(result.final_path)
     assert "rsync -av" in controller.state.last_transfer_command
+
+
+def test_data_management_controller_two_segment_modeling_actions(tmp_path: Path) -> None:
+    run_dir = tmp_path / "data" / "experiments" / "two_segment_collect_pose_command_dataset" / "20260508_120000_two_segment_collect_pose_command_dataset"
+    shutil.copytree(TWO_SEGMENT_FIXTURE, run_dir)
+    controller = DataManagementController(project_root=tmp_path)
+    state = controller.refresh()
+    item = next(entry for entry in state.items if entry.path == run_dir)
+
+    controller.set_selected_paths([str(item.path)])
+    state = controller.refresh()
+    assert state.can_run_two_segment_modeling is True
+    assert state.can_open_modeling_summary is False
+    output_dir = controller.run_two_segment_modeling_for_selected()
+    assert (output_dir / "summary.json").exists()
+
+    state = controller.refresh()
+    output_item = next(entry for entry in state.items if entry.path == output_dir)
+    controller.set_selected_paths([str(output_item.path)])
+    state = controller.refresh()
+    assert state.can_run_two_segment_modeling is False
+    assert state.can_open_modeling_summary is True
+    assert state.can_export_modeling_bundle is True
+    assert controller.open_modeling_summary_path_for_selected().name == "two_segment_modeling_summary.txt"
+    export = controller.export_selected_modeling_bundle()
+    assert export.final_path.exists()
 
 
 def test_data_management_controller_validates_marks_and_trashes_selected_run(tmp_path: Path) -> None:

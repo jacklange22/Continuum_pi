@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shutil
 import time
 
 import pytest
@@ -22,6 +23,9 @@ from continuum_robot.gui.tabs.modeling_tab import ModelingTab
 from continuum_robot.gui.widgets.ann_training_window import AnnTrainingWindow
 from continuum_robot.modeling import analysis as analysis_module
 from continuum_robot.modeling.analysis import ModelMetrics, ModelEvaluation, ModelingEvaluationResult
+
+
+TWO_SEGMENT_FIXTURE = Path(__file__).parent / "fixtures" / "two_segment_modeling_trainable"
 
 
 def _app() -> QApplication:
@@ -224,6 +228,35 @@ def test_modeling_tab_constructs_with_grouped_workspace_stylesheet_contract(tmp_
         assert tab.objectName() == "modelingWorkspace"
         assert "QWidget#modelingWorkspace QComboBox" in tab.styleSheet()
         assert "QWidget#modelingWorkspace QListWidget" in tab.styleSheet()
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_modeling_controller_and_tab_expose_two_segment_modeling_panel(tmp_path: Path) -> None:
+    _app()
+    run_dir = tmp_path / "data" / "experiments" / "two_segment_collect_pose_command_dataset" / "20260508_120000_two_segment_collect_pose_command_dataset"
+    shutil.copytree(TWO_SEGMENT_FIXTURE, run_dir)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    state = controller.refresh()
+
+    assert str(run_dir) in state.two_segment_dataset_runs
+    assert state.two_segment_can_run is True
+    trainability = controller.validate_two_segment_modeling_trainability([run_dir])
+    assert trainability["samples_accepted"] == 6
+    assert trainability["samples_rejected"] == 0
+
+    tab = ModelingTab(controller)
+    try:
+        tab.update(state)
+        assert tab.two_segment_run_list.count() == 1
+        assert tab.two_segment_run_button.isEnabled() is True
+        assert tab.two_segment_strict_check.isChecked() is True
     finally:
         tab.close()
         controller.shutdown()

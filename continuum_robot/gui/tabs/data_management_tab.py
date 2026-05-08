@@ -201,6 +201,22 @@ class DataManagementTab(QWidget):
         validation_row.addWidget(self.validate_experiment_button)
         validation_row.addStretch(1)
         actions_card.body_layout.addLayout(validation_row)
+        modeling_row = QHBoxLayout()
+        modeling_row.setContentsMargins(0, 0, 0, 0)
+        modeling_row.setSpacing(10)
+        self.run_two_segment_modeling_button = QPushButton("Run Two-Segment Modeling")
+        self.run_two_segment_modeling_button.clicked.connect(self._run_two_segment_modeling)
+        self.open_modeling_summary_button = QPushButton("Open Modeling Summary")
+        self.open_modeling_summary_button.setProperty("variant", "ghost")
+        self.open_modeling_summary_button.clicked.connect(self._open_modeling_summary)
+        self.export_modeling_bundle_button = QPushButton("Export Modeling Bundle")
+        self.export_modeling_bundle_button.setProperty("variant", "ghost")
+        self.export_modeling_bundle_button.clicked.connect(self._export_modeling_bundle)
+        modeling_row.addWidget(self.run_two_segment_modeling_button)
+        modeling_row.addWidget(self.open_modeling_summary_button)
+        modeling_row.addWidget(self.export_modeling_bundle_button)
+        modeling_row.addStretch(1)
+        actions_card.body_layout.addLayout(modeling_row)
         review_row = QHBoxLayout()
         review_row.setContentsMargins(0, 0, 0, 0)
         review_row.setSpacing(10)
@@ -289,6 +305,9 @@ class DataManagementTab(QWidget):
         self.validate_selected_button.setEnabled(state.can_validate_selected_run)
         self.validate_latest_button.setEnabled(state.can_validate_latest_run)
         self.validate_experiment_button.setEnabled(state.can_validate_experiment_runs)
+        self.run_two_segment_modeling_button.setEnabled(state.can_run_two_segment_modeling)
+        self.open_modeling_summary_button.setEnabled(state.can_open_modeling_summary)
+        self.export_modeling_bundle_button.setEnabled(state.can_export_modeling_bundle)
         self.save_review_button.setEnabled(state.can_mark_selected_run)
         self.archive_run_button.setEnabled(state.can_archive_selected_run)
         self.trash_run_button.setEnabled(state.can_trash_selected_run)
@@ -430,6 +449,32 @@ class DataManagementTab(QWidget):
 
     def _validate_experiment_runs(self) -> None:
         self._run_text_action(self.controller.validate_visible_experiment_runs)
+
+    def _run_two_segment_modeling(self) -> None:
+        try:
+            output_dir = self.controller.run_two_segment_modeling_for_selected()
+        except Exception as exc:
+            self.status_label.setText(f"Two-segment modeling failed: {exc}")
+            return
+        self.update(self.controller.refresh())
+        self.status_label.setText(f"Two-segment modeling saved to {output_dir}")
+
+    def _open_modeling_summary(self) -> None:
+        try:
+            path = self.controller.open_modeling_summary_path_for_selected()
+        except Exception as exc:
+            self.status_label.setText(f"Open modeling summary failed: {exc}")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _export_modeling_bundle(self) -> None:
+        try:
+            result = self.controller.export_selected_modeling_bundle()
+        except Exception as exc:
+            self.status_label.setText(f"Modeling export failed: {exc}")
+            return
+        self.update(self.controller.refresh())
+        self.status_label.setText(f"Exported modeling bundle to {result.final_path}")
 
     def _save_review(self) -> None:
         try:

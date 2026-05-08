@@ -41,6 +41,9 @@ def test_data_management_tab_updates_from_controller_state(tmp_path) -> None:
     assert tab.export_selected_button.isEnabled() is False
     assert tab.export_latest_button.isEnabled() is False
     assert tab.validate_selected_button.isEnabled() is False
+    assert tab.run_two_segment_modeling_button.isEnabled() is False
+    assert tab.open_modeling_summary_button.isEnabled() is False
+    assert tab.export_modeling_bundle_button.isEnabled() is False
     assert tab.save_review_button.isEnabled() is False
     assert tab.archive_run_button.isEnabled() is False
     assert tab.trash_run_button.isEnabled() is False

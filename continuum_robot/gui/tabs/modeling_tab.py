@@ -7,6 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QSignalBlocker, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFrame,
@@ -162,6 +163,68 @@ class ModelingTab(QWidget):
         controls_card.body_layout.addLayout(action_row)
         left.addWidget(controls_card)
 
+        two_segment_card = _Card(
+            "Two-Segment Modeling",
+            "Offline analysis for `two_segment_collect_pose_command_dataset` runs. This does not enable live control.",
+        )
+        two_segment_buttons = QHBoxLayout()
+        two_segment_buttons.setContentsMargins(0, 0, 0, 0)
+        self.two_segment_refresh_button = QPushButton("Refresh Runs")
+        self.two_segment_refresh_button.setProperty("variant", "ghost")
+        self.two_segment_refresh_button.clicked.connect(self._refresh_catalogs)
+        self.two_segment_open_output_button = QPushButton("Open Output")
+        self.two_segment_open_output_button.setProperty("variant", "ghost")
+        self.two_segment_open_output_button.clicked.connect(self._open_two_segment_output)
+        self.two_segment_export_button = QPushButton("Export Bundle")
+        self.two_segment_export_button.setProperty("variant", "ghost")
+        self.two_segment_export_button.clicked.connect(self._export_two_segment_output)
+        two_segment_buttons.addWidget(self.two_segment_refresh_button)
+        two_segment_buttons.addWidget(self.two_segment_open_output_button)
+        two_segment_buttons.addWidget(self.two_segment_export_button)
+        two_segment_buttons.addStretch(1)
+        two_segment_card.body_layout.addLayout(two_segment_buttons)
+        self.two_segment_run_list = QListWidget()
+        self.two_segment_run_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.two_segment_run_list.setMinimumHeight(140)
+        self.two_segment_run_list.itemSelectionChanged.connect(self._on_two_segment_selection_changed)
+        two_segment_card.body_layout.addWidget(self.two_segment_run_list)
+        model_row = QHBoxLayout()
+        model_row.setContentsMargins(0, 0, 0, 0)
+        self.two_segment_linear_check = QCheckBox("Linear")
+        self.two_segment_linear_check.setChecked(True)
+        self.two_segment_linear_check.toggled.connect(lambda value: self.controller.set_two_segment_model_enabled("linear_baseline", bool(value)))
+        self.two_segment_ann_check = QCheckBox("ANN")
+        self.two_segment_ann_check.setChecked(True)
+        self.two_segment_ann_check.toggled.connect(lambda value: self.controller.set_two_segment_model_enabled("ann", bool(value)))
+        self.two_segment_camarillo_check = QCheckBox("Camarillo unavailable")
+        self.two_segment_camarillo_check.toggled.connect(lambda value: self.controller.set_two_segment_model_enabled("camarillo", bool(value)))
+        self.two_segment_mike_check = QCheckBox("Mike unavailable")
+        self.two_segment_mike_check.toggled.connect(lambda value: self.controller.set_two_segment_model_enabled("mike_constant_curvature", bool(value)))
+        model_row.addWidget(self.two_segment_linear_check)
+        model_row.addWidget(self.two_segment_ann_check)
+        model_row.addWidget(self.two_segment_camarillo_check)
+        model_row.addWidget(self.two_segment_mike_check)
+        model_row.addStretch(1)
+        two_segment_card.body_layout.addLayout(model_row)
+        trust_row = QHBoxLayout()
+        trust_row.setContentsMargins(0, 0, 0, 0)
+        self.two_segment_strict_check = QCheckBox("Strict")
+        self.two_segment_strict_check.setChecked(True)
+        self.two_segment_strict_check.toggled.connect(lambda value: self.controller.set_two_segment_strict_mode(bool(value)))
+        self.two_segment_lower_trust_check = QCheckBox("Allow lower trust")
+        self.two_segment_lower_trust_check.toggled.connect(lambda value: self.controller.set_two_segment_allow_lower_trust(bool(value)))
+        self.two_segment_run_button = QPushButton("Run Two-Segment Modeling")
+        self.two_segment_run_button.setProperty("role", "primary")
+        self.two_segment_run_button.clicked.connect(self.controller.run_two_segment_modeling_analysis)
+        trust_row.addWidget(self.two_segment_strict_check)
+        trust_row.addWidget(self.two_segment_lower_trust_check)
+        trust_row.addWidget(self.two_segment_run_button)
+        trust_row.addStretch(1)
+        two_segment_card.body_layout.addLayout(trust_row)
+        self.two_segment_pairs = _PairsWidget()
+        two_segment_card.body_layout.addWidget(self.two_segment_pairs)
+        left.addWidget(two_segment_card)
+
         results_card = _Card("Comparison Summary", "Compact saved-output summary and side-by-side error views for the selected models.")
         self.status_label = QLabel("Select a dataset, choose models, then run a comparison.")
         self.status_label.setWordWrap(True)
@@ -185,9 +248,20 @@ class ModelingTab(QWidget):
         self.open_dataset_button.setEnabled(bool(state.selected_dataset_path))
         self.open_artifact_button.setEnabled(bool(state.selected_artifact_path))
         self.open_results_button.setEnabled(bool(state.last_output_path))
+        self._sync_two_segment_run_list(state)
+        self.two_segment_pairs.set_pairs(state.two_segment_summary_pairs)
+        self.two_segment_run_button.setEnabled(state.two_segment_can_run)
+        self.two_segment_open_output_button.setEnabled(state.two_segment_can_open_output)
+        self.two_segment_export_button.setEnabled(state.two_segment_can_export_output)
         self._set_checkbox(self.mike_check, state.include_mike)
         self._set_checkbox(self.camarillo_check, state.include_camarillo)
         self._set_checkbox(self.ann_check, state.include_ann)
+        self._set_checkbox(self.two_segment_linear_check, state.two_segment_include_linear)
+        self._set_checkbox(self.two_segment_ann_check, state.two_segment_include_ann)
+        self._set_checkbox(self.two_segment_camarillo_check, state.two_segment_include_camarillo)
+        self._set_checkbox(self.two_segment_mike_check, state.two_segment_include_mike)
+        self._set_checkbox(self.two_segment_strict_check, state.two_segment_strict_mode)
+        self._set_checkbox(self.two_segment_lower_trust_check, state.two_segment_allow_lower_trust)
         self._set_combo(self.scope_combo, state.evaluation_scope)
 
     def _refresh_catalogs(self) -> None:
@@ -231,6 +305,25 @@ class ModelingTab(QWidget):
                     self.artifact_list.setCurrentRow(index)
                     break
 
+    def _sync_two_segment_run_list(self, state: ModelingViewState) -> None:
+        current_paths = [self.two_segment_run_list.item(index).data(Qt.UserRole) for index in range(self.two_segment_run_list.count())]
+        target_paths = list(state.two_segment_dataset_runs)
+        if current_paths != target_paths:
+            with QSignalBlocker(self.two_segment_run_list):
+                self.two_segment_run_list.clear()
+                for path in target_paths:
+                    run_path = Path(path)
+                    item = QListWidgetItem(run_path.name)
+                    item.setData(Qt.UserRole, str(path))
+                    self.two_segment_run_list.addItem(item)
+        selected = set(state.selected_two_segment_run_paths)
+        with QSignalBlocker(self.two_segment_run_list):
+            self.two_segment_run_list.clearSelection()
+            for index in range(self.two_segment_run_list.count()):
+                item = self.two_segment_run_list.item(index)
+                if item.data(Qt.UserRole) in selected:
+                    item.setSelected(True)
+
     def _on_dataset_selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if current is not None:
             self.controller.select_dataset(str(current.data(Qt.UserRole)))
@@ -238,6 +331,14 @@ class ModelingTab(QWidget):
     def _on_artifact_selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if current is not None:
             self.controller.select_artifact(str(current.data(Qt.UserRole)))
+
+    def _on_two_segment_selection_changed(self) -> None:
+        paths = [
+            str(item.data(Qt.UserRole))
+            for item in self.two_segment_run_list.selectedItems()
+        ]
+        self.controller.select_two_segment_runs(paths)
+        self.update(self.controller.refresh())
 
     def _on_scope_changed(self, _index: int) -> None:
         value = self.scope_combo.currentData()
@@ -258,6 +359,19 @@ class ModelingTab(QWidget):
         state = self.controller.refresh()
         if state.last_output_path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(state.last_output_path))))
+
+    def _open_two_segment_output(self) -> None:
+        state = self.controller.refresh()
+        if state.two_segment_last_output_path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(state.two_segment_last_output_path))))
+
+    def _export_two_segment_output(self) -> None:
+        try:
+            self.controller.export_last_two_segment_modeling_bundle()
+        except Exception as exc:
+            self.status_label.setText(f"Two-segment export failed: {exc}")
+            return
+        self.update(self.controller.refresh())
 
     @staticmethod
     def _set_checkbox(widget: QCheckBox, value: bool) -> None:

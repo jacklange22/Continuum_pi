@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import threading
 
+from continuum_robot.data.export_run_bundle import ExportBundleResult, export_run_bundle
 from continuum_robot.gui.experiment_visualization import VisualizationModel
 from continuum_robot.data.run_management import discover_experiment_run_dirs
 from continuum_robot.modeling import (
@@ -25,7 +26,12 @@ from continuum_robot.modeling import (
     evaluate_models,
     load_trained_artifact_details,
 )
-from continuum_robot.modeling.two_segment import load_two_segment_modeling_dataset
+from continuum_robot.modeling.two_segment import (
+    TwoSegmentModelingConfig,
+    TwoSegmentModelingResult,
+    load_two_segment_modeling_dataset,
+    run_two_segment_modeling,
+)
 
 
 @dataclass
@@ -51,6 +57,21 @@ class ModelingViewState:
     visualization_model: VisualizationModel = field(
         default_factory=lambda: VisualizationModel(summary_lines=["No modeling results loaded."])
     )
+    two_segment_dataset_runs: list[str] = field(default_factory=list)
+    selected_two_segment_run_paths: list[str] = field(default_factory=list)
+    two_segment_summary_pairs: list[tuple[str, str]] = field(default_factory=list)
+    two_segment_include_linear: bool = True
+    two_segment_include_ann: bool = True
+    two_segment_include_camarillo: bool = False
+    two_segment_include_mike: bool = False
+    two_segment_strict_mode: bool = True
+    two_segment_allow_lower_trust: bool = False
+    two_segment_active: bool = False
+    two_segment_can_run: bool = False
+    two_segment_last_output_path: str | None = None
+    two_segment_can_open_output: bool = False
+    two_segment_can_export_output: bool = False
+    two_segment_export_path: str | None = None
 
 
 class ModelingController:
@@ -74,6 +95,7 @@ class ModelingController:
         self._selected_dataset_summary: ModelingDatasetSummary | None = None
         self._selected_artifact_details: ArtifactDetails | None = None
         self._last_result: ModelingEvaluationResult | None = None
+        self._last_two_segment_result: TwoSegmentModelingResult | None = None
         self.config = ModelingEvaluationConfig(results_root=str(self.results_root))
         self.state = ModelingViewState()
 
@@ -82,19 +104,25 @@ class ModelingController:
             catalog_dirty = self._catalog_dirty
             selected_dataset_path = self.state.selected_dataset_path
             selected_artifact_path = self.state.selected_artifact_path
+            selected_two_segment_run_paths = list(self.state.selected_two_segment_run_paths)
             selected_dataset_summary = self._selected_dataset_summary
             selected_artifact_details = self._selected_artifact_details
             evaluation_active = self.state.evaluation_active
+            two_segment_active = self.state.two_segment_active
 
         datasets = self.state.datasets
         artifacts = self.state.artifacts
+        two_segment_runs = list(self.state.two_segment_dataset_runs)
         if catalog_dirty:
             datasets = discover_modeling_datasets(output_root=self.dataset_output_root)
             artifacts = discover_trained_artifacts(artifact_root=self.artifact_root)
+            two_segment_runs = [str(path) for path in self.discover_two_segment_dataset_runs()]
             if not selected_dataset_path and datasets:
                 selected_dataset_path = str(datasets[0].path)
             if artifacts and selected_artifact_path == "":
                 selected_artifact_path = str(artifacts[0].path)
+            if not selected_two_segment_run_paths and two_segment_runs:
+                selected_two_segment_run_paths = [two_segment_runs[0]]
             selected_dataset_summary = self._resolve_dataset_summary(selected_dataset_path, datasets)
             selected_artifact_details = self._resolve_artifact_details(selected_artifact_path, artifacts)
         if (not catalog_dirty) and selected_dataset_summary is None and selected_dataset_path:
@@ -107,6 +135,11 @@ class ModelingController:
             or bool(self.config.include_camarillo)
             or (bool(self.config.include_ann) and bool(selected_artifact_details))
         ) and not evaluation_active
+        two_segment_trainability = self._two_segment_trainability_pairs(
+            selected_two_segment_run_paths,
+            allow_lower_trust=bool(self.state.two_segment_allow_lower_trust and not self.state.two_segment_strict_mode),
+        )
+        two_segment_can_run = bool(selected_two_segment_run_paths) and not two_segment_active and bool(self._two_segment_model_keys())
 
         with self._lock:
             self._catalog_dirty = False
@@ -125,6 +158,12 @@ class ModelingController:
             self.state.include_ann = bool(self.config.include_ann)
             self.state.evaluation_scope = str(self.config.evaluation_scope)
             self.state.can_evaluate = can_evaluate
+            self.state.two_segment_dataset_runs = two_segment_runs
+            self.state.selected_two_segment_run_paths = selected_two_segment_run_paths
+            self.state.two_segment_summary_pairs = two_segment_trainability
+            self.state.two_segment_can_run = two_segment_can_run
+            self.state.two_segment_can_open_output = bool(self.state.two_segment_last_output_path)
+            self.state.two_segment_can_export_output = bool(self.state.two_segment_last_output_path)
             return self.state
 
     def select_dataset(self, path: str) -> None:
@@ -163,6 +202,40 @@ class ModelingController:
             self.artifact_root = Path(path)
             self._catalog_dirty = True
 
+    def select_two_segment_runs(self, paths: list[str]) -> None:
+        selected = {str(path) for path in paths if str(path).strip()}
+        with self._lock:
+            visible = set(self.state.two_segment_dataset_runs)
+            self.state.selected_two_segment_run_paths = [
+                path for path in self.state.two_segment_dataset_runs if path in selected or path not in visible
+            ]
+            if not self.state.selected_two_segment_run_paths:
+                self.state.selected_two_segment_run_paths = [path for path in paths if str(path).strip()]
+
+    def set_two_segment_model_enabled(self, model_key: str, value: bool) -> None:
+        with self._lock:
+            key = str(model_key)
+            if key == "linear_baseline":
+                self.state.two_segment_include_linear = bool(value)
+            elif key == "ann":
+                self.state.two_segment_include_ann = bool(value)
+            elif key == "camarillo":
+                self.state.two_segment_include_camarillo = bool(value)
+            elif key in {"mike", "mike_constant_curvature"}:
+                self.state.two_segment_include_mike = bool(value)
+
+    def set_two_segment_strict_mode(self, value: bool) -> None:
+        with self._lock:
+            self.state.two_segment_strict_mode = bool(value)
+            if bool(value):
+                self.state.two_segment_allow_lower_trust = False
+
+    def set_two_segment_allow_lower_trust(self, value: bool) -> None:
+        with self._lock:
+            self.state.two_segment_allow_lower_trust = bool(value)
+            if bool(value):
+                self.state.two_segment_strict_mode = False
+
     def discover_two_segment_dataset_runs(self) -> list[Path]:
         """Return two-segment collect-pose runs for future GUI integration."""
         return discover_experiment_run_dirs(
@@ -188,6 +261,53 @@ class ModelingController:
             "orientation_available": dataset.orientation_available,
             "includes_intermediate_pose": dataset.includes_intermediate_pose,
         }
+
+    def run_two_segment_modeling_analysis(self) -> None:
+        with self._lock:
+            if self.state.two_segment_active:
+                return
+            run_dirs = [Path(path) for path in self.state.selected_two_segment_run_paths]
+            model_keys = self._two_segment_model_keys()
+            allow_lower_trust = bool(self.state.two_segment_allow_lower_trust and not self.state.two_segment_strict_mode)
+            self.state.two_segment_active = True
+            self.state.status_message = "Running two-segment modeling analysis..."
+        if not run_dirs:
+            with self._lock:
+                self.state.two_segment_active = False
+                self.state.status_message = "Select one or more two-segment dataset runs first."
+            return
+        if not model_keys:
+            with self._lock:
+                self.state.two_segment_active = False
+                self.state.status_message = "Select at least one two-segment model family."
+            return
+        self._worker_thread = threading.Thread(
+            target=self._two_segment_modeling_worker,
+            kwargs={
+                "run_dirs": run_dirs,
+                "model_keys": model_keys,
+                "allow_lower_trust": allow_lower_trust,
+            },
+            daemon=True,
+        )
+        self._worker_thread.start()
+
+    def export_last_two_segment_modeling_bundle(self) -> ExportBundleResult:
+        with self._lock:
+            output_path = self.state.two_segment_last_output_path
+        if not output_path:
+            raise ValueError("No two-segment modeling output is available to export.")
+        result = export_run_bundle(
+            run_dir=Path(output_path),
+            project_root=self.project_root,
+            include_samples=False,
+            include_debug=False,
+            make_zip=True,
+        )
+        with self._lock:
+            self.state.two_segment_export_path = str(result.final_path)
+            self.state.status_message = f"Exported two-segment modeling bundle to {result.final_path}."
+        return result
 
     def evaluate(self) -> None:
         with self._lock:
@@ -248,6 +368,85 @@ class ModelingController:
                 f"Modeling comparison saved to {result.output_dir.name} "
                 f"using {result.selected_sample_count} samples."
             )
+
+    def _two_segment_modeling_worker(self, *, run_dirs: list[Path], model_keys: list[str], allow_lower_trust: bool) -> None:
+        try:
+            result = run_two_segment_modeling(
+                run_dirs=run_dirs,
+                project_root=self.project_root,
+                config=TwoSegmentModelingConfig(
+                    allow_lower_trust=bool(allow_lower_trust),
+                    model_keys=list(model_keys),
+                    output_root=str(self.project_root / "data" / "experiments"),
+                    random_seed=42,
+                ),
+            )
+        except ValueError as exc:
+            requirements = (
+                "Required: dual_segment dataset, accepted all-8 startup, distal_tip pose role, "
+                "non-servo-only trusted run, successful commands, and valid_for_two_segment_model_training=true."
+            )
+            with self._lock:
+                self.state.two_segment_active = False
+                self.state.status_message = f"Two-segment modeling could not start: {exc} {requirements}"
+            return
+        with self._lock:
+            self._last_two_segment_result = result
+            self.state.two_segment_active = False
+            self.state.two_segment_last_output_path = str(result.output_dir)
+            self.state.status_message = self._two_segment_result_message(result)
+
+    def _two_segment_model_keys(self) -> list[str]:
+        keys: list[str] = []
+        if self.state.two_segment_include_linear:
+            keys.append("linear_baseline")
+        if self.state.two_segment_include_ann:
+            keys.append("ann")
+        if self.state.two_segment_include_camarillo:
+            keys.append("camarillo")
+        if self.state.two_segment_include_mike:
+            keys.append("mike_constant_curvature")
+        return keys
+
+    def _two_segment_trainability_pairs(self, run_paths: list[str], *, allow_lower_trust: bool) -> list[tuple[str, str]]:
+        if not run_paths:
+            return [
+                ("Selection", "Select one or more two_segment_collect_pose_command_dataset runs."),
+                ("Required", "dual_segment, all-8 startup, distal_tip robot-frame pose, trusted non-servo-only samples."),
+            ]
+        try:
+            summary = self.validate_two_segment_modeling_trainability(
+                [Path(path) for path in run_paths],
+                allow_lower_trust=bool(allow_lower_trust),
+            )
+        except Exception as exc:
+            return [("Trainability", f"Could not inspect selected runs: {exc}")]
+        return [
+            ("Runs", str(summary["runs_scanned"])),
+            ("Samples", f"{summary['samples_accepted']} accepted / {summary['samples_rejected']} rejected"),
+            ("Trainable", str(summary["trainable"])),
+            ("Rejection Reasons", str(summary["rejection_reasons"] or {})),
+            ("Orientation", "available" if summary["orientation_available"] else "XYZ only"),
+            ("Intermediate Pose", str(summary["includes_intermediate_pose"])),
+        ]
+
+    @staticmethod
+    def _two_segment_result_message(result: TwoSegmentModelingResult) -> str:
+        completed = [item for item in result.model_results if item.status == "completed"]
+        unavailable = [f"{item.model_key}: {item.reason}" for item in result.model_results if item.status == "unavailable"]
+        best = min(
+            completed,
+            key=lambda item: float(item.metrics.get("xyz_rmse_mm", float("inf"))),
+        ) if completed else None
+        pieces = [
+            f"Two-segment modeling saved to {result.output_dir.name}.",
+            f"Accepted {result.dataset.accepted_count}, rejected {result.dataset.rejected_count}.",
+        ]
+        if best is not None:
+            pieces.append(f"Best XYZ RMSE: {best.model_key} {best.metrics.get('xyz_rmse_mm'):.4g} mm.")
+        if unavailable:
+            pieces.append("Unavailable: " + "; ".join(unavailable[:3]))
+        return " ".join(pieces)
 
     @staticmethod
     def _resolve_dataset_summary(

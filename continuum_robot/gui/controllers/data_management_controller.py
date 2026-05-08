@@ -18,6 +18,7 @@ from continuum_robot.data.run_management import (
     write_run_review,
 )
 from continuum_robot.data.validate_run_bundle import render_validation_report, validate_run_folder
+from continuum_robot.modeling.two_segment import TwoSegmentModelingConfig, run_two_segment_modeling
 from continuum_robot.data_management import (
     ManagedDataItem,
     build_root_summary,
@@ -66,6 +67,9 @@ class DataManagementViewState:
     can_build_evidence_index: bool = True
     review_status_options: list[str] = field(default_factory=lambda: sorted(REVIEW_STATUSES))
     last_evidence_index_path: str | None = None
+    can_run_two_segment_modeling: bool = False
+    can_open_modeling_summary: bool = False
+    can_export_modeling_bundle: bool = False
 
 
 class DataManagementController:
@@ -109,6 +113,10 @@ class DataManagementController:
         self.state.can_mark_selected_run = selected_run_dir is not None
         self.state.can_archive_selected_run = selected_run_dir is not None
         self.state.can_trash_selected_run = selected_run_dir is not None
+        selected_experiment = _experiment_name_for_run(selected_run_dir) if selected_run_dir is not None else ""
+        self.state.can_run_two_segment_modeling = selected_experiment == "two_segment_collect_pose_command_dataset"
+        self.state.can_open_modeling_summary = selected_experiment == "two_segment_modeling"
+        self.state.can_export_modeling_bundle = selected_experiment == "two_segment_modeling"
         self.state.can_copy_export_path = bool(self.state.last_export_path)
         self.state.can_copy_transfer_command = bool(self.state.last_transfer_command)
         self.state.selected_delete_summary = _delete_summary(selected_items)
@@ -294,6 +302,46 @@ class DataManagementController:
         self.state.status_message = f"Built thesis evidence index at {output_dir}."
         return output_dir
 
+    def run_two_segment_modeling_for_selected(self) -> Path:
+        run_dir = self._selected_run_or_error()
+        experiment_name = _experiment_name_for_run(run_dir)
+        if experiment_name != "two_segment_collect_pose_command_dataset":
+            raise ValueError("Select a two_segment_collect_pose_command_dataset run first.")
+        try:
+            result = run_two_segment_modeling(
+                run_dirs=[run_dir],
+                project_root=self.project_root,
+                config=TwoSegmentModelingConfig(
+                    model_keys=["linear_baseline"],
+                    output_root=str(self.project_root / "data" / "experiments"),
+                    random_seed=42,
+                ),
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "No trainable two-segment data. Required: dual_segment dataset, accepted all-8 startup, "
+                "distal_tip pose role, non-servo-only run, successful commands, and "
+                "valid_for_two_segment_model_training=true. "
+                f"Details: {exc}"
+            ) from exc
+        self._catalog_dirty = True
+        self.refresh()
+        self.state.status_message = f"Two-segment modeling saved to {result.output_dir}."
+        return result.output_dir
+
+    def open_modeling_summary_path_for_selected(self) -> Path:
+        run_dir = self._selected_run_or_error()
+        if _experiment_name_for_run(run_dir) != "two_segment_modeling":
+            raise ValueError("Select a two_segment_modeling run first.")
+        summary_text = run_dir / "two_segment_modeling_summary.txt"
+        return summary_text if summary_text.exists() else run_dir / "summary.json"
+
+    def export_selected_modeling_bundle(self) -> ExportBundleResult:
+        run_dir = self._selected_run_or_error()
+        if _experiment_name_for_run(run_dir) != "two_segment_modeling":
+            raise ValueError("Select a two_segment_modeling run first.")
+        return self._export_run(run_dir=run_dir, include_samples=False, include_debug=False, make_zip=True)
+
     def _export_run(
         self,
         *,
@@ -428,6 +476,15 @@ def _selected_run_dir(selected_items: list[ManagedDataItem]) -> Path | None:
     if len(selected_items) != 1:
         return None
     return _exportable_run_dir(selected_items[0])
+
+
+def _experiment_name_for_run(run_dir: Path | None) -> str:
+    if run_dir is None:
+        return ""
+    try:
+        return summarize_run(run_dir).experiment_name
+    except Exception:
+        return ""
 
 
 def _display_path(project_root: Path, path: Path | None) -> str:
