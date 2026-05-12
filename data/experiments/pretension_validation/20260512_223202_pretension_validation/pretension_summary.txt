@@ -1,0 +1,55 @@
+Pretension Validation Summary (Single-Segment Staged)
+Current is treated as a load/engagement proxy only; values are not calibrated tendon force.
+
+Run ID: f0b1837b7bd5
+Timestamp: 2026-05-12T22:32:13.187936+00:00
+Status: partial_success
+Algorithm: reliable_advanced_4servo_pretension
+Algorithm mode: conservative_startup
+Staged strategy: conservative_startup
+Servo IDs: [5, 6, 7, 8]
+Repeat runs: 3
+Accepted runs: 0 / 3
+Accepted fraction: 0.000
+
+Units:
+- Current: mA servo-reported current estimate; signed current is saved separately from absolute load proxy.
+- Load proxy: absolute current delta from baseline in mA; not calibrated tendon force.
+- Position: ticks
+- Travel / tip position: mm
+
+Telemetry / trust:
+- Runtime tip mode used: latest_accepted
+- Runtime tip trust level: unavailable
+- Thesis-trusted runtime tip: False
+- Aggregate telemetry event counts: {}
+- Aggregate packet retry count: 0
+
+Repeatability:
+- Final position std by servo (ticks): {'5': 0.0, '6': 0.0, '7': 19.327585352432298, '8': 19.567546828585563}
+- Final current std by servo (mA): {'5': 0.0, '6': 0.0, '7': 6.599663291074443, '8': 5.656854249492381}
+- Final tip XY std (mm): n/a
+- Quality score mean (0-100): 77.290
+- Quality score std (0-100): 0.007
+- Failure reasons: {'current_only_lower_trust': 3, 'not_converged': 3, 'partial_pair_failure': 3}
+- Current characterization: [{'sample_count': 20, 'by_servo': {'5': {'sample_count': 20, 'mean_current_ma': 0.0, 'std_current_ma': 0.0, 'min_current_ma': 0.0, 'max_current_ma': 0.0, 'peak_to_peak_current_ma': 0.0}, '6': {'sample_count': 20, 'mean_current_ma': 0.0, 'std_current_ma': 0.0, 'min_current_ma': 0.0, 'max_current_ma': 0.0, 'peak_to_peak_current_ma': 0.0}, '7': {'sample_count': 20, 'mean_current_ma': 14.85, 'std_current_ma': 0.852936105461599, 'min_current_ma': 13.0, 'max_current_ma': 16.0, 'peak_to_peak_current_ma': 3.0}, '8': {'sample_count': 20, 'mean_current_ma': 1.1, 'std_current_ma': 2.046948949045872, 'min_current_ma': 0.0, 'max_current_ma': 9.0, 'peak_to_peak_current_ma': 9.0}}, 'max_noise_std_ma': 2.046948949045872, 'max_peak_to_peak_ma': 9.0, 'noise_multiplier': 3.0, 'max_useful_current_delta_ma': 9.0, 'telemetry_event_counts': {}, 'packet_retry_count': 0, 'telemetry_fail_closed_reason': None, 'current_units': 'mA servo-reported current estimate; signed raw samples retained and load proxy uses absolute delta from baseline', 'interpretation': 'current is treated as a relative load proxy; deltas below useful threshold are not considered reliable'}, {'sample_count': 20, 'by_servo': {'5': {'sample_count': 20, 'mean_current_ma': 0.0, 'std_current_ma': 0.0, 'min_current_ma': 0.0, 'max_current_ma': 0.0, 'peak_to_peak_current_ma': 0.0}, '6': {'sample_count': 20, 'mean_current_ma': 0.3, 'std_current_ma': 1.307669683062202, 'min_current_ma': 0.0, 'max_current_ma': 6.0, 'peak_to_peak_current_ma': 6.0}, '7': {'sample_count': 20, 'mean_current_ma': 11.4, 'std_current_ma': 6.61362230551458, 'min_current_ma': 0.0, 'max_current_ma': 16.0, 'peak_to_peak_current_ma': 16.0}, '8': {'sample_count': 20, 'mean_current_ma': -3.8, 'std_current_ma': 5.946427498927402, 'min_current_ma': -12.0, 'max_current_ma': 3.0, 'peak_to_peak_current_ma': 15.0}}, 'max_noise_std_ma': 6.61362230551458, 'max_peak_to_peak_ma': 16.0, 'noise_multiplier': 3.0, 'max_useful_current_delta_ma': 19.84086691654374, 'telemetry_event_counts': {}, 'packet_retry_count': 0, 'telemetry_fail_closed_reason': None, 'current_units': 'mA servo-reported current estimate; signed raw samples retained and load proxy uses absolute delta from baseline', 'interpretation': 'current is treated as a relative load proxy; deltas below useful threshold are not considered reliable'}, {'sample_count': 20, 'by_servo': {'5': {'sample_count': 20, 'mean_current_ma': 0.0, 'std_current_ma': 0.0, 'min_current_ma': 0.0, 'max_current_ma': 0.0, 'peak_to_peak_current_ma': 0.0}, '6': {'sample_count': 20, 'mean_current_ma': 0.0, 'std_current_ma': 0.0, 'min_current_ma': 0.0, 'max_current_ma': 0.0, 'peak_to_peak_current_ma': 0.0}, '7': {'sample_count': 20, 'mean_current_ma': -0.05, 'std_current_ma': 0.21794494717703367, 'min_current_ma': -1.0, 'max_current_ma': 0.0, 'peak_to_peak_current_ma': 1.0}, '8': {'sample_count': 20, 'mean_current_ma': 0.0, 'std_current_ma': 0.0, 'min_current_ma': 0.0, 'max_current_ma': 0.0, 'peak_to_peak_current_ma': 0.0}}, 'max_noise_std_ma': 0.21794494717703367, 'max_peak_to_peak_ma': 1.0, 'noise_multiplier': 3.0, 'max_useful_current_delta_ma': 2.0, 'telemetry_event_counts': {}, 'packet_retry_count': 0, 'telemetry_fail_closed_reason': None, 'current_units': 'mA servo-reported current estimate; signed raw samples retained and load proxy uses absolute delta from baseline', 'interpretation': 'current is treated as a relative load proxy; deltas below useful threshold are not considered reliable'}]
+
+Manual vs advanced artifact:
+- Manual startup artifact: {'available': True, 'source_type': 'manual', 'accepted': True, 'usable': True, 'message': 'Accepted manual pretension/startup state is recorded for servo(s): 5, 6, 7, 8', 'updated_at_utc': '2026-05-12T00:34:10Z', 'note': None, 'positions_by_servo': {'5': 2148, '6': 2173, '7': 2198, '8': 2223}, 'currents_ma_by_servo': {'5': 180, '6': 190, '7': 200, '8': 210}}
+- Advanced startup artifacts: [{'run_index': 0, 'accepted': False, 'quality_score_0_100': 77.3, 'final_position_ticks_by_servo': {'5': 3514, '6': 3512, '7': 3406, '8': 3322}, 'final_current_ma_by_servo': {'5': 0, '6': 0, '7': 14, '8': 0}, 'final_tip_xyz_mm': None, 'final_tip_xy_offset_mm': None}, {'run_index': 1, 'accepted': False, 'quality_score_0_100': 77.285, 'final_position_ticks_by_servo': {'5': 3514, '6': 3512, '7': 3447, '8': 3323}, 'final_current_ma_by_servo': {'5': 0, '6': 0, '7': 0, '8': -12}, 'final_tip_xyz_mm': None, 'final_tip_xy_offset_mm': None}, {'run_index': 2, 'accepted': False, 'quality_score_0_100': 77.285, 'final_position_ticks_by_servo': {'5': 3514, '6': 3512, '7': 3447, '8': 3364}, 'final_current_ma_by_servo': {'5': 0, '6': 0, '7': 0, '8': 0}, 'final_tip_xyz_mm': None, 'final_tip_xy_offset_mm': None}]
+
+Saved plots:
+- pretension_tendon_displacement_vs_tip_xy.png
+- pretension_tendon_displacement_vs_current.png
+- pretension_current_vs_tip_error.png
+- pretension_balance_over_stages.png
+- pretension_tip_xy_path.png
+- pretension_final_tip_xy_scatter.png
+- pretension_final_current_distribution.png
+- pretension_final_position_distribution.png
+- pretension_quality_score_distribution.png
+- pretension_repeatability_summary.png
+- pretension_tip_xy_path_report.png
+- pretension_load_proxy_by_servo_report.png
+- pretension_tendon_displacement_vs_load_proxy_report.png
+- pretension_final_state_report.png

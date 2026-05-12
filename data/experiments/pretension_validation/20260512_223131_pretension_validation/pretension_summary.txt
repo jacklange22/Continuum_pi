@@ -1,0 +1,22 @@
+Pretension Validation Summary
+Current is used here as an engagement proxy only. This run does not claim tendon-force sensing.
+
+Run ID: aeb41f1c1e21
+Timestamp: 2026-05-12T22:31:38.113260+00:00
+Servo ID: n/a
+Accepted: no
+Status: invalid_due_to_insufficient_samples
+Stop Reason: Current-only staged pretension requires an explicit lower-trust/current-only override. Enable allow_current_only_when_tracker_missing or set run_trust_mode=current_only.
+Final Position (ticks): n/a
+Travel Used (ticks): n/a
+Travel Used (mm): n/a
+Baseline Current (mA): n/a
+Effective Trigger Current (mA): n/a
+Observed Trigger Current (mA): n/a
+Hard Current Stop (mA): n/a
+Max Observed Current (mA): n/a
+Max Observed Filtered Current (mA): n/a
+Max Observed Displacement (mm): n/a
+Trigger Displacement (mm): n/a
+Tracker Metric Frame: n/a
+Trace Sample Count: 0

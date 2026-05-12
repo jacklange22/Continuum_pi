@@ -1,0 +1,85 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "single_segment_repeatability",
+  "run_id": "d6826310a2c7",
+  "timestamp_utc": "2026-04-26T01:55:07.555629+00:00",
+  "git_commit": "d483192aebf1c882ce49c78e1f657bff586e7bb4",
+  "backend_info": {
+    "mock_mode": false,
+    "tracking_backend_configured": "ndi",
+    "tracking_backend_selected": "ndi",
+    "tracking_backend_identity": "ndi_tracker_python",
+    "tracking_state": "streaming_healthy",
+    "servo_connected": true,
+    "pretension_source": {
+      "source_type": "manual",
+      "accepted": true,
+      "usable": true,
+      "message": "Accepted manual pretension/startup state is recorded for servo(s): 1, 2, 3, 4",
+      "updated_at_utc": "2026-04-26T00:26:44Z",
+      "note": null
+    }
+  },
+  "registration_info": {
+    "path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+    "exists": true,
+    "tracking_registration_state": "loaded",
+    "tip_pose_status": "coil_as_tip",
+    "runtime_tip_mode": "coil_as_tip",
+    "runtime_tip_trust_level": "thesis_trusted",
+    "runtime_tip_mode_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil pose is shown directly as the tip.",
+    "runtime_tip_calibration_state": "coil_as_tip",
+    "runtime_tip_selected_artifact_kind": "coil_as_tip",
+    "runtime_tip_selected_artifact_path": null,
+    "runtime_tip_policy": {
+      "mode": "coil_as_tip",
+      "calibration_state": "coil_as_tip",
+      "tip_pose_status": "coil_as_tip",
+      "trust_label": "thesis_trusted",
+      "trust_level": "thesis_trusted",
+      "thesis_trusted": true,
+      "workflow": "generic",
+      "allowed_for_workflow": true,
+      "requires_lower_trust_override": false,
+      "uses_coil_as_tip": true,
+      "uses_calibrated_tip_transform": false,
+      "uses_identity_transform": true,
+      "intended_use": "Current trusted runtime position path for robot-frame tip repeatability, pretension centering, modeling datasets, and demos when coil-origin-as-tip is the declared measurement.",
+      "status_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil pose is shown directly as the tip.",
+      "reasons": [],
+      "warnings": [
+        "Coil-as-tip uses identity T_coil_tip and reports the 0A coil origin as the tip; do not interpret it as a validated calibrated tip transform or true tip orientation."
+      ],
+      "allowed_workflows": {
+        "repeatability": true,
+        "pretension_validation": true,
+        "penprobe_chasing": true,
+        "modeling_dataset": true,
+        "transform_chain_validation": true
+      }
+    },
+    "thesis_trusted_runtime_tip": true
+  },
+  "config_used": {
+    "tool_id": "0A",
+    "settle_time_s": 4.0,
+    "capture_timeout_s": 1.0,
+    "capture_poll_interval_s": 0.02,
+    "max_tracker_age_s": 0.25,
+    "random_seed": 0,
+    "run_label": "",
+    "require_robot_frame_tip": true,
+    "allow_debug_coil_as_tip": false,
+    "return_to_center_on_finalize": true,
+    "fail_on_rejected_capture": false,
+    "thesis_goal_rms_mm": 1.0,
+    "min_repeat_captures_per_target": 12,
+    "min_repeat_capture_fraction": 0.85,
+    "max_rejected_capture_fraction": 0.1,
+    "baseline_run_path": "",
+    "inner_ring_radius_mm": 4.0,
+    "outer_ring_radius_mm": 8.0,
+    "max_target_tick_delta_from_startup": 650
+  },
+  "operator_notes": ""
+}
