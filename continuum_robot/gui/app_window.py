@@ -59,7 +59,6 @@ class AppWindow(QMainWindow):
         self.refresh()
 
     def refresh(self) -> None:
-        system_state = self.system_controller.refresh()
         current_widget = self.tab_widget.currentWidget()
         if current_widget is self.tracking_tab:
             tracker_mvp_state = self.tracker_mvp_controller.refresh()
@@ -74,6 +73,7 @@ class AppWindow(QMainWindow):
             self.statusBar().showMessage(registration_state.status_message)
             return
         if current_widget is self.system_tab:
+            system_state = self.system_controller.refresh()
             if self.system_controller.state.dynamixel_connected:
                 if self._system_summary_refresh_due:
                     system_state = self.system_controller.refresh_readiness(include_scan=False)
@@ -88,6 +88,8 @@ class AppWindow(QMainWindow):
                     else:
                         system_state = self.system_controller.refresh()
             self.system_tab.update(system_state)
+            self.statusBar().showMessage(system_state.status_message)
+            return
         elif current_widget is self.servos_tab:
             servo_state = self._refresh_servo_state()
             if getattr(self.servos_controller, "latest_runtime_snapshot", None) is not None:
@@ -124,6 +126,7 @@ class AppWindow(QMainWindow):
             self.data_management_tab.update(data_management_state)
             self.statusBar().showMessage(data_management_state.status_message)
             return
+        system_state = self.system_controller.refresh()
         self.statusBar().showMessage(system_state.status_message)
 
     def _refresh_servo_state(self):

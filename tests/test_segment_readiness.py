@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from continuum_robot.servos.neutral_calibration_service import NeutralCalibrationService, ServoCalibrationContext
-from continuum_robot.servos.segment_readiness import STATUS_FAIL, STATUS_PASS, evaluate_selected_segment_readiness
+from continuum_robot.servos.segment_readiness import STATUS_FAIL, STATUS_PASS, STATUS_WARN, evaluate_selected_segment_readiness
 from continuum_robot.servos.sign_mapping_check import (
     ServoMappingCheckEntry,
     ServoMappingCheckRecord,
@@ -133,6 +133,33 @@ def test_segment_b_valid_neutral_safe_and_startup_passes(tmp_path: Path) -> None
     assert readiness.neutral_safe_calibration.status == STATUS_PASS
     assert readiness.startup_pretension.ready is True
     assert readiness.experiment.ready_for_repeatability is True
+
+
+class _CachedRuntimeSnapshot:
+    detected_servo_ids: list[int] = []
+    missing_servo_ids: list[int] = [5, 6, 7, 8]
+    entries: dict[int, object] = {servo_id: object() for servo_id in [5, 6, 7, 8]}
+    message: str = "Showing cached servo state; cached=0/4."
+
+
+def test_cached_empty_runtime_snapshot_is_unknown_not_missing(tmp_path: Path) -> None:
+    service = NeutralCalibrationService(path=tmp_path / "neutral.json", context=_context(active_segment="segment_b"))
+    context = _context(active_segment="segment_b")
+
+    readiness = evaluate_selected_segment_readiness(
+        operating_mode="single_segment",
+        active_segment_key=context.active_segment_key,
+        active_segment_label=context.active_segment_label,
+        expected_servo_ids=context.expected_servo_ids,
+        calibration_summary=service.get_calibration_summary(),
+        mock_mode=False,
+        servo_connected=True,
+        runtime_snapshot=_CachedRuntimeSnapshot(),
+    )
+
+    assert readiness.transport.status == STATUS_WARN
+    assert readiness.transport.missing_servo_ids == []
+    assert "unknown, not confirmed missing" in readiness.transport.message
 
 
 def test_sign_mapping_check_write_read_and_missing_warning(tmp_path: Path) -> None:

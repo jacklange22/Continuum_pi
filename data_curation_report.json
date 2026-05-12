@@ -1,0 +1,2420 @@
+{
+  "generated_at_utc": "2026-05-12T22:31:56.912034+00:00",
+  "project_root": "/Users/jacklange/Continuum/pi_code",
+  "classification_counts": {
+    "keep_candidate": 6,
+    "protected_active_alias": 2,
+    "needs_human_review": 57,
+    "trash_candidate": 5,
+    "generated_ignore": 43
+  },
+  "roots": [
+    {
+      "root": "data/experiments",
+      "exists": true,
+      "item_count": 44,
+      "total_size_bytes": 18506259,
+      "oldest_mtime_utc": "2026-03-28T15:58:44.771074+00:00",
+      "newest_mtime_utc": "2026-04-26T00:11:28.048922+00:00",
+      "missing_run_review_count": 44,
+      "mock_count": 3,
+      "lower_trust_count": 44,
+      "thesis_candidate_count": 0,
+      "advisor_share_count": 0
+    },
+    {
+      "root": "data/mock_experiments",
+      "exists": false,
+      "item_count": 0,
+      "total_size_bytes": 0,
+      "oldest_mtime_utc": "",
+      "newest_mtime_utc": "",
+      "missing_run_review_count": 0,
+      "mock_count": 0,
+      "lower_trust_count": 0,
+      "thesis_candidate_count": 0,
+      "advisor_share_count": 0
+    },
+    {
+      "root": "data/experiments_archived",
+      "exists": false,
+      "item_count": 0,
+      "total_size_bytes": 0,
+      "oldest_mtime_utc": "",
+      "newest_mtime_utc": "",
+      "missing_run_review_count": 0,
+      "mock_count": 0,
+      "lower_trust_count": 0,
+      "thesis_candidate_count": 0,
+      "advisor_share_count": 0
+    },
+    {
+      "root": "data/trash",
+      "exists": false,
+      "item_count": 0,
+      "total_size_bytes": 0,
+      "oldest_mtime_utc": "",
+      "newest_mtime_utc": "",
+      "missing_run_review_count": 0,
+      "mock_count": 0,
+      "lower_trust_count": 0,
+      "thesis_candidate_count": 0,
+      "advisor_share_count": 0
+    },
+    {
+      "root": "data/exports",
+      "exists": true,
+      "item_count": 0,
+      "total_size_bytes": 0,
+      "oldest_mtime_utc": "",
+      "newest_mtime_utc": "",
+      "missing_run_review_count": 0,
+      "mock_count": 0,
+      "lower_trust_count": 0,
+      "thesis_candidate_count": 0,
+      "advisor_share_count": 0
+    },
+    {
+      "root": "data/calibration",
+      "exists": true,
+      "item_count": 2,
+      "total_size_bytes": 469239,
+      "oldest_mtime_utc": "2026-05-12T00:34:10.307957+00:00",
+      "newest_mtime_utc": "2026-05-12T05:43:55.200616+00:00",
+      "missing_run_review_count": 0,
+      "mock_count": 0,
+      "lower_trust_count": 0,
+      "thesis_candidate_count": 0,
+      "advisor_share_count": 0
+    },
+    {
+      "root": "data/pivot_calibration",
+      "exists": true,
+      "item_count": 21,
+      "total_size_bytes": 3570457,
+      "oldest_mtime_utc": "2026-03-28T15:58:44.721351+00:00",
+      "newest_mtime_utc": "2026-04-25T19:00:34.334131+00:00",
+      "missing_run_review_count": 18,
+      "mock_count": 2,
+      "lower_trust_count": 18,
+      "thesis_candidate_count": 0,
+      "advisor_share_count": 0
+    },
+    {
+      "root": "data/runtime_tip_calibration",
+      "exists": true,
+      "item_count": 2,
+      "total_size_bytes": 78474,
+      "oldest_mtime_utc": "2026-04-20T00:50:49.116016+00:00",
+      "newest_mtime_utc": "2026-04-20T00:50:49.116134+00:00",
+      "missing_run_review_count": 0,
+      "mock_count": 0,
+      "lower_trust_count": 0,
+      "thesis_candidate_count": 0,
+      "advisor_share_count": 0
+    },
+    {
+      "root": "data/diagnostics",
+      "exists": true,
+      "item_count": 42,
+      "total_size_bytes": 776971,
+      "oldest_mtime_utc": "2026-04-13T02:47:43.633673+00:00",
+      "newest_mtime_utc": "2026-05-12T22:25:08.485021+00:00",
+      "missing_run_review_count": 0,
+      "mock_count": 0,
+      "lower_trust_count": 0,
+      "thesis_candidate_count": 0,
+      "advisor_share_count": 0
+    },
+    {
+      "root": "data/modeling_results",
+      "exists": true,
+      "item_count": 1,
+      "total_size_bytes": 117123,
+      "oldest_mtime_utc": "2026-04-20T15:58:21.734721+00:00",
+      "newest_mtime_utc": "2026-04-20T15:58:21.734721+00:00",
+      "missing_run_review_count": 0,
+      "mock_count": 0,
+      "lower_trust_count": 0,
+      "thesis_candidate_count": 0,
+      "advisor_share_count": 0
+    },
+    {
+      "root": "data/models",
+      "exists": true,
+      "item_count": 1,
+      "total_size_bytes": 82658,
+      "oldest_mtime_utc": "2026-05-08T23:21:07.173103+00:00",
+      "newest_mtime_utc": "2026-05-08T23:21:07.173103+00:00",
+      "missing_run_review_count": 0,
+      "mock_count": 0,
+      "lower_trust_count": 0,
+      "thesis_candidate_count": 0,
+      "advisor_share_count": 0
+    }
+  ],
+  "large_files": [],
+  "duplicate_groups": [],
+  "items": [
+    {
+      "path": "data/runtime_tip_calibration/20260417_225556_runtime_tip_calibration.json",
+      "root": "data/runtime_tip_calibration",
+      "item_type": "file",
+      "classification": "keep_candidate",
+      "reasons": [
+        "calibration_artifact"
+      ],
+      "size_bytes": 39237,
+      "mtime_utc": "2026-04-20T00:50:49.116134+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/runtime_tip_calibration/latest_runtime_tip_calibration.json",
+      "root": "data/runtime_tip_calibration",
+      "item_type": "file",
+      "classification": "protected_active_alias",
+      "reasons": [
+        "active_alias"
+      ],
+      "size_bytes": 39237,
+      "mtime_utc": "2026-04-20T00:50:49.116016+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/pivot_calibration/staged",
+      "root": "data/pivot_calibration",
+      "item_type": "dir",
+      "classification": "keep_candidate",
+      "reasons": [
+        "calibration_artifact"
+      ],
+      "size_bytes": 216,
+      "mtime_utc": "2026-04-25T19:00:34.334131+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/pivot_calibration/captures",
+      "root": "data/pivot_calibration",
+      "item_type": "dir",
+      "classification": "keep_candidate",
+      "reasons": [
+        "calibration_artifact"
+      ],
+      "size_bytes": 268950,
+      "mtime_utc": "2026-04-25T19:00:34.333570+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/pivot_calibration/20260424_230515_pivot_calibration_review",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 304782,
+      "mtime_utc": "2026-04-25T19:00:34.332915+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "4a039b123f8a",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "pivot_calibration:4a039b123f8a"
+    },
+    {
+      "path": "data/pivot_calibration/20260423_211344_pivot_calibration_review",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 433261,
+      "mtime_utc": "2026-04-25T19:00:34.330411+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "de5c5a51633e",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "pivot_calibration:de5c5a51633e"
+    },
+    {
+      "path": "data/pivot_calibration/20260423_203116_pivot_calibration_review",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 294608,
+      "mtime_utc": "2026-04-25T19:00:34.329675+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "5ffd12243b98",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "pivot_calibration:5ffd12243b98"
+    },
+    {
+      "path": "data/pivot_calibration/20260420_150845_pivot_calibration_review",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 211023,
+      "mtime_utc": "2026-04-25T19:00:34.328501+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "af56cbbce03a",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "pivot_calibration:af56cbbce03a"
+    },
+    {
+      "path": "data/pivot_calibration/generated_penprobe_tip.csv",
+      "root": "data/pivot_calibration",
+      "item_type": "file",
+      "classification": "protected_active_alias",
+      "reasons": [
+        "active_alias"
+      ],
+      "size_bytes": 24,
+      "mtime_utc": "2026-04-24T23:20:19.117883+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/pivot_calibration/20260419_225103_pivot_calibration_review",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 432276,
+      "mtime_utc": "2026-04-20T00:50:49.114907+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "6aae45a5bc91",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "pivot_calibration:6aae45a5bc91"
+    },
+    {
+      "path": "data/pivot_calibration/20260419_225008_pivot_calibration_review",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 389771,
+      "mtime_utc": "2026-04-20T00:50:49.113975+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "614065ea547e",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "pivot_calibration:614065ea547e"
+    },
+    {
+      "path": "data/pivot_calibration/20260403_161031_pivot_calibration_review",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 316220,
+      "mtime_utc": "2026-04-12T22:16:02.719969+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "6e65a8ed277a",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "pivot_calibration:6e65a8ed277a"
+    },
+    {
+      "path": "data/pivot_calibration/20260412_214329_pivot_calibration_review",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 371099,
+      "mtime_utc": "2026-04-12T22:16:02.715539+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "bc0923018735",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "pivot_calibration:bc0923018735"
+    },
+    {
+      "path": "data/pivot_calibration/20260401_193401_pivot_calibration_review",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 304964,
+      "mtime_utc": "2026-04-01T23:15:38.098961+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "08c611fcea7b",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "pivot_calibration:08c611fcea7b"
+    },
+    {
+      "path": "data/pivot_calibration/20260401_181455_pivot_calibration_review",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 2554,
+      "mtime_utc": "2026-04-01T23:15:38.097464+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "e1b138b7c133",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "pivot_calibration:e1b138b7c133"
+    },
+    {
+      "path": "data/pivot_calibration/20260401_181454_pivot_calibration_review",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 2554,
+      "mtime_utc": "2026-04-01T23:15:38.096757+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "79c3570bdee1",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "pivot_calibration:79c3570bdee1"
+    },
+    {
+      "path": "data/pivot_calibration/20260401_181429_pivot_calibration_review",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 2554,
+      "mtime_utc": "2026-04-01T23:15:38.096266+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "23d669ef0a4a",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "pivot_calibration:23d669ef0a4a"
+    },
+    {
+      "path": "data/pivot_calibration/20260401_181408_pivot_calibration_review",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 2554,
+      "mtime_utc": "2026-04-01T23:15:38.095753+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "65e3868a6f9b",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "pivot_calibration:65e3868a6f9b"
+    },
+    {
+      "path": "data/pivot_calibration/20260401_181404_pivot_calibration_review",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 2554,
+      "mtime_utc": "2026-04-01T23:15:38.095209+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "c90af23986c1",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "pivot_calibration:c90af23986c1"
+    },
+    {
+      "path": "data/pivot_calibration/20260331_210343_pivot_calibration",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 103117,
+      "mtime_utc": "2026-04-01T23:15:38.087678+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "f9502c2a021f",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "pivot_calibration:f9502c2a021f"
+    },
+    {
+      "path": "data/pivot_calibration/20260331_210330_pivot_calibration",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 100584,
+      "mtime_utc": "2026-04-01T23:15:38.086404+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "07784581798b",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "pivot_calibration:07784581798b"
+    },
+    {
+      "path": "data/pivot_calibration/20260329_013002_pivot_calibration",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "trash_candidate",
+      "reasons": [
+        "mock_or_mock_trust"
+      ],
+      "size_bytes": 14223,
+      "mtime_utc": "2026-03-29T01:30:02.052790+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "eac84c711f3e",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": true,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "pivot_calibration:eac84c711f3e"
+    },
+    {
+      "path": "data/pivot_calibration/20260328_155844_pivot_calibration",
+      "root": "data/pivot_calibration",
+      "item_type": "run",
+      "classification": "trash_candidate",
+      "reasons": [
+        "mock_or_mock_trust"
+      ],
+      "size_bytes": 12569,
+      "mtime_utc": "2026-03-28T15:58:44.721351+00:00",
+      "experiment_name": "pivot_calibration",
+      "run_id": "8e7c52a7b76a",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": true,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "pivot_calibration:8e7c52a7b76a"
+    },
+    {
+      "path": "data/models/ann",
+      "root": "data/models",
+      "item_type": "dir",
+      "classification": "keep_candidate",
+      "reasons": [
+        "trained_model_artifact"
+      ],
+      "size_bytes": 82658,
+      "mtime_utc": "2026-05-08T23:21:07.173103+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/modeling_results/20260420_155821_20260419_225535_collect_pose_command_dataset",
+      "root": "data/modeling_results",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 117123,
+      "mtime_utc": "2026-04-20T15:58:21.734721+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/experiments/single_segment_repeatability/20260426_000443_single_segment_repeatability",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 403380,
+      "mtime_utc": "2026-04-26T00:11:28.048922+00:00",
+      "experiment_name": "single_segment_repeatability",
+      "run_id": "3b2cbee9d7d7",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "single_segment_repeatability:3b2cbee9d7d7"
+    },
+    {
+      "path": "data/experiments/collect_pose_command_dataset/20260426_000359_collect_pose_command_dataset",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 257186,
+      "mtime_utc": "2026-04-26T00:11:28.045087+00:00",
+      "experiment_name": "collect_pose_command_dataset",
+      "run_id": "7ba23348a56c",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "success",
+      "duplicate_key": "collect_pose_command_dataset:7ba23348a56c"
+    },
+    {
+      "path": "data/experiments/collect_pose_command_dataset/20260426_000304_collect_pose_command_dataset",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 420605,
+      "mtime_utc": "2026-04-26T00:11:28.042481+00:00",
+      "experiment_name": "collect_pose_command_dataset",
+      "run_id": "de24fac43b0d",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "success",
+      "duplicate_key": "collect_pose_command_dataset:de24fac43b0d"
+    },
+    {
+      "path": "data/experiments/collect_pose_command_dataset/20260426_000233_collect_pose_command_dataset",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 181905,
+      "mtime_utc": "2026-04-26T00:11:28.037677+00:00",
+      "experiment_name": "collect_pose_command_dataset",
+      "run_id": "cc49f6875d78",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "collect_pose_command_dataset:cc49f6875d78"
+    },
+    {
+      "path": "data/experiments/collect_pose_command_dataset/20260425_235602_collect_pose_command_dataset",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 358839,
+      "mtime_utc": "2026-04-26T00:11:28.035658+00:00",
+      "experiment_name": "collect_pose_command_dataset",
+      "run_id": "c5ce84216152",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "success",
+      "duplicate_key": "collect_pose_command_dataset:c5ce84216152"
+    },
+    {
+      "path": "data/experiments/collect_pose_command_dataset/20260425_235105_collect_pose_command_dataset",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 1598256,
+      "mtime_utc": "2026-04-26T00:11:28.032579+00:00",
+      "experiment_name": "collect_pose_command_dataset",
+      "run_id": "7c882e53ff7f",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "success",
+      "duplicate_key": "collect_pose_command_dataset:7c882e53ff7f"
+    },
+    {
+      "path": "data/experiments/collect_pose_command_dataset/20260425_234956_collect_pose_command_dataset",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 282653,
+      "mtime_utc": "2026-04-26T00:11:28.027152+00:00",
+      "experiment_name": "collect_pose_command_dataset",
+      "run_id": "73cf2b7bfda0",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "success",
+      "duplicate_key": "collect_pose_command_dataset:73cf2b7bfda0"
+    },
+    {
+      "path": "data/experiments/single_segment_repeatability/20260425_163654_single_segment_repeatability",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 3155986,
+      "mtime_utc": "2026-04-25T20:49:42.029560+00:00",
+      "experiment_name": "single_segment_repeatability",
+      "run_id": "40fd3267ecba",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "single_segment_repeatability:40fd3267ecba"
+    },
+    {
+      "path": "data/experiments/single_segment_repeatability/20260425_160741_single_segment_repeatability",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 181274,
+      "mtime_utc": "2026-04-25T19:00:34.323816+00:00",
+      "experiment_name": "single_segment_repeatability",
+      "run_id": "395a7232faf3",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "single_segment_repeatability:395a7232faf3"
+    },
+    {
+      "path": "data/experiments/single_segment_repeatability/20260425_003625_single_segment_repeatability",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 1556935,
+      "mtime_utc": "2026-04-25T19:00:34.318747+00:00",
+      "experiment_name": "single_segment_repeatability",
+      "run_id": "b3955fc2cb33",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_repeatability_coverage",
+      "duplicate_key": "single_segment_repeatability:b3955fc2cb33"
+    },
+    {
+      "path": "data/experiments/single_segment_repeatability/20260424_230923_single_segment_repeatability",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 425863,
+      "mtime_utc": "2026-04-25T19:00:34.315769+00:00",
+      "experiment_name": "single_segment_repeatability",
+      "run_id": "435b20b5ab96",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_repeatability_coverage",
+      "duplicate_key": "single_segment_repeatability:435b20b5ab96"
+    },
+    {
+      "path": "data/experiments/pretension_validation/20260425_162000_pretension_validation",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 101969,
+      "mtime_utc": "2026-04-25T19:00:34.310719+00:00",
+      "experiment_name": "pretension_validation",
+      "run_id": "fda39ed0da80",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "partial_success",
+      "duplicate_key": "pretension_validation:fda39ed0da80"
+    },
+    {
+      "path": "data/experiments/pretension_validation/20260425_161944_pretension_validation",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 102207,
+      "mtime_utc": "2026-04-25T19:00:34.309862+00:00",
+      "experiment_name": "pretension_validation",
+      "run_id": "b9c240c7d027",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "partial_success",
+      "duplicate_key": "pretension_validation:b9c240c7d027"
+    },
+    {
+      "path": "data/experiments/pretension_validation/20260425_161431_pretension_validation",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 56571,
+      "mtime_utc": "2026-04-25T19:00:34.308890+00:00",
+      "experiment_name": "pretension_validation",
+      "run_id": "da9df1679350",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "success",
+      "duplicate_key": "pretension_validation:da9df1679350"
+    },
+    {
+      "path": "data/experiments/collect_pose_command_dataset/20260424_154138_collect_pose_command_dataset",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 749909,
+      "mtime_utc": "2026-04-25T19:00:34.307756+00:00",
+      "experiment_name": "collect_pose_command_dataset",
+      "run_id": "94d6e93b345d",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "success",
+      "duplicate_key": "collect_pose_command_dataset:94d6e93b345d"
+    },
+    {
+      "path": "data/experiments/collect_pose_command_dataset/20260420_151651_collect_pose_command_dataset",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 511437,
+      "mtime_utc": "2026-04-25T19:00:34.304932+00:00",
+      "experiment_name": "collect_pose_command_dataset",
+      "run_id": "a7f41278fce0",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "success",
+      "duplicate_key": "collect_pose_command_dataset:a7f41278fce0"
+    },
+    {
+      "path": "data/experiments/pivot_validation/20260424_014411_pivot_validation",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 195903,
+      "mtime_utc": "2026-04-24T01:44:27.690662+00:00",
+      "experiment_name": "pivot_validation",
+      "run_id": "ed5f922f49c0",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "pivot_validation:ed5f922f49c0"
+    },
+    {
+      "path": "data/experiments/pivot_validation/20260424_004520_pivot_validation",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 102248,
+      "mtime_utc": "2026-04-24T00:45:25.875009+00:00",
+      "experiment_name": "pivot_validation",
+      "run_id": "74306472320e",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "pivot_validation:74306472320e"
+    },
+    {
+      "path": "data/experiments/pivot_validation/20260423_214202_pivot_validation",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 109194,
+      "mtime_utc": "2026-04-23T21:42:06.842914+00:00",
+      "experiment_name": "pivot_validation",
+      "run_id": "7a55e4359ecf",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "pivot_validation:7a55e4359ecf"
+    },
+    {
+      "path": "data/experiments/single_segment_repeatability/20260419_225413_single_segment_repeatability",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 185747,
+      "mtime_utc": "2026-04-20T00:50:49.112525+00:00",
+      "experiment_name": "single_segment_repeatability",
+      "run_id": "4e594933917f",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_repeatability_coverage",
+      "duplicate_key": "single_segment_repeatability:4e594933917f"
+    },
+    {
+      "path": "data/experiments/single_segment_repeatability/20260418_165149_single_segment_repeatability",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 224602,
+      "mtime_utc": "2026-04-20T00:50:49.111008+00:00",
+      "experiment_name": "single_segment_repeatability",
+      "run_id": "54cce23b4151",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_repeatability_coverage",
+      "duplicate_key": "single_segment_repeatability:54cce23b4151"
+    },
+    {
+      "path": "data/experiments/single_segment_repeatability/20260418_164854_single_segment_repeatability",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 178120,
+      "mtime_utc": "2026-04-20T00:50:49.109857+00:00",
+      "experiment_name": "single_segment_repeatability",
+      "run_id": "4cd5695a4560",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "single_segment_repeatability:4cd5695a4560"
+    },
+    {
+      "path": "data/experiments/single_segment_repeatability/20260418_162752_single_segment_repeatability",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 158597,
+      "mtime_utc": "2026-04-20T00:50:49.107480+00:00",
+      "experiment_name": "single_segment_repeatability",
+      "run_id": "26d5bcd3b890",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "single_segment_repeatability:26d5bcd3b890"
+    },
+    {
+      "path": "data/experiments/single_segment_repeatability/20260418_155702_single_segment_repeatability",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 158597,
+      "mtime_utc": "2026-04-20T00:50:49.105910+00:00",
+      "experiment_name": "single_segment_repeatability",
+      "run_id": "9caca2de2db2",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "single_segment_repeatability:9caca2de2db2"
+    },
+    {
+      "path": "data/experiments/single_segment_repeatability/20260418_155554_single_segment_repeatability",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 178076,
+      "mtime_utc": "2026-04-20T00:50:49.103187+00:00",
+      "experiment_name": "single_segment_repeatability",
+      "run_id": "b1dda228180a",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "single_segment_repeatability:b1dda228180a"
+    },
+    {
+      "path": "data/experiments/single_segment_repeatability/20260418_153622_single_segment_repeatability",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 158597,
+      "mtime_utc": "2026-04-20T00:50:49.101819+00:00",
+      "experiment_name": "single_segment_repeatability",
+      "run_id": "c1dae6e69fcb",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "single_segment_repeatability:c1dae6e69fcb"
+    },
+    {
+      "path": "data/experiments/single_segment_repeatability/20260418_150719_single_segment_repeatability",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 177848,
+      "mtime_utc": "2026-04-20T00:50:49.100361+00:00",
+      "experiment_name": "single_segment_repeatability",
+      "run_id": "01df367139dd",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "single_segment_repeatability:01df367139dd"
+    },
+    {
+      "path": "data/experiments/single_segment_repeatability/20260418_150640_single_segment_repeatability",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 158800,
+      "mtime_utc": "2026-04-20T00:50:49.099374+00:00",
+      "experiment_name": "single_segment_repeatability",
+      "run_id": "8f02b02fc752",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "single_segment_repeatability:8f02b02fc752"
+    },
+    {
+      "path": "data/experiments/single_segment_repeatability/20260418_143545_single_segment_repeatability",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 178208,
+      "mtime_utc": "2026-04-20T00:50:49.097872+00:00",
+      "experiment_name": "single_segment_repeatability",
+      "run_id": "612056ed3640",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "single_segment_repeatability:612056ed3640"
+    },
+    {
+      "path": "data/experiments/single_segment_repeatability/20260417_233847_single_segment_repeatability",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 177854,
+      "mtime_utc": "2026-04-20T00:50:49.096521+00:00",
+      "experiment_name": "single_segment_repeatability",
+      "run_id": "347a6a4c6188",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "single_segment_repeatability:347a6a4c6188"
+    },
+    {
+      "path": "data/experiments/single_segment_repeatability/20260417_233751_single_segment_repeatability",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 177822,
+      "mtime_utc": "2026-04-20T00:50:49.094856+00:00",
+      "experiment_name": "single_segment_repeatability",
+      "run_id": "cc6a89eb9153",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "single_segment_repeatability:cc6a89eb9153"
+    },
+    {
+      "path": "data/experiments/servo_tracker_sync_validation/20260417_230114_servo_tracker_sync_validation",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 1072327,
+      "mtime_utc": "2026-04-20T00:50:49.093554+00:00",
+      "experiment_name": "servo_tracker_sync_validation",
+      "run_id": "2c00f840937d",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "servo_tracker_sync_validation:2c00f840937d"
+    },
+    {
+      "path": "data/experiments/servo_tracker_sync_validation/20260417_230000_servo_tracker_sync_validation",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 1058139,
+      "mtime_utc": "2026-04-20T00:50:49.088783+00:00",
+      "experiment_name": "servo_tracker_sync_validation",
+      "run_id": "424a6165f932",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "servo_tracker_sync_validation:424a6165f932"
+    },
+    {
+      "path": "data/experiments/command_schedule_validation/20260417_230147_command_schedule_validation",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 14018,
+      "mtime_utc": "2026-04-20T00:50:49.084022+00:00",
+      "experiment_name": "command_schedule_validation",
+      "run_id": "bd3fbe8c342b",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "command_schedule_validation:bd3fbe8c342b"
+    },
+    {
+      "path": "data/experiments/collect_pose_command_dataset/20260419_225548_collect_pose_command_dataset",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 1735498,
+      "mtime_utc": "2026-04-20T00:50:49.083397+00:00",
+      "experiment_name": "collect_pose_command_dataset",
+      "run_id": "a511bc343882",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "success",
+      "duplicate_key": "collect_pose_command_dataset:a511bc343882"
+    },
+    {
+      "path": "data/experiments/collect_pose_command_dataset/20260419_212335_collect_pose_command_dataset",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 555676,
+      "mtime_utc": "2026-04-20T00:50:49.079422+00:00",
+      "experiment_name": "collect_pose_command_dataset",
+      "run_id": "1a655cd7bf1f",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "success",
+      "duplicate_key": "collect_pose_command_dataset:1a655cd7bf1f"
+    },
+    {
+      "path": "data/experiments/collect_pose_command_dataset/20260418_143624_collect_pose_command_dataset",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 153772,
+      "mtime_utc": "2026-04-20T00:50:49.076274+00:00",
+      "experiment_name": "collect_pose_command_dataset",
+      "run_id": "f31e81767cf2",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": false,
+      "status": "invalid_due_to_insufficient_samples",
+      "duplicate_key": "collect_pose_command_dataset:f31e81767cf2"
+    },
+    {
+      "path": "data/experiments/pretension_validation/20260412_222117_pretension_validation",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 98651,
+      "mtime_utc": "2026-04-20T00:50:49.074519+00:00",
+      "experiment_name": "pretension_validation",
+      "run_id": "1968aa799619",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "partial_success",
+      "duplicate_key": "pretension_validation:1968aa799619"
+    },
+    {
+      "path": "data/experiments/pretension_validation/20260412_221703_pretension_validation",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 51543,
+      "mtime_utc": "2026-04-20T00:50:49.073906+00:00",
+      "experiment_name": "pretension_validation",
+      "run_id": "a9d9f9dea2d0",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "partial_success",
+      "duplicate_key": "pretension_validation:a9d9f9dea2d0"
+    },
+    {
+      "path": "data/experiments/tracker_timing_validation/20260412_214943_tracker_timing_validation",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 528057,
+      "mtime_utc": "2026-04-12T22:16:02.713333+00:00",
+      "experiment_name": "tracker_timing_validation",
+      "run_id": "ded9b7fd2fe9",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "tracker_timing_validation:ded9b7fd2fe9"
+    },
+    {
+      "path": "data/experiments/aurora_grid_accuracy/20260412_214736_aurora_grid_accuracy",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "needs_human_review",
+      "reasons": [
+        "missing_run_review"
+      ],
+      "size_bytes": 153088,
+      "mtime_utc": "2026-04-12T22:16:02.708216+00:00",
+      "experiment_name": "aurora_grid_accuracy",
+      "run_id": "3a39334eace6",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": false,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "aurora_grid_accuracy:3a39334eace6"
+    },
+    {
+      "path": "data/experiments/repeatability_dataset/20260328_230219_repeatability_dataset",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "trash_candidate",
+      "reasons": [
+        "mock_or_mock_trust"
+      ],
+      "size_bytes": 79293,
+      "mtime_utc": "2026-03-28T23:02:19.732896+00:00",
+      "experiment_name": "repeatability_dataset",
+      "run_id": "1cd464207960",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": true,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "partial_success",
+      "duplicate_key": "repeatability_dataset:1cd464207960"
+    },
+    {
+      "path": "data/experiments/repeatability_dataset/20260328_155844_repeatability_dataset",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "trash_candidate",
+      "reasons": [
+        "mock_or_mock_trust"
+      ],
+      "size_bytes": 79388,
+      "mtime_utc": "2026-03-28T15:58:44.771262+00:00",
+      "experiment_name": "repeatability_dataset",
+      "run_id": "ed1c9ad42b54",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": true,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "partial_success",
+      "duplicate_key": "repeatability_dataset:ed1c9ad42b54"
+    },
+    {
+      "path": "data/experiments/aurora_grid_accuracy/20260328_155844_aurora_grid_accuracy",
+      "root": "data/experiments",
+      "item_type": "run",
+      "classification": "trash_candidate",
+      "reasons": [
+        "mock_or_mock_trust"
+      ],
+      "size_bytes": 61621,
+      "mtime_utc": "2026-03-28T15:58:44.771074+00:00",
+      "experiment_name": "aurora_grid_accuracy",
+      "run_id": "3e2687f53486",
+      "review_status": "debug",
+      "has_run_review": false,
+      "mock_mode": true,
+      "trust_mode": "unknown",
+      "success": true,
+      "status": "success",
+      "duplicate_key": "aurora_grid_accuracy:3e2687f53486"
+    },
+    {
+      "path": "data/diagnostics/data_curation/20260512_222508_cleanup_preview",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 2887,
+      "mtime_utc": "2026-05-12T22:25:08.485021+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/data_curation/20260512_222502_data_curation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 102818,
+      "mtime_utc": "2026-05-12T22:25:02.186664+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/hardware_readiness/20260512_055608",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 50440,
+      "mtime_utc": "2026-05-12T05:56:09.838165+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/prehardware_dry_run/20260512_055607",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 34017,
+      "mtime_utc": "2026-05-12T05:56:08.542741+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/hardware_readiness/20260512_054813",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 50450,
+      "mtime_utc": "2026-05-12T05:48:15.091567+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/prehardware_dry_run/20260512_054809",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 34023,
+      "mtime_utc": "2026-05-12T05:48:09.921410+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/hardware_readiness/20260512_045759",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 44871,
+      "mtime_utc": "2026-05-12T04:58:01.884194+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/prehardware_dry_run/20260512_045755",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 33323,
+      "mtime_utc": "2026-05-12T04:57:56.236849+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260424_230457_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 12549,
+      "mtime_utc": "2026-04-25T19:00:34.302166+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260423_211322_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 12589,
+      "mtime_utc": "2026-04-25T19:00:34.301941+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260423_203028_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 12922,
+      "mtime_utc": "2026-04-25T19:00:34.301717+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/data_management_migration/20260423_015046_data_management_migration_preview",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 3305,
+      "mtime_utc": "2026-04-23T01:50:46.405950+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/data_management_migration/20260423_015042_data_management_migration_apply",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 5551,
+      "mtime_utc": "2026-04-23T01:50:42.189590+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/data_management_migration/20260423_014839_data_management_migration",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 28616,
+      "mtime_utc": "2026-04-23T01:50:42.188815+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/data_management_migration/20260423_015033_data_management_migration_preview",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 5575,
+      "mtime_utc": "2026-04-23T01:50:33.668166+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260412_222019_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 12776,
+      "mtime_utc": "2026-04-23T01:48:39.281783+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260412_222052_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 12629,
+      "mtime_utc": "2026-04-23T01:48:39.281657+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/data_management_migration/20260423_010401_data_management_migration",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 2837,
+      "mtime_utc": "2026-04-23T01:04:01.406752+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/data_management_migration/20260423_003757_data_management_migration",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 39813,
+      "mtime_utc": "2026-04-23T00:37:57.328944+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/data_management_migration/20260423_003749_data_management_migration",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 40007,
+      "mtime_utc": "2026-04-23T00:37:49.336755+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260419_224941_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 12800,
+      "mtime_utc": "2026-04-20T00:50:49.112700+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260412_214238_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 12556,
+      "mtime_utc": "2026-04-13T02:47:43.750966+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260406_155901_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 13239,
+      "mtime_utc": "2026-04-13T02:47:43.744860+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260403_161001_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 13329,
+      "mtime_utc": "2026-04-13T02:47:43.738440+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260403_160948_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 13332,
+      "mtime_utc": "2026-04-13T02:47:43.733146+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260401_193931_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 13213,
+      "mtime_utc": "2026-04-13T02:47:43.727986+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260401_193916_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 13121,
+      "mtime_utc": "2026-04-13T02:47:43.722924+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260401_193317_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 13214,
+      "mtime_utc": "2026-04-13T02:47:43.717812+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260401_181329_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 13219,
+      "mtime_utc": "2026-04-13T02:47:43.712512+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260401_181148_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 13246,
+      "mtime_utc": "2026-04-13T02:47:43.707695+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260401_181133_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 13332,
+      "mtime_utc": "2026-04-13T02:47:43.703681+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260331_210318_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 13236,
+      "mtime_utc": "2026-04-13T02:47:43.687080+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260331_210306_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 13343,
+      "mtime_utc": "2026-04-13T02:47:43.677990+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260331_192249_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 7146,
+      "mtime_utc": "2026-04-13T02:47:43.672655+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260331_192248_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 7050,
+      "mtime_utc": "2026-04-13T02:47:43.668359+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260331_191934_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 7148,
+      "mtime_utc": "2026-04-13T02:47:43.663680+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260331_191748_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 7166,
+      "mtime_utc": "2026-04-13T02:47:43.657552+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260331_191621_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 7143,
+      "mtime_utc": "2026-04-13T02:47:43.653006+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260331_191619_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 7044,
+      "mtime_utc": "2026-04-13T02:47:43.647832+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260331_191603_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 7153,
+      "mtime_utc": "2026-04-13T02:47:43.642328+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260331_191554_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 7136,
+      "mtime_utc": "2026-04-13T02:47:43.638159+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/diagnostics/tracker_validation/20260330_210713_tracker_validation",
+      "root": "data/diagnostics",
+      "item_type": "dir",
+      "classification": "generated_ignore",
+      "reasons": [
+        "generated_root"
+      ],
+      "size_bytes": 6807,
+      "mtime_utc": "2026-04-13T02:47:43.633673+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/calibration/servo_mapping_checks",
+      "root": "data/calibration",
+      "item_type": "dir",
+      "classification": "keep_candidate",
+      "reasons": [
+        "calibration_artifact"
+      ],
+      "size_bytes": 0,
+      "mtime_utc": "2026-05-12T05:43:55.200616+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    },
+    {
+      "path": "data/calibration/servo_calibration",
+      "root": "data/calibration",
+      "item_type": "dir",
+      "classification": "keep_candidate",
+      "reasons": [
+        "calibration_artifact"
+      ],
+      "size_bytes": 469239,
+      "mtime_utc": "2026-05-12T00:34:10.307957+00:00",
+      "experiment_name": "",
+      "run_id": "",
+      "review_status": "",
+      "has_run_review": false,
+      "mock_mode": null,
+      "trust_mode": "",
+      "success": null,
+      "status": "",
+      "duplicate_key": ""
+    }
+  ]
+}

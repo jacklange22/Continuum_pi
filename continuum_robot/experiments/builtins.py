@@ -3344,7 +3344,9 @@ class PretensionValidationExperiment(BaseExperiment):
                 "summary_requirements": {
                     "force_status": (
                         "success"
-                        if accepted_runs == len(run_rows)
+                        if run_rows and accepted_runs == len(run_rows)
+                        else "failed"
+                        if accepted_runs == 0
                         else "partial_success"
                     )
                 },
@@ -4789,7 +4791,13 @@ class PretensionValidationExperiment(BaseExperiment):
                 "quality_score_0_100": "score",
             },
             "summary_requirements": {
-                "force_status": "success" if accepted_runs == len(run_rows) else "partial_success"
+                "force_status": (
+                    "success"
+                    if run_rows and accepted_runs == len(run_rows)
+                    else "failed"
+                    if accepted_runs == 0
+                    else "partial_success"
+                )
             },
         }
 

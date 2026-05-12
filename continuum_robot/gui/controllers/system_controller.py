@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import logging
 from pathlib import Path
+import time
 
 from continuum_robot.config.config_loader import ConfigLoader
 from continuum_robot.config.settings import Settings
@@ -148,6 +149,9 @@ class SystemController:
             session_log_path=str(session_log_path or ""),
         )
         self._last_truth_snapshot: dict[str, str] = {}
+        self._readiness_cache: tuple[tuple[int, ...], bool, object] | None = None
+        self._readiness_cache_monotonic_s: float = 0.0
+        self._readiness_cache_ttl_s: float = 0.75
         self._refresh_telemetry_policy()
         self.rescan_ports()
 
@@ -290,7 +294,7 @@ class SystemController:
                 "OpenRB connected | port=%s | baud=%s | expected_servo_ids=%s | selection_reason=%s",
                 connected_port,
                 self.state.baudrate,
-                self.settings.robot.servo_ids,
+                self.settings.robot.operating_context().expected_servo_ids,
                 selected_reason or "configured_port",
             )
             replacement_message = ""
@@ -457,8 +461,8 @@ class SystemController:
         try:
             self.servo_service.disconnect()
             self.openrb_client.disconnect()
-            LOG.info("OpenRB and DYNAMIXEL disconnected.")
-            self.state.status_message = "OpenRB and DYNAMIXEL bus disconnected."
+            LOG.info("OpenRB and DYNAMIXEL disconnected; torque state preserved unless explicitly configured otherwise.")
+            self.state.status_message = "OpenRB and DYNAMIXEL bus disconnected; torque state was preserved."
             self.state.last_error = None
         except Exception as exc:
             try:
@@ -469,7 +473,7 @@ class SystemController:
                 LOG.info("OpenRB disconnect cleanup warning | error=%s", exc)
                 self.state.last_error = None
                 self.state.status_message = (
-                    "OpenRB disconnected; skipped some torque-off cleanup because the bus was already unavailable."
+                    "OpenRB disconnected; torque state was preserved, but the bus was already unavailable during cleanup."
                 )
             else:
                 LOG.exception("OpenRB disconnect failed | error=%s", exc)
@@ -495,16 +499,20 @@ class SystemController:
             self.state.bench_debug_text = self._build_disconnected_bench_debug_text()
             return self.refresh()
         try:
+            started = time.monotonic()
+            context = self.settings.robot.operating_context()
+            expected_ids = [int(value) for value in context.expected_servo_ids]
             ownership = self.servo_service.bus_ownership_status()
             if ownership.active and not ownership.held_by_current_thread:
                 snapshot = self.servo_service.build_cached_runtime_servo_snapshot(
-                    list(self.settings.robot.servo_ids),
+                    expected_ids,
+                    selected_servo_id=int(context.selected_servo_id) if context.selected_servo_id is not None else None,
                 )
                 self.sync_servo_runtime_snapshot(snapshot)
                 self.state.status_message = self.servo_service.bus_busy_message(action="system readiness refresh")
                 self.state.last_error = None
                 return self.refresh()
-            if self.settings.robot.operating_context().operating_mode == "one_servo":
+            if context.operating_mode == "one_servo":
                 debug_snapshot = self.servo_service.build_bench_debug_snapshot(self._expected_servo_id())
                 self.state.detected_servo_ids = (
                     [int(debug_snapshot.selected_servo_id)]
@@ -530,27 +538,32 @@ class SystemController:
                     else None
                 )
             else:
-                snapshot = self.servo_service.build_runtime_servo_snapshot(
-                    list(self.settings.robot.servo_ids),
-                    include_scan=bool(include_scan),
-                )
-                self.state.detected_servo_ids = list(snapshot.detected_servo_ids)
-                self.state.telemetry_ready_count = int(snapshot.telemetry_ready_count)
-                self.state.motion_ready_count = int(snapshot.motion_ready_count)
-                self.state.bus_reachable = bool(snapshot.detected_servo_ids)
-                self.state.motion_ready = bool(snapshot.all_motion_ready)
-                external_power_flags = [
-                    entry.motion_assessment.external_power_ready
-                    for entry in snapshot.entries.values()
-                    if entry.motion_assessment is not None and entry.motion_assessment.external_power_ready is not None
-                ]
-                if not external_power_flags:
-                    self.state.external_power_ready = None
+                cache_key = (tuple(expected_ids), bool(include_scan))
+                cached = self._readiness_cache
+                if (
+                    cached is not None
+                    and cached[0] == cache_key[0]
+                    and cached[1] == cache_key[1]
+                    and (time.monotonic() - self._readiness_cache_monotonic_s) <= self._readiness_cache_ttl_s
+                ):
+                    snapshot = cached[2]
                 else:
-                    self.state.external_power_ready = all(bool(flag) for flag in external_power_flags)
-                self.state.readiness_message = snapshot.message
-                self.state.bench_debug_text = self._build_runtime_servo_debug_text(snapshot)
+                    snapshot = self.servo_service.build_runtime_servo_snapshot(
+                        expected_ids,
+                        include_scan=bool(include_scan),
+                    )
+                    self._readiness_cache = (cache_key[0], cache_key[1], snapshot)
+                    self._readiness_cache_monotonic_s = time.monotonic()
+                self.sync_servo_runtime_snapshot(snapshot)
                 self.state.last_error = None if snapshot.all_motion_ready else snapshot.message
+            elapsed_ms = (time.monotonic() - started) * 1000.0
+            if elapsed_ms > 250.0:
+                LOG.warning(
+                    "System readiness refresh slow | elapsed_ms=%.1f | expected_servo_ids=%s | include_scan=%s",
+                    elapsed_ms,
+                    expected_ids,
+                    bool(include_scan),
+                )
         except ServoBusBusyError as exc:
             self.state.readiness_message = str(exc)
             self.state.status_message = str(exc)

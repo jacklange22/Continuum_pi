@@ -670,6 +670,9 @@ def test_staged_pretension_records_current_only_lower_trust(tmp_path: Path) -> N
 
     metrics = result.summary.experiment_metrics
     run_row = metrics["run_rows"][0]
+    assert result.summary.status == "failed"
+    assert result.success is False
+    assert metrics["accepted_run_count"] == 0
     assert run_row["trust_status"] == "current_only_lower_trust"
     assert "current_only_lower_trust" in run_row["reject_reasons"]
 

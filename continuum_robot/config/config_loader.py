@@ -139,6 +139,11 @@ class ConfigLoader:
             coarse_jog_step_ticks=int(safety_data.get("coarse_jog_step_ticks", 25)),
             software_position_margin_ticks=int(safety_data.get("software_position_margin_ticks", 64)),
             telemetry_stale_after_s=float(safety_data.get("telemetry_stale_after_s", 0.25)),
+            torque_off_on_disconnect=bool(safety_data.get("torque_off_on_disconnect", False)),
+            wrap_risk_margin_ticks=int(safety_data.get("wrap_risk_margin_ticks", 128)),
+            max_raw_jump_without_wrap_risk_ticks=int(
+                safety_data.get("max_raw_jump_without_wrap_risk_ticks", 900)
+            ),
             pretension_untensioned_reference_tick=int(
                 safety_data.get("pretension_untensioned_reference_tick", 4095)
             ),

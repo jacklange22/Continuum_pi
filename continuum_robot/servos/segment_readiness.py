@@ -223,6 +223,13 @@ def _evaluate_transport(
     if not servo_connected:
         status = STATUS_WARN
         message = "OpenRB is disconnected; transport has not been validated."
+    elif runtime_snapshot is not None and not responding and not any(bool(row) for row in rows.values()):
+        status = STATUS_WARN
+        missing = []
+        message = (
+            "Live readiness scan unavailable; no cached servo telemetry was available. "
+            "Transport is unknown, not confirmed missing."
+        )
     elif missing:
         status = STATUS_FAIL
         message = "missing servo ID(s): " + ", ".join(str(value) for value in missing) + "."

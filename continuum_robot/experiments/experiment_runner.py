@@ -372,22 +372,38 @@ class ExperimentRunner:
             try:
                 if calibration_summary_for_metadata is None:
                     calibration_summary_for_metadata = self.servo_service.get_calibration_summary()
+                expected_ids = [int(value) for value in operating_context.expected_servo_ids]
+                ownership = self.servo_service.bus_ownership_status()
+                runtime_snapshot = self.servo_service.build_cached_runtime_servo_snapshot(
+                    expected_ids,
+                    selected_servo_id=(
+                        int(operating_context.selected_servo_id)
+                        if operating_context.selected_servo_id is not None
+                        else None
+                    ),
+                )
                 sign_mapping = _latest_sign_mapping_summary(
                     project_root=self.project_root,
                     active_segment_key=str(operating_context.active_segment_key or ""),
-                    expected_servo_ids=[int(value) for value in operating_context.expected_servo_ids],
+                    expected_servo_ids=expected_ids,
                 )
                 readiness = evaluate_selected_segment_readiness(
                     operating_mode=operating_context.operating_mode,
                     active_segment_key=operating_context.active_segment_key,
                     active_segment_label=operating_context.active_segment_label,
-                    expected_servo_ids=[int(value) for value in operating_context.expected_servo_ids],
+                    expected_servo_ids=expected_ids,
                     calibration_summary=calibration_summary_for_metadata,
                     mock_mode=bool(self.settings.runtime.mock_mode),
                     servo_connected=bool(getattr(self.servo_service, "is_connected", False)),
+                    runtime_snapshot=runtime_snapshot,
                     sign_mapping=sign_mapping,
                 )
                 selected_segment_readiness_info = readiness.to_dict()
+                selected_segment_readiness_info["metadata_readiness_source"] = "cached_telemetry_used"
+                selected_segment_readiness_info["cached_telemetry_used"] = True
+                selected_segment_readiness_info["live_scan_unavailable_due_to_experiment_ownership"] = bool(
+                    ownership.active
+                )
                 if sign_mapping is not None:
                     sign_mapping_info = {
                         "exists": bool(sign_mapping.exists),

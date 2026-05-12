@@ -34,19 +34,29 @@ Confirm:
 
 ## 3. Wednesday Single-Segment First Workflow
 
+Current hardware-day default is `single_segment`, Segment B, servo IDs `[5,6,7,8]`.
+The other segment being disconnected is informational only in this mode.
+
 1. Before connecting hardware, confirm `mock_mode=false` in `config/system.local.yaml`.
 2. Select `single_segment` on System.
-3. Select Segment A or Segment B and apply settings.
+3. Select Segment B `[5,6,7,8]` and apply settings unless the hardware has been deliberately rerouted.
 4. Connect OpenRB.
-5. On Servos, confirm the expected four servo IDs respond and no unexpected IDs appear.
-6. Use tiny manual jogs to confirm servo sign and tendon routing before any automated motion.
-7. Connect tracker.
-8. Confirm 0A / runtime-tip visibility and load or validate registration if the run needs pose trust.
-9. Capture a manual startup state or run conservative pretension.
-10. Run `pretension_validation` first.
-11. Repeat pretension validation three times before thesis-style repeatability claims.
-12. Run a tiny `single_segment_repeatability` or `collect_pose_command_dataset` session.
-13. Validate/export the run bundle from Data, then mark the run review status.
+5. On Servos, confirm the expected four active servo IDs respond.
+6. Keep torque on unless intentionally disabling it. Normal GUI close/reload/disconnect should not be used as a torque-off control.
+7. Use tiny manual jogs to confirm servo sign and tendon routing before any automated motion.
+8. Do not command a move-to-4095 untensioned reference while tendons are attached.
+9. If any servo position is near 0 or 4095, stop, manually reset the spool if needed, and re-capture neutral/startup.
+10. Capture the Segment B sign/mapping checklist:
+    - `5 = +x`, `6 = +y`, `7 = -x`, `8 = -y`
+    - `axis_a = 5/7`, `axis_b = 6/8`
+11. Capture valid neutral/safe bounds before calibrated motion.
+12. Connect tracker.
+13. Confirm 0A / runtime-tip visibility and load or validate registration if the run needs pose trust.
+14. Do not use automatic pretension until sign/mapping and neutral/safe bounds pass.
+15. When ready, run conservative `pretension_validation` from `current_position` mode only.
+16. Repeat pretension validation three times before thesis-style repeatability claims.
+17. Run a tiny `single_segment_repeatability` or `collect_pose_command_dataset` session.
+18. Validate/export the run bundle from Data, then mark the run review status.
 
 Stop immediately if:
 

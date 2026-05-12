@@ -25,6 +25,9 @@ class SafetyGuard:
         coarse_jog_step_ticks: int = 25,
         software_position_margin_ticks: int = 64,
         telemetry_stale_after_s: float = 0.25,
+        torque_off_on_disconnect: bool = False,
+        wrap_risk_margin_ticks: int = 128,
+        max_raw_jump_without_wrap_risk_ticks: int = 900,
         pretension_untensioned_reference_tick: int = 4095,
         pretension_start_mode: str = "current_position",
         pretension_step_ticks: int = 2,
@@ -63,6 +66,9 @@ class SafetyGuard:
         self.coarse_jog_step_ticks = coarse_jog_step_ticks
         self.software_position_margin_ticks = software_position_margin_ticks
         self.telemetry_stale_after_s = telemetry_stale_after_s
+        self.torque_off_on_disconnect = bool(torque_off_on_disconnect)
+        self.wrap_risk_margin_ticks = int(wrap_risk_margin_ticks)
+        self.max_raw_jump_without_wrap_risk_ticks = int(max_raw_jump_without_wrap_risk_ticks)
         self.pretension_untensioned_reference_tick = pretension_untensioned_reference_tick
         self.pretension_start_mode = str(pretension_start_mode or "current_position").strip().lower()
         self.pretension_step_ticks = pretension_step_ticks

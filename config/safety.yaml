@@ -22,6 +22,13 @@ software_position_margin_ticks: 64
 # Keep the stale-telemetry gate honest for bring-up. If this trips on the Pi,
 # fix read cadence/latency before relaxing the threshold.
 telemetry_stale_after_s: 0.25
+# Hardware-day tendon policy: normal GUI close/reload/disconnect preserves
+# current servo torque state unless an operator explicitly disables torque.
+torque_off_on_disconnect: false
+# Raw XC330 0..4095 discontinuity guard. Commands near/crossing the raw wrap
+# boundary are blocked until a safe neutral/startup state is recaptured.
+wrap_risk_margin_ticks: 128
+max_raw_jump_without_wrap_risk_ticks: 900
 pretension_untensioned_reference_tick: 4095
 pretension_start_mode: current_position  # current_position | manual_startup_artifact | release_200_from_current | full_release_4095
 pretension_step_ticks: 2

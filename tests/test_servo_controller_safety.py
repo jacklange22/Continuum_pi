@@ -316,7 +316,7 @@ def test_system_controller_reports_motion_ready_in_single_servo_bench_mode_witho
     assert "Active range: 0..4095" in controller.state.readiness_message
 
 
-def test_system_controller_disconnect_attempts_torque_off(tmp_path: Path) -> None:
+def test_system_controller_disconnect_preserves_torque_by_default(tmp_path: Path) -> None:
     settings = _settings_4servo()
     bus = _DisconnectTrackingBus([1, 2, 3, 4])
     servo_service = _servo_service(
@@ -335,7 +335,7 @@ def test_system_controller_disconnect_attempts_torque_off(tmp_path: Path) -> Non
 
     controller.disconnect_openrb()
 
-    assert sorted(bus.torque_disable_calls) == [1, 2, 3, 4]
+    assert bus.torque_disable_calls == []
 
 
 def test_system_controller_openrb_connect_skips_onboard_uart_fallback_by_default(
@@ -718,6 +718,32 @@ def test_system_controller_reports_configured_4servo_readiness(tmp_path: Path) -
     assert "discovered_ids=[1, 2, 3, 4]" in controller.state.bench_debug_text
 
 
+def test_system_controller_single_segment_b_uses_active_expected_ids(tmp_path: Path) -> None:
+    settings = _settings_dual_segment()
+    settings.robot.mode = "single_segment"
+    settings.robot.active_segment = "segment_b"
+    service = _servo_service(
+        tmp_path,
+        dxl_bus=MockDxlBus([5, 6, 7, 8]),
+        context_servo_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+        robot_mode="single_segment",
+    )
+    controller = SystemController(
+        tracking_service=_TrackingStub(),
+        openrb_client=MockOpenRbClient(),
+        servo_service=service,
+        settings=settings,
+    )
+
+    controller.connect_openrb()
+    controller.refresh_readiness(include_scan=True)
+
+    assert controller.state.expected_servo_ids == [5, 6, 7, 8]
+    assert controller.state.detected_servo_ids == [5, 6, 7, 8]
+    assert "missing=[1, 2, 3, 4]" not in controller.state.readiness_message
+    assert controller.state.motion_ready is True
+
+
 def test_servos_controller_reports_4servo_missing_and_unexpected_ids(tmp_path: Path) -> None:
     settings = _settings_4servo()
     service = _servo_service(
@@ -731,17 +757,20 @@ def test_servos_controller_reports_4servo_missing_and_unexpected_ids(tmp_path: P
 
     controller.refresh_readiness()
 
-    assert controller.state.detected_servo_ids == [1, 2, 4, 9]
+    assert controller.state.detected_servo_ids == [1, 2, 4]
     assert controller.state.missing_servo_ids == [3]
-    assert controller.state.unexpected_servo_ids == [9]
+    assert controller.state.unexpected_servo_ids == []
     assert controller.state.telemetry[3]["error"] is not None
     assert "Spine 1" in controller.state.single_segment_readiness_summary
     assert "missing servo ID(s): 3" in controller.state.single_segment_readiness_summary
 
+    scan_result = controller.scan()
+    assert scan_result == [1, 2, 4, 9]
+
     controller.refresh()
 
-    assert controller.state.unexpected_servo_ids == [9]
-    assert controller.state.detected_servo_ids == [1, 2, 4, 9]
+    assert controller.state.unexpected_servo_ids == []
+    assert controller.state.detected_servo_ids == [1, 2, 4]
 
 
 def test_servos_controller_readiness_card_separates_startup_from_calibration(tmp_path: Path) -> None:

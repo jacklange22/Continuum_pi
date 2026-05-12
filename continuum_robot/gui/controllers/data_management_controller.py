@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import perf_counter
+from typing import Any
 
 from continuum_robot.data.build_thesis_evidence_index import build_thesis_evidence_index
 from continuum_robot.data.export_run_bundle import (
@@ -42,15 +44,19 @@ class DataManagementViewState:
 
     items: list[ManagedDataItem] = field(default_factory=list)
     filtered_items: list[ManagedDataItem] = field(default_factory=list)
+    run_summaries_by_path: dict[str, Any] = field(default_factory=dict)
     selected_paths: list[str] = field(default_factory=list)
     root_summary_pairs: list[tuple[str, str]] = field(default_factory=list)
     detail_pairs: list[tuple[str, str]] = field(default_factory=list)
+    performance_pairs: list[tuple[str, str]] = field(default_factory=list)
     category_filter: str = "all"
     search_text: str = ""
     experiment_filter: str = "all"
     root_filter: str = "all"
     review_status_filter: str = "all"
     trust_mode_filter: str = "all"
+    operating_mode_filter: str = "all"
+    segment_filter: str = "all"
     mock_mode_filter: str = "all"
     valid_model_filter: str = "all"
     valid_thesis_filter: str = "all"
@@ -101,11 +107,17 @@ class DataManagementController:
         self.state = DataManagementViewState(root_summary_pairs=build_root_summary(self.project_root))
         self._catalog_dirty = True
         self._last_migration_report: MigrationReport | None = None
+        self._run_summary_cache: dict[Path, tuple[tuple[int, int], Any]] = {}
 
     def refresh(self) -> DataManagementViewState:
+        total_start = perf_counter()
+        discovery_time = 0.0
         if self._catalog_dirty:
+            start = perf_counter()
             self.state.items = discover_managed_data(self.project_root)
+            discovery_time = perf_counter() - start
             self._catalog_dirty = False
+        start = perf_counter()
         self.state.filtered_items = filter_managed_data(
             self.state.items,
             category_key=self.state.category_filter,
@@ -114,6 +126,8 @@ class DataManagementController:
             root_filter=self.state.root_filter,
             review_status_filter=self.state.review_status_filter,
             trust_mode_filter=self.state.trust_mode_filter,
+            operating_mode_filter=self.state.operating_mode_filter,
+            segment_filter=self.state.segment_filter,
             mock_mode_filter=self.state.mock_mode_filter,
             valid_model_filter=self.state.valid_model_filter,
             valid_thesis_filter=self.state.valid_thesis_filter,
@@ -122,13 +136,22 @@ class DataManagementController:
             has_figures_filter=self.state.has_figures_filter,
             has_review_filter=self.state.has_review_filter,
             sort_mode=self.state.sort_mode,
+            run_summary_loader=self._summary_for_item,
         )
+        filter_time = perf_counter() - start
+        start = perf_counter()
         self._refresh_filter_options()
+        option_time = perf_counter() - start
         visible_paths = {str(item.path) for item in self.state.filtered_items}
         self.state.selected_paths = [path for path in self.state.selected_paths if path in visible_paths]
         selected_items = self.selected_items()
+        start = perf_counter()
         self.state.root_summary_pairs = build_root_summary(self.project_root)
-        self.state.detail_pairs = _build_detail_pairs(self.project_root, selected_items)
+        self.state.detail_pairs = _build_detail_pairs(self.project_root, selected_items, summary_loader=self._summary_for_item)
+        detail_time = perf_counter() - start
+        start = perf_counter()
+        self.state.run_summaries_by_path = self._visible_run_summaries(self.state.filtered_items)
+        table_summary_time = perf_counter() - start
         self.state.can_open = bool(selected_items)
         self.state.can_reveal = bool(selected_items)
         self.state.can_copy_path = bool(selected_items)
@@ -173,6 +196,16 @@ class DataManagementController:
             self.state.status_message = (
                 f"{len(self.state.filtered_items)} item(s) shown across {len(self.state.items)} discovered artifact(s)."
             )
+        total_time = perf_counter() - total_start
+        self.state.performance_pairs = [
+            ("Total refresh", f"{total_time * 1000.0:.1f} ms"),
+            ("Catalog discovery", f"{discovery_time * 1000.0:.1f} ms" if discovery_time else "cached"),
+            ("Filter / sort", f"{filter_time * 1000.0:.1f} ms"),
+            ("Filter options", f"{option_time * 1000.0:.1f} ms"),
+            ("Details", f"{detail_time * 1000.0:.1f} ms"),
+            ("Visible summaries", f"{table_summary_time * 1000.0:.1f} ms"),
+            ("Summary cache", f"{len(self._run_summary_cache)} run(s)"),
+        ]
         return self.state
 
     def set_category_filter(self, value: str) -> None:
@@ -185,6 +218,67 @@ class DataManagementController:
         if not hasattr(self.state, key):
             raise ValueError(f"Unknown data filter: {key}")
         setattr(self.state, key, str(value or "all"))
+
+    def apply_filter_preset(self, preset: str) -> None:
+        preset = str(preset or "all")
+        if preset == "all":
+            self.state.category_filter = "all"
+            self.state.root_filter = "all"
+            self.state.experiment_filter = "all"
+            self.state.review_status_filter = "all"
+            self.state.trust_mode_filter = "all"
+            self.state.operating_mode_filter = "all"
+            self.state.segment_filter = "all"
+            self.state.mock_mode_filter = "all"
+            self.state.size_filter = "all"
+            self.state.has_review_filter = "all"
+            self.state.search_text = ""
+            return
+        if preset == "today":
+            from datetime import date
+
+            self.state.search_text = date.today().strftime("%Y%m%d")
+            self.state.category_filter = "all"
+            return
+        if preset == "real_hardware":
+            self.state.category_filter = "experiments"
+            self.state.root_filter = "data/experiments"
+            self.state.mock_mode_filter = "false"
+            self.state.trust_mode_filter = "all"
+            return
+        if preset == "single_segment":
+            self.state.category_filter = "experiments"
+            self.state.operating_mode_filter = "single_segment"
+            self.state.mock_mode_filter = "false"
+            return
+        if preset == "segment_b":
+            self.state.category_filter = "experiments"
+            self.state.operating_mode_filter = "single_segment"
+            self.state.segment_filter = "segment_b"
+            self.state.mock_mode_filter = "false"
+            return
+        if preset == "needs_review":
+            self.state.category_filter = "experiments"
+            self.state.review_status_filter = "unreviewed"
+            return
+        if preset == "thesis_advisor":
+            self.state.category_filter = "experiments"
+            self.state.review_status_filter = "all"
+            self.state.valid_thesis_filter = "true"
+            self.state.search_text = ""
+            return
+        if preset == "large_files":
+            self.state.size_filter = "large"
+            self.state.sort_mode = "largest"
+            return
+        if preset == "generated_diagnostics":
+            self.state.category_filter = "diagnostics"
+            self.state.root_filter = "data/diagnostics"
+            return
+        if preset == "trash_candidates":
+            self.state.category_filter = "experiments"
+            self.state.review_status_filter = "garbage"
+            return
 
     def set_selected_paths(self, paths: list[str]) -> None:
         selected = {str(path) for path in paths if str(path).strip()}
@@ -236,6 +330,7 @@ class DataManagementController:
 
     def invalidate_catalog(self) -> None:
         self._catalog_dirty = True
+        self._run_summary_cache = {}
 
     def export_selected(
         self,
@@ -460,7 +555,7 @@ class DataManagementController:
             if run_dir is None:
                 continue
             try:
-                summary = summarize_run(run_dir)
+                summary = self._summary_for_run_dir(run_dir)
             except Exception:
                 continue
             experiments.add(summary.experiment_name)
@@ -472,6 +567,34 @@ class DataManagementController:
             *sorted(value for value in trust_modes if value),
             *[value for value in ("thesis_trusted", "lower_trust", "servo_only", "current_only", "mock", "debug") if value not in trust_modes],
         ]
+
+    def _summary_for_item(self, item: ManagedDataItem):
+        run_dir = _exportable_run_dir(item)
+        if run_dir is None:
+            return None
+        return self._summary_for_run_dir(run_dir)
+
+    def _summary_for_run_dir(self, run_dir: Path):
+        run_dir = Path(run_dir)
+        signature = _run_dir_signature(run_dir)
+        cached = self._run_summary_cache.get(run_dir)
+        if cached is not None and cached[0] == signature:
+            return cached[1]
+        summary = summarize_run(run_dir)
+        self._run_summary_cache[run_dir] = (signature, summary)
+        return summary
+
+    def _visible_run_summaries(self, items: list[ManagedDataItem]) -> dict[str, Any]:
+        summaries: dict[str, Any] = {}
+        for item in items:
+            run_dir = _exportable_run_dir(item)
+            if run_dir is None:
+                continue
+            try:
+                summaries[str(run_dir)] = self._summary_for_run_dir(run_dir)
+            except Exception:
+                continue
+        return summaries
 
     def _selected_run_or_none(self) -> Path | None:
         return _selected_run_dir(self.selected_items())
@@ -490,7 +613,12 @@ class DataManagementController:
         raise ValueError("No exportable run bundle is visible.")
 
 
-def _build_detail_pairs(project_root: Path, selected_items: list[ManagedDataItem]) -> list[tuple[str, str]]:
+def _build_detail_pairs(
+    project_root: Path,
+    selected_items: list[ManagedDataItem],
+    *,
+    summary_loader=None,
+) -> list[tuple[str, str]]:
     if not selected_items:
         return [("Selection", "Choose one or more items to inspect paths, type, and delete readiness.")]
     if len(selected_items) > 1:
@@ -526,7 +654,8 @@ def _build_detail_pairs(project_root: Path, selected_items: list[ManagedDataItem
     run_dir = _exportable_run_dir(item)
     if run_dir is not None:
         try:
-            pairs.extend(detail_pairs_for_run(summarize_run(run_dir), project_root=project_root))
+            summary = summary_loader(item) if summary_loader is not None else summarize_run(run_dir)
+            pairs.extend(detail_pairs_for_run(summary, project_root=project_root))
         except Exception as exc:
             pairs.append(("Run Summary", f"Could not summarize run: {exc}"))
     return pairs
@@ -605,6 +734,24 @@ def _experiment_name_for_run(run_dir: Path | None) -> str:
         return summarize_run(run_dir).experiment_name
     except Exception:
         return ""
+
+
+def _run_dir_signature(run_dir: Path) -> tuple[int, int]:
+    summary_path = Path(run_dir) / "summary.json"
+    metadata_path = Path(run_dir) / "metadata.json"
+    review_path = Path(run_dir) / "run_review.json"
+    total_mtime_ns = 0
+    total_size = 0
+    for path in (summary_path, metadata_path, review_path):
+        if not path.exists():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        total_mtime_ns = max(total_mtime_ns, int(stat.st_mtime_ns))
+        total_size += int(stat.st_size)
+    return total_mtime_ns, total_size
 
 
 def _display_path(project_root: Path, path: Path | None) -> str:

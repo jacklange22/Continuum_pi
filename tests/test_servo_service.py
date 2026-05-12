@@ -19,6 +19,7 @@ from continuum_robot.servos.servo_service import (
     PretensionParameters,
     ServoBusBusyError,
     ServoService,
+    is_wrap_risk,
 )
 
 
@@ -194,6 +195,17 @@ class _DisconnectOrderBus(MockDxlBus):
     def disconnect(self) -> None:
         self.events.append(("disconnect", None, None))
         super().disconnect()
+
+
+class _TorqueRecordingBus(MockDxlBus):
+    def __init__(self, servo_ids: list[int]) -> None:
+        super().__init__(servo_ids)
+        self.torque_disable_calls: list[int] = []
+
+    def write_torque_enable(self, servo_id: int, enabled: bool) -> None:
+        if not enabled:
+            self.torque_disable_calls.append(int(servo_id))
+        super().write_torque_enable(servo_id, enabled)
 
 
 class _PretensionGoalWriteCrashBus(_PretensionBus):
@@ -1441,16 +1453,60 @@ def test_servo_service_pretension_fails_on_timeout(tmp_path: Path) -> None:
     assert bus._state[1].torque_enabled is False
 
 
-def test_servo_service_disconnect_disarms_known_servos_before_bus_close(tmp_path: Path) -> None:
+def test_wrap_risk_helper_blocks_raw_discontinuity_commands() -> None:
+    assert is_wrap_risk(50, 3500, (0, 4095)) is True
+    assert is_wrap_risk(100, 4095, (0, 4095)) is True
+    assert is_wrap_risk(4050, 3500, (0, 4095)) is False
+    assert is_wrap_risk(3500, 3480, (0, 4095)) is False
+
+
+def test_move_to_raw_target_blocks_wrap_risk(tmp_path: Path) -> None:
+    bus = MockDxlBus([1])
+    bus._state[1].present_position = 50
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1])
+    service.connect("/dev/mock-openrb", 115200)
+
+    result = service.move_servo_to_raw_target(servo_id=1, target_tick=3500)
+
+    assert result.success is False
+    assert result.blocked is True
+    assert "Target crosses raw tick discontinuity".lower() in result.message.lower()
+    assert bus._state[1].present_position == 50
+
+
+def test_servo_service_disconnect_preserves_torque_by_default(tmp_path: Path) -> None:
     bus = _DisconnectOrderBus(fail_servo_id=1)
     service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1, 2])
     service.connect("/dev/mock-openrb", 115200)
 
     service.disconnect()
 
+    assert bus.events == [("disconnect", None, None)]
+
+
+def test_servo_service_explicit_disconnect_torque_off_disarms_before_bus_close(tmp_path: Path) -> None:
+    bus = _DisconnectOrderBus(fail_servo_id=1)
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1, 2])
+    service.connect("/dev/mock-openrb", 115200)
+
+    service.disconnect(torque_off=True, requested_by_operator=True)
+
     assert bus.events[0] == ("torque", 1, False)
     assert bus.events[1] == ("torque", 2, False)
     assert bus.events[-1][0] == "disconnect"
+
+
+def test_explicit_torque_off_targets_active_commanded_scope(tmp_path: Path) -> None:
+    bus = _TorqueRecordingBus([1, 2, 3, 4, 5, 6, 7, 8])
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[1, 2, 3, 4, 5, 6, 7, 8])
+    service.neutral_calibration.context.expected_servo_ids = [5, 6, 7, 8]
+    service.neutral_calibration.context.commanded_servo_ids = [5, 6, 7, 8]
+    service._last_goal_positions_by_id = {1: 2048, 5: 2048}
+    service.connect("/dev/mock-openrb", 115200)
+
+    service.disconnect(torque_off=True, requested_by_operator=True)
+
+    assert bus.torque_disable_calls == [5, 6, 7, 8]
 
 
 def test_servo_service_pretension_cancel_disarms_servo_when_routine_armed_torque(tmp_path: Path) -> None:

@@ -579,7 +579,18 @@ class ExperimentController:
                     self._current_bundle = bundle
                     self.state.last_output_path = str(result.paths.output_dir)
                     self.state.loaded_run_path = str(result.paths.output_dir)
-                    if stopped and partial_saved:
+                    accepted_run_count = result.summary.experiment_metrics.get("accepted_run_count")
+                    no_accepted_pretension = (
+                        str(experiment_name) == "pretension_validation"
+                        and accepted_run_count is not None
+                        and int(accepted_run_count) == 0
+                    )
+                    if no_accepted_pretension:
+                        self.state.status_message = (
+                            f"No accepted pretension startup produced. Review {result.paths.output_dir.name}."
+                        )
+                        self.state.last_error = result.message
+                    elif stopped and partial_saved:
                         self.state.status_message = (
                             f"Run stopped. Partial results were saved to {result.paths.output_dir.name}."
                         )

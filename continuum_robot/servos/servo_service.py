@@ -53,6 +53,59 @@ SINGLE_SEGMENT_WORKFLOW_CURRENT_AWARE = "current_aware_validation"
 LOG = logging.getLogger(__name__)
 
 
+def command_crosses_wrap_boundary(
+    current_tick: int,
+    target_tick: int,
+    safe_bounds: tuple[int, int] | None = None,
+    *,
+    raw_min_tick: int = RAW_POSITION_MIN_TICK,
+    raw_max_tick: int = RAW_POSITION_MAX_TICK,
+    margin_ticks: int = 128,
+    max_delta_ticks: int = 900,
+) -> bool:
+    """Return True when a raw XC330 command risks crossing the 0/4095 discontinuity."""
+    current = int(current_tick)
+    target = int(target_tick)
+    raw_min = int(raw_min_tick)
+    raw_max = int(raw_max_tick)
+    margin = max(0, int(margin_ticks))
+    max_delta = max(1, int(max_delta_ticks))
+    if not (raw_min <= current <= raw_max and raw_min <= target <= raw_max):
+        return True
+    if safe_bounds is not None:
+        safe_min, safe_max = (int(safe_bounds[0]), int(safe_bounds[1]))
+        if safe_min <= safe_max and not (safe_min <= current <= safe_max and safe_min <= target <= safe_max):
+            return True
+    delta = abs(target - current)
+    near_low_current = current <= raw_min + margin
+    near_low_target = target <= raw_min + margin
+    near_high_current = current >= raw_max - margin
+    near_high_target = target >= raw_max - margin
+    if (near_low_current and near_high_target) or (near_high_current and near_low_target):
+        return True
+    if (near_low_current or near_low_target or near_high_current or near_high_target) and delta > max_delta:
+        return True
+    return bool(delta > ((raw_max - raw_min) // 2))
+
+
+def is_wrap_risk(
+    current_tick: int,
+    target_tick: int,
+    safe_bounds: tuple[int, int] | None = None,
+    *,
+    margin_ticks: int = 128,
+    max_delta_ticks: int = 900,
+) -> bool:
+    """Compatibility helper for tests and operator-facing wrap checks."""
+    return command_crosses_wrap_boundary(
+        current_tick,
+        target_tick,
+        safe_bounds,
+        margin_ticks=margin_ticks,
+        max_delta_ticks=max_delta_ticks,
+    )
+
+
 @dataclass
 class ServoDisplacementDebugEntry:
     """Per-servo debug details for one coordinated displacement command."""
@@ -523,18 +576,37 @@ class ServoService:
             lambda: self.dxl_bus.connect(port, baudrate),
         )
 
-    def disconnect(self) -> None:
-        torque_report = self.disarm_all_known(
-            reason="disconnect",
-            owner="servo_service.disconnect",
-            best_effort=True,
-        )
-        LOG.info(
-            "Disconnect torque-off report | targets=%s | success=%s | failures=%s",
-            torque_report.target_servo_ids,
-            torque_report.success_count,
-            torque_report.failure_count,
-        )
+    def disconnect(
+        self,
+        *,
+        torque_off: bool | None = None,
+        requested_by_operator: bool = False,
+        reason: str = "disconnect",
+    ) -> None:
+        auto_torque_off_enabled = bool(getattr(self.safety_guard, "torque_off_on_disconnect", False))
+        torque_off_enabled = auto_torque_off_enabled if torque_off is None else bool(torque_off)
+        target_servo_ids = self._configured_servo_ids_for_supervisor()
+        if torque_off_enabled:
+            torque_report = self.disarm_all_known(
+                reason=str(reason),
+                owner="servo_service.disconnect",
+                best_effort=True,
+            )
+            LOG.info(
+                "Disconnect torque policy | torque_policy=torque_disarm | torque_off_requested_by_operator=%s | auto_torque_off_enabled=%s | target_servo_ids=%s | success=%s | failures=%s",
+                bool(requested_by_operator),
+                auto_torque_off_enabled,
+                torque_report.target_servo_ids,
+                torque_report.success_count,
+                torque_report.failure_count,
+            )
+        else:
+            LOG.info(
+                "Disconnect torque policy | torque_policy=preserve_torque | torque_off_requested_by_operator=%s | auto_torque_off_enabled=%s | target_servo_ids=%s",
+                bool(requested_by_operator),
+                auto_torque_off_enabled,
+                target_servo_ids,
+            )
         self._guard_bus_call(
             "disconnect OpenRB / DYNAMIXEL",
             self.dxl_bus.disconnect,
@@ -544,11 +616,17 @@ class ServoService:
         self._last_single_segment_motion_configuration_by_servo.clear()
 
     def _configured_servo_ids_for_supervisor(self) -> list[int]:
-        configured = self.neutral_calibration.context.servo_ids or []
+        context = self.neutral_calibration.context
+        configured = context.commanded_servo_ids or context.expected_servo_ids or self._configured_single_segment_servo_ids()
         return [int(servo_id) for servo_id in configured]
 
     def _last_commanded_servo_ids_for_supervisor(self) -> list[int]:
-        return [int(servo_id) for servo_id in self._last_goal_positions_by_id]
+        active_scope = set(self._configured_servo_ids_for_supervisor())
+        return [
+            int(servo_id)
+            for servo_id in self._last_goal_positions_by_id
+            if not active_scope or int(servo_id) in active_scope
+        ]
 
     def disarm_all_known(
         self,
@@ -572,6 +650,36 @@ class ServoService:
     @staticmethod
     def raw_position_range() -> tuple[int, int]:
         return (RAW_POSITION_MIN_TICK, RAW_POSITION_MAX_TICK)
+
+    def _wrap_rejection_reason(
+        self,
+        *,
+        servo_id: int,
+        current_tick: int | None,
+        target_tick: int,
+        safe_min_tick: int | None,
+        safe_max_tick: int | None,
+    ) -> str | None:
+        if current_tick is None:
+            return f"wrap safety rejection: servo {servo_id} current position is unavailable."
+        safe_bounds = (
+            (int(safe_min_tick), int(safe_max_tick))
+            if safe_min_tick is not None and safe_max_tick is not None
+            else None
+        )
+        if command_crosses_wrap_boundary(
+            int(current_tick),
+            int(target_tick),
+            safe_bounds,
+            margin_ticks=int(getattr(self.safety_guard, "wrap_risk_margin_ticks", 128)),
+            max_delta_ticks=int(getattr(self.safety_guard, "max_raw_jump_without_wrap_risk_ticks", 900)),
+        ):
+            return (
+                f"wrap safety rejection: servo {servo_id} target crosses raw tick discontinuity; command blocked. "
+                "Servo position is near the 0/4095 wrap boundary. Do not command untensioned reference. "
+                "Re-capture neutral/startup or manually reset spool."
+            )
+        return None
 
     @staticmethod
     def operating_mode_label(mode: int | None) -> str:
@@ -1861,14 +1969,11 @@ class ServoService:
                 message="No expected servo IDs are configured.",
             )
 
-        discovered_ids = (
-            self.scan_ids(
-                min_id=int(self.dxl_bus.config.discovery_min_id),
-                max_id=int(self.dxl_bus.config.discovery_max_id),
-            )
-            if include_scan
-            else []
-        )
+        discovered_ids = [
+            servo_id
+            for servo_id in expected_ids
+            if include_scan and self._ping_servo(int(servo_id))
+        ]
         telemetry_by_id = self.read_telemetry(expected_ids)
         entries: dict[int, ServoRuntimeStateEntry] = {}
         detected_servo_ids: list[int] = []
@@ -2723,6 +2828,32 @@ class ServoService:
                 safe_max_tick=int(window.effective_max_target_tick),
                 clamped=False,
             )
+        wrap_reason = self._wrap_rejection_reason(
+            servo_id=int(servo_id),
+            current_tick=int(current_position),
+            target_tick=int(goal_tick),
+            safe_min_tick=int(window.effective_min_target_tick),
+            safe_max_tick=int(window.effective_max_target_tick),
+        )
+        if wrap_reason is not None:
+            return ServoJogResult(
+                servo_id=int(servo_id),
+                command_direction="loosen" if int(goal_tick) >= int(current_position) else "tighten",
+                step_ticks=abs(int(goal_tick) - int(current_position)),
+                delta_ticks=int(goal_tick) - int(current_position),
+                success=False,
+                blocked=True,
+                status="blocked",
+                message=wrap_reason,
+                goal_tick=None,
+                telemetry=assessment.telemetry,
+                assessment=assessment,
+                current_position_tick=int(current_position),
+                unclamped_goal_tick=int(goal_tick),
+                safe_min_tick=int(window.effective_min_target_tick),
+                safe_max_tick=int(window.effective_max_target_tick),
+                clamped=False,
+            )
         self._write_goal_positions({int(servo_id): int(goal_tick)})
         if float(config.settle_time_s) > 0.0:
             self._sleep_fn(float(config.settle_time_s))
@@ -2809,6 +2940,32 @@ class ServoService:
                     f"Blocked {reason} for servo {servo_id}: target {goal_tick} would not move the servo."
                 ),
                 goal_tick=goal_tick,
+                telemetry=assessment.telemetry,
+                assessment=assessment,
+                current_position_tick=current_position,
+                unclamped_goal_tick=unclamped_goal,
+                safe_min_tick=safe_min,
+                safe_max_tick=safe_max,
+                clamped=clamped,
+            )
+        wrap_reason = self._wrap_rejection_reason(
+            servo_id=int(servo_id),
+            current_tick=current_position,
+            target_tick=goal_tick,
+            safe_min_tick=safe_min,
+            safe_max_tick=safe_max,
+        )
+        if wrap_reason is not None:
+            return ServoJogResult(
+                servo_id=int(servo_id),
+                command_direction="loosen" if goal_tick >= current_position else "tighten",
+                step_ticks=abs(goal_tick - current_position),
+                delta_ticks=goal_tick - current_position,
+                success=False,
+                blocked=True,
+                status="blocked",
+                message=wrap_reason,
+                goal_tick=None,
                 telemetry=assessment.telemetry,
                 assessment=assessment,
                 current_position_tick=current_position,
@@ -3156,6 +3313,7 @@ class ServoService:
         self,
         *,
         servo_id: int,
+        current_position_tick: int | None = None,
         requested_goal_tick: int,
         safe_min_tick: int | None,
         safe_max_tick: int | None,
@@ -3177,6 +3335,15 @@ class ServoService:
                 f"hardware-limit rejection: servo {servo_id} target {requested_goal_tick} exceeds the {limit_name} "
                 f"[{safe_min_tick}, {safe_max_tick}]"
             )
+        wrap_reason = self._wrap_rejection_reason(
+            servo_id=int(servo_id),
+            current_tick=current_position_tick,
+            target_tick=int(requested_goal_tick),
+            safe_min_tick=safe_min_tick,
+            safe_max_tick=safe_max_tick,
+        )
+        if wrap_reason is not None:
+            return wrap_reason
         return None
 
     def _summarize_displacement_assessment_block(self, assessment: ServoMotionAssessment, *, servo_id: int) -> str:
@@ -3431,6 +3598,7 @@ class ServoService:
             else:
                 clamp_reason = self._displacement_rejection_reason(
                     servo_id=int(servo_id),
+                    current_position_tick=int(current_position) if current_position is not None else None,
                     requested_goal_tick=int(raw_goal_tick),
                     safe_min_tick=effective_min_tick,
                     safe_max_tick=effective_max_tick,
@@ -3682,6 +3850,7 @@ class ServoService:
                 if clamp_reason is None:
                     clamp_reason = self._displacement_rejection_reason(
                         servo_id=int(servo_id),
+                        current_position_tick=int(current_position) if current_position is not None else None,
                         requested_goal_tick=int(raw_goal_tick),
                         safe_min_tick=effective_min_tick,
                         safe_max_tick=effective_max_tick,
@@ -4683,6 +4852,29 @@ class ServoService:
                         telemetry=current_assessment.telemetry,
                     )
                 )
+            wrap_reason = self._wrap_rejection_reason(
+                servo_id=int(servo_id),
+                current_tick=int(current_position),
+                target_tick=int(next_goal),
+                safe_min_tick=int(travel_min_tick),
+                safe_max_tick=int(safe_max),
+            )
+            if wrap_reason is not None:
+                return _persist_and_emit(
+                    _build_result(
+                        status="wrap_risk_blocked",
+                        success=False,
+                        message=wrap_reason,
+                        final_position_tick=current_position,
+                        final_current_ma=int(current_ma),
+                        filtered_current_ma=filtered_current,
+                        current_delta_ma=current_delta,
+                        stop_reason="wrap_risk",
+                        failure_phase="stepping",
+                        primary_reason="Target crosses raw tick discontinuity; command blocked.",
+                        telemetry=current_assessment.telemetry,
+                    )
+                )
 
             last_commanded_target_tick = int(next_goal)
             _emit_progress(
@@ -5061,6 +5253,29 @@ class ServoService:
                 ),
                 assessment=assessment,
             )
+        wrap_reason = self._wrap_rejection_reason(
+            servo_id=int(servo_id),
+            current_tick=int(current_position),
+            target_tick=int(clamped_target),
+            safe_min_tick=bounded_min,
+            safe_max_tick=bounded_max,
+        )
+        if wrap_reason is not None:
+            return ServoMotionPlan(
+                servo_id=int(servo_id),
+                action=str(action),
+                current_position_tick=int(current_position),
+                step_ticks=int(step_ticks),
+                delta_ticks=int(delta_ticks),
+                unclamped_target_tick=int(unclamped_target),
+                clamped_target_tick=int(clamped_target),
+                safe_min_tick=bounded_min,
+                safe_max_tick=bounded_max,
+                clamped=clamped,
+                allowed=False,
+                block_reason=wrap_reason,
+                assessment=assessment,
+            )
         return ServoMotionPlan(
             servo_id=int(servo_id),
             action=str(action),
@@ -5162,8 +5377,7 @@ class ServoService:
             clamped=plan.clamped,
         )
 
-    @staticmethod
-    def _validate_goal_against_assessment(assessment: ServoMotionAssessment, goal_tick: int) -> None:
+    def _validate_goal_against_assessment(self, assessment: ServoMotionAssessment, goal_tick: int) -> None:
         if assessment.safe_min_tick is None or assessment.safe_max_tick is None:
             raise RuntimeError(f"Servo {assessment.servo_id} active motion range is unavailable.")
         if int(goal_tick) < int(assessment.safe_min_tick) or int(goal_tick) > int(assessment.safe_max_tick):
@@ -5171,6 +5385,15 @@ class ServoService:
                 f"Servo {assessment.servo_id} goal {goal_tick} is outside the active motion range "
                 f"[{assessment.safe_min_tick}, {assessment.safe_max_tick}]."
             )
+        wrap_reason = self._wrap_rejection_reason(
+            servo_id=int(assessment.servo_id),
+            current_tick=assessment.telemetry.present_position,
+            target_tick=int(goal_tick),
+            safe_min_tick=assessment.safe_min_tick,
+            safe_max_tick=assessment.safe_max_tick,
+        )
+        if wrap_reason is not None:
+            raise ValueError(wrap_reason)
 
     def _validate_post_motion(self, telemetry: ServoTelemetry) -> None:
         if telemetry.hardware_error_code not in (None, 0) or telemetry.hardware_error:

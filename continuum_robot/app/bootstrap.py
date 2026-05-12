@@ -115,7 +115,7 @@ def build_app_context(*, session_log_path: Path | None = None) -> AppContext:
         expected_tool_ids=(settings.registration.coil_tool_id, settings.registration.capture_tool_id),
     )
     if settings.runtime.mock_mode:
-        dxl_bus = MockDxlBus(servo_ids=settings.robot.servo_ids)
+        dxl_bus = MockDxlBus(servo_ids=settings.robot.operating_context().expected_servo_ids)
         openrb_client = MockOpenRbClient()
     else:
         dxl_bus = DxlBus(config=settings.serial.dynamixel_settings)
@@ -221,6 +221,9 @@ def build_app_context(*, session_log_path: Path | None = None) -> AppContext:
         coarse_jog_step_ticks=settings.safety.coarse_jog_step_ticks,
         software_position_margin_ticks=settings.safety.software_position_margin_ticks,
         telemetry_stale_after_s=settings.safety.telemetry_stale_after_s,
+        torque_off_on_disconnect=settings.safety.torque_off_on_disconnect,
+        wrap_risk_margin_ticks=settings.safety.wrap_risk_margin_ticks,
+        max_raw_jump_without_wrap_risk_ticks=settings.safety.max_raw_jump_without_wrap_risk_ticks,
         pretension_step_ticks=settings.safety.pretension_step_ticks,
         pretension_timeout_s=settings.safety.pretension_timeout_s,
         pretension_settle_time_s=settings.safety.pretension_settle_time_s,
@@ -276,9 +279,12 @@ def build_app_context(*, session_log_path: Path | None = None) -> AppContext:
     services.register("experiment_dataset_loader", experiment_dataset_loader)
 
     LOG.info(
-        "App context ready | mock_mode=%s | robot_mode=%s | servo_ids=%s | tracker_backend=%s | openrb_port=%s | baud=%s | session_log=%s",
+        "App context ready | mock_mode=%s | robot_mode=%s | active_segment=%s | expected_servo_ids=%s | commanded_servo_ids=%s | profile_servo_ids=%s | tracker_backend=%s | openrb_port=%s | baud=%s | session_log=%s",
         settings.runtime.mock_mode,
-        settings.robot.mode,
+        settings.robot.operating_context().operating_mode,
+        settings.robot.active_segment_key(),
+        settings.robot.operating_context().expected_servo_ids,
+        settings.robot.operating_context().commanded_servo_ids,
         settings.robot.servo_ids,
         settings.serial.tracker_backend,
         settings.serial.openrb_port,

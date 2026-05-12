@@ -4,6 +4,16 @@
 
 Keep the Pi GUI as the single operator surface for calibration, validation, registration, and experiments. These workflows reflect the current repo and the target lab sequence.
 
+## Current Hardware-Day Guardrails
+
+- Use `single_segment`, Segment B, servo IDs `[5,6,7,8]` for the current distal hardware setup.
+- Missing Segment A IDs `[1,2,3,4]` are not a readiness blocker while Segment B is the active single segment.
+- Keep torque enabled unless the operator intentionally disables torque. Normal reload/disconnect/GUI close should preserve torque by default.
+- Do not use move-to-4095 untensioned reference with tendons attached.
+- If any present position is near the raw 0/4095 discontinuity, stop, manually reset if needed, then re-capture neutral/startup.
+- Before automatic pretension, verify tiny jog sign/mapping, capture neutral/safe bounds, and use `current_position` mode.
+- Segment B mapping: `5 = +x`, `6 = +y`, `7 = -x`, `8 = -y`; pairs are `axis_a = 5/7`, `axis_b = 6/8`.
+
 ## Workflow 1: One-Servo Bring-Up
 
 Applies now.

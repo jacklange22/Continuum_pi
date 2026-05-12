@@ -433,6 +433,9 @@ class SafetyConfig:
     coarse_jog_step_ticks: int = 25
     software_position_margin_ticks: int = 64
     telemetry_stale_after_s: float = 0.25
+    torque_off_on_disconnect: bool = False
+    wrap_risk_margin_ticks: int = 128
+    max_raw_jump_without_wrap_risk_ticks: int = 900
     pretension_untensioned_reference_tick: int = 4095
     pretension_start_mode: str = "current_position"
     pretension_step_ticks: int = 2

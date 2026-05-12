@@ -13,6 +13,7 @@ from continuum_robot.data_management import (
     filter_managed_data,
     preview_migration,
 )
+from continuum_robot.data.curation import build_curation_report, preview_cleanup, write_curation_report
 from continuum_robot.experiments.dataset_io import (
     ExperimentDatasetWriter,
     canonical_timestamped_name,
@@ -93,6 +94,102 @@ def test_filter_managed_data_can_select_mock_runs_by_root_and_trust(tmp_path: Pa
     )
 
     assert [item.path for item in filtered] == [run_dir]
+
+
+def test_data_curation_report_classifies_mock_generated_keep_and_protected_items(tmp_path: Path) -> None:
+    mock_run = tmp_path / "data" / "mock_experiments" / "single_segment_repeatability" / "20260102_000000_single_segment_repeatability"
+    mock_run.mkdir(parents=True)
+    (mock_run / "metadata.json").write_text(
+        json.dumps({"experiment_name": "single_segment_repeatability", "provenance_info": {"mock_mode": True}}),
+        encoding="utf-8",
+    )
+    (mock_run / "summary.json").write_text(
+        json.dumps({"experiment_name": "single_segment_repeatability", "experiment_metrics": {"run_trust_mode": "mock"}}),
+        encoding="utf-8",
+    )
+    keep_run = tmp_path / "data" / "experiments" / "single_segment_repeatability" / "20260103_000000_single_segment_repeatability"
+    keep_run.mkdir(parents=True)
+    (keep_run / "metadata.json").write_text(
+        json.dumps(
+            {
+                "experiment_name": "single_segment_repeatability",
+                "trust_info": {"run_trust_mode": "thesis_trusted", "valid_for_thesis_repeatability": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (keep_run / "summary.json").write_text(
+        json.dumps(
+            {
+                "experiment_name": "single_segment_repeatability",
+                "success": True,
+                "status": "success",
+                "experiment_metrics": {"run_trust_mode": "thesis_trusted", "valid_for_thesis_repeatability": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (keep_run / "run_review.json").write_text(json.dumps({"review_status": "thesis_candidate"}), encoding="utf-8")
+    diagnostic = tmp_path / "data" / "diagnostics" / "prehardware_dry_run" / "20260512_120000"
+    diagnostic.mkdir(parents=True)
+    (diagnostic / "summary.json").write_text(json.dumps({"status": "PASS"}), encoding="utf-8")
+    protected = tmp_path / "data" / "runtime_tip_calibration" / "latest_runtime_tip_calibration.json"
+    protected.parent.mkdir(parents=True)
+    protected.write_text("{}", encoding="utf-8")
+
+    report = write_curation_report(build_curation_report(tmp_path), also_write_root_aliases=True)
+    classifications = {item.path: item.classification for item in report.items}
+
+    assert classifications[mock_run] == "trash_candidate"
+    assert classifications[keep_run] == "keep_candidate"
+    assert classifications[diagnostic] == "generated_ignore"
+    assert classifications[protected] == "protected_active_alias"
+    assert report.json_path is not None and report.json_path.exists()
+    assert (tmp_path / "data_curation_report.md").exists()
+
+
+def test_cleanup_preview_does_not_delete_and_apply_moves_only_candidates(tmp_path: Path) -> None:
+    trash_candidate = tmp_path / "data" / "mock_experiments" / "single_segment_repeatability" / "20260102_000000_single_segment_repeatability"
+    trash_candidate.mkdir(parents=True)
+    (trash_candidate / "metadata.json").write_text(
+        json.dumps({"experiment_name": "single_segment_repeatability", "provenance_info": {"mock_mode": True}}),
+        encoding="utf-8",
+    )
+    (trash_candidate / "summary.json").write_text(
+        json.dumps({"experiment_name": "single_segment_repeatability", "experiment_metrics": {"run_trust_mode": "mock"}}),
+        encoding="utf-8",
+    )
+    keep_run = tmp_path / "data" / "experiments" / "single_segment_repeatability" / "20260103_000000_single_segment_repeatability"
+    keep_run.mkdir(parents=True)
+    (keep_run / "metadata.json").write_text(json.dumps({"experiment_name": "single_segment_repeatability"}), encoding="utf-8")
+    (keep_run / "summary.json").write_text(json.dumps({"experiment_name": "single_segment_repeatability"}), encoding="utf-8")
+    (keep_run / "run_review.json").write_text(json.dumps({"review_status": "keep"}), encoding="utf-8")
+
+    preview = preview_cleanup(tmp_path, apply_trash_candidates=True, dry_run=True, filters={"mock_only": True})
+    assert preview.action_count == 1
+    assert trash_candidate.exists()
+    assert keep_run.exists()
+
+    applied = preview_cleanup(tmp_path, apply_trash_candidates=True, dry_run=False, filters={"mock_only": True})
+    assert applied.applied_count == 1
+    assert trash_candidate.exists() is False
+    assert keep_run.exists()
+    assert (tmp_path / "data" / "trash" / "single_segment_repeatability" / trash_candidate.name).exists()
+
+
+def test_permanent_delete_requires_trash_path_and_force(tmp_path: Path) -> None:
+    trash_dir = tmp_path / "data" / "trash" / "single_segment_repeatability" / "20260102_000000_single_segment_repeatability"
+    trash_dir.mkdir(parents=True)
+    (trash_dir / "metadata.json").write_text(json.dumps({"experiment_name": "single_segment_repeatability"}), encoding="utf-8")
+    (trash_dir / "summary.json").write_text(json.dumps({"experiment_name": "single_segment_repeatability"}), encoding="utf-8")
+
+    skipped = preview_cleanup(tmp_path, permanently_delete_trash=True, dry_run=False, force=False)
+    assert skipped.skipped_count == 1
+    assert trash_dir.exists()
+
+    deleted = preview_cleanup(tmp_path, permanently_delete_trash=True, dry_run=False, force=True)
+    assert deleted.applied_count == 1
+    assert trash_dir.exists() is False
 
 
 def test_registration_and_runtime_tip_repositories_use_canonical_timestamp_names(tmp_path: Path) -> None:

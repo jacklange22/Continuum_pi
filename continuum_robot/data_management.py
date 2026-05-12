@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import re
 import shutil
-from typing import Any
+from typing import Any, Callable
 
 from continuum_robot.data.run_management import summarize_run
 from continuum_robot.experiments.dataset_io import (
@@ -135,6 +135,8 @@ def filter_managed_data(
     root_filter: str = "all",
     review_status_filter: str = "all",
     trust_mode_filter: str = "all",
+    operating_mode_filter: str = "all",
+    segment_filter: str = "all",
     mock_mode_filter: str = "all",
     valid_model_filter: str = "all",
     valid_thesis_filter: str = "all",
@@ -143,6 +145,7 @@ def filter_managed_data(
     has_figures_filter: str = "all",
     has_review_filter: str = "all",
     sort_mode: str = "newest",
+    run_summary_loader: Callable[[ManagedDataItem], Any] | None = None,
 ) -> list[ManagedDataItem]:
     """Filter discovered items by category, run metadata, and a simple substring search."""
     selected_category = str(category_key or "all").strip().lower()
@@ -155,7 +158,7 @@ def filter_managed_data(
     for item in items:
         if selected_category not in {"", "all"} and item.category_key != selected_category:
             continue
-        run_summary = _safe_run_summary(item)
+        run_summary = _summary_for_item(item, run_summary_loader)
         if root_filter not in {"", "all"} and _root_location_for_item(item) != root_filter:
             continue
         if run_summary is not None:
@@ -166,6 +169,10 @@ def filter_managed_data(
             if review_status_filter not in {"", "all", "unreviewed"} and run_summary.review.review_status != review_status_filter:
                 continue
             if trust_mode_filter not in {"", "all"} and run_summary.run_trust_mode != trust_mode_filter:
+                continue
+            if operating_mode_filter not in {"", "all"} and run_summary.operating_mode != operating_mode_filter:
+                continue
+            if segment_filter not in {"", "all"} and segment_filter.lower() not in run_summary.active_segment.lower():
                 continue
             if not _bool_filter_matches(mock_mode_filter, run_summary.mock_mode):
                 continue
@@ -188,6 +195,8 @@ def filter_managed_data(
                     experiment_filter,
                     review_status_filter,
                     trust_mode_filter,
+                    operating_mode_filter,
+                    segment_filter,
                     mock_mode_filter,
                     valid_model_filter,
                     valid_thesis_filter,
@@ -214,7 +223,11 @@ def filter_managed_data(
             if needle not in haystack:
                 continue
         filtered.append(item)
-    return sorted(filtered, key=lambda item: _sort_key(item, sort_mode), reverse=_sort_reverse(sort_mode))
+    return sorted(
+        filtered,
+        key=lambda item: _sort_key(item, sort_mode, run_summary_loader=run_summary_loader),
+        reverse=_sort_reverse(sort_mode),
+    )
 
 
 def delete_managed_items(project_root: Path, items: list[ManagedDataItem]) -> list[Path]:
@@ -251,6 +264,15 @@ def _safe_run_summary(item: ManagedDataItem):
         return summarize_run(run_dir)
     except Exception:
         return None
+
+
+def _summary_for_item(item: ManagedDataItem, loader: Callable[[ManagedDataItem], Any] | None):
+    if loader is not None:
+        try:
+            return loader(item)
+        except Exception:
+            return None
+    return _safe_run_summary(item)
 
 
 def _run_dir_for_item(item: ManagedDataItem) -> Path | None:
@@ -302,9 +324,14 @@ def _size_filter_matches(filter_value: str, size_bytes: int) -> bool:
     return True
 
 
-def _sort_key(item: ManagedDataItem, sort_mode: str) -> tuple[Any, ...]:
+def _sort_key(
+    item: ManagedDataItem,
+    sort_mode: str,
+    *,
+    run_summary_loader: Callable[[ManagedDataItem], Any] | None = None,
+) -> tuple[Any, ...]:
     mode = str(sort_mode or "newest").strip().lower()
-    summary = _safe_run_summary(item)
+    summary = _summary_for_item(item, run_summary_loader)
     if mode == "largest":
         size = summary.total_size_bytes if summary is not None else _item_size_bytes(item)
         return (int(size), item.timestamp_sort_key, str(item.path))

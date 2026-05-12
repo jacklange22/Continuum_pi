@@ -244,7 +244,7 @@ class ServosController:
         else:
             snapshot = self.servo_service.build_configured_servo_bringup_snapshot(
                 list(self.state.expected_servo_ids),
-                allow_scan=True,
+                allow_scan=False,
             )
             self._apply_configured_servo_snapshot(snapshot)
         return self.refresh()

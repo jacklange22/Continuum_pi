@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from time import perf_counter
 
 from PySide6.QtCore import QSignalBlocker, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
@@ -95,11 +96,28 @@ class DataManagementTab(QWidget):
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search name, type, status, or path")
         self.search_input.textChanged.connect(self._on_search_changed)
+        self.preset_combo = _combo_with_options(
+            [
+                ("Presets", "all"),
+                ("Today", "today"),
+                ("Real hardware", "real_hardware"),
+                ("Single segment", "single_segment"),
+                ("Segment B", "segment_b"),
+                ("Needs review", "needs_review"),
+                ("Thesis/advisor", "thesis_advisor"),
+                ("Large files", "large_files"),
+                ("Generated diagnostics", "generated_diagnostics"),
+                ("Trash candidates", "trash_candidates"),
+            ]
+        )
+        self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.setProperty("variant", "ghost")
         self.refresh_button.clicked.connect(self._refresh_catalog)
         filter_row.addWidget(QLabel("Category"))
         filter_row.addWidget(self.category_combo, 0)
+        filter_row.addWidget(QLabel("Preset"))
+        filter_row.addWidget(self.preset_combo, 0)
         filter_row.addWidget(self.search_input, 1)
         filter_row.addWidget(self.refresh_button, 0)
         filters_card.body_layout.addLayout(filter_row)
@@ -376,8 +394,10 @@ class DataManagementTab(QWidget):
         migration_row.addStretch(1)
         details_card.body_layout.addLayout(migration_row)
         self.migration_pairs = _PairsWidget()
+        self.performance_pairs = _PairsWidget()
         details_card.body_layout.addWidget(self.selection_pairs)
         details_card.body_layout.addWidget(self.migration_pairs)
+        details_card.body_layout.addWidget(self.performance_pairs)
         details_card.body_layout.addWidget(self.root_pairs)
         lower.addWidget(details_card, 2)
 
@@ -397,9 +417,10 @@ class DataManagementTab(QWidget):
         self._set_combo(self.review_sidecar_filter_combo, state.has_review_filter)
         self._set_combo(self.size_filter_combo, state.size_filter)
         self._set_combo(self.sort_combo, state.sort_mode)
-        self._sync_table(state)
+        table_ms = self._sync_table(state)
         self.selection_pairs.set_pairs(state.detail_pairs)
         self.migration_pairs.set_pairs(state.migration_summary_pairs)
+        self.performance_pairs.set_pairs([*state.performance_pairs, ("Table population", f"{table_ms:.1f} ms")])
         self.root_pairs.set_pairs(state.root_summary_pairs)
         self.status_label.setText(state.status_message)
         self.open_button.setEnabled(state.can_open)
@@ -449,7 +470,12 @@ class DataManagementTab(QWidget):
         self.controller.set_filter_value(key, value)
         self.update(self.controller.refresh())
 
-    def _sync_table(self, state: DataManagementViewState) -> None:
+    def _on_preset_changed(self, _index: int) -> None:
+        self.controller.apply_filter_preset(str(self.preset_combo.currentData() or "all"))
+        self.update(self.controller.refresh())
+
+    def _sync_table(self, state: DataManagementViewState) -> float:
+        started = perf_counter()
         current_paths = [
             self.table.item(row, 0).data(Qt.UserRole)
             for row in range(self.table.rowCount())
@@ -460,7 +486,9 @@ class DataManagementTab(QWidget):
             with QSignalBlocker(self.table):
                 self.table.setRowCount(len(state.filtered_items))
                 for row, item in enumerate(state.filtered_items):
-                    values = _table_values(item, self.controller.project_root)
+                    run_dir = _run_dir_for_item(item)
+                    summary = state.run_summaries_by_path.get(str(run_dir)) if run_dir is not None else None
+                    values = _table_values(item, self.controller.project_root, summary=summary)
                     for column, value in enumerate(values):
                         cell = QTableWidgetItem(str(value))
                         cell.setData(Qt.UserRole, str(item.path))
@@ -474,6 +502,7 @@ class DataManagementTab(QWidget):
                 item = self.table.item(row, 0)
                 if item is not None and item.data(Qt.UserRole) in selected:
                     self.table.selectRow(row)
+        return (perf_counter() - started) * 1000.0
 
     def _sync_selection_from_table(self) -> None:
         paths = []
@@ -877,11 +906,12 @@ def _replace_combo_options(combo: QComboBox, options: list[tuple[str, str]]) -> 
             combo.setCurrentIndex(index)
 
 
-def _table_values(item, project_root: Path) -> list[str]:
+def _table_values(item, project_root: Path, *, summary=None) -> list[str]:
     run_dir = _run_dir_for_item(item)
     if run_dir is not None:
         try:
-            summary = summarize_run(run_dir)
+            if summary is None:
+                summary = summarize_run(run_dir)
             mode_segment = summary.operating_mode
             if summary.active_segment:
                 mode_segment = f"{mode_segment} / {summary.active_segment}"

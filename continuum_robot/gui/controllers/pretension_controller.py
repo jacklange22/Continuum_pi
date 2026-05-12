@@ -100,11 +100,13 @@ class PretensionController:
         self.config_loader = config_loader
         self.servo_service = servo_service
         self.settings = settings
-        default_servo_id = settings.robot.servo_ids[0] if settings.robot.servo_ids else None
+        operating_context = settings.robot.operating_context()
+        expected_servo_ids = [int(value) for value in operating_context.expected_servo_ids]
+        default_servo_id = expected_servo_ids[0] if expected_servo_ids else None
         self.state = PretensionViewState(
             connected=servo_service.is_connected,
-            robot_mode=settings.robot.mode,
-            expected_servo_ids=list(settings.robot.servo_ids),
+            robot_mode=operating_context.operating_mode,
+            expected_servo_ids=list(expected_servo_ids),
             selected_servo_id=int(default_servo_id) if default_servo_id is not None else None,
             telemetry_freshness_threshold_s=servo_service.telemetry_freshness_threshold_s(),
             calibration_path=str(servo_service.neutral_calibration.path),
@@ -133,8 +135,9 @@ class PretensionController:
 
     def refresh(self) -> PretensionViewState:
         self.state.connected = self.servo_service.is_connected
-        self.state.robot_mode = self.settings.robot.mode
-        self.state.expected_servo_ids = list(self.settings.robot.servo_ids)
+        operating_context = self.settings.robot.operating_context()
+        self.state.robot_mode = operating_context.operating_mode
+        self.state.expected_servo_ids = [int(value) for value in operating_context.expected_servo_ids]
         self.state.telemetry_freshness_threshold_s = self.servo_service.telemetry_freshness_threshold_s()
         if self.state.selected_servo_id not in self.state.expected_servo_ids and self.state.expected_servo_ids:
             self.state.selected_servo_id = int(self.state.expected_servo_ids[0])
