@@ -8,6 +8,7 @@ from continuum_robot.servos.sign_mapping_check import (
     ServoMappingCheckEntry,
     ServoMappingCheckRecord,
     ServoMappingCheckRepository,
+    configured_axis_mapping,
 )
 
 
@@ -169,6 +170,37 @@ def test_sign_mapping_check_write_read_and_missing_warning(tmp_path: Path) -> No
     assert missing.exists is False
     assert missing.confirmed is False
     assert "not been recorded" in missing.message
+
+
+def test_configured_segment_b_mapping_and_one_click_confirmation(tmp_path: Path) -> None:
+    repo = ServoMappingCheckRepository(tmp_path / "checks")
+    mapping = configured_axis_mapping(
+        expected_servo_ids=[5, 6, 7, 8],
+        active_segment_pairs={"axis_a": [5, 7], "axis_b": [6, 8]},
+    )
+
+    record = repo.confirm_configured_mapping(
+        operating_mode="single_segment",
+        active_segment_key="segment_b",
+        active_segment_label="Segment B",
+        expected_servo_ids=[5, 6, 7, 8],
+        active_segment_pairs={"axis_a": [5, 7], "axis_b": [6, 8]},
+        notes="hardware-day configured mapping",
+    )
+    summary = repo.latest_for_segment(active_segment_key="segment_b", expected_servo_ids=[5, 6, 7, 8])
+
+    assert {servo_id: data["tendon"] for servo_id, data in mapping.items()} == {
+        5: "+X",
+        6: "+Y",
+        7: "-X",
+        8: "-Y",
+    }
+    assert record.lower_tick_means_tension is True
+    assert record.confirmed_by_operator is True
+    assert record.all_expected_confirmed() is True
+    assert summary.confirmed is True
+    assert summary.record is not None
+    assert summary.record.entries[0].positive_tendon_direction == "+X"
 
     record = repo.write(
         ServoMappingCheckRecord(

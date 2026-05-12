@@ -15,7 +15,12 @@ from continuum_robot.experiments.framework import BaseExperiment, ExperimentHard
 from continuum_robot.experiments.schemas import ExperimentTimeseriesSample
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
 from continuum_robot.servos.segment_readiness import evaluate_selected_segment_readiness
-from continuum_robot.servos.servo_service import RAW_POSITION_MAX_TICK, RAW_POSITION_MIN_TICK, SINGLE_SEGMENT_WORKFLOW_EXPERIMENT
+from continuum_robot.servos.servo_service import (
+    RAW_POSITION_MAX_TICK,
+    RAW_POSITION_MIN_TICK,
+    SINGLE_SEGMENT_WORKFLOW_EXPERIMENT,
+    is_wrap_risk,
+)
 
 
 MAPPING_PAIRED_XY_PROPORTIONAL = "paired_xy_proportional"
@@ -27,17 +32,25 @@ SUPPORTED_MAPPING_MODES = {MAPPING_PAIRED_XY_PROPORTIONAL, MAPPING_LEGACY_POLYNO
 class PenprobeChasingDemoConfig:
     """Operator config for the single-segment penprobe chasing MVP."""
 
-    loop_period_s: float = 0.075
+    loop_period_s: float = 0.04
     max_duration_s: float = 30.0
-    max_iterations: int = 400
+    max_iterations: int = 750
     max_tick_delta_from_startup: int = 500
     hard_max_tick_delta_from_startup: int = 500
-    max_step_ticks: int = 10
+    max_step_ticks: int = 25
+    max_tick_step_per_cycle: int = 25
     max_target_radius_mm: float = 45.0
     target_deadband_mm: float = 1.0
+    xy_deadband_mm: float = 1.0
+    proportional_gain_ticks_per_mm: float = 8.0
     displacement_gain_cm_per_mm: float = 0.002
+    stale_tracker_timeout_s: float = 0.2
+    max_servo_write_hz: float = 25.0
+    saturation_stop_cycles: int = 40
     x_axis_sign: int = 1
     y_axis_sign: int = 1
+    flip_x: bool = False
+    flip_y: bool = False
     mapping_mode: str = MAPPING_PAIRED_XY_PROPORTIONAL
     legacy_polynomial_workspace: dict[str, str] = field(default_factory=dict)
 
@@ -49,17 +62,25 @@ class PenprobeChasingDemoConfig:
         if mode not in SUPPORTED_MAPPING_MODES:
             mode = MAPPING_PAIRED_XY_PROPORTIONAL
         return cls(
-            loop_period_s=max(0.02, float(payload.get("loop_period_s", 0.075))),
+            loop_period_s=max(0.02, float(payload.get("loop_period_s", payload.get("loop_target_period_s", 0.04)))),
             max_duration_s=max(0.0, float(payload.get("max_duration_s", 30.0))),
-            max_iterations=max(1, int(payload.get("max_iterations", 400))),
+            max_iterations=max(1, int(payload.get("max_iterations", 750))),
             max_tick_delta_from_startup=max(0, int(payload.get("max_tick_delta_from_startup", 500))),
             hard_max_tick_delta_from_startup=max(0, int(payload.get("hard_max_tick_delta_from_startup", 500))),
-            max_step_ticks=max(1, int(payload.get("max_step_ticks", 10))),
+            max_step_ticks=max(1, min(100, int(payload.get("max_step_ticks", payload.get("max_tick_step_per_cycle", 25))))),
+            max_tick_step_per_cycle=max(1, min(100, int(payload.get("max_tick_step_per_cycle", payload.get("max_step_ticks", 25))))),
             max_target_radius_mm=max(0.0, float(payload.get("max_target_radius_mm", 45.0))),
             target_deadband_mm=max(0.0, float(payload.get("target_deadband_mm", 1.0))),
+            xy_deadband_mm=max(0.0, float(payload.get("xy_deadband_mm", payload.get("target_deadband_mm", 1.0)))),
+            proportional_gain_ticks_per_mm=max(0.0, float(payload.get("proportional_gain_ticks_per_mm", 8.0))),
             displacement_gain_cm_per_mm=max(0.0, float(payload.get("displacement_gain_cm_per_mm", 0.002))),
+            stale_tracker_timeout_s=max(0.02, float(payload.get("stale_tracker_timeout_s", 0.2))),
+            max_servo_write_hz=max(1.0, float(payload.get("max_servo_write_hz", 25.0))),
+            saturation_stop_cycles=max(1, int(payload.get("saturation_stop_cycles", 40))),
             x_axis_sign=(1 if int(payload.get("x_axis_sign", 1)) >= 0 else -1),
             y_axis_sign=(1 if int(payload.get("y_axis_sign", 1)) >= 0 else -1),
+            flip_x=bool(payload.get("flip_x", False)),
+            flip_y=bool(payload.get("flip_y", False)),
             mapping_mode=mode,
             legacy_polynomial_workspace={
                 str(key): str(value)
@@ -167,6 +188,8 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
         start_monotonic = float(session.context.monotonic_fn())
         self._stop_reason = "running"
         last_loop_monotonic = start_monotonic
+        last_servo_write_monotonic = start_monotonic
+        saturated_cycles = 0
 
         try:
             with session.context.servo_service.exclusive_bus_operation(
@@ -183,8 +206,8 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                     last_loop_monotonic = now
 
                     snapshot = session.context.tracking_service.get_snapshot()
-                    tip = _extract_robot_frame_tool_pose(snapshot, "0A", max_tracker_age_s=float(self.config.loop_period_s) * 4.0)
-                    target = _extract_robot_frame_tool_pose(snapshot, "0B", max_tracker_age_s=float(self.config.loop_period_s) * 4.0)
+                    tip = _extract_robot_frame_tool_pose(snapshot, "0A", max_tracker_age_s=float(self.config.stale_tracker_timeout_s))
+                    target = _extract_robot_frame_tool_pose(snapshot, "0B", max_tracker_age_s=float(self.config.stale_tracker_timeout_s))
                     telemetry = _validate_servo_telemetry_ready(session.context.servo_service, servo_ids)
 
                     desired_delta_by_servo, mapping_debug = paired_xy_proportional_tick_request(
@@ -195,31 +218,57 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                         mapper=mapper,
                         config=self.config,
                     )
+                    max_step = int(self.config.max_tick_step_per_cycle or self.config.max_step_ticks)
                     stepped_delta_by_servo = _step_and_clamp_tick_deltas(
                         current_delta_by_servo=self._current_tick_delta_by_servo,
                         desired_delta_by_servo=desired_delta_by_servo,
-                        max_step_ticks=int(self.config.max_step_ticks),
+                        max_step_ticks=max_step,
                         max_abs_delta_ticks=int(self.config.max_tick_delta_from_startup),
                     )
                     bounded_delta_by_servo, raw_bound_clips = _clamp_tick_deltas_to_startup_raw_bounds(
                         stepped_delta_by_servo,
                         startup_reference_by_servo=self._startup_reference_by_servo,
                     )
+                    previous_delta_by_servo = dict(self._current_tick_delta_by_servo)
                     self._current_tick_delta_by_servo = dict(bounded_delta_by_servo)
                     commanded_ticks = {
                         int(servo_id): int(self._startup_reference_by_servo[int(servo_id)] + bounded_delta_by_servo[int(servo_id)])
+                        for servo_id in servo_ids
+                    }
+                    wrap_risks = {
+                        int(servo_id): int(commanded_ticks[int(servo_id)])
+                        for servo_id in servo_ids
+                        if is_wrap_risk(
+                            int(telemetry[int(servo_id)].present_position),
+                            int(commanded_ticks[int(servo_id)]),
+                            (RAW_POSITION_MIN_TICK, RAW_POSITION_MAX_TICK),
+                        )
+                    }
+                    if wrap_risks:
+                        raise RuntimeError("wrap_risk:" + json.dumps({str(k): v for k, v in wrap_risks.items()}, sort_keys=True))
+                    commanded_step_by_servo = {
+                        int(servo_id): int(bounded_delta_by_servo[int(servo_id)] - previous_delta_by_servo.get(int(servo_id), 0))
                         for servo_id in servo_ids
                     }
                     tendon_displacements_cm = [
                         float(mapper.ticks_to_displacement_mm(bounded_delta_by_servo[int(servo_id)]) / 10.0)
                         for servo_id in servo_ids
                     ]
+                    min_write_interval_s = 1.0 / max(1.0, float(self.config.max_servo_write_hz))
+                    elapsed_since_write = max(0.0, now - last_servo_write_monotonic)
+                    if elapsed_since_write < min_write_interval_s:
+                        sleep_for_rate_limit = min_write_interval_s - elapsed_since_write
+                        if sleep_for_rate_limit > 0.0:
+                            session.context.sleep_fn(sleep_for_rate_limit)
+                            now = float(session.context.monotonic_fn())
                     command_result = session.context.servo_service.command_displacement(
                         tendon_displacements_cm,
                         [int(self._startup_reference_by_servo[int(servo_id)]) for servo_id in servo_ids],
                         servo_ids,
                         motion_workflow=SINGLE_SEGMENT_WORKFLOW_EXPERIMENT,
                     )
+                    servo_write_dt_s = max(0.0, float(session.context.monotonic_fn()) - last_servo_write_monotonic)
+                    last_servo_write_monotonic = float(session.context.monotonic_fn())
                     measured_after = {
                         int(servo_id): (
                             int(command_result.telemetry_by_id[int(servo_id)].present_position)
@@ -234,6 +283,13 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                     ]
                     error_norm = float(math.hypot(error_xy[0], error_xy[1]))
                     max_tick_delta_used = max(abs(int(value)) for value in bounded_delta_by_servo.values()) if bounded_delta_by_servo else 0
+                    distance_to_cap = max(0, int(self.config.max_tick_delta_from_startup) - int(max_tick_delta_used))
+                    if distance_to_cap <= 0:
+                        saturated_cycles += 1
+                    else:
+                        saturated_cycles = 0
+                    if saturated_cycles >= int(self.config.saturation_stop_cycles):
+                        raise RuntimeError("saturation_limit_persisted")
                     sample = _build_chasing_sample(
                         session=session,
                         snapshot=snapshot,
@@ -244,6 +300,7 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                         error_norm_mm=error_norm,
                         requested_tick_delta_by_servo=desired_delta_by_servo,
                         commanded_tick_delta_by_servo=bounded_delta_by_servo,
+                        commanded_tick_step_by_servo=commanded_step_by_servo,
                         commanded_ticks=commanded_ticks,
                         measured_ticks=measured_after,
                         tendon_displacements_cm=tendon_displacements_cm,
@@ -254,14 +311,17 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                             "raw_bound_clips": {str(k): v for k, v in raw_bound_clips.items()},
                             "servo_command_positions_by_id": {str(k): int(v) for k, v in dict(command_result.positions_by_id).items()},
                             "servo_clamp_reasons_by_id": {str(k): str(v) for k, v in dict(command_result.clamp_reasons_by_id).items()},
+                            "distance_to_cap_ticks": int(distance_to_cap),
+                            "servo_write_rate_hz": (1.0 / servo_write_dt_s if servo_write_dt_s > 0.0 else None),
                         },
                         mapping_mode_used=self._mapping_mode_used,
                         max_tick_delta_used=max_tick_delta_used,
                         telemetry_by_id=telemetry,
                     )
                     session.add_sample(sample)
-                    session.update_progress(iteration + 1, total, {"phase": "chasing", "error_mm": error_norm})
-                    if error_norm <= float(self.config.target_deadband_mm):
+                    if iteration == 0 or iteration % max(1, int(round(0.15 / max(float(self.config.loop_period_s), 0.001)))) == 0:
+                        session.update_progress(iteration + 1, total, {"phase": "chasing", "error_mm": error_norm})
+                    if error_norm <= float(self.config.xy_deadband_mm):
                         session.set_metric("last_deadband_iteration", int(iteration))
                     sleep_s = max(0.0, float(self.config.loop_period_s) - (float(session.context.monotonic_fn()) - now))
                     if sleep_s > 0.0:
@@ -412,6 +472,10 @@ def _classify_stop_reason(exc: Exception) -> str:
         return "servo_telemetry_missing"
     if "hardware_error" in message:
         return "servo_hardware_error"
+    if "wrap_risk" in message:
+        return "wrap_risk"
+    if "saturation_limit_persisted" in message:
+        return "saturation_limit_persisted"
     if "stopped by operator" in message.lower():
         return "operator_stop"
     return "failed"
@@ -429,6 +493,9 @@ def paired_xy_proportional_tick_request(
     """Map XY error to antagonistic paired tick deltas relative to startup."""
     error_x = float(target_xy_mm[0]) - float(tip_xy_mm[0])
     error_y = float(target_xy_mm[1]) - float(tip_xy_mm[1])
+    if float(math.hypot(error_x, error_y)) <= float(config.xy_deadband_mm):
+        error_x = 0.0
+        error_y = 0.0
     clamped_x, clamped_y, clamped_radius = _clamp_xy(error_x, error_y, float(config.max_target_radius_mm))
     axis_a = list(dict(pairs or {}).get("axis_a", []))
     axis_b = list(dict(pairs or {}).get("axis_b", []))
@@ -441,30 +508,29 @@ def paired_xy_proportional_tick_request(
     _apply_axis_pair_request(
         request_cm_by_servo,
         pair=[int(axis_a[0]), int(axis_a[1])],
-        axis_request_cm=float(clamped_x) * float(config.displacement_gain_cm_per_mm) * int(config.x_axis_sign),
+        axis_request_ticks=int(round(float(clamped_x) * float(config.proportional_gain_ticks_per_mm) * int(config.x_axis_sign) * (-1 if config.flip_x else 1))),
     )
     _apply_axis_pair_request(
         request_cm_by_servo,
         pair=[int(axis_b[0]), int(axis_b[1])],
-        axis_request_cm=float(clamped_y) * float(config.displacement_gain_cm_per_mm) * int(config.y_axis_sign),
+        axis_request_ticks=int(round(float(clamped_y) * float(config.proportional_gain_ticks_per_mm) * int(config.y_axis_sign) * (-1 if config.flip_y else 1))),
     )
-    request_ticks = {
-        int(servo_id): int(mapper.displacement_cm_to_ticks(request_cm_by_servo[int(servo_id)]))
-        for servo_id in servo_ids
-    }
+    request_ticks = {int(servo_id): int(request_cm_by_servo[int(servo_id)]) for servo_id in servo_ids}
     return request_ticks, {
         "xy_error_mm": [error_x, error_y],
         "clamped_xy_error_mm": [clamped_x, clamped_y],
         "clamped_radius_mm": clamped_radius,
-        "request_cm_by_servo": {str(k): float(v) for k, v in request_cm_by_servo.items()},
+        "request_ticks_by_servo": {str(k): int(v) for k, v in request_ticks.items()},
+        "lower_tick_means_tension": True,
+        "proportional_gain_ticks_per_mm": float(config.proportional_gain_ticks_per_mm),
         "axis_a": axis_a,
         "axis_b": axis_b,
     }
 
 
-def _apply_axis_pair_request(request_cm_by_servo: dict[int, float], *, pair: list[int], axis_request_cm: float) -> None:
-    request_cm_by_servo[int(pair[0])] = request_cm_by_servo.get(int(pair[0]), 0.0) - float(axis_request_cm)
-    request_cm_by_servo[int(pair[1])] = request_cm_by_servo.get(int(pair[1]), 0.0) + float(axis_request_cm)
+def _apply_axis_pair_request(request_cm_by_servo: dict[int, float], *, pair: list[int], axis_request_ticks: int) -> None:
+    request_cm_by_servo[int(pair[0])] = request_cm_by_servo.get(int(pair[0]), 0.0) - int(axis_request_ticks)
+    request_cm_by_servo[int(pair[1])] = request_cm_by_servo.get(int(pair[1]), 0.0) + int(axis_request_ticks)
 
 
 def _clamp_xy(x_mm: float, y_mm: float, max_radius_mm: float) -> tuple[float, float, float]:
@@ -553,6 +619,7 @@ def _build_chasing_sample(
     error_norm_mm: float,
     requested_tick_delta_by_servo: dict[int, int],
     commanded_tick_delta_by_servo: dict[int, int],
+    commanded_tick_step_by_servo: dict[int, int],
     commanded_ticks: dict[int, int],
     measured_ticks: dict[int, int | None],
     tendon_displacements_cm: list[float],
@@ -600,6 +667,7 @@ def _build_chasing_sample(
             "xy_error_norm_mm": float(error_norm_mm),
             "requested_tick_delta_by_servo": {str(k): int(v) for k, v in requested_tick_delta_by_servo.items()},
             "commanded_tick_delta_by_servo": {str(k): int(v) for k, v in commanded_tick_delta_by_servo.items()},
+            "commanded_tick_step_by_servo": {str(k): int(v) for k, v in commanded_tick_step_by_servo.items()},
             "startup_reference_by_servo": {str(k): int(v) for k, v in startup_reference_by_servo.items()},
             "measured_ticks_by_servo": {str(k): v for k, v in measured_ticks.items()},
             "max_tick_delta_used": int(max_tick_delta_used),

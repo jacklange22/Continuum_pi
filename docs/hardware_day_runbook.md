@@ -49,6 +49,8 @@ The other segment being disconnected is informational only in this mode.
 10. Capture the Segment B sign/mapping checklist:
     - `5 = +x`, `6 = +y`, `7 = -x`, `8 = -y`
     - `axis_a = 5/7`, `axis_b = 6/8`
+    - lower ticks mean more tension / tendon shortening
+    - use `Confirm Configured Mapping` on Servos once the hardware matches this configured mapping
 11. Capture valid neutral/safe bounds before calibrated motion.
 12. Connect tracker.
 13. Confirm 0A / runtime-tip visibility and load or validate registration if the run needs pose trust.
@@ -104,6 +106,8 @@ Stop reasons to take seriously:
 - Repeatability: use only trusted tracker/registration/runtime-tip state for thesis claims.
 - Collect-pose / babble: no-tracker servo-only runs are hardware/debug runs, not model-training data.
 - Penprobe chasing demo: `single_segment` only; 0B target wording depends on whether a pivot-calibrated tool tip is actually active.
+- Penprobe chasing demo is a hardware demo only: the 0A coil origin chases 0B in XY using the active single-segment pairs. Start with max step 25 ticks/cycle, then 50, then at most 100 after sign/mapping is confirmed. Stop on stale tracker, wrap risk, servo hardware error, or persistent saturation at the startup cap.
+- Background readiness uses cached telemetry during active experiments. Use explicit `Refresh Readiness` or `Discover / Read Servo` when you need a fresh bus read.
 - `parallel_single` is mirrored single-segment babble/testing only, not full two-segment kinematics.
 
 ## 7. Export Workflow

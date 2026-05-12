@@ -281,6 +281,58 @@ def test_active_segment_a_and_b_pairs_drive_selected_servo_ids_only() -> None:
     assert set(request_b) == {5, 6, 7, 8}
     assert request_b[5] == -request_b[7]
     assert request_b[6] == -request_b[8]
+    assert request_b[5] < 0
+    assert request_b[6] < 0
+
+
+def test_large_xy_error_steps_near_configured_max_not_one_tick() -> None:
+    mapper = TendonDisplacementMapper(spool_diameter_cm=1.2, ticks_per_rev=4096)
+    config = PenprobeChasingDemoConfig.from_dict(
+        {"proportional_gain_ticks_per_mm": 8.0, "max_tick_step_per_cycle": 50}
+    )
+    desired, _ = paired_xy_proportional_tick_request(
+        tip_xy_mm=[0.0, 0.0],
+        target_xy_mm=[20.0, 0.0],
+        servo_ids=[5, 6, 7, 8],
+        pairs={"axis_a": [5, 7], "axis_b": [6, 8]},
+        mapper=mapper,
+        config=config,
+    )
+    stepped = _step_and_clamp_tick_deltas(
+        current_delta_by_servo={5: 0, 6: 0, 7: 0, 8: 0},
+        desired_delta_by_servo=desired,
+        max_step_ticks=config.max_tick_step_per_cycle,
+        max_abs_delta_ticks=500,
+    )
+
+    assert desired[5] < -100
+    assert stepped[5] == -50
+    assert stepped[7] == 50
+    assert abs(stepped[5]) > 1
+
+
+def test_max_tick_step_per_cycle_clamps_to_100_when_configured_higher() -> None:
+    config = PenprobeChasingDemoConfig.from_dict({"max_tick_step_per_cycle": 250, "max_step_ticks": 250})
+
+    assert config.max_tick_step_per_cycle == 100
+    assert config.max_step_ticks == 100
+
+
+def test_deadband_suppresses_tiny_penprobe_jitter() -> None:
+    mapper = TendonDisplacementMapper(spool_diameter_cm=1.2, ticks_per_rev=4096)
+    config = PenprobeChasingDemoConfig.from_dict({"xy_deadband_mm": 1.0, "proportional_gain_ticks_per_mm": 10.0})
+
+    desired, debug = paired_xy_proportional_tick_request(
+        tip_xy_mm=[0.0, 0.0],
+        target_xy_mm=[0.2, 0.2],
+        servo_ids=[5, 6, 7, 8],
+        pairs={"axis_a": [5, 7], "axis_b": [6, 8]},
+        mapper=mapper,
+        config=config,
+    )
+
+    assert desired == {5: 0, 6: 0, 7: 0, 8: 0}
+    assert debug["clamped_xy_error_mm"] == [0.0, 0.0]
 
 
 def test_command_clamp_stays_within_default_500_ticks_and_raw_bounds() -> None:

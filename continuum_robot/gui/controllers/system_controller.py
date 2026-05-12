@@ -151,7 +151,8 @@ class SystemController:
         self._last_truth_snapshot: dict[str, str] = {}
         self._readiness_cache: tuple[tuple[int, ...], bool, object] | None = None
         self._readiness_cache_monotonic_s: float = 0.0
-        self._readiness_cache_ttl_s: float = 0.75
+        self._readiness_cache_ttl_s: float = 2.0
+        self._last_slow_readiness_warning_s: float = 0.0
         self._refresh_telemetry_policy()
         self.rescan_ports()
 
@@ -541,9 +542,9 @@ class SystemController:
                 cache_key = (tuple(expected_ids), bool(include_scan))
                 cached = self._readiness_cache
                 if (
-                    cached is not None
+                    not include_scan
+                    and cached is not None
                     and cached[0] == cache_key[0]
-                    and cached[1] == cache_key[1]
                     and (time.monotonic() - self._readiness_cache_monotonic_s) <= self._readiness_cache_ttl_s
                 ):
                     snapshot = cached[2]
@@ -557,7 +558,9 @@ class SystemController:
                 self.sync_servo_runtime_snapshot(snapshot)
                 self.state.last_error = None if snapshot.all_motion_ready else snapshot.message
             elapsed_ms = (time.monotonic() - started) * 1000.0
-            if elapsed_ms > 250.0:
+            now_for_warning = time.monotonic()
+            if elapsed_ms > 250.0 and (now_for_warning - self._last_slow_readiness_warning_s) > 10.0:
+                self._last_slow_readiness_warning_s = now_for_warning
                 LOG.warning(
                     "System readiness refresh slow | elapsed_ms=%.1f | expected_servo_ids=%s | include_scan=%s",
                     elapsed_ms,

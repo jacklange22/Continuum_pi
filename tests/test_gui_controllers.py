@@ -1093,7 +1093,7 @@ def test_system_controller_refresh_readiness_preserves_counts_when_bus_busy(tmp_
         state = controller.refresh_readiness()
         assert state.motion_ready_count == snapshot.motion_ready_count
         assert state.telemetry_ready_count == snapshot.telemetry_ready_count
-        assert "owned by active pretension run on servo 2" in state.readiness_message
+        assert "owned by pretension run" in state.readiness_message
     finally:
         release.set()
         thread.join(timeout=1.0)
@@ -1116,6 +1116,57 @@ def test_system_controller_refresh_readiness_uses_runtime_snapshot_counts(tmp_pa
     assert state.motion_ready_count == 4
     assert state.motion_ready is True
     assert "Motion ready 4/4" in state.readiness_message
+
+
+def test_system_controller_refresh_readiness_uses_cache_for_repeated_timer_refresh(tmp_path: Path, monkeypatch) -> None:
+    settings = _settings()
+    service = _pretension_service(tmp_path, dxl_bus=_MultiServoPretensionBus(current_sequences={}))
+    service.connect("/dev/mock-openrb", 115200)
+    controller = SystemController(
+        tracking_service=_tracking_service(settings, tmp_path),
+        openrb_client=MockOpenRbClient(),
+        servo_service=service,
+        settings=settings,
+    )
+    live_calls = {"count": 0}
+    original = service.build_runtime_servo_snapshot
+
+    def _counting_live(*args, **kwargs):
+        live_calls["count"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(service, "build_runtime_servo_snapshot", _counting_live)
+
+    controller.refresh_readiness(include_scan=False)
+    controller.refresh_readiness(include_scan=False)
+    controller.refresh_readiness(include_scan=False)
+
+    assert live_calls["count"] == 1
+
+
+def test_system_controller_explicit_scan_bypasses_readiness_cache(tmp_path: Path, monkeypatch) -> None:
+    settings = _settings()
+    service = _pretension_service(tmp_path, dxl_bus=_MultiServoPretensionBus(current_sequences={}))
+    service.connect("/dev/mock-openrb", 115200)
+    controller = SystemController(
+        tracking_service=_tracking_service(settings, tmp_path),
+        openrb_client=MockOpenRbClient(),
+        servo_service=service,
+        settings=settings,
+    )
+    live_calls = {"count": 0}
+    original = service.build_runtime_servo_snapshot
+
+    def _counting_live(*args, **kwargs):
+        live_calls["count"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(service, "build_runtime_servo_snapshot", _counting_live)
+
+    controller.refresh_readiness(include_scan=True)
+    controller.refresh_readiness(include_scan=True)
+
+    assert live_calls["count"] == 2
 
 
 def _app_context(tmp_path: Path) -> AppContext:
@@ -2819,6 +2870,28 @@ def test_experiment_workspace_loads_motor_babble_page_and_summary(tmp_path: Path
     assert page.run_button.text() == "Run Motor Babble Dataset"
     assert page.collection_summary_widget._pairs_signature is not None
     assert page.viewer_3d is None
+
+
+def test_experiment_tab_skips_unchanged_penprobe_full_page_updates(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("penprobe_chasing_demo")
+
+    state = controller.refresh()
+    tab.update(state)
+    page = tab._page_for("penprobe_chasing_demo")
+    original_set_state = page.set_state
+    calls = {"count": 0}
+
+    def _counting_set_state(next_state):
+        calls["count"] += 1
+        return original_set_state(next_state)
+
+    page.set_state = _counting_set_state
+
+    assert tab.update(state) is False
+    assert calls["count"] == 0
 
 
 def test_experiment_workspace_loads_registration_validation_page(tmp_path: Path) -> None:

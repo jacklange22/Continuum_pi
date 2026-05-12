@@ -13,7 +13,7 @@ from continuum_robot.servos.servo_service import (
     ServoBusBusyError,
     ServoMotionAssessment,
 )
-from continuum_robot.servos.sign_mapping_check import ServoMappingCheckRepository
+from continuum_robot.servos.sign_mapping_check import ServoMappingCheckRepository, configured_axis_mapping
 
 
 @dataclass
@@ -97,6 +97,7 @@ class ServosViewState:
     bench_debug_text: str = ""
     status_message: str = "Servo control idle."
     last_error: str | None = None
+    configured_sign_mapping_summary: str = ""
 
 
 class ServosController:
@@ -263,6 +264,26 @@ class ServosController:
             notes=notes,
         )
         self.state.status_message = f"Created servo sign/mapping checklist: {record.artifact_path}"
+        self.state.last_error = None
+        self.refresh()
+        return str(record.artifact_path)
+
+    def confirm_configured_sign_mapping(self, *, operator: str = "", notes: str = "") -> str:
+        if self.state.robot_mode != "single_segment":
+            raise RuntimeError("Configured sign/mapping confirmation is scoped to single_segment bring-up.")
+        active_ids = [int(value) for value in self.state.active_segment_servo_ids or self.state.expected_servo_ids]
+        repo = ServoMappingCheckRepository(self._project_root_for_runtime_artifacts() / "data" / "calibration" / "servo_mapping_checks")
+        record = repo.confirm_configured_mapping(
+            operating_mode=self.state.robot_mode,
+            active_segment_key=self.state.active_segment_key,
+            active_segment_label=self.state.active_segment_label,
+            expected_servo_ids=active_ids,
+            active_segment_pairs=self.state.active_segment_pairs,
+            operator=operator,
+            mock_mode=bool(self.settings.runtime.mock_mode),
+            notes=notes,
+        )
+        self.state.status_message = f"Confirmed configured servo sign/mapping: {record.artifact_path}"
         self.state.last_error = None
         self.refresh()
         return str(record.artifact_path)
@@ -957,6 +978,19 @@ class ServosController:
                 self.state.all_8_readiness_summary = f"dual_segment expects 8 IDs; current context has {expected}."
         else:
             self.state.all_8_readiness_summary = ""
+        active_ids_for_mapping = [int(value) for value in self.state.active_segment_servo_ids or expected]
+        configured_mapping = configured_axis_mapping(
+            expected_servo_ids=active_ids_for_mapping,
+            active_segment_pairs=self.state.active_segment_pairs,
+        )
+        self.state.configured_sign_mapping_summary = (
+            "Configured mapping: "
+            + ", ".join(
+                f"{servo_id}={configured_mapping[int(servo_id)].get('tendon', '')}"
+                for servo_id in active_ids_for_mapping
+            )
+            + "; lower ticks = more tension/shortening."
+        )
         if self.state.robot_mode == "single_segment":
             active_ids = [int(value) for value in self.state.active_segment_servo_ids or expected]
             summary = self.servo_service.get_calibration_summary()

@@ -36,6 +36,7 @@ class ExperimentTab(QWidget):
         self.controller = controller
         self._pages: dict[str, QWidget] = {}
         self._page_state_fingerprints: dict[str, tuple[object, ...]] = {}
+        self._page_state_applied_at_s: dict[str, float] = {}
         self._last_logged_selection = ""
         self.setObjectName("experimentWorkspace")
         self.setStyleSheet(experiment_shell_stylesheet(object_name="experimentWorkspace"))
@@ -136,11 +137,27 @@ class ExperimentTab(QWidget):
 
         page = self._page_for(state.selected_experiment)
         fingerprint = page.state_fingerprint(state)
+        previous_fingerprint = self._page_state_fingerprints.get(state.selected_experiment)
+        page_changed = self.page_stack.currentWidget() is not page
+        min_interval_s = 0.15 if bool(state.run_active) else 0.0
+        last_applied = float(self._page_state_applied_at_s.get(state.selected_experiment, 0.0))
+        if (
+            previous_fingerprint == fingerprint
+            and not page_changed
+        ):
+            return False
+        if (
+            min_interval_s > 0.0
+            and not page_changed
+            and previous_fingerprint is not None
+            and (time.monotonic() - last_applied) < min_interval_s
+        ):
+            return False
         if (
             getattr(page, "refresh_policy", "live") == "manual"
-            and self._page_state_fingerprints.get(state.selected_experiment) == fingerprint
+            and previous_fingerprint == fingerprint
         ):
-            if self.page_stack.currentWidget() is not page:
+            if page_changed:
                 self.page_stack.setCurrentWidget(page)
             if hasattr(page, "_log_interaction_snapshot"):
                 page._log_interaction_snapshot("tab_manual_update_skipped", selector=self.experiment_combo)
@@ -159,6 +176,7 @@ class ExperimentTab(QWidget):
         set_state_started = time.monotonic()
         page.set_state(state)
         self._page_state_fingerprints[state.selected_experiment] = fingerprint
+        self._page_state_applied_at_s[state.selected_experiment] = time.monotonic()
         self._log_event(
             "set_state_applied",
             experiment=state.selected_experiment,
@@ -253,7 +271,8 @@ class ExperimentTab(QWidget):
             details["elapsed_ms"] = f"{float(details['elapsed_ms']):.1f}"
         details["gui_thread"] = self._is_gui_thread()
         rendered = " ".join(f"{key}={value}" for key, value in details.items())
-        LOG.info("ExperimentTab %s | %s", stage, rendered)
+        log_fn = LOG.debug if stage in {"set_state_applied", "update_complete"} else LOG.info
+        log_fn("ExperimentTab %s | %s", stage, rendered)
 
     def _update_status_chip(self, state: ExperimentViewState) -> None:
         status = state.preflight_report.overall_status

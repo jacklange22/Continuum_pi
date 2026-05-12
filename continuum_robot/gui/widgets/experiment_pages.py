@@ -3056,7 +3056,7 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
             lambda value: self.controller.set_config_value("max_tick_delta_from_startup", int(value))
         )
         self.loop_period_spin = QDoubleSpinBox()
-        self.loop_period_spin.setRange(0.05, 1.0)
+        self.loop_period_spin.setRange(0.02, 1.0)
         self.loop_period_spin.setDecimals(3)
         self.loop_period_spin.setSingleStep(0.025)
         self.loop_period_spin.valueChanged.connect(lambda value: self.controller.set_config_value("loop_period_s", float(value)))
@@ -3080,21 +3080,45 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
         self.max_radius_spin.setSingleStep(5.0)
         self.max_radius_spin.valueChanged.connect(lambda value: self.controller.set_config_value("max_target_radius_mm", float(value)))
         self.gain_spin = QDoubleSpinBox()
-        self.gain_spin.setRange(0.0, 0.05)
-        self.gain_spin.setDecimals(4)
-        self.gain_spin.setSingleStep(0.0005)
-        self.gain_spin.valueChanged.connect(lambda value: self.controller.set_config_value("displacement_gain_cm_per_mm", float(value)))
+        self.gain_spin.setRange(0.0, 50.0)
+        self.gain_spin.setDecimals(1)
+        self.gain_spin.setSingleStep(1.0)
+        self.gain_spin.valueChanged.connect(lambda value: self.controller.set_config_value("proportional_gain_ticks_per_mm", float(value)))
         self.max_step_spin = QSpinBox()
         self.max_step_spin.setRange(1, 100)
-        self.max_step_spin.valueChanged.connect(lambda value: self.controller.set_config_value("max_step_ticks", int(value)))
+        self.max_step_spin.valueChanged.connect(lambda value: self.controller.set_config_value("max_tick_step_per_cycle", int(value)))
+        self.deadband_spin = QDoubleSpinBox()
+        self.deadband_spin.setRange(0.0, 20.0)
+        self.deadband_spin.setDecimals(1)
+        self.deadband_spin.setSingleStep(0.5)
+        self.deadband_spin.valueChanged.connect(lambda value: self.controller.set_config_value("xy_deadband_mm", float(value)))
+        self.stale_timeout_spin = QDoubleSpinBox()
+        self.stale_timeout_spin.setRange(0.02, 2.0)
+        self.stale_timeout_spin.setDecimals(2)
+        self.stale_timeout_spin.setSingleStep(0.05)
+        self.stale_timeout_spin.valueChanged.connect(lambda value: self.controller.set_config_value("stale_tracker_timeout_s", float(value)))
+        self.max_write_hz_spin = QDoubleSpinBox()
+        self.max_write_hz_spin.setRange(1.0, 60.0)
+        self.max_write_hz_spin.setDecimals(1)
+        self.max_write_hz_spin.setSingleStep(5.0)
+        self.max_write_hz_spin.valueChanged.connect(lambda value: self.controller.set_config_value("max_servo_write_hz", float(value)))
+        self.flip_x_checkbox = QCheckBox("Flip X")
+        self.flip_x_checkbox.toggled.connect(lambda value: self.controller.set_config_value("flip_x", bool(value)))
+        self.flip_y_checkbox = QCheckBox("Flip Y")
+        self.flip_y_checkbox.toggled.connect(lambda value: self.controller.set_config_value("flip_y", bool(value)))
         form.addRow("Max Delta From Startup (ticks)", self.max_tick_delta_spin)
         form.addRow("Loop Period (s)", self.loop_period_spin)
         form.addRow("Max Duration (s)", self.duration_spin)
         form.addRow("Max Iterations", self.max_iterations_spin)
         form.addRow("Mapping Mode", self.mapping_mode_combo)
         form.addRow("Max Target Radius (mm)", self.max_radius_spin)
-        form.addRow("Gain (cm/mm)", self.gain_spin)
-        form.addRow("Max Step (ticks)", self.max_step_spin)
+        form.addRow("Gain (ticks/mm)", self.gain_spin)
+        form.addRow("Max Step / Cycle (ticks)", self.max_step_spin)
+        form.addRow("XY Deadband (mm)", self.deadband_spin)
+        form.addRow("Tracker Stale Timeout (s)", self.stale_timeout_spin)
+        form.addRow("Max Servo Write Hz", self.max_write_hz_spin)
+        form.addRow("Sign Override", self.flip_x_checkbox)
+        form.addRow("", self.flip_y_checkbox)
         control_card.body_layout.addLayout(form)
 
         status_card = ExperimentCard("Live Status", "Last received sample and active scope for the running demo.")
@@ -3112,8 +3136,15 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
         self._set_spin(self.max_iterations_spin, int(config.max_iterations))
         self._set_combo_value(self.mapping_mode_combo, str(config.mapping_mode))
         self._set_double(self.max_radius_spin, float(config.max_target_radius_mm))
-        self._set_double(self.gain_spin, float(config.displacement_gain_cm_per_mm))
-        self._set_spin(self.max_step_spin, int(config.max_step_ticks))
+        self._set_double(self.gain_spin, float(config.proportional_gain_ticks_per_mm))
+        self._set_spin(self.max_step_spin, int(config.max_tick_step_per_cycle))
+        self._set_double(self.deadband_spin, float(config.xy_deadband_mm))
+        self._set_double(self.stale_timeout_spin, float(config.stale_tracker_timeout_s))
+        self._set_double(self.max_write_hz_spin, float(config.max_servo_write_hz))
+        with QSignalBlocker(self.flip_x_checkbox):
+            self.flip_x_checkbox.setChecked(bool(config.flip_x))
+        with QSignalBlocker(self.flip_y_checkbox):
+            self.flip_y_checkbox.setChecked(bool(config.flip_y))
         self._sync_demo_status(state=state)
 
     def _sync_demo_status(self, *, state: ExperimentViewState) -> None:
@@ -3127,6 +3158,11 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
         target_xy = extra.get("target_xy_mm")
         error_norm = extra.get("xy_error_norm_mm")
         max_delta = extra.get("max_tick_delta_used")
+        step_by_servo = extra.get("commanded_tick_step_by_servo")
+        goal_by_servo = getattr(last_sample, "commanded_motor_values", {}) if last_sample is not None else {}
+        mapping_debug = dict(extra.get("mapping_debug", {}) or {})
+        distance_to_cap = mapping_debug.get("distance_to_cap_ticks")
+        write_rate = mapping_debug.get("servo_write_rate_hz")
         pairs = context.active_pairs if context.operating_mode == "single_segment" else {}
         self.demo_status_widget.set_pairs(
             [
@@ -3137,7 +3173,12 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
                 ("Tip 0A XY", _format_xy_pair(tip_xy)),
                 ("Target 0B XY", _format_xy_pair(target_xy)),
                 ("XY Error", f"{float(error_norm):.2f} mm" if error_norm is not None else "n/a"),
+                ("Commanded Step", str(step_by_servo or "n/a")),
+                ("Goal Ticks", str(goal_by_servo or "n/a")),
                 ("Max Delta Used", f"{int(max_delta)} ticks" if max_delta is not None else "n/a"),
+                ("Distance To Cap", f"{int(distance_to_cap)} ticks" if distance_to_cap is not None else "n/a"),
+                ("Tracker Freshness", f"{float(getattr(last_sample, 'freshness_s', 0.0)):.3f} s" if last_sample is not None and getattr(last_sample, "freshness_s", None) is not None else "n/a"),
+                ("Servo Write Rate", f"{float(write_rate):.1f} Hz" if write_rate is not None else "n/a"),
                 ("Preflight", state.preflight_report.summary),
             ]
         )

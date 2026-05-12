@@ -20,6 +20,8 @@ class ServoMappingCheckEntry:
 
     servo_id: int
     expected_tendon_position: str = ""
+    axis_label: str = ""
+    positive_tendon_direction: str = ""
     tiny_jog_direction: str = ""
     observed_tendon_behavior: str = ""
     expected_sign_confirmed: bool | None = None
@@ -40,6 +42,8 @@ class ServoMappingCheckRecord:
     source: str = "tiny_jog_sign_mapping_check"
     artifact_path: str = ""
     mock_mode: bool = False
+    lower_tick_means_tension: bool = True
+    confirmed_by_operator: bool = False
     entries: list[ServoMappingCheckEntry] = field(default_factory=list)
     notes: str = ""
 
@@ -109,6 +113,50 @@ class ServoMappingCheckRepository:
         )
         return self.write(record)
 
+    def confirm_configured_mapping(
+        self,
+        *,
+        operating_mode: str,
+        active_segment_key: str,
+        active_segment_label: str,
+        expected_servo_ids: list[int],
+        active_segment_pairs: dict[str, list[int]],
+        operator: str = "",
+        mock_mode: bool = False,
+        notes: str = "",
+    ) -> ServoMappingCheckRecord:
+        """Write a one-click configured mapping confirmation artifact."""
+        mapping = configured_axis_mapping(
+            expected_servo_ids=expected_servo_ids,
+            active_segment_pairs=active_segment_pairs,
+        )
+        record = ServoMappingCheckRecord(
+            timestamp_utc=_utc_now(),
+            operator=str(operator or ""),
+            operating_mode=str(operating_mode or ""),
+            active_segment_key=str(active_segment_key or ""),
+            active_segment_label=str(active_segment_label or ""),
+            expected_servo_ids=[int(value) for value in expected_servo_ids],
+            source="configured_mapping_confirmation",
+            mock_mode=bool(mock_mode),
+            lower_tick_means_tension=True,
+            confirmed_by_operator=True,
+            entries=[
+                ServoMappingCheckEntry(
+                    servo_id=int(servo_id),
+                    expected_tendon_position=str(mapping[int(servo_id)]["tendon"]),
+                    axis_label=str(mapping[int(servo_id)]["axis"]),
+                    positive_tendon_direction=str(mapping[int(servo_id)]["tendon"]),
+                    tiny_jog_direction="configured_lower_tick_tensions",
+                    observed_tendon_behavior="configured_mapping_confirmed_by_operator",
+                    expected_sign_confirmed=True,
+                )
+                for servo_id in [int(value) for value in expected_servo_ids]
+            ],
+            notes=str(notes or ""),
+        )
+        return self.write(record)
+
     def write(self, record: ServoMappingCheckRecord) -> ServoMappingCheckRecord:
         timestamp = record.timestamp_utc or _utc_now()
         safe_segment = _safe_token(record.active_segment_key or "segment")
@@ -125,10 +173,14 @@ class ServoMappingCheckRepository:
             source=str(record.source or "tiny_jog_sign_mapping_check"),
             artifact_path=str(path),
             mock_mode=bool(record.mock_mode),
+            lower_tick_means_tension=bool(record.lower_tick_means_tension),
+            confirmed_by_operator=bool(record.confirmed_by_operator),
             entries=[
                 ServoMappingCheckEntry(
                     servo_id=int(entry.servo_id),
                     expected_tendon_position=str(entry.expected_tendon_position or ""),
+                    axis_label=str(entry.axis_label or ""),
+                    positive_tendon_direction=str(entry.positive_tendon_direction or ""),
                     tiny_jog_direction=str(entry.tiny_jog_direction or ""),
                     observed_tendon_behavior=str(entry.observed_tendon_behavior or ""),
                     expected_sign_confirmed=(
@@ -199,7 +251,7 @@ class ServoMappingCheckRepository:
             )
         elif not confirmed:
             message = (
-                "Servo sign/mapping checklist exists, but expected sign is not confirmed for servo(s): "
+                "Configured servo sign/mapping exists but is not operator-confirmed for servo(s): "
                 + ", ".join(str(value) for value in unconfirmed)
             )
         else:
@@ -229,6 +281,8 @@ def _coerce_record(payload: dict[str, Any], *, path: Path) -> ServoMappingCheckR
             ServoMappingCheckEntry(
                 servo_id=int(data.get("servo_id")),
                 expected_tendon_position=str(data.get("expected_tendon_position", "") or ""),
+                axis_label=str(data.get("axis_label", "") or ""),
+                positive_tendon_direction=str(data.get("positive_tendon_direction", "") or ""),
                 tiny_jog_direction=str(data.get("tiny_jog_direction", "") or ""),
                 observed_tendon_behavior=str(data.get("observed_tendon_behavior", "") or ""),
                 expected_sign_confirmed=None if confirmed is None else bool(confirmed),
@@ -246,9 +300,33 @@ def _coerce_record(payload: dict[str, Any], *, path: Path) -> ServoMappingCheckR
         source=str(payload.get("source", "tiny_jog_sign_mapping_check") or "tiny_jog_sign_mapping_check"),
         artifact_path=str(payload.get("artifact_path", "") or str(path)),
         mock_mode=bool(payload.get("mock_mode", False)),
+        lower_tick_means_tension=bool(payload.get("lower_tick_means_tension", True)),
+        confirmed_by_operator=bool(payload.get("confirmed_by_operator", False)),
         entries=entries,
         notes=str(payload.get("notes", "") or ""),
     )
+
+
+def configured_axis_mapping(
+    *,
+    expected_servo_ids: list[int],
+    active_segment_pairs: dict[str, list[int]],
+) -> dict[int, dict[str, str]]:
+    """Return the configured single-segment axis/tendon label for each servo."""
+    ids = [int(value) for value in expected_servo_ids]
+    pairs = {str(key): [int(value) for value in values] for key, values in dict(active_segment_pairs or {}).items()}
+    axis_a = pairs.get("axis_a") or ([ids[0], ids[2]] if len(ids) >= 4 else [])
+    axis_b = pairs.get("axis_b") or ([ids[1], ids[3]] if len(ids) >= 4 else [])
+    mapping: dict[int, dict[str, str]] = {}
+    if len(axis_a) >= 2:
+        mapping[int(axis_a[0])] = {"axis": "X", "tendon": "+X"}
+        mapping[int(axis_a[1])] = {"axis": "X", "tendon": "-X"}
+    if len(axis_b) >= 2:
+        mapping[int(axis_b[0])] = {"axis": "Y", "tendon": "+Y"}
+        mapping[int(axis_b[1])] = {"axis": "Y", "tendon": "-Y"}
+    for servo_id in ids:
+        mapping.setdefault(int(servo_id), {"axis": "", "tendon": ""})
+    return mapping
 
 
 def _utc_now() -> str:

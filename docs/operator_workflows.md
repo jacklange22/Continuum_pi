@@ -13,6 +13,9 @@ Keep the Pi GUI as the single operator surface for calibration, validation, regi
 - If any present position is near the raw 0/4095 discontinuity, stop, manually reset if needed, then re-capture neutral/startup.
 - Before automatic pretension, verify tiny jog sign/mapping, capture neutral/safe bounds, and use `current_position` mode.
 - Segment B mapping: `5 = +x`, `6 = +y`, `7 = -x`, `8 = -y`; pairs are `axis_a = 5/7`, `axis_b = 6/8`.
+- Use `Confirm Configured Mapping` on the Servos tab when the active Segment B hardware matches the configured mapping. The saved artifact records `lower_tick_means_tension=true`.
+- Penprobe chasing is demo-only: 0A coil-origin chases 0B in XY. Tune `Gain (ticks/mm)` and `Max Step / Cycle` carefully: start at 25 ticks, then 50, then 100 only if motion direction and tracker freshness are stable.
+- System readiness uses cached servo telemetry during normal background refresh and active experiments. Use explicit refresh/scan buttons for live bus reads.
 
 ## Workflow 1: One-Servo Bring-Up
 
