@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from continuum_robot.config.schemas import (
@@ -79,10 +80,15 @@ def test_experiment_runner_routes_csv_points_through_canonical_dataset(tmp_path:
 
     assert summary.rows_written == 5
     assert summary.output_path.exists()
-    assert summary.output_path.parent == tmp_path / "data" / "experiments" / "collect_pose_command_dataset"
+    assert summary.output_path.parent == tmp_path / "data" / "mock_experiments" / "collect_pose_command_dataset"
     assert (summary.output_path / "metadata.json").exists()
     assert (summary.output_path / "samples.jsonl").exists()
     assert (summary.output_path / "summary.json").exists()
+    assert (summary.output_path / "run_review.json").exists()
+    metadata = json.loads((summary.output_path / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["trust_info"]["run_trust_mode"] == "mock"
+    assert metadata["trust_info"]["valid_for_model_training"] is False
+    assert metadata["trust_info"]["valid_for_thesis_repeatability"] is False
     assert (summary.output_path / "modeling_dataset_summary.txt").exists()
     assert (summary.output_path / "modeling_dataset_export.jsonl").exists()
 
@@ -123,7 +129,7 @@ def test_experiment_runner_writes_runs_under_experiment_type_folder(tmp_path: Pa
     )
 
     assert result.paths.output_dir == (
-        tmp_path / "data" / "experiments" / "dataset_schema_roundtrip" / "named_roundtrip_run"
+        tmp_path / "data" / "mock_experiments" / "dataset_schema_roundtrip" / "named_roundtrip_run"
     )
     assert "runs" not in result.paths.output_dir.parts
 

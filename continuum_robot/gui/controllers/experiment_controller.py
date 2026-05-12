@@ -193,7 +193,7 @@ class ExperimentController:
         self.state = ExperimentViewState(
             experiment_options=list(visible_options.values()),
             experiment_filter_summary=self._mode_filter_summary(visible_options),
-            output_root=str(experiment_runner.output_dir),
+            output_root=str(self._mock_aware_output_root(Path(experiment_runner.output_dir))),
         )
         if not self._options_by_name:
             raise RuntimeError("No workspace-visible experiments are registered.")
@@ -727,8 +727,22 @@ class ExperimentController:
     def _resolve_repo_path(self, raw_path: str | Path) -> Path:
         path = Path(raw_path)
         if path.is_absolute():
-            return path
-        return self.project_root / path
+            resolved = path
+        else:
+            resolved = self.project_root / path
+        return self._mock_aware_output_root(resolved)
+
+    def _mock_aware_output_root(self, path: Path) -> Path:
+        if not bool(getattr(self.settings.runtime, "mock_mode", False)):
+            return Path(path)
+        candidate = Path(path)
+        try:
+            relative = candidate.resolve().relative_to((self.project_root / "data" / "experiments").resolve())
+        except ValueError:
+            if candidate.name == "experiments" and candidate.parent.name == "data":
+                return candidate.parent / "mock_experiments"
+            return candidate
+        return self.project_root / "data" / "mock_experiments" / relative
 
     def _parse_config_text(self, text: str) -> tuple[dict[str, Any], str | None]:
         raw = str(text or "").strip()

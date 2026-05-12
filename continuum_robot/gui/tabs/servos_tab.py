@@ -157,6 +157,9 @@ class ServosTab(QWidget):
         self.load_neutral_button = QPushButton("Load Calibration")
         self.load_neutral_button.setProperty("variant", "ghost")
         self.load_neutral_button.clicked.connect(lambda: self._safe_call(self.controller.load_neutral_setpoints))
+        self.create_sign_check_button = QPushButton("Create Sign Checklist")
+        self.create_sign_check_button.setProperty("variant", "ghost")
+        self.create_sign_check_button.clicked.connect(lambda: self._safe_call(self.controller.create_sign_mapping_checklist))
 
         self.jog_servo_spin = QSpinBox()
         self.jog_servo_spin.setRange(1, 252)
@@ -295,6 +298,7 @@ class ServosTab(QWidget):
         bringup_actions.addWidget(self.refresh_readiness_button)
         bringup_actions.addWidget(self.capture_neutral_button)
         bringup_actions.addWidget(self.load_neutral_button)
+        bringup_actions.addWidget(self.create_sign_check_button)
         bringup_actions.addStretch(1)
         bringup_actions_layout.addLayout(bringup_actions)
 
@@ -626,6 +630,7 @@ class ServosTab(QWidget):
         self.refresh_readiness_button.setEnabled(state.connected)
         self.capture_neutral_button.setEnabled(state.connected and any_servo)
         self.load_neutral_button.setEnabled(True)
+        self.create_sign_check_button.setEnabled(state.robot_mode == "single_segment" and bool(state.expected_servo_ids))
         self.fine_minus_button.setEnabled(motion_allowed)
         self.fine_plus_button.setEnabled(motion_allowed)
         self.coarse_minus_button.setEnabled(motion_allowed)
@@ -803,6 +808,9 @@ class ServosTab(QWidget):
         if self._updating_jog_settings:
             return
         self._jog_settings_dirty = self._current_jog_settings() != self._applied_jog_settings
+        self.save_servo_settings_button.setEnabled(
+            bool(self._apply_runtime_parameters) and self._jog_settings_dirty
+        )
 
     def _save_servo_settings(self) -> None:
         if self._apply_runtime_parameters is None:

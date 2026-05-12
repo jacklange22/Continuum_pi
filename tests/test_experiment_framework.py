@@ -1354,15 +1354,17 @@ def test_collect_pose_command_dataset_runs_servo_only_without_tracker_when_expli
     )
 
     assert result.success is True
-    assert result.metadata.trust_info["run_trust_mode"] == "servo_only"
+    assert result.metadata.trust_info["run_trust_mode"] == "mock"
     assert result.metadata.trust_info["valid_for_model_training"] is False
     assert result.metadata.provenance_info["hardware_profile"] == settings.runtime.robot_config
     assert result.metadata.provenance_info["expected_servo_ids"] == settings.robot.expected_servo_ids()
     metrics = result.summary.experiment_metrics
-    assert metrics["run_trust_mode"] == "servo_only"
+    assert metrics["run_trust_mode"] == "mock"
     assert metrics["run_trust"]["valid_for_model_training"] is False
     assert metrics["valid_for_model_training"] is False
     assert metrics["valid_for_thesis_repeatability"] is False
+    assert metrics["valid_for_two_segment_model_training"] is False
+    assert "mock_mode" in metrics["data_quality_warnings"]
     assert metrics["legacy_export_enabled"] is False
     assert metrics["position_frame"] == "none"
     assert not result.paths.output_dir.joinpath("modeling_dataset_legacy_compat.dat").exists()

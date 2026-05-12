@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields, replace
 import logging
+from pathlib import Path
 import threading
 import time
 from typing import Any, Callable
@@ -481,12 +482,16 @@ class ServoService:
         sleep_fn: Callable[[float], None] = time.sleep,
         time_fn: Callable[[], float] = time.monotonic,
         motor_control_supervisor: MotorControlSupervisor | None = None,
+        mock_mode: bool = False,
+        mock_neutral_calibration_path: Path | None = None,
     ) -> None:
         self.dxl_bus = dxl_bus
         self.mapper = mapper
         self.safety_guard = safety_guard
         self.neutral_calibration = neutral_calibration
         self.pretension_validation = pretension_validation
+        self.mock_mode = bool(mock_mode)
+        self.mock_neutral_calibration_path = Path(mock_neutral_calibration_path) if mock_neutral_calibration_path else None
         self._sleep_fn = sleep_fn
         self._time_fn = time_fn
         self._bus_state_lock = threading.RLock()
@@ -1396,21 +1401,48 @@ class ServoService:
                 min_offset_ticks=int(self.safety_guard.min_offset_ticks),
                 max_offset_ticks=int(self.safety_guard.max_offset_ticks),
             )
-        self.neutral_calibration.save_neutral_setpoints(
+        calibration_service = self.neutral_calibration
+        calibration_metadata = {
+            "mock_mode": False,
+            "calibration_trust": "hardware",
+            "valid_for_hardware_startup": True,
+        }
+        if self.mock_mode:
+            mock_path = self.mock_neutral_calibration_path or self._default_mock_neutral_calibration_path()
+            calibration_service = NeutralCalibrationService(
+                path=mock_path,
+                archive_root=mock_path.parent / "history",
+                context=self.neutral_calibration.context,
+            )
+            calibration_metadata = {
+                "mock_mode": True,
+                "calibration_trust": "mock",
+                "valid_for_hardware_startup": False,
+            }
+        calibration_service.save_neutral_setpoints(
             setpoints,
             safe_bounds_by_id=safe_bounds_by_id,
             capture_source=capture_source,
+            calibration_metadata=calibration_metadata,
         )
         return NeutralCaptureResult(
             servo_ids=[int(servo_id) for servo_id in servo_ids],
             setpoints_by_id=setpoints,
             safe_bounds_by_id=dict(safe_bounds_by_id),
-            artifact_path=str(self.neutral_calibration.path),
+            artifact_path=str(calibration_service.path),
             message=(
                 f"Captured and saved neutral setpoints for servo IDs {sorted(setpoints)} "
-                f"to {self.neutral_calibration.path}."
+                f"to {calibration_service.path}."
             ),
         )
+
+    def _default_mock_neutral_calibration_path(self) -> Path:
+        path = Path(self.neutral_calibration.path)
+        try:
+            project_root = path.resolve().parents[1] if path.parent.name == "config" else path.resolve().parents[2]
+        except IndexError:
+            project_root = Path.cwd()
+        return project_root / "data" / "mock_calibration" / "latest_mock_neutral_setpoints.json"
 
     def build_bench_debug_snapshot(self, expected_servo_id: int | None) -> ServoBenchDebugSnapshot:
         summary = self.neutral_calibration.get_calibration_summary()

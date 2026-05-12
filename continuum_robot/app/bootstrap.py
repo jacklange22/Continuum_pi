@@ -240,6 +240,8 @@ def build_app_context(*, session_log_path: Path | None = None) -> AppContext:
         safety_guard=safety_guard,
         neutral_calibration=neutral_calibration,
         pretension_validation=pretension_validation,
+        mock_mode=bool(settings.runtime.mock_mode),
+        mock_neutral_calibration_path=project_root / "data" / "mock_calibration" / "latest_mock_neutral_setpoints.json",
     )
     experiment_loader = ExperimentLoader()
     experiment_dataset_writer = ExperimentDatasetWriter(output_root=experiment_output_dir)

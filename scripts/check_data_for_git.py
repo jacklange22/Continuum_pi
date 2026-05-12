@@ -21,7 +21,7 @@ if __name__ == "__main__":
     if VENV_PYTHON.exists() and Path(sys.prefix).resolve() != (ROOT / ".venv").resolve():
         os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), str(Path(__file__).resolve()), *sys.argv[1:]])
 
-from continuum_robot.data.run_management import discover_experiment_run_dirs, load_run_review, summarize_run
+from continuum_robot.data.run_management import discover_experiment_run_dirs, discover_run_dirs, load_run_review, summarize_run
 
 
 DEFAULT_WARN_BYTES = 50 * 1024 * 1024
@@ -29,7 +29,12 @@ DEFAULT_FAIL_BYTES = 100 * 1024 * 1024
 FORBIDDEN_GENERATED_DIRS = (
     Path("data/exports"),
     Path("data/trash"),
-    Path("data/diagnostics/prehardware_dry_run"),
+    Path("data/diagnostics"),
+    Path("data/mock_experiments"),
+    Path("data/mock_calibration"),
+    Path("data/calibration/servo_calibration"),
+    Path("data/runtime_tip_calibration"),
+    Path("data/pivot_calibration"),
 )
 ARCHIVE_SUFFIXES = {".zip", ".tar", ".tgz", ".gz", ".bz2", ".xz", ".7z"}
 IMPORTANT_REVIEW_STATUSES = {"thesis_candidate", "advisor_share", "keep"}
@@ -80,10 +85,27 @@ def run_data_hygiene_check(
                 "data/experiments_archived is ignored; archived but important runs cannot be committed.",
             )
         )
+    if (project_root / ".git").exists():
+        for ignored_root in (
+            Path("data/mock_experiments/__hygiene_check__"),
+            Path("data/exports/__hygiene_check__"),
+            Path("data/trash/__hygiene_check__"),
+            Path("data/diagnostics/__hygiene_check__"),
+            Path("data/mock_calibration/__hygiene_check__"),
+        ):
+            if not _git_check_ignored(project_root, ignored_root):
+                findings.append(
+                    HygieneFinding(
+                        "WARN",
+                        str(ignored_root.parent) + "/",
+                        "Generated/mock/export/trash/diagnostic root is not ignored; add it to .gitignore before syncing.",
+                    )
+                )
 
     run_status_counts: dict[str, int] = {}
     experiment_runs = discover_experiment_run_dirs(project_root)
     archived_runs = _discover_archived_run_dirs(project_root)
+    mock_runs = discover_run_dirs(project_root, root_name="mock_experiments")
     for run_dir in [*experiment_runs, *archived_runs]:
         review = load_run_review(run_dir)
         run_status_counts[review.review_status] = run_status_counts.get(review.review_status, 0) + 1
@@ -91,8 +113,41 @@ def run_data_hygiene_check(
             findings.append(
                 HygieneFinding("WARN", _rel(project_root, run_dir), "Run is missing run_review.json classification.")
             )
+        try:
+            summary = summarize_run(run_dir)
+        except Exception as exc:
+            findings.append(HygieneFinding("WARN", _rel(project_root, run_dir), f"Could not summarize run trust metadata: {exc}"))
+            summary = None
+        if summary is not None:
+            if run_dir in experiment_runs and (summary.mock_mode is True or summary.run_trust_mode == "mock"):
+                findings.append(
+                    HygieneFinding(
+                        "FAIL",
+                        _rel(project_root, run_dir),
+                        "Mock/debug run is in data/experiments; move it under data/mock_experiments or regenerate with mock root.",
+                    )
+                )
+            if run_dir in experiment_runs and review.review_status == "debug":
+                findings.append(
+                    HygieneFinding(
+                        "WARN",
+                        _rel(project_root, run_dir),
+                        "Real experiment run is still unreviewed/debug; mark keep/thesis_candidate/advisor_share only after inspection.",
+                    )
+                )
         if review.review_status in IMPORTANT_REVIEW_STATUSES:
             _check_candidate_run(project_root, run_dir, findings)
+    for run_dir in mock_runs:
+        review = load_run_review(run_dir)
+        run_status_counts[review.review_status] = run_status_counts.get(review.review_status, 0) + 1
+        if review.include_in_evidence_index or review.review_status in IMPORTANT_REVIEW_STATUSES:
+            findings.append(
+                HygieneFinding(
+                    "FAIL",
+                    _rel(project_root, run_dir),
+                    "Mock run is marked for evidence/review inclusion; set include_in_evidence_index=false and review_status=debug/garbage.",
+                )
+            )
 
     for path in _iter_data_files(project_root):
         relative = _relative_path(project_root, path)
@@ -111,9 +166,10 @@ def run_data_hygiene_check(
                 HygieneFinding(
                     level,
                     str(relative),
-                    "Generated export/trash/diagnostic/archive artifact should not be committed.",
+                    "Generated/mock/export/trash/diagnostic/calibration artifact should not be committed; keep it ignored or move reviewed real data to data/experiments.",
                 )
             )
+        _check_calibration_artifact(project_root, path, relative, findings)
 
     status = "PASS"
     if any(item.level == "FAIL" for item in findings):
@@ -243,6 +299,58 @@ def _check_candidate_run(project_root: Path, run_dir: Path, findings: list[Hygie
         findings.append(HygieneFinding("WARN", _rel(project_root, run_dir), "Candidate run has no *_report.png figures."))
     if summary.run_trust_mode in {"unknown", ""}:
         findings.append(HygieneFinding("WARN", _rel(project_root, run_dir), "Candidate run is missing run_trust_mode."))
+    if summary.run_trust_mode in {"mock", "servo_only", "current_only", "lower_trust", "debug", "debug_only"}:
+        findings.append(
+            HygieneFinding(
+                "FAIL",
+                _rel(project_root, run_dir),
+                f"Candidate run has non-thesis trust mode {summary.run_trust_mode}; do not include in evidence/GitHub sync.",
+            )
+        )
+    if summary.mock_mode is True:
+        findings.append(HygieneFinding("FAIL", _rel(project_root, run_dir), "Candidate run was produced in mock_mode."))
+
+
+def _check_calibration_artifact(project_root: Path, path: Path, relative: Path, findings: list[HygieneFinding]) -> None:
+    relative_text = str(relative)
+    if not (
+        relative_text.startswith("data/mock_calibration/")
+        or relative_text.startswith("data/calibration/servo_calibration/")
+        or relative_text.startswith("data/runtime_tip_calibration/")
+        or relative_text.startswith("data/pivot_calibration/")
+    ):
+        return
+    payload = _read_json(path)
+    robot = payload.get("robot") if isinstance(payload.get("robot"), dict) else {}
+    trust = str(robot.get("calibration_trust") or payload.get("calibration_trust") or "").strip().lower()
+    mock_mode = bool(robot.get("mock_mode", payload.get("mock_mode", False)))
+    if relative_text.startswith("data/mock_calibration/") or mock_mode or trust == "mock":
+        findings.append(
+            HygieneFinding(
+                "FAIL",
+                relative_text,
+                "Mock calibration artifact detected; keep it under data/mock_calibration and do not sync as hardware startup truth.",
+            )
+        )
+        return
+    if relative_text.startswith("data/calibration/servo_calibration/") and trust not in {"hardware", "reviewed_hardware"}:
+        findings.append(
+            HygieneFinding(
+                "WARN",
+                relative_text,
+                "Servo calibration archive lacks calibration_trust=hardware/reviewed_hardware; review before committing.",
+            )
+        )
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    if path.suffix.lower() != ".json":
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _iter_data_files(project_root: Path):

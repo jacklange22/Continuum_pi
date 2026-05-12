@@ -28,9 +28,9 @@ def test_hardware_readiness_check_reports_operator_subsystems(tmp_path: Path) ->
     )
     text = render_hardware_readiness_report(report)
 
-    assert report.passed
     assert "Hardware Readiness Check" in text
     assert "config" in text
     assert "serial_ports" in text
+    assert "selected_segment_calibration" in text
     assert "gui_pages" in text
     assert (report.output_dir / "hardware_readiness_summary.json").exists()

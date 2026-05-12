@@ -10,6 +10,7 @@ import re
 import shutil
 from typing import Any
 
+from continuum_robot.data.run_management import summarize_run
 from continuum_robot.experiments.dataset_io import (
     canonical_timestamp_token,
     sanitize_output_name,
@@ -113,6 +114,7 @@ def discover_managed_data(project_root: Path) -> list[ManagedDataItem]:
     items = [
         *_discover_calibration_items(root),
         *_discover_experiment_items(root),
+        *_discover_export_items(root),
         *_discover_modeling_items(root),
         *_discover_diagnostic_items(root),
         *_discover_trash_items(root),
@@ -129,14 +131,73 @@ def filter_managed_data(
     *,
     category_key: str = "all",
     search_text: str = "",
+    experiment_filter: str = "all",
+    root_filter: str = "all",
+    review_status_filter: str = "all",
+    trust_mode_filter: str = "all",
+    mock_mode_filter: str = "all",
+    valid_model_filter: str = "all",
+    valid_thesis_filter: str = "all",
+    size_filter: str = "all",
+    has_samples_filter: str = "all",
+    has_figures_filter: str = "all",
+    has_review_filter: str = "all",
+    sort_mode: str = "newest",
 ) -> list[ManagedDataItem]:
-    """Filter discovered items by category and a simple substring search."""
+    """Filter discovered items by category, run metadata, and a simple substring search."""
     selected_category = str(category_key or "all").strip().lower()
     needle = str(search_text or "").strip().lower()
+    experiment_filter = str(experiment_filter or "all").strip()
+    root_filter = str(root_filter or "all").strip()
+    review_status_filter = str(review_status_filter or "all").strip()
+    trust_mode_filter = str(trust_mode_filter or "all").strip()
     filtered: list[ManagedDataItem] = []
     for item in items:
         if selected_category not in {"", "all"} and item.category_key != selected_category:
             continue
+        run_summary = _safe_run_summary(item)
+        if root_filter not in {"", "all"} and _root_location_for_item(item) != root_filter:
+            continue
+        if run_summary is not None:
+            if experiment_filter not in {"", "all"} and run_summary.experiment_name != experiment_filter:
+                continue
+            if review_status_filter == "unreviewed" and run_summary.has_run_review:
+                continue
+            if review_status_filter not in {"", "all", "unreviewed"} and run_summary.review.review_status != review_status_filter:
+                continue
+            if trust_mode_filter not in {"", "all"} and run_summary.run_trust_mode != trust_mode_filter:
+                continue
+            if not _bool_filter_matches(mock_mode_filter, run_summary.mock_mode):
+                continue
+            if not _bool_filter_matches(valid_model_filter, run_summary.valid_for_model_training):
+                continue
+            if not _bool_filter_matches(valid_thesis_filter, run_summary.valid_for_thesis_repeatability):
+                continue
+            if not _bool_filter_matches(has_samples_filter, run_summary.samples_present):
+                continue
+            if not _bool_filter_matches(has_figures_filter, bool(run_summary.report_figures)):
+                continue
+            if not _bool_filter_matches(has_review_filter, run_summary.has_run_review):
+                continue
+            if not _size_filter_matches(size_filter, run_summary.total_size_bytes):
+                continue
+        else:
+            if any(
+                value not in {"", "all"}
+                for value in (
+                    experiment_filter,
+                    review_status_filter,
+                    trust_mode_filter,
+                    mock_mode_filter,
+                    valid_model_filter,
+                    valid_thesis_filter,
+                    has_samples_filter,
+                    has_figures_filter,
+                    has_review_filter,
+                    size_filter,
+                )
+            ):
+                continue
         if needle:
             haystack = " ".join(
                 [
@@ -153,7 +214,7 @@ def filter_managed_data(
             if needle not in haystack:
                 continue
         filtered.append(item)
-    return filtered
+    return sorted(filtered, key=lambda item: _sort_key(item, sort_mode), reverse=_sort_reverse(sort_mode))
 
 
 def delete_managed_items(project_root: Path, items: list[ManagedDataItem]) -> list[Path]:
@@ -180,6 +241,102 @@ def delete_managed_items(project_root: Path, items: list[ManagedDataItem]) -> li
             resolved_path.unlink()
         deleted.append(item.path)
     return deleted
+
+
+def _safe_run_summary(item: ManagedDataItem):
+    run_dir = _run_dir_for_item(item)
+    if run_dir is None:
+        return None
+    try:
+        return summarize_run(run_dir)
+    except Exception:
+        return None
+
+
+def _run_dir_for_item(item: ManagedDataItem) -> Path | None:
+    if item.category_key not in {"experiments", "modeling", "diagnostics", "trash"}:
+        return None
+    path = item.path if item.path.is_dir() else item.path.parent
+    if (path / "summary.json").exists() or (path / "metadata.json").exists() or (path / "evaluation_metadata.json").exists():
+        return path
+    return None
+
+
+def _root_location_for_item(item: ManagedDataItem) -> str:
+    try:
+        parts = list(item.path.parts)
+        for index, part in enumerate(parts[:-1]):
+            if part == "data" and index + 1 < len(parts):
+                return f"data/{parts[index + 1]}"
+    except Exception:
+        pass
+    return ""
+
+
+def _bool_filter_matches(filter_value: str, value: Any) -> bool:
+    selected = str(filter_value or "all").strip().lower()
+    if selected in {"", "all"}:
+        return True
+    if selected == "true":
+        return value is True
+    if selected == "false":
+        return value is False
+    if selected == "yes":
+        return bool(value)
+    if selected == "no":
+        return not bool(value)
+    return True
+
+
+def _size_filter_matches(filter_value: str, size_bytes: int) -> bool:
+    selected = str(filter_value or "all").strip().lower()
+    size = int(size_bytes or 0)
+    if selected in {"", "all"}:
+        return True
+    if selected == "small":
+        return size < 1024 * 1024
+    if selected == "medium":
+        return 1024 * 1024 <= size < 25 * 1024 * 1024
+    if selected == "large":
+        return size >= 25 * 1024 * 1024
+    return True
+
+
+def _sort_key(item: ManagedDataItem, sort_mode: str) -> tuple[Any, ...]:
+    mode = str(sort_mode or "newest").strip().lower()
+    summary = _safe_run_summary(item)
+    if mode == "largest":
+        size = summary.total_size_bytes if summary is not None else _item_size_bytes(item)
+        return (int(size), item.timestamp_sort_key, str(item.path))
+    if mode == "experiment":
+        return ((summary.experiment_name if summary else item.item_type), item.timestamp_sort_key, str(item.path))
+    if mode == "review":
+        return ((summary.review.review_status if summary else ""), item.timestamp_sort_key, str(item.path))
+    if mode == "trust":
+        return ((summary.run_trust_mode if summary else ""), item.timestamp_sort_key, str(item.path))
+    return (item.timestamp_sort_key, item.category_label, item.readable_name, str(item.path))
+
+
+def _sort_reverse(sort_mode: str) -> bool:
+    return str(sort_mode or "newest").strip().lower() in {"newest", "largest"}
+
+
+def _item_size_bytes(item: ManagedDataItem) -> int:
+    path = item.path
+    if path.is_file():
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
+    total = 0
+    if path.is_dir():
+        for child in path.rglob("*"):
+            if child.is_file():
+                try:
+                    total += child.stat().st_size
+                except OSError:
+                    continue
+    return total
 
 
 def preview_migration(
@@ -242,7 +399,8 @@ def build_root_summary(project_root: Path) -> list[tuple[str, str]]:
             "data/registrations | data/runtime_tip_calibration | data/pivot_calibration | "
             "config/neutral_setpoints.json | data/calibration/servo_calibration",
         ),
-        ("Experiments", "data/experiments/*"),
+        ("Experiments", "data/experiments/* | data/mock_experiments/* | data/experiments_archived/*"),
+        ("Exports", "data/exports/*"),
         ("Modeling / Training", "data/models/ann | data/modeling_results"),
         (
             "Diagnostics",
@@ -453,7 +611,37 @@ def _discover_calibration_items(project_root: Path) -> list[ManagedDataItem]:
 
 def _discover_experiment_items(project_root: Path) -> list[ManagedDataItem]:
     items: list[ManagedDataItem] = []
-    experiments_root = project_root / "data" / "experiments"
+    items.extend(
+        _discover_experiment_items_under_root(
+            project_root / "data" / "experiments",
+            category_label="Experiments",
+            status_prefix="",
+        )
+    )
+    items.extend(
+        _discover_experiment_items_under_root(
+            project_root / "data" / "mock_experiments",
+            category_label="Mock Experiments",
+            status_prefix="mock",
+        )
+    )
+    items.extend(
+        _discover_experiment_items_under_root(
+            project_root / "data" / "experiments_archived",
+            category_label="Archived Experiments",
+            status_prefix="archived",
+        )
+    )
+    return items
+
+
+def _discover_experiment_items_under_root(
+    experiments_root: Path,
+    *,
+    category_label: str,
+    status_prefix: str,
+) -> list[ManagedDataItem]:
+    items: list[ManagedDataItem] = []
     if not experiments_root.exists():
         return items
     for experiment_root in sorted((path for path in experiments_root.iterdir() if path.is_dir()), reverse=True):
@@ -468,6 +656,8 @@ def _discover_experiment_items(project_root: Path) -> list[ManagedDataItem]:
                     root_path=experiments_root,
                     canonical_root_path=experiments_root / experiment_name,
                     legacy_note="legacy experiments root",
+                    category_label=category_label,
+                    status_prefix=status_prefix,
                 )
             )
             continue
@@ -481,8 +671,47 @@ def _discover_experiment_items(project_root: Path) -> list[ManagedDataItem]:
                     experiment_name=experiment_name,
                     root_path=experiment_root,
                     canonical_root_path=experiments_root / experiment_name,
+                    category_label=category_label,
+                    status_prefix=status_prefix,
                 )
             )
+    return items
+
+
+def _discover_export_items(project_root: Path) -> list[ManagedDataItem]:
+    items: list[ManagedDataItem] = []
+    exports_root = project_root / "data" / "exports"
+    if not exports_root.exists():
+        return items
+    for path in sorted(exports_root.iterdir(), reverse=True):
+        if path.name.startswith("."):
+            continue
+        payload = _read_json(path / "manifest.json") if path.is_dir() else {}
+        if path.suffix == ".zip":
+            payload = {}
+        items.append(
+            _build_item(
+                category_key="exports",
+                category_label="Exports",
+                item_type="export_bundle",
+                readable_name="Export Bundle",
+                path=path,
+                root_path=exports_root,
+                canonical_root_path=exports_root,
+                canonical_label="export_bundle",
+                timestamp_label=_timestamp_from_payload_or_name(payload, path.name),
+                path_kind="dir" if path.is_dir() else "file",
+                extension=path.suffix if path.is_file() else "",
+                status=str(payload.get("profile") or "export"),
+                details=(
+                    f"profile={payload.get('profile', 'unknown')} | files={payload.get('file_count', 'unknown')}"
+                    if payload
+                    else "Export bundle"
+                ),
+                original_name=path.name,
+                metadata=payload,
+            )
+        )
     return items
 
 
@@ -923,6 +1152,8 @@ def _build_experiment_item(
     root_path: Path,
     canonical_root_path: Path,
     legacy_note: str = "",
+    category_label: str = "Experiments",
+    status_prefix: str = "",
 ) -> ManagedDataItem:
     metadata_path = run_dir / "metadata.json"
     summary_path = run_dir / "summary.json"
@@ -938,12 +1169,14 @@ def _build_experiment_item(
         timestamp_label = _timestamp_from_payload_or_name(metadata, run_dir.name)
         details = _experiment_details(metadata, summary)
         status = str(summary.get("status", "") or "saved")
+        if status_prefix:
+            status = f"{status_prefix} {status}".strip()
         metadata_payload = {"experiment_name": experiment_name, **metadata}
     if legacy_note:
         details = f"{details} | {legacy_note}"
     return _build_item(
         category_key="experiments",
-        category_label="Experiments",
+        category_label=category_label,
         item_type=experiment_name,
         readable_name=readable_name,
         path=run_dir,

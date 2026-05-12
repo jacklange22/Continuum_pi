@@ -377,7 +377,9 @@ class ExperimentPageBase(QWidget):
                 self.controller.run(confirm_overwrite=True)
             else:
                 self.controller.run()
-        except Exception:
+        except Exception as exc:
+            LOG.exception("Experiment page run action failed")
+            set_text_document(self.status_text, f"Run action failed: {exc}", stick_to_bottom_if_at_bottom=True)
             return
 
     def _load_selected_history_item(self, item: QListWidgetItem) -> None:
@@ -385,7 +387,13 @@ class ExperimentPageBase(QWidget):
         if raw_path:
             try:
                 self.controller.load_run(raw_path)
-            except Exception:
+            except Exception as exc:
+                LOG.exception("Experiment history load failed | path=%s", raw_path)
+                set_text_document(
+                    self.status_text,
+                    f"History load failed for {raw_path}: {exc}",
+                    stick_to_bottom_if_at_bottom=True,
+                )
                 return
 
     def _open_current_run_folder(self) -> None:

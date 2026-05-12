@@ -6,7 +6,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from continuum_robot.data.build_thesis_evidence_index import build_thesis_evidence_index
-from continuum_robot.data.export_run_bundle import ExportBundleResult, build_transfer_commands, export_run_bundle
+from continuum_robot.data.export_run_bundle import (
+    EXPORT_PROFILE_HUMAN,
+    ExportBundleResult,
+    build_transfer_commands,
+    export_run_bundle,
+)
 from continuum_robot.data.run_management import (
     MoveRunResult,
     REVIEW_STATUSES,
@@ -42,6 +47,21 @@ class DataManagementViewState:
     detail_pairs: list[tuple[str, str]] = field(default_factory=list)
     category_filter: str = "all"
     search_text: str = ""
+    experiment_filter: str = "all"
+    root_filter: str = "all"
+    review_status_filter: str = "all"
+    trust_mode_filter: str = "all"
+    mock_mode_filter: str = "all"
+    valid_model_filter: str = "all"
+    valid_thesis_filter: str = "all"
+    size_filter: str = "all"
+    has_samples_filter: str = "all"
+    has_figures_filter: str = "all"
+    has_review_filter: str = "all"
+    sort_mode: str = "newest"
+    experiment_filter_options: list[str] = field(default_factory=lambda: ["all"])
+    root_filter_options: list[str] = field(default_factory=lambda: ["all"])
+    trust_mode_filter_options: list[str] = field(default_factory=lambda: ["all"])
     status_message: str = "Browse saved calibration, experiment, modeling, and diagnostic artifacts."
     can_open: bool = False
     can_reveal: bool = False
@@ -90,7 +110,20 @@ class DataManagementController:
             self.state.items,
             category_key=self.state.category_filter,
             search_text=self.state.search_text,
+            experiment_filter=self.state.experiment_filter,
+            root_filter=self.state.root_filter,
+            review_status_filter=self.state.review_status_filter,
+            trust_mode_filter=self.state.trust_mode_filter,
+            mock_mode_filter=self.state.mock_mode_filter,
+            valid_model_filter=self.state.valid_model_filter,
+            valid_thesis_filter=self.state.valid_thesis_filter,
+            size_filter=self.state.size_filter,
+            has_samples_filter=self.state.has_samples_filter,
+            has_figures_filter=self.state.has_figures_filter,
+            has_review_filter=self.state.has_review_filter,
+            sort_mode=self.state.sort_mode,
         )
+        self._refresh_filter_options()
         visible_paths = {str(item.path) for item in self.state.filtered_items}
         self.state.selected_paths = [path for path in self.state.selected_paths if path in visible_paths]
         selected_items = self.selected_items()
@@ -147,6 +180,11 @@ class DataManagementController:
 
     def set_search_text(self, value: str) -> None:
         self.state.search_text = str(value or "")
+
+    def set_filter_value(self, key: str, value: str) -> None:
+        if not hasattr(self.state, key):
+            raise ValueError(f"Unknown data filter: {key}")
+        setattr(self.state, key, str(value or "all"))
 
     def set_selected_paths(self, paths: list[str]) -> None:
         selected = {str(path) for path in paths if str(path).strip()}
@@ -205,12 +243,19 @@ class DataManagementController:
         include_samples: bool = False,
         include_debug: bool = False,
         make_zip: bool = True,
+        profile: str = EXPORT_PROFILE_HUMAN,
     ) -> ExportBundleResult:
         selected = self.selected_items()
         run_dir = _selected_run_dir(selected)
         if run_dir is None:
             raise ValueError("Select exactly one exportable run directory.")
-        return self._export_run(run_dir=run_dir, include_samples=include_samples, include_debug=include_debug, make_zip=make_zip)
+        return self._export_run(
+            run_dir=run_dir,
+            include_samples=include_samples,
+            include_debug=include_debug,
+            make_zip=make_zip,
+            profile=profile,
+        )
 
     def export_latest_visible(
         self,
@@ -218,11 +263,18 @@ class DataManagementController:
         include_samples: bool = False,
         include_debug: bool = False,
         make_zip: bool = True,
+        profile: str = EXPORT_PROFILE_HUMAN,
     ) -> ExportBundleResult:
         for item in self.state.filtered_items or self.state.items:
             run_dir = _exportable_run_dir(item)
             if run_dir is not None:
-                return self._export_run(run_dir=run_dir, include_samples=include_samples, include_debug=include_debug, make_zip=make_zip)
+                return self._export_run(
+                    run_dir=run_dir,
+                    include_samples=include_samples,
+                    include_debug=include_debug,
+                    make_zip=make_zip,
+                    profile=profile,
+                )
         raise ValueError("No exportable run bundle is visible.")
 
     def exports_folder(self) -> Path:
@@ -266,6 +318,7 @@ class DataManagementController:
         status: str,
         notes: str = "",
         include_in_evidence_index: bool | None = None,
+        intended_use: str | None = None,
     ):
         run_dir = self._selected_run_or_error()
         review = write_run_review(
@@ -273,6 +326,7 @@ class DataManagementController:
             status=status,
             notes=notes,
             include_in_evidence_index=include_in_evidence_index,
+            intended_use=intended_use,
         )
         self._catalog_dirty = True
         self.refresh()
@@ -297,8 +351,19 @@ class DataManagementController:
         self.state.status_message = f"Moved run to trash: {result.destination_path}."
         return result
 
-    def build_evidence_index(self) -> Path:
-        output_dir = build_thesis_evidence_index(project_root=self.project_root)
+    def build_evidence_index(
+        self,
+        *,
+        include_debug: bool = False,
+        include_mock: bool = False,
+        include_unreviewed: bool = False,
+    ) -> Path:
+        output_dir = build_thesis_evidence_index(
+            project_root=self.project_root,
+            include_debug=include_debug,
+            include_mock=include_mock,
+            include_unreviewed=include_unreviewed,
+        )
         self.state.last_evidence_index_path = str(output_dir)
         self._catalog_dirty = True
         self.refresh()
@@ -344,7 +409,13 @@ class DataManagementController:
         run_dir = self._selected_run_or_error()
         if _experiment_name_for_run(run_dir) != "two_segment_modeling":
             raise ValueError("Select a two_segment_modeling run first.")
-        return self._export_run(run_dir=run_dir, include_samples=False, include_debug=False, make_zip=True)
+        return self._export_run(
+            run_dir=run_dir,
+            include_samples=False,
+            include_debug=False,
+            make_zip=True,
+            profile=EXPORT_PROFILE_HUMAN,
+        )
 
     def _export_run(
         self,
@@ -353,6 +424,7 @@ class DataManagementController:
         include_samples: bool,
         include_debug: bool,
         make_zip: bool,
+        profile: str,
     ) -> ExportBundleResult:
         result = export_run_bundle(
             run_dir=run_dir,
@@ -360,6 +432,7 @@ class DataManagementController:
             include_samples=include_samples,
             include_debug=include_debug,
             make_zip=make_zip,
+            profile=profile,
         )
         self.state.last_export_path = str(result.final_path)
         self.state.last_transfer_command = build_transfer_commands(result.final_path)
@@ -376,6 +449,29 @@ class DataManagementController:
         self.state.can_copy_export_path = True
         self.state.can_copy_transfer_command = True
         return result
+
+    def _refresh_filter_options(self) -> None:
+        experiments: set[str] = set()
+        roots: set[str] = set()
+        trust_modes: set[str] = set()
+        for item in self.state.items:
+            roots.add(_root_location_for_item(item))
+            run_dir = _exportable_run_dir(item)
+            if run_dir is None:
+                continue
+            try:
+                summary = summarize_run(run_dir)
+            except Exception:
+                continue
+            experiments.add(summary.experiment_name)
+            trust_modes.add(summary.run_trust_mode)
+        self.state.experiment_filter_options = ["all", *sorted(value for value in experiments if value)]
+        self.state.root_filter_options = ["all", *sorted(value for value in roots if value)]
+        self.state.trust_mode_filter_options = [
+            "all",
+            *sorted(value for value in trust_modes if value),
+            *[value for value in ("thesis_trusted", "lower_trust", "servo_only", "current_only", "mock", "debug") if value not in trust_modes],
+        ]
 
     def _selected_run_or_none(self) -> Path | None:
         return _selected_run_dir(self.selected_items())
@@ -460,6 +556,14 @@ def _delete_button_label(selected_items: list[ManagedDataItem]) -> str:
 
 def _is_trash_item(item: ManagedDataItem) -> bool:
     return item.category_key == "trash"
+
+
+def _root_location_for_item(item: ManagedDataItem) -> str:
+    parts = list(item.path.parts)
+    for index, part in enumerate(parts[:-1]):
+        if part == "data" and index + 1 < len(parts):
+            return f"data/{parts[index + 1]}"
+    return ""
 
 
 def _migration_summary_pairs(report: MigrationReport | None) -> list[tuple[str, str]]:

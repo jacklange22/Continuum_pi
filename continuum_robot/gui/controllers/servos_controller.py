@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 import threading
 
 from continuum_robot.config.settings import Settings
+from continuum_robot.servos.segment_readiness import evaluate_selected_segment_readiness
 from continuum_robot.servos.servo_service import (
     PretensionRoutineResult,
     ServoBusBusyError,
     ServoMotionAssessment,
 )
+from continuum_robot.servos.sign_mapping_check import ServoMappingCheckRepository
 
 
 @dataclass
@@ -245,6 +248,24 @@ class ServosController:
             )
             self._apply_configured_servo_snapshot(snapshot)
         return self.refresh()
+
+    def create_sign_mapping_checklist(self, *, operator: str = "", notes: str = "") -> str:
+        if self.state.robot_mode != "single_segment":
+            raise RuntimeError("Sign/mapping checklist is currently scoped to single_segment bring-up.")
+        repo = ServoMappingCheckRepository(self._project_root_for_runtime_artifacts() / "data" / "calibration" / "servo_mapping_checks")
+        record = repo.create_checklist(
+            operating_mode=self.state.robot_mode,
+            active_segment_key=self.state.active_segment_key,
+            active_segment_label=self.state.active_segment_label,
+            expected_servo_ids=[int(value) for value in self.state.active_segment_servo_ids or self.state.expected_servo_ids],
+            operator=operator,
+            mock_mode=bool(self.settings.runtime.mock_mode),
+            notes=notes,
+        )
+        self.state.status_message = f"Created servo sign/mapping checklist: {record.artifact_path}"
+        self.state.last_error = None
+        self.refresh()
+        return str(record.artifact_path)
 
     def assign_servo_id(self, current_id: int, new_id: int) -> None:
         result = self.servo_service.assign_servo_id_safely(current_id, new_id)
@@ -938,41 +959,39 @@ class ServosController:
             self.state.all_8_readiness_summary = ""
         if self.state.robot_mode == "single_segment":
             active_ids = [int(value) for value in self.state.active_segment_servo_ids or expected]
-            missing = sorted({servo_id for servo_id in active_ids if servo_id in missing_global or servo_id not in detected})
-            stale = sorted(
-                servo_id
-                for servo_id in active_ids
-                if servo_id in self.state.telemetry and self.state.telemetry[servo_id].get("telemetry_fresh") is False
+            summary = self.servo_service.get_calibration_summary()
+            sign_mapping = self._latest_sign_mapping_summary(active_ids)
+            readiness = evaluate_selected_segment_readiness(
+                operating_mode=self.state.robot_mode,
+                active_segment_key=self.state.active_segment_key,
+                active_segment_label=self.state.active_segment_label,
+                expected_servo_ids=active_ids,
+                calibration_summary=summary,
+                mock_mode=bool(self.settings.runtime.mock_mode),
+                servo_connected=bool(self.state.connected),
+                runtime_snapshot=self.latest_runtime_snapshot,
+                telemetry_rows=self.state.telemetry,
+                sign_mapping=sign_mapping,
             )
-            errors = sorted(
-                servo_id
-                for servo_id in active_ids
-                if servo_id in self.state.telemetry and self.state.telemetry[servo_id].get("error")
-            )
-            if not self.state.connected:
-                next_action = "Connect OpenRB, then refresh configured servos."
-                status = "not ready"
-            elif missing:
-                next_action = "Resolve missing servo ID(s): " + ", ".join(str(value) for value in missing) + "."
-                status = "not ready"
-            elif stale:
-                next_action = "Refresh telemetry before jogging or running pretension."
-                status = "not ready"
-            elif errors:
-                next_action = "Inspect hardware error/status for servo ID(s): " + ", ".join(str(value) for value in errors) + "."
-                status = "not ready"
-            elif self.state.pretension_source_type in {"none", ""}:
-                next_action = "Capture manual startup or run conservative pretension before repeatability/modeling data."
-                status = "servo-ready; startup reference needed"
-            else:
-                next_action = "Servo side is ready; confirm tracker/registration in the selected experiment preflight."
-                status = "ready"
-            self.state.single_segment_readiness_summary = (
-                f"{self.state.active_segment_label}: expected {', '.join(str(value) for value in active_ids) or 'none'}; "
-                f"{status}. Next: {next_action}"
-            )
+            self.state.single_segment_readiness_summary = readiness.compact_text()
         else:
             self.state.single_segment_readiness_summary = ""
+
+    def _latest_sign_mapping_summary(self, expected_servo_ids: list[int]):
+        try:
+            repo = ServoMappingCheckRepository(self._project_root_for_runtime_artifacts() / "data" / "calibration" / "servo_mapping_checks")
+            return repo.latest_for_segment(
+                active_segment_key=self.state.active_segment_key,
+                expected_servo_ids=[int(value) for value in expected_servo_ids],
+            )
+        except Exception:
+            return None
+
+    def _project_root_for_runtime_artifacts(self) -> Path:
+        path = Path(self.servo_service.neutral_calibration.path).resolve()
+        if path.parent.name == "config":
+            return path.parent.parent
+        return path.parent
 
     def _refresh_selected_servo_live(self) -> None:
         if not self.state.connected or self.state.selected_servo_id is None:

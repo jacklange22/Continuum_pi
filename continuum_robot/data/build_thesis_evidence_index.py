@@ -19,6 +19,9 @@ def build_thesis_evidence_index(
     project_root: Path,
     output_root: Path | None = None,
     experiment_name: str | None = None,
+    include_debug: bool = False,
+    include_mock: bool = False,
+    include_unreviewed: bool = False,
 ) -> Path:
     """Write thesis_evidence_index.md/json and return the output directory."""
     project_root = Path(project_root).resolve()
@@ -29,12 +32,24 @@ def build_thesis_evidence_index(
         summarize_run(run_dir)
         for run_dir in discover_experiment_run_dirs(project_root, experiment_name=experiment_name)
     ]
-    included = [run for run in runs if _include_run(run)]
+    included = [
+        run
+        for run in runs
+        if _include_run(
+            run,
+            include_debug=include_debug,
+            include_mock=include_mock,
+            include_unreviewed=include_unreviewed,
+        )
+    ]
     payload = {
         "schema_version": "1.0",
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "project_root": str(project_root),
         "experiment_name_filter": experiment_name,
+        "include_debug": bool(include_debug),
+        "include_mock": bool(include_mock),
+        "include_unreviewed": bool(include_unreviewed),
         "run_count_scanned": len(runs),
         "run_count_included": len(included),
         "experiments": _group_runs(included),
@@ -49,11 +64,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--project-root", default=".", help="Project root. Defaults to current directory.")
     parser.add_argument("--output-dir", help="Destination root. Defaults to data/exports.")
     parser.add_argument("--experiment", help="Limit index to one experiment name.")
+    parser.add_argument("--include-debug", action="store_true", help="Explicitly include debug-reviewed runs.")
+    parser.add_argument("--include-mock", action="store_true", help="Explicitly allow mock runs into the index.")
+    parser.add_argument("--include-unreviewed", action="store_true", help="Explicitly include old runs missing run_review.json.")
     args = parser.parse_args(argv)
     output_dir = build_thesis_evidence_index(
         project_root=Path(args.project_root),
         output_root=Path(args.output_dir) if args.output_dir else None,
         experiment_name=args.experiment,
+        include_debug=bool(args.include_debug),
+        include_mock=bool(args.include_mock),
+        include_unreviewed=bool(args.include_unreviewed),
     )
     print(f"Thesis evidence index: {output_dir}")
     print(f"- {output_dir / 'thesis_evidence_index.md'}")
@@ -61,12 +82,29 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _include_run(run: ManagedRunSummary) -> bool:
+def _include_run(
+    run: ManagedRunSummary,
+    *,
+    include_debug: bool = False,
+    include_mock: bool = False,
+    include_unreviewed: bool = False,
+) -> bool:
+    if run.mock_mode is True and not include_mock:
+        return False
+    if run.run_trust_mode in {"mock", "servo_only", "current_only", "lower_trust", "debug", "debug_only"}:
+        if run.run_trust_mode == "mock" and not include_mock:
+            return False
+        if run.run_trust_mode != "mock" and not include_debug:
+            return False
+    if not run.has_run_review and not include_unreviewed:
+        return False
+    if run.review.review_status in {"debug", "garbage", "archived"}:
+        return bool(include_debug)
     if run.review.include_in_evidence_index:
         return True
-    if run.review.review_status in {"keep", "thesis_candidate", "advisor_share"}:
+    if run.review.review_status in {"thesis_candidate", "advisor_share"}:
         return True
-    return run.validation_status == "PASS" and run.run_trust_mode == "thesis_trusted"
+    return False
 
 
 def _group_runs(runs: list[ManagedRunSummary]) -> dict[str, list[dict[str, Any]]]:
@@ -146,7 +184,7 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         f"Runs scanned: {payload.get('run_count_scanned')}",
         f"Runs included: {payload.get('run_count_included')}",
         "",
-        "This index lists reviewed candidate runs and complete thesis-trusted runs. It does not include raw samples.",
+        "This index lists reviewed thesis/advisor evidence only by default. It does not include raw samples.",
         "",
     ]
     experiments = payload.get("experiments")

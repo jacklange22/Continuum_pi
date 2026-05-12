@@ -17,10 +17,14 @@ from continuum_robot.experiments.dataset_io import canonical_timestamp_token, sa
 
 DEFAULT_DATA_ROOT = Path("data")
 DEFAULT_MAX_SAMPLE_BYTES = 25 * 1024 * 1024
+EXPORT_PROFILE_HUMAN = "human_advisor"
+EXPORT_PROFILE_AI_DEBUG = "ai_debug"
+EXPORT_PROFILES = {EXPORT_PROFILE_HUMAN, EXPORT_PROFILE_AI_DEBUG}
 
 CORE_FILENAMES = {
     "summary.json",
     "metadata.json",
+    "run_review.json",
     "config_snapshot.yaml",
     "metrics.csv",
     "comparison_metrics.csv",
@@ -126,15 +130,18 @@ def export_run_bundle(
     include_debug: bool = False,
     max_sample_bytes: int = DEFAULT_MAX_SAMPLE_BYTES,
     make_zip: bool = False,
+    profile: str = EXPORT_PROFILE_HUMAN,
 ) -> ExportBundleResult:
     """Copy the useful contents of one run directory into a bounded export bundle."""
     run_dir = Path(run_dir).resolve()
     if not run_dir.exists() or not run_dir.is_dir():
         raise FileNotFoundError(f"Run directory does not exist: {run_dir}")
     project_root = Path(project_root or Path.cwd()).resolve()
+    profile = _normalize_profile(profile)
+    effective_include_debug = bool(include_debug or profile == EXPORT_PROFILE_AI_DEBUG)
     experiment_name = _experiment_name_for_run(run_dir)
     stamp = canonical_timestamp_token()
-    bundle_name = f"{stamp}_{sanitize_output_name(experiment_name)}_bundle"
+    bundle_name = f"{stamp}_{sanitize_output_name(experiment_name)}_{profile}_bundle"
     output_root = Path(output_root or (project_root / DEFAULT_DATA_ROOT / "exports")).resolve()
     bundle_dir = _collision_safe_dir(output_root / bundle_name)
     bundle_dir.mkdir(parents=True, exist_ok=False)
@@ -143,14 +150,18 @@ def export_run_bundle(
     skipped: list[SkippedEntry] = []
     for source in _candidate_files(run_dir):
         category = _classify_file(source)
-        if category == "debug" and not include_debug:
+        if category == "debug" and not effective_include_debug:
             skipped.append(SkippedEntry(source_path=str(source), reason="debug output excluded by default", size_bytes=source.stat().st_size))
             continue
-        if source.name in OPTIONAL_LARGE_FILENAMES and not include_samples:
-            skipped.append(SkippedEntry(source_path=str(source), reason="large/raw sample file excluded; pass --include-samples", size_bytes=source.stat().st_size))
+        if category == "figure" and not effective_include_debug:
+            skipped.append(SkippedEntry(source_path=str(source), reason="non-report figure excluded from human/advisor profile", size_bytes=source.stat().st_size))
             continue
-        if source.name in OPTIONAL_LARGE_FILENAMES and source.stat().st_size > int(max_sample_bytes):
+        sample_size = source.stat().st_size
+        if source.name in OPTIONAL_LARGE_FILENAMES and sample_size > int(max_sample_bytes):
             skipped.append(SkippedEntry(source_path=str(source), reason=f"large sample file exceeds {int(max_sample_bytes)} bytes", size_bytes=source.stat().st_size))
+            continue
+        if source.name in OPTIONAL_LARGE_FILENAMES and not (include_samples or profile == EXPORT_PROFILE_AI_DEBUG):
+            skipped.append(SkippedEntry(source_path=str(source), reason="large/raw sample file excluded; pass --include-samples or use ai_debug profile", size_bytes=source.stat().st_size))
             continue
         relative = source.relative_to(run_dir)
         destination = bundle_dir / relative
@@ -169,7 +180,15 @@ def export_run_bundle(
     entries.append(_bundle_entry(source=trust_path, destination=trust_path, bundle_dir=bundle_dir, category="metadata"))
 
     readme_path = bundle_dir / "README.txt"
-    readme_path.write_text(_render_bundle_readme(run_dir=run_dir, experiment_name=experiment_name, trust_payload=trust_payload), encoding="utf-8")
+    readme_path.write_text(
+        _render_bundle_readme(
+            run_dir=run_dir,
+            experiment_name=experiment_name,
+            trust_payload=trust_payload,
+            profile=profile,
+        ),
+        encoding="utf-8",
+    )
     entries.append(_bundle_entry(source=readme_path, destination=readme_path, bundle_dir=bundle_dir, category="metadata"))
 
     manifest_path = bundle_dir / "manifest.json"
@@ -178,8 +197,9 @@ def export_run_bundle(
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "source_run_dir": str(run_dir),
         "experiment_name": experiment_name,
+        "profile": profile,
         "include_samples": bool(include_samples),
-        "include_debug": bool(include_debug),
+        "include_debug": bool(effective_include_debug),
         "max_sample_bytes": int(max_sample_bytes),
         "file_count": len(entries),
         "total_size_bytes": sum(entry.size_bytes for entry in entries),
@@ -243,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
         include_debug=bool(args.include_debug),
         max_sample_bytes=int(args.max_sample_bytes),
         make_zip=bool(args.zip),
+        profile=str(args.profile),
     )
     print(f"Exported run bundle: {result.final_path}")
     print(f"Source run: {result.run_dir}")
@@ -264,6 +285,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--include-debug", action="store_true", help="Include debug subfolders and debug-marked figures.")
     parser.add_argument("--max-sample-bytes", type=int, default=DEFAULT_MAX_SAMPLE_BYTES, help="Maximum size for optional sample files.")
     parser.add_argument("--zip", action="store_true", help="Also create a .zip archive of the bundle folder.")
+    parser.add_argument(
+        "--profile",
+        choices=sorted(EXPORT_PROFILES),
+        default=EXPORT_PROFILE_HUMAN,
+        help="Export profile: human_advisor is clean/thesis-facing; ai_debug is fuller for assistant debugging.",
+    )
     return parser
 
 
@@ -337,6 +364,26 @@ def _extract_trust_provenance(*, run_dir: Path) -> dict[str, Any]:
         "metadata_provenance_info": metadata_provenance,
         "summary_run_trust": summary_trust,
         "summary_run_provenance": summary_provenance,
+        "selected_segment_readiness": (
+            summary_provenance.get("selected_segment_readiness")
+            or metadata_provenance.get("selected_segment_readiness")
+            or {}
+        ),
+        "startup_pretension_artifact": (
+            summary_provenance.get("startup_pretension_artifact")
+            or metadata_provenance.get("startup_pretension_artifact")
+            or _as_dict(_as_dict(metadata.get("backend_info")).get("pretension_source"))
+        ),
+        "servo_sign_mapping_check": (
+            summary_provenance.get("servo_sign_mapping_check")
+            or metadata_provenance.get("servo_sign_mapping_check")
+            or _as_dict(_as_dict(metadata.get("backend_info")).get("servo_sign_mapping_check"))
+        ),
+        "active_segment": (
+            summary_provenance.get("active_segment")
+            or metadata_provenance.get("active_segment")
+            or _as_dict(_as_dict(metadata.get("backend_info")).get("active_segment"))
+        ),
         "run_trust_mode": (
             summary_metrics.get("run_trust_mode")
             or summary_trust.get("run_trust_mode")
@@ -360,10 +407,18 @@ def _extract_trust_provenance(*, run_dir: Path) -> dict[str, Any]:
     }
 
 
-def _render_bundle_readme(*, run_dir: Path, experiment_name: str, trust_payload: dict[str, Any]) -> str:
+def _render_bundle_readme(*, run_dir: Path, experiment_name: str, trust_payload: dict[str, Any], profile: str) -> str:
+    profile_note = (
+        "Human / Advisor Export: clean review packet; raw samples and debug-heavy files are excluded unless requested."
+        if profile == EXPORT_PROFILE_HUMAN
+        else "AI Debug Export: complete debugging packet; samples are included when below the configured size cap."
+    )
     return "\n".join(
         [
             f"Continuum Robot Run Bundle: {experiment_name}",
+            "",
+            f"Profile: {profile}",
+            profile_note,
             "",
             f"Source run: {run_dir}",
             f"Run ID: {trust_payload.get('run_id', 'n/a')}",
@@ -377,12 +432,29 @@ def _render_bundle_readme(*, run_dir: Path, experiment_name: str, trust_payload:
             "- *_report.png: thesis-facing figures.",
             "- Other PNGs: compatibility or operator review figures.",
             "- metrics.csv / comparison_metrics.csv: tabular metrics when present.",
-            "- trust_provenance.json: condensed trust/provenance block for quick review.",
+            "- trust_provenance.json: condensed trust/provenance block, including calibration/startup/sign-check context when present.",
             "- manifest.json: file list, sizes, checksums, and skipped large/debug files.",
+            "- run_review.json: operator review status when present in the source run.",
             "",
-            "Raw samples are included only when the exporter was run with --include-samples.",
+            "Raw samples are included only for AI debug profile or when explicitly requested, and still obey the size cap.",
         ]
     ).strip() + "\n"
+
+
+def _normalize_profile(profile: str) -> str:
+    value = str(profile or EXPORT_PROFILE_HUMAN).strip().lower().replace("-", "_")
+    aliases = {
+        "human": EXPORT_PROFILE_HUMAN,
+        "advisor": EXPORT_PROFILE_HUMAN,
+        "human_advisor": EXPORT_PROFILE_HUMAN,
+        "ai": EXPORT_PROFILE_AI_DEBUG,
+        "debug": EXPORT_PROFILE_AI_DEBUG,
+        "ai_debug": EXPORT_PROFILE_AI_DEBUG,
+    }
+    resolved = aliases.get(value, value)
+    if resolved not in EXPORT_PROFILES:
+        raise ValueError(f"Unknown export profile '{profile}'. Expected one of: {', '.join(sorted(EXPORT_PROFILES))}")
+    return resolved
 
 
 def _experiment_name_for_run(run_dir: Path) -> str:

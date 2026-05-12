@@ -31,6 +31,7 @@ from continuum_robot.experiments.validation import (
     STATUS_PARTIAL_SUCCESS,
     STATUS_SUCCESS,
 )
+from continuum_robot.servos.segment_readiness import evaluate_selected_segment_readiness
 from continuum_robot.servos.servo_service import ServoBusBusyError
 from continuum_robot.tracking.runtime_tip_policy import evaluate_runtime_tip_trust
 
@@ -1225,6 +1226,18 @@ def _precheck_single_segment_repeatability(
     calibration_summary = session.context.servo_service.neutral_calibration.get_calibration_summary()
     if not calibration_summary.exists or not calibration_summary.compatible:
         raise RuntimeError(f"Servo calibration artifact is not ready: {calibration_summary.message}")
+    operating_context = settings.robot.operating_context()
+    readiness = evaluate_selected_segment_readiness(
+        operating_mode=operating_context.operating_mode,
+        active_segment_key=operating_context.active_segment_key,
+        active_segment_label=operating_context.active_segment_label,
+        expected_servo_ids=[int(value) for value in servo_ids],
+        calibration_summary=calibration_summary,
+        mock_mode=bool(settings.runtime.mock_mode),
+        servo_connected=True,
+    )
+    if not readiness.neutral_safe_calibration.ready:
+        raise RuntimeError(readiness.neutral_safe_calibration.message)
     pretension_source = calibration_summary.pretension_source_summary([int(value) for value in servo_ids])
     if not pretension_source.accepted or not pretension_source.usable:
         raise RuntimeError(pretension_source.message)
@@ -1302,6 +1315,11 @@ def _record_repeatability_run_provenance(
         mapper=session.context.servo_service.mapper,
         inner_ring_radius_mm=float(config.inner_ring_radius_mm),
         outer_ring_radius_mm=float(config.outer_ring_radius_mm),
+    )
+    runtime_tip_policy = evaluate_runtime_tip_trust(
+        snapshot=snapshot,
+        workflow=RUNTIME_TIP_POLICY_WORKFLOW,
+        allow_lower_trust=bool(config.allow_debug_coil_as_tip),
     )
     pretension_source = servo_calibration_summary.pretension_source_summary([int(value) for value in servo_ids])
     pretension_entries: dict[str, Any] = {}

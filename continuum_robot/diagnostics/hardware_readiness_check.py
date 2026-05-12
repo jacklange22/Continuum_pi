@@ -20,6 +20,9 @@ from continuum_robot.diagnostics.prehardware_dry_run import (
 )
 from continuum_robot.experiments.dataset_io import canonical_timestamp_token
 from continuum_robot.hardware.serial_ports import discover_serial_ports
+from continuum_robot.servos.neutral_calibration_service import NeutralCalibrationService, ServoCalibrationContext
+from continuum_robot.servos.segment_readiness import evaluate_selected_segment_readiness
+from continuum_robot.servos.sign_mapping_check import ServoMappingCheckRepository
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,8 @@ def run_hardware_readiness_check(
         )
     if settings is not None:
         checks.append(_serial_readiness_check(settings=settings))
+        checks.append(_tracker_backend_fallback_check(settings=settings))
+        checks.append(_selected_segment_calibration_check(project_root=project_root, settings=settings))
         checks.append(_tracking_role_check(settings=settings))
         checks.append(_physics_config_check(project_root=project_root))
     checks.append(_gui_construction_check())
@@ -180,6 +185,145 @@ def _serial_readiness_check(*, settings) -> HardwareReadinessCheck:
         message="Configured tracker/OpenRB ports are distinct and non-empty.",
         next_action="Connect tracker first, then OpenRB, and confirm expected servo IDs.",
         details={"available_ports": port_names, "aurora_port": aurora_port, "openrb_port": openrb_port},
+    )
+
+
+def _tracker_backend_fallback_check(*, settings) -> HardwareReadinessCheck:
+    fallback_enabled = bool(getattr(settings.serial, "tracker_fallback_enabled", False))
+    fallback_backend = str(getattr(settings.serial, "tracker_fallback_backend", "") or "")
+    configured_backend = str(getattr(settings.serial, "tracker_backend", "") or "")
+    if fallback_enabled:
+        return HardwareReadinessCheck(
+            subsystem="tracker_backend",
+            status="WARN",
+            message=(
+                f"Tracker fallback is enabled (configured={configured_backend}, fallback={fallback_backend}). "
+                "This is not appropriate for thesis-intended hardware runs unless explicitly documented."
+            ),
+            next_action="Disable tracker bridge fallback for thesis-intended data; use the Python NDI backend path.",
+            details={"tracker_backend": configured_backend, "tracker_fallback_backend": fallback_backend},
+        )
+    return HardwareReadinessCheck(
+        subsystem="tracker_backend",
+        status="PASS",
+        message=f"Tracker fallback is disabled; configured backend is {configured_backend or 'default'}.",
+        next_action="Confirm live tracking uses the Python NDI backend before thesis-intended runs.",
+        details={"tracker_backend": configured_backend, "tracker_fallback_backend": fallback_backend},
+    )
+
+
+def _selected_segment_calibration_check(*, project_root: Path, settings) -> HardwareReadinessCheck:
+    context = settings.robot.operating_context()
+    neutral_path = project_root / str(settings.calibration.neutral_setpoints_path or "config/neutral_setpoints.json")
+    service = NeutralCalibrationService(
+        path=neutral_path,
+        context=_calibration_context_from_settings(settings),
+    )
+    summary = service.get_calibration_summary()
+    sign_mapping = None
+    if context.operating_mode == "single_segment":
+        sign_mapping = ServoMappingCheckRepository(
+            project_root / "data" / "calibration" / "servo_mapping_checks"
+        ).latest_for_segment(
+            active_segment_key=str(context.active_segment_key or ""),
+            expected_servo_ids=[int(value) for value in context.expected_servo_ids],
+        )
+    readiness = evaluate_selected_segment_readiness(
+        operating_mode=context.operating_mode,
+        active_segment_key=context.active_segment_key,
+        active_segment_label=context.active_segment_label,
+        expected_servo_ids=[int(value) for value in context.expected_servo_ids],
+        calibration_summary=summary,
+        mock_mode=bool(settings.runtime.mock_mode),
+        servo_connected=False,
+        sign_mapping=sign_mapping,
+    )
+    neutral = readiness.neutral_safe_calibration
+    startup = readiness.startup_pretension
+    if context.operating_mode != "single_segment":
+        return HardwareReadinessCheck(
+            subsystem="selected_segment_calibration",
+            status="WARN",
+            message=(
+                f"Current mode is {context.operating_mode}; Wednesday target should be single_segment "
+                "with Segment B [5,6,7,8] or Segment A [1,2,3,4]."
+            ),
+            next_action="Select single_segment / Segment B for [5,6,7,8].",
+            details=readiness.to_dict(),
+        )
+    if not neutral.ready:
+        status = "WARN" if settings.runtime.mock_mode and neutral.is_mock else "FAIL"
+        next_action = (
+            "Set mock_mode=false in system.local.yaml or System tab before hardware data."
+            if settings.runtime.mock_mode
+            else "Capture valid neutral/safe calibration before repeatability."
+        )
+        startup_note = (
+            " Startup reference exists, but calibrated neutral/safe bounds are missing or incompatible."
+            if startup.accepted
+            else ""
+        )
+        return HardwareReadinessCheck(
+            subsystem="selected_segment_calibration",
+            status=status,
+            message=(
+                f"{context.active_segment_label} ({context.active_segment_key}) expected IDs "
+                f"{context.expected_servo_ids}: {neutral.message}{startup_note}"
+            ),
+            next_action=next_action,
+            details=readiness.to_dict(),
+        )
+    if not startup.ready:
+        return HardwareReadinessCheck(
+            subsystem="selected_segment_calibration",
+            status="WARN",
+            message=(
+                f"{context.active_segment_label} ({context.active_segment_key}) has neutral/safe calibration, "
+                f"but startup/pretension reference is not ready: {startup.message}"
+            ),
+            next_action="Capture manual startup or run pretension_validation before repeatability.",
+            details=readiness.to_dict(),
+        )
+    mapping_warning = sign_mapping is not None and not sign_mapping.confirmed
+    return HardwareReadinessCheck(
+        subsystem="selected_segment_calibration",
+        status="WARN" if mapping_warning else "PASS",
+        message=readiness.next_action,
+        next_action=(
+            "Run tiny jog sign checklist before pretension."
+            if mapping_warning
+            else "Run pretension_validation, then repeatability only after tracker/registration preflight passes."
+        ),
+        details=readiness.to_dict(),
+    )
+
+
+def _calibration_context_from_settings(settings) -> ServoCalibrationContext:
+    operating_context = settings.robot.operating_context()
+    return ServoCalibrationContext(
+        robot_mode=settings.robot.operating_mode(),
+        robot_config_name=settings.runtime.robot_config,
+        servo_ids=list(settings.robot.servo_ids),
+        tendon_to_servo=list(settings.robot.tendon_to_servo),
+        active_segment_key=settings.robot.active_segment_key(),
+        active_segment_label=settings.robot.active_segment_label(),
+        active_segment_servo_ids=settings.robot.active_segment_servo_ids(),
+        active_segment_pairs=settings.robot.active_segment_pairs(),
+        segments=settings.robot.segment_metadata(),
+        segment_order=settings.robot.segment_order(),
+        selected_servo_id=settings.robot.selected_servo_id,
+        expected_servo_ids=settings.robot.expected_servo_ids(),
+        commanded_servo_ids=settings.robot.commanded_servo_ids(),
+        mirror_pairs=settings.robot.parallel_mirror_pairs(),
+        mode_profile=operating_context.mode_profile,
+        mode_capabilities=operating_context.mode_capabilities,
+        mode_notes=operating_context.mode_notes,
+        ticks_per_revolution=settings.robot.ticks_per_revolution,
+        spool_diameter_cm=settings.robot.spool_diameter_cm,
+        position_min_offset_ticks=settings.safety.position_min_offset_ticks,
+        position_max_offset_ticks=settings.safety.position_max_offset_ticks,
+        default_pretension_current_threshold_ma=settings.safety.default_pretension_current_threshold_ma,
+        tightening_rotation_by_servo=dict(settings.robot.tightening_rotation_by_servo),
     )
 
 

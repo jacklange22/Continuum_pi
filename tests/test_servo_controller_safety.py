@@ -744,6 +744,29 @@ def test_servos_controller_reports_4servo_missing_and_unexpected_ids(tmp_path: P
     assert controller.state.detected_servo_ids == [1, 2, 4, 9]
 
 
+def test_servos_controller_readiness_card_separates_startup_from_calibration(tmp_path: Path) -> None:
+    settings = _settings_4servo()
+    service = _servo_service(
+        tmp_path,
+        dxl_bus=MockDxlBus([1, 2, 3, 4]),
+        context_servo_ids=[1, 2, 3, 4],
+        robot_mode="4-servo",
+    )
+    service.connect("/dev/ttyACM0", 57600)
+    service.capture_manual_pretension_state(note="startup only")
+    service.accept_manual_pretension_state()
+
+    controller = ServosController(service, settings)
+
+    text = controller.state.single_segment_readiness_summary
+    assert "Active segment: Spine 1" in text
+    assert "Expected servo IDs: [1, 2, 3, 4]" in text
+    assert "Neutral/safe calibration: FAIL" in text
+    assert "Startup/pretension reference: PASS" in text
+    assert "Raw tiny jog: Allowed as raw/hardware-bound bring-up only" in text
+    assert "calibrated experiments remain blocked" in text
+
+
 def test_servos_controller_four_servo_selection_and_jog_only_moves_selected_servo(tmp_path: Path) -> None:
     settings = _settings_4servo()
     service = _servo_service(

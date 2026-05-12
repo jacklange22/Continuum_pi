@@ -53,6 +53,10 @@ from continuum_robot.tracking.runtime_tip_policy import (
     WORKFLOW_PRETENSION_VALIDATION,
     evaluate_runtime_tip_trust,
 )
+from continuum_robot.servos.segment_readiness import (
+    evaluate_selected_segment_readiness,
+)
+from continuum_robot.servos.sign_mapping_check import ServoMappingCheckRepository
 
 
 PREFLIGHT_OK = "ok"
@@ -388,6 +392,18 @@ def evaluate_preflight(
             )
         else:
             checks.append(_ok("neutral_setpoints", "Neutral Setpoints", "Neutral setpoints exist for all configured tendons."))
+        checks.extend(
+            _selected_segment_truth_checks(
+                settings=settings,
+                servo_calibration_summary=servo_calibration_summary,
+                project_root=project_root,
+                servo_connected=servo_connected,
+                require_startup=True,
+                strict_startup=True,
+                allow_calibration_creation=False,
+                label_prefix="Repeatability",
+            )
+        )
         checks.append(_pretension_artifact_check(servo_ids=servo_ids, servo_calibration_summary=servo_calibration_summary))
         if config.baseline_run_path:
             baseline_path = _resolve_repo_path(project_root, config.baseline_run_path)
@@ -867,6 +883,24 @@ def evaluate_preflight(
                     f"Active segment {settings.robot.active_segment_label()} ({settings.robot.active_segment_key()}) matches the 4-servo single-segment modeling workspace.",
                 )
             )
+        collect_debug_mode = bool(
+            config.dry_run
+            or no_tracker_servo_only
+            or bool(config.allow_lower_trust_pretension)
+            or str(config.run_trust_mode or "").strip().lower() in {"servo_only", "current_only", "lower_trust", "debug", "debug_only", "mock"}
+        )
+        checks.extend(
+            _selected_segment_truth_checks(
+                settings=settings,
+                servo_calibration_summary=servo_calibration_summary,
+                project_root=project_root,
+                servo_connected=servo_connected,
+                require_startup=True,
+                strict_startup=not collect_debug_mode,
+                allow_calibration_creation=collect_debug_mode,
+                label_prefix="Collect Pose",
+            )
+        )
         if no_tracker_servo_only:
             checks.append(
                 _warning(
@@ -1197,6 +1231,18 @@ def evaluate_preflight(
                         f"Staged pretension will use {settings.robot.active_segment_label()} ({settings.robot.active_segment_key()}): {selected_ids}.",
                     )
                 )
+            checks.extend(
+                _selected_segment_truth_checks(
+                    settings=settings,
+                    servo_calibration_summary=servo_calibration_summary,
+                    project_root=project_root,
+                    servo_connected=servo_connected,
+                    require_startup=False,
+                    strict_startup=False,
+                    allow_calibration_creation=True,
+                    label_prefix="Pretension Validation",
+                )
+            )
         pretension_no_tracker_allowed = bool(
             (bool(config.allow_no_tracker_test_run)
             or bool(config.allow_current_only_when_tracker_missing)
@@ -1562,6 +1608,18 @@ def evaluate_preflight(
             checks.append(_blocked("servo_service", "Servo Service", "Penprobe chasing requires a connected ServoService."))
         else:
             checks.append(_ok("servo_service", "Servo Service", "ServoService is connected."))
+        checks.extend(
+            _selected_segment_truth_checks(
+                settings=settings,
+                servo_calibration_summary=servo_calibration_summary,
+                project_root=project_root,
+                servo_connected=servo_connected,
+                require_startup=True,
+                strict_startup=True,
+                allow_calibration_creation=False,
+                label_prefix="Penprobe",
+            )
+        )
         if int(config.max_tick_delta_from_startup) > int(config.hard_max_tick_delta_from_startup):
             checks.append(
                 _blocked(
@@ -1699,6 +1757,118 @@ def _strict_tool_gate_check(*, tool_id: str, snapshot, max_tracker_age_s: float)
         "Tracker Capture Gate",
         f"Tool {tool_key} is visible and tracker data age is within {float(max_tracker_age_s):.3f}s.",
     )
+
+
+def _selected_segment_truth_checks(
+    *,
+    settings,
+    servo_calibration_summary,
+    project_root: Path,
+    servo_connected: bool,
+    require_startup: bool,
+    strict_startup: bool,
+    allow_calibration_creation: bool,
+    label_prefix: str,
+) -> list[PreflightCheck]:
+    context = settings.robot.operating_context()
+    if context.operating_mode != "single_segment":
+        return []
+    expected_ids = [int(value) for value in context.active_segment_servo_ids or context.expected_servo_ids]
+    sign_mapping = _latest_sign_mapping_check(
+        project_root=project_root,
+        active_segment_key=str(context.active_segment_key or ""),
+        expected_servo_ids=expected_ids,
+    )
+    readiness = evaluate_selected_segment_readiness(
+        operating_mode=context.operating_mode,
+        active_segment_key=context.active_segment_key,
+        active_segment_label=context.active_segment_label,
+        expected_servo_ids=expected_ids,
+        calibration_summary=servo_calibration_summary,
+        mock_mode=bool(settings.runtime.mock_mode),
+        servo_connected=bool(servo_connected),
+        sign_mapping=sign_mapping,
+    )
+    checks: list[PreflightCheck] = []
+    if bool(settings.runtime.mock_mode):
+        checks.append(
+            _warning(
+                "mock_mode",
+                "Runtime Mode",
+                "mock_mode=true. Runs may execute only as mock/debug output and must remain non-thesis/non-training.",
+            )
+        )
+    neutral = readiness.neutral_safe_calibration
+    neutral_label = f"{label_prefix} Neutral/Safe Calibration"
+    if neutral.ready:
+        checks.append(_ok("neutral_safe_calibration", neutral_label, neutral.message))
+    elif allow_calibration_creation and not neutral.mismatch_reasons and not neutral.is_mock:
+        checks.append(
+            _warning(
+                "neutral_safe_calibration",
+                neutral_label,
+                neutral.message
+                + " Raw tiny jog is allowed for bring-up; calibrated experiments remain blocked until bounds are captured.",
+            )
+        )
+    elif neutral.is_mock and bool(settings.runtime.mock_mode):
+        checks.append(
+            _warning(
+                "neutral_safe_calibration",
+                neutral_label,
+                neutral.message + " This run can only be mock/debug and is not hardware-valid.",
+            )
+        )
+    else:
+        checks.append(_blocked("neutral_safe_calibration", neutral_label, neutral.message))
+    startup = readiness.startup_pretension
+    if require_startup:
+        startup_label = f"{label_prefix} Startup Reference"
+        if startup.ready:
+            checks.append(_ok("startup_reference", startup_label, startup.message))
+        elif strict_startup:
+            checks.append(_blocked("startup_reference", startup_label, startup.message))
+        else:
+            checks.append(
+                _warning(
+                    "startup_reference",
+                    startup_label,
+                    startup.message + " This explicit debug/servo-only run must not be used as thesis/training data.",
+                )
+            )
+    elif not startup.ready:
+        checks.append(
+            _info(
+                "startup_reference",
+                f"{label_prefix} Startup Reference",
+                startup.message + " Pretension validation may proceed only as calibration/startup creation.",
+            )
+        )
+    if sign_mapping is not None and not sign_mapping.confirmed:
+        checks.append(
+            _warning(
+                "servo_sign_mapping",
+                "Servo Sign/Mapping",
+                sign_mapping.message,
+            )
+        )
+    return checks
+
+
+def _latest_sign_mapping_check(
+    *,
+    project_root: Path,
+    active_segment_key: str,
+    expected_servo_ids: list[int],
+):
+    try:
+        repo = ServoMappingCheckRepository(project_root / "data" / "calibration" / "servo_mapping_checks")
+        return repo.latest_for_segment(
+            active_segment_key=str(active_segment_key or ""),
+            expected_servo_ids=[int(value) for value in expected_servo_ids],
+        )
+    except Exception:
+        return None
 
 
 def _pretension_artifact_check(*, servo_ids: list[int], servo_calibration_summary) -> PreflightCheck:

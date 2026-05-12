@@ -39,6 +39,7 @@ class DataManagementTab(QWidget):
         ("All Data", "all"),
         ("Calibration", "calibration"),
         ("Experiments", "experiments"),
+        ("Exports", "exports"),
         ("Modeling / Training", "modeling"),
         ("Diagnostics", "diagnostics"),
         ("Trash", "trash"),
@@ -103,6 +104,81 @@ class DataManagementTab(QWidget):
         filter_row.addWidget(self.refresh_button, 0)
         filters_card.body_layout.addLayout(filter_row)
 
+        filter_row_2 = QHBoxLayout()
+        filter_row_2.setContentsMargins(0, 0, 0, 0)
+        filter_row_2.setSpacing(8)
+        self.root_filter_combo = _combo_with_options([("Any root", "all")])
+        self.experiment_filter_combo = _combo_with_options([("Any experiment", "all")])
+        self.review_filter_combo = _combo_with_options(
+            [("Any review", "all"), ("Unreviewed", "unreviewed")]
+            + [(status, status) for status in ("debug", "garbage", "keep", "thesis_candidate", "advisor_share", "archived")]
+        )
+        self.trust_filter_combo = _combo_with_options([("Any trust", "all")])
+        self.sort_combo = _combo_with_options(
+            [
+                ("Newest", "newest"),
+                ("Largest", "largest"),
+                ("Experiment", "experiment"),
+                ("Review", "review"),
+                ("Trust", "trust"),
+            ]
+        )
+        for combo, key in (
+            (self.root_filter_combo, "root_filter"),
+            (self.experiment_filter_combo, "experiment_filter"),
+            (self.review_filter_combo, "review_status_filter"),
+            (self.trust_filter_combo, "trust_mode_filter"),
+            (self.sort_combo, "sort_mode"),
+        ):
+            combo.currentIndexChanged.connect(lambda _index, k=key, c=combo: self._on_filter_changed(k, str(c.currentData() or "all")))
+        filter_row_2.addWidget(QLabel("Root"))
+        filter_row_2.addWidget(self.root_filter_combo)
+        filter_row_2.addWidget(QLabel("Experiment"))
+        filter_row_2.addWidget(self.experiment_filter_combo)
+        filter_row_2.addWidget(QLabel("Review"))
+        filter_row_2.addWidget(self.review_filter_combo)
+        filter_row_2.addWidget(QLabel("Trust"))
+        filter_row_2.addWidget(self.trust_filter_combo)
+        filter_row_2.addWidget(QLabel("Sort"))
+        filter_row_2.addWidget(self.sort_combo)
+        filters_card.body_layout.addLayout(filter_row_2)
+
+        filter_row_3 = QHBoxLayout()
+        filter_row_3.setContentsMargins(0, 0, 0, 0)
+        filter_row_3.setSpacing(8)
+        self.mock_filter_combo = _bool_filter_combo("Mock mode")
+        self.model_valid_filter_combo = _bool_filter_combo("Model valid")
+        self.thesis_valid_filter_combo = _bool_filter_combo("Thesis valid")
+        self.samples_filter_combo = _bool_filter_combo("Samples")
+        self.figures_filter_combo = _bool_filter_combo("Figures")
+        self.review_sidecar_filter_combo = _bool_filter_combo("run_review")
+        self.size_filter_combo = _combo_with_options(
+            [("Any size", "all"), ("<1 MB", "small"), ("1-25 MB", "medium"), (">=25 MB", "large")]
+        )
+        for combo, key in (
+            (self.mock_filter_combo, "mock_mode_filter"),
+            (self.model_valid_filter_combo, "valid_model_filter"),
+            (self.thesis_valid_filter_combo, "valid_thesis_filter"),
+            (self.samples_filter_combo, "has_samples_filter"),
+            (self.figures_filter_combo, "has_figures_filter"),
+            (self.review_sidecar_filter_combo, "has_review_filter"),
+            (self.size_filter_combo, "size_filter"),
+        ):
+            combo.currentIndexChanged.connect(lambda _index, k=key, c=combo: self._on_filter_changed(k, str(c.currentData() or "all")))
+        for label, combo in (
+            ("Mock", self.mock_filter_combo),
+            ("Model", self.model_valid_filter_combo),
+            ("Thesis", self.thesis_valid_filter_combo),
+            ("Samples", self.samples_filter_combo),
+            ("Figures", self.figures_filter_combo),
+            ("Review file", self.review_sidecar_filter_combo),
+            ("Size", self.size_filter_combo),
+        ):
+            filter_row_3.addWidget(QLabel(label))
+            filter_row_3.addWidget(combo)
+        filter_row_3.addStretch(1)
+        filters_card.body_layout.addLayout(filter_row_3)
+
         self.table = QTableWidget(0, len(self.COLUMN_LABELS))
         self.table.setHorizontalHeaderLabels(self.COLUMN_LABELS)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -153,17 +229,24 @@ class DataManagementTab(QWidget):
         export_row = QHBoxLayout()
         export_row.setContentsMargins(0, 0, 0, 0)
         export_row.setSpacing(10)
-        self.export_selected_button = QPushButton("Export Selected Run")
+        self.export_selected_button = QPushButton("Export Human Packet")
         self.export_selected_button.clicked.connect(self._export_selected_run)
-        self.export_latest_button = QPushButton("Export Latest Run")
+        self.export_latest_button = QPushButton("Export Latest Human")
         self.export_latest_button.setProperty("variant", "ghost")
         self.export_latest_button.clicked.connect(self._export_latest_run)
+        self.export_ai_selected_button = QPushButton("Export AI Debug Packet")
+        self.export_ai_selected_button.clicked.connect(self._export_ai_selected_run)
+        self.export_ai_latest_button = QPushButton("Export Latest AI Debug")
+        self.export_ai_latest_button.setProperty("variant", "ghost")
+        self.export_ai_latest_button.clicked.connect(self._export_ai_latest_run)
         self.include_samples_checkbox = QCheckBox("Include samples")
         self.include_debug_checkbox = QCheckBox("Include debug")
         self.zip_export_checkbox = QCheckBox("Zip")
         self.zip_export_checkbox.setChecked(True)
         export_row.addWidget(self.export_selected_button)
         export_row.addWidget(self.export_latest_button)
+        export_row.addWidget(self.export_ai_selected_button)
+        export_row.addWidget(self.export_ai_latest_button)
         export_row.addWidget(self.include_samples_checkbox)
         export_row.addWidget(self.include_debug_checkbox)
         export_row.addWidget(self.zip_export_checkbox)
@@ -227,11 +310,22 @@ class DataManagementTab(QWidget):
         self.review_notes_input = QLineEdit()
         self.review_notes_input.setPlaceholderText("Review notes")
         self.include_evidence_checkbox = QCheckBox("Evidence index")
+        self.intended_use_combo = _combo_with_options(
+            [
+                ("debug", "debug"),
+                ("mock", "mock"),
+                ("thesis", "thesis"),
+                ("advisor", "advisor"),
+                ("ai_debug", "ai_debug"),
+            ]
+        )
         self.save_review_button = QPushButton("Save Review")
         self.save_review_button.clicked.connect(self._save_review)
         review_row.addWidget(QLabel("Mark"))
         review_row.addWidget(self.review_status_combo)
         review_row.addWidget(self.review_notes_input, 1)
+        review_row.addWidget(QLabel("Use"))
+        review_row.addWidget(self.intended_use_combo)
         review_row.addWidget(self.include_evidence_checkbox)
         review_row.addWidget(self.save_review_button)
         actions_card.body_layout.addLayout(review_row)
@@ -247,9 +341,13 @@ class DataManagementTab(QWidget):
         self.build_evidence_index_button = QPushButton("Build Evidence Index")
         self.build_evidence_index_button.setProperty("variant", "ghost")
         self.build_evidence_index_button.clicked.connect(self._build_evidence_index)
+        self.include_debug_evidence_checkbox = QCheckBox("Include debug")
+        self.include_mock_evidence_checkbox = QCheckBox("Include mock")
         lifecycle_row.addWidget(self.archive_run_button)
         lifecycle_row.addWidget(self.trash_run_button)
         lifecycle_row.addWidget(self.build_evidence_index_button)
+        lifecycle_row.addWidget(self.include_debug_evidence_checkbox)
+        lifecycle_row.addWidget(self.include_mock_evidence_checkbox)
         lifecycle_row.addStretch(1)
         actions_card.body_layout.addLayout(lifecycle_row)
         self.status_label = QLabel("Browse saved calibration, experiment, modeling, and diagnostic artifacts.")
@@ -284,8 +382,21 @@ class DataManagementTab(QWidget):
         lower.addWidget(details_card, 2)
 
     def update(self, state: DataManagementViewState) -> None:
+        self._sync_filter_options(state)
         self._set_combo(self.category_combo, state.category_filter)
         self._set_line_edit(self.search_input, state.search_text)
+        self._set_combo(self.root_filter_combo, state.root_filter)
+        self._set_combo(self.experiment_filter_combo, state.experiment_filter)
+        self._set_combo(self.review_filter_combo, state.review_status_filter)
+        self._set_combo(self.trust_filter_combo, state.trust_mode_filter)
+        self._set_combo(self.mock_filter_combo, state.mock_mode_filter)
+        self._set_combo(self.model_valid_filter_combo, state.valid_model_filter)
+        self._set_combo(self.thesis_valid_filter_combo, state.valid_thesis_filter)
+        self._set_combo(self.samples_filter_combo, state.has_samples_filter)
+        self._set_combo(self.figures_filter_combo, state.has_figures_filter)
+        self._set_combo(self.review_sidecar_filter_combo, state.has_review_filter)
+        self._set_combo(self.size_filter_combo, state.size_filter)
+        self._set_combo(self.sort_combo, state.sort_mode)
         self._sync_table(state)
         self.selection_pairs.set_pairs(state.detail_pairs)
         self.migration_pairs.set_pairs(state.migration_summary_pairs)
@@ -301,6 +412,8 @@ class DataManagementTab(QWidget):
         self.open_migration_report_button.setEnabled(bool(state.last_migration_report_path))
         self.export_selected_button.setEnabled(state.can_export_selected)
         self.export_latest_button.setEnabled(state.can_export_latest)
+        self.export_ai_selected_button.setEnabled(state.can_export_selected)
+        self.export_ai_latest_button.setEnabled(state.can_export_latest)
         self.copy_export_path_button.setEnabled(state.can_copy_export_path)
         self.copy_transfer_command_button.setEnabled(state.can_copy_transfer_command)
         self.open_exports_folder_button.setEnabled(True)
@@ -330,6 +443,10 @@ class DataManagementTab(QWidget):
 
     def _on_search_changed(self, value: str) -> None:
         self.controller.set_search_text(value)
+        self.update(self.controller.refresh())
+
+    def _on_filter_changed(self, key: str, value: str) -> None:
+        self.controller.set_filter_value(key, value)
         self.update(self.controller.refresh())
 
     def _sync_table(self, state: DataManagementViewState) -> None:
@@ -392,24 +509,32 @@ class DataManagementTab(QWidget):
         self.status_label.setText(f"Copied {len(selected)} path(s) to the clipboard.")
 
     def _export_selected_run(self) -> None:
-        self._run_export(selected=True)
+        self._run_export(selected=True, profile="human_advisor")
 
     def _export_latest_run(self) -> None:
-        self._run_export(selected=False)
+        self._run_export(selected=False, profile="human_advisor")
 
-    def _run_export(self, *, selected: bool) -> None:
+    def _export_ai_selected_run(self) -> None:
+        self._run_export(selected=True, profile="ai_debug")
+
+    def _export_ai_latest_run(self) -> None:
+        self._run_export(selected=False, profile="ai_debug")
+
+    def _run_export(self, *, selected: bool, profile: str) -> None:
         try:
             if selected:
                 result = self.controller.export_selected(
                     include_samples=self.include_samples_checkbox.isChecked(),
                     include_debug=self.include_debug_checkbox.isChecked(),
                     make_zip=self.zip_export_checkbox.isChecked(),
+                    profile=profile,
                 )
             else:
                 result = self.controller.export_latest_visible(
                     include_samples=self.include_samples_checkbox.isChecked(),
                     include_debug=self.include_debug_checkbox.isChecked(),
                     make_zip=self.zip_export_checkbox.isChecked(),
+                    profile=profile,
                 )
         except Exception as exc:
             self.status_label.setText(f"Export failed: {exc}")
@@ -484,6 +609,7 @@ class DataManagementTab(QWidget):
                 status=str(self.review_status_combo.currentData() or "debug"),
                 notes=self.review_notes_input.text(),
                 include_in_evidence_index=self.include_evidence_checkbox.isChecked(),
+                intended_use=str(self.intended_use_combo.currentData() or "debug"),
             )
         except Exception as exc:
             self.status_label.setText(f"Review save failed: {exc}")
@@ -540,7 +666,10 @@ class DataManagementTab(QWidget):
 
     def _build_evidence_index(self) -> None:
         try:
-            output_dir = self.controller.build_evidence_index()
+            output_dir = self.controller.build_evidence_index(
+                include_debug=self.include_debug_evidence_checkbox.isChecked(),
+                include_mock=self.include_mock_evidence_checkbox.isChecked(),
+            )
         except Exception as exc:
             self.status_label.setText(f"Evidence index failed: {exc}")
             return
@@ -577,6 +706,10 @@ class DataManagementTab(QWidget):
         if self.include_evidence_checkbox.isChecked() != review.include_in_evidence_index:
             with QSignalBlocker(self.include_evidence_checkbox):
                 self.include_evidence_checkbox.setChecked(review.include_in_evidence_index)
+        intended_index = self.intended_use_combo.findData(review.intended_use or "debug")
+        if intended_index >= 0 and self.intended_use_combo.currentIndex() != intended_index:
+            with QSignalBlocker(self.intended_use_combo):
+                self.intended_use_combo.setCurrentIndex(intended_index)
 
     def _delete_selected(self) -> None:
         selected = self.controller.selected_items()
@@ -646,6 +779,20 @@ class DataManagementTab(QWidget):
             with QSignalBlocker(combo):
                 combo.setCurrentIndex(index)
 
+    def _sync_filter_options(self, state: DataManagementViewState) -> None:
+        _replace_combo_options(
+            self.root_filter_combo,
+            [("Any root", "all"), *[(value, value) for value in state.root_filter_options if value != "all"]],
+        )
+        _replace_combo_options(
+            self.experiment_filter_combo,
+            [("Any experiment", "all"), *[(value, value) for value in state.experiment_filter_options if value != "all"]],
+        )
+        _replace_combo_options(
+            self.trust_filter_combo,
+            [("Any trust", "all"), *[(value, value) for value in state.trust_mode_filter_options if value != "all"]],
+        )
+
     @staticmethod
     def _set_line_edit(widget: QLineEdit, value: str) -> None:
         if widget.text() != value:
@@ -704,6 +851,32 @@ def _relative_path(path: Path, project_root: Path) -> str:
         return str(path)
 
 
+def _combo_with_options(options: list[tuple[str, str]]) -> QComboBox:
+    combo = QComboBox()
+    for label, value in options:
+        combo.addItem(label, value)
+    return combo
+
+
+def _bool_filter_combo(label: str) -> QComboBox:
+    return _combo_with_options([(f"Any {label}", "all"), ("true", "true"), ("false", "false")])
+
+
+def _replace_combo_options(combo: QComboBox, options: list[tuple[str, str]]) -> None:
+    current = combo.currentData()
+    existing = [combo.itemData(index) for index in range(combo.count())]
+    target = [value for _, value in options]
+    if existing == target:
+        return
+    with QSignalBlocker(combo):
+        combo.clear()
+        for label, value in options:
+            combo.addItem(label, value)
+        index = combo.findData(current)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+
+
 def _table_values(item, project_root: Path) -> list[str]:
     run_dir = _run_dir_for_item(item)
     if run_dir is not None:
@@ -748,7 +921,7 @@ def _table_values(item, project_root: Path) -> list[str]:
 
 
 def _run_dir_for_item(item) -> Path | None:
-    if item.category_key not in {"experiments", "modeling", "diagnostics"}:
+    if item.category_key not in {"experiments", "modeling", "diagnostics", "trash"}:
         return None
     path = item.path if item.path.is_dir() else item.path.parent
     if (path / "summary.json").exists() or (path / "metadata.json").exists() or (path / "evaluation_metadata.json").exists():

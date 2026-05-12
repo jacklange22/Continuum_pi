@@ -10,6 +10,7 @@ from continuum_robot.data_management import (
     apply_migration,
     delete_managed_items,
     discover_managed_data,
+    filter_managed_data,
     preview_migration,
 )
 from continuum_robot.experiments.dataset_io import (
@@ -39,6 +40,59 @@ def test_canonical_timestamped_name_uses_suffix_only_on_collision(tmp_path: Path
 
     assert first == "20260422_153011_registration_validation"
     assert second == "20260422_153011_registration_validation_01"
+
+
+def test_filter_managed_data_can_select_mock_runs_by_root_and_trust(tmp_path: Path) -> None:
+    run_dir = tmp_path / "data" / "mock_experiments" / "single_segment_repeatability" / "20260102_000000_single_segment_repeatability"
+    run_dir.mkdir(parents=True)
+    (run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "experiment_name": "single_segment_repeatability",
+                "run_id": "mock-run",
+                "provenance_info": {"mock_mode": True, "operating_mode": "single_segment"},
+                "trust_info": {
+                    "run_trust_mode": "mock",
+                    "valid_for_model_training": False,
+                    "valid_for_thesis_repeatability": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "experiment_name": "single_segment_repeatability",
+                "run_id": "mock-run",
+                "success": True,
+                "status": "success",
+                "experiment_metrics": {
+                    "run_trust_mode": "mock",
+                    "valid_for_model_training": False,
+                    "valid_for_thesis_repeatability": False,
+                    "mock_mode": True,
+                    "run_provenance": {"mock_mode": True, "operating_mode": "single_segment"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "run_review.json").write_text(
+        json.dumps({"review_status": "debug", "include_in_evidence_index": False, "intended_use": "mock"}),
+        encoding="utf-8",
+    )
+
+    items = discover_managed_data(tmp_path)
+    filtered = filter_managed_data(
+        items,
+        root_filter="data/mock_experiments",
+        trust_mode_filter="mock",
+        mock_mode_filter="true",
+        has_review_filter="true",
+    )
+
+    assert [item.path for item in filtered] == [run_dir]
 
 
 def test_registration_and_runtime_tip_repositories_use_canonical_timestamp_names(tmp_path: Path) -> None:

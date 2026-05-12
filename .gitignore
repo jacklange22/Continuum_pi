@@ -34,18 +34,22 @@ bin/
 
 # Runtime data
 data/trash/**
+data/mock_experiments/**
+data/mock_calibration/**
 data/calibrations/*
 !data/calibrations/.gitkeep
+data/calibration/servo_calibration/**
 data/logs/*
 !data/logs/.gitkeep
 data/registrations/*
 !data/registrations/.gitkeep
 data/tracker_captures/*
 !data/tracker_captures/.gitkeep
+data/runtime_tip_calibration/**
+data/pivot_calibration/**
 
 # Generated operator-readiness/export bundles
-data/diagnostics/prehardware_dry_run/**
-data/diagnostics/hardware_readiness/**
+data/diagnostics/**
 data/exports/**
 data/**/*.zip
 data/**/*.tar

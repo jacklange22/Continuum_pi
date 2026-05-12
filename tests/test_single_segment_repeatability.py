@@ -420,7 +420,7 @@ def test_preflight_blocks_repeatability_when_runtime_tip_mode_is_quick_override(
 
 def test_preflight_allows_repeatability_coil_as_tip_as_trusted_policy(tmp_path: Path) -> None:
     pytest.importorskip("PySide6")
-    from continuum_robot.gui.experiment_preflight import RUN_OK, evaluate_preflight
+    from continuum_robot.gui.experiment_preflight import RUN_WARNING, evaluate_preflight
 
     settings = _settings(mock_mode=False)
     service = _servo_service(tmp_path)
@@ -447,7 +447,8 @@ def test_preflight_allows_repeatability_coil_as_tip_as_trusted_policy(tmp_path: 
         servo_calibration_summary=service.neutral_calibration.get_calibration_summary(),
     )
 
-    assert report.overall_status == RUN_OK
+    assert report.overall_status == RUN_WARNING
+    assert any(check.key == "servo_sign_mapping" and check.status == "warning" for check in report.checks)
     assert any(
         check.key == "runtime_tip" and check.status == "ok"
         for check in report.checks
@@ -456,7 +457,7 @@ def test_preflight_allows_repeatability_coil_as_tip_as_trusted_policy(tmp_path: 
 
 def test_preflight_ignores_legacy_debug_flag_for_trusted_coil_as_tip(tmp_path: Path) -> None:
     pytest.importorskip("PySide6")
-    from continuum_robot.gui.experiment_preflight import RUN_OK, evaluate_preflight
+    from continuum_robot.gui.experiment_preflight import RUN_WARNING, evaluate_preflight
 
     settings = _settings(mock_mode=False)
     service = _servo_service(tmp_path)
@@ -483,7 +484,8 @@ def test_preflight_ignores_legacy_debug_flag_for_trusted_coil_as_tip(tmp_path: P
         servo_calibration_summary=service.neutral_calibration.get_calibration_summary(),
     )
 
-    assert report.overall_status == RUN_OK
+    assert report.overall_status == RUN_WARNING
+    assert any(check.key == "servo_sign_mapping" and check.status == "warning" for check in report.checks)
     assert any(
         check.key == "runtime_tip" and check.status == "ok"
         for check in report.checks
@@ -538,7 +540,7 @@ def test_repeatability_preflight_and_precheck_agree_on_runtime_tip_workflow_reso
 
 def test_preflight_accepts_manual_pretension_source_for_repeatability(tmp_path: Path) -> None:
     pytest.importorskip("PySide6")
-    from continuum_robot.gui.experiment_preflight import RUN_OK, evaluate_preflight
+    from continuum_robot.gui.experiment_preflight import RUN_WARNING, evaluate_preflight
 
     settings = _settings(mock_mode=False)
     service = _servo_service(tmp_path, pretension_source="manual")
@@ -561,7 +563,8 @@ def test_preflight_accepts_manual_pretension_source_for_repeatability(tmp_path: 
         servo_calibration_summary=service.neutral_calibration.get_calibration_summary(),
     )
 
-    assert report.overall_status == RUN_OK
+    assert report.overall_status == RUN_WARNING
+    assert any(check.key == "servo_sign_mapping" and check.status == "warning" for check in report.checks)
     assert any(
         check.key == "pretension" and "manual pretension" in check.message.lower()
         for check in report.checks

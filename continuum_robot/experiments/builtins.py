@@ -39,6 +39,7 @@ from continuum_robot.experiments.schedules import (
 )
 from continuum_robot.experiments.sample_builders import sample_from_tracking_snapshot
 from continuum_robot.experiments.schemas import ExperimentMetadata, ExperimentSummary, ExperimentTimeseriesSample
+from continuum_robot.servos.segment_readiness import evaluate_selected_segment_readiness
 from continuum_robot.servos.servo_service import PretensionParameters
 from continuum_robot.tracking.timing_benchmark import (
     compute_servo_tracker_sync_summary,
@@ -5905,6 +5906,12 @@ def _precheck_collect_pose_command_dataset(
         if not config.dry_run:
             if not calibration_summary.exists or not calibration_summary.compatible:
                 raise RuntimeError(f"Servo calibration artifact is not ready: {calibration_summary.message}")
+            _check_collect_pose_selected_segment_truth(
+                session=session,
+                calibration_summary=calibration_summary,
+                servo_ids=servo_ids,
+                trusted_run=False,
+            )
             if (not pretension_source.accepted or not pretension_source.usable) and not config.allow_lower_trust_pretension:
                 raise RuntimeError(
                     "An accepted pretension/startup artifact is required before servo-only motion testing. "
@@ -5950,6 +5957,12 @@ def _precheck_collect_pose_command_dataset(
     if not config.dry_run:
         if not calibration_summary.exists or not calibration_summary.compatible:
             raise RuntimeError(f"Servo calibration artifact is not ready: {calibration_summary.message}")
+        _check_collect_pose_selected_segment_truth(
+            session=session,
+            calibration_summary=calibration_summary,
+            servo_ids=servo_ids,
+            trusted_run=not bool(config.allow_lower_trust_pretension),
+        )
         if (not pretension_source.accepted or not pretension_source.usable) and not config.allow_lower_trust_pretension:
             raise RuntimeError(
                 "An accepted pretension/startup artifact is required before modeling dataset collection. "
@@ -5979,6 +5992,41 @@ def _collect_pose_servo_only_test_mode(*, config: CollectPoseCommandDatasetConfi
         "streaming_healthy",
         "streaming_degraded",
     }
+
+
+def _check_collect_pose_selected_segment_truth(
+    *,
+    session: ExperimentSession,
+    calibration_summary,
+    servo_ids: list[int],
+    trusted_run: bool,
+) -> None:
+    context = session.context.settings.robot.operating_context()
+    if context.operating_mode != "single_segment":
+        return
+    readiness = evaluate_selected_segment_readiness(
+        operating_mode=context.operating_mode,
+        active_segment_key=context.active_segment_key,
+        active_segment_label=context.active_segment_label,
+        expected_servo_ids=[int(value) for value in servo_ids],
+        calibration_summary=calibration_summary,
+        mock_mode=bool(session.context.settings.runtime.mock_mode),
+        servo_connected=bool(getattr(session.context.servo_service, "is_connected", False)),
+    )
+    if not readiness.neutral_safe_calibration.ready:
+        if trusted_run:
+            raise RuntimeError(readiness.neutral_safe_calibration.message)
+        session.add_warning(
+            readiness.neutral_safe_calibration.message
+            + " This run is explicit servo-only/lower-trust debug output and is not training-ready."
+        )
+    if not readiness.startup_pretension.ready:
+        if trusted_run:
+            raise RuntimeError(readiness.startup_pretension.message)
+        session.add_warning(
+            readiness.startup_pretension.message
+            + " This run is explicit servo-only/lower-trust debug output and is not training-ready."
+        )
 
 
 def _collect_pose_parallel_single_mode(session: ExperimentSession) -> bool:

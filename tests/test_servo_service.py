@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 from pathlib import Path
 import threading
 
@@ -208,6 +209,7 @@ def _build_service(
     context_servo_ids: list[int] | None = None,
     telemetry_stale_after_s: float = 0.25,
     min_input_voltage_mv: int = 4000,
+    mock_mode: bool = False,
 ) -> ServoService:
     bus = dxl_bus or MockDxlBus([1, 2, 3, 4])
     if context_servo_ids is None:
@@ -248,6 +250,8 @@ def _build_service(
         pretension_validation=PretensionValidationService(),
         sleep_fn=lambda _seconds: None,
         time_fn=time_fn or (lambda: 0.0),
+        mock_mode=mock_mode,
+        mock_neutral_calibration_path=tmp_path / "data" / "mock_calibration" / "latest_mock_neutral_setpoints.json",
     )
 
 
@@ -272,6 +276,22 @@ def test_servo_service_capture_save_load_and_command(tmp_path: Path) -> None:
     assert summary.servo_entries[1].safe_max_tick == neutral[1] + 600
     assert summary.servo_entries[1].pretension_current_threshold_ma == 220
     assert summary.servo_entries[1].capture_source == "live_present_position"
+
+
+def test_mock_neutral_capture_writes_mock_calibration_not_real_config(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, mock_mode=True)
+    service.connect("/dev/mock-openrb", 115200)
+
+    result = service.capture_and_save_neutral_setpoints([1, 2, 3, 4])
+
+    real_path = tmp_path / "neutral.json"
+    mock_path = tmp_path / "data" / "mock_calibration" / "latest_mock_neutral_setpoints.json"
+    assert result.artifact_path == str(mock_path)
+    assert not real_path.exists()
+    payload = json.loads(mock_path.read_text(encoding="utf-8"))
+    assert payload["robot"]["mock_mode"] is True
+    assert payload["robot"]["calibration_trust"] == "mock"
+    assert payload["robot"]["valid_for_hardware_startup"] is False
 
 
 def test_servo_service_startup_calibration_persists_bounds_and_threshold(tmp_path: Path) -> None:

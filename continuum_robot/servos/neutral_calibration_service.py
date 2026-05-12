@@ -113,6 +113,8 @@ class ServoCalibrationSummary:
     schema_version: int
     migrated_legacy_format: bool = False
     servo_entries: dict[int, ServoCalibrationEntry] = field(default_factory=dict)
+    robot_metadata: dict[str, Any] = field(default_factory=dict)
+    source_format: str = "servo_calibration_v2"
 
     @property
     def calibrated_servo_ids(self) -> list[int]:
@@ -137,6 +139,25 @@ class ServoCalibrationSummary:
             for servo_id, entry in self.servo_entries.items()
             if entry.pretension_current_threshold_ma is None
         )
+
+    @property
+    def calibration_trust(self) -> str:
+        raw = str(self.robot_metadata.get("calibration_trust", "") or "").strip().lower()
+        if raw:
+            return raw
+        if bool(self.robot_metadata.get("mock_mode", False)):
+            return "mock"
+        return "unknown"
+
+    @property
+    def is_mock_calibration(self) -> bool:
+        trust = self.calibration_trust
+        if trust in {"mock", "debug", "synthetic"}:
+            return True
+        if bool(self.robot_metadata.get("mock_mode", False)):
+            return True
+        hardware_valid = self.robot_metadata.get("valid_for_hardware_startup")
+        return hardware_valid is False
 
     def pretension_source_summary(self, servo_ids: list[int]) -> PretensionSourceSummary:
         requested_ids = [int(servo_id) for servo_id in servo_ids]
@@ -236,6 +257,7 @@ class NeutralCalibrationService:
         *,
         safe_bounds_by_id: dict[int, tuple[int, int]] | None = None,
         capture_source: str = "live_present_position",
+        calibration_metadata: dict[str, Any] | None = None,
     ) -> None:
         artifact = self.load_calibration_artifact()
         tendon_index_by_servo = {
@@ -294,6 +316,7 @@ class NeutralCalibrationService:
             )
         artifact.updated_at_utc = timestamp
         artifact.robot = self._robot_metadata()
+        artifact.robot.update(dict(calibration_metadata or {}))
         artifact.source_format = "servo_calibration_v2"
         self.save_calibration_artifact(artifact)
 
@@ -624,6 +647,8 @@ class NeutralCalibrationService:
             schema_version=int(artifact.schema_version),
             migrated_legacy_format=migrated_legacy,
             servo_entries=dict(sorted(artifact.servos.items())),
+            robot_metadata=dict(artifact.robot or {}),
+            source_format=str(artifact.source_format),
         )
 
     def bounds_by_servo_id(self, servo_ids: list[int]) -> dict[int, tuple[int, int]]:

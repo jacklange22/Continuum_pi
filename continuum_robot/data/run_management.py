@@ -24,8 +24,10 @@ class RunReview:
 
     review_status: str = "debug"
     notes: str = ""
+    created_at: str = ""
     reviewed_at: str = ""
     reviewed_by: str = ""
+    intended_use: str = ""
     include_in_evidence_index: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -33,8 +35,11 @@ class RunReview:
             "schema_version": "1.0",
             "review_status": self.review_status,
             "notes": self.notes,
+            "created_at": self.created_at,
             "reviewed_at": self.reviewed_at,
+            "reviewer": self.reviewed_by,
             "include_in_evidence_index": self.include_in_evidence_index,
+            "intended_use": self.intended_use,
         }
         if self.reviewed_by:
             payload["reviewed_by"] = self.reviewed_by
@@ -73,6 +78,10 @@ class ManagedRunSummary:
     metrics_files: list[str] = field(default_factory=list)
     samples_present: bool = False
     samples_size_bytes: int = 0
+    total_size_bytes: int = 0
+    mock_mode: bool | None = None
+    root_location: str = ""
+    has_run_review: bool = False
     review: RunReview = field(default_factory=RunReview)
 
 
@@ -87,8 +96,13 @@ class MoveRunResult:
 
 def discover_experiment_run_dirs(project_root: Path, *, experiment_name: str | None = None) -> list[Path]:
     """Return canonical experiment run directories, newest first."""
+    return discover_run_dirs(project_root, root_name="experiments", experiment_name=experiment_name)
+
+
+def discover_run_dirs(project_root: Path, *, root_name: str, experiment_name: str | None = None) -> list[Path]:
+    """Return run directories under one data root, newest first."""
     root = Path(project_root)
-    experiments_root = root / "data" / "experiments"
+    experiments_root = root / "data" / str(root_name)
     if not experiments_root.exists():
         return []
     runs: list[Path] = []
@@ -122,10 +136,37 @@ def load_run_review(run_dir: Path) -> RunReview:
     return RunReview(
         review_status=status,
         notes=str(payload.get("notes") or ""),
+        created_at=str(payload.get("created_at") or ""),
         reviewed_at=str(payload.get("reviewed_at") or ""),
-        reviewed_by=str(payload.get("reviewed_by") or ""),
+        reviewed_by=str(payload.get("reviewed_by") or payload.get("reviewer") or ""),
+        intended_use=str(payload.get("intended_use") or ""),
         include_in_evidence_index=bool(payload.get("include_in_evidence_index", False)),
     )
+
+
+def ensure_run_review(
+    run_dir: Path,
+    *,
+    status: str = "debug",
+    intended_use: str = "debug",
+    include_in_evidence_index: bool = False,
+) -> RunReview:
+    """Create a default run_review.json if one does not already exist."""
+    run_dir = Path(run_dir)
+    path = run_dir / REVIEW_FILENAME
+    if path.exists():
+        return load_run_review(run_dir)
+    review = RunReview(
+        review_status=status if status in REVIEW_STATUSES else "debug",
+        notes="",
+        created_at=_utc_now(),
+        reviewed_at="",
+        reviewed_by="",
+        intended_use=str(intended_use or "debug"),
+        include_in_evidence_index=bool(include_in_evidence_index),
+    )
+    path.write_text(json.dumps(review.to_dict(), indent=2), encoding="utf-8")
+    return review
 
 
 def write_run_review(
@@ -135,6 +176,7 @@ def write_run_review(
     notes: str = "",
     reviewed_by: str = "",
     include_in_evidence_index: bool | None = None,
+    intended_use: str | None = None,
 ) -> RunReview:
     """Create or update run_review.json without touching raw experiment outputs."""
     run_dir = Path(run_dir)
@@ -147,12 +189,18 @@ def write_run_review(
     review = RunReview(
         review_status=status,
         notes=str(notes if notes != "" else previous.notes),
+        created_at=previous.created_at or _utc_now(),
         reviewed_at=_utc_now(),
         reviewed_by=str(reviewed_by or previous.reviewed_by),
+        intended_use=str(
+            intended_use
+            if intended_use not in (None, "")
+            else (previous.intended_use or _default_intended_use_for_status(status))
+        ),
         include_in_evidence_index=(
             bool(include_in_evidence_index)
             if include_in_evidence_index is not None
-            else (status in {"keep", "thesis_candidate", "advisor_share"})
+            else (status in {"thesis_candidate", "advisor_share"})
         ),
     )
     (run_dir / REVIEW_FILENAME).write_text(json.dumps(review.to_dict(), indent=2), encoding="utf-8")
@@ -201,6 +249,14 @@ def summarize_run(run_dir: Path) -> ManagedRunSummary:
         _nested(run_provenance, "operating_context", "two_segment_foundation"),
     )
     samples_path = run_dir / "samples.jsonl"
+    review_path = run_dir / REVIEW_FILENAME
+    review = load_run_review(run_dir)
+    root_location = _root_location(run_dir)
+    mock_mode = _first_value(
+        metadata_provenance.get("mock_mode"),
+        run_provenance.get("mock_mode"),
+        _nested(metadata, "backend_info", "mock_mode"),
+    )
     return ManagedRunSummary(
         run_dir=run_dir,
         experiment_name=sanitize_output_name(experiment_name),
@@ -264,7 +320,11 @@ def summarize_run(run_dir: Path) -> ManagedRunSummary:
         metrics_files=_relative_files(run_dir, lambda path: path.suffix.lower() == ".csv"),
         samples_present=samples_path.exists(),
         samples_size_bytes=samples_path.stat().st_size if samples_path.exists() else 0,
-        review=load_run_review(run_dir),
+        total_size_bytes=_dir_size_bytes(run_dir),
+        mock_mode=(None if mock_mode is None else bool(mock_mode)),
+        root_location=root_location,
+        has_run_review=review_path.exists(),
+        review=review,
     )
 
 
@@ -302,8 +362,13 @@ def detail_pairs_for_run(summary: ManagedRunSummary, *, project_root: Path | Non
         ("Report Figures", _count_and_names(summary.report_figures)),
         ("Metrics Files", _count_and_names(summary.metrics_files)),
         ("Samples", f"{'present' if summary.samples_present else 'absent'} ({summary.samples_size_bytes} bytes)"),
+        ("Run Size", f"{summary.total_size_bytes} bytes"),
+        ("Root", summary.root_location or "n/a"),
+        ("Mock Mode", _display_value(summary.mock_mode)),
+        ("Run Review Sidecar", "present" if summary.has_run_review else "missing"),
         ("Review Status", summary.review.review_status),
         ("Evidence Index", str(summary.review.include_in_evidence_index)),
+        ("Intended Use", summary.review.intended_use or "n/a"),
         ("Review Notes", summary.review.notes or "n/a"),
     ]
 
@@ -395,6 +460,41 @@ def _as_string_list(value: Any) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _dir_size_bytes(path: Path) -> int:
+    total = 0
+    if not Path(path).exists():
+        return 0
+    for candidate in Path(path).rglob("*"):
+        if candidate.is_file():
+            try:
+                total += candidate.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def _root_location(run_dir: Path) -> str:
+    parts = list(Path(run_dir).parts)
+    for index, part in enumerate(parts[:-1]):
+        if part == "data" and index + 1 < len(parts):
+            return f"data/{parts[index + 1]}"
+    return ""
+
+
+def _default_intended_use_for_status(status: str) -> str:
+    if status == "thesis_candidate":
+        return "thesis"
+    if status == "advisor_share":
+        return "advisor"
+    if status == "garbage":
+        return "debug"
+    if status == "keep":
+        return "thesis"
+    if status == "archived":
+        return "debug"
+    return "debug"
 
 
 def _format_segment(value: Any) -> str:
