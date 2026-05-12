@@ -12,6 +12,7 @@ from typing import Callable
 
 import numpy as np
 import yaml
+from shiboken6 import isValid as _qt_is_valid
 from PySide6.QtCore import QCoreApplication, QEvent, QSignalBlocker, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
@@ -3209,10 +3210,21 @@ class _ValidationSelectionPage(ExperimentPageBase):
         self._table_apply_complete = True
         self._table_apply_started_s = 0.0
         self._table_apply_token = 0
+        self._page_closing = False
         super().__init__(controller, experiment_name, parent)
         self.run_button.setText(self.run_button_text)
         self._install_interaction_instrumentation()
         self.candidates_loaded.connect(self._apply_loaded_candidates)
+        self.destroyed.connect(lambda *_args: self.shutdown())
+
+    def shutdown(self) -> None:
+        self._page_closing = True
+        self._candidate_load_generation += 1
+        self._table_apply_token += 1
+        self._candidate_loading = False
+
+    def _page_is_valid(self) -> bool:
+        return bool(not self._page_closing and _qt_is_valid(self))
 
     def _build_parameter_sections(self) -> None:
         selection_card = ExperimentCard(self.selection_title, self.selection_subtitle)
@@ -3457,7 +3469,15 @@ class _ValidationSelectionPage(ExperimentPageBase):
                 candidate_count=len(candidates),
                 error=error or "",
             )
-            self.candidates_loaded.emit(generation, candidates, error)
+            if self._page_closing:
+                return
+            try:
+                self.candidates_loaded.emit(generation, candidates, error)
+            except RuntimeError:
+                LOG.debug(
+                    "Validation source discovery result dropped after page shutdown | experiment=%s",
+                    self.experiment_name,
+                )
 
         threading.Thread(
             target=_worker,
@@ -3466,6 +3486,8 @@ class _ValidationSelectionPage(ExperimentPageBase):
         ).start()
 
     def _apply_loaded_candidates(self, generation: int, candidates, error: object) -> None:
+        if not self._page_is_valid():
+            return
         started = time.monotonic()
         self._log_stage(
             "candidate_apply",
@@ -3531,11 +3553,15 @@ class _ValidationSelectionPage(ExperimentPageBase):
         self._log_surface_state("loaded_state")
 
     def _schedule_table_apply(self, generation: int) -> None:
+        if not self._page_is_valid():
+            return
         self._table_apply_token += 1
         token = self._table_apply_token
         QTimer.singleShot(0, lambda current_generation=generation, current_token=token: self._apply_table_batch(current_generation, current_token))
 
     def _apply_table_batch(self, generation: int, token: int) -> None:
+        if not self._page_is_valid():
+            return
         if int(token) != int(self._table_apply_token):
             self._log_stage("table_rebuild", "skip", reason="stale_callback", generation=generation, token=token)
             return

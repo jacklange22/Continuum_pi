@@ -9,7 +9,9 @@ Run from the repo root on the Pi:
 ```bash
 git status --short
 scripts/run_tests.sh quick
+scripts/run_tests.sh hardware-safe
 .venv/bin/python -m continuum_robot.diagnostics.prehardware_dry_run
+.venv/bin/python -m continuum_robot.diagnostics.hardware_readiness_check
 ```
 
 Confirm:
@@ -18,6 +20,8 @@ Confirm:
 - Normal hardware profile is `robot_8servo.yaml`.
 - Operating mode matches the task: `one_servo`, `single_segment`, `dual_segment`, or `parallel_single`.
 - `data/experiments/` and `data/exports/` are writable.
+- `prehardware_dry_run` passes the no-hardware export/validator/operator fixture checks.
+- `hardware_readiness_check` is PASS overall, or any WARN item has a clear hardware-day action.
 
 ## 2. Startup Workflow
 
@@ -28,14 +32,47 @@ Confirm:
 5. Connect OpenRB and verify expected servo IDs match the selected mode.
 6. Connect tracker and verify live tool status before trusting pose-dependent experiments.
 
-## 3. Tracking And Registration
+## 3. Wednesday Single-Segment First Workflow
+
+1. Before connecting hardware, confirm `mock_mode=false` in `config/system.local.yaml`.
+2. Select `single_segment` on System.
+3. Select Segment A or Segment B and apply settings.
+4. Connect OpenRB.
+5. On Servos, confirm the expected four servo IDs respond and no unexpected IDs appear.
+6. Use tiny manual jogs to confirm servo sign and tendon routing before any automated motion.
+7. Connect tracker.
+8. Confirm 0A / runtime-tip visibility and load or validate registration if the run needs pose trust.
+9. Capture a manual startup state or run conservative pretension.
+10. Run `pretension_validation` first.
+11. Repeat pretension validation three times before thesis-style repeatability claims.
+12. Run a tiny `single_segment_repeatability` or `collect_pose_command_dataset` session.
+13. Validate/export the run bundle from Data, then mark the run review status.
+
+Stop immediately if:
+
+- the wrong servo moves
+- a tendon unwinds or visibly loses routing
+- the spine bends aggressively
+- position telemetry is missing
+- no-status or incorrect-status packets repeat
+- tracker 0A/runtime-tip data is stale or missing for pose-dependent runs
+
+Pretension hardware ladder:
+
+1. Manual visual check with torque off and no automated motion.
+2. Current-only / servo-only characterization if tracking is unavailable.
+3. Tracker-enabled conservative pretension with tiny steps and low travel caps.
+4. Repeat pretension three times and compare final positions, load proxy spread, stop reasons, and final XY error when tracking is available.
+5. Export all runs before changing hardware or routing.
+
+## 4. Tracking And Registration
 
 1. Verify 0A and 0B are live.
 2. Check or load the accepted registration artifact.
 3. Check runtime tip policy.
 4. Remember: `coil_as_tip` means the 0A coil origin / position path in robot frame, not a separately calibrated physical tip offset.
 
-## 4. Servo And Pretension
+## 5. Servo And Pretension
 
 1. Start with manual jog/readiness checks.
 2. Use manual startup capture as the fallback baseline.
@@ -52,14 +89,14 @@ Stop reasons to take seriously:
 - `safety_limit_rejected`
 - `current_noise_too_high`
 
-## 5. Experiment Workflow
+## 6. Experiment Workflow
 
 - Repeatability: use only trusted tracker/registration/runtime-tip state for thesis claims.
 - Collect-pose / babble: no-tracker servo-only runs are hardware/debug runs, not model-training data.
 - Penprobe chasing demo: `single_segment` only; 0B target wording depends on whether a pivot-calibrated tool tip is actually active.
 - `parallel_single` is mirrored single-segment babble/testing only, not full two-segment kinematics.
 
-## 6. Export Workflow
+## 7. Export Workflow
 
 CLI export:
 
@@ -108,7 +145,7 @@ Transfer from the Mac:
 rsync -av <pi-user>@<pi-host>:/path/to/pi_code/data/exports/<bundle>.zip ~/Downloads/
 ```
 
-## 7. Do-Not-Trust Warnings
+## 8. Do-Not-Trust Warnings
 
 - Servo-only/no-tracker runs are not model-training valid.
 - Lower-trust runs are not thesis-valid repeatability evidence.

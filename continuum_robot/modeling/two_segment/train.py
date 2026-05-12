@@ -28,6 +28,8 @@ class TwoSegmentModelingConfig:
     output_root: str | None = None
     figure_quality: str = "production"
     output_dir: str | None = None
+    label_mode: str = "auto"
+    include_orientation_if_available: bool = False
 
 
 @dataclass(frozen=True)
@@ -57,7 +59,11 @@ def run_two_segment_modeling(
             "Two-segment modeling requires at least 2 accepted labeled samples. "
             f"Accepted={dataset.accepted_count}, rejected={dataset.rejected_count}, reasons={dataset.rejection_counts()}."
         )
-    bundle = build_feature_label_bundle(dataset)
+    bundle = build_feature_label_bundle(
+        dataset,
+        label_mode=str(config.label_mode),
+        include_orientation_if_available=bool(config.include_orientation_if_available),
+    )
     split = build_train_test_split(
         samples=bundle.samples,
         test_fraction=float(config.test_fraction),
@@ -84,6 +90,7 @@ def run_two_segment_modeling(
             X_test=X_test,
             y_test=y_test,
             model_dir=model_dir,
+            label_metadata=bundle.label_metadata,
         )
         model_results.append(result)
         if result.predictions is not None:
@@ -94,6 +101,7 @@ def run_two_segment_modeling(
                     samples=[bundle.samples[index] for index in split["test_indices"]],
                     y_true=y_test,
                     y_pred=result.predictions,
+                    label_metadata=bundle.label_metadata,
                 )
             )
     output_paths = write_output_bundle(
@@ -164,21 +172,32 @@ def build_train_test_split(
     }
 
 
-def _prediction_rows(*, model_key: str, status: str, samples: list[Any], y_true: np.ndarray, y_pred: np.ndarray) -> list[dict[str, Any]]:
+def _prediction_rows(
+    *,
+    model_key: str,
+    status: str,
+    samples: list[Any],
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    label_metadata: dict[str, Any],
+) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    errors = np.linalg.norm(y_pred[:, :3] - y_true[:, :3], axis=1)
+    slices = label_metadata.get("label_slices") if isinstance(label_metadata.get("label_slices"), dict) else {}
+    distal_slice = _slice_for(slices, "distal_tip", "position") or [0, 1, 2]
+    errors = np.linalg.norm(y_pred[:, distal_slice] - y_true[:, distal_slice], axis=1)
     for index, sample in enumerate(samples):
         row = {
             "model_key": model_key,
             "status": status,
+            "label_mode": str(label_metadata.get("label_mode") or ""),
             "run_name": sample.run_name,
             "source_sample_index": sample.sample_index,
-            "measured_x_mm": float(y_true[index, 0]),
-            "measured_y_mm": float(y_true[index, 1]),
-            "measured_z_mm": float(y_true[index, 2]),
-            "predicted_x_mm": float(y_pred[index, 0]),
-            "predicted_y_mm": float(y_pred[index, 1]),
-            "predicted_z_mm": float(y_pred[index, 2]),
+            "measured_x_mm": float(y_true[index, distal_slice[0]]),
+            "measured_y_mm": float(y_true[index, distal_slice[1]]),
+            "measured_z_mm": float(y_true[index, distal_slice[2]]),
+            "predicted_x_mm": float(y_pred[index, distal_slice[0]]),
+            "predicted_y_mm": float(y_pred[index, distal_slice[1]]),
+            "predicted_z_mm": float(y_pred[index, distal_slice[2]]),
             "position_error_mm": float(errors[index]),
             "segment_a_d1_mm": float(sample.feature_mm[0]),
             "segment_a_d2_mm": float(sample.feature_mm[1]),
@@ -189,17 +208,54 @@ def _prediction_rows(*, model_key: str, status: str, samples: list[Any], y_true:
             "segment_b_d7_mm": float(sample.feature_mm[6]),
             "segment_b_d8_mm": float(sample.feature_mm[7]),
         }
-        if y_true.shape[1] >= 6 and y_pred.shape[1] >= 6:
-            row.update(
-                {
-                    "measured_tx": float(y_true[index, 3]),
-                    "measured_ty": float(y_true[index, 4]),
-                    "measured_tz": float(y_true[index, 5]),
-                    "predicted_tx": float(y_pred[index, 3]),
-                    "predicted_ty": float(y_pred[index, 4]),
-                    "predicted_tz": float(y_pred[index, 5]),
-                }
-            )
+        for role in ("intermediate_segment", "distal_tip"):
+            position_slice = _slice_for(slices, role, "position")
+            if position_slice:
+                prefix = "intermediate" if role == "intermediate_segment" else "distal"
+                role_error = float(np.linalg.norm(y_pred[index, position_slice] - y_true[index, position_slice]))
+                row.update(
+                    {
+                        f"measured_{prefix}_x_mm": float(y_true[index, position_slice[0]]),
+                        f"measured_{prefix}_y_mm": float(y_true[index, position_slice[1]]),
+                        f"measured_{prefix}_z_mm": float(y_true[index, position_slice[2]]),
+                        f"predicted_{prefix}_x_mm": float(y_pred[index, position_slice[0]]),
+                        f"predicted_{prefix}_y_mm": float(y_pred[index, position_slice[1]]),
+                        f"predicted_{prefix}_z_mm": float(y_pred[index, position_slice[2]]),
+                        f"{prefix}_position_error_mm": role_error,
+                    }
+                )
+            orientation_slice = _slice_for(slices, role, "orientation")
+            if orientation_slice:
+                prefix = "intermediate" if role == "intermediate_segment" else "distal"
+                row.update(
+                    {
+                        f"measured_{prefix}_tx": float(y_true[index, orientation_slice[0]]),
+                        f"measured_{prefix}_ty": float(y_true[index, orientation_slice[1]]),
+                        f"measured_{prefix}_tz": float(y_true[index, orientation_slice[2]]),
+                        f"predicted_{prefix}_tx": float(y_pred[index, orientation_slice[0]]),
+                        f"predicted_{prefix}_ty": float(y_pred[index, orientation_slice[1]]),
+                        f"predicted_{prefix}_tz": float(y_pred[index, orientation_slice[2]]),
+                    }
+                )
+                if role == "distal_tip":
+                    row.update(
+                        {
+                            "measured_tx": row[f"measured_{prefix}_tx"],
+                            "measured_ty": row[f"measured_{prefix}_ty"],
+                            "measured_tz": row[f"measured_{prefix}_tz"],
+                            "predicted_tx": row[f"predicted_{prefix}_tx"],
+                            "predicted_ty": row[f"predicted_{prefix}_ty"],
+                            "predicted_tz": row[f"predicted_{prefix}_tz"],
+                        }
+                    )
         rows.append(row)
     _ = position_metrics
     return rows
+
+
+def _slice_for(slices: dict[str, Any], role: str, kind: str) -> list[int] | None:
+    role_slices = slices.get(role) if isinstance(slices.get(role), dict) else {}
+    value = role_slices.get(kind)
+    if isinstance(value, list) and len(value) == 3:
+        return [int(item) for item in value]
+    return None

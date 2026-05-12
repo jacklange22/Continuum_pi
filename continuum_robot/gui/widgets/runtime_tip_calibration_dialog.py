@@ -243,7 +243,14 @@ class RuntimeTipCalibrationDialog(QDialog):
             f"{str(state.active_runtime_tip_mode).replace('_', ' ')} | "
             f"{str(state.active_runtime_tip_trust_level).replace('_', ' ')}"
         )
-        self.live_runtime_tip_source_label.setText(state.active_runtime_tip_mode_message)
+        runtime_tip_mode = str(state.active_runtime_tip_mode or "")
+        runtime_tip_source_message = str(state.active_runtime_tip_mode_message or "")
+        if runtime_tip_mode == "coil_as_tip":
+            runtime_tip_source_message = (
+                "0A coil pose is shown directly as the tip. "
+                f"{runtime_tip_source_message}".strip()
+            )
+        self.live_runtime_tip_source_label.setText(runtime_tip_source_message)
         self.live_runtime_tip_guidance_label.setText(state.active_runtime_tip_guidance)
         self.runtime_chain_label.setText(f"{state.runtime_chain_state}: {state.runtime_chain_message}")
         self.latest_artifact_label.setText(state.latest_accepted_path or "none")

@@ -19,12 +19,19 @@ from continuum_robot.modeling.two_segment import (
 )
 from continuum_robot.modeling.two_segment.cli import main as modeling_cli_main
 from continuum_robot.modeling.two_segment.models import TorchANNModel, default_model_suite
+from continuum_robot.modeling.two_segment.physics import two_segment_constant_curvature_prediction
 
 
 FIXTURE_RUN = Path(__file__).parent / "fixtures" / "two_segment_modeling_trainable"
 
 
-def _write_two_segment_dataset_run(root: Path, *, name: str = "20260508_120000_two_segment_collect_pose_command_dataset", servo_only: bool = False) -> Path:
+def _write_two_segment_dataset_run(
+    root: Path,
+    *,
+    name: str = "20260508_120000_two_segment_collect_pose_command_dataset",
+    servo_only: bool = False,
+    include_intermediate: bool = False,
+) -> Path:
     run_dir = root / "data" / "experiments" / "two_segment_collect_pose_command_dataset" / name
     run_dir.mkdir(parents=True, exist_ok=True)
     metrics = {
@@ -100,9 +107,25 @@ def _write_two_segment_dataset_run(root: Path, *, name: str = "20260508_120000_t
                 [0.0, 0.0, 1.0, position[2]],
                 [0.0, 0.0, 0.0, 1.0],
             ]
+            intermediate = [
+                5.0 + 0.2 * command_mm[0],
+                8.0 + 0.15 * command_mm[1],
+                15.0 + 0.02 * sum(command_mm[:4]),
+            ]
+            intermediate_matrix = [
+                [1.0, 0.0, 0.0, intermediate[0]],
+                [0.0, 1.0, 0.0, intermediate[1]],
+                [0.0, 0.0, 1.0, intermediate[2]],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
             pose_payload = {"frame": "robot", "distal_tip_pose": {"T_robot_tip": matrix}}
             if servo_only:
                 pose_payload = {"frame": "tracker", "distal_tip_pose": {}}
+            robot_roles = {} if servo_only else {"distal_tip": {"T_robot_tip": matrix}}
+            available_roles = [] if servo_only else ["distal_tip"]
+            if include_intermediate and not servo_only:
+                robot_roles["intermediate_segment"] = {"T_robot_intermediate": intermediate_matrix}
+                available_roles.append("intermediate_segment")
             sample = {
                 "wall_time_utc": f"2026-05-08T12:00:{index:02d}+00:00",
                 "phase": "synthetic_test",
@@ -118,7 +141,7 @@ def _write_two_segment_dataset_run(root: Path, *, name: str = "20260508_120000_t
                     "commanded_servo_ids": [1, 2, 3, 4, 5, 6, 7, 8],
                     "flat_command_cm": [value / 10.0 for value in command_mm],
                 },
-                "pose_in_robot_frame": {} if servo_only else {"roles": {"distal_tip": {"T_robot_tip": matrix}}},
+                "pose_in_robot_frame": {} if servo_only else {"roles": robot_roles},
                 "two_segment_pose": pose_payload,
                 "extra": {
                     "record_kind": "two_segment_dataset_capture",
@@ -129,10 +152,15 @@ def _write_two_segment_dataset_run(root: Path, *, name: str = "20260508_120000_t
                     "command_units": "cm",
                     "commanded_servo_ids": [1, 2, 3, 4, 5, 6, 7, 8],
                     "startup_artifact_provenance": metrics["startup_artifact_provenance"],
-                    "available_pose_roles": [] if servo_only else ["distal_tip"],
+                    "available_pose_roles": available_roles,
                     "missing_required_pose_roles": ["distal_tip"] if servo_only else [],
-                    "distal_only": True,
-                    "includes_intermediate_pose": False,
+                    "distal_only": not bool(include_intermediate and not servo_only),
+                    "includes_intermediate_pose": bool(include_intermediate and not servo_only),
+                    "segment_order": ["segment_a", "segment_b"],
+                    "segments": {
+                        "segment_a": {"label": "Segment A", "role": "proximal", "servo_ids": [1, 2, 3, 4], "pair_mapping": [[1, 3], [2, 4]], "segment_order_index": 0},
+                        "segment_b": {"label": "Segment B", "role": "distal", "servo_ids": [5, 6, 7, 8], "pair_mapping": [[5, 7], [6, 8]], "segment_order_index": 1},
+                    },
                 },
             }
             handle.write(json.dumps(sample) + "\n")
@@ -151,6 +179,8 @@ def test_two_segment_modeling_loader_is_strict_and_builds_mm_features(tmp_path: 
     assert bundle.X.shape == (8, 8)
     assert bundle.X[1, 0] == 1.0
     assert bundle.feature_metadata["feature_names"][0] == "segment_a_servo_1_displacement_mm"
+    assert bundle.feature_metadata["tendon_displacement_positive_direction"] == "shortening"
+    assert bundle.feature_metadata["encoder_tick_direction_for_shortening"] == "decreasing_ticks"
     assert bundle.label_metadata["orientation_available"] is False
 
 
@@ -159,8 +189,21 @@ def test_two_segment_modeling_config_example_loads() -> None:
 
     assert payload["strict_trainability"] is True
     assert payload["input_units"] == "tendon_displacement_mm"
-    assert payload["output_target"] == "distal_tip_xyz"
+    assert payload["output_target"] == "auto"
+    assert "two_coil_xyz" in payload["labeling"]["allowed_modes"]
     assert payload["ann"]["hidden_layers"] == [128, 128]
+    assert payload["ann"]["hidden_layer_options"] == [[32, 32], [64, 64], [128, 128]]
+    assert payload["physics_models"]["global"]["output_pose_frame"]["value"] == "robot"
+    assert payload["physics_models"]["global"]["tendon_displacement_positive_direction"]["value"] == "shortening"
+    assert payload["physics_models"]["global"]["encoder_tick_direction_for_shortening"]["value"] == "decreasing_ticks"
+    assert payload["physics_models"]["segments"]["segment_a"]["segment_length_mm"]["value"] == 66.0
+    assert payload["physics_models"]["segments"]["segment_b"]["tendon_center_radius_mm"]["value"] == 4.12
+    assert payload["physics_models"]["segments"]["segment_a"]["hole_radius_or_diameter_mm"]["value"] == 1.65
+    assert "confirm whether" in payload["physics_models"]["segments"]["segment_a"]["hole_radius_or_diameter_mm"]["notes"].lower()
+    assert "required_conventions_confirmed" in payload["physics_models"]["mike_constant_curvature"]
+    assert payload["physics_models"]["mike_constant_curvature"]["geometry_complete"] is True
+    assert payload["physics_models"]["mike_constant_curvature"]["sign_convention_known"] is True
+    assert "segment_stiffness_values" in payload["physics_models"]["camarillo"]
     assert "linear_baseline" in payload["models"]["enabled"]
 
 
@@ -189,16 +232,24 @@ def test_two_segment_modeling_writes_outputs_validator_export_and_data_summary(t
         "label_metadata.json",
         "train_test_split.json",
         "rejected_samples.jsonl",
+        "model_status.json",
+        "physics_model_parameter_report.json",
+        "physics_model_parameter_report.txt",
         "two_segment_model_comparison_report.png",
+        "two_segment_distal_measured_vs_predicted_xy_report.png",
         "two_segment_measured_vs_predicted_xy_report.png",
         "two_segment_position_error_distribution_report.png",
         "two_segment_axis_error_report.png",
+        "two_segment_two_coil_error_report.png",
     ]:
         assert (result.output_dir / filename).exists()
     summary = json.loads((result.output_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["experiment_name"] == "two_segment_modeling"
     assert summary["experiment_metrics"]["models"]["linear_baseline"]["status"] == "completed"
-    assert summary["experiment_metrics"]["models"]["camarillo"]["status"] == "unavailable"
+    assert summary["experiment_metrics"]["models"]["camarillo"]["status"].startswith("unavailable")
+    assert summary["experiment_metrics"]["models"]["mike_constant_curvature"]["status"].startswith("unavailable")
+    assert summary["experiment_metrics"]["models"]["mike_constant_curvature"]["artifact_paths"]
+    assert summary["experiment_metrics"]["physics_model_status"]["camarillo"]["predictions_generated"] is False
     assert "single_run_random_split_can_overestimate_generalization" in summary["experiment_metrics"]["data_quality_warnings"]
 
     validation = validate_run_folder(result.output_dir)
@@ -210,6 +261,8 @@ def test_two_segment_modeling_writes_outputs_validator_export_and_data_summary(t
     exported = {entry.bundle_path for entry in export.entries}
     assert "two_segment_modeling_summary.txt" in exported
     assert "predictions.csv" in exported
+    assert "model_status.json" in exported
+    assert "physics_model_parameter_report.json" in exported
     assert "models/linear_baseline/linear_baseline_weights.json" in exported
 
 
@@ -218,7 +271,7 @@ def test_two_segment_modeling_fixture_supports_orientation_outputs_and_evidence_
     shutil.copytree(FIXTURE_RUN, run_dir)
 
     dataset = load_two_segment_modeling_dataset([run_dir])
-    bundle = build_feature_label_bundle(dataset)
+    bundle = build_feature_label_bundle(dataset, include_orientation_if_available=True)
     assert bundle.X.shape == (6, 8)
     assert bundle.y.shape == (6, 6)
     assert bundle.feature_metadata["feature_units"] == ["mm"] * 8
@@ -232,6 +285,7 @@ def test_two_segment_modeling_fixture_supports_orientation_outputs_and_evidence_
             model_keys=["linear_baseline", "camarillo"],
             output_root=str(tmp_path / "data" / "experiments"),
             random_seed=1,
+            include_orientation_if_available=True,
         ),
     )
     summary = json.loads((result.output_dir / "summary.json").read_text(encoding="utf-8"))
@@ -247,7 +301,49 @@ def test_two_segment_modeling_fixture_supports_orientation_outputs_and_evidence_
     modeling_metrics = entry["key_metrics"]["two_segment_modeling"]
     assert modeling_metrics["input_dataset_run_ids"] == ["fixture-two-segment-trainable"]
     assert modeling_metrics["best_model"] == "linear_baseline"
+    assert "camarillo" in modeling_metrics["physics_model_status"]
     assert "two_segment_orientation_error_report.png" in "\n".join(entry["report_figures"])
+
+
+def test_two_segment_modeling_two_coil_label_mode_and_segment_metadata(tmp_path: Path) -> None:
+    run_dir = _write_two_segment_dataset_run(tmp_path, include_intermediate=True)
+    dataset = load_two_segment_modeling_dataset([run_dir])
+    bundle = build_feature_label_bundle(dataset)
+
+    assert bundle.label_metadata["label_mode"] == "two_coil_xyz"
+    assert bundle.y.shape == (8, 6)
+    assert bundle.label_metadata["label_slices"]["intermediate_segment"]["position"] == [0, 1, 2]
+    assert bundle.label_metadata["label_slices"]["distal_tip"]["position"] == [3, 4, 5]
+    assert bundle.label_metadata["includes_intermediate_label"] is True
+    assert bundle.feature_metadata["segment_grouping"]["lower_segment"]["segment"] == "segment_a"
+    assert bundle.feature_metadata["segment_grouping"]["upper_segment"]["segment"] == "segment_b"
+
+    result = run_two_segment_modeling(
+        run_dirs=[run_dir],
+        project_root=tmp_path,
+        config=TwoSegmentModelingConfig(
+            model_keys=["linear_baseline"],
+            output_root=str(tmp_path / "data" / "experiments"),
+            random_seed=3,
+        ),
+    )
+    summary = json.loads((result.output_dir / "summary.json").read_text(encoding="utf-8"))
+    linear = summary["experiment_metrics"]["models"]["linear_baseline"]["metrics"]
+    assert summary["experiment_metrics"]["label_mode"] == "two_coil_xyz"
+    assert summary["experiment_metrics"]["includes_intermediate_label"] is True
+    assert "intermediate_xyz_rmse_mm" in linear
+    assert "two_coil_combined_xyz_rmse_mm" in linear
+    assert (result.output_dir / "two_segment_intermediate_measured_vs_predicted_xy_report.png").exists()
+
+
+def test_two_segment_modeling_distal_xyz_fallback_does_not_fabricate_intermediate(tmp_path: Path) -> None:
+    run_dir = _write_two_segment_dataset_run(tmp_path, include_intermediate=False)
+    dataset = load_two_segment_modeling_dataset([run_dir])
+    bundle = build_feature_label_bundle(dataset)
+
+    assert bundle.label_metadata["label_mode"] == "distal_xyz"
+    assert bundle.y.shape == (8, 3)
+    assert "intermediate_segment" not in bundle.label_metadata["label_slices"]
 
 
 def test_two_segment_modeling_cli_help_and_no_trainable_data_message(tmp_path: Path, capsys) -> None:
@@ -314,6 +410,32 @@ def test_two_segment_ann_reports_unavailable_when_torch_missing(monkeypatch) -> 
     assert "PyTorch unavailable" in result.reason
 
 
+def test_two_segment_ann_sweep_skips_cleanly_when_torch_missing(monkeypatch, tmp_path: Path) -> None:
+    original_import = __import__
+
+    def _blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "torch":
+            raise ImportError("torch deliberately unavailable in test")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", _blocked_import)
+    model = default_model_suite(
+        model_keys=["ann"],
+        config={"ann": {"sweep_enabled": True, "hidden_layer_options": [[32, 32]], "epochs": 1}},
+    )[0]
+    result = model.fit_predict(
+        X_train=np.zeros((2, 8)),
+        y_train=np.zeros((2, 3)),
+        X_test=np.zeros((1, 8)),
+        y_test=np.zeros((1, 3)),
+        model_dir=tmp_path / "ann_sweep_missing",
+    )
+
+    assert result.status == "unavailable"
+    assert "PyTorch unavailable" in result.reason
+    assert (tmp_path / "ann_sweep_missing" / "ann_sweep_summary.json").exists()
+
+
 def test_two_segment_physics_adapters_remain_honestly_unavailable(tmp_path: Path) -> None:
     models = default_model_suite(model_keys=["camarillo", "mike_constant_curvature"], config={})
     results = [
@@ -327,8 +449,138 @@ def test_two_segment_physics_adapters_remain_honestly_unavailable(tmp_path: Path
         for model in models
     ]
 
-    assert all(result.status == "unavailable" for result in results)
-    assert all("fake" in result.reason or "No active" in result.reason or "not yet wired" in result.reason for result in results)
+    assert all(result.status.startswith("unavailable") for result in results)
+    assert all(result.predictions is None for result in results)
+    assert all((tmp_path / result.model_key / "model_status.json").exists() for result in results)
+    assert any("Missing required" in result.reason for result in results)
+
+
+def test_design_geometry_makes_mike_ready_but_still_convention_gated(tmp_path: Path) -> None:
+    run_dir = _write_two_segment_dataset_run(tmp_path, include_intermediate=True)
+    payload = yaml.safe_load(Path("config/modeling_two_segment.example.yaml").read_text(encoding="utf-8"))
+    result = run_two_segment_modeling(
+        run_dirs=[run_dir],
+        project_root=tmp_path,
+        config=TwoSegmentModelingConfig(
+            model_keys=["mike_constant_curvature", "camarillo"],
+            model_config={"physics_models": payload["physics_models"]},
+            output_root=str(tmp_path / "data" / "experiments"),
+            random_seed=4,
+        ),
+    )
+    summary = json.loads((result.output_dir / "summary.json").read_text(encoding="utf-8"))
+    report = json.loads((result.output_dir / "physics_model_parameter_report.json").read_text(encoding="utf-8"))
+    mike = summary["experiment_metrics"]["models"]["mike_constant_curvature"]
+    camarillo = summary["experiment_metrics"]["models"]["camarillo"]
+
+    assert mike["status"] == "unavailable_unvalidated_convention"
+    assert "segment_length_mm" not in "\n".join(mike["status_details"]["missing_parameters"])
+    assert "tendon_positions_mm" not in "\n".join(mike["status_details"]["missing_parameters"])
+    assert any("segment_a.segment_length_mm" in item for item in report["known_design_parameters"])
+    assert any("hole_radius_or_diameter_mm" in item for item in report["nonblocking_uncertain_parameters"])
+    assert "required_conventions_confirmed" in "\n".join(mike["status_details"]["hardware_validation_required"])
+    assert camarillo["status"].startswith("unavailable")
+    assert "segment_stiffness_values" in "\n".join(camarillo["status_details"]["blocking_missing_parameters"])
+    assert "servo_current_is_load_proxy_not_stiffness" in "\n".join(payload["physics_models"]["camarillo"]["unavailable_reason_notes"])
+
+
+def _complete_cc_physics_config() -> dict:
+    positions = [[4.0, 0.0], [0.0, 4.0], [-4.0, 0.0], [0.0, -4.0]]
+    return {
+        "physics_models": {
+            "global": {
+                "model_frame_convention": "base_frame_z_along_segment_then_compose_segment_a_segment_b",
+                "tendon_displacement_sign_convention": "positive_shortens_tendon",
+                "output_pose_frame": "robot",
+                "tangent_representation": "transform_z_axis",
+                "segment_order_source": "robot_config",
+            },
+            "segments": {
+                "segment_a": {"segment_length_mm": 80.0, "tendon_positions_mm": positions},
+                "segment_b": {"segment_length_mm": 70.0, "tendon_positions_mm": positions},
+            },
+            "mike_constant_curvature": {
+                "required_conventions_confirmed": True,
+                "validated_against_hardware": False,
+                "curvature_from_tendon_displacement": "least_squares_tendon_plane",
+            },
+        }
+    }
+
+
+def test_mike_constant_curvature_composes_two_segments_without_fake_outputs(tmp_path: Path) -> None:
+    run_dir = _write_two_segment_dataset_run(tmp_path, include_intermediate=True)
+    config = _complete_cc_physics_config()
+    result = run_two_segment_modeling(
+        run_dirs=[run_dir],
+        project_root=tmp_path,
+        config=TwoSegmentModelingConfig(
+            model_keys=["mike_constant_curvature"],
+            model_config=config,
+            output_root=str(tmp_path / "data" / "experiments"),
+            random_seed=3,
+        ),
+    )
+    model_result = result.model_results[0]
+
+    assert model_result.status == "completed"
+    assert model_result.predictions is not None
+    assert model_result.status_details["hardware_validated"] is False
+    assert model_result.status_details["predictions_generated"] is True
+    assert "distal_xyz_rmse_mm" in model_result.metrics
+    assert "intermediate_xyz_rmse_mm" in model_result.metrics
+
+
+def test_constant_curvature_composition_semantics() -> None:
+    config = _complete_cc_physics_config()
+    zero = np.zeros(8, dtype=float)
+    segment_a_only = np.asarray([1.0, -1.0, -1.0, 1.0, 0.0, 0.0, 0.0, 0.0], dtype=float)
+    segment_b_only = np.asarray([0.0, 0.0, 0.0, 0.0, 1.0, -1.0, -1.0, 1.0], dtype=float)
+    combined = segment_a_only + segment_b_only
+
+    pose_zero = two_segment_constant_curvature_prediction(zero, config)
+    pose_a = two_segment_constant_curvature_prediction(segment_a_only, config)
+    pose_b = two_segment_constant_curvature_prediction(segment_b_only, config)
+    pose_ab = two_segment_constant_curvature_prediction(combined, config)
+
+    assert not np.allclose(pose_a["distal_xyz"], pose_zero["distal_xyz"])
+    assert not np.allclose(pose_b["distal_xyz"], pose_zero["distal_xyz"])
+    assert not np.allclose(pose_ab["distal_xyz"], pose_a["distal_xyz"])
+    assert not np.allclose(pose_ab["distal_xyz"], pose_b["distal_xyz"])
+    assert np.allclose(pose_b["intermediate_xyz"], pose_zero["intermediate_xyz"])
+    assert not np.allclose(pose_a["intermediate_xyz"], pose_zero["intermediate_xyz"])
+
+
+def test_constant_curvature_sign_convention_is_explicit() -> None:
+    config = _complete_cc_physics_config()
+    command = np.asarray([1.0, 0.0, -1.0, 0.0, 0.5, 0.0, -0.5, 0.0], dtype=float)
+    shortened = two_segment_constant_curvature_prediction(command, config)
+    lengthen_config = json.loads(json.dumps(config))
+    lengthen_config["physics_models"]["global"]["tendon_displacement_sign_convention"] = "positive_lengthens_tendon"
+    lengthened = two_segment_constant_curvature_prediction(command, lengthen_config)
+
+    assert not np.allclose(shortened["distal_xyz"], lengthened["distal_xyz"])
+    assert np.sign(shortened["distal_xyz"][0]) == -np.sign(lengthened["distal_xyz"][0])
+
+
+def test_segment_order_and_roles_are_configurable_in_feature_metadata(tmp_path: Path) -> None:
+    run_dir = _write_two_segment_dataset_run(tmp_path)
+    samples_path = run_dir / "samples.jsonl"
+    rows = [json.loads(line) for line in samples_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    for row in rows:
+        row["extra"]["segment_order"] = ["segment_b", "segment_a"]
+        row["extra"]["segments"]["segment_a"]["role"] = "distal"
+        row["extra"]["segments"]["segment_a"]["segment_order_index"] = 1
+        row["extra"]["segments"]["segment_b"]["role"] = "proximal"
+        row["extra"]["segments"]["segment_b"]["segment_order_index"] = 0
+    samples_path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+
+    dataset = load_two_segment_modeling_dataset([run_dir])
+    bundle = build_feature_label_bundle(dataset)
+
+    assert bundle.feature_metadata["segment_order"] == ["segment_b", "segment_a"]
+    assert bundle.feature_metadata["segment_grouping"]["lower_segment"]["segment"] == "segment_b"
+    assert bundle.feature_metadata["segment_grouping"]["upper_segment"]["segment"] == "segment_a"
 
 
 def test_two_segment_modeling_cli_runs_linear_only(tmp_path: Path) -> None:

@@ -24,6 +24,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output-dir", help="Exact output directory to create. Existing paths get a numeric suffix.")
     parser.add_argument("--allow-lower-trust", action="store_true", help="Allow lower-trust labeled samples and mark outputs lower-trust.")
     parser.add_argument("--models", nargs="+", help="Model keys to attempt: linear_baseline camarillo mike_constant_curvature ann.")
+    parser.add_argument("--label-mode", choices=["auto", "distal_xyz", "distal_pose6", "two_coil_xyz", "two_coil_pose12"], help="Output label mode.")
+    parser.add_argument("--include-orientation-if-available", action="store_true", help="In auto mode, use pose labels when all required tangent labels are present.")
     parser.add_argument("--test-fraction", type=float, help="Test split fraction.")
     parser.add_argument("--seed", type=int, help="Random seed for split/training.")
     parser.add_argument("--by-run-split", action="store_true", help="Force a by-run split when multiple runs are supplied.")
@@ -71,6 +73,7 @@ def _config_from_args(args: argparse.Namespace) -> TwoSegmentModelingConfig:
     payload = _read_yaml_config(Path(args.config)) if args.config else {}
     split = dict(payload.get("split", {}) or {})
     models = dict(payload.get("models", {}) or {})
+    labeling = dict(payload.get("labeling", {}) or {})
     model_config = _model_config(payload)
     split_method = str(split.get("method", "auto") or "auto").lower()
     by_run_split = None
@@ -92,6 +95,8 @@ def _config_from_args(args: argparse.Namespace) -> TwoSegmentModelingConfig:
         output_root=args.output_root or dict(payload.get("output", {}) or {}).get("output_root"),
         output_dir=args.output_dir or dict(payload.get("output", {}) or {}).get("output_dir"),
         figure_quality=str(args.figure_quality or dict(payload.get("output", {}) or {}).get("figure_quality", "production")),
+        label_mode=str(args.label_mode or labeling.get("label_mode") or payload.get("output_target", "auto")).replace("distal_tip_xyz", "distal_xyz"),
+        include_orientation_if_available=bool(args.include_orientation_if_available or labeling.get("include_orientation_if_available", payload.get("include_orientation_if_available", False))),
     )
 
 

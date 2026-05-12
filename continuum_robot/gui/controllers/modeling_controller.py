@@ -66,6 +66,12 @@ class ModelingViewState:
     two_segment_include_mike: bool = False
     two_segment_strict_mode: bool = True
     two_segment_allow_lower_trust: bool = False
+    two_segment_label_mode: str = "auto"
+    two_segment_include_orientation_if_available: bool = False
+    two_segment_ann_sweep_enabled: bool = False
+    two_segment_ann_hidden_layers: str = "128,128"
+    two_segment_ann_epochs: int = 200
+    two_segment_test_fraction: float = 0.25
     two_segment_active: bool = False
     two_segment_can_run: bool = False
     two_segment_last_output_path: str | None = None
@@ -260,7 +266,33 @@ class ModelingController:
             "trainable": dataset.accepted_count >= 2,
             "orientation_available": dataset.orientation_available,
             "includes_intermediate_pose": dataset.includes_intermediate_pose,
+            "two_coil_xyz_available": dataset.two_coil_xyz_available,
+            "two_coil_orientation_available": dataset.two_coil_orientation_available,
         }
+
+    def set_two_segment_label_mode(self, value: str) -> None:
+        with self._lock:
+            self.state.two_segment_label_mode = str(value or "auto")
+
+    def set_two_segment_include_orientation_if_available(self, value: bool) -> None:
+        with self._lock:
+            self.state.two_segment_include_orientation_if_available = bool(value)
+
+    def set_two_segment_ann_sweep_enabled(self, value: bool) -> None:
+        with self._lock:
+            self.state.two_segment_ann_sweep_enabled = bool(value)
+
+    def set_two_segment_ann_hidden_layers(self, value: str) -> None:
+        with self._lock:
+            self.state.two_segment_ann_hidden_layers = str(value or "128,128")
+
+    def set_two_segment_ann_epochs(self, value: int) -> None:
+        with self._lock:
+            self.state.two_segment_ann_epochs = max(1, int(value))
+
+    def set_two_segment_test_fraction(self, value: float) -> None:
+        with self._lock:
+            self.state.two_segment_test_fraction = min(0.9, max(0.05, float(value)))
 
     def run_two_segment_modeling_analysis(self) -> None:
         with self._lock:
@@ -269,6 +301,12 @@ class ModelingController:
             run_dirs = [Path(path) for path in self.state.selected_two_segment_run_paths]
             model_keys = self._two_segment_model_keys()
             allow_lower_trust = bool(self.state.two_segment_allow_lower_trust and not self.state.two_segment_strict_mode)
+            label_mode = str(self.state.two_segment_label_mode)
+            include_orientation = bool(self.state.two_segment_include_orientation_if_available)
+            ann_sweep = bool(self.state.two_segment_ann_sweep_enabled)
+            ann_hidden_layers = str(self.state.two_segment_ann_hidden_layers)
+            ann_epochs = int(self.state.two_segment_ann_epochs)
+            test_fraction = float(self.state.two_segment_test_fraction)
             self.state.two_segment_active = True
             self.state.status_message = "Running two-segment modeling analysis..."
         if not run_dirs:
@@ -287,6 +325,12 @@ class ModelingController:
                 "run_dirs": run_dirs,
                 "model_keys": model_keys,
                 "allow_lower_trust": allow_lower_trust,
+                "label_mode": label_mode,
+                "include_orientation": include_orientation,
+                "ann_sweep": ann_sweep,
+                "ann_hidden_layers": ann_hidden_layers,
+                "ann_epochs": ann_epochs,
+                "test_fraction": test_fraction,
             },
             daemon=True,
         )
@@ -369,14 +413,42 @@ class ModelingController:
                 f"using {result.selected_sample_count} samples."
             )
 
-    def _two_segment_modeling_worker(self, *, run_dirs: list[Path], model_keys: list[str], allow_lower_trust: bool) -> None:
+    def _two_segment_modeling_worker(
+        self,
+        *,
+        run_dirs: list[Path],
+        model_keys: list[str],
+        allow_lower_trust: bool,
+        label_mode: str,
+        include_orientation: bool,
+        ann_sweep: bool,
+        ann_hidden_layers: str,
+        ann_epochs: int,
+        test_fraction: float,
+    ) -> None:
         try:
+            hidden_layers = _parse_hidden_layers(ann_hidden_layers)
             result = run_two_segment_modeling(
                 run_dirs=run_dirs,
                 project_root=self.project_root,
                 config=TwoSegmentModelingConfig(
                     allow_lower_trust=bool(allow_lower_trust),
                     model_keys=list(model_keys),
+                    label_mode=str(label_mode),
+                    include_orientation_if_available=bool(include_orientation),
+                    test_fraction=float(test_fraction),
+                    model_config={
+                        "ann": {
+                            "hidden_layers": hidden_layers,
+                            "hidden_layer_options": [[32, 32], [64, 64], [128, 128]],
+                            "sweep_enabled": bool(ann_sweep),
+                            "epochs": int(ann_epochs),
+                            "batch_size": 64,
+                            "learning_rate": 0.001,
+                            "patience": 20,
+                            "seeds": [42],
+                        }
+                    },
                     output_root=str(self.project_root / "data" / "experiments"),
                     random_seed=42,
                 ),
@@ -428,12 +500,16 @@ class ModelingController:
             ("Rejection Reasons", str(summary["rejection_reasons"] or {})),
             ("Orientation", "available" if summary["orientation_available"] else "XYZ only"),
             ("Intermediate Pose", str(summary["includes_intermediate_pose"])),
+            ("Two-Coil Labels", str(summary.get("two_coil_xyz_available", False))),
+            ("Label Mode", str(self.state.two_segment_label_mode)),
+            ("Input Features", "8 tendon displacements (mm)"),
+            ("Physics Models", "Mike/Camarillo require validated geometry, stiffness, sign, and frame config."),
         ]
 
     @staticmethod
     def _two_segment_result_message(result: TwoSegmentModelingResult) -> str:
         completed = [item for item in result.model_results if item.status == "completed"]
-        unavailable = [f"{item.model_key}: {item.reason}" for item in result.model_results if item.status == "unavailable"]
+        unavailable = [f"{item.model_key}: {item.reason}" for item in result.model_results if str(item.status).startswith("unavailable")]
         best = min(
             completed,
             key=lambda item: float(item.metrics.get("xyz_rmse_mm", float("inf"))),
@@ -475,3 +551,11 @@ class ModelingController:
             except Exception:
                 return None
         return None
+
+
+def _parse_hidden_layers(raw: str) -> list[int]:
+    try:
+        values = [int(part.strip()) for part in str(raw).split(",") if part.strip()]
+    except ValueError:
+        return [128, 128]
+    return values or [128, 128]

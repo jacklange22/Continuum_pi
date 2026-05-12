@@ -36,6 +36,8 @@ def test_data_management_tab_updates_from_controller_state(tmp_path) -> None:
     tab.update(controller.refresh())
 
     assert tab.table.columnCount() == 8
+    assert tab.delete_button.text() == "Delete Selected File/Bundle"
+    assert tab.trash_run_button.text() == "Move Selected Run to Trash"
     assert tab.delete_button.isEnabled() is False
     assert tab.preview_migration_button.isEnabled() is False
     assert tab.export_selected_button.isEnabled() is False

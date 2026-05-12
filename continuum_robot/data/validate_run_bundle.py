@@ -52,9 +52,10 @@ EXPECTED_REPORT_FIGURES = {
     ],
     "two_segment_modeling": [
         "two_segment_model_comparison_report.png",
-        "two_segment_measured_vs_predicted_xy_report.png",
+        "two_segment_distal_measured_vs_predicted_xy_report.png",
         "two_segment_position_error_distribution_report.png",
         "two_segment_axis_error_report.png",
+        "two_segment_two_coil_error_report.png",
     ],
 }
 
@@ -365,6 +366,9 @@ def _check_two_segment_modeling(
         "rejected_samples.jsonl",
         "two_segment_modeling_summary.txt",
         "run_provenance.json",
+        "model_status.json",
+        "physics_model_parameter_report.json",
+        "physics_model_parameter_report.txt",
     ]:
         if not (run_dir / filename).exists():
             issues.append(RunValidationIssue("WARN", f"Expected two-segment modeling artifact is missing: {filename}"))

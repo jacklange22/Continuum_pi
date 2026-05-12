@@ -47,6 +47,7 @@ class DataManagementViewState:
     can_reveal: bool = False
     can_copy_path: bool = False
     can_delete: bool = False
+    delete_button_label: str = "Delete Selected File/Bundle"
     selected_delete_summary: str = ""
     migration_summary_pairs: list[tuple[str, str]] = field(default_factory=list)
     last_migration_report_path: str | None = None
@@ -103,6 +104,7 @@ class DataManagementController:
             and all(item.deletable for item in selected_items)
             and all(_exportable_run_dir(item) is None for item in selected_items)
         )
+        self.state.delete_button_label = _delete_button_label(selected_items)
         self.state.can_export_selected = _selected_run_dir(selected_items) is not None
         self.state.can_export_latest = any(_exportable_run_dir(item) is not None for item in (self.state.filtered_items or self.state.items))
         selected_run_dir = _selected_run_dir(selected_items)
@@ -167,7 +169,9 @@ class DataManagementController:
         self._catalog_dirty = True
         self.refresh()
         if deleted:
-            self.state.status_message = f"Deleted {len(deleted)} selected item(s)."
+            trash_deleted = all(_is_trash_item(item) for item in selected_items)
+            verb = "Permanently deleted" if trash_deleted else "Deleted"
+            self.state.status_message = f"{verb} {len(deleted)} selected item(s)."
         return deleted
 
     def preview_migration(self) -> MigrationReport:
@@ -438,12 +442,24 @@ def _delete_summary(selected_items: list[ManagedDataItem]) -> str:
     run_count = sum(1 for item in selected_items if _exportable_run_dir(item) is not None)
     if run_count:
         return "Use Archive Selected Run or Move Run to Trash for experiment runs."
+    if all(_is_trash_item(item) for item in selected_items):
+        return "Permanently delete selected trash item(s). This cannot be undone."
     if not all(item.deletable for item in selected_items):
         blocked = [item.readable_name for item in selected_items if not item.deletable]
         return "Delete disabled for protected items: " + ", ".join(blocked[:3])
     if len(selected_items) == 1:
         return f"Delete {selected_items[0].readable_name}"
     return f"Delete {len(selected_items)} selected items"
+
+
+def _delete_button_label(selected_items: list[ManagedDataItem]) -> str:
+    if selected_items and all(_is_trash_item(item) for item in selected_items):
+        return "Permanently Delete from Trash"
+    return "Delete Selected File/Bundle"
+
+
+def _is_trash_item(item: ManagedDataItem) -> bool:
+    return item.category_key == "trash"
 
 
 def _migration_summary_pairs(report: MigrationReport | None) -> list[tuple[str, str]]:

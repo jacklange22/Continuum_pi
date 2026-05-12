@@ -227,15 +227,19 @@ Run tests:
 
 ```bash
 scripts/run_tests.sh quick
+scripts/run_tests.sh hardware-safe
 ```
 
 Use the canonical runner instead of bare `pytest` so the active `.venv` Python is used and Python-version skips are not missed. It requires Python 3.10+; Python 3.11+ is recommended. Useful modes are `quick`, `hardware-safe`, `full-nongui`, and `gui`.
 
-Run the no-hardware operator readiness check before a bench session:
+Run the no-hardware operator readiness checks before a bench session:
 
 ```bash
 .venv/bin/python -m continuum_robot.diagnostics.prehardware_dry_run
+.venv/bin/python -m continuum_robot.diagnostics.hardware_readiness_check
 ```
+
+`prehardware_dry_run` exercises the fixture/export/validator path. `hardware_readiness_check` adds hardware-day acceptance checks for config, serial-port setup, tracking-role config, GUI page construction, two-segment physics config readiness, and the nested dry run.
 
 Use `docs/hardware_day_runbook.md` as the concise bench-session checklist.
 

@@ -479,6 +479,35 @@ def test_data_management_controller_validates_marks_and_trashes_selected_run(tmp
     assert controller.state.selected_paths == []
 
 
+def test_data_management_discovers_and_permanently_deletes_trash_items(tmp_path: Path) -> None:
+    trash_dir = tmp_path / "data" / "trash" / "collect_pose_command_dataset" / "20260102_000000_collect_pose_command_dataset"
+    trash_dir.mkdir(parents=True)
+    (trash_dir / "metadata.json").write_text(
+        json.dumps({"experiment_name": "collect_pose_command_dataset", "timestamp_utc": "2026-01-02T00:00:00Z"}),
+        encoding="utf-8",
+    )
+    (trash_dir / "summary.json").write_text(
+        json.dumps({"experiment_name": "collect_pose_command_dataset", "status": "success"}),
+        encoding="utf-8",
+    )
+    controller = DataManagementController(project_root=tmp_path)
+    state = controller.refresh()
+    item = next(entry for entry in state.items if entry.path == trash_dir)
+
+    assert item.category_key == "trash"
+    controller.set_selected_paths([str(item.path)])
+    state = controller.refresh()
+    assert state.can_delete is True
+    assert state.delete_button_label == "Permanently Delete from Trash"
+    assert "cannot be undone" in state.selected_delete_summary
+
+    deleted = controller.delete_selected()
+
+    assert deleted == [trash_dir]
+    assert trash_dir.exists() is False
+    assert controller.state.status_message.startswith("Permanently deleted")
+
+
 def test_preview_migration_detects_legacy_candidates_and_writes_ledger(tmp_path: Path) -> None:
     legacy_path = tmp_path / "data" / "registrations" / "registration_20260422T160000_000001Z.json"
     legacy_path.parent.mkdir(parents=True)

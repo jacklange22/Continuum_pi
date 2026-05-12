@@ -13,6 +13,8 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QDoubleSpinBox,
+    QSpinBox,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -206,6 +208,52 @@ class ModelingTab(QWidget):
         model_row.addWidget(self.two_segment_mike_check)
         model_row.addStretch(1)
         two_segment_card.body_layout.addLayout(model_row)
+        label_row = QHBoxLayout()
+        label_row.setContentsMargins(0, 0, 0, 0)
+        label_row.addWidget(QLabel("Label Mode"))
+        self.two_segment_label_mode_combo = QComboBox()
+        for label, value in [
+            ("Auto", "auto"),
+            ("Distal XYZ", "distal_xyz"),
+            ("Distal Pose 6", "distal_pose6"),
+            ("Two-Coil XYZ", "two_coil_xyz"),
+            ("Two-Coil Pose 12", "two_coil_pose12"),
+        ]:
+            self.two_segment_label_mode_combo.addItem(label, value)
+        self.two_segment_label_mode_combo.currentIndexChanged.connect(self._on_two_segment_label_mode_changed)
+        self.two_segment_orientation_check = QCheckBox("Orientation if available")
+        self.two_segment_orientation_check.toggled.connect(
+            lambda value: self.controller.set_two_segment_include_orientation_if_available(bool(value))
+        )
+        label_row.addWidget(self.two_segment_label_mode_combo, 1)
+        label_row.addWidget(self.two_segment_orientation_check)
+        two_segment_card.body_layout.addLayout(label_row)
+        ann_row = QHBoxLayout()
+        ann_row.setContentsMargins(0, 0, 0, 0)
+        self.two_segment_ann_sweep_check = QCheckBox("ANN sweep")
+        self.two_segment_ann_sweep_check.toggled.connect(lambda value: self.controller.set_two_segment_ann_sweep_enabled(bool(value)))
+        ann_row.addWidget(self.two_segment_ann_sweep_check)
+        ann_row.addWidget(QLabel("Hidden"))
+        self.two_segment_hidden_combo = QComboBox()
+        for label in ["128,128", "64,64", "32,32"]:
+            self.two_segment_hidden_combo.addItem(label, label)
+        self.two_segment_hidden_combo.currentIndexChanged.connect(self._on_two_segment_hidden_changed)
+        ann_row.addWidget(self.two_segment_hidden_combo)
+        ann_row.addWidget(QLabel("Epochs"))
+        self.two_segment_epochs_spin = QSpinBox()
+        self.two_segment_epochs_spin.setRange(1, 5000)
+        self.two_segment_epochs_spin.setValue(200)
+        self.two_segment_epochs_spin.valueChanged.connect(lambda value: self.controller.set_two_segment_ann_epochs(int(value)))
+        ann_row.addWidget(self.two_segment_epochs_spin)
+        ann_row.addWidget(QLabel("Test"))
+        self.two_segment_test_fraction_spin = QDoubleSpinBox()
+        self.two_segment_test_fraction_spin.setRange(0.05, 0.9)
+        self.two_segment_test_fraction_spin.setSingleStep(0.05)
+        self.two_segment_test_fraction_spin.setValue(0.25)
+        self.two_segment_test_fraction_spin.valueChanged.connect(lambda value: self.controller.set_two_segment_test_fraction(float(value)))
+        ann_row.addWidget(self.two_segment_test_fraction_spin)
+        ann_row.addStretch(1)
+        two_segment_card.body_layout.addLayout(ann_row)
         trust_row = QHBoxLayout()
         trust_row.setContentsMargins(0, 0, 0, 0)
         self.two_segment_strict_check = QCheckBox("Strict")
@@ -262,7 +310,13 @@ class ModelingTab(QWidget):
         self._set_checkbox(self.two_segment_mike_check, state.two_segment_include_mike)
         self._set_checkbox(self.two_segment_strict_check, state.two_segment_strict_mode)
         self._set_checkbox(self.two_segment_lower_trust_check, state.two_segment_allow_lower_trust)
+        self._set_checkbox(self.two_segment_orientation_check, state.two_segment_include_orientation_if_available)
+        self._set_checkbox(self.two_segment_ann_sweep_check, state.two_segment_ann_sweep_enabled)
         self._set_combo(self.scope_combo, state.evaluation_scope)
+        self._set_combo(self.two_segment_label_mode_combo, state.two_segment_label_mode)
+        self._set_combo(self.two_segment_hidden_combo, state.two_segment_ann_hidden_layers)
+        self._set_spin_value(self.two_segment_epochs_spin, state.two_segment_ann_epochs)
+        self._set_spin_value(self.two_segment_test_fraction_spin, state.two_segment_test_fraction)
 
     def _refresh_catalogs(self) -> None:
         self.controller.set_dataset_output_root(self.controller.dataset_output_root)
@@ -345,6 +399,16 @@ class ModelingTab(QWidget):
         if value:
             self.controller.set_evaluation_scope(str(value))
 
+    def _on_two_segment_label_mode_changed(self, _index: int) -> None:
+        value = self.two_segment_label_mode_combo.currentData()
+        if value:
+            self.controller.set_two_segment_label_mode(str(value))
+
+    def _on_two_segment_hidden_changed(self, _index: int) -> None:
+        value = self.two_segment_hidden_combo.currentData()
+        if value:
+            self.controller.set_two_segment_ann_hidden_layers(str(value))
+
     def _open_selected_dataset(self) -> None:
         state = self.controller.refresh()
         if state.selected_dataset_path:
@@ -387,6 +451,13 @@ class ModelingTab(QWidget):
                 with QSignalBlocker(widget):
                     widget.setCurrentIndex(index)
                 return
+
+    @staticmethod
+    def _set_spin_value(widget, value) -> None:
+        if widget.value() == value:
+            return
+        with QSignalBlocker(widget):
+            widget.setValue(value)
 
 
 class _Card(QFrame):

@@ -2741,6 +2741,45 @@ def test_experiment_workspace_hides_operational_pivot_workflow_from_selector(tmp
     assert "collect_pose_command_dataset" in option_names
 
 
+def test_experiment_workspace_filters_options_by_operating_mode(tmp_path: Path) -> None:
+    controller = _experiment_controller(tmp_path)
+
+    single_options = [option.name for option in controller.refresh().experiment_options]
+    assert "pretension_validation" in single_options
+    assert "single_segment_repeatability" in single_options
+    assert "collect_pose_command_dataset" in single_options
+    assert "penprobe_chasing_demo" in single_options
+    assert "two_segment_startup_validation" not in single_options
+    assert "two_segment_collect_pose_command_dataset" not in single_options
+    assert "single_segment workflows" in controller.state.experiment_filter_summary
+
+    controller.settings.robot.mode = "dual_segment"
+    dual_options = [option.name for option in controller.refresh().experiment_options]
+    assert "two_segment_startup_validation" in dual_options
+    assert "two_segment_collect_pose_command_dataset" in dual_options
+    assert "pretension_validation" not in dual_options
+    assert "single_segment_repeatability" not in dual_options
+    assert "penprobe_chasing_demo" not in dual_options
+
+    controller.settings.robot.mode = "parallel_single"
+    parallel_options = [option.name for option in controller.refresh().experiment_options]
+    assert "collect_pose_command_dataset" in parallel_options
+    assert "pretension_validation" not in parallel_options
+    assert "penprobe_chasing_demo" not in parallel_options
+
+
+def test_experiment_workspace_clears_hidden_selection_after_mode_change(tmp_path: Path) -> None:
+    controller = _experiment_controller(tmp_path)
+    controller.select_experiment("pretension_validation")
+    assert controller.refresh().selected_experiment == "pretension_validation"
+
+    controller.settings.robot.mode = "dual_segment"
+    state = controller.refresh()
+
+    assert state.selected_experiment == ""
+    assert "hidden for operating_mode=dual_segment" in state.status_message
+
+
 def test_experiment_workspace_blocks_single_segment_repeatability_in_mock_mode(tmp_path: Path) -> None:
     controller = _experiment_controller(tmp_path)
     controller.select_experiment("single_segment_repeatability")
@@ -2826,6 +2865,38 @@ def test_registration_validation_page_deferred_loads_candidates_without_blocking
 
     release.set()
     QTest.qWait(50)
+
+
+def test_validation_page_shutdown_drops_late_candidate_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    release = threading.Event()
+
+    def _slow_candidates(_project_root):
+        release.wait(timeout=1.0)
+        return [
+            ValidationRunCandidate(
+                path="data/registrations/late.json",
+                timestamp_utc="2026-01-01T00:00:00+00:00",
+                label="late.json",
+            )
+        ]
+
+    monkeypatch.setattr(experiment_pages_module, "list_registration_validation_candidates", _slow_candidates)
+    controller.select_experiment("registration_validation")
+    tab.update(controller.refresh())
+    page = tab._page_for("registration_validation")
+    assert page._candidate_loading is True
+
+    page.shutdown()
+    release.set()
+    QTest.qWait(80)
+
+    assert page._candidate_loading is False
+    assert page._candidate_cache == []
 
 
 def test_registration_validation_page_does_not_recurse_during_table_rebuild(tmp_path: Path) -> None:

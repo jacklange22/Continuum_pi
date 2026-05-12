@@ -29,6 +29,7 @@ class ServosViewState:
     segment_definitions: dict[str, dict] = field(default_factory=dict)
     segment_readiness_summary: str = ""
     all_8_readiness_summary: str = ""
+    single_segment_readiness_summary: str = ""
     selected_servo_segment_label: str = "Unknown segment"
     manual_pretension_sequence_hint: str = ""
     dual_segment_foundation_note: str = ""
@@ -935,6 +936,43 @@ class ServosController:
                 self.state.all_8_readiness_summary = f"dual_segment expects 8 IDs; current context has {expected}."
         else:
             self.state.all_8_readiness_summary = ""
+        if self.state.robot_mode == "single_segment":
+            active_ids = [int(value) for value in self.state.active_segment_servo_ids or expected]
+            missing = sorted({servo_id for servo_id in active_ids if servo_id in missing_global or servo_id not in detected})
+            stale = sorted(
+                servo_id
+                for servo_id in active_ids
+                if servo_id in self.state.telemetry and self.state.telemetry[servo_id].get("telemetry_fresh") is False
+            )
+            errors = sorted(
+                servo_id
+                for servo_id in active_ids
+                if servo_id in self.state.telemetry and self.state.telemetry[servo_id].get("error")
+            )
+            if not self.state.connected:
+                next_action = "Connect OpenRB, then refresh configured servos."
+                status = "not ready"
+            elif missing:
+                next_action = "Resolve missing servo ID(s): " + ", ".join(str(value) for value in missing) + "."
+                status = "not ready"
+            elif stale:
+                next_action = "Refresh telemetry before jogging or running pretension."
+                status = "not ready"
+            elif errors:
+                next_action = "Inspect hardware error/status for servo ID(s): " + ", ".join(str(value) for value in errors) + "."
+                status = "not ready"
+            elif self.state.pretension_source_type in {"none", ""}:
+                next_action = "Capture manual startup or run conservative pretension before repeatability/modeling data."
+                status = "servo-ready; startup reference needed"
+            else:
+                next_action = "Servo side is ready; confirm tracker/registration in the selected experiment preflight."
+                status = "ready"
+            self.state.single_segment_readiness_summary = (
+                f"{self.state.active_segment_label}: expected {', '.join(str(value) for value in active_ids) or 'none'}; "
+                f"{status}. Next: {next_action}"
+            )
+        else:
+            self.state.single_segment_readiness_summary = ""
 
     def _refresh_selected_servo_live(self) -> None:
         if not self.state.connected or self.state.selected_servo_id is None:

@@ -249,6 +249,7 @@ CLI:
 .venv/bin/python -m continuum_robot.modeling.two_segment.cli \
   --latest \
   --config config/modeling_two_segment.example.yaml \
+  --label-mode auto \
   --models linear_baseline ann camarillo mike_constant_curvature
 ```
 
@@ -258,9 +259,10 @@ GUI:
 2. Use the `Two-Segment Modeling` section.
 3. Select one or more `two_segment_collect_pose_command_dataset` runs.
 4. Check trainability status: accepted/rejected samples, rejection reasons, and orientation availability.
-5. Keep `Strict` enabled for thesis-facing work.
-6. Choose model families and run analysis.
-7. Open or export the output bundle.
+5. Choose the label mode. `Auto` uses `two_coil_xyz` when every accepted sample has `intermediate_segment` and `distal_tip` robot-frame XYZ labels; otherwise it uses `distal_xyz`.
+6. Keep `Strict` enabled for thesis-facing work.
+7. Choose model families and run analysis.
+8. Open or export the output bundle.
 
 Data tab shortcut:
 
@@ -271,16 +273,37 @@ Data tab shortcut:
 Outputs:
 
 - `two_segment_model_comparison_report.png`: model XYZ RMSE comparison
-- `two_segment_measured_vs_predicted_xy_report.png`: distal-tip XY measured vs predicted
+- `two_segment_distal_measured_vs_predicted_xy_report.png`: distal-tip XY measured vs predicted
+- `two_segment_intermediate_measured_vs_predicted_xy_report.png`: intermediate coil XY measured vs predicted when labels exist
+- `two_segment_two_coil_error_report.png`: distal/intermediate position error comparison
 - `two_segment_position_error_distribution_report.png`: position error distribution in mm
 - `two_segment_axis_error_report.png`: X/Y/Z RMSE
 - `two_segment_orientation_error_report.png`: angular tangent/orientation error when explicit tangent labels exist
+
+Composition semantics:
+
+- Segment A is the lower/proximal segment by default, and Segment B is the upper/distal segment by default; the modeling metadata records the configured segment order and roles used for a run.
+- Segment B rides on Segment A. Moving Segment A changes the global pose of Segment B even when Segment B tendon displacement is zero.
+- The active scaffold fits a direct global forward model: `[dA, dB] -> robot-frame pose labels`.
+- Future structured control may use `base -> intermediate -> distal` composition, but this workflow does not implement control.
 
 Model status:
 
 - `linear_baseline` is implemented and should be used as the first sanity check.
 - `ann` runs when PyTorch is available; otherwise it is reported as unavailable and analysis continues.
-- `mike_constant_curvature` and `camarillo` are scaffolded/unavailable until active, validated two-segment adapters and parameters exist.
+- `mike_constant_curvature` is a config-gated geometric baseline. It only generates predictions when segment lengths, tendon positions, sign convention, frame convention, and curvature convention are explicitly configured.
+- `camarillo` remains unavailable until segment/cable stiffness values, additional cable length, tendon routing, sign convention, and frame convention are measured and validated for the current stacked robot.
+
+Physics model readiness:
+
+- Physics models compose Segment A and Segment B transforms explicitly. This is different from direct ANN/linear models, which learn `[dA, dB] -> global pose` from data.
+- Required geometry belongs in `config/modeling_two_segment.example.yaml` under `physics_models`.
+- Known design geometry is recorded there with provenance/status fields. Current design entries include 66 mm Segment A/B lengths, 2 mm spacer after Segment A, 4.12 mm tendon-hole center radius, nominal 0/90/180/270 degree tendon angular positions, and Smooth-On PMC-780 / 80A material.
+- The 1.65 mm hole-size entry is intentionally named `hole_radius_or_diameter_mm` because the radius-versus-diameter wording still needs confirmation.
+- Positive tendon displacement is recorded as tendon shortening / more tension, and shortening is expected to decrease encoder ticks. Servo current remains a load proxy only, not a tendon stiffness measurement.
+- Missing or unvalidated physics parameters produce `unavailable_missing_parameters` or `unavailable_unvalidated_convention`; they do not produce zeros or placeholder predictions.
+- Each modeling run writes `model_status.json`, `physics_model_parameter_report.json`, and `physics_model_parameter_report.txt` so thesis evidence can distinguish completed numeric models from unavailable physics adapters.
+- To enable real physics comparison later, measure segment lengths, tendon positions/radii, neutral/startup reference convention, displacement sign convention, and Camarillo stiffness/cable stiffness values, then validate the resulting prediction frames against tracked coils.
 
 ## Recommended Lab Order
 

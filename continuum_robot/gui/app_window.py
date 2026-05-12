@@ -158,7 +158,10 @@ class AppWindow(QMainWindow):
         openrb_client = context.services.get("openrb_client")
         experiment_loader = context.services.get("experiment_loader")
         experiment_runner = context.services.get("experiment_runner")
-        experiment_dataset_writer = context.services.get("experiment_dataset_writer")
+        try:
+            experiment_dataset_writer = context.services.get("experiment_dataset_writer")
+        except KeyError:
+            experiment_dataset_writer = None
 
         self.system_controller = SystemController(
             tracking_service=tracking_service,
@@ -307,6 +310,12 @@ class AppWindow(QMainWindow):
         if dialog is not None:
             try:
                 dialog.close()
+            except Exception:
+                pass
+        experiment_tab = getattr(self, "experiment_tab", None)
+        if experiment_tab is not None:
+            try:
+                experiment_tab.shutdown()
             except Exception:
                 pass
         for attribute in ("servos_controller", "pretension_controller", "experiment_controller", "modeling_controller", "tracking_controller"):

@@ -49,6 +49,48 @@ class ExperimentOption:
     default_config_path: str | None = None
 
 
+MODE_EXPERIMENT_VISIBILITY: dict[str, set[str]] = {
+    "one_servo": {
+        "command_schedule_validation",
+        "tracker_timing_validation",
+        "servo_tracker_sync_validation",
+        "aurora_grid_accuracy",
+        "registration_validation",
+        "pivot_validation",
+    },
+    "single_segment": {
+        "pretension_validation",
+        "single_segment_repeatability",
+        "collect_pose_command_dataset",
+        "penprobe_chasing_demo",
+        "registration_validation",
+        "pivot_validation",
+        "aurora_grid_accuracy",
+        "tracker_timing_validation",
+        "servo_tracker_sync_validation",
+        "command_schedule_validation",
+        "replay_runner",
+    },
+    "dual_segment": {
+        "two_segment_startup_validation",
+        "two_segment_collect_pose_command_dataset",
+        "registration_validation",
+        "pivot_validation",
+        "aurora_grid_accuracy",
+        "tracker_timing_validation",
+        "servo_tracker_sync_validation",
+        "command_schedule_validation",
+        "replay_runner",
+    },
+    "parallel_single": {
+        "collect_pose_command_dataset",
+        "command_schedule_validation",
+        "tracker_timing_validation",
+        "servo_tracker_sync_validation",
+    },
+}
+
+
 @dataclass
 class RunHistoryEntry:
     """Lightweight summary of one prior experiment run."""
@@ -66,6 +108,7 @@ class ExperimentViewState:
     """UI-facing state for the generic experiment workspace."""
 
     experiment_options: list[ExperimentOption] = field(default_factory=list)
+    experiment_filter_summary: str = ""
     selected_experiment: str = ""
     experiment_title: str = ""
     experiment_description: str = ""
@@ -146,8 +189,10 @@ class ExperimentController:
         self._last_prerequisite_refresh_s = 0.0
 
         self._options_by_name = self._build_workspace_options()
+        visible_options = self._mode_filtered_workspace_options()
         self.state = ExperimentViewState(
-            experiment_options=list(self._options_by_name.values()),
+            experiment_options=list(visible_options.values()),
+            experiment_filter_summary=self._mode_filter_summary(visible_options),
             output_root=str(experiment_runner.output_dir),
         )
         if not self._options_by_name:
@@ -155,7 +200,32 @@ class ExperimentController:
 
     def refresh(self) -> ExperimentViewState:
         started = time.monotonic()
+        visible_options = self._mode_filtered_workspace_options()
+        filter_summary = self._mode_filter_summary(visible_options)
         with self._lock:
+            self.state.experiment_options = list(visible_options.values())
+            self.state.experiment_filter_summary = filter_summary
+            if self.state.selected_experiment and self.state.selected_experiment not in visible_options:
+                previous = self.state.selected_experiment
+                self.state.selected_experiment = ""
+                self.state.loaded_run_path = None
+                self.state.last_output_path = None
+                self.state.last_error = None
+                self.state.status_message = (
+                    f"{previous} is hidden for operating_mode={self.settings.robot.operating_mode()}. "
+                    "Select a workflow listed for the current mode."
+                )
+                self._selected_payload = {}
+                self._field_drafts.clear()
+                self._field_errors.clear()
+                self._raw_config_error = None
+                self._current_bundle = None
+                self._live_samples = []
+                self._history_dirty = True
+                self._planned_output_dir_name = ""
+                self.state.config_text = ""
+                self.state.history_loading = False
+                self._invalidate_preflight_cache_locked()
             selected_experiment = self.state.selected_experiment
             output_root = self._resolve_repo_path(self.state.output_root)
             current_bundle = self._current_bundle
@@ -612,6 +682,32 @@ class ExperimentController:
         ordered_names = [name for name in preferred_order if name in options]
         ordered_names.extend(sorted(name for name in options if name not in ordered_names))
         return {name: options[name] for name in ordered_names}
+
+    def _mode_filtered_workspace_options(self) -> dict[str, ExperimentOption]:
+        mode = self.settings.robot.operating_mode()
+        allowed = MODE_EXPERIMENT_VISIBILITY.get(mode)
+        if not allowed:
+            return dict(self._options_by_name)
+        return {name: option for name, option in self._options_by_name.items() if name in allowed}
+
+    def _mode_filter_summary(self, visible_options: dict[str, ExperimentOption]) -> str:
+        mode = self.settings.robot.operating_mode()
+        active_label = self.settings.robot.active_segment_label()
+        if mode == "single_segment":
+            return (
+                f"Showing single_segment workflows for {active_label}: pretension, repeatability, "
+                "collect-pose, penprobe chasing, and calibration/tracker validation."
+            )
+        if mode == "dual_segment":
+            return (
+                "Showing dual_segment foundation workflows only: all-8 startup validation, "
+                "two-segment collect-pose dataset, and supporting validation/diagnostics."
+            )
+        if mode == "parallel_single":
+            return "Showing parallel_single mirrored testing workflows only; pretension/control/chasing are hidden."
+        if mode == "one_servo":
+            return "Showing one_servo-safe diagnostics/validation only; multi-servo experiments are hidden."
+        return f"Showing {len(visible_options)} workflow(s) for operating_mode={mode}."
 
     def _default_config_path(self, experiment_name: str) -> Path:
         option = self._options_by_name[experiment_name]

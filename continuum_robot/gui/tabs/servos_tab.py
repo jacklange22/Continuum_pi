@@ -88,6 +88,8 @@ class ServosTab(QWidget):
         self.unexpected_ids_label.setWordWrap(True)
         self.segment_readiness_label = QLabel()
         self.segment_readiness_label.setWordWrap(True)
+        self.single_segment_readiness_label = QLabel()
+        self.single_segment_readiness_label.setWordWrap(True)
         self.all_8_readiness_label = QLabel()
         self.all_8_readiness_label.setWordWrap(True)
         self.dual_segment_note_label = QLabel()
@@ -250,6 +252,7 @@ class ServosTab(QWidget):
         self.summary_layout.addRow("Missing expected", self.missing_ids_label)
         self.summary_layout.addRow("Unexpected found", self.unexpected_ids_label)
         self.summary_layout.addRow("Segment readiness", self.segment_readiness_label)
+        self.summary_layout.addRow("Single-segment readiness", self.single_segment_readiness_label)
         self.summary_layout.addRow("All-8 readiness", self.all_8_readiness_label)
         self.summary_layout.addRow("dual_segment scope", self.dual_segment_note_label)
         self.summary_layout.addRow("Manual sequence", self.manual_sequence_label)
@@ -509,6 +512,7 @@ class ServosTab(QWidget):
         self.missing_ids_label.setText(", ".join(str(sid) for sid in state.missing_servo_ids))
         self.unexpected_ids_label.setText(", ".join(str(sid) for sid in state.unexpected_servo_ids))
         self.segment_readiness_label.setText(state.segment_readiness_summary or "not available")
+        self.single_segment_readiness_label.setText(state.single_segment_readiness_summary)
         self.all_8_readiness_label.setText(state.all_8_readiness_summary)
         self.dual_segment_note_label.setText(state.dual_segment_foundation_note)
         self.manual_sequence_label.setText(state.manual_pretension_sequence_hint)
@@ -588,6 +592,11 @@ class ServosTab(QWidget):
         motion_allowed = state.connected and any_servo and state.selected_servo_motion_ready
         self._set_form_row_visible(self.summary_layout, self.missing_ids_label, bool(state.missing_servo_ids))
         self._set_form_row_visible(self.summary_layout, self.unexpected_ids_label, bool(state.unexpected_servo_ids))
+        self._set_form_row_visible(
+            self.summary_layout,
+            self.single_segment_readiness_label,
+            state.robot_mode == "single_segment" and bool(state.single_segment_readiness_summary),
+        )
         self._set_form_row_visible(
             self.summary_layout,
             self.all_8_readiness_label,
@@ -703,6 +712,8 @@ class ServosTab(QWidget):
                 operator_lines.append(state.all_8_readiness_summary)
             if state.segment_readiness_summary:
                 operator_lines.append(f"Segments: {state.segment_readiness_summary}")
+            if state.single_segment_readiness_summary:
+                operator_lines.append(state.single_segment_readiness_summary)
             operator_lines.append(f"Active pretension source: {state.pretension_source_summary}")
             if state.single_segment_reference_summary:
                 operator_lines.append(f"Experiment reference: {state.single_segment_reference_summary}")

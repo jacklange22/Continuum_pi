@@ -250,6 +250,7 @@ def test_modeling_controller_and_tab_expose_two_segment_modeling_panel(tmp_path:
     trainability = controller.validate_two_segment_modeling_trainability([run_dir])
     assert trainability["samples_accepted"] == 6
     assert trainability["samples_rejected"] == 0
+    assert "two_coil_xyz_available" in trainability
 
     tab = ModelingTab(controller)
     try:
@@ -257,6 +258,8 @@ def test_modeling_controller_and_tab_expose_two_segment_modeling_panel(tmp_path:
         assert tab.two_segment_run_list.count() == 1
         assert tab.two_segment_run_button.isEnabled() is True
         assert tab.two_segment_strict_check.isChecked() is True
+        assert tab.two_segment_label_mode_combo.currentData() == "auto"
+        assert tab.two_segment_hidden_combo.currentData() == "128,128"
     finally:
         tab.close()
         controller.shutdown()

@@ -45,6 +45,7 @@ data/tracker_captures/*
 
 # Generated operator-readiness/export bundles
 data/diagnostics/prehardware_dry_run/**
+data/diagnostics/hardware_readiness/**
 data/exports/**
 data/**/*.zip
 data/**/*.tar

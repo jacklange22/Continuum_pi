@@ -5,7 +5,7 @@ from continuum_robot.modeling.two_segment.dataset import (
     TwoSegmentModelingSample,
     load_two_segment_modeling_dataset,
 )
-from continuum_robot.modeling.two_segment.features import FeatureLabelBundle, build_feature_label_bundle
+from continuum_robot.modeling.two_segment.features import FeatureLabelBundle, LabelBuildError, build_feature_label_bundle
 from continuum_robot.modeling.two_segment.train import (
     TwoSegmentModelingConfig,
     TwoSegmentModelingResult,
@@ -15,6 +15,7 @@ from continuum_robot.modeling.two_segment.train import (
 
 __all__ = [
     "FeatureLabelBundle",
+    "LabelBuildError",
     "TwoSegmentModelingConfig",
     "TwoSegmentModelingDataset",
     "TwoSegmentModelingResult",

@@ -66,6 +66,9 @@ class ExperimentTab(QWidget):
         self.experiment_combo.setObjectName("experimentSelectorCombo")
         self.experiment_combo.setMinimumHeight(36)
         self.experiment_combo.currentIndexChanged.connect(self._on_experiment_selected)
+        self.filter_summary_label = QLabel("")
+        self.filter_summary_label.setProperty("role", "hint")
+        self.filter_summary_label.setWordWrap(True)
         self.load_defaults_button = QPushButton("Load Defaults")
         self.load_defaults_button.setProperty("variant", "ghost")
         self.load_defaults_button.clicked.connect(self.controller.load_defaults)
@@ -89,6 +92,7 @@ class ExperimentTab(QWidget):
         selector_row.addWidget(self.experiment_combo, 1)
         selector_row.addWidget(self.load_defaults_button)
         header_card.body_layout.addLayout(selector_row)
+        header_card.body_layout.addWidget(self.filter_summary_label)
         selected_summary = QWidget()
         selected_summary_layout = QVBoxLayout(selected_summary)
         selected_summary_layout.setContentsMargins(0, 0, 0, 0)
@@ -113,6 +117,7 @@ class ExperimentTab(QWidget):
     def update(self, state: ExperimentViewState) -> bool:
         started = time.monotonic()
         self._update_selector(state)
+        self.filter_summary_label.setText(state.experiment_filter_summary)
         if not state.selected_experiment:
             self.selected_experiment_title.setText("Select An Experiment")
             self.selected_experiment_description.setText(
@@ -168,6 +173,13 @@ class ExperimentTab(QWidget):
             elapsed_ms=(time.monotonic() - started) * 1000.0,
         )
         return True
+
+    def shutdown(self) -> None:
+        for page in list(self._pages.values()):
+            shutdown = getattr(page, "shutdown", None)
+            if callable(shutdown):
+                shutdown()
+            page.close()
 
     def _update_selector(self, state: ExperimentViewState) -> None:
         target_keys = ["", *[option.name for option in state.experiment_options]]

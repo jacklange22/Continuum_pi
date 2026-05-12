@@ -735,6 +735,8 @@ def test_servos_controller_reports_4servo_missing_and_unexpected_ids(tmp_path: P
     assert controller.state.missing_servo_ids == [3]
     assert controller.state.unexpected_servo_ids == [9]
     assert controller.state.telemetry[3]["error"] is not None
+    assert "Spine 1" in controller.state.single_segment_readiness_summary
+    assert "missing servo ID(s): 3" in controller.state.single_segment_readiness_summary
 
     controller.refresh()
 

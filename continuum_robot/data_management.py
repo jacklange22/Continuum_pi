@@ -115,6 +115,7 @@ def discover_managed_data(project_root: Path) -> list[ManagedDataItem]:
         *_discover_experiment_items(root),
         *_discover_modeling_items(root),
         *_discover_diagnostic_items(root),
+        *_discover_trash_items(root),
     ]
     return sorted(
         items,
@@ -248,6 +249,7 @@ def build_root_summary(project_root: Path) -> list[tuple[str, str]]:
             "data/diagnostics/* | data/experiments/tracker_timing_validation | "
             "data/experiments/servo_tracker_sync_validation",
         ),
+        ("Trash", "data/trash/*"),
         ("Migration Ledgers", "data/diagnostics/data_management_migration"),
     ]
 
@@ -582,6 +584,52 @@ def _discover_modeling_items(project_root: Path) -> list[ManagedDataItem]:
                     details=details,
                     original_name=path.name,
                     metadata=metadata,
+                )
+            )
+    return items
+
+
+def _discover_trash_items(project_root: Path) -> list[ManagedDataItem]:
+    items: list[ManagedDataItem] = []
+    trash_root = project_root / "data" / "trash"
+    if not trash_root.exists():
+        return items
+    for experiment_root in sorted((path for path in trash_root.iterdir() if path.is_dir()), reverse=True):
+        experiment_name = experiment_root.name
+        for run_dir in sorted((path for path in experiment_root.iterdir() if path.is_dir()), reverse=True):
+            metadata_path = run_dir / "metadata.json"
+            summary_path = run_dir / "summary.json"
+            readable_name = f"Trash: {_humanize_name(experiment_name)}"
+            timestamp_label = _timestamp_from_name(run_dir.name)
+            details = "Trashed run; permanent delete is available only from data/trash."
+            status = "trash"
+            metadata_payload: dict[str, Any] = {"experiment_name": experiment_name}
+            if metadata_path.exists() and summary_path.exists():
+                metadata = _read_json(metadata_path)
+                summary = _read_json(summary_path)
+                run_experiment_name = str(metadata.get("experiment_name", experiment_name) or experiment_name)
+                readable_name = f"Trash: {_humanize_name(run_experiment_name)}"
+                timestamp_label = _timestamp_from_payload_or_name(metadata, run_dir.name)
+                details = _experiment_details(metadata, summary) + " | trashed run"
+                metadata_payload = {"experiment_name": run_experiment_name, **metadata}
+            items.append(
+                _build_item(
+                    category_key="trash",
+                    category_label="Trash",
+                    item_type=experiment_name,
+                    readable_name=readable_name,
+                    path=run_dir,
+                    root_path=trash_root,
+                    canonical_root_path=trash_root / experiment_name,
+                    canonical_label=experiment_name,
+                    timestamp_label=timestamp_label,
+                    path_kind="dir",
+                    extension="",
+                    status=status,
+                    details=details,
+                    original_name=run_dir.name,
+                    treat_current_name_as_canonical=True,
+                    metadata=metadata_payload,
                 )
             )
     return items

@@ -115,6 +115,9 @@ def _extract_key_metrics(run_dir: Path) -> dict[str, Any]:
         "orientation_available",
         "distal_only",
         "includes_intermediate_pose",
+        "includes_intermediate_label",
+        "label_mode",
+        "physics_model_status",
     ]
     extracted = {key: metrics[key] for key in useful_keys if key in metrics}
     if str(metrics.get("dataset_type") or "") == "two_segment_modeling":
@@ -126,6 +129,9 @@ def _extract_key_metrics(run_dir: Path) -> dict[str, Any]:
             "best_model": best.get("model_key"),
             "best_xyz_rmse_mm": best.get("xyz_rmse_mm"),
             "best_orientation_mean_error_deg": best.get("orientation_mean_error_deg"),
+            "label_mode": metrics.get("label_mode"),
+            "includes_intermediate_label": metrics.get("includes_intermediate_label"),
+            "physics_model_status": metrics.get("physics_model_status", {}),
             "lower_trust_warning": "allow_lower_trust_used_outputs_not_thesis_trusted"
             in list(metrics.get("data_quality_warnings", []) or []),
         }

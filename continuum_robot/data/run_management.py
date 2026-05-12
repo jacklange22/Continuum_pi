@@ -472,7 +472,10 @@ def _format_two_segment_modeling_summary(metrics: dict[str, Any]) -> str:
             f"split={metrics.get('split_method')}",
             f"completed={completed}",
             f"unavailable={unavailable}",
+            f"label_mode={metrics.get('label_mode')}",
+            f"includes_intermediate_label={bool(metrics.get('includes_intermediate_label'))}",
             f"orientation_available={bool(metrics.get('orientation_available'))}",
+            f"physics={metrics.get('physics_model_status', {})}",
         ]
     )
 

@@ -41,6 +41,7 @@ class DataManagementTab(QWidget):
         ("Experiments", "experiments"),
         ("Modeling / Training", "modeling"),
         ("Diagnostics", "diagnostics"),
+        ("Trash", "trash"),
     ]
 
     COLUMN_LABELS = ["Timestamp", "Experiment", "Run", "Validation", "Trust", "Mode / Segment", "Flags", "Path"]
@@ -140,7 +141,7 @@ class DataManagementTab(QWidget):
         self.copy_path_button = QPushButton("Copy Path")
         self.copy_path_button.setProperty("variant", "ghost")
         self.copy_path_button.clicked.connect(self._copy_selected_paths)
-        self.delete_button = QPushButton("Delete Selected")
+        self.delete_button = QPushButton("Delete Selected File/Bundle")
         self.delete_button.setProperty("variant", "danger")
         self.delete_button.clicked.connect(self._delete_selected)
         action_row.addWidget(self.open_button)
@@ -240,7 +241,7 @@ class DataManagementTab(QWidget):
         self.archive_run_button = QPushButton("Archive Selected Run")
         self.archive_run_button.setProperty("variant", "ghost")
         self.archive_run_button.clicked.connect(self._archive_selected_run)
-        self.trash_run_button = QPushButton("Move Run to Trash")
+        self.trash_run_button = QPushButton("Move Selected Run to Trash")
         self.trash_run_button.setProperty("variant", "danger")
         self.trash_run_button.clicked.connect(self._trash_selected_run)
         self.build_evidence_index_button = QPushButton("Build Evidence Index")
@@ -294,6 +295,7 @@ class DataManagementTab(QWidget):
         self.reveal_button.setEnabled(state.can_reveal)
         self.copy_path_button.setEnabled(state.can_copy_path)
         self.delete_button.setEnabled(state.can_delete)
+        self.delete_button.setText(state.delete_button_label)
         self.preview_migration_button.setEnabled(state.can_preview_migration)
         self.apply_migration_button.setEnabled(state.can_apply_migration)
         self.open_migration_report_button.setEnabled(bool(state.last_migration_report_path))
@@ -583,16 +585,21 @@ class DataManagementTab(QWidget):
         if not all(item.deletable for item in selected):
             self.status_label.setText(self.controller.refresh().selected_delete_summary)
             return
-        lines = [f"Delete {len(selected)} selected item(s)?", ""]
+        trash_only = all(item.category_key == "trash" for item in selected)
+        action_label = "Permanently delete from trash" if trash_only else "Delete"
+        lines = [f"{action_label} {len(selected)} selected item(s)?", ""]
         for item in selected[:8]:
             lines.append(_relative_path(item.path, self.controller.project_root))
         if len(selected) > 8:
             lines.append(f"... and {len(selected) - 8} more")
         lines.append("")
-        lines.append("This deletes only the selected bundles/files, not their parent category folders.")
+        if trash_only:
+            lines.append("This permanently deletes selected item(s) from data/trash and cannot be undone.")
+        else:
+            lines.append("This deletes only the selected bundles/files, not active experiment run folders.")
         choice = QMessageBox.question(
             self,
-            "Delete Selected Data",
+            "Permanently Delete Trash Item" if trash_only else "Delete Selected File/Bundle",
             "\n".join(lines),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,

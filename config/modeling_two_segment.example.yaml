@@ -4,8 +4,20 @@
 strict_trainability: true
 allow_lower_trust: false
 input_units: tendon_displacement_mm
-output_target: distal_tip_xyz
-include_orientation_if_available: true
+output_target: auto
+
+labeling:
+  # auto uses two_coil_xyz when intermediate_segment XYZ is present for every
+  # accepted sample; otherwise it uses distal_xyz. Orientation modes require
+  # explicit tangent labels and never synthesize them.
+  label_mode: auto
+  include_orientation_if_available: false
+  allowed_modes:
+    - auto
+    - distal_xyz
+    - distal_pose6
+    - two_coil_xyz
+    - two_coil_pose12
 
 models:
   enabled:
@@ -24,34 +36,307 @@ linear_baseline:
 
 ann:
   hidden_layers: [128, 128]
+  hidden_layer_options:
+    - [32, 32]
+    - [64, 64]
+    - [128, 128]
+  sweep_enabled: false
+  seeds: [42]
   epochs: 200
   batch_size: 64
   learning_rate: 0.001
   patience: 20
 
 physics_models:
-  # Placeholders for future active-code adapters. Missing or unvalidated values
-  # should keep the Camarillo/Mike adapters unavailable rather than producing
-  # fake predictions.
-  segment_lengths_mm:
-    segment_a: null
-    segment_b: null
-  cable_positions_mm:
+  # These values are not thesis-trusted until measured and validated against the
+  # current two-segment hardware. Missing or unvalidated values must make a
+  # physics adapter unavailable rather than producing fake predictions.
+  global:
+    model_frame_convention:
+      value: base_frame_z_along_segment_then_compose_segment_a_segment_b
+      units: none
+      source: design
+      hardware_validated: false
+      notes: Upper segment neutral x/y should align above lower segment when vertical; validate with tracked coils.
+    tendon_displacement_positive_direction:
+      value: shortening
+      units: none
+      source: design
+      hardware_validated: false
+      notes: Positive tendon displacement means tendon shortening / more tension.
+    tendon_displacement_sign_convention:
+      value: positive_shortens_tendon
+      units: none
+      source: design
+      hardware_validated: false
+      notes: Used by the constant-curvature adapter; verify with tracked single-axis pulls.
+    encoder_tick_direction_for_shortening:
+      value: decreasing_ticks
+      units: encoder_ticks
+      source: design
+      hardware_validated: false
+      notes: Shortening is expected to lower encoder tick count.
+    output_pose_frame:
+      value: robot
+      units: none
+      source: design
+      hardware_validated: false
+      notes: Pose labels must be in robot frame.
+    tangent_representation:
+      value: transform_z_axis
+      units: none
+      source: design
+      hardware_validated: false
+      notes: Tangent/orientation is represented by the composed transform z-axis when requested.
+    segment_order_source:
+      value: robot_config
+      units: none
+      source: design
+      hardware_validated: false
+      notes: Segment A is proximal/lower/base by default; Segment B is distal/upper/top by default.
+    segment_order:
+      value:
+        - segment_a
+        - segment_b
+      units: none
+      source: design
+      hardware_validated: false
+      notes: Segment A proximal/lower then Segment B distal/upper.
+    direct_global_model:
+      value: true
+      units: none
+      source: design
+      hardware_validated: false
+      notes: Direct ANN/linear models learn [dA,dB] to global robot-frame labels.
+    structured_composition_model:
+      value: false
+      units: none
+      source: design
+      hardware_validated: false
+      notes: Physics adapters compose segment transforms, but no structured control is implemented.
+  segments:
     segment_a:
-      - [4.0, 0.0]
-      - [0.0, 4.0]
-      - [-4.0, 0.0]
-      - [0.0, -4.0]
+      segment_label: Segment A
+      segment_role:
+        value: proximal/lower/base
+        units: none
+        source: design
+        hardware_validated: false
+        notes: Segment A is the lower segment by default.
+      segment_length_mm:
+        value: 66.0
+        units: mm
+        source: design
+        hardware_validated: false
+        notes: Nominal molded segment length.
+      tendon_center_radius_mm:
+        value: 4.12
+        units: mm
+        source: design
+        hardware_validated: false
+        notes: Four tendon hole centers are equally spaced around the segment center.
+      tendon_angular_positions_deg:
+        value: [0, 90, 180, 270]
+        units: deg
+        source: design
+        hardware_validated: false
+        notes: Angular convention is model x/y frame dependent and must be hardware validated.
+      tendon_positions_mm:
+        value:
+          - [4.12, 0.0]
+          - [0.0, 4.12]
+          - [-4.12, 0.0]
+          - [0.0, -4.12]
+        units: mm
+        source: design
+        hardware_validated: false
+        notes: Derived from tendon_center_radius_mm and nominal angular positions.
+      hole_radius_or_diameter_mm:
+        value: 1.65
+        units: mm
+        source: design
+        hardware_validated: false
+        notes: User wording was 'hole radius is 1.65 mm'; confirm whether this is radius or diameter.
+      spacer_after_segment_mm:
+        value: 2.0
+        units: mm
+        source: design
+        hardware_validated: false
+        notes: Solid spacer between Segment A and Segment B.
+      effective_parameters_same_as_segment_b_by_default:
+        value: true
+        units: none
+        source: design
+        hardware_validated: false
+        notes: Segment A and Segment B are nominally identical, but Segment B tendons pass through Segment A.
+      additional_tendon_pass_through_note:
+        value: Segment B tendons pass through Segment A.
+        units: none
+        source: design
+        hardware_validated: false
+        notes: Allow separate effective Segment A parameters after hardware identification.
+      rubber_material:
+        value: Smooth-On PMC-780 / 80A
+        units: none
+        source: design
+        hardware_validated: false
+        notes: Material nonlinearity is not modeled in the constant-curvature baseline.
+      neutral_startup_reference_convention: accepted_all_8_manual_startup
+      bending_stiffness_parameters: null
+      cable_stiffness_parameters: null
     segment_b:
-      - [4.0, 0.0]
-      - [0.0, 4.0]
-      - [-4.0, 0.0]
-      - [0.0, -4.0]
-  stiffness_values:
-    ka: null
-    kb: null
-    kt: null
-  additional_cable_length_mm: null
+      segment_label: Segment B
+      segment_role:
+        value: distal/upper/top
+        units: none
+        source: design
+        hardware_validated: false
+        notes: Segment B is the upper segment by default.
+      segment_length_mm:
+        value: 66.0
+        units: mm
+        source: design
+        hardware_validated: false
+        notes: Nominal molded segment length.
+      tendon_center_radius_mm:
+        value: 4.12
+        units: mm
+        source: design
+        hardware_validated: false
+        notes: Four tendon hole centers are equally spaced around the segment center.
+      tendon_angular_positions_deg:
+        value: [0, 90, 180, 270]
+        units: deg
+        source: design
+        hardware_validated: false
+        notes: Angular convention is model x/y frame dependent and must be hardware validated.
+      tendon_positions_mm:
+        value:
+          - [4.12, 0.0]
+          - [0.0, 4.12]
+          - [-4.12, 0.0]
+          - [0.0, -4.12]
+        units: mm
+        source: design
+        hardware_validated: false
+        notes: Derived from tendon_center_radius_mm and nominal angular positions.
+      hole_radius_or_diameter_mm:
+        value: 1.65
+        units: mm
+        source: design
+        hardware_validated: false
+        notes: User wording was 'hole radius is 1.65 mm'; confirm whether this is radius or diameter.
+      spacer_after_segment_mm:
+        value: 0.0
+        units: mm
+        source: design
+        hardware_validated: false
+        notes: No additional modeled spacer after distal segment for current distal-tip output.
+      effective_parameters_same_as_segment_a_by_default:
+        value: true
+        units: none
+        source: design
+        hardware_validated: false
+        notes: Segment A and Segment B are nominally identical before hardware identification.
+      neutral_xy_alignment_note:
+        value: Upper segment neutral x/y should align above Segment A at neutral.
+        units: none
+        source: design
+        hardware_validated: false
+        notes: Validate using tracked intermediate/distal coils.
+      rubber_material:
+        value: Smooth-On PMC-780 / 80A
+        units: none
+        source: design
+        hardware_validated: false
+        notes: Material nonlinearity is not modeled in the constant-curvature baseline.
+      neutral_startup_reference_convention: accepted_all_8_manual_startup
+      bending_stiffness_parameters: null
+      cable_stiffness_parameters: null
+  mike_constant_curvature:
+    validated_against_hardware: false
+    required_conventions_confirmed: false
+    geometry_complete: true
+    sign_convention_known: true
+    frame_convention_hardware_validated: false
+    can_run_when_required_conventions_confirmed: true
+    constant_curvature_assumptions:
+      - per_segment_constant_curvature
+      - no_friction_or_hysteresis
+      - no_gravity_or_payload_deflection
+      - segment_b_transform_composed_after_segment_a
+    neutral_axis_convention: null
+    curvature_from_tendon_displacement:
+      value: least_squares_tendon_plane
+      units: none
+      source: estimated
+      hardware_validated: false
+      notes: Geometric baseline; verify against tracked data before thesis claims.
+    segment_lengths_mm:
+      segment_a:
+        value: 66.0
+        units: mm
+        source: design
+        hardware_validated: false
+        notes: Mirrors Segment A design length.
+      segment_b:
+        value: 66.0
+        units: mm
+        source: design
+        hardware_validated: false
+        notes: Mirrors Segment B design length.
+    tendon_positions_mm:
+      segment_a:
+        value:
+          - [4.12, 0.0]
+          - [0.0, 4.12]
+          - [-4.12, 0.0]
+          - [0.0, -4.12]
+        units: mm
+        source: design
+        hardware_validated: false
+        notes: Derived from nominal radius/angular positions.
+      segment_b:
+        value:
+          - [4.12, 0.0]
+          - [0.0, 4.12]
+          - [-4.12, 0.0]
+          - [0.0, -4.12]
+        units: mm
+        source: design
+        hardware_validated: false
+        notes: Derived from nominal radius/angular positions.
+  camarillo:
+    validated_against_hardware: false
+    required_conventions_confirmed: false
+    parameter_source: null
+    unavailable_reason_notes:
+      - measured_or_fitted_segment_stiffness_missing
+      - tendon_or_cable_stiffness_missing
+      - additional_cable_routing_effective_length_missing
+      - hardware_validated_frame_and_sign_conventions_missing
+      - servo_current_is_load_proxy_not_stiffness
+    segment_lengths_mm:
+      segment_a: null
+      segment_b: null
+    cable_positions_mm:
+      segment_a:
+        - [4.0, 0.0]
+        - [0.0, 4.0]
+        - [-4.0, 0.0]
+        - [0.0, -4.0]
+      segment_b:
+        - [4.0, 0.0]
+        - [0.0, 4.0]
+        - [-4.0, 0.0]
+        - [0.0, -4.0]
+    segment_stiffness_values:
+      segment_a: null
+      segment_b: null
+    cable_stiffness_values:
+      segment_a: null
+      segment_b: null
+    additional_cable_length_mm: null
 
 output:
   figure_quality: production

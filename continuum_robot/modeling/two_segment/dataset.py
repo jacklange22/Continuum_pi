@@ -41,8 +41,12 @@ class TwoSegmentModelingSample:
     feature_mm: np.ndarray
     distal_position_mm: np.ndarray
     distal_tangent: np.ndarray | None
+    intermediate_position_mm: np.ndarray | None
+    intermediate_tangent: np.ndarray | None
     segment_command: dict[str, list[float]]
     ordered_servo_ids: list[int]
+    segment_order: list[str]
+    segment_metadata: dict[str, Any]
     command_schema_version: str
     command_units_source: str
     startup_artifact_path: str
@@ -78,6 +82,17 @@ class TwoSegmentModelingDataset:
     @property
     def orientation_available(self) -> bool:
         return bool(self.samples) and all(sample.distal_tangent is not None for sample in self.samples)
+
+    @property
+    def two_coil_xyz_available(self) -> bool:
+        return bool(self.samples) and all(sample.intermediate_position_mm is not None for sample in self.samples)
+
+    @property
+    def two_coil_orientation_available(self) -> bool:
+        return bool(self.samples) and all(
+            sample.intermediate_tangent is not None and sample.distal_tangent is not None
+            for sample in self.samples
+        )
 
     @property
     def includes_intermediate_pose(self) -> bool:
@@ -152,7 +167,10 @@ def _accepted_sample(*, run_dir: Path, sample_index: int, sample: dict[str, Any]
     if position_mm is None:
         raise ValueError("distal_tip_robot_frame_pose_missing")
     tangent = extract_distal_tangent(sample)
+    intermediate_position = extract_role_position_mm(sample, "intermediate_segment")
+    intermediate_tangent = extract_role_tangent(sample, "intermediate_segment")
     startup = _as_dict(extra.get("startup_artifact_provenance"))
+    segment_order = _segment_order(sample)
     return TwoSegmentModelingSample(
         run_dir=run_dir,
         run_name=run_dir.name,
@@ -161,8 +179,12 @@ def _accepted_sample(*, run_dir: Path, sample_index: int, sample: dict[str, Any]
         feature_mm=feature_mm,
         distal_position_mm=position_mm,
         distal_tangent=tangent,
+        intermediate_position_mm=intermediate_position,
+        intermediate_tangent=intermediate_tangent,
         segment_command=_segment_command_mm(command_record),
         ordered_servo_ids=[int(value) for value in list(extra.get("commanded_servo_ids") or command_record.get("commanded_servo_ids") or SERVO_ID_ORDER)],
+        segment_order=segment_order,
+        segment_metadata=_segment_metadata(sample, segment_order=segment_order),
         command_schema_version=str(extra.get("command_schema_version") or command_record.get("schema_version") or ""),
         command_units_source=source_units,
         startup_artifact_path=str(startup.get("artifact_path") or ""),
@@ -205,9 +227,7 @@ def extract_feature_mm(sample: dict[str, Any]) -> tuple[np.ndarray, str]:
 def extract_distal_position_mm(sample: dict[str, Any]) -> np.ndarray | None:
     """Extract distal-tip XYZ in robot frame without changing transform math."""
 
-    role_pose = _nested(sample, "pose_in_robot_frame", "roles", "distal_tip")
-    matrix = _as_dict(role_pose).get("T_robot_tip") if isinstance(role_pose, dict) else None
-    point = _translation_from_matrix(matrix)
+    point = extract_role_position_mm(sample, "distal_tip")
     if point is not None:
         return point
     pose = _as_dict(_nested(sample, "two_segment_pose", "distal_tip_pose"))
@@ -228,11 +248,50 @@ def extract_distal_tangent(sample: dict[str, Any]) -> np.ndarray | None:
     fields. If future datasets store a calibrated tangent vector, it is used.
     """
 
+    return extract_role_tangent(sample, "distal_tip")
+
+
+def extract_role_position_mm(sample: dict[str, Any], role: str) -> np.ndarray | None:
+    """Extract a named role XYZ label in robot frame when explicitly stored."""
+
+    role_pose = _as_dict(_nested(sample, "pose_in_robot_frame", "roles", role))
+    for matrix_key in ("T_robot_tip", "T_robot_tool", "T_robot_intermediate", "T_robot_role"):
+        point = _translation_from_matrix(role_pose.get(matrix_key))
+        if point is not None:
+            return point
+    translation = role_pose.get("translation_mm")
+    if isinstance(translation, list) and len(translation) >= 3:
+        return np.asarray([float(translation[0]), float(translation[1]), float(translation[2])], dtype=float)
+    if role != "distal_tip":
+        pose = _as_dict(_nested(sample, "two_segment_pose", "role_observations", role))
+        if str(_nested(sample, "two_segment_pose", "frame") or "").lower() == "robot":
+            translation = pose.get("translation_mm")
+            if isinstance(translation, list) and len(translation) >= 3:
+                return np.asarray([float(translation[0]), float(translation[1]), float(translation[2])], dtype=float)
+    return None
+
+
+def extract_role_tangent(sample: dict[str, Any], role: str) -> np.ndarray | None:
+    """Extract explicit tangent/orientation labels for a named role."""
+
     candidates = [
-        _nested(sample, "pose_in_robot_frame", "roles", "distal_tip", "tangent_xyz"),
-        _nested(sample, "two_segment_pose", "distal_tip_pose", "tangent_xyz"),
-        _nested(sample, "two_segment_pose", "distal_tip_pose", "orientation_tangent_xyz"),
+        _nested(sample, "pose_in_robot_frame", "roles", role, "tangent_xyz"),
+        _nested(sample, "pose_in_robot_frame", "roles", role, "orientation_tangent_xyz"),
     ]
+    if role == "distal_tip":
+        candidates.extend(
+            [
+                _nested(sample, "two_segment_pose", "distal_tip_pose", "tangent_xyz"),
+                _nested(sample, "two_segment_pose", "distal_tip_pose", "orientation_tangent_xyz"),
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                _nested(sample, "two_segment_pose", "role_observations", role, "tangent_xyz"),
+                _nested(sample, "two_segment_pose", "role_observations", role, "orientation_tangent_xyz"),
+            ]
+        )
     for value in candidates:
         if isinstance(value, list) and len(value) >= 3:
             vector = np.asarray([float(value[0]), float(value[1]), float(value[2])], dtype=float)
@@ -240,6 +299,56 @@ def extract_distal_tangent(sample: dict[str, Any]) -> np.ndarray | None:
             if norm > 0.0:
                 return vector / norm
     return None
+
+
+def _segment_order(sample: dict[str, Any]) -> list[str]:
+    command_record = _as_dict(sample.get("two_segment_command"))
+    extra = _as_dict(sample.get("extra"))
+    candidates = [
+        extra.get("segment_order"),
+        command_record.get("segment_order"),
+        _nested(sample, "metadata", "segment_order"),
+    ]
+    for value in candidates:
+        if isinstance(value, list) and value:
+            return [str(item) for item in value]
+    return ["segment_a", "segment_b"]
+
+
+def _segment_metadata(sample: dict[str, Any], *, segment_order: list[str]) -> dict[str, Any]:
+    extra = _as_dict(sample.get("extra"))
+    segments = _as_dict(extra.get("segments") or extra.get("segment_definitions"))
+    fallback = {
+        "segment_a": {
+            "label": "Segment A",
+            "role": "proximal",
+            "role_aliases": ["proximal", "lower", "base", "bottom"],
+            "servo_ids": [1, 2, 3, 4],
+            "pair_mapping": [[1, 3], [2, 4]],
+            "segment_order_index": segment_order.index("segment_a") if "segment_a" in segment_order else 0,
+        },
+        "segment_b": {
+            "label": "Segment B",
+            "role": "distal",
+            "role_aliases": ["distal", "upper", "top"],
+            "servo_ids": [5, 6, 7, 8],
+            "pair_mapping": [[5, 7], [6, 8]],
+            "segment_order_index": segment_order.index("segment_b") if "segment_b" in segment_order else 1,
+        },
+    }
+    merged: dict[str, Any] = {}
+    for segment in segment_order:
+        raw = _as_dict(segments.get(segment))
+        base = dict(fallback.get(segment, {"label": segment, "role": "", "servo_ids": [], "pair_mapping": []}))
+        base.update(raw)
+        base["segment_order_index"] = int(base.get("segment_order_index", segment_order.index(segment)))
+        base["servo_ids"] = [int(value) for value in list(base.get("servo_ids") or [])]
+        base["pair_mapping"] = [[int(v) for v in list(pair)] for pair in list(base.get("pair_mapping") or []) if isinstance(pair, list)]
+        merged[segment] = base
+    for segment, payload in fallback.items():
+        if segment not in merged:
+            merged[segment] = payload
+    return merged
 
 
 def _rejection_reason(sample: dict[str, Any], *, metrics: dict[str, Any], allow_lower_trust: bool) -> str | None:
