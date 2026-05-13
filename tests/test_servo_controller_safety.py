@@ -213,10 +213,18 @@ class _TrackingReadBus(MockDxlBus):
 
 
 class _StaleControllerBus(MockDxlBus):
+    def read_telemetry(self, servo_ids: list[int], **kwargs):
+        result = super().read_telemetry(servo_ids, **kwargs)
+        for servo_id in servo_ids:
+            result[int(servo_id)].last_read_monotonic_s = self._state[int(servo_id)].last_read_monotonic_s
+            result[int(servo_id)].last_valid_packet_monotonic_s = self._state[int(servo_id)].last_read_monotonic_s
+        return result
+
     def read_live_telemetry(self, servo_ids: list[int]):
         result = super().read_live_telemetry(servo_ids)
         for servo_id in servo_ids:
             result[int(servo_id)].last_read_monotonic_s = self._state[int(servo_id)].last_read_monotonic_s
+            result[int(servo_id)].last_valid_packet_monotonic_s = self._state[int(servo_id)].last_read_monotonic_s
         return result
 
 
@@ -610,7 +618,8 @@ def test_system_controller_syncs_servo_summary_from_servos_state(tmp_path: Path)
     assert system_controller.state.telemetry_ready_count == 4
     assert system_controller.state.motion_ready_count == expected_motion_ready_count
     assert "Detected 4/4" in system_controller.state.readiness_message
-    assert f"Motion ready {expected_motion_ready_count}/4" in system_controller.state.readiness_message
+    assert "Packet read 4/4" in system_controller.state.readiness_message
+    assert "Experiments use fresh pre-motion read" in system_controller.state.readiness_message
 
 
 def test_servo_service_bench_snapshot_marks_ping_only_when_readback_fails(tmp_path: Path) -> None:
@@ -901,11 +910,14 @@ def test_servos_controller_formats_stale_telemetry_reason_honestly(tmp_path: Pat
 
     controller = ServosController(service, settings)
 
-    assert controller.state.selected_servo_telemetry_status_label == "Stale"
+    assert controller.state.selected_servo_telemetry_status_label == "Stale display"
     assert controller.state.selected_servo_telemetry_fresh is False
     assert controller.state.selected_servo_telemetry_age_s == 1.0
     assert controller.state.selected_servo_reason_label == "Telemetry is stale (1.000 s > 0.250 s)."
     assert controller.state.telemetry[1]["block_reason"] == "Telemetry is stale (1.000 s > 0.250 s)."
+    assert controller.state.telemetry[1]["packet_read_ok"] is True
+    assert controller.state.telemetry[1]["stale_display_warning"] is True
+    assert controller.state.telemetry[1]["motion_ready"] is True
 
 
 def test_servos_controller_jog_does_not_trigger_full_table_refresh_reads(tmp_path: Path) -> None:
@@ -952,7 +964,9 @@ def test_servos_controller_refresh_selected_servo_uses_selected_only_runtime_ref
     assert bus.live_read_calls == []
     assert len(bus.read_calls) == 1
     assert bus.read_calls[0][0] == [4]
-    assert bus.read_calls[0][1] == {}
+    assert bus.read_calls[0][1].get("include_reported_id") is False
+    assert bus.read_calls[0][1].get("include_identity") is False
+    assert bus.read_calls[0][1].get("include_limits") is False
 
 
 def test_system_controller_save_runtime_parameters_persists_poll_rate(tmp_path: Path) -> None:

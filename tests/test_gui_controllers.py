@@ -232,6 +232,32 @@ class _MultiServoPretensionBus(MockDxlBus):
                 self._state[int(servo_id)].present_current_ma = sequence.pop(0)
 
 
+class _RuntimeReadCountingBus(_MultiServoPretensionBus):
+    def __init__(self) -> None:
+        super().__init__(current_sequences={})
+        self.full_read_count = 0
+        self.minimal_read_count = 0
+
+    def read_telemetry(self, servo_ids: list[int], **kwargs):
+        self.full_read_count += 1
+        return super().read_telemetry(servo_ids, **kwargs)
+
+    def read_minimal_telemetry(self, servo_ids: list[int]):
+        self.minimal_read_count += 1
+        telemetry = MockDxlBus.read_telemetry(
+            self,
+            servo_ids,
+            include_reported_id=False,
+            include_identity=False,
+            include_limits=False,
+        )
+        for item in telemetry.values():
+            item.present_voltage_raw_unit = None
+            item.present_voltage_mv = None
+            item.present_temperature_c = None
+        return telemetry
+
+
 class _TorqueEnableFailureMultiServoPretensionBus(_MultiServoPretensionBus):
     def __init__(self, *, current_sequences: dict[int, list[int | None]], fail_message: str = "mock torque enable failure") -> None:
         super().__init__(current_sequences=current_sequences)
@@ -1115,7 +1141,27 @@ def test_system_controller_refresh_readiness_uses_runtime_snapshot_counts(tmp_pa
     assert state.telemetry_ready_count == 4
     assert state.motion_ready_count == 4
     assert state.motion_ready is True
-    assert "Motion ready 4/4" in state.readiness_message
+    assert "Packet read 4/4" in state.readiness_message
+    assert "Experiments use fresh pre-motion read" in state.readiness_message
+
+
+def test_system_controller_normal_refresh_uses_minimal_runtime_telemetry(tmp_path: Path) -> None:
+    settings = _settings()
+    bus = _RuntimeReadCountingBus()
+    service = _pretension_service(tmp_path, dxl_bus=bus)
+    service.connect("/dev/mock-openrb", 57600)
+    controller = SystemController(
+        tracking_service=_tracking_service(settings, tmp_path),
+        openrb_client=MockOpenRbClient(),
+        servo_service=service,
+        settings=settings,
+    )
+
+    state = controller.refresh_readiness(include_scan=False)
+
+    assert state.telemetry_ready_count == 4
+    assert bus.minimal_read_count == 1
+    assert bus.full_read_count == 0
 
 
 def test_system_controller_refresh_readiness_uses_cache_for_repeated_timer_refresh(tmp_path: Path, monkeypatch) -> None:

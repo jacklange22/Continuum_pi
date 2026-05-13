@@ -235,14 +235,18 @@ def _evaluate_transport(
         message = "missing servo ID(s): " + ", ".join(str(value) for value in missing) + "."
     elif stale:
         status = STATUS_WARN
-        message = "Telemetry is stale for servo ID(s): " + ", ".join(str(value) for value in stale) + "."
+        message = (
+            "GUI display cache is stale for servo ID(s): "
+            + ", ".join(str(value) for value in stale)
+            + ". Experiments perform fresh pre-motion reads before commanding."
+        )
     elif errors:
         status = STATUS_FAIL
         message = "Hardware/telemetry errors on servo ID(s): " + ", ".join(str(value) for value in errors) + "."
     else:
         status = STATUS_PASS if expected_servo_ids else STATUS_WARN
         message = (
-            "Fresh/readable telemetry is available for expected servo IDs."
+            "Readable packet telemetry is available for expected servo IDs."
             if expected_servo_ids
             else "No expected servo IDs are configured."
         )
@@ -465,7 +469,16 @@ def _evaluate_experiments(
     mock_mode: bool,
 ) -> ExperimentReadiness:
     transport_ok = transport.status == STATUS_PASS
-    raw_jog = bool(transport_ok)
+    expected_ids = {int(value) for value in transport.expected_servo_ids}
+    responding_ids = {int(value) for value in transport.responding_servo_ids}
+    stale_display_only = bool(
+        transport.status == STATUS_WARN
+        and transport.stale_servo_ids
+        and not transport.missing_servo_ids
+        and not transport.hardware_error_servo_ids
+        and expected_ids.issubset(responding_ids)
+    )
+    raw_jog = bool(transport_ok or stale_display_only)
     calibrated = bool(transport_ok and neutral.ready)
     startup_ready = bool(calibrated and startup.ready)
     if raw_jog and not calibrated:
@@ -473,7 +486,7 @@ def _evaluate_experiments(
     elif raw_jog:
         raw_label = "Allowed; calibration is available, but tiny jog remains a raw hardware-bound action."
     else:
-        raw_label = "Blocked until selected servos are connected, readable, fresh, and error-free."
+        raw_label = "Blocked until selected servos are connected, readable, and error-free."
     if mock_mode:
         message = "Mock/debug runtime: runs may execute only as non-thesis/non-training output."
     elif startup_ready:
@@ -512,7 +525,12 @@ def _next_action(
             f"{transport.missing_servo_ids}. Connect/scan before calibration."
         )
     if transport.status == STATUS_WARN:
-        return "Refresh servo telemetry and resolve stale/readback warnings before calibration."
+        if transport.stale_servo_ids and not transport.missing_servo_ids and not transport.hardware_error_servo_ids:
+            return (
+                "GUI display cache is stale; refresh the display or proceed to an experiment "
+                "that performs a fresh pre-motion read."
+            )
+        return "Refresh servo telemetry and resolve readback warnings before calibration."
     if transport.status == STATUS_FAIL:
         return transport.message
     if neutral.is_mock:

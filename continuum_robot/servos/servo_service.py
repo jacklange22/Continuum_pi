@@ -324,11 +324,16 @@ class ServoRuntimeStateEntry:
     telemetry: ServoTelemetry | None
     identity_read_ok: bool
     telemetry_read_ok: bool
-    detected: bool
-    telemetry_status: str
-    motion_assessment: ServoMotionAssessment | None
-    pretension_assessment: ServoMotionAssessment | None
-    message: str
+    packet_read_ok: bool = False
+    required_fields_ok: bool = False
+    gui_cache_fresh: bool | None = None
+    stale_display_warning: bool = False
+    experiment_motion_ready: bool = False
+    detected: bool = False
+    telemetry_status: str = "Unknown"
+    motion_assessment: ServoMotionAssessment | None = None
+    pretension_assessment: ServoMotionAssessment | None = None
+    message: str = ""
 
 
 @dataclass
@@ -341,12 +346,18 @@ class ServoRuntimeStateSnapshot:
     missing_servo_ids: list[int]
     unexpected_servo_ids: list[int]
     entries: dict[int, ServoRuntimeStateEntry]
-    telemetry_ready_count: int
-    motion_ready_count: int
-    pretension_ready_count: int
-    all_motion_ready: bool
-    selected_servo_id: int | None
-    message: str
+    telemetry_ready_count: int = 0
+    packet_read_ok_count: int = 0
+    required_fields_ok_count: int = 0
+    gui_cache_stale_count: int = 0
+    experiment_motion_ready_count: int = 0
+    motion_ready_count: int = 0
+    pretension_ready_count: int = 0
+    all_motion_ready: bool = False
+    selected_servo_id: int | None = None
+    message: str = ""
+    telemetry_profile: str = "full"
+    experiments_use_fresh_pre_motion_read: bool = True
 
 
 @dataclass
@@ -1460,6 +1471,29 @@ class ServoService:
             return "hardware_error"
         return "telemetry_error"
 
+    @staticmethod
+    def _runtime_packet_read_ok(telemetry: ServoTelemetry | None) -> bool:
+        if telemetry is None:
+            return False
+        return bool(
+            telemetry.present_position is not None
+            and telemetry.hardware_error_code in (None, 0)
+            and not telemetry.hardware_error
+            and not telemetry.telemetry_error
+            and not telemetry.identity_error
+        )
+
+    @staticmethod
+    def _runtime_required_fields_ok(telemetry: ServoTelemetry | None) -> bool:
+        if telemetry is None:
+            return False
+        return bool(
+            telemetry.present_position is not None
+            and telemetry.operating_mode is not None
+            and telemetry.hardware_error_code is not None
+            and telemetry.telemetry_error is None
+        )
+
     def _guard_bus_call(self, action: str, fn: Callable[[], object]):
         self._assert_bus_access(action=action)
         with self._bus_io_lock:
@@ -2043,9 +2077,11 @@ class ServoService:
         selected_servo_id: int | None = None,
         selected_pretension_parameters: PretensionParameters | None = None,
         include_scan: bool = True,
+        telemetry_profile: str = "full",
     ) -> ServoRuntimeStateSnapshot:
         """Return one canonical live servo snapshot for GUI readiness surfaces."""
         expected_ids = sorted({int(servo_id) for servo_id in expected_servo_ids})
+        profile = "full" if str(telemetry_profile).strip().lower() == "full" else "minimal"
         if not self.is_connected:
             return ServoRuntimeStateSnapshot(
                 connected=False,
@@ -2082,29 +2118,56 @@ class ServoService:
             for servo_id in expected_ids
             if include_scan and self._ping_servo(int(servo_id))
         ]
-        telemetry_by_id = self.read_telemetry(expected_ids)
+        telemetry_by_id = (
+            self.read_telemetry(expected_ids)
+            if profile == "full"
+            else self.read_minimal_telemetry(expected_ids)
+        )
         entries: dict[int, ServoRuntimeStateEntry] = {}
         detected_servo_ids: list[int] = []
         telemetry_ready_count = 0
+        packet_read_ok_count = 0
+        required_fields_ok_count = 0
+        gui_cache_stale_count = 0
         motion_ready_count = 0
         pretension_ready_count = 0
 
         for servo_id in expected_ids:
             telemetry = telemetry_by_id.get(int(servo_id))
             identity_read_ok = bool(telemetry is not None and self._identity_read_ok(telemetry))
-            telemetry_read_ok = bool(
+            packet_read_ok = self._runtime_packet_read_ok(telemetry)
+            required_fields_ok = self._runtime_required_fields_ok(telemetry)
+            telemetry_read_ok = packet_read_ok if profile == "minimal" else bool(
                 telemetry is not None
                 and telemetry.present_position is not None
                 and telemetry.min_position_limit is not None
                 and telemetry.max_position_limit is not None
                 and telemetry.telemetry_error is None
             )
-            motion_assessment = (
-                self.assess_experiment_motion(
-                    int(servo_id),
+            gui_cache_fresh = self.telemetry_is_fresh(telemetry)
+            stale_display_warning = bool(packet_read_ok and gui_cache_fresh is False)
+            if profile == "minimal":
+                motion_assessment = self._assess_gui_experiment_motion_display(
+                    servo_id=int(servo_id),
                     telemetry=telemetry,
                 )
-                if telemetry is not None else None
+            else:
+                motion_assessment = (
+                    self.assess_experiment_motion(
+                        int(servo_id),
+                        telemetry=telemetry,
+                    )
+                    if telemetry is not None else None
+                )
+            experiment_motion_ready = bool(
+                motion_assessment is not None
+                and (
+                    motion_assessment.ready
+                    or (
+                        packet_read_ok
+                        and self._assessment_blocked_only_by_stale_telemetry(motion_assessment)
+                    )
+                )
             )
             pretension_parameters = (
                 selected_pretension_parameters
@@ -2117,7 +2180,7 @@ class ServoService:
                     parameters=pretension_parameters,
                     telemetry=telemetry,
                 )
-                if telemetry is not None
+                if telemetry is not None and profile == "full"
                 else None
             )
             telemetry_status = self._runtime_telemetry_status(
@@ -2142,7 +2205,13 @@ class ServoService:
                 detected_servo_ids.append(int(servo_id))
             if telemetry_status == "Live":
                 telemetry_ready_count += 1
-            if motion_assessment is not None and motion_assessment.ready:
+            if packet_read_ok:
+                packet_read_ok_count += 1
+            if required_fields_ok:
+                required_fields_ok_count += 1
+            if stale_display_warning:
+                gui_cache_stale_count += 1
+            if experiment_motion_ready:
                 motion_ready_count += 1
             if pretension_assessment is not None and pretension_assessment.ready:
                 pretension_ready_count += 1
@@ -2151,7 +2220,13 @@ class ServoService:
             elif motion_assessment is not None and motion_assessment.ready:
                 message = f"Servo {servo_id} is ready for cautious motion."
             elif motion_assessment is not None:
-                message = motion_assessment.reason
+                if experiment_motion_ready and stale_display_warning:
+                    message = (
+                        f"Servo {servo_id} packet read succeeded; GUI display cache is stale. "
+                        "Experiments perform a fresh pre-motion read before commanding."
+                    )
+                else:
+                    message = motion_assessment.reason
             else:
                 message = f"Servo {servo_id} telemetry is unavailable."
             entries[int(servo_id)] = ServoRuntimeStateEntry(
@@ -2159,6 +2234,11 @@ class ServoService:
                 telemetry=telemetry,
                 identity_read_ok=identity_read_ok,
                 telemetry_read_ok=telemetry_read_ok,
+                packet_read_ok=packet_read_ok,
+                required_fields_ok=required_fields_ok,
+                gui_cache_fresh=gui_cache_fresh,
+                stale_display_warning=stale_display_warning,
+                experiment_motion_ready=experiment_motion_ready,
                 detected=detected,
                 telemetry_status=telemetry_status,
                 motion_assessment=motion_assessment,
@@ -2183,8 +2263,9 @@ class ServoService:
         details.extend(
             [
                 f"Detected {len(combined_detected_ids)}/{total}",
-                f"Telemetry {telemetry_ready_count}/{total}",
-                f"Motion ready {motion_ready_count}/{total}",
+                f"Packet read {packet_read_ok_count}/{total}",
+                f"GUI cache age warning {gui_cache_stale_count}/{total}",
+                "Experiments use fresh pre-motion read",
             ]
         )
         if missing_servo_ids:
@@ -2199,12 +2280,18 @@ class ServoService:
             missing_servo_ids=sorted(missing_servo_ids),
             unexpected_servo_ids=unexpected_servo_ids,
             entries=entries,
-            telemetry_ready_count=int(telemetry_ready_count),
+            telemetry_ready_count=int(packet_read_ok_count),
+            packet_read_ok_count=int(packet_read_ok_count),
+            required_fields_ok_count=int(required_fields_ok_count),
+            gui_cache_stale_count=int(gui_cache_stale_count),
+            experiment_motion_ready_count=int(motion_ready_count),
             motion_ready_count=int(motion_ready_count),
             pretension_ready_count=int(pretension_ready_count),
             all_motion_ready=bool(total > 0 and motion_ready_count == total),
             selected_servo_id=int(selected_servo_id) if selected_servo_id is not None else None,
             message=message,
+            telemetry_profile=profile,
+            experiments_use_fresh_pre_motion_read=True,
         )
 
     def build_cached_runtime_servo_snapshot(
@@ -2224,41 +2311,59 @@ class ServoService:
         entries: dict[int, ServoRuntimeStateEntry] = {}
         detected_servo_ids: list[int] = []
         telemetry_ready_count = 0
+        packet_read_ok_count = 0
+        required_fields_ok_count = 0
+        gui_cache_stale_count = 0
         motion_ready_count = 0
         pretension_ready_count = 0
         for servo_id in expected_ids:
             telemetry = telemetry_by_id.get(int(servo_id))
             identity_read_ok = bool(telemetry is not None and self._identity_read_ok(telemetry))
-            telemetry_read_ok = bool(
-                telemetry is not None
-                and telemetry.present_position is not None
-                and telemetry.telemetry_error is None
+            packet_read_ok = self._runtime_packet_read_ok(telemetry)
+            required_fields_ok = self._runtime_required_fields_ok(telemetry)
+            telemetry_read_ok = packet_read_ok
+            gui_cache_fresh = self.telemetry_is_fresh(telemetry)
+            stale_display_warning = bool(packet_read_ok and gui_cache_fresh is False)
+            motion_assessment = self._assess_gui_experiment_motion_display(
+                servo_id=int(servo_id),
+                telemetry=telemetry,
             )
-            motion_assessment = (
-                self.assess_experiment_motion(int(servo_id), telemetry=telemetry)
-                if telemetry is not None
-                else None
+            experiment_motion_ready = bool(
+                motion_assessment is not None
+                and (
+                    motion_assessment.ready
+                    or (
+                        packet_read_ok
+                        and self._assessment_blocked_only_by_stale_telemetry(motion_assessment)
+                    )
+                )
             )
-            pretension_assessment = (
-                self.assess_pretension_readiness(int(servo_id), telemetry=telemetry)
-                if telemetry is not None
-                else None
-            )
+            pretension_assessment = None
             detected = bool(telemetry is not None and (telemetry_read_ok or identity_read_ok))
             if detected:
                 detected_servo_ids.append(int(servo_id))
             if telemetry_read_ok:
                 telemetry_ready_count += 1
-            if motion_assessment is not None and motion_assessment.ready:
+            if packet_read_ok:
+                packet_read_ok_count += 1
+            if required_fields_ok:
+                required_fields_ok_count += 1
+            if stale_display_warning:
+                gui_cache_stale_count += 1
+            if experiment_motion_ready:
                 motion_ready_count += 1
-            if pretension_assessment is not None and pretension_assessment.ready:
-                pretension_ready_count += 1
             if telemetry is None:
                 message = f"No cached telemetry is available for servo {servo_id}."
             elif motion_assessment is not None and motion_assessment.ready:
                 message = f"Servo {servo_id} cached telemetry was ready when last read."
             elif motion_assessment is not None:
-                message = f"Cached state: {motion_assessment.reason}"
+                if experiment_motion_ready and stale_display_warning:
+                    message = (
+                        f"Cached packet for servo {servo_id} was valid but display age is stale. "
+                        "Experiments perform a fresh pre-motion read before commanding."
+                    )
+                else:
+                    message = f"Cached state: {motion_assessment.reason}"
             else:
                 message = f"Cached telemetry is unavailable for servo {servo_id}."
             entries[int(servo_id)] = ServoRuntimeStateEntry(
@@ -2266,8 +2371,17 @@ class ServoService:
                 telemetry=telemetry,
                 identity_read_ok=identity_read_ok,
                 telemetry_read_ok=telemetry_read_ok,
+                packet_read_ok=packet_read_ok,
+                required_fields_ok=required_fields_ok,
+                gui_cache_fresh=gui_cache_fresh,
+                stale_display_warning=stale_display_warning,
+                experiment_motion_ready=experiment_motion_ready,
                 detected=detected,
-                telemetry_status="Cached" if telemetry is not None else "Unavailable",
+                telemetry_status=(
+                    "Cached stale display"
+                    if stale_display_warning
+                    else ("Cached" if telemetry is not None else "Unavailable")
+                ),
                 motion_assessment=motion_assessment,
                 pretension_assessment=pretension_assessment,
                 message=message,
@@ -2277,7 +2391,10 @@ class ServoService:
         owner_text = owner.owner or "servo operation"
         message = (
             f"Showing cached servo state while DYNAMIXEL bus is owned by {owner_text}. "
-            f"cached={len(detected_servo_ids)}/{len(expected_ids)}."
+            f"Detected {len(detected_servo_ids)}/{len(expected_ids)} | "
+            f"Packet read {packet_read_ok_count}/{len(expected_ids)} | "
+            f"GUI cache age warning {gui_cache_stale_count}/{len(expected_ids)} | "
+            "Experiments use fresh pre-motion read."
         )
         return ServoRuntimeStateSnapshot(
             connected=self.is_connected,
@@ -2286,12 +2403,18 @@ class ServoService:
             missing_servo_ids=missing_servo_ids,
             unexpected_servo_ids=[],
             entries=entries,
-            telemetry_ready_count=int(telemetry_ready_count),
+            telemetry_ready_count=int(packet_read_ok_count),
+            packet_read_ok_count=int(packet_read_ok_count),
+            required_fields_ok_count=int(required_fields_ok_count),
+            gui_cache_stale_count=int(gui_cache_stale_count),
+            experiment_motion_ready_count=int(motion_ready_count),
             motion_ready_count=int(motion_ready_count),
             pretension_ready_count=int(pretension_ready_count),
             all_motion_ready=bool(expected_ids and motion_ready_count == len(expected_ids)),
             selected_servo_id=int(selected_servo_id) if selected_servo_id is not None else None,
             message=message,
+            telemetry_profile="cached",
+            experiments_use_fresh_pre_motion_read=True,
         )
 
     def discover_one_servo(
@@ -3631,6 +3754,57 @@ class ServoService:
             telemetry=telemetry,
             safe_min_tick=safe_min,
             safe_max_tick=safe_max,
+            tightening_direction="smaller raw position counts",
+            blocking_reasons=tuple(errors),
+            external_power_required=False,
+            external_power_ready=None,
+        )
+
+    def _assess_gui_experiment_motion_display(
+        self,
+        *,
+        servo_id: int,
+        telemetry: ServoTelemetry | None,
+    ) -> ServoMotionAssessment | None:
+        """Lightweight GUI-only experiment readiness summary.
+
+        This deliberately avoids full telemetry/limit refreshes. Live
+        experiments still perform their own experiment-owned pre-motion read.
+        """
+        if telemetry is None:
+            return None
+        errors: list[str] = []
+        if telemetry.present_position is None:
+            errors.append("Present Position is unavailable.")
+        if telemetry.hardware_error_code not in (None, 0):
+            errors.append(f"Hardware Error Status is 0x{int(telemetry.hardware_error_code):02X}.")
+        elif telemetry.hardware_error and not telemetry.telemetry_error:
+            errors.append(str(telemetry.hardware_error))
+        if telemetry.telemetry_error:
+            errors.append(str(telemetry.telemetry_error))
+        try:
+            self.safety_guard.validate_currents([telemetry.present_current_ma], require_present=False)
+        except ValueError as exc:
+            errors.append(str(exc))
+        if self.dxl_bus.config.require_fresh_telemetry_for_motion:
+            try:
+                self.safety_guard.validate_telemetry_freshness(
+                    telemetry.last_valid_packet_monotonic_s or telemetry.last_read_monotonic_s
+                )
+            except ValueError as exc:
+                errors.append(str(exc))
+        raw_min, raw_max = self.raw_position_range()
+        return ServoMotionAssessment(
+            servo_id=int(servo_id),
+            ready=not errors,
+            reason=(
+                "Experiment will perform a fresh pre-motion read before commanding."
+                if not errors
+                else " | ".join(errors)
+            ),
+            telemetry=telemetry,
+            safe_min_tick=int(raw_min),
+            safe_max_tick=int(raw_max),
             tightening_direction="smaller raw position counts",
             blocking_reasons=tuple(errors),
             external_power_required=False,
@@ -5914,11 +6088,11 @@ class ServoService:
             return "Unreadable"
         fresh = self.telemetry_is_fresh(telemetry)
         if fresh is False:
-            return "Stale"
+            return "Stale display" if self._runtime_packet_read_ok(telemetry) else "Stale"
         if motion_assessment is not None:
             for reason in motion_assessment.blocking_reasons:
                 if "telemetry is stale" in str(reason).lower():
-                    return "Stale"
+                    return "Stale display" if self._runtime_packet_read_ok(telemetry) else "Stale"
         if telemetry.present_position is None:
             return "Unreadable"
         return "Live"

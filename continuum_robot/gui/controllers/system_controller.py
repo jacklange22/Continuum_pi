@@ -539,12 +539,14 @@ class SystemController:
                     else None
                 )
             else:
+                telemetry_profile = "minimal"
                 cache_key = (tuple(expected_ids), bool(include_scan))
                 cached = self._readiness_cache
                 if (
                     not include_scan
                     and cached is not None
                     and cached[0] == cache_key[0]
+                    and cached[1] == cache_key[1]
                     and (time.monotonic() - self._readiness_cache_monotonic_s) <= self._readiness_cache_ttl_s
                 ):
                     snapshot = cached[2]
@@ -552,6 +554,7 @@ class SystemController:
                     snapshot = self.servo_service.build_runtime_servo_snapshot(
                         expected_ids,
                         include_scan=bool(include_scan),
+                        telemetry_profile=telemetry_profile,
                     )
                     self._readiness_cache = (cache_key[0], cache_key[1], snapshot)
                     self._readiness_cache_monotonic_s = time.monotonic()
@@ -951,11 +954,19 @@ class SystemController:
         detected_ids = [int(servo_id) for servo_id in getattr(servo_state, "detected_servo_ids", [])]
         telemetry = dict(getattr(servo_state, "telemetry", {}))
         total = len(expected_ids)
-        telemetry_ready_count = sum(
+        packet_read_count = sum(
             1
             for servo_id in expected_ids
-            if str(telemetry.get(int(servo_id), {}).get("telemetry_status", "")).strip().lower()
-            not in {"", "unknown", "unreadable"}
+            if bool(telemetry.get(int(servo_id), {}).get("packet_read_ok"))
+            or str(telemetry.get(int(servo_id), {}).get("telemetry_status", "")).strip().lower()
+            not in {"", "unknown", "unreadable", "missing"}
+        )
+        stale_display_count = sum(
+            1
+            for servo_id in expected_ids
+            if bool(telemetry.get(int(servo_id), {}).get("stale_display_warning"))
+            or str(telemetry.get(int(servo_id), {}).get("telemetry_status", "")).strip().lower()
+            in {"stale display", "cached stale display"}
         )
         motion_ready_count = sum(
             1
@@ -978,7 +989,7 @@ class SystemController:
         self.state.expected_servo_ids = expected_ids
         self.state.detected_servo_ids = detected_ids
         self.state.bus_reachable = bool(detected_ids)
-        self.state.telemetry_ready_count = int(telemetry_ready_count)
+        self.state.telemetry_ready_count = int(packet_read_count)
         self.state.motion_ready_count = int(motion_ready_count)
         self.state.motion_ready = bool(total > 0 and motion_ready_count == total)
         issues: list[str] = []
@@ -991,8 +1002,9 @@ class SystemController:
         if total:
             summary = (
                 f"Detected {len(detected_ids)}/{total} | "
-                f"Telemetry {telemetry_ready_count}/{total} | "
-                f"Motion ready {motion_ready_count}/{total}"
+                f"Packet read {packet_read_count}/{total} | "
+                f"GUI cache age warning {stale_display_count}/{total} | "
+                "Experiments use fresh pre-motion read"
             )
         else:
             summary = "No expected servo IDs are configured."
@@ -1411,12 +1423,18 @@ class SystemController:
         motion_ready_ids = [
             int(entry.servo_id)
             for entry in getattr(snapshot, "entries", {}).values()
-            if entry.motion_assessment is not None and entry.motion_assessment.ready
+            if bool(getattr(entry, "experiment_motion_ready", False))
+            or (entry.motion_assessment is not None and entry.motion_assessment.ready)
         ]
-        telemetry_ok_ids = [
+        packet_read_ok_ids = [
             int(entry.servo_id)
             for entry in getattr(snapshot, "entries", {}).values()
-            if entry.telemetry_status == "Live"
+            if bool(getattr(entry, "packet_read_ok", False))
+        ]
+        stale_display_ids = [
+            int(entry.servo_id)
+            for entry in getattr(snapshot, "entries", {}).values()
+            if bool(getattr(entry, "stale_display_warning", False))
         ]
         return "\n".join(
             [
@@ -1432,7 +1450,8 @@ class SystemController:
                 f"detected_servo_ids={getattr(snapshot, 'detected_servo_ids', [])}",
                 f"missing_servo_ids={getattr(snapshot, 'missing_servo_ids', [])}",
                 f"unexpected_servo_ids={getattr(snapshot, 'unexpected_servo_ids', [])}",
-                f"telemetry_ok_ids={telemetry_ok_ids}",
+                f"packet_read_ok_ids={packet_read_ok_ids}",
+                f"gui_cache_stale_ids={stale_display_ids}",
                 f"motion_ready_ids={motion_ready_ids}",
                 f"freshness_threshold_s={self.state.telemetry_freshness_timeout_s:.3f}",
                 f"all_motion_ready={getattr(snapshot, 'all_motion_ready', False)}",

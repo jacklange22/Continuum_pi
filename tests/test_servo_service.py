@@ -122,6 +122,26 @@ class _StaleThenFreshBus(MockDxlBus):
         return result
 
 
+class _StaleDisplayMinimalBus(MockDxlBus):
+    def __init__(self, servo_ids: list[int]) -> None:
+        super().__init__(servo_ids)
+        self.minimal_read_count = 0
+        self.full_read_count = 0
+
+    def read_minimal_telemetry(self, servo_ids: list[int]) -> dict[int, object]:
+        self.minimal_read_count += 1
+        result = super().read_minimal_telemetry(servo_ids)
+        for servo_id in servo_ids:
+            telemetry = result[int(servo_id)]
+            telemetry.last_read_monotonic_s = 0.0
+            telemetry.last_valid_packet_monotonic_s = 0.0
+        return result
+
+    def read_telemetry(self, servo_ids: list[int], **kwargs) -> dict[int, object]:
+        self.full_read_count += 1
+        return super().read_telemetry(servo_ids, **kwargs)
+
+
 class _MissingPositionLiveReadBus(MockDxlBus):
     def read_telemetry(self, servo_ids: list[int], **kwargs) -> dict[int, object]:
         result = super().read_telemetry(servo_ids, **kwargs)
@@ -837,6 +857,37 @@ def test_servo_service_build_runtime_snapshot_reports_consistent_counts(tmp_path
     assert snapshot.entries[2].telemetry_status == "Live"
     assert snapshot.entries[2].pretension_assessment is not None
     assert snapshot.entries[2].pretension_assessment.ready is True
+
+
+def test_runtime_snapshot_treats_stale_display_cache_as_packet_warning(tmp_path: Path) -> None:
+    bus = _StaleDisplayMinimalBus([5, 6, 7, 8])
+    service = _build_service(
+        tmp_path,
+        dxl_bus=bus,
+        context_servo_ids=[5, 6, 7, 8],
+        time_fn=lambda: 1.0,
+        telemetry_stale_after_s=0.25,
+    )
+    service.connect("/dev/mock-openrb", 57600)
+
+    snapshot = service.build_runtime_servo_snapshot(
+        [5, 6, 7, 8],
+        include_scan=False,
+        telemetry_profile="minimal",
+    )
+
+    assert snapshot.telemetry_profile == "minimal"
+    assert snapshot.packet_read_ok_count == 4
+    assert snapshot.telemetry_ready_count == 4
+    assert snapshot.gui_cache_stale_count == 4
+    assert snapshot.motion_ready_count == 4
+    assert snapshot.all_motion_ready is True
+    assert "Packet read 4/4" in snapshot.message
+    assert "GUI cache age warning 4/4" in snapshot.message
+    assert "Telemetry 2/4" not in snapshot.message
+    assert snapshot.entries[7].telemetry_status == "Stale display"
+    assert snapshot.entries[7].experiment_motion_ready is True
+    assert "fresh pre-motion read" in snapshot.entries[7].message
 
 
 def test_servo_service_blocks_non_owner_bus_reads_during_exclusive_pretension(tmp_path: Path) -> None:

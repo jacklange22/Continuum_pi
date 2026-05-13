@@ -91,6 +91,38 @@ def test_startup_artifact_without_neutral_safe_bounds_is_not_experiment_ready(tm
     assert "Startup reference exists" in readiness.next_action
 
 
+def test_stale_display_cache_warns_without_marking_transport_missing(tmp_path: Path) -> None:
+    service = NeutralCalibrationService(path=tmp_path / "neutral.json", context=_context(active_segment="segment_b"))
+    context = _context(active_segment="segment_b")
+
+    readiness = evaluate_selected_segment_readiness(
+        operating_mode="single_segment",
+        active_segment_key=context.active_segment_key,
+        active_segment_label=context.active_segment_label,
+        expected_servo_ids=context.expected_servo_ids,
+        calibration_summary=service.get_calibration_summary(),
+        mock_mode=False,
+        servo_connected=True,
+        telemetry_rows={
+            servo_id: {
+                "position": 2048,
+                "telemetry_fresh": False,
+                "packet_read_ok": True,
+                "hardware_error": 0,
+                "error": None,
+            }
+            for servo_id in context.expected_servo_ids
+        },
+    )
+
+    assert readiness.transport.status == STATUS_WARN
+    assert readiness.transport.missing_servo_ids == []
+    assert "GUI display cache is stale" in readiness.transport.message
+    assert "fresh pre-motion reads" in readiness.transport.message
+    assert readiness.experiment.ready_for_raw_tiny_jog is True
+    assert "fresh pre-motion read" in readiness.next_action
+
+
 def test_mock_calibration_cannot_be_hardware_valid(tmp_path: Path) -> None:
     service = NeutralCalibrationService(path=tmp_path / "neutral.json", context=_context(active_segment="segment_b"))
     service.save_neutral_setpoints(

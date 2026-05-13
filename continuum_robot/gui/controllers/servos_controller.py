@@ -867,7 +867,8 @@ class ServosController:
             snapshot = self.servo_service.build_runtime_servo_snapshot(
                 target_ids,
                 selected_servo_id=self.state.selected_servo_id,
-                include_scan=bool(replace),
+                include_scan=False,
+                telemetry_profile="minimal",
             )
         self.latest_runtime_snapshot = snapshot
         existing_rows = dict(self.state.telemetry)
@@ -888,6 +889,7 @@ class ServosController:
                 entry.telemetry,
                 assessment,
                 existing_row=existing_rows.get(int(servo_id)),
+                runtime_entry=entry,
             )
             rows[int(servo_id)] = row
         self.state.telemetry = rows
@@ -956,7 +958,7 @@ class ServosController:
             elif missing:
                 status = "missing " + ", ".join(str(value) for value in missing)
             elif stale:
-                status = "stale " + ", ".join(str(value) for value in stale)
+                status = "display age warning " + ", ".join(str(value) for value in stale)
             elif errors:
                 status = "hardware/telemetry issue " + ", ".join(str(value) for value in errors)
             else:
@@ -1062,15 +1064,57 @@ class ServosController:
         assessment: ServoMotionAssessment,
         *,
         existing_row: dict | None = None,
+        runtime_entry=None,
     ) -> dict:
         existing_row = dict(existing_row or {})
         telemetry_age_s = self.servo_service.telemetry_age_s(telemetry)
         telemetry_fresh = self.servo_service.telemetry_is_fresh(telemetry)
+        packet_read_ok = bool(
+            getattr(runtime_entry, "packet_read_ok", False)
+            if runtime_entry is not None
+            else (
+                telemetry.present_position is not None
+                and telemetry.hardware_error_code in (None, 0)
+                and not telemetry.hardware_error
+                and not telemetry.telemetry_error
+                and not telemetry.identity_error
+            )
+        )
+        required_fields_ok = bool(
+            getattr(runtime_entry, "required_fields_ok", False)
+            if runtime_entry is not None
+            else (
+                telemetry.present_position is not None
+                and telemetry.operating_mode is not None
+                and telemetry.hardware_error_code is not None
+                and telemetry.telemetry_error is None
+            )
+        )
+        stale_display_warning = bool(
+            getattr(runtime_entry, "stale_display_warning", False)
+            if runtime_entry is not None
+            else packet_read_ok and telemetry_fresh is False
+        )
+        experiment_motion_ready = bool(
+            getattr(runtime_entry, "experiment_motion_ready", False)
+            if runtime_entry is not None
+            else assessment.ready
+        )
         hardware_error_text = self._hardware_error_text(
             telemetry.hardware_error_code,
             telemetry.hardware_error,
         )
         block_reason = self._first_blocking_reason(list(assessment.blocking_reasons))
+        status_payload = {
+            "position": telemetry.present_position,
+            "current_ma": telemetry.present_current_ma,
+            "voltage_mv": telemetry.present_voltage_mv,
+            "temperature_c": telemetry.present_temperature_c,
+            "blocking_reasons": list(assessment.blocking_reasons),
+            "telemetry_fresh": telemetry_fresh,
+            "packet_read_ok": packet_read_ok,
+            "stale_display_warning": stale_display_warning,
+        }
         return {
             "reported_servo_id": telemetry.reported_servo_id if telemetry.reported_servo_id is not None else existing_row.get("reported_servo_id"),
             "model_number": telemetry.model_number if telemetry.model_number is not None else existing_row.get("model_number"),
@@ -1088,26 +1132,37 @@ class ServosController:
             "safe_min_tick": assessment.safe_min_tick,
             "safe_max_tick": assessment.safe_max_tick,
             "safe_bounds": self._assessment_bounds_text(assessment),
-            "ready": self._assessment_status_text(assessment),
-            "motion_ready": bool(assessment.ready),
-            "telemetry_status": self._telemetry_status_from_row(
-                {
-                    "position": telemetry.present_position,
-                    "current_ma": telemetry.present_current_ma,
-                    "voltage_mv": telemetry.present_voltage_mv,
-                    "temperature_c": telemetry.present_temperature_c,
-                    "blocking_reasons": list(assessment.blocking_reasons),
-                }
+            "ready": (
+                "fresh pre-motion read before command"
+                if experiment_motion_ready and not assessment.ready and stale_display_warning
+                else self._assessment_status_text(assessment)
             ),
+            "motion_ready": bool(experiment_motion_ready),
+            "telemetry_status": self._telemetry_status_from_row(status_payload),
             "telemetry_age_s": telemetry_age_s,
             "telemetry_age_label": self._format_age_label(telemetry_age_s),
             "telemetry_fresh": telemetry_fresh,
+            "gui_cache_fresh": telemetry_fresh,
+            "packet_read_ok": packet_read_ok,
+            "required_fields_ok": required_fields_ok,
+            "stale_display_warning": stale_display_warning,
+            "experiment_motion_ready": experiment_motion_ready,
             "freshness_threshold_s": self.servo_service.telemetry_freshness_threshold_s(),
             "position_convention": self.servo_service.position_convention_summary(),
             "external_power_ready": assessment.external_power_ready,
             "blocking_reasons": list(assessment.blocking_reasons),
             "block_reason": block_reason,
+            "read_source": telemetry.read_source,
+            "last_valid_packet_monotonic_s": telemetry.last_valid_packet_monotonic_s,
+            "last_valid_packet_wall_time": telemetry.last_valid_packet_wall_time,
+            "last_read_attempt_monotonic_s": telemetry.last_read_attempt_monotonic_s,
             "last_read_monotonic_s": telemetry.last_read_monotonic_s,
+            "read_duration_ms": telemetry.read_duration_ms,
+            "packet_age_s": telemetry.packet_age_s,
+            "telemetry_error_code": telemetry.telemetry_error_code,
+            "telemetry_error_detail": telemetry.telemetry_error_detail,
+            "bus_owner": telemetry.bus_owner,
+            "read_sequence_index": telemetry.read_sequence_index,
         }
 
     def _missing_telemetry_row(self, servo_id: int, existing_row: dict | None = None) -> dict:
@@ -1133,6 +1188,11 @@ class ServosController:
             "motion_ready": False,
             "telemetry_status": "Unreadable",
             "telemetry_age_s": None,
+            "packet_read_ok": False,
+            "required_fields_ok": False,
+            "stale_display_warning": False,
+            "experiment_motion_ready": False,
+            "read_source": existing_row.get("read_source", "unavailable"),
             "telemetry_age_label": "—",
             "telemetry_fresh": None,
             "freshness_threshold_s": self.servo_service.telemetry_freshness_threshold_s(),
@@ -1497,20 +1557,20 @@ class ServosController:
         if assessment is not None and any(
             "telemetry is stale" in str(reason).lower() for reason in assessment.blocking_reasons
         ):
-            return "Stale"
+            return "Stale display"
         return "Live"
 
     @staticmethod
     def _telemetry_status_from_row(row: dict) -> str:
         if not row:
             return "Unknown"
-        if row.get("telemetry_fresh") is False:
-            return "Stale"
-        for reason in row.get("blocking_reasons", []):
-            if "telemetry is stale" in str(reason).lower():
-                return "Stale"
         if row.get("position") is None:
             return "Unreadable"
+        if bool(row.get("stale_display_warning")) or row.get("telemetry_fresh") is False:
+            return "Stale display" if bool(row.get("packet_read_ok", True)) else "Stale"
+        for reason in row.get("blocking_reasons", []):
+            if "telemetry is stale" in str(reason).lower():
+                return "Stale display" if bool(row.get("packet_read_ok", True)) else "Stale"
         return "Live"
 
     def _telemetry_status_from_result(self, result) -> str:
