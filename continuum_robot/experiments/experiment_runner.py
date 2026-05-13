@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 import subprocess
 import time
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from continuum_robot.experiments.builtins import register_builtin_experiments
@@ -82,6 +82,7 @@ class ExperimentRunner:
             register_builtin_experiments(self.registry)
         self.dataset_writer = dataset_writer or ExperimentDatasetWriter(self.output_dir)
         self.dataset_loader = dataset_loader or ExperimentDatasetLoader()
+        self.penprobe_live_gui_hz: Callable[..., float | None] | None = None
 
     def available_experiments(self) -> list:
         """Return registered experiment descriptors."""
@@ -129,6 +130,7 @@ class ExperimentRunner:
                 output_root=resolved_output_root,
                 monotonic_fn=self.monotonic_fn,
                 sleep_fn=self.sleep_fn,
+                penprobe_live_gui_hz=self.penprobe_live_gui_hz,
             ),
             metadata=metadata,
             stop_requested=stop_requested,

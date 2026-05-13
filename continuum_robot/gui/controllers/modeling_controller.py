@@ -120,7 +120,12 @@ class ModelingController:
         artifacts = self.state.artifacts
         two_segment_runs = list(self.state.two_segment_dataset_runs)
         if catalog_dirty:
-            datasets = discover_modeling_datasets(output_root=self.dataset_output_root)
+            datasets = discover_modeling_datasets(
+                project_root=self.project_root,
+                output_root=self.dataset_output_root,
+                include_mock_experiments=False,
+                include_archived_experiments=False,
+            )
             artifacts = discover_trained_artifacts(artifact_root=self.artifact_root)
             two_segment_runs = [str(path) for path in self.discover_two_segment_dataset_runs()]
             if not selected_dataset_path and datasets:

@@ -48,9 +48,12 @@ class DataManagementTab(QWidget):
 
     COLUMN_LABELS = ["Timestamp", "Experiment", "Run", "Validation", "Trust", "Mode / Segment", "Flags", "Path"]
 
-    def __init__(self, controller: DataManagementController, parent=None) -> None:
+    def __init__(
+        self, controller: DataManagementController, *, open_in_ann_training=None, parent=None
+    ) -> None:
         super().__init__(parent)
         self.controller = controller
+        self._ann_training_opener = open_in_ann_training
         self.setObjectName("dataManagementWorkspace")
         self.setStyleSheet(
             grouped_workspace_stylesheet(
@@ -235,12 +238,16 @@ class DataManagementTab(QWidget):
         self.copy_path_button = QPushButton("Copy Path")
         self.copy_path_button.setProperty("variant", "ghost")
         self.copy_path_button.clicked.connect(self._copy_selected_paths)
+        self.open_ann_training_button = QPushButton("Open in ANN Training")
+        self.open_ann_training_button.setProperty("variant", "ghost")
+        self.open_ann_training_button.clicked.connect(self._open_ann_training_from_data_tab)
         self.delete_button = QPushButton("Delete Selected File/Bundle")
         self.delete_button.setProperty("variant", "danger")
         self.delete_button.clicked.connect(self._delete_selected)
         action_row.addWidget(self.open_button)
         action_row.addWidget(self.reveal_button)
         action_row.addWidget(self.copy_path_button)
+        action_row.addWidget(self.open_ann_training_button)
         action_row.addWidget(self.delete_button)
         action_row.addStretch(1)
         actions_card.body_layout.addLayout(action_row)
@@ -426,6 +433,13 @@ class DataManagementTab(QWidget):
         self.open_button.setEnabled(state.can_open)
         self.reveal_button.setEnabled(state.can_reveal)
         self.copy_path_button.setEnabled(state.can_copy_path)
+        ann_ready = (
+            self._ann_training_opener is not None
+            and len(state.selected_paths) == 1
+            and any("collect_pose_command_dataset" in str(p).replace("\\", "/") for p in state.selected_paths)
+        )
+        self.open_ann_training_button.setVisible(self._ann_training_opener is not None)
+        self.open_ann_training_button.setEnabled(bool(ann_ready))
         self.delete_button.setEnabled(state.can_delete)
         self.delete_button.setText(state.delete_button_label)
         self.preview_migration_button.setEnabled(state.can_preview_migration)
@@ -519,6 +533,15 @@ class DataManagementTab(QWidget):
             return
         for item in selected:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(item.path)))
+
+    def _open_ann_training_from_data_tab(self) -> None:
+        if self._ann_training_opener is None:
+            return
+        state = self.controller.refresh()
+        paths = [str(p) for p in state.selected_paths]
+        if len(paths) != 1:
+            return
+        self._ann_training_opener(paths[0])
 
     def _reveal_selected(self) -> None:
         selected = self.controller.selected_items()

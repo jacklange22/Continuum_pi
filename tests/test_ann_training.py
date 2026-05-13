@@ -15,9 +15,13 @@ from continuum_robot.modeling.ann_training import (
     AnnTrainingConfig,
     build_grouped_split,
     detect_training_backends,
+    discover_modeling_datasets,
     discover_trained_artifacts,
+    effective_legacy_ann_training_allowed,
+    format_hidden_layers_for_ann_ui,
     load_loss_history,
     load_modeling_dataset_summary,
+    parse_hidden_layers_text,
     prepare_legacy_ann_dataset,
     validate_training_config,
 )
@@ -53,6 +57,8 @@ def _write_modeling_run(tmp_path: Path) -> Path:
             "accepted_sample_count": 3,
             "rejected_sample_count": 1,
             "accepted_capture_rate": 0.75,
+            "run_trust_mode": "thesis_trusted",
+            "valid_for_model_training": True,
             "run_provenance": {
                 "runtime_tip_calibration": {"mode": "latest_accepted", "trust_level": "trusted"},
                 "pretension_artifact": {"active_source_type": "accepted_artifact", "status": "ready"},
@@ -113,6 +119,77 @@ def _write_modeling_run(tmp_path: Path) -> Path:
     return output_root
 
 
+def test_discover_modeling_datasets_finds_real_collect_pose_runs(tmp_path: Path) -> None:
+    run_dir = _write_modeling_run(tmp_path)
+    catalog = discover_modeling_datasets(project_root=tmp_path, output_root=tmp_path / "data" / "experiments")
+    assert len(catalog) == 1
+    assert catalog[0].path.resolve() == run_dir.resolve()
+    assert catalog[0].dataset_scan_root == "experiments"
+    assert catalog[0].trainable_for_legacy_ann is True
+
+
+def test_discover_modeling_datasets_marks_mock_root_non_trainable(tmp_path: Path) -> None:
+    mock_run = tmp_path / "data" / "mock_experiments" / "collect_pose_command_dataset" / "20260420_mock_pose"
+    mock_run.mkdir(parents=True)
+    metadata = {
+        "schema_version": "1.0",
+        "experiment_name": "collect_pose_command_dataset",
+        "run_id": "mock1",
+        "timestamp_utc": "2026-04-20T12:00:00+00:00",
+    }
+    summary = {
+        "schema_version": "1.0",
+        "experiment_name": "collect_pose_command_dataset",
+        "run_id": "mock1",
+        "success": True,
+        "sample_counts": {"total": 1},
+        "status": "success",
+        "experiment_metrics": {
+            "dataset_mode": "workspace_coverage",
+            "accepted_sample_count": 1,
+            "rejected_sample_count": 0,
+            "run_trust_mode": "thesis_trusted",
+            "valid_for_model_training": True,
+        },
+    }
+    row = {
+        "accepted": True,
+        "resolved_cable_command_cm": [0.1, 0.2, 0.3, 0.4],
+        "tip_position_xyz_mm": [1.0, 2.0, 3.0],
+        "tip_tangent_xyz": [0.0, 0.0, 1.0],
+    }
+    (mock_run / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (mock_run / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    with (mock_run / "modeling_dataset_export.jsonl").open("w", encoding="utf-8") as handle:
+        handle.write(json.dumps(row) + "\n")
+
+    catalog = discover_modeling_datasets(
+        project_root=tmp_path,
+        output_root=tmp_path / "data" / "experiments",
+        include_mock_experiments=True,
+    )
+    mock_entry = next(entry for entry in catalog if "mock_pose" in entry.run_name)
+    assert mock_entry.dataset_scan_root == "mock"
+    assert mock_entry.trainable_for_legacy_ann is False
+    assert not effective_legacy_ann_training_allowed(mock_entry, allow_mock_training=False)
+    assert effective_legacy_ann_training_allowed(mock_entry, allow_mock_training=True)
+
+
+def test_discover_modeling_datasets_lists_incomplete_run_with_reason(tmp_path: Path) -> None:
+    run_dir = tmp_path / "data" / "experiments" / "collect_pose_command_dataset" / "incomplete_run"
+    run_dir.mkdir(parents=True)
+    metadata = {"experiment_name": "collect_pose_command_dataset", "run_id": "x", "timestamp_utc": "2026-01-01T00:00:00Z"}
+    summary = {"status": "success", "sample_counts": {"total": 0}, "experiment_metrics": {}}
+    (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+
+    catalog = discover_modeling_datasets(project_root=tmp_path)
+    entry = next(e for e in catalog if e.run_name == "incomplete_run")
+    assert entry.export_jsonl_path is None
+    assert any("No modeling_dataset_export.jsonl" in reason for reason in entry.legacy_ann_rejection_reasons)
+    assert entry.trainable_for_legacy_ann is False
+
+
 def test_prepare_legacy_ann_dataset_filters_invalid_rows(tmp_path: Path) -> None:
     run_dir = _write_modeling_run(tmp_path)
 
@@ -121,6 +198,8 @@ def test_prepare_legacy_ann_dataset_filters_invalid_rows(tmp_path: Path) -> None
 
     assert summary.accepted_count == 3
     assert summary.rejected_count == 1
+    assert summary.trainable_for_legacy_ann is True
+    assert summary.accepted_legacy_trainable_count >= 1
     assert summary.full_pose_available is True
     assert summary.sequential_context_available is True
     assert prepared.inputs.shape == (2, 4)
@@ -219,3 +298,55 @@ def test_discover_trained_artifacts_and_loss_history_round_trip(tmp_path: Path) 
     assert artifacts[0].backend_name == "mps"
     assert train_losses == [1.0, 0.8]
     assert validation_losses == [1.1, 0.9]
+
+
+def test_ann_training_config_default_hidden_layers() -> None:
+    assert AnnTrainingConfig().hidden_layers == [32, 32]
+
+
+def test_parse_hidden_layers_text_accepts_semicolon_and_spacing() -> None:
+    got, err = parse_hidden_layers_text("64; 64 , 32")
+    assert err is None
+    assert got == [64, 64, 32]
+
+
+def test_parse_hidden_layers_text_rejects_non_positive() -> None:
+    _got, err = parse_hidden_layers_text("32, 0")
+    assert err is not None and "positive" in str(err).lower()
+
+
+def test_parse_hidden_layers_text_rejects_garbage() -> None:
+    _got, err = parse_hidden_layers_text("32, x")
+    assert err is not None
+
+
+def test_format_hidden_layers_for_ann_ui() -> None:
+    assert format_hidden_layers_for_ann_ui([32, 32]) == "32, 32"
+
+
+def test_render_summary_includes_hidden_layers() -> None:
+    text = training_module._render_summary_text(
+        {
+            "status": "completed",
+            "created_at_utc": "2026-01-01T00:00:00Z",
+            "dataset": {"run_name": "r", "dataset_mode": "m", "prepared_sample_count": 1},
+            "backend": {"selected_backend": "cpu", "platform_summary": "test"},
+            "model": {"hidden_layers": [128, 128]},
+            "training": {"epochs_completed": 1, "best_epoch": 1, "best_validation_loss": 0.1, "test_loss": 0.2},
+        }
+    )
+    assert "[128, 128]" in text
+
+
+def test_build_legacy_ann_model_respects_128_hidden_layers() -> None:
+    torch = pytest.importorskip("torch")
+    model = training_module._build_legacy_ann_model(
+        torch=torch,
+        input_dim=4,
+        output_dim=6,
+        hidden_layers=[128, 128],
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+    assert model.input.in_features == 4
+    assert model.input.out_features == 128

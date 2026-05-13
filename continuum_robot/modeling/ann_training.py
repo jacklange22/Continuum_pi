@@ -12,12 +12,12 @@ import platform
 from pathlib import Path
 import re
 import time
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 import numpy as np
 
 from continuum_robot.experiments.dataset_io import canonical_experiment_output_root, canonical_timestamped_path
-from continuum_robot.experiments.plotting import color, create_figure, legend, save_figure, style_axes
+from continuum_robot.experiments.plotting import color, create_figure, import_matplotlib, legend, save_figure, style_axes
 
 try:
     from continuum_robot.gui.experiment_visualization import ChartModel, ChartSeriesModel, VisualizationModel
@@ -64,7 +64,68 @@ LEGACY_TANGENT_THRESHOLD_RAD = float(np.pi)
 LEGACY_FULL_POSE_INPUT_DIM = 4
 LEGACY_FULL_POSE_OUTPUT_DIM = 6
 DEFAULT_HIDDEN_LAYERS = [32, 32]
+
+
+def format_hidden_layers_for_ann_ui(layers: list[int]) -> str:
+    """Canonical comma+space display for ANN hidden-layer lists (GUI + config text)."""
+    return ", ".join(str(int(x)) for x in layers)
+
+
+def parse_hidden_layers_text(raw: str) -> tuple[list[int] | None, str | None]:
+    """Parse comma/semicolon-separated positive integers for ANN hidden layers.
+
+    Returns ``(layers, None)`` on success, or ``(None, error_message)`` on failure.
+    """
+    stripped = str(raw or "").strip()
+    if not stripped:
+        return None, "Hidden layers must not be empty."
+    try:
+        segments = [segment.strip() for segment in stripped.replace(";", ",").split(",")]
+        parsed = [int(value) for value in segments if value]
+    except ValueError:
+        return None, "Hidden layers must be a comma-separated list of integers."
+    if not parsed:
+        return None, "Hidden layers must contain at least one integer."
+    if any(int(value) <= 0 for value in parsed):
+        return None, "Each hidden layer size must be a positive integer."
+    return parsed, None
+
+
+def parse_sweep_extra_hidden_layers_groups(raw: str) -> tuple[list[list[int]] | None, str | None]:
+    """Parse optional extra ANN architectures for model sweeps.
+
+    Groups are separated by ``|`` or newlines. Each group is comma/semicolon-separated widths,
+    e.g. ``"48,48 | 96"`` → ``[[48, 48], [96]]``.
+    """
+    stripped = str(raw or "").strip()
+    if not stripped:
+        return [], None
+    groups_out: list[list[int]] = []
+    for segment in re.split(r"[\n|]+", stripped):
+        piece = segment.strip()
+        if not piece:
+            continue
+        layers, err = parse_hidden_layers_text(piece)
+        if err or layers is None:
+            return None, err or f"Invalid sweep architecture group: {piece!r}"
+        groups_out.append(list(layers))
+    return groups_out, None
+
+
 DEFAULT_POSE_SCALE = 10.0
+
+MODEL_SWEEP_DEFAULT_ANN_HIDDEN_LAYERS: tuple[tuple[int, ...], ...] = ((32, 32), (64, 64), (128, 128))
+
+MODEL_SWEEP_SINGLE_SPLIT_WARNING = (
+    "All models were trained and compared on one grouped train/validation/test split from this "
+    "dataset only. Metrics do not assess cross-session or cross-run generalization."
+)
+
+COLLECT_POSE_COMMAND_DATASET = "collect_pose_command_dataset"
+
+# Default ANN catalog policy: training is blocked for these trust modes unless UI enables lower-trust debug training.
+_LEGACY_ANN_LOW_TRUST_MODES = frozenset({"lower_trust", "debug"})
+_LEGACY_ANN_SERVO_BLOCKED_MODES = frozenset({"servo_only"})
 
 
 class TorchUnavailableError(RuntimeError):
@@ -123,6 +184,16 @@ class ModelingDatasetSummary:
     trust_summary: str
     runtime_tip_summary: str
     pretension_summary: str
+    dataset_scan_root: str = "experiments"
+    catalog_experiment_name: str = ""
+    mock_mode_flag: bool | None = None
+    run_trust_mode: str = "unknown"
+    valid_for_model_training_flag: bool | None = None
+    structurally_ready_for_legacy_ann: bool = False
+    accepted_legacy_trainable_count: int = 0
+    trainable_for_legacy_ann: bool = False
+    legacy_ann_rejection_reasons: tuple[str, ...] = ()
+    discovery_warnings: tuple[str, ...] = ()
     metadata_payload: dict[str, Any] = field(default_factory=dict)
     summary_payload: dict[str, Any] = field(default_factory=dict)
 
@@ -168,6 +239,9 @@ class AnnTrainingConfig:
     checkpointing: bool = False
     artifact_name: str = "legacy_ann_full_pose"
     artifact_root: str = DEFAULT_ARTIFACT_ROOT
+    model_sweep_include_linear_baseline: bool = True
+    model_sweep_extra_hidden_layers_text: str = ""
+    linear_ridge_alpha: float = 1e-6
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -222,6 +296,20 @@ class TrainingResult:
 
 
 @dataclass(frozen=True)
+class ModelSweepResult:
+    """Outputs from :func:`run_model_sweep`."""
+
+    sweep_root: Path
+    summary_json_path: Path
+    summary_csv_path: Path
+    summary_txt_path: Path
+    comparison_png_path: Path | None
+    rows: tuple[dict[str, Any], ...]
+    best_model: dict[str, Any] | None
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class TrainedArtifactSummary:
     """List entry for a saved ANN artifact bundle."""
 
@@ -242,50 +330,277 @@ def default_artifact_root(project_root: Path) -> Path:
     return Path(project_root) / DEFAULT_ARTIFACT_ROOT
 
 
-def discover_modeling_datasets(*, output_root: Path) -> list[ModelingDatasetSummary]:
-    """List canonical modeling datasets from the experiment output root."""
-    dataset_root = canonical_experiment_output_root(Path(output_root), "collect_pose_command_dataset")
-    if not dataset_root.exists():
-        return []
-    items: list[ModelingDatasetSummary] = []
-    for child in sorted(dataset_root.iterdir(), key=lambda value: value.name, reverse=True):
-        if not child.is_dir():
-            continue
-        try:
-            items.append(load_modeling_dataset_summary(child))
-        except Exception:
-            continue
-    items.sort(key=lambda entry: (entry.timestamp_utc, entry.run_name), reverse=True)
-    return items
+def _is_data_trash_path(path: Path) -> bool:
+    """True if the path lives under ``data/trash`` (operators use Trash for quarantine)."""
+    try:
+        resolved = Path(path).resolve()
+    except Exception:
+        resolved = Path(path)
+    parts = resolved.parts
+    for index, part in enumerate(parts):
+        if part == "data" and index + 1 < len(parts) and parts[index + 1] == "trash":
+            return True
+    return False
 
 
-def load_modeling_dataset_summary(path: Path) -> ModelingDatasetSummary:
-    """Load summary metadata for one modeling dataset run."""
-    run_dir = Path(path)
-    metadata_payload = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
-    summary_payload = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+def _coalesce_model_training_valid(*values: Any) -> bool | None:
+    for value in values:
+        if value is None:
+            continue
+        return bool(value)
+    return None
+
+
+def _read_mock_mode_flag(metadata_payload: dict[str, Any], metrics: dict[str, Any]) -> bool | None:
+    mp = dict(metadata_payload.get("run_provenance", {}) or {})
+    rp = dict(metrics.get("run_provenance", {}) or {})
+    raw = (
+        mp.get("mock_mode")
+        if mp.get("mock_mode") is not None
+        else rp.get("mock_mode")
+        if rp.get("mock_mode") is not None
+        else _as_dict(metadata_payload.get("backend_info")).get("mock_mode")
+    )
+    if raw is None:
+        return None
+    return bool(raw)
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _read_run_trust_mode(metadata_payload: dict[str, Any], metrics: dict[str, Any]) -> str:
+    run_trust = _as_dict(metrics.get("run_trust"))
+    meta_trust = _as_dict(metadata_payload.get("trust_info"))
+    raw = (
+        metrics.get("run_trust_mode")
+        if metrics.get("run_trust_mode") is not None
+        else run_trust.get("run_trust_mode")
+        if run_trust.get("run_trust_mode") is not None
+        else meta_trust.get("run_trust_mode")
+    )
+    return str(raw or "unknown").strip().lower() or "unknown"
+
+
+def _finalize_legacy_ann_trainability(
+    *,
+    dataset_scan_root: str,
+    structurally_ready_for_legacy_ann: bool,
+    export_jsonl_path: Path | None,
+    accepted_legacy_trainable_count: int,
+    mock_mode_flag: bool | None,
+    run_trust_mode: str,
+    valid_for_model_training_flag: bool | None,
+    full_pose_available: bool,
+    accepted_count: int,
+) -> tuple[bool, tuple[str, ...]]:
+    reasons: list[str] = []
+
+    if dataset_scan_root == "mock":
+        reasons.append("mock run (under data/mock_experiments)")
+
+    if mock_mode_flag is True:
+        reasons.append("mock run")
+
+    if export_jsonl_path is None:
+        reasons.append("No modeling_dataset_export.jsonl")
+
+    if export_jsonl_path is not None and accepted_legacy_trainable_count <= 0 and accepted_count > 0:
+        reasons.append("0 accepted full-pose samples (after ANN field validation)")
+    elif export_jsonl_path is not None and accepted_count == 0:
+        reasons.append("0 accepted samples in export")
+
+    if (
+        export_jsonl_path is not None
+        and accepted_count > 0
+        and not full_pose_available
+        and accepted_legacy_trainable_count > 0
+    ):
+        reasons.append("mixed-quality export: some accepted rows lack full ANN fields")
+
+    if run_trust_mode in _LEGACY_ANN_SERVO_BLOCKED_MODES:
+        reasons.append("servo-only/no tracker labels")
+
+    if run_trust_mode in _LEGACY_ANN_LOW_TRUST_MODES:
+        reasons.append("lower-trust run; enable include lower-trust if you really want debug training")
+
+    if valid_for_model_training_flag is False:
+        reasons.append("not marked valid_for_model_training")
+
+    trainable = True
+    if not structurally_ready_for_legacy_ann:
+        trainable = False
+    elif dataset_scan_root == "mock":
+        trainable = False
+    elif mock_mode_flag is True:
+        trainable = False
+    elif export_jsonl_path is None:
+        trainable = False
+    elif accepted_legacy_trainable_count <= 0:
+        trainable = False
+    elif run_trust_mode in _LEGACY_ANN_SERVO_BLOCKED_MODES:
+        trainable = False
+    elif run_trust_mode in _LEGACY_ANN_LOW_TRUST_MODES:
+        trainable = False
+    elif valid_for_model_training_flag is False:
+        trainable = False
+
+    # De-duplicate while keeping order
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for reason in reasons:
+        if reason not in seen:
+            ordered.append(reason)
+            seen.add(reason)
+    return trainable, tuple(ordered)
+
+
+def effective_legacy_ann_training_allowed(
+    summary: ModelingDatasetSummary | None,
+    *,
+    allow_mock_training: bool = False,
+    allow_lower_trust_training: bool = False,
+) -> bool:
+    """Return whether Benchmark/Train should be enabled for this dataset under optional debug overrides."""
+    if summary is None:
+        return False
+    if not summary.structurally_ready_for_legacy_ann:
+        return False
+    if summary.dataset_scan_root == "mock" and not allow_mock_training:
+        return False
+    if summary.mock_mode_flag is True and not allow_mock_training:
+        return False
+    if summary.valid_for_model_training_flag is False and not allow_lower_trust_training:
+        return False
+    if summary.run_trust_mode in _LEGACY_ANN_SERVO_BLOCKED_MODES:
+        return False
+    if summary.run_trust_mode in _LEGACY_ANN_LOW_TRUST_MODES and not allow_lower_trust_training:
+        return False
+    return True
+
+
+def _compile_modeling_dataset_summary(
+    run_dir: Path,
+    *,
+    dataset_scan_root: str,
+    strict: bool,
+) -> ModelingDatasetSummary:
+    run_dir = Path(run_dir)
+    meta_path = run_dir / "metadata.json"
+    sum_path = run_dir / "summary.json"
+    export_path = run_dir / "modeling_dataset_export.jsonl"
+
+    warnings: list[str] = []
+    metadata_payload: dict[str, Any] = {}
+    summary_payload: dict[str, Any] = {}
+
+    if strict:
+        if not meta_path.is_file():
+            raise FileNotFoundError(str(meta_path))
+        if not sum_path.is_file():
+            raise FileNotFoundError(str(sum_path))
+        metadata_payload = json.loads(meta_path.read_text(encoding="utf-8"))
+        if not isinstance(metadata_payload, dict):
+            raise ValueError("metadata.json must be a JSON object.")
+        summary_payload = json.loads(sum_path.read_text(encoding="utf-8"))
+        if not isinstance(summary_payload, dict):
+            raise ValueError("summary.json must be a JSON object.")
+    else:
+        if meta_path.is_file():
+            try:
+                raw = json.loads(meta_path.read_text(encoding="utf-8"))
+                metadata_payload = raw if isinstance(raw, dict) else {}
+                if not isinstance(raw, dict):
+                    warnings.append("metadata.json was not a JSON object.")
+            except Exception as exc:
+                warnings.append(f"metadata.json unreadable: {exc}")
+        else:
+            warnings.append("missing metadata.json")
+        if sum_path.is_file():
+            try:
+                raw = json.loads(sum_path.read_text(encoding="utf-8"))
+                summary_payload = raw if isinstance(raw, dict) else {}
+                if not isinstance(raw, dict):
+                    warnings.append("summary.json was not a JSON object.")
+            except Exception as exc:
+                warnings.append(f"summary.json unreadable: {exc}")
+        else:
+            warnings.append("missing summary.json")
+
     metrics = (
         summary_payload.get("experiment_metrics", {})
         if isinstance(summary_payload.get("experiment_metrics"), dict)
         else {}
     )
-    export_rows = _load_export_rows(run_dir)
+    export_rows: list[dict[str, Any]] = []
+    if export_path.is_file():
+        try:
+            export_rows = _load_export_rows(run_dir)
+        except Exception as exc:
+            warnings.append(f"modeling_dataset_export.jsonl unreadable: {exc}")
     accepted_rows = [row for row in export_rows if bool(row.get("accepted"))]
-    full_pose_available = all(
-        len(row.get("resolved_cable_command_cm", []) or []) == LEGACY_FULL_POSE_INPUT_DIM
-        and len(row.get("tip_position_xyz_mm", []) or []) == 3
-        and len(row.get("tip_tangent_xyz", []) or []) == 3
-        for row in accepted_rows
-    ) if accepted_rows else False
+    accepted_legacy_trainable_count = 0
+    for row in accepted_rows:
+        if _row_filter_reason(row) is None:
+            accepted_legacy_trainable_count += 1
+
+    full_pose_available = (
+        all(
+            len(row.get("resolved_cable_command_cm", []) or []) == LEGACY_FULL_POSE_INPUT_DIM
+            and len(row.get("tip_position_xyz_mm", []) or []) == 3
+            and len(row.get("tip_tangent_xyz", []) or []) == 3
+            for row in accepted_rows
+        )
+        if accepted_rows
+        else False
+    )
     tangent_available = all(len(row.get("tip_tangent_xyz", []) or []) == 3 for row in accepted_rows) if accepted_rows else False
     sequential_context_available = any(len(row.get("previous_pair_command_cm", []) or []) == 2 for row in export_rows)
+
     provenance = dict(metrics.get("run_provenance", {}) or {})
     runtime_tip = dict(provenance.get("runtime_tip_calibration", {}) or {})
     pretension = dict(provenance.get("pretension_artifact", {}) or {})
     trust_summary = (
-        f"runtime tip {runtime_tip.get('trust_level', 'unknown')}, "
-        f"pretension {pretension.get('status', 'unknown')}"
+        f"runtime tip {runtime_tip.get('trust_level', 'unknown')}, pretension {pretension.get('status', 'unknown')}"
     )
+
+    run_trust = _as_dict(metrics.get("run_trust"))
+    meta_trust = _as_dict(metadata_payload.get("trust_info"))
+    valid_for_model_training_flag = _coalesce_model_training_valid(
+        metrics.get("valid_for_model_training"),
+        run_trust.get("valid_for_model_training"),
+        meta_trust.get("valid_for_model_training"),
+    )
+    mock_mode_flag = _read_mock_mode_flag(metadata_payload, metrics)
+    run_trust_mode = _read_run_trust_mode(metadata_payload, metrics)
+
+    structurally_ready_for_legacy_ann = bool(
+        meta_path.is_file()
+        and sum_path.is_file()
+        and export_path.is_file()
+        and isinstance(metadata_payload, dict)
+        and isinstance(summary_payload, dict)
+        and len(metadata_payload) > 0
+        and len(summary_payload) > 0
+        and accepted_legacy_trainable_count > 0
+    )
+
+    trainable_for_legacy_ann, legacy_reasons = _finalize_legacy_ann_trainability(
+        dataset_scan_root=dataset_scan_root,
+        structurally_ready_for_legacy_ann=structurally_ready_for_legacy_ann,
+        export_jsonl_path=export_path if export_path.is_file() else None,
+        accepted_legacy_trainable_count=accepted_legacy_trainable_count,
+        mock_mode_flag=mock_mode_flag,
+        run_trust_mode=run_trust_mode,
+        valid_for_model_training_flag=valid_for_model_training_flag,
+        full_pose_available=bool(full_pose_available),
+        accepted_count=len(accepted_rows),
+    )
+
+    export_jsonl_path = export_path if export_path.is_file() else None
+    catalog_experiment_name = str(metadata_payload.get("experiment_name") or "").strip()
+
     return ModelingDatasetSummary(
         path=run_dir,
         run_id=str(metadata_payload.get("run_id", "") or ""),
@@ -307,15 +622,110 @@ def load_modeling_dataset_summary(path: Path) -> ModelingDatasetSummary:
         full_pose_available=bool(full_pose_available),
         tangent_available=bool(tangent_available),
         sequential_context_available=bool(sequential_context_available),
-        export_jsonl_path=(run_dir / "modeling_dataset_export.jsonl") if (run_dir / "modeling_dataset_export.jsonl").exists() else None,
+        export_jsonl_path=export_jsonl_path,
         legacy_dat_path=(run_dir / "modeling_dataset_legacy_compat.dat") if (run_dir / "modeling_dataset_legacy_compat.dat").exists() else None,
         summary_text_path=(run_dir / "modeling_dataset_summary.txt") if (run_dir / "modeling_dataset_summary.txt").exists() else None,
         trust_summary=trust_summary,
         runtime_tip_summary=f"{runtime_tip.get('mode', 'unknown')} ({runtime_tip.get('trust_level', 'unknown')})",
         pretension_summary=f"{pretension.get('active_source_type', 'unknown')} ({pretension.get('status', 'unknown')})",
+        dataset_scan_root=dataset_scan_root,
+        catalog_experiment_name=catalog_experiment_name,
+        mock_mode_flag=mock_mode_flag,
+        run_trust_mode=run_trust_mode,
+        valid_for_model_training_flag=valid_for_model_training_flag,
+        structurally_ready_for_legacy_ann=bool(structurally_ready_for_legacy_ann),
+        accepted_legacy_trainable_count=int(accepted_legacy_trainable_count),
+        trainable_for_legacy_ann=bool(trainable_for_legacy_ann),
+        legacy_ann_rejection_reasons=legacy_reasons,
+        discovery_warnings=tuple(warnings),
         metadata_payload=metadata_payload,
         summary_payload=summary_payload,
     )
+
+
+def _discovery_sort_key(entry: ModelingDatasetSummary) -> tuple:
+    kind_order = {"experiments": 0, "real": 0, "legacy": 1, "archived": 2, "mock": 3}
+    return (
+        0 if entry.trainable_for_legacy_ann else 1,
+        kind_order.get(entry.dataset_scan_root, 4),
+        str(entry.timestamp_utc or ""),
+        str(entry.run_name or ""),
+    )
+
+
+def discover_modeling_datasets(
+    *,
+    output_root: Path | None = None,
+    project_root: Path | None = None,
+    include_mock_experiments: bool = False,
+    include_archived_experiments: bool = False,
+) -> list[ModelingDatasetSummary]:
+    """List collect_pose_command_dataset runs from canonical data roots.
+
+    When ``project_root`` is provided, discovery merges:
+
+    - ``data/experiments/collect_pose_command_dataset/*``
+    - optional ``data/mock_experiments/...`` (``include_mock_experiments``)
+    - optional ``data/experiments_archived/...`` (``include_archived_experiments``)
+    - optional legacy relative path via ``canonical_experiment_output_root(output_root, ...)``
+
+    Runs under ``data/trash`` are skipped. Every run folder yields an entry even when incomplete,
+    with trainability spelled out on the summary record.
+    """
+    merged_roots: list[tuple[Path, str]] = []
+    pr = Path(project_root) if project_root is not None else None
+    if pr is not None:
+        merged_roots.append((pr / "data" / "experiments" / COLLECT_POSE_COMMAND_DATASET, "experiments"))
+        if include_mock_experiments:
+            merged_roots.append((pr / "data" / "mock_experiments" / COLLECT_POSE_COMMAND_DATASET, "mock"))
+        if include_archived_experiments:
+            merged_roots.append((pr / "data" / "experiments_archived" / COLLECT_POSE_COMMAND_DATASET, "archived"))
+    legacy_root: Path | None = None
+    if output_root is not None:
+        legacy_root = canonical_experiment_output_root(Path(output_root), COLLECT_POSE_COMMAND_DATASET)
+
+    seen: set[str] = set()
+    run_dirs: list[tuple[Path, str]] = []
+    for collect_root, scan_kind in merged_roots:
+        if not collect_root.exists() or not collect_root.is_dir():
+            continue
+        for child in sorted(collect_root.iterdir(), key=lambda value: value.name, reverse=True):
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            if _is_data_trash_path(child):
+                continue
+            key = str(child.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            run_dirs.append((child, scan_kind))
+
+    if legacy_root is not None and legacy_root.exists():
+        for child in sorted(legacy_root.iterdir(), key=lambda value: value.name, reverse=True):
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            if _is_data_trash_path(child):
+                continue
+            key = str(child.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            run_dirs.append((child, "legacy"))
+
+    items: list[ModelingDatasetSummary] = []
+    for run_dir, scan_kind in run_dirs:
+        items.append(_compile_modeling_dataset_summary(run_dir, dataset_scan_root=scan_kind, strict=False))
+
+    items.sort(key=_discovery_sort_key)
+    return items
+
+
+def load_modeling_dataset_summary(path: Path) -> ModelingDatasetSummary:
+    """Load summary metadata for one modeling dataset run.
+
+    Raises when core JSON artifacts are missing/unreadable (training prep expects a healthy bundle).
+    """
+    return _compile_modeling_dataset_summary(Path(path), dataset_scan_root="experiments", strict=True)
 
 
 def prepare_legacy_ann_dataset(path: Path) -> PreparedLegacyAnnDataset:
@@ -526,6 +936,134 @@ def validate_training_config(config: AnnTrainingConfig) -> None:
         raise ValueError("Artifact name must not be empty.")
 
 
+def _prepare_empty_artifact_directory(path: Path) -> None:
+    """Create ``path`` as a new empty directory (parents must exist)."""
+    candidate = Path(path)
+    if candidate.exists():
+        try:
+            next(candidate.iterdir())
+        except StopIteration:
+            return
+        raise ValueError(f"Artifact directory must be empty: {candidate}")
+    candidate.mkdir(parents=False, exist_ok=False)
+
+
+def _tangent_angle_errors_rad(pred_t: np.ndarray, targ_t: np.ndarray) -> np.ndarray:
+    eps = 1e-12
+    pnorm = np.linalg.norm(pred_t, axis=1)
+    tnorm = np.linalg.norm(targ_t, axis=1)
+    mask = (pnorm > eps) & (tnorm > eps)
+    out = np.full(int(pred_t.shape[0]), np.nan, dtype=float)
+    if not np.any(mask):
+        return out
+    pn = pred_t[mask] / pnorm[mask, None]
+    tn = targ_t[mask] / tnorm[mask, None]
+    dots = np.clip(np.sum(pn * tn, axis=1), -1.0, 1.0)
+    out[mask] = np.arccos(dots)
+    return out
+
+
+def compute_pose_evaluation_metrics(pred: np.ndarray, targ: np.ndarray) -> dict[str, Any]:
+    """Geometric error metrics for full-pose predictions (pos mm + tangent xyz)."""
+    pred = np.asarray(pred, dtype=float)
+    targ = np.asarray(targ, dtype=float)
+    dpos = pred[:, :3] - targ[:, :3]
+    pos_mags = np.linalg.norm(dpos, axis=1)
+    rmse_xyz = float(np.sqrt(np.mean(np.sum(dpos**2, axis=1))))
+    rmse_xy = float(np.sqrt(np.mean(np.sum(dpos[:, :2] ** 2, axis=1))))
+    rmse_z = float(np.sqrt(np.mean(dpos[:, 2] ** 2)))
+    ang = _tangent_angle_errors_rad(pred[:, 3:6], targ[:, 3:6])
+    finite_ang = ang[np.isfinite(ang)]
+    return {
+        "position_rmse_xyz_mm": rmse_xyz,
+        "position_rmse_xy_mm": rmse_xy,
+        "position_rmse_z_mm": rmse_z,
+        "position_error_l2_mm": {
+            "mean": float(np.mean(pos_mags)),
+            "median": float(np.median(pos_mags)),
+            "p95": float(np.percentile(pos_mags, 95)),
+            "max": float(np.max(pos_mags)),
+        },
+        "tangent_angular_error_rad": (
+            {
+                "mean": float(np.mean(finite_ang)),
+                "median": float(np.median(finite_ang)),
+                "p95": float(np.percentile(finite_ang, 95)),
+                "max": float(np.max(finite_ang)),
+            }
+            if finite_ang.size
+            else None
+        ),
+    }
+
+
+def _eval_torch_loader_metrics(
+    *,
+    torch: Any,
+    model: Any,
+    loss_module: Any,
+    dataloader: Any,
+    device: Any,
+) -> dict[str, Any] | None:
+    """Mean per-batch scalar loss plus pose metrics for one split."""
+    if len(dataloader) == 0:
+        return None
+    preds: list[np.ndarray] = []
+    targs: list[np.ndarray] = []
+    batch_losses: list[float] = []
+    for batch in dataloader:
+        inputs, targets = batch
+        inputs = inputs.to(device)
+        targets = targets.to(device)
+        model.eval()
+        with torch.no_grad():
+            predictions = model(inputs)
+            batch_losses.append(float(loss_module(predictions, targets).item()))
+        preds.append(predictions.detach().cpu().numpy())
+        targs.append(targets.detach().cpu().numpy())
+    pred = np.concatenate(preds, axis=0)
+    targ = np.concatenate(targs, axis=0)
+    metrics = compute_pose_evaluation_metrics(pred, targ)
+    return {"loss_mean": float(np.mean(batch_losses)), **metrics}
+
+
+def merge_ann_sweep_architectures(
+    *,
+    defaults: Sequence[Sequence[int]],
+    extras: list[list[int]],
+) -> list[list[int]]:
+    """Deduplicate architecture lists while preserving order (defaults first)."""
+    seen: set[tuple[int, ...]] = set()
+    out: list[list[int]] = []
+    for group in (*defaults, *extras):
+        key = tuple(int(x) for x in group)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(list(key))
+    return out
+
+
+def select_best_sweep_row_by_test_position_rmse(rows: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
+    """Pick the sweep row with lowest ``test_position_rmse_xyz_mm`` when present, else lowest ``test_loss``."""
+    best: dict[str, Any] | None = None
+    best_key: tuple[float, float] | None = None
+    for row in rows:
+        xyz = row.get("test_position_rmse_xyz_mm")
+        if xyz is not None and isinstance(xyz, (int, float)) and not math.isnan(float(xyz)):
+            key = (float(xyz), float(row.get("test_loss") or 1e308))
+        else:
+            tl = row.get("test_loss")
+            if tl is None or (isinstance(tl, float) and math.isnan(tl)):
+                key = (1e308, 1e308)
+            else:
+                key = (1e308, float(tl))
+        if best is None or key < (best_key or (1e308, 1e308)):
+            best = dict(row)
+            best_key = key
+    return best
+
+
 def estimate_runtime(
     *,
     prepared: PreparedLegacyAnnDataset,
@@ -622,40 +1160,51 @@ def train_legacy_ann(
     progress_callback: Callable[[TrainingProgress], None] | None = None,
     stop_requested: Callable[[], bool] | None = None,
     time_fn: Callable[[], float] = time.perf_counter,
+    split: DatasetSplit | None = None,
+    artifact_dir: Path | None = None,
 ) -> TrainingResult:
-    """Train the legacy full-pose ANN and save an artifact bundle."""
+    """Train the legacy full-pose ANN and save an artifact bundle.
+
+    When ``split`` is provided (e.g. model sweep), that split is used instead of rebuilding.
+    When ``artifact_dir`` is provided, artifacts are written there (directory must not exist or must be empty);
+    otherwise a timestamped folder is allocated under the configured artifact root.
+    """
     validate_training_config(config)
     torch = _require_torch()
     prepared = prepare_legacy_ann_dataset(dataset_path)
     if prepared.inputs.shape[0] == 0:
         raise ValueError("Dataset has no accepted full-pose samples after filtering.")
-    split = build_grouped_split(prepared, config)
+    split_used = split if split is not None else build_grouped_split(prepared, config)
     backend_report = detect_training_backends(preferred_backend=backend_name)
     device = _torch_device(torch, backend_report.selected_backend)
     dtype = _torch_dtype(torch, backend_report.selected_dtype)
     np.random.seed(int(config.random_seed))
     torch.manual_seed(int(config.random_seed))
-    artifact_dir = _allocate_artifact_dir(
-        project_root=Path(project_root),
-        artifact_root_raw=config.artifact_root,
-        artifact_name=config.artifact_name,
-    )
-    checkpoints_dir = artifact_dir / "checkpoints"
-    artifact_dir.mkdir(parents=True, exist_ok=False)
+    if artifact_dir is None:
+        artifact_dir_path = _allocate_artifact_dir(
+            project_root=Path(project_root),
+            artifact_root_raw=config.artifact_root,
+            artifact_name=config.artifact_name,
+        )
+        artifact_dir_path.mkdir(parents=True, exist_ok=False)
+    else:
+        artifact_dir_path = Path(artifact_dir).resolve()
+        _prepare_empty_artifact_directory(artifact_dir_path)
+    checkpoints_dir = artifact_dir_path / "checkpoints"
     if bool(config.checkpointing):
         checkpoints_dir.mkdir(parents=True, exist_ok=True)
-    loss_history_path = artifact_dir / "loss_history.csv"
-    loss_plot_path = artifact_dir / "loss_curve.png"
-    loss_report_plot_path = artifact_dir / "ann_loss_curve_report.png"
-    metadata_path = artifact_dir / "training_metadata.json"
-    config_path = artifact_dir / "training_config.json"
-    split_manifest_path = artifact_dir / "split_manifest.json"
-    summary_text_path = artifact_dir / "training_summary.txt"
-    model_path = artifact_dir / "model.pt"
+    loss_history_path = artifact_dir_path / "loss_history.csv"
+    loss_plot_path = artifact_dir_path / "loss_curve.png"
+    loss_report_plot_path = artifact_dir_path / "ann_loss_curve_report.png"
+    metadata_path = artifact_dir_path / "training_metadata.json"
+    config_path = artifact_dir_path / "training_config.json"
+    split_manifest_path = artifact_dir_path / "split_manifest.json"
+    summary_text_path = artifact_dir_path / "training_summary.txt"
+    model_path = artifact_dir_path / "model.pt"
 
     estimate = estimate_runtime(
         prepared=prepared,
-        split=split,
+        split=split_used,
         config=config,
         backend_name=backend_report.selected_backend,
         time_fn=time_fn,
@@ -663,7 +1212,7 @@ def train_legacy_ann(
     train_loader, validation_loader, test_loader = _build_dataloaders(
         torch=torch,
         prepared=prepared,
-        split=split,
+        split=split_used,
         config=config,
         dtype=dtype,
     )
@@ -774,16 +1323,41 @@ def train_legacy_ann(
         if len(test_loader) > 0 and best_state_dict is not None
         else None
     )
+    training_wall_time_s = max(0.0, time_fn() - started_at)
+    evaluation_payload: dict[str, Any] = {
+        "single_dataset_split_note": MODEL_SWEEP_SINGLE_SPLIT_WARNING,
+    }
+    if best_state_dict is not None:
+        val_metrics = _eval_torch_loader_metrics(
+            torch=torch,
+            model=model,
+            loss_module=loss_module,
+            dataloader=validation_loader,
+            device=device,
+        )
+        test_metrics = (
+            _eval_torch_loader_metrics(
+                torch=torch,
+                model=model,
+                loss_module=loss_module,
+                dataloader=test_loader,
+                device=device,
+            )
+            if len(test_loader) > 0
+            else None
+        )
+        evaluation_payload["validation"] = val_metrics
+        evaluation_payload["test"] = test_metrics
     _write_loss_history_csv(loss_history_path, epoch_rows)
     _write_loss_plot(loss_plot_path, train_losses, validation_losses)
     _write_loss_plot(loss_report_plot_path, train_losses, validation_losses)
     split_manifest = {
         "schema_version": TRAINING_SCHEMA_VERSION,
-        "strategy": split.strategy,
-        "train_indices": list(split.train_indices),
-        "validation_indices": list(split.validation_indices),
-        "test_indices": list(split.test_indices),
-        "group_ids": list(split.group_ids),
+        "strategy": split_used.strategy,
+        "train_indices": list(split_used.train_indices),
+        "validation_indices": list(split_used.validation_indices),
+        "test_indices": list(split_used.test_indices),
+        "group_ids": list(split_used.group_ids),
         "sequence_indices": list(prepared.sequence_indices),
     }
     split_manifest_path.write_text(json.dumps(split_manifest, indent=2), encoding="utf-8")
@@ -827,21 +1401,23 @@ def train_legacy_ann(
             "best_epoch": best_epoch,
             "best_validation_loss": best_validation_loss,
             "test_loss": (float(test_loss) if test_loss is not None else None),
+            "training_wall_time_s": float(training_wall_time_s),
             "checkpointing": bool(config.checkpointing),
             "learning_rate": float(config.learning_rate),
             "batch_size": int(config.batch_size),
             "random_seed": int(config.random_seed),
         },
         "split": {
-            "strategy": split.strategy,
+            "strategy": split_used.strategy,
             "train_ratio": float(config.train_ratio),
             "validation_ratio": float(config.validation_ratio),
             "test_ratio": float(config.test_ratio),
-            "train_count": len(split.train_indices),
-            "validation_count": len(split.validation_indices),
-            "test_count": len(split.test_indices),
+            "train_count": len(split_used.train_indices),
+            "validation_count": len(split_used.validation_indices),
+            "test_count": len(split_used.test_indices),
         },
         "estimate": (asdict(estimate) if estimate is not None else None),
+        "evaluation": evaluation_payload,
         "files": {
             "model_path": (str(model_path) if model_path.exists() else None),
             "loss_history_path": str(loss_history_path),
@@ -855,7 +1431,7 @@ def train_legacy_ann(
     config_path.write_text(json.dumps(config.to_dict(), indent=2), encoding="utf-8")
     summary_text_path.write_text(_render_summary_text(metadata_payload), encoding="utf-8")
     return TrainingResult(
-        artifact_dir=artifact_dir,
+        artifact_dir=artifact_dir_path,
         model_path=(model_path if model_path.exists() else None),
         metadata_path=metadata_path,
         loss_history_path=loss_history_path,
@@ -870,6 +1446,498 @@ def train_legacy_ann(
         train_losses=train_losses,
         validation_losses=validation_losses,
         estimate=estimate,
+    )
+
+
+def _ann_sweep_subdir_name(hidden_layers: list[int]) -> str:
+    return "ann_" + "_".join(str(int(x)) for x in hidden_layers)
+
+
+def _write_model_comparison_report_png(path: Path, rows: Sequence[dict[str, Any]]) -> bool:
+    """Bar chart of test XYZ RMSE (mm) by model. Returns False if matplotlib or metrics unavailable."""
+    try:
+        plt = import_matplotlib()
+    except Exception:
+        return False
+    labels: list[str] = []
+    values: list[float] = []
+    for row in rows:
+        labels.append(str(row.get("model_label") or row.get("model_key") or "?"))
+        raw = row.get("test_position_rmse_xyz_mm")
+        if raw is None:
+            values.append(float("nan"))
+        else:
+            values.append(float(raw))
+    if not labels or not any(not math.isnan(v) for v in values):
+        return False
+    fig, ax = plt.subplots(figsize=(7.2, 4.5))
+    plot_vals = [0.0 if math.isnan(v) else v for v in values]
+    ax.bar(range(len(labels)), plot_vals, color=color("measured"))
+    ax.set_xticks(range(len(labels)))
+    ax.set_xticklabels(labels, rotation=25, ha="right")
+    style_axes(ax, title="Model sweep — test position RMSE (XYZ)", xlabel="Model", ylabel="mm (RMS of 3D error)")
+    fig.tight_layout()
+    save_figure(fig, path)
+    plt.close(fig)
+    return True
+
+
+def _write_model_sweep_summary_artifacts(
+    *,
+    sweep_root: Path,
+    rows: list[dict[str, Any]],
+    best: dict[str, Any] | None,
+    warnings: tuple[str, ...],
+) -> tuple[Path, Path, Path, Path | None]:
+    json_path = sweep_root / "model_sweep_summary.json"
+    csv_path = sweep_root / "model_sweep_summary.csv"
+    txt_path = sweep_root / "model_sweep_summary.txt"
+    png_path = sweep_root / "model_comparison_report.png"
+    payload = {
+        "schema_version": TRAINING_SCHEMA_VERSION,
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "warnings": list(warnings),
+        "rows": rows,
+        "best_model": best,
+    }
+    json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    if rows:
+        fieldnames = sorted({key for row in rows for key in row.keys()})
+        with csv_path.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({key: row.get(key) for key in fieldnames})
+    lines = [
+        "ANN / linear ridge model sweep summary",
+        "",
+        f"Created (UTC): {payload['created_at_utc']}",
+        f"Sweep folder: {sweep_root}",
+        "",
+    ]
+    for warn in warnings:
+        lines.append(f"Warning: {warn}")
+    if warnings:
+        lines.append("")
+    if best:
+        lines.append(
+            "Best model (lowest test_position_rmse_xyz_mm when available, else test loss): "
+            f"{best.get('model_label') or best.get('model_key')} "
+            f"| subdir={best.get('artifact_subdir')}"
+        )
+        lines.append("")
+    for row in rows:
+        lines.append(
+            f"- {row.get('model_label')}: val_loss={_fmt_number(row.get('validation_loss_mean'))} "
+            f"test_loss={_fmt_number(row.get('test_loss'))} "
+            f"test_xyz_rmse_mm={_fmt_number(row.get('test_position_rmse_xyz_mm'))} "
+            f"time_s={_fmt_number(row.get('training_wall_time_s'))}"
+        )
+    txt_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+    png_written = _write_model_comparison_report_png(png_path, rows)
+    return json_path, csv_path, txt_path, (png_path if png_written else None)
+
+
+def _sweep_summary_row_from_metadata(
+    metadata: dict[str, Any],
+    *,
+    model_key: str,
+    model_label: str,
+    artifact_subdir: str,
+) -> dict[str, Any]:
+    training = dict(metadata.get("training", {}) or {})
+    evaluation = dict(metadata.get("evaluation", {}) or {})
+    val_block = dict(evaluation.get("validation") or {}) if evaluation.get("validation") else {}
+    test_block = dict(evaluation.get("test") or {}) if evaluation.get("test") else {}
+    pos_err = dict(test_block.get("position_error_l2_mm") or {})
+    ang = test_block.get("tangent_angular_error_rad")
+    ang_d = dict(ang) if isinstance(ang, dict) else {}
+    return {
+        "model_key": model_key,
+        "model_label": model_label,
+        "artifact_subdir": artifact_subdir,
+        "validation_loss_mean": val_block.get("loss_mean"),
+        "test_loss": training.get("test_loss"),
+        "test_position_rmse_xyz_mm": test_block.get("position_rmse_xyz_mm"),
+        "test_position_rmse_xy_mm": test_block.get("position_rmse_xy_mm"),
+        "test_position_rmse_z_mm": test_block.get("position_rmse_z_mm"),
+        "test_position_error_l2_mean_mm": pos_err.get("mean"),
+        "test_position_error_l2_median_mm": pos_err.get("median"),
+        "test_position_error_l2_p95_mm": pos_err.get("p95"),
+        "test_position_error_l2_max_mm": pos_err.get("max"),
+        "test_tangent_angular_error_mean_rad": ang_d.get("mean"),
+        "test_tangent_angular_error_median_rad": ang_d.get("median"),
+        "training_wall_time_s": training.get("training_wall_time_s"),
+        "hidden_layers": list(dict(metadata.get("model", {}) or {}).get("hidden_layers") or []),
+    }
+
+
+def train_linear_ridge_full_pose(
+    *,
+    project_root: Path,
+    dataset_path: Path,
+    prepared: PreparedLegacyAnnDataset,
+    split: DatasetSplit,
+    config: AnnTrainingConfig,
+    backend_name: str,
+    artifact_dir: Path,
+    ridge_alpha: float | None = None,
+    stop_requested: Callable[[], bool] | None = None,
+    time_fn: Callable[[], float] = time.perf_counter,
+) -> TrainingResult:
+    """Closed-form ridge linear map (4 cable cm -> 6 pose) for sweep baseline comparison."""
+    if stop_requested is not None and stop_requested():
+        raise RuntimeError("Cancelled before linear ridge baseline started.")
+    torch = _require_torch()
+    alpha = float(ridge_alpha if ridge_alpha is not None else config.linear_ridge_alpha)
+    backend_report = detect_training_backends(preferred_backend=backend_name)
+    device = _torch_device(torch, backend_report.selected_backend)
+    dtype = _torch_dtype(torch, backend_report.selected_dtype)
+    np.random.seed(int(config.random_seed))
+    torch.manual_seed(int(config.random_seed))
+    artifact_dir_path = Path(artifact_dir).resolve()
+    _prepare_empty_artifact_directory(artifact_dir_path)
+    started_at = time_fn()
+    Xi = prepared.inputs[np.asarray(split.train_indices, dtype=int)]
+    Yi = prepared.outputs[np.asarray(split.train_indices, dtype=int)]
+    if Xi.shape[0] < 1:
+        raise ValueError("Ridge baseline requires at least one training sample.")
+    n = Xi.shape[0]
+    x_aug = np.concatenate([np.ones((n, 1), dtype=float), Xi], axis=1)
+    d = int(x_aug.shape[1])
+    reg = alpha * np.eye(d, dtype=float)
+    ata = x_aug.T @ x_aug + reg
+    aty = x_aug.T @ Yi
+    try:
+        coeffs = np.linalg.solve(ata, aty)
+    except np.linalg.LinAlgError:
+        coeffs = np.linalg.lstsq(ata, aty, rcond=None)[0]
+    lin = torch.nn.Linear(LEGACY_FULL_POSE_INPUT_DIM, LEGACY_FULL_POSE_OUTPUT_DIM).to(device=device, dtype=dtype)
+    with torch.no_grad():
+        lin.weight.copy_(torch.tensor(coeffs[1:, :].T, dtype=dtype, device=device))
+        lin.bias.copy_(torch.tensor(coeffs[0, :], dtype=dtype, device=device))
+    train_loader, validation_loader, test_loader = _build_dataloaders(
+        torch=torch,
+        prepared=prepared,
+        split=split,
+        config=config,
+        dtype=dtype,
+    )
+    loss_module = _build_loss_module(torch=torch, config=config, device=device, dtype=dtype)
+    train_loss = (
+        _run_validation_epoch(
+            torch=torch,
+            model=lin,
+            loss_module=loss_module,
+            dataloader=train_loader,
+            device=device,
+        )
+        if len(train_loader) > 0
+        else float("nan")
+    )
+    val_loss = (
+        _run_validation_epoch(
+            torch=torch,
+            model=lin,
+            loss_module=loss_module,
+            dataloader=validation_loader,
+            device=device,
+        )
+        if len(validation_loader) > 0
+        else None
+    )
+    test_loss = (
+        _run_validation_epoch(
+            torch=torch,
+            model=lin,
+            loss_module=loss_module,
+            dataloader=test_loader,
+            device=device,
+        )
+        if len(test_loader) > 0
+        else None
+    )
+    training_wall_time_s = max(0.0, time_fn() - started_at)
+    val_metrics = _eval_torch_loader_metrics(
+        torch=torch,
+        model=lin,
+        loss_module=loss_module,
+        dataloader=validation_loader,
+        device=device,
+    )
+    test_metrics = (
+        _eval_torch_loader_metrics(
+            torch=torch,
+            model=lin,
+            loss_module=loss_module,
+            dataloader=test_loader,
+            device=device,
+        )
+        if len(test_loader) > 0
+        else None
+    )
+    evaluation_payload: dict[str, Any] = {
+        "single_dataset_split_note": MODEL_SWEEP_SINGLE_SPLIT_WARNING,
+        "validation": val_metrics,
+        "test": test_metrics,
+    }
+    loss_history_path = artifact_dir_path / "loss_history.csv"
+    loss_plot_path = artifact_dir_path / "loss_curve.png"
+    loss_report_plot_path = artifact_dir_path / "ann_loss_curve_report.png"
+    metadata_path = artifact_dir_path / "training_metadata.json"
+    config_path = artifact_dir_path / "training_config.json"
+    split_manifest_path = artifact_dir_path / "split_manifest.json"
+    summary_text_path = artifact_dir_path / "training_summary.txt"
+    model_path = artifact_dir_path / "model.pt"
+    epoch_rows = [
+        {
+            "epoch": 1,
+            "train_loss": float(train_loss),
+            "validation_loss": (float(val_loss) if val_loss is not None else None),
+            "elapsed_s": float(training_wall_time_s),
+        }
+    ]
+    _write_loss_history_csv(loss_history_path, epoch_rows)
+    train_losses = [float(train_loss)]
+    validation_losses = [float(val_loss) if val_loss is not None else float("nan")]
+    _write_loss_plot(loss_plot_path, train_losses, validation_losses)
+    _write_loss_plot(loss_report_plot_path, train_losses, validation_losses)
+    torch.save(lin.state_dict(), model_path)
+    split_manifest = {
+        "schema_version": TRAINING_SCHEMA_VERSION,
+        "strategy": split.strategy,
+        "train_indices": list(split.train_indices),
+        "validation_indices": list(split.validation_indices),
+        "test_indices": list(split.test_indices),
+        "group_ids": list(split.group_ids),
+        "sequence_indices": list(prepared.sequence_indices),
+    }
+    split_manifest_path.write_text(json.dumps(split_manifest, indent=2), encoding="utf-8")
+    dataset_metadata = _dataset_metadata_for_artifact(prepared=prepared)
+    config_dump = dict(config.to_dict())
+    config_dump["hidden_layers"] = []
+    config_dump["linear_ridge_baseline"] = True
+    metadata_payload = {
+        "schema_version": TRAINING_SCHEMA_VERSION,
+        "artifact_kind": "linear_ridge_full_pose_v1",
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "status": "completed",
+        "dataset": dataset_metadata,
+        "model": {
+            "family": "linear_ridge_full_pose",
+            "variant": "full_pose",
+            "input_dim": LEGACY_FULL_POSE_INPUT_DIM,
+            "output_dim": LEGACY_FULL_POSE_OUTPUT_DIM,
+            "hidden_layers": [],
+            "ridge_alpha": alpha,
+            "dtype": backend_report.selected_dtype,
+        },
+        "loss": {
+            "kind": str(config.loss_kind),
+            "pose_orientation_scale": float(config.pose_orientation_scale),
+        },
+        "backend": {
+            "selected_backend": backend_report.selected_backend,
+            "recommended_backend": backend_report.recommended_backend,
+            "torch_version": backend_report.torch_version,
+            "python_version": backend_report.python_version,
+            "platform_summary": backend_report.platform_summary,
+        },
+        "training": {
+            "epochs_requested": 1,
+            "epochs_completed": 1,
+            "best_epoch": 1,
+            "best_validation_loss": (float(val_loss) if val_loss is not None else None),
+            "test_loss": (float(test_loss) if test_loss is not None else None),
+            "training_wall_time_s": float(training_wall_time_s),
+            "checkpointing": False,
+            "learning_rate": float(config.learning_rate),
+            "batch_size": int(config.batch_size),
+            "random_seed": int(config.random_seed),
+        },
+        "split": {
+            "strategy": split.strategy,
+            "train_ratio": float(config.train_ratio),
+            "validation_ratio": float(config.validation_ratio),
+            "test_ratio": float(config.test_ratio),
+            "train_count": len(split.train_indices),
+            "validation_count": len(split.validation_indices),
+            "test_count": len(split.test_indices),
+        },
+        "estimate": None,
+        "evaluation": evaluation_payload,
+        "files": {
+            "model_path": str(model_path),
+            "loss_history_path": str(loss_history_path),
+            "loss_plot_path": str(loss_plot_path),
+            "loss_report_plot_path": str(loss_report_plot_path),
+            "split_manifest_path": str(split_manifest_path),
+            "summary_text_path": str(summary_text_path),
+        },
+    }
+    metadata_path.write_text(json.dumps(metadata_payload, indent=2), encoding="utf-8")
+    config_path.write_text(json.dumps(config_dump, indent=2), encoding="utf-8")
+    summary_text_path.write_text(_render_summary_text(metadata_payload), encoding="utf-8")
+    return TrainingResult(
+        artifact_dir=artifact_dir_path,
+        model_path=model_path,
+        metadata_path=metadata_path,
+        loss_history_path=loss_history_path,
+        loss_plot_path=loss_plot_path,
+        split_manifest_path=split_manifest_path,
+        summary_text_path=summary_text_path,
+        status="completed",
+        best_epoch=1,
+        best_validation_loss=(float(val_loss) if val_loss is not None else None),
+        test_loss=(float(test_loss) if test_loss is not None else None),
+        epochs_completed=1,
+        train_losses=train_losses,
+        validation_losses=validation_losses,
+        estimate=None,
+    )
+
+
+def run_model_sweep(
+    *,
+    project_root: Path,
+    dataset_path: Path,
+    base_config: AnnTrainingConfig,
+    backend_name: str,
+    include_linear_baseline: bool | None = None,
+    ann_hidden_layers_list: list[list[int]] | None = None,
+    extra_hidden_layers_text: str | None = None,
+    status_callback: Callable[[str], None] | None = None,
+    stop_requested: Callable[[], bool] | None = None,
+    time_fn: Callable[[], float] = time.perf_counter,
+) -> ModelSweepResult:
+    """Train linear ridge (optional) and several ANNs sharing one split; write sweep summaries."""
+    _require_torch()
+    prepared = prepare_legacy_ann_dataset(dataset_path)
+    if prepared.inputs.shape[0] == 0:
+        raise ValueError("Dataset has no accepted full-pose samples after filtering.")
+    validate_training_config(base_config)
+    split = build_grouped_split(prepared, base_config)
+    extras_raw = (
+        str(extra_hidden_layers_text)
+        if extra_hidden_layers_text is not None
+        else str(base_config.model_sweep_extra_hidden_layers_text or "")
+    )
+    defaults = [list(t) for t in MODEL_SWEEP_DEFAULT_ANN_HIDDEN_LAYERS]
+    if ann_hidden_layers_list is not None:
+        ann_list = [list(int(x) for x in group) for group in ann_hidden_layers_list]
+    else:
+        extras, extra_err = parse_sweep_extra_hidden_layers_groups(extras_raw)
+        if extra_err or extras is None:
+            raise ValueError(extra_err or "Invalid sweep extra architectures text.")
+        ann_list = merge_ann_sweep_architectures(defaults=defaults, extras=list(extras))
+    use_linear = (
+        bool(include_linear_baseline)
+        if include_linear_baseline is not None
+        else bool(base_config.model_sweep_include_linear_baseline)
+    )
+    sweep_root = _allocate_artifact_dir(
+        project_root=Path(project_root),
+        artifact_root_raw=base_config.artifact_root,
+        artifact_name=f"{base_config.artifact_name.strip()}_model_sweep",
+    )
+    sweep_root.mkdir(parents=True, exist_ok=False)
+    shared_split_path = sweep_root / "shared_split_manifest.json"
+    shared_split_path.write_text(
+        json.dumps(
+            {
+                "schema_version": TRAINING_SCHEMA_VERSION,
+                "strategy": split.strategy,
+                "train_indices": list(split.train_indices),
+                "validation_indices": list(split.validation_indices),
+                "test_indices": list(split.test_indices),
+                "group_ids": list(split.group_ids),
+                "sequence_indices": list(prepared.sequence_indices),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    warnings_list: list[str] = [MODEL_SWEEP_SINGLE_SPLIT_WARNING]
+    if len(split.test_indices) < 3:
+        warnings_list.append("Test split has very few samples; sweep metrics may be noisy.")
+    rows: list[dict[str, Any]] = []
+
+    def _status(msg: str) -> None:
+        if status_callback is not None:
+            status_callback(msg)
+
+    if use_linear:
+        if stop_requested is not None and stop_requested():
+            raise RuntimeError("Model sweep cancelled.")
+        _status("Sweep: training linear ridge baseline.")
+        lin_dir = sweep_root / "linear_ridge_full_pose"
+        train_linear_ridge_full_pose(
+            project_root=project_root,
+            dataset_path=dataset_path,
+            prepared=prepared,
+            split=split,
+            config=base_config,
+            backend_name=backend_name,
+            artifact_dir=lin_dir,
+            stop_requested=stop_requested,
+            time_fn=time_fn,
+        )
+        meta = json.loads((lin_dir / "training_metadata.json").read_text(encoding="utf-8"))
+        rows.append(
+            _sweep_summary_row_from_metadata(
+                meta,
+                model_key="linear_ridge_full_pose",
+                model_label="linear_ridge",
+                artifact_subdir="linear_ridge_full_pose",
+            )
+        )
+
+    for hidden in ann_list:
+        if stop_requested is not None and stop_requested():
+            raise RuntimeError("Model sweep cancelled.")
+        label = format_hidden_layers_for_ann_ui(hidden)
+        sub = _ann_sweep_subdir_name(hidden)
+        _status(f"Sweep: training ANN [{label}] -> {sub}")
+        cfg = AnnTrainingConfig(**base_config.to_dict())
+        cfg.hidden_layers = list(hidden)
+        train_legacy_ann(
+            project_root=project_root,
+            dataset_path=dataset_path,
+            config=cfg,
+            backend_name=backend_name,
+            split=split,
+            artifact_dir=sweep_root / sub,
+            progress_callback=None,
+            stop_requested=stop_requested,
+            time_fn=time_fn,
+        )
+        meta = json.loads((sweep_root / sub / "training_metadata.json").read_text(encoding="utf-8"))
+        rows.append(
+            _sweep_summary_row_from_metadata(
+                meta,
+                model_key=f"legacy_ann_{sub}",
+                model_label=f"ANN [{label}]",
+                artifact_subdir=sub,
+            )
+        )
+
+    best = select_best_sweep_row_by_test_position_rmse(rows)
+    warnings_t = tuple(warnings_list)
+    json_path, csv_path, txt_path, png_path = _write_model_sweep_summary_artifacts(
+        sweep_root=sweep_root,
+        rows=rows,
+        best=best,
+        warnings=warnings_t,
+    )
+    return ModelSweepResult(
+        sweep_root=sweep_root,
+        summary_json_path=json_path,
+        summary_csv_path=csv_path,
+        summary_txt_path=txt_path,
+        comparison_png_path=png_path,
+        rows=tuple(rows),
+        best_model=best,
+        warnings=warnings_t,
     )
 
 
@@ -1304,8 +2372,21 @@ def _render_summary_text(metadata_payload: dict[str, Any]) -> str:
     backend = dict(metadata_payload.get("backend", {}) or {})
     training = dict(metadata_payload.get("training", {}) or {})
     estimate = dict(metadata_payload.get("estimate", {}) or {})
+    model = dict(metadata_payload.get("model", {}) or {})
+    artifact_kind = str(metadata_payload.get("artifact_kind", "") or "")
+    title = (
+        "Linear ridge full-pose baseline summary"
+        if "linear_ridge" in artifact_kind
+        else "Legacy ANN full-pose training summary"
+    )
+    hl = model.get("hidden_layers")
+    model_line = (
+        f"Model: {model.get('family', 'n/a')} | ridge_alpha={model.get('ridge_alpha', 'n/a')}"
+        if str(model.get("family", "")).startswith("linear_ridge")
+        else f"Hidden layers: {hl if hl is not None else 'n/a'}"
+    )
     lines = [
-        "Legacy ANN Full-Pose Training Summary",
+        title,
         "",
         f"Status: {metadata_payload.get('status', 'unknown')}",
         f"Created: {metadata_payload.get('created_at_utc', 'n/a')}",
@@ -1313,13 +2394,41 @@ def _render_summary_text(metadata_payload: dict[str, Any]) -> str:
         f"Dataset mode: {dataset.get('dataset_mode', 'n/a')}",
         f"Prepared samples: {dataset.get('prepared_sample_count', 'n/a')}",
         f"Backend: {backend.get('selected_backend', 'n/a')} ({backend.get('platform_summary', 'n/a')})",
+        model_line,
         f"Epochs completed: {training.get('epochs_completed', 'n/a')}",
         f"Best epoch: {training.get('best_epoch', 'n/a')}",
         f"Best validation loss: {_fmt_number(training.get('best_validation_loss'))}",
         f"Test loss: {_fmt_number(training.get('test_loss'))}",
+        f"Training wall time (s): {_fmt_number(training.get('training_wall_time_s'))}",
     ]
     if estimate:
         lines.append(f"Warmup estimate: {_fmt_seconds(estimate.get('estimated_total_s'))}")
+    evaluation = dict(metadata_payload.get("evaluation", {}) or {})
+    test_block = dict(evaluation.get("test") or {}) if evaluation.get("test") else {}
+    if test_block:
+        pe = dict(test_block.get("position_error_l2_mm") or {})
+        lines.extend(
+            [
+                "",
+                "Held-out test metrics (same split as training):",
+                f"  Loss (batch mean): {_fmt_number(test_block.get('loss_mean'))}",
+                f"  Position RMSE XYZ (mm): {_fmt_number(test_block.get('position_rmse_xyz_mm'))}",
+                f"  Position RMSE XY (mm): {_fmt_number(test_block.get('position_rmse_xy_mm'))}",
+                f"  Position RMSE Z (mm): {_fmt_number(test_block.get('position_rmse_z_mm'))}",
+                f"  Position error L2 mean / median / p95 / max (mm): "
+                f"{_fmt_number(pe.get('mean'))} / {_fmt_number(pe.get('median'))} / "
+                f"{_fmt_number(pe.get('p95'))} / {_fmt_number(pe.get('max'))}",
+            ]
+        )
+        ang = test_block.get("tangent_angular_error_rad")
+        if isinstance(ang, dict) and ang:
+            lines.append(
+                "  Tangent angular error mean / median (rad): "
+                f"{_fmt_number(ang.get('mean'))} / {_fmt_number(ang.get('median'))}"
+            )
+    note = evaluation.get("single_dataset_split_note")
+    if note:
+        lines.extend(["", f"Note: {note}"])
     lines.extend(
         [
             "",

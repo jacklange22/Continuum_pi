@@ -65,6 +65,8 @@ def _write_modeling_run(tmp_path: Path) -> Path:
             "accepted_sample_count": 2,
             "rejected_sample_count": 0,
             "accepted_capture_rate": 1.0,
+            "run_trust_mode": "thesis_trusted",
+            "valid_for_model_training": True,
             "run_provenance": {
                 "runtime_tip_calibration": {"mode": "latest_accepted", "trust_level": "trusted"},
                 "pretension_artifact": {"active_source_type": "accepted_artifact", "status": "ready"},
@@ -146,7 +148,10 @@ def test_modeling_tab_launches_and_evaluates_async(tmp_path: Path, monkeypatch: 
         plot_path.write_bytes(b"png")
         time.sleep(0.05)
         return ModelingEvaluationResult(
-            dataset_summary=controller_module.discover_modeling_datasets(output_root=tmp_path / "data" / "experiments")[0],
+            dataset_summary=controller_module.discover_modeling_datasets(
+                project_root=tmp_path,
+                output_root=tmp_path / "data" / "experiments",
+            )[0],
             artifact_details=controller_module.load_trained_artifact_details(artifact_path),
             evaluation_scope_requested=config.evaluation_scope,
             evaluation_scope_used="full_dataset",

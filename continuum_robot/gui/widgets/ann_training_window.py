@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from continuum_robot.gui.controllers.ann_training_controller import AnnTrainingController, AnnTrainingViewState
+from continuum_robot.modeling.ann_training import format_hidden_layers_for_ann_ui
 from continuum_robot.gui.theme import COLORS
 from continuum_robot.gui.widgets.experiment_results_widget import ExperimentResultsWidget
 
@@ -43,6 +44,7 @@ class AnnTrainingWindow(QWidget):
         self.resize(1440, 920)
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._refresh_state)
+        self._hidden_layers_user_editing = False
         self._build_ui()
         self._refresh_timer.start(self.REFRESH_INTERVAL_MS)
         self._refresh_state()
@@ -88,7 +90,11 @@ class AnnTrainingWindow(QWidget):
         self.right_layout.setSpacing(12)
         content.addWidget(right_panel, 4)
 
-        dataset_card = _Card("Modeling Datasets", "Select a canonical `collect_pose_command_dataset` run.")
+        dataset_card = _Card(
+            "Modeling Datasets",
+            "Discovered from data/experiments (and optional mock/archived roots). Train/Benchmark require structurally valid exports "
+            "and trust policy unless you enable debug overrides.",
+        )
         dataset_toolbar = QHBoxLayout()
         dataset_toolbar.setContentsMargins(0, 0, 0, 0)
         self.refresh_catalog_button = QPushButton("Refresh")
@@ -101,6 +107,35 @@ class AnnTrainingWindow(QWidget):
         dataset_toolbar.addWidget(self.open_dataset_button)
         dataset_toolbar.addStretch(1)
         dataset_card.body_layout.addLayout(dataset_toolbar)
+        self.dataset_catalog_hint = QLabel("")
+        self.dataset_catalog_hint.setWordWrap(True)
+        self.dataset_catalog_hint.setStyleSheet(f"color: {COLORS.text_secondary};")
+        dataset_card.body_layout.addWidget(self.dataset_catalog_hint)
+        filter_row = QHBoxLayout()
+        filter_row.setContentsMargins(0, 0, 0, 0)
+        filter_row.setSpacing(14)
+        self.show_non_trainable_check = QCheckBox("Show non-trainable / debug datasets")
+        self.show_non_trainable_check.toggled.connect(self._on_show_non_trainable_toggled)
+        self.show_mock_roots_check = QCheckBox("Show mock dataset roots")
+        self.show_mock_roots_check.toggled.connect(self._on_show_mock_roots_toggled)
+        self.include_archived_check = QCheckBox("Include archived runs")
+        self.include_archived_check.toggled.connect(self._on_include_archived_toggled)
+        filter_row.addWidget(self.show_non_trainable_check)
+        filter_row.addWidget(self.show_mock_roots_check)
+        filter_row.addWidget(self.include_archived_check)
+        filter_row.addStretch(1)
+        dataset_card.body_layout.addLayout(filter_row)
+        dbg_row = QHBoxLayout()
+        dbg_row.setContentsMargins(0, 0, 0, 0)
+        dbg_row.setSpacing(14)
+        self.allow_mock_training_check = QCheckBox("Allow training on mock datasets (debug)")
+        self.allow_mock_training_check.toggled.connect(self._on_allow_mock_training_toggled)
+        self.allow_lower_trust_check = QCheckBox("Include lower-trust / invalid-flag training (debug)")
+        self.allow_lower_trust_check.toggled.connect(self._on_allow_lower_trust_toggled)
+        dbg_row.addWidget(self.allow_mock_training_check)
+        dbg_row.addWidget(self.allow_lower_trust_check)
+        dbg_row.addStretch(1)
+        dataset_card.body_layout.addLayout(dbg_row)
         self.dataset_list = QListWidget()
         self.dataset_list.currentItemChanged.connect(self._on_dataset_selected)
         self.dataset_list.setMinimumHeight(220)
@@ -150,10 +185,23 @@ class AnnTrainingWindow(QWidget):
         params_form = QFormLayout()
         params_form.setContentsMargins(0, 0, 0, 0)
         params_form.setSpacing(10)
+        self.hidden_layers_preset_combo = QComboBox()
+        self.hidden_layers_preset_combo.addItem("Custom (field below)", None)
+        for label, layers in (
+            ("[32, 32]", [32, 32]),
+            ("[64, 64]", [64, 64]),
+            ("[128, 128]", [128, 128]),
+        ):
+            self.hidden_layers_preset_combo.addItem(label, layers)
+        self.hidden_layers_preset_combo.currentIndexChanged.connect(self._on_hidden_layers_preset_changed)
         self.hidden_layers_edit = QLineEdit()
-        self.hidden_layers_edit.editingFinished.connect(
-            lambda: self.controller.set_hidden_layers_text(self.hidden_layers_edit.text())
-        )
+        self.hidden_layers_edit.textChanged.connect(self._on_hidden_layers_text_changed)
+        self.hidden_layers_edit.editingFinished.connect(self._on_hidden_layers_editing_finished)
+        hidden_layers_row = QHBoxLayout()
+        hidden_layers_row.setContentsMargins(0, 0, 0, 0)
+        hidden_layers_row.setSpacing(8)
+        hidden_layers_row.addWidget(self.hidden_layers_preset_combo, 1)
+        hidden_layers_row.addWidget(self.hidden_layers_edit, 2)
         self.learning_rate_spin = QDoubleSpinBox()
         self.learning_rate_spin.setDecimals(6)
         self.learning_rate_spin.setRange(0.000001, 1.0)
@@ -205,7 +253,7 @@ class AnnTrainingWindow(QWidget):
         self.artifact_name_edit.editingFinished.connect(
             lambda: self.controller.set_artifact_name(self.artifact_name_edit.text().strip())
         )
-        params_form.addRow("Hidden Layers", self.hidden_layers_edit)
+        params_form.addRow("Hidden Layers", hidden_layers_row)
         params_form.addRow("Learning Rate", self.learning_rate_spin)
         params_form.addRow("Batch Size", self.batch_size_spin)
         params_form.addRow("Epochs", self.epochs_spin)
@@ -225,7 +273,34 @@ class AnnTrainingWindow(QWidget):
         self.right_layout.addWidget(params_card)
 
         runtime_card = _Card("Runtime Estimate / Training", "Run a real warmup benchmark, then train asynchronously without blocking the rest of the app.")
+        sweep_row = QHBoxLayout()
+        sweep_row.setContentsMargins(0, 0, 0, 0)
+        sweep_row.setSpacing(10)
+        self.sweep_include_linear_check = QCheckBox("Include linear ridge baseline in sweep")
+        self.sweep_include_linear_check.setChecked(True)
+        self.sweep_include_linear_check.toggled.connect(
+            lambda value: self.controller.set_model_sweep_include_linear_baseline(bool(value))
+        )
+        self.sweep_extra_edit = QLineEdit()
+        self.sweep_extra_edit.setPlaceholderText('Extra ANN widths (optional), e.g. "48,48 | 96"')
+        self.sweep_extra_edit.editingFinished.connect(
+            lambda: self.controller.set_model_sweep_extra_hidden_layers_text(self.sweep_extra_edit.text().strip())
+        )
+        self.run_sweep_button = QPushButton("Run Model Sweep")
+        self.run_sweep_button.setProperty("variant", "ghost")
+        self.run_sweep_button.clicked.connect(self.controller.run_sweep)
+        sweep_row.addWidget(self.sweep_include_linear_check, 2)
+        sweep_row.addWidget(self.sweep_extra_edit, 3)
+        sweep_row.addWidget(self.run_sweep_button, 1)
+        self.sweep_best_label = QLabel("")
+        self.sweep_best_label.setWordWrap(True)
+        self.sweep_warning_label = QLabel("")
+        self.sweep_warning_label.setWordWrap(True)
+        self.sweep_warning_label.setStyleSheet(f"color: {COLORS.warning_fg};")
         runtime_toolbar = QHBoxLayout()
+        runtime_card.body_layout.addLayout(sweep_row)
+        runtime_card.body_layout.addWidget(self.sweep_best_label)
+        runtime_card.body_layout.addWidget(self.sweep_warning_label)
         runtime_toolbar.setContentsMargins(0, 0, 0, 0)
         self.benchmark_button = QPushButton("Benchmark Estimate")
         self.benchmark_button.setProperty("variant", "ghost")
@@ -274,9 +349,35 @@ class AnnTrainingWindow(QWidget):
         self.open_artifact_button.setEnabled(bool(state.selected_artifact_path))
         self.benchmark_button.setEnabled(state.can_benchmark)
         self.train_button.setEnabled(state.can_train)
-        self.cancel_button.setEnabled(state.training_active)
+        self.run_sweep_button.setEnabled(state.can_run_sweep)
+        self.cancel_button.setEnabled(state.training_active or state.sweep_active)
+        self.sweep_include_linear_check.setEnabled(not state.sweep_active)
+        self.sweep_extra_edit.setEnabled(not state.sweep_active)
+        self.sweep_best_label.setText(state.sweep_best_model_text or "")
+        self.sweep_warning_label.setText(state.sweep_split_warning or "")
+        self.sweep_warning_label.setVisible(bool(state.sweep_split_warning))
         self.progress_bar.setMaximum(max(1, state.total_epochs or 1))
         self.progress_bar.setValue(int(state.current_epoch))
+        hint = state.dataset_catalog_message or ""
+        if state.catalog_trainable_total or state.catalog_non_trainable_total:
+            hint = (
+                f"{hint}\nCatalog: {state.catalog_trainable_total} trainable, "
+                f"{state.catalog_non_trainable_total} non-trainable (all roots)."
+            ).strip()
+        self.dataset_catalog_hint.setText(hint.strip())
+        self._sync_dataset_filters(state)
+
+    def _sync_dataset_filters(self, state: AnnTrainingViewState) -> None:
+        with QSignalBlocker(self.show_non_trainable_check):
+            self.show_non_trainable_check.setChecked(bool(state.show_non_trainable_datasets))
+        with QSignalBlocker(self.show_mock_roots_check):
+            self.show_mock_roots_check.setChecked(bool(state.show_mock_dataset_roots))
+        with QSignalBlocker(self.include_archived_check):
+            self.include_archived_check.setChecked(bool(state.include_archived_datasets))
+        with QSignalBlocker(self.allow_mock_training_check):
+            self.allow_mock_training_check.setChecked(bool(state.allow_mock_training))
+        with QSignalBlocker(self.allow_lower_trust_check):
+            self.allow_lower_trust_check.setChecked(bool(state.allow_lower_trust_training))
 
     def _sync_dataset_list(self, state: AnnTrainingViewState) -> None:
         current_paths = [self.dataset_list.item(index).data(Qt.UserRole) for index in range(self.dataset_list.count())]
@@ -285,8 +386,10 @@ class AnnTrainingWindow(QWidget):
             with QSignalBlocker(self.dataset_list):
                 self.dataset_list.clear()
                 for dataset in state.datasets:
+                    tag = "trainable" if dataset.trainable_for_legacy_ann else "blocked"
                     label = (
-                        f"{dataset.run_name} | {dataset.dataset_mode} | "
+                        f"[{tag}] {dataset.run_name} | root={dataset.dataset_scan_root} | "
+                        f"{dataset.accepted_legacy_trainable_count} legacy rows | "
                         f"{dataset.accepted_count} accepted"
                     )
                     item = QListWidgetItem(label)
@@ -335,7 +438,9 @@ class AnnTrainingWindow(QWidget):
 
     def _sync_parameters(self, state: AnnTrainingViewState) -> None:
         config = self.controller.config_snapshot()
-        self._set_line_text(self.hidden_layers_edit, self.controller.hidden_layers_text())
+        if not self.hidden_layers_edit.hasFocus() and not self._hidden_layers_user_editing:
+            self._set_line_text(self.hidden_layers_edit, self.controller.hidden_layers_text())
+        self._sync_hidden_layers_preset_combo(config)
         self._set_double(self.learning_rate_spin, float(config.learning_rate))
         self._set_spin(self.batch_size_spin, int(config.batch_size))
         self._set_spin(self.epochs_spin, int(config.epochs))
@@ -347,6 +452,9 @@ class AnnTrainingWindow(QWidget):
         self._set_double(self.test_ratio_spin, float(config.test_ratio))
         self._set_checkbox(self.checkpoint_check, bool(config.checkpointing))
         self._set_line_text(self.artifact_name_edit, str(config.artifact_name))
+        with QSignalBlocker(self.sweep_include_linear_check):
+            self.sweep_include_linear_check.setChecked(bool(config.model_sweep_include_linear_baseline))
+        self._set_line_text(self.sweep_extra_edit, str(config.model_sweep_extra_hidden_layers_text or ""))
         self._set_line_text(self.artifact_root_edit, self.controller.artifact_root_text())
 
     def _on_dataset_selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
@@ -364,8 +472,42 @@ class AnnTrainingWindow(QWidget):
         if backend_name:
             self.controller.select_backend(str(backend_name))
 
+    def _on_hidden_layers_text_changed(self, text: str) -> None:
+        if self.hidden_layers_edit.signalsBlocked():
+            return
+        canonical = self.controller.hidden_layers_text()
+        if str(text).strip() == str(canonical).strip():
+            self._hidden_layers_user_editing = False
+        else:
+            self._hidden_layers_user_editing = True
+
+    def _on_hidden_layers_editing_finished(self) -> None:
+        self.controller.set_hidden_layers_text(self.hidden_layers_edit.text())
+        self._hidden_layers_user_editing = False
+
+    def _on_hidden_layers_preset_changed(self, _index: int) -> None:
+        layers = self.hidden_layers_preset_combo.currentData()
+        if layers is None:
+            return
+        text = format_hidden_layers_for_ann_ui(list(layers))
+        self.controller.set_hidden_layers_text(text)
+        self._hidden_layers_user_editing = False
+        with QSignalBlocker(self.hidden_layers_edit):
+            self.hidden_layers_edit.setText(text)
+
+    def _sync_hidden_layers_preset_combo(self, config) -> None:
+        layers_tuple = tuple(int(x) for x in config.hidden_layers)
+        target_index = 0
+        for i in range(1, self.hidden_layers_preset_combo.count()):
+            data = self.hidden_layers_preset_combo.itemData(i)
+            if isinstance(data, list) and tuple(int(x) for x in data) == layers_tuple:
+                target_index = i
+                break
+        with QSignalBlocker(self.hidden_layers_preset_combo):
+            self.hidden_layers_preset_combo.setCurrentIndex(target_index)
+
     def _refresh_catalogs(self) -> None:
-        self.controller.set_dataset_output_root(self.controller.dataset_output_root)
+        self.controller.invalidate_catalog()
         self.controller.set_artifact_root(self.artifact_root_edit.text().strip())
         self._refresh_state()
 
@@ -374,6 +516,26 @@ class AnnTrainingWindow(QWidget):
         if selected:
             self.controller.set_artifact_root(selected)
             self._refresh_state()
+
+    def _on_show_non_trainable_toggled(self, value: bool) -> None:
+        self.controller.set_show_non_trainable_datasets(bool(value))
+        self._refresh_state()
+
+    def _on_show_mock_roots_toggled(self, value: bool) -> None:
+        self.controller.set_show_mock_dataset_roots(bool(value))
+        self._refresh_state()
+
+    def _on_include_archived_toggled(self, value: bool) -> None:
+        self.controller.set_include_archived_datasets(bool(value))
+        self._refresh_state()
+
+    def _on_allow_mock_training_toggled(self, value: bool) -> None:
+        self.controller.set_allow_mock_training(bool(value))
+        self._refresh_state()
+
+    def _on_allow_lower_trust_toggled(self, value: bool) -> None:
+        self.controller.set_allow_lower_trust_training(bool(value))
+        self._refresh_state()
 
     def _open_selected_dataset(self) -> None:
         state = self.controller.refresh()

@@ -5,6 +5,7 @@ from continuum_robot.modeling.ann_training import (
     BackendOption,
     BackendReport,
     DatasetSplit,
+    ModelSweepResult,
     ModelingDatasetSummary,
     PreparedLegacyAnnDataset,
     TorchUnavailableError,
@@ -24,6 +25,7 @@ from continuum_robot.modeling.ann_training import (
     load_modeling_dataset_summary,
     load_training_metadata,
     prepare_legacy_ann_dataset,
+    run_model_sweep,
     train_legacy_ann,
     validate_training_config,
 )
@@ -57,6 +59,7 @@ __all__ = [
     "ModelingEvaluationConfig",
     "ModelingEvaluationResult",
     "ModelingGeometryConfig",
+    "ModelSweepResult",
     "PreparedLegacyAnnDataset",
     "TorchUnavailableError",
     "TrainedArtifactSummary",
@@ -82,6 +85,7 @@ __all__ = [
     "load_trained_artifact_details",
     "load_training_metadata",
     "prepare_legacy_ann_dataset",
+    "run_model_sweep",
     "train_legacy_ann",
     "validate_training_config",
 ]

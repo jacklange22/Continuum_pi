@@ -12,6 +12,7 @@ from continuum_robot.gui.experiment_visualization import VisualizationModel
 from continuum_robot.modeling.ann_training import (
     AnnTrainingConfig,
     BackendReport,
+    MODEL_SWEEP_SINGLE_SPLIT_WARNING,
     ModelingDatasetSummary,
     TorchUnavailableError,
     TrainedArtifactSummary,
@@ -23,12 +24,16 @@ from continuum_robot.modeling.ann_training import (
     detect_training_backends,
     discover_modeling_datasets,
     discover_trained_artifacts,
+    effective_legacy_ann_training_allowed,
     estimate_memory_bytes,
     estimate_runtime,
+    format_hidden_layers_for_ann_ui,
     load_loss_history,
     load_modeling_dataset_summary,
     load_training_metadata,
     prepare_legacy_ann_dataset,
+    parse_hidden_layers_text,
+    run_model_sweep,
     train_legacy_ann,
     validate_training_config,
 )
@@ -39,6 +44,15 @@ class AnnTrainingViewState:
     """UI-facing snapshot for the training popout."""
 
     datasets: list[ModelingDatasetSummary] = field(default_factory=list)
+    catalog_all_datasets: list[ModelingDatasetSummary] = field(default_factory=list)
+    catalog_trainable_total: int = 0
+    catalog_non_trainable_total: int = 0
+    dataset_catalog_message: str = ""
+    show_non_trainable_datasets: bool = False
+    show_mock_dataset_roots: bool = False
+    include_archived_datasets: bool = False
+    allow_mock_training: bool = False
+    allow_lower_trust_training: bool = False
     selected_dataset_path: str = ""
     dataset_summary_pairs: list[tuple[str, str]] = field(default_factory=list)
     backend_report: BackendReport | None = None
@@ -62,6 +76,10 @@ class AnnTrainingViewState:
     last_output_path: str | None = None
     can_benchmark: bool = False
     can_train: bool = False
+    sweep_active: bool = False
+    can_run_sweep: bool = False
+    sweep_best_model_text: str = ""
+    sweep_split_warning: str = ""
     visualization_model: VisualizationModel = field(
         default_factory=lambda: VisualizationModel(summary_lines=["No training history loaded."])
     )
@@ -93,6 +111,7 @@ class AnnTrainingController:
         self._hidden_layers_text = "32, 32"
         self._hidden_layers_parse_error: str | None = None
         self.config = AnnTrainingConfig(artifact_root=str(self.artifact_root))
+        self._hidden_layers_text = format_hidden_layers_for_ann_ui(self.config.hidden_layers)
         self.state = AnnTrainingViewState()
 
     def refresh(self) -> AnnTrainingViewState:
@@ -104,21 +123,70 @@ class AnnTrainingController:
             config = AnnTrainingConfig(**self.config.to_dict())
             training_active = self.state.training_active
             benchmark_active = self.state.benchmark_active
+            sweep_active = self.state.sweep_active
             estimate = self.state.estimate
             estimate_signature = self._estimate_signature
             selected_dataset_summary = self._selected_dataset_summary
             selected_artifact_metadata = self._selected_artifact_metadata
+            show_non_trainable = self.state.show_non_trainable_datasets
+            show_mock_roots = self.state.show_mock_dataset_roots
+            include_archived = self.state.include_archived_datasets
+            allow_mock_training = self.state.allow_mock_training
+            allow_lower_trust = self.state.allow_lower_trust_training
 
         datasets = self.state.datasets
         artifacts = self.state.artifacts
         if catalog_dirty:
-            datasets = discover_modeling_datasets(output_root=self.dataset_output_root)
+            catalog_all = discover_modeling_datasets(
+                project_root=self.project_root,
+                output_root=self.dataset_output_root,
+                include_mock_experiments=show_mock_roots,
+                include_archived_experiments=include_archived,
+            )
+            trainable_total = sum(1 for item in catalog_all if item.trainable_for_legacy_ann)
+            non_trainable_total = max(0, len(catalog_all) - trainable_total)
+            visible = [
+                item
+                for item in catalog_all
+                if (item.trainable_for_legacy_ann or show_non_trainable)
+                and (show_mock_roots or item.dataset_scan_root != "mock")
+            ]
+            datasets = visible
+            catalog_message = ""
+            if not catalog_all:
+                catalog_message = (
+                    "No collect_pose_command_dataset folders found under data/experiments (and optional mock/archived roots)."
+                )
+            elif trainable_total == 0 and non_trainable_total > 0 and not show_non_trainable:
+                catalog_message = (
+                    f"No trainable canonical collect-pose datasets found. Found {non_trainable_total} non-trainable run(s). "
+                    "Enable “Show non-trainable / debug datasets” to inspect why."
+                )
+            self.state.catalog_all_datasets = catalog_all
+            self.state.catalog_trainable_total = trainable_total
+            self.state.catalog_non_trainable_total = non_trainable_total
+            self.state.dataset_catalog_message = catalog_message
             artifacts = discover_trained_artifacts(artifact_root=self.artifact_root)
-            if not selected_dataset_path and datasets:
-                selected_dataset_path = str(datasets[0].path)
+            if not datasets:
+                selected_dataset_path = ""
+                selected_dataset_summary = None
+            else:
+                visible_paths = {str(item.path) for item in datasets}
+                if not selected_dataset_path:
+                    preferred_trainable = next((item for item in datasets if item.trainable_for_legacy_ann), None)
+                    if preferred_trainable is not None:
+                        selected_dataset_path = str(preferred_trainable.path)
+                    else:
+                        selected_dataset_path = str(datasets[0].path)
+                elif selected_dataset_path not in visible_paths:
+                    preferred_trainable = next((item for item in datasets if item.trainable_for_legacy_ann), None)
+                    if preferred_trainable is not None:
+                        selected_dataset_path = str(preferred_trainable.path)
+                    else:
+                        selected_dataset_path = str(datasets[0].path)
+                selected_dataset_summary = self._resolve_dataset_summary(selected_dataset_path, datasets)
             if not selected_artifact_path and artifacts:
                 selected_artifact_path = str(artifacts[0].path)
-            selected_dataset_summary = self._resolve_dataset_summary(selected_dataset_path, datasets)
             selected_artifact_metadata = self._resolve_artifact_metadata(selected_artifact_path, artifacts)
         elif selected_dataset_summary is None and selected_dataset_path:
             selected_dataset_summary = self._resolve_dataset_summary(selected_dataset_path, datasets)
@@ -135,8 +203,21 @@ class AnnTrainingController:
         )
         estimate_pairs = self._estimate_pairs(estimate=estimate, stale=self._estimate_is_stale(estimate_signature, selected_dataset_summary, config, backend_report))
         artifact_pairs = self._artifact_pairs(selected_artifact_metadata)
-        can_benchmark = bool(selected_dataset_summary) and config_error is None and not training_active and not benchmark_active and backend_report.torch_available
+        training_allowed = effective_legacy_ann_training_allowed(
+            selected_dataset_summary,
+            allow_mock_training=allow_mock_training,
+            allow_lower_trust_training=allow_lower_trust,
+        )
+        can_benchmark = (
+            training_allowed
+            and config_error is None
+            and not training_active
+            and not benchmark_active
+            and not sweep_active
+            and backend_report.torch_available
+        )
         can_train = can_benchmark
+        can_run_sweep = can_train
         visualization_model = self._visualization_model(selected_artifact_metadata)
 
         with self._lock:
@@ -156,6 +237,7 @@ class AnnTrainingController:
             self.state.estimate_stale = self._estimate_is_stale(estimate_signature, selected_dataset_summary, config, backend_report)
             self.state.can_benchmark = can_benchmark
             self.state.can_train = can_train
+            self.state.can_run_sweep = can_run_sweep
             self.state.visualization_model = visualization_model
             if catalog_dirty and not self.state.status_message:
                 self.state.status_message = "Select a modeling dataset to prepare ANN training."
@@ -164,6 +246,33 @@ class AnnTrainingController:
     def set_dataset_output_root(self, path: Path) -> None:
         with self._lock:
             self.dataset_output_root = Path(path)
+            self._catalog_dirty = True
+
+    def set_show_non_trainable_datasets(self, value: bool) -> None:
+        with self._lock:
+            self.state.show_non_trainable_datasets = bool(value)
+            self._catalog_dirty = True
+
+    def set_show_mock_dataset_roots(self, value: bool) -> None:
+        with self._lock:
+            self.state.show_mock_dataset_roots = bool(value)
+            self._catalog_dirty = True
+
+    def set_include_archived_datasets(self, value: bool) -> None:
+        with self._lock:
+            self.state.include_archived_datasets = bool(value)
+            self._catalog_dirty = True
+
+    def set_allow_mock_training(self, value: bool) -> None:
+        with self._lock:
+            self.state.allow_mock_training = bool(value)
+
+    def set_allow_lower_trust_training(self, value: bool) -> None:
+        with self._lock:
+            self.state.allow_lower_trust_training = bool(value)
+
+    def invalidate_catalog(self) -> None:
+        with self._lock:
             self._catalog_dirty = True
 
     def set_artifact_root(self, raw_path: str) -> None:
@@ -194,16 +303,14 @@ class AnnTrainingController:
 
     def set_hidden_layers_text(self, raw_value: str) -> None:
         with self._lock:
-            self._hidden_layers_text = str(raw_value)
-            try:
-                layers = [segment.strip() for segment in str(raw_value).replace(";", ",").split(",")]
-                parsed = [int(value) for value in layers if value]
-            except ValueError:
-                self._hidden_layers_parse_error = "Hidden layers must be a comma-separated list of integers."
+            parsed, err = parse_hidden_layers_text(raw_value)
+            self._hidden_layers_parse_error = err
+            if parsed is None:
+                self._hidden_layers_text = str(raw_value)
                 self.config.hidden_layers = []
             else:
-                self._hidden_layers_parse_error = None
-                self.config.hidden_layers = parsed
+                self.config.hidden_layers = list(parsed)
+                self._hidden_layers_text = format_hidden_layers_for_ann_ui(parsed)
             self._invalidate_estimate_locked()
 
     def set_learning_rate(self, value: float) -> None:
@@ -260,6 +367,83 @@ class AnnTrainingController:
         with self._lock:
             self.config.artifact_name = str(value).strip()
             self._invalidate_estimate_locked()
+
+    def set_model_sweep_include_linear_baseline(self, value: bool) -> None:
+        with self._lock:
+            self.config.model_sweep_include_linear_baseline = bool(value)
+
+    def set_model_sweep_extra_hidden_layers_text(self, value: str) -> None:
+        with self._lock:
+            self.config.model_sweep_extra_hidden_layers_text = str(value)
+
+    def run_sweep(self) -> None:
+        if self._job_active():
+            return
+        state = self.refresh()
+        if not state.can_run_sweep:
+            return
+        with self._lock:
+            self.state.sweep_active = True
+            self.state.status_message = "Starting model sweep (shared split)."
+            self._cancel_event.clear()
+            dataset_path = self.state.selected_dataset_path
+            config = AnnTrainingConfig(**self.config.to_dict())
+            selected_backend = self._selected_backend_name_or_report()
+
+        def _worker() -> None:
+            try:
+
+                def _on_status(message: str) -> None:
+                    with self._lock:
+                        self.state.status_message = message
+
+                result = run_model_sweep(
+                    project_root=self.project_root,
+                    dataset_path=Path(dataset_path),
+                    base_config=config,
+                    backend_name=selected_backend,
+                    include_linear_baseline=config.model_sweep_include_linear_baseline,
+                    extra_hidden_layers_text=config.model_sweep_extra_hidden_layers_text,
+                    status_callback=_on_status,
+                    stop_requested=self._cancel_event.is_set,
+                )
+                best = result.best_model
+                best_text = ""
+                if best is not None:
+                    rmse = best.get("test_position_rmse_xyz_mm")
+                    best_text = (
+                        f"Best by test XYZ RMSE: {best.get('model_label')} "
+                        f"({best.get('artifact_subdir')})"
+                        + (f", RMSE={float(rmse):.4f} mm" if rmse is not None else "")
+                    )
+                with self._lock:
+                    self.state.last_output_path = str(result.sweep_root)
+                    self._catalog_dirty = True
+                    self.state.sweep_best_model_text = best_text
+                    self.state.sweep_split_warning = MODEL_SWEEP_SINGLE_SPLIT_WARNING
+                    if best is not None and best.get("artifact_subdir"):
+                        best_path = result.sweep_root / str(best["artifact_subdir"])
+                        self.state.selected_artifact_path = str(best_path)
+                        try:
+                            self._selected_artifact_metadata = load_training_metadata(best_path)
+                        except Exception:
+                            self._selected_artifact_metadata = None
+                    else:
+                        self.state.selected_artifact_path = str(result.sweep_root)
+                        self._selected_artifact_metadata = None
+                    self.state.status_message = f"Model sweep complete. Results in {result.sweep_root.name}."
+            except TorchUnavailableError as exc:
+                with self._lock:
+                    self.state.status_message = str(exc)
+            except Exception as exc:
+                with self._lock:
+                    self.state.status_message = f"Model sweep failed: {exc}"
+            finally:
+                with self._lock:
+                    self.state.sweep_active = False
+
+        self._worker_thread = threading.Thread(target=_worker, daemon=True)
+        self._worker_thread.start()
 
     def benchmark(self) -> None:
         if self._job_active():
@@ -409,7 +593,7 @@ class AnnTrainingController:
 
     def _job_active(self) -> bool:
         with self._lock:
-            return bool(self.state.training_active or self.state.benchmark_active)
+            return bool(self.state.training_active or self.state.benchmark_active or self.state.sweep_active)
 
     def _resolve_dataset_summary(self, selected_path: str, datasets: list[ModelingDatasetSummary]) -> ModelingDatasetSummary | None:
         for dataset in datasets:
@@ -450,6 +634,16 @@ class AnnTrainingController:
     def _dataset_pairs(self, summary: ModelingDatasetSummary | None) -> list[tuple[str, str]]:
         if summary is None:
             return [("Dataset", "No modeling dataset selected.")]
+        roots = {
+            "experiments": "real (data/experiments)",
+            "mock": "mock (data/mock_experiments)",
+            "archived": "archived",
+            "legacy": "legacy / custom output root",
+        }
+        root_label = roots.get(summary.dataset_scan_root, summary.dataset_scan_root)
+        reason_text = (
+            "; ".join(summary.legacy_ann_rejection_reasons) if summary.legacy_ann_rejection_reasons else "none"
+        )
         export_files = []
         if summary.export_jsonl_path is not None:
             export_files.append("export jsonl")
@@ -457,6 +651,16 @@ class AnnTrainingController:
             export_files.append("legacy dat")
         return [
             ("Run", summary.run_name),
+            ("Experiment", summary.catalog_experiment_name or "collect_pose_command_dataset"),
+            ("Data root", root_label),
+            ("Run ID", summary.run_id or "n/a"),
+            ("Timestamp", summary.timestamp_utc or "n/a"),
+            ("Mock", str(summary.mock_mode_flag)),
+            ("Trust mode", summary.run_trust_mode),
+            ("Valid for model training", str(summary.valid_for_model_training_flag)),
+            ("ANN trainable (catalog)", "yes" if summary.trainable_for_legacy_ann else "no"),
+            ("Legacy train rows", str(summary.accepted_legacy_trainable_count)),
+            ("Rejection reasons", reason_text),
             ("Mode", summary.dataset_mode.replace("_", " ")),
             ("Accepted", str(summary.accepted_count)),
             ("Rejected", str(summary.rejected_count)),
@@ -481,7 +685,11 @@ class AnnTrainingController:
         dataset_summary: ModelingDatasetSummary | None,
         config: AnnTrainingConfig,
     ) -> list[tuple[str, str]]:
-        sample_count = dataset_summary.accepted_count if dataset_summary is not None else 0
+        sample_count = (
+            int(dataset_summary.accepted_legacy_trainable_count)
+            if dataset_summary is not None and int(dataset_summary.accepted_legacy_trainable_count) > 0
+            else (int(dataset_summary.accepted_count) if dataset_summary is not None else 0)
+        )
         memory_bytes = estimate_memory_bytes(
             sample_count=sample_count,
             batch_size=config.batch_size,
@@ -521,10 +729,13 @@ class AnnTrainingController:
         training = dict(metadata.get("training", {}) or {})
         dataset = dict(metadata.get("dataset", {}) or {})
         backend = dict(metadata.get("backend", {}) or {})
+        model = dict(metadata.get("model", {}) or {})
+        hl = model.get("hidden_layers")
         return [
             ("Status", str(metadata.get("status", "unknown") or "unknown")),
             ("Dataset", str(dataset.get("run_name", "unknown") or "unknown")),
             ("Backend", str(backend.get("selected_backend", "unknown") or "unknown")),
+            ("Hidden layers", str(hl) if hl is not None else "n/a"),
             ("Epochs", str(training.get("epochs_completed", "n/a"))),
             ("Best Epoch", str(training.get("best_epoch", "n/a"))),
             ("Best Val", _fmt_metric(training.get("best_validation_loss"))),
