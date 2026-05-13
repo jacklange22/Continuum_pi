@@ -140,6 +140,7 @@ class ExperimentViewState:
     visualization_model: VisualizationModel = field(
         default_factory=lambda: VisualizationModel(summary_lines=["No run loaded."])
     )
+    penprobe_chase_live_summary: str = ""
 
 
 class ExperimentController:
@@ -148,6 +149,7 @@ class ExperimentController:
     HISTORY_LIMIT = 25
     HISTORY_SCAN_CANDIDATE_MULTIPLIER = 4
     PREREQUISITE_REFRESH_INTERVAL_S = 0.25
+    PREREQUISITE_REFRESH_WHILE_PENPROBE_RUNNING_S = 0.35
     MANUAL_REFRESH_EXPERIMENTS = {
         "registration_validation",
         "pivot_validation",
@@ -187,6 +189,8 @@ class ExperimentController:
         self._preflight_cache_key: tuple[Any, ...] | None = None
         self._preflight_cache_report: PreflightReport | None = None
         self._last_prerequisite_refresh_s = 0.0
+        self._penprobe_gui_hz_smooth: float | None = None
+        self._penprobe_gui_last_wall_s = 0.0
 
         self._options_by_name = self._build_workspace_options()
         visible_options = self._mode_filtered_workspace_options()
@@ -197,6 +201,29 @@ class ExperimentController:
         )
         if not self._options_by_name:
             raise RuntimeError("No workspace-visible experiments are registered.")
+        self.experiment_runner.penprobe_live_gui_hz = self.peek_penprobe_gui_hz
+
+    def peek_penprobe_gui_hz(self) -> float | None:
+        with self._lock:
+            return self._penprobe_gui_hz_smooth
+
+    def note_penprobe_gui_pulse(self) -> None:
+        with self._lock:
+            if str(self.state.selected_experiment or "") != "penprobe_chasing_demo" or not bool(self.state.run_active):
+                return
+            wall = time.monotonic()
+            prev = float(self._penprobe_gui_last_wall_s)
+            self._penprobe_gui_last_wall_s = wall
+            if prev <= 0.0:
+                return
+            interval_s = wall - prev
+            instant_hz = 1.0 / max(1e-6, interval_s)
+            beta = 0.35
+            if self._penprobe_gui_hz_smooth is None:
+                self._penprobe_gui_hz_smooth = float(instant_hz)
+            else:
+                smooth = float(self._penprobe_gui_hz_smooth)
+                self._penprobe_gui_hz_smooth = float(beta * instant_hz + (1.0 - beta) * smooth)
 
     def refresh(self) -> ExperimentViewState:
         started = time.monotonic()
@@ -360,6 +387,15 @@ class ExperimentController:
         """Compatibility alias for the main window refresh loop."""
         with self._lock:
             now = time.monotonic()
+            if (
+                self.state.selected_experiment == "penprobe_chasing_demo"
+                and self.state.run_active
+                and not self._history_dirty
+                and not self._visualization_dirty
+                and self._preflight_cache_report is not None
+                and (now - self._last_prerequisite_refresh_s) < float(self.PREREQUISITE_REFRESH_WHILE_PENPROBE_RUNNING_S)
+            ):
+                return self.state
             if (
                 self.state.selected_experiment
                 and not self.state.run_active
@@ -559,6 +595,10 @@ class ExperimentController:
             operator_notes = self.state.operator_notes
             output_root = self._resolve_repo_path(self.state.output_root)
             output_dir_name = self._planned_output_dir_name
+            self._visualization_dirty = True
+            self.state.penprobe_chase_live_summary = ""
+            self._penprobe_gui_last_wall_s = 0.0
+            self._penprobe_gui_hz_smooth = None
 
         def _worker() -> None:
             try:
@@ -620,6 +660,7 @@ class ExperimentController:
             finally:
                 with self._lock:
                     self.state.run_active = False
+                    self.state.penprobe_chase_live_summary = ""
 
         self._thread = threading.Thread(target=_worker, daemon=True)
         self._thread.start()
@@ -825,7 +866,18 @@ class ExperimentController:
     def _on_sample(self, sample) -> None:
         with self._lock:
             self._live_samples.append(sample)
-            self._visualization_dirty = True
+            selected = str(self.state.selected_experiment or "")
+            chasing = selected == "penprobe_chasing_demo" and bool(self.state.run_active)
+            if chasing:
+                extra = getattr(sample, "extra", None) if sample is not None else None
+                if isinstance(extra, dict) and extra.get("chase_live_status_line"):
+                    self.state.penprobe_chase_live_summary = str(extra.get("chase_live_status_line"))
+                iteration = getattr(sample, "sample_index", None)
+                dirty_every = 25
+                if isinstance(iteration, int) and int(iteration) > 0 and int(iteration) % int(dirty_every) == 0:
+                    self._visualization_dirty = True
+            else:
+                self._visualization_dirty = True
 
     def _scan_run_history(self, output_root: Path, experiment_name: str) -> list[RunHistoryEntry]:
         entries: list[RunHistoryEntry] = []

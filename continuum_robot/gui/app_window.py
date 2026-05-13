@@ -238,7 +238,10 @@ class AppWindow(QMainWindow):
         self.pretension_tab = PretensionTab(self.pretension_controller)
         self.experiment_tab = ExperimentTab(self.experiment_controller)
         self.modeling_tab = ModelingTab(self.modeling_controller)
-        self.data_management_tab = DataManagementTab(self.data_management_controller)
+        self.data_management_tab = DataManagementTab(
+            self.data_management_controller,
+            open_in_ann_training=self._open_collect_pose_ann_training,
+        )
         for widget, label in (
             (self.system_tab, "System"),
             (self.tracking_tab, "Tracking"),
@@ -268,6 +271,8 @@ class AppWindow(QMainWindow):
         self._servo_refresh_cycle = 0
         self._system_summary_refresh_due = True
         self._system_summary_refresh_cycle = 0
+        self._ann_training_controller = None
+        self._ann_training_window = None
         self._refresh_timer.start(self._refresh_interval_ms(settings.runtime.poll_rate_hz))
 
     def _save_and_apply_runtime_parameters(self, **parameters) -> None:
@@ -335,10 +340,48 @@ class AppWindow(QMainWindow):
                 system_controller.disconnect_openrb()
             except Exception:
                 pass
+        ann_training = getattr(self, "_ann_training_controller", None)
+        if ann_training is not None:
+            try:
+                ann_training.shutdown()
+            except Exception:
+                pass
 
     @classmethod
     def _refresh_interval_ms(cls, poll_rate_hz: int) -> int:
         return max(cls.MIN_REFRESH_INTERVAL_MS, int(1000 / max(1, int(poll_rate_hz))))
+
+    def _open_collect_pose_ann_training(self, run_path: str) -> None:
+        """Open (or focus) the legacy ANN training popout on a collect-pose run folder."""
+        from pathlib import Path
+
+        from continuum_robot.gui.controllers.ann_training_controller import AnnTrainingController
+        from continuum_robot.gui.widgets.ann_training_window import AnnTrainingWindow
+
+        path = Path(run_path)
+        if not any(name.lower() == "collect_pose_command_dataset" for name in path.parts):
+            return
+        project_root = Path(self.context.project_root)
+        exp = self.experiment_controller
+        dataset_output_root = exp._resolve_repo_path(exp.state.output_root)
+        artifact_root = project_root / "data" / "models" / "ann"
+        if self._ann_training_controller is None:
+            self._ann_training_controller = AnnTrainingController(
+                project_root=project_root,
+                dataset_output_root=dataset_output_root,
+                artifact_root=artifact_root,
+            )
+            self._ann_training_window = AnnTrainingWindow(self._ann_training_controller, parent=self)
+        else:
+            self._ann_training_controller.set_dataset_output_root(dataset_output_root)
+        if any(part.lower() == "mock_experiments" for part in path.parts):
+            self._ann_training_controller.set_show_mock_dataset_roots(True)
+        self._ann_training_controller.set_show_non_trainable_datasets(True)
+        self._ann_training_controller.select_dataset(str(path.resolve()))
+        self._ann_training_controller.invalidate_catalog()
+        self._ann_training_window.show()
+        self._ann_training_window.raise_()
+        self._ann_training_window.activateWindow()
 
     def _open_runtime_tip_calibration(self) -> None:
         dialog = getattr(self, "runtime_tip_calibration_dialog", None)

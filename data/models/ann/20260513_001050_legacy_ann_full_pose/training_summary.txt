@@ -1,0 +1,19 @@
+Legacy ANN Full-Pose Training Summary
+
+Status: completed
+Created: 2026-05-13T00:10:52.352732+00:00
+Dataset: 20260512_233341_collect_pose_command_dataset
+Dataset mode: workspace_coverage
+Prepared samples: 182
+Backend: mps (Darwin 24.5.0 | arm64)
+Epochs completed: 256
+Best epoch: 256
+Best validation loss: 23.029652
+Test loss: 20.150141
+Warmup estimate: 1.3 s
+
+Legacy references:
+- @references/ANN.py
+- @references/real_model_learning.py
+- @references/utils_data.py
+- @references/multi_input.py

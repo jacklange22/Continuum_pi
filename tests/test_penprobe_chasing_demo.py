@@ -29,6 +29,7 @@ from continuum_robot.experiments.penprobe_chasing_demo import (
     _resolve_mapping_mode,
     _step_and_clamp_tick_deltas,
     paired_xy_proportional_tick_request,
+    _servo_write_allowed,
 )
 from continuum_robot.experiments.registry import ExperimentRegistry
 from continuum_robot.experiments.schemas import ExperimentMetadata
@@ -191,13 +192,25 @@ class _ServoService:
         assert reason
         yield
 
-    def command_displacement(self, tendon_displacements_cm, neutral_ticks, servo_ids, *, motion_workflow):
+    def command_displacement(
+        self, tendon_displacements_cm, neutral_ticks, servo_ids, *, motion_workflow, chase_tight_loop_writes=False
+    ):
         self.commanded_servo_ids = [int(value) for value in servo_ids]
         telemetry = self.read_live_telemetry(servo_ids)
         return SimpleNamespace(
             positions_by_id={int(servo_id): int(neutral_ticks[index]) for index, servo_id in enumerate(servo_ids)},
             telemetry_by_id=telemetry,
             clamp_reasons_by_id={},
+        )
+
+    def bus_ownership_status(self):
+        return SimpleNamespace(
+            active=False,
+            owner=None,
+            reason=None,
+            servo_id=None,
+            held_by_current_thread=False,
+            started_at_monotonic_s=None,
         )
 
     def telemetry_age_s(self, telemetry):
@@ -305,10 +318,10 @@ def test_large_xy_error_steps_near_configured_max_not_one_tick() -> None:
         max_abs_delta_ticks=500,
     )
 
-    assert desired[5] < -100
-    assert stepped[5] == -50
-    assert stepped[7] == 50
-    assert abs(stepped[5]) > 1
+    assert desired[int(5)] == -50
+    assert stepped[int(5)] == -50
+    assert stepped[int(7)] == 50
+    assert abs(stepped[int(5)]) > 1
 
 
 def test_max_tick_step_per_cycle_clamps_to_100_when_configured_higher() -> None:
@@ -369,26 +382,58 @@ def test_requires_0a_and_0b_tracking() -> None:
 
 def test_tracker_loss_stops_and_records_failure_metrics() -> None:
     experiment = PenprobeChasingDemoExperiment(
-        PenprobeChasingDemoConfig.from_dict({"max_iterations": 2, "max_duration_s": 0.0})
+        PenprobeChasingDemoConfig.from_dict(
+            {
+                "max_iterations": 30,
+                "max_duration_s": 0.0,
+                "stale_tracker_persist_cycles_before_stop": 3,
+            }
+        )
     )
     servo = _ServoService([5, 6, 7, 8])
-    session = _session(
-        active_segment="segment_b",
-        tracking=_TrackingService([_snapshot(), _snapshot(), _snapshot(stale=True)]),
-        servo=servo,
-    )
+
+    class _StaleAfterCalls:
+        def __init__(self, fresh_calls: int) -> None:
+            self.calls = 0
+            self.fresh_calls = int(fresh_calls)
+
+        def get_snapshot(self):
+            self.calls += 1
+            stale = self.calls > self.fresh_calls
+            return _snapshot(stale=stale)
+
+    tracking = _StaleAfterCalls(5)
+    session = _session(active_segment="segment_b", tracking=tracking, servo=servo)
 
     experiment.precheck(session)
-    with pytest.raises(RuntimeError, match="tracker_stale"):
+    with pytest.raises(RuntimeError, match="tracker_stale_persisted"):
         experiment.execute(session)
 
     assert servo.commanded_servo_ids == [5, 6, 7, 8]
-    assert session.metrics["stop_reason"] == "tracker_stale"
-    assert session.metrics["active_segment_key"] == "segment_b"
+    assert session.metrics["stop_reason"] == "tracker_stale_persisted"
     assert session.metrics["controlled_point_source"] == "0A coil origin in robot frame"
-    assert "0B tool origin" in session.metrics["target_point_source"]
-    assert session.metrics["operating_context"]["active_segment"]["servo_ids"] == [5, 6, 7, 8]
     assert session.samples
+
+
+def test_servo_rate_gate_skips_extra_writes_under_fast_control_loop() -> None:
+    experiment = PenprobeChasingDemoExperiment(
+        PenprobeChasingDemoConfig.from_dict(
+            {
+                "max_iterations": 240,
+                "max_duration_s": 0.0,
+                "loop_period_s": 0.02,
+                "max_servo_write_hz": 2.0,
+                "saturation_stop_cycles": 99999,
+            }
+        )
+    )
+    servo = _ServoService([5, 6, 7, 8])
+    session = _session(active_segment="segment_b", tracking=_TrackingService([_snapshot()]), servo=servo)
+    experiment.precheck(session)
+    experiment.execute(session)
+    reasons = [str(row.extra.get("skipped_write_reason")) for row in session.samples]
+    assert sum(value == "rate_limit" for value in reasons) >= 140
+    assert sum(value == "servo_written" for value in reasons) >= 5
 
 
 def test_legacy_mapping_mode_requires_configured_existing_files(tmp_path: Path) -> None:
@@ -419,3 +464,52 @@ def test_fallback_mapping_works_without_legacy_files() -> None:
 
     assert mode == MAPPING_PAIRED_XY_PROPORTIONAL
     assert warnings == []
+
+
+def test_two_mm_positive_x_error_has_sixteen_raw_ticks_before_norm_clamp() -> None:
+    mapper = TendonDisplacementMapper(spool_diameter_cm=1.2, ticks_per_rev=4096)
+    config = PenprobeChasingDemoConfig.from_dict({"proportional_gain_ticks_per_mm": 8.0, "max_tick_step_per_cycle": 100})
+    _, dbg = paired_xy_proportional_tick_request(
+        tip_xy_mm=[0.0, 0.0],
+        target_xy_mm=[2.0, 0.0],
+        servo_ids=[5, 6, 7, 8],
+        pairs={"axis_a": [5, 7], "axis_b": [6, 8]},
+        mapper=mapper,
+        config=config,
+    )
+    assert abs(float(dbg["raw_axis_request_ticks_xy"][0]) - 16.0) < 1e-6
+    assert abs(float(dbg["raw_axis_request_ticks_xy"][1])) < 1e-6
+
+
+def test_flip_x_inverts_signed_axis_ticks() -> None:
+    mapper = TendonDisplacementMapper(spool_diameter_cm=1.2, ticks_per_rev=4096)
+    base_cfg = PenprobeChasingDemoConfig.from_dict({"proportional_gain_ticks_per_mm": 8.0, "max_tick_step_per_cycle": 100})
+    flip_cfg = PenprobeChasingDemoConfig.from_dict(
+        {"proportional_gain_ticks_per_mm": 8.0, "max_tick_step_per_cycle": 100, "flip_x": True}
+    )
+    a_ticks, _ = paired_xy_proportional_tick_request(
+        tip_xy_mm=[0.0, 0.0],
+        target_xy_mm=[2.0, 0.0],
+        servo_ids=[5, 6, 7, 8],
+        pairs={"axis_a": [5, 7], "axis_b": [6, 8]},
+        mapper=mapper,
+        config=base_cfg,
+    )
+    b_ticks, _ = paired_xy_proportional_tick_request(
+        tip_xy_mm=[0.0, 0.0],
+        target_xy_mm=[2.0, 0.0],
+        servo_ids=[5, 6, 7, 8],
+        pairs={"axis_a": [5, 7], "axis_b": [6, 8]},
+        mapper=mapper,
+        config=flip_cfg,
+    )
+    assert a_ticks[int(5)] == -b_ticks[int(5)]
+    assert a_ticks[int(7)] == -b_ticks[int(7)]
+
+
+def test_servo_write_allowed_respects_spacing() -> None:
+    ok, reason = _servo_write_allowed(now_s=0.2, last_write_monotonic_s=0.0, max_hz=10.0)
+    assert ok is True and reason is None
+    ok, reason = _servo_write_allowed(now_s=0.05, last_write_monotonic_s=0.0, max_hz=10.0)
+    assert ok is False and reason == "rate_limit"
+

@@ -43,6 +43,7 @@ class ExperimentContext:
     output_root: Path
     monotonic_fn: Callable[[], float] = time.monotonic
     sleep_fn: Callable[[float], None] = time.sleep
+    penprobe_live_gui_hz: Callable[[], float | None] | None = None
 
 
 @dataclass

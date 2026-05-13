@@ -3046,6 +3046,23 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
         super().__init__(controller, experiment_name, parent)
         self.run_button.setText("Start Demo")
+        nominal_hz = float(PenprobeChasingDemoConfig.from_dict(self.controller.config_payload()).gui_status_nominal_hz)
+        interval_ms = int(max(100, min(200, round(1000.0 / max(nominal_hz, 1.0)))))
+        self._chase_status_timer = QTimer(self)
+        self._chase_status_timer.setInterval(interval_ms)
+        self._chase_status_timer.timeout.connect(self._pulse_chasing_hud)
+        self._chase_status_timer.start()
+
+    def shutdown(self) -> None:
+        timer = getattr(self, "_chase_status_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
+
+    def _pulse_chasing_hud(self) -> None:
+        self.controller.note_penprobe_gui_pulse()
+        text = str(getattr(self.controller.state, "penprobe_chase_live_summary", "") or "").strip()
+        if hasattr(self, "loop_status_label") and text:
+            self.loop_status_label.setText(text)
 
     def _build_parameter_sections(self) -> None:
         control_card = ExperimentCard("Demo Controls", "Keep the envelope conservative while validating 0A-to-0B chasing behavior.")
@@ -3122,6 +3139,12 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
         control_card.body_layout.addLayout(form)
 
         status_card = ExperimentCard("Live Status", "Last received sample and active scope for the running demo.")
+        self.loop_status_label = QLabel(
+            "Control: — Hz, Servo writes: — Hz, Tracker age: — ms (running updates appear here)."
+        )
+        self.loop_status_label.setWordWrap(True)
+        self.loop_status_label.setProperty("role", "body")
+        status_card.body_layout.addWidget(self.loop_status_label)
         self.demo_status_widget = KeyValueSummaryWidget()
         status_card.body_layout.addWidget(self.demo_status_widget)
         self.parameter_layout.addWidget(control_card)
@@ -3154,6 +3177,12 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
         if samples:
             last_sample = samples[-1]
         extra = dict(getattr(last_sample, "extra", {}) or {}) if last_sample is not None else {}
+        hud = str(getattr(state, "penprobe_chase_live_summary", "") or "").strip()
+        if hasattr(self, "loop_status_label"):
+            self.loop_status_label.setText(
+                hud
+                or "Control: — Hz, Servo writes: — Hz, Tracker age: — ms (when the demo runs, live Hz fills in here)."
+            )
         tip_xy = extra.get("tip_xy_mm")
         target_xy = extra.get("target_xy_mm")
         error_norm = extra.get("xy_error_norm_mm")
@@ -3162,7 +3191,9 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
         goal_by_servo = getattr(last_sample, "commanded_motor_values", {}) if last_sample is not None else {}
         mapping_debug = dict(extra.get("mapping_debug", {}) or {})
         distance_to_cap = mapping_debug.get("distance_to_cap_ticks")
-        write_rate = mapping_debug.get("servo_write_rate_hz")
+        write_rate = extra.get("actual_servo_write_hz")
+        control_hz = extra.get("actual_control_hz")
+        gui_hz = extra.get("actual_gui_update_hz")
         pairs = context.active_pairs if context.operating_mode == "single_segment" else {}
         self.demo_status_widget.set_pairs(
             [
@@ -3178,16 +3209,25 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
                 ("Max Delta Used", f"{int(max_delta)} ticks" if max_delta is not None else "n/a"),
                 ("Distance To Cap", f"{int(distance_to_cap)} ticks" if distance_to_cap is not None else "n/a"),
                 ("Tracker Freshness", f"{float(getattr(last_sample, 'freshness_s', 0.0)):.3f} s" if last_sample is not None and getattr(last_sample, "freshness_s", None) is not None else "n/a"),
-                ("Servo Write Rate", f"{float(write_rate):.1f} Hz" if write_rate is not None else "n/a"),
+                ("Control Hz (instant)", f"{float(control_hz):.1f} Hz" if isinstance(control_hz, (int, float)) else "n/a"),
+                ("Servo writes Hz", f"{float(write_rate):.1f} Hz" if isinstance(write_rate, (int, float)) else "n/a"),
+                ("GUI Hz probe", f"{float(gui_hz):.1f} Hz" if isinstance(gui_hz, (int, float)) else "n/a"),
                 ("Preflight", state.preflight_report.summary),
             ]
         )
 
     def _parameter_state_fingerprint(self, state: ExperimentViewState) -> tuple[object, ...]:
+        cfg_key = json.dumps(self.controller.config_payload(), sort_keys=True, default=str)
+        if bool(state.run_active) and str(state.selected_experiment or "") == str(self.experiment_name):
+            return (
+                cfg_key,
+                True,
+                str(state.preflight_report.overall_status),
+            )
         samples = getattr(self.controller, "_live_samples", [])
         last_sample = samples[-1] if samples else None
         return (
-            json.dumps(self.controller.config_payload(), sort_keys=True, default=str),
+            cfg_key,
             getattr(last_sample, "sample_index", None),
             state.preflight_report.overall_status,
         )

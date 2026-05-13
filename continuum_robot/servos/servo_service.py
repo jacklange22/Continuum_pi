@@ -3535,35 +3535,39 @@ class ServoService:
         pair_notes: list[str],
         motion_profile: SingleSegmentMotionProfile,
         command_metadata: dict[str, Any] | None = None,
+        chase_tight_loop_writes: bool = False,
     ) -> ServoCommandResult:
         command_metadata = dict(command_metadata or {})
         raw_goals_by_servo = {
             int(servo_id): int(goal_tick)
             for servo_id, goal_tick in zip(servo_ids, raw_goals)
         }
-        LOG.info(
-            "Simple experiment motion start | workflow=%s | servo_ids=%s | requested_cm=%s | resolved_cm=%s | raw_goals=%s | pair_notes=%s",
-            motion_profile.workflow,
-            list(servo_ids),
-            list(requested_displacements),
-            list(resolved_displacements),
-            raw_goals_by_servo,
-            list(pair_notes),
-        )
+        bus_attempts = 1 if chase_tight_loop_writes else 2
+        if not chase_tight_loop_writes:
+            LOG.info(
+                "Simple experiment motion start | workflow=%s | servo_ids=%s | requested_cm=%s | resolved_cm=%s | raw_goals=%s | pair_notes=%s",
+                motion_profile.workflow,
+                list(servo_ids),
+                list(requested_displacements),
+                list(resolved_displacements),
+                raw_goals_by_servo,
+                list(pair_notes),
+            )
         telemetry_by_id = self._run_with_retry(
             action="read telemetry before simple experiment motion",
-            fn=lambda: self.read_telemetry(servo_ids),
-            attempts=2,
+            fn=lambda: self.read_live_telemetry(servo_ids),
+            attempts=bus_attempts,
         )
         configuration_notes = self._ensure_simple_single_segment_experiment_configuration(
             list(servo_ids),
             telemetry_by_id=telemetry_by_id,
         )
-        telemetry_by_id = self._run_with_retry(
-            action="read telemetry after simple experiment mode configuration",
-            fn=lambda: self.read_telemetry(servo_ids),
-            attempts=2,
-        )
+        if configuration_notes or not chase_tight_loop_writes:
+            telemetry_by_id = self._run_with_retry(
+                action="read telemetry after simple experiment mode configuration",
+                fn=lambda: self.read_live_telemetry(servo_ids),
+                attempts=bus_attempts,
+            )
         configuration_summary = self.single_segment_motion_configuration_summary(
             list(servo_ids),
             workflow=motion_profile.workflow,
@@ -3648,12 +3652,12 @@ class ServoService:
         self._run_with_retry(
             action="write goal positions for simple experiment motion",
             fn=lambda: self._write_goal_positions(payload),
-            attempts=2,
+            attempts=bus_attempts,
         )
         telemetry = self._run_with_retry(
             action="read telemetry after simple experiment motion",
-            fn=lambda: self.read_telemetry(servo_ids),
-            attempts=2,
+            fn=lambda: self.read_live_telemetry(servo_ids),
+            attempts=bus_attempts,
         )
         for servo_id in servo_ids:
             try:
@@ -3683,18 +3687,19 @@ class ServoService:
             applied_ids = ", ".join(str(value) for value in sorted(payload))
             message_parts.append(f"Applied Position Control mode to servos {applied_ids}.")
         message_parts.append(f"Goals {self._format_servo_positions_by_id(payload)}.")
-        LOG.info(
-            "Simple experiment motion success | workflow=%s | requested_cm=%s | resolved_cm=%s | raw_goals=%s | final_goals=%s | pair_notes=%s | config=%s | mode_updates=%s | telemetry=%s",
-            motion_profile.workflow,
-            requested_displacements,
-            resolved_displacements,
-            raw_goals_by_servo,
-            payload,
-            list(pair_notes),
-            configuration_summary.message,
-            list(configuration_notes),
-            self._telemetry_payload_by_servo(telemetry),
-        )
+        if not chase_tight_loop_writes:
+            LOG.info(
+                "Simple experiment motion success | workflow=%s | requested_cm=%s | resolved_cm=%s | raw_goals=%s | final_goals=%s | pair_notes=%s | config=%s | mode_updates=%s | telemetry=%s",
+                motion_profile.workflow,
+                requested_displacements,
+                resolved_displacements,
+                raw_goals_by_servo,
+                payload,
+                list(pair_notes),
+                configuration_summary.message,
+                list(configuration_notes),
+                self._telemetry_payload_by_servo(telemetry),
+            )
         return ServoCommandResult(
             positions_by_id=payload,
             telemetry_by_id=telemetry,
@@ -3715,6 +3720,7 @@ class ServoService:
         *,
         motion_workflow: str = SINGLE_SEGMENT_WORKFLOW_EXPERIMENT,
         parallel_mirror_pairs: dict[int, int] | None = None,
+        chase_tight_loop_writes: bool = False,
     ) -> ServoCommandResult:
         """Compute and send safe goal position ticks.
 
@@ -3756,6 +3762,7 @@ class ServoService:
                 pair_notes=pair_notes,
                 motion_profile=motion_profile,
                 command_metadata=command_metadata,
+                chase_tight_loop_writes=bool(chase_tight_loop_writes),
             )
         configuration_notes: list[str] = []
         configuration_summary: SingleSegmentMotionConfigurationSummary | None = None
