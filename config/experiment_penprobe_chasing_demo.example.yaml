@@ -1,8 +1,23 @@
+# Penprobe chasing demo (single-segment 0A coil chases live 0B XY target).
+# Defaults below are conservative. Uncomment / copy alternate blocks only when
+# the spine and tendon routing are confirmed clear for larger motion.
+#
+# --- Conservative lab tuning (recommended first) ---
+# max_tick_step_per_cycle: 25
+# max_tick_delta_from_startup: 250
+# proportional_gain_ticks_per_mm: 8
+#
+# --- Larger visible demo (optional; not the default) ---
+# max_tick_step_per_cycle: 50   # or up to 100 in GUI
+# max_tick_delta_from_startup: 600
+# hard_max_tick_delta_from_startup: 800   # YAML hard cap; GUI spin max is 800
+# proportional_gain_ticks_per_mm: 15     # typical range 15–30 for demos
+
 loop_period_s: 0.04
 max_duration_s: 30.0
 max_iterations: 750
-max_tick_delta_from_startup: 500
-hard_max_tick_delta_from_startup: 500
+max_tick_delta_from_startup: 250
+hard_max_tick_delta_from_startup: 800
 max_tick_step_per_cycle: 25
 max_step_ticks: 25
 max_target_radius_mm: 45.0

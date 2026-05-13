@@ -175,6 +175,50 @@ class _PreMotionTelemetryProfileBus(MockDxlBus):
         return MockDxlBus.read_telemetry(self, servo_ids, **kwargs)
 
 
+class _MinimalStripOperatingModeBus(MockDxlBus):
+    """Minimal snapshots omit Operating Mode (real bus / profile quirk)."""
+
+    def read_minimal_telemetry(self, servo_ids: list[int]) -> dict[int, object]:
+        result = super().read_minimal_telemetry(servo_ids)
+        for telemetry in result.values():
+            telemetry.operating_mode = None
+        return result
+
+
+class _MinimalStripOperatingModeTargetedReadFailsBus(_MinimalStripOperatingModeBus):
+    """After ``fail_targeted_reads`` is True, :meth:`read_telemetry` raises (cache must cover).
+
+    ``read_minimal_telemetry`` still succeeds by calling :meth:`MockDxlBus.read_telemetry`
+    directly so the pre-motion minimal path matches hardware (minimal does not invoke
+    the same failure mode as a full-table read).
+    """
+
+    def __init__(self, servo_ids: list[int]) -> None:
+        super().__init__(servo_ids)
+        self.fail_targeted_reads = False
+
+    def read_minimal_telemetry(self, servo_ids: list[int]) -> dict[int, object]:
+        result = MockDxlBus.read_telemetry(
+            self,
+            servo_ids,
+            include_reported_id=False,
+            include_identity=False,
+            include_limits=False,
+        )
+        for item in result.values():
+            item.present_voltage_raw_unit = None
+            item.present_voltage_mv = None
+            item.present_temperature_c = None
+            item.read_source = "live_read"
+            item.operating_mode = None
+        return result
+
+    def read_telemetry(self, servo_ids: list[int], **kwargs) -> dict[int, object]:
+        if self.fail_targeted_reads:
+            raise RuntimeError("mock targeted read_telemetry failure")
+        return super().read_telemetry(servo_ids, **kwargs)
+
+
 class _MissingPositionLiveReadBus(MockDxlBus):
     def read_telemetry(self, servo_ids: list[int], **kwargs) -> dict[int, object]:
         result = super().read_telemetry(servo_ids, **kwargs)
@@ -579,6 +623,101 @@ def test_simple_experiment_motion_uses_minimal_pre_motion_telemetry(tmp_path: Pa
     assert bus.live_read_count >= 1
     assert bus.full_read_count == 0
     assert result.command_metadata["pre_motion_telemetry_profile"] == "minimal"
+
+
+def test_simple_experiment_motion_hydrates_operating_mode_when_minimal_omits_it_via_targeted_read(tmp_path: Path) -> None:
+    bus = _MinimalStripOperatingModeBus([5, 6, 7, 8])
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[5, 6, 7, 8])
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([5, 6, 7, 8])
+    with service.exclusive_bus_operation(owner="unit_test_collect_pose_like", reason="minimal mode field"):
+        result = service.command_displacement(
+            tendon_displacements_cm=[0.05, 0.0, -0.05, 0.0],
+            neutral_ticks=[neutral[servo_id] for servo_id in [5, 6, 7, 8]],
+            servo_ids=[5, 6, 7, 8],
+        )
+    events = list(result.command_metadata.get("operating_mode_hydration_events") or [])
+    sources = {entry.get("source") for entry in events}
+    assert "targeted_read_telemetry" in sources
+    assert result.positions_by_id
+
+
+def test_simple_experiment_motion_uses_last_verified_mode_when_minimal_omits_and_targeted_read_fails(tmp_path: Path) -> None:
+    bus = _MinimalStripOperatingModeTargetedReadFailsBus([5, 6, 7, 8])
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[5, 6, 7, 8], time_fn=lambda: 0.0)
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([5, 6, 7, 8])
+    with service.exclusive_bus_operation(owner="unit_test", reason="seed operating mode cache"):
+        first = service.command_displacement(
+            tendon_displacements_cm=[0.0, 0.0, 0.0, 0.0],
+            neutral_ticks=[neutral[servo_id] for servo_id in [5, 6, 7, 8]],
+            servo_ids=[5, 6, 7, 8],
+        )
+    assert list(first.command_metadata.get("operating_mode_hydration_events") or [])
+    bus.fail_targeted_reads = True
+    with service.exclusive_bus_operation(owner="unit_test", reason="cache-only hydration"):
+        second = service.command_displacement(
+            tendon_displacements_cm=[0.0, 0.0, 0.0, 0.0],
+            neutral_ticks=[neutral[servo_id] for servo_id in [5, 6, 7, 8]],
+            servo_ids=[5, 6, 7, 8],
+            skip_post_command_telemetry=True,
+        )
+    events = list(second.command_metadata.get("operating_mode_hydration_events") or [])
+    assert any(entry.get("source") == "last_verified_operating_mode_cache" for entry in events)
+
+
+def test_simple_experiment_motion_25_cycles_minimal_missing_operating_mode_does_not_reject(tmp_path: Path) -> None:
+    bus = _MinimalStripOperatingModeBus([5, 6, 7, 8])
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[5, 6, 7, 8], time_fn=lambda: 0.0)
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([5, 6, 7, 8])
+    with service.exclusive_bus_operation(owner="unit_test", reason="collect_pose_like burst"):
+        for _ in range(25):
+            result = service.command_displacement(
+                tendon_displacements_cm=[0.02, 0.0, -0.02, 0.0],
+                neutral_ticks=[neutral[servo_id] for servo_id in [5, 6, 7, 8]],
+                servo_ids=[5, 6, 7, 8],
+            )
+    assert result.positions_by_id
+
+
+def test_simple_experiment_motion_operating_mode_unavailable_is_not_wrong_mode_message(tmp_path: Path) -> None:
+    bus = _MinimalStripOperatingModeBus([5, 6, 7, 8])
+    bus.config.single_segment_auto_configure_motion_defaults = False
+    for telemetry in bus._state.values():
+        telemetry.operating_mode = None
+        telemetry.torque_enabled = True
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[5, 6, 7, 8])
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = {servo_id: int(bus._state[servo_id].present_position or 2048) for servo_id in [5, 6, 7, 8]}
+    with service.exclusive_bus_operation(owner="unit_test", reason="mode truly missing"):
+        with pytest.raises(ServoTelemetryRetryError, match="operating mode telemetry unavailable") as excinfo:
+            service.command_displacement(
+                tendon_displacements_cm=[0.02, 0.0, -0.02, 0.0],
+                neutral_ticks=[neutral[servo_id] for servo_id in [5, 6, 7, 8]],
+                servo_ids=[5, 6, 7, 8],
+            )
+    row = (excinfo.value.context.get("operating_mode_availability_by_servo") or {}).get("5", {})
+    assert row.get("operating_mode_present") is False
+    assert row.get("wrong_operating_mode") is False
+
+
+def test_simple_experiment_motion_minimal_missing_mode_with_wrong_reported_mode_fails_hard(tmp_path: Path) -> None:
+    bus = _MinimalStripOperatingModeBus([5, 6, 7, 8])
+    bus.config.single_segment_auto_configure_motion_defaults = False
+    for telemetry in bus._state.values():
+        telemetry.operating_mode = 5
+        telemetry.torque_enabled = True
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[5, 6, 7, 8])
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = {servo_id: int(bus._state[servo_id].present_position or 2048) for servo_id in [5, 6, 7, 8]}
+    with service.exclusive_bus_operation(owner="unit_test", reason="wrong mode"):
+        with pytest.raises(ServoTelemetryRetryError, match="wrong operating mode"):
+            service.command_displacement(
+                tendon_displacements_cm=[0.02, 0.0, -0.02, 0.0],
+                neutral_ticks=[neutral[servo_id] for servo_id in [5, 6, 7, 8]],
+                servo_ids=[5, 6, 7, 8],
+            )
 
 
 def test_simple_experiment_motion_fresh_read_failure_blocks_command(tmp_path: Path) -> None:

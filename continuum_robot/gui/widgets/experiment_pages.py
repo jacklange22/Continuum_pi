@@ -3095,6 +3095,19 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
     visualization_mode_override = VIS_MODE_PROJECTION
     page_hint = "MVP demo: chase live 0B penprobe XY target with the active single-segment 0A coil-as-tip. Commands stay bounded from the accepted startup reference."
 
+    @staticmethod
+    def _penprobe_demo_travel_warning_text(max_tick_delta_from_startup: int) -> str:
+        parts: list[str] = []
+        if int(max_tick_delta_from_startup) > 300:
+            parts.append(
+                "Large penprobe demo travel. Confirm spine is clear and tendon routing is safe."
+            )
+        if int(max_tick_delta_from_startup) >= 700:
+            parts.append(
+                "Near GUI max; ensure hard_max_tick_delta_from_startup in YAML allows this value."
+            )
+        return " ".join(parts).strip()
+
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
         super().__init__(controller, experiment_name, parent)
         self.run_button.setText("Start Demo")
@@ -3120,7 +3133,7 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
         control_card = ExperimentCard("Demo Controls", "Keep the envelope conservative while validating 0A-to-0B chasing behavior.")
         form = QFormLayout()
         self.max_tick_delta_spin = QSpinBox()
-        self.max_tick_delta_spin.setRange(1, 500)
+        self.max_tick_delta_spin.setRange(1, 800)
         self.max_tick_delta_spin.valueChanged.connect(
             lambda value: self.controller.set_config_value("max_tick_delta_from_startup", int(value))
         )
@@ -3156,6 +3169,14 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
         self.max_step_spin = QSpinBox()
         self.max_step_spin.setRange(1, 100)
         self.max_step_spin.valueChanged.connect(lambda value: self.controller.set_config_value("max_tick_step_per_cycle", int(value)))
+        self.demo_travel_warning = QLabel("")
+        self.demo_travel_warning.setWordWrap(True)
+        self.demo_travel_warning.setProperty("role", "warning")
+        self.max_tick_delta_spin.valueChanged.connect(
+            lambda value: self.demo_travel_warning.setText(
+                self._penprobe_demo_travel_warning_text(int(value))
+            )
+        )
         self.deadband_spin = QDoubleSpinBox()
         self.deadband_spin.setRange(0.0, 20.0)
         self.deadband_spin.setDecimals(1)
@@ -3176,6 +3197,7 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
         self.flip_y_checkbox = QCheckBox("Flip Y")
         self.flip_y_checkbox.toggled.connect(lambda value: self.controller.set_config_value("flip_y", bool(value)))
         form.addRow("Max Delta From Startup (ticks)", self.max_tick_delta_spin)
+        form.addRow("", self.demo_travel_warning)
         form.addRow("Loop Period (s)", self.loop_period_spin)
         form.addRow("Max Duration (s)", self.duration_spin)
         form.addRow("Max Iterations", self.max_iterations_spin)
@@ -3189,6 +3211,9 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
         form.addRow("Sign Override", self.flip_x_checkbox)
         form.addRow("", self.flip_y_checkbox)
         control_card.body_layout.addLayout(form)
+        self.demo_travel_warning.setText(
+            self._penprobe_demo_travel_warning_text(int(self.max_tick_delta_spin.value()))
+        )
 
         status_card = ExperimentCard("Live Status", "Last received sample and active scope for the running demo.")
         self.loop_status_label = QLabel(
@@ -3206,6 +3231,10 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
         _ = state
         config = PenprobeChasingDemoConfig.from_dict(self.controller.config_payload())
         self._set_spin(self.max_tick_delta_spin, int(config.max_tick_delta_from_startup))
+        if hasattr(self, "demo_travel_warning"):
+            self.demo_travel_warning.setText(
+                self._penprobe_demo_travel_warning_text(int(config.max_tick_delta_from_startup))
+            )
         self._set_double(self.loop_period_spin, float(config.loop_period_s))
         self._set_double(self.duration_spin, float(config.max_duration_s))
         self._set_spin(self.max_iterations_spin, int(config.max_iterations))

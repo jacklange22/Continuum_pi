@@ -24,6 +24,7 @@ from continuum_robot.experiments.penprobe_chasing_demo import (
     MAPPING_PAIRED_XY_PROPORTIONAL,
     PenprobeChasingDemoConfig,
     PenprobeChasingDemoExperiment,
+    _chase_motion_limiter_summary,
     _clamp_tick_deltas_to_startup_raw_bounds,
     _extract_robot_frame_tool_pose,
     _resolve_mapping_mode,
@@ -328,7 +329,7 @@ def test_large_xy_error_steps_near_configured_max_not_one_tick() -> None:
         mapper=mapper,
         config=config,
     )
-    stepped = _step_and_clamp_tick_deltas(
+    stepped, _reasons = _step_and_clamp_tick_deltas(
         current_delta_by_servo={5: 0, 6: 0, 7: 0, 8: 0},
         desired_delta_by_servo=desired,
         max_step_ticks=config.max_tick_step_per_cycle,
@@ -346,6 +347,65 @@ def test_max_tick_step_per_cycle_clamps_to_100_when_configured_higher() -> None:
 
     assert config.max_tick_step_per_cycle == 100
     assert config.max_step_ticks == 100
+
+
+def test_max_tick_delta_600_allows_cumulative_travel_with_per_cycle_step_cap() -> None:
+    cur = {5: 0}
+    for _ in range(10):
+        stepped, _reasons = _step_and_clamp_tick_deltas(
+            current_delta_by_servo=cur,
+            desired_delta_by_servo={5: 700},
+            max_step_ticks=100,
+            max_abs_delta_ticks=600,
+        )
+        cur = {5: stepped[5]}
+    assert cur[5] == 600
+
+
+def test_max_tick_delta_100_caps_total_despite_large_per_cycle_step() -> None:
+    cur = {5: 0}
+    for _ in range(20):
+        stepped, _reasons = _step_and_clamp_tick_deltas(
+            current_delta_by_servo=cur,
+            desired_delta_by_servo={5: 999},
+            max_step_ticks=100,
+            max_abs_delta_ticks=100,
+        )
+        cur = {5: stepped[5]}
+    assert cur[5] == 100
+
+
+def test_chase_motion_limiter_prefers_startup_raw_bounds_over_demo_delta_cap() -> None:
+    assert (
+        _chase_motion_limiter_summary(
+            raw_bound_clips={5: "raw_goal_5000_clamped_to_4095"},
+            step_clamp_reasons={5: ["max_tick_delta_from_startup"]},
+            mapping_debug={},
+            skipped_write_reason=None,
+        )
+        == "startup_raw_bounds:raw_goal_5000_clamped_to_4095"
+    )
+
+
+def test_chase_motion_limiter_reports_demo_delta_cap_when_raw_bounds_clear() -> None:
+    assert (
+        _chase_motion_limiter_summary(
+            raw_bound_clips={},
+            step_clamp_reasons={5: ["max_tick_delta_from_startup"]},
+            mapping_debug={},
+            skipped_write_reason=None,
+        )
+        == "max_tick_delta_from_startup"
+    )
+
+
+def test_penprobe_precheck_warns_when_max_tick_delta_exceeds_300() -> None:
+    experiment = PenprobeChasingDemoExperiment(
+        PenprobeChasingDemoConfig.from_dict({"max_tick_delta_from_startup": 600})
+    )
+    session = _session(active_segment="segment_b")
+    experiment.precheck(session)
+    assert any("Large penprobe demo travel" in msg for msg in session.warning_messages)
 
 
 def test_deadband_suppresses_tiny_penprobe_jitter() -> None:
@@ -366,7 +426,7 @@ def test_deadband_suppresses_tiny_penprobe_jitter() -> None:
 
 
 def test_command_clamp_stays_within_default_500_ticks_and_raw_bounds() -> None:
-    stepped = _step_and_clamp_tick_deltas(
+    stepped, _reasons = _step_and_clamp_tick_deltas(
         current_delta_by_servo={1: 490, 2: -490},
         desired_delta_by_servo={1: 900, 2: -900},
         max_step_ticks=50,

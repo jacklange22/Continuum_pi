@@ -580,6 +580,7 @@ class ServoService:
         self._last_telemetry_by_id: dict[int, ServoTelemetry] = {}
         self._telemetry_read_sequence_index = 0
         self._last_single_segment_motion_configuration_by_servo: dict[int, dict[str, int | None]] = {}
+        self._simple_experiment_operating_mode_verified: dict[int, dict[str, Any]] = {}
         self.motor_control_supervisor = motor_control_supervisor or MotorControlSupervisor(
             configured_servo_ids_provider=self._configured_servo_ids_for_supervisor,
             last_commanded_servo_ids_provider=self._last_commanded_servo_ids_for_supervisor,
@@ -635,6 +636,7 @@ class ServoService:
         self._last_goal_positions_by_id.clear()
         self._last_goal_command_monotonic_s.clear()
         self._last_single_segment_motion_configuration_by_servo.clear()
+        self._simple_experiment_operating_mode_verified.clear()
 
     def _configured_servo_ids_for_supervisor(self) -> list[int]:
         context = self.neutral_calibration.context
@@ -1047,6 +1049,102 @@ class ServoService:
             self._last_single_segment_motion_configuration_by_servo[int(servo_id)] = dict(signature)
         return notes
 
+    def _simple_experiment_operating_mode_record_ttl_s(self) -> float:
+        stale = float(getattr(self.safety_guard, "telemetry_stale_after_s", 0.25) or 0.25)
+        return max(30.0, 6.0 * stale)
+
+    def _touch_simple_experiment_operating_mode_record(
+        self,
+        servo_id: int,
+        mode: int,
+        source: str,
+    ) -> None:
+        with self._bus_state_lock:
+            owner = self._exclusive_bus_owner
+        self._simple_experiment_operating_mode_verified[int(servo_id)] = {
+            "mode": int(mode),
+            "verified_at_monotonic": float(self._time_fn()),
+            "source": str(source),
+            "bus_owner_at_verify": owner,
+        }
+
+    def _simple_experiment_operating_mode_record_usable(self, servo_id: int, *, preferred_mode: int) -> int | None:
+        rec = self._simple_experiment_operating_mode_verified.get(int(servo_id))
+        if not rec:
+            return None
+        if int(rec.get("mode", -1)) != int(preferred_mode):
+            return None
+        age = float(self._time_fn()) - float(rec.get("verified_at_monotonic", 0.0))
+        if age < 0.0 or age > self._simple_experiment_operating_mode_record_ttl_s():
+            return None
+        return int(rec["mode"])
+
+    def _hydrate_operating_modes_for_simple_experiment_motion(
+        self,
+        servo_ids: list[int],
+        telemetry_by_id: dict[int, ServoTelemetry],
+        *,
+        preferred_mode: int | None,
+        command_metadata: dict[str, Any],
+    ) -> None:
+        """Fill missing Operating Mode on minimal snapshots using cache or a targeted table read."""
+        if preferred_mode is None:
+            return
+        events: list[dict[str, Any]] = list(command_metadata.get("operating_mode_hydration_events") or [])
+        for servo_id in [int(value) for value in servo_ids]:
+            tel = telemetry_by_id.get(int(servo_id))
+            if tel is None:
+                continue
+            if tel.operating_mode is not None:
+                self._touch_simple_experiment_operating_mode_record(
+                    int(servo_id),
+                    int(tel.operating_mode),
+                    "minimal_or_live_telemetry",
+                )
+                continue
+            cached_mode = self._simple_experiment_operating_mode_record_usable(
+                int(servo_id),
+                preferred_mode=int(preferred_mode),
+            )
+            if cached_mode is not None:
+                telemetry_by_id[int(servo_id)] = replace(tel, operating_mode=int(cached_mode))
+                events.append(
+                    {
+                        "servo_id": int(servo_id),
+                        "source": "last_verified_operating_mode_cache",
+                        "mode": int(cached_mode),
+                    }
+                )
+                continue
+            try:
+                targeted = self.read_telemetry([int(servo_id)])
+            except Exception as exc:
+                events.append({"servo_id": int(servo_id), "source": "targeted_read_telemetry", "error": str(exc)})
+                continue
+            tread = targeted.get(int(servo_id))
+            if tread is None:
+                events.append({"servo_id": int(servo_id), "source": "targeted_read_telemetry", "error": "missing_result"})
+                continue
+            mode_val = tread.operating_mode
+            telemetry_by_id[int(servo_id)] = replace(tel, operating_mode=mode_val)
+            if mode_val is not None:
+                self._touch_simple_experiment_operating_mode_record(
+                    int(servo_id),
+                    int(mode_val),
+                    "targeted_read_telemetry",
+                )
+                events.append({"servo_id": int(servo_id), "source": "targeted_read_telemetry", "mode": int(mode_val)})
+            elif tread.telemetry_error or tread.hardware_error:
+                events.append(
+                    {
+                        "servo_id": int(servo_id),
+                        "source": "targeted_read_telemetry",
+                        "error": tread.telemetry_error or tread.hardware_error,
+                    }
+                )
+        if events:
+            command_metadata["operating_mode_hydration_events"] = events
+
     def _ensure_simple_single_segment_experiment_configuration(
         self,
         servo_ids: list[int],
@@ -1077,6 +1175,11 @@ class ServoService:
             if applied == signature and (
                 telemetry.operating_mode is None or int(telemetry.operating_mode) == int(preferred_mode)
             ):
+                self._touch_simple_experiment_operating_mode_record(
+                    int(servo_id),
+                    int(preferred_mode),
+                    "configure_signature_hit_assumed_or_read",
+                )
                 continue
             if telemetry.operating_mode is None or int(telemetry.operating_mode) != int(preferred_mode):
                 self._run_with_retry(
@@ -1092,6 +1195,11 @@ class ServoService:
                     f"->{self.operating_mode_label(preferred_mode)}"
                 )
             self._last_single_segment_motion_configuration_by_servo[int(servo_id)] = dict(signature)
+            self._touch_simple_experiment_operating_mode_record(
+                int(servo_id),
+                int(preferred_mode),
+                "single_segment_experiment_configure",
+            )
         return notes
 
     def _run_with_retry(
@@ -3698,6 +3806,12 @@ class ServoService:
                 for servo_id in servo_ids
                 if self._missing_motion_fields(telemetry_by_id.get(int(servo_id)))
             },
+            "preferred_operating_mode_experiment": command_metadata.get("preferred_operating_mode_experiment"),
+            "operating_mode_availability_by_servo": self._operating_mode_availability_context(
+                servo_ids,
+                telemetry_by_id,
+                preferred_mode=command_metadata.get("preferred_operating_mode_experiment"),
+            ),
             "last_valid_telemetry_by_servo": self._telemetry_payload_by_servo(telemetry_by_id),
             "last_commanded_goal_ticks": {str(k): int(v) for k, v in sorted(raw_goals_by_servo.items())},
             "last_resolved_cable_command_cm": list(resolved_displacements),
@@ -3716,6 +3830,30 @@ class ServoService:
         if telemetry.operating_mode is None:
             missing.append("operating_mode")
         return missing
+
+    def _operating_mode_availability_context(
+        self,
+        servo_ids: list[int],
+        telemetry_by_id: dict[int, ServoTelemetry],
+        *,
+        preferred_mode: int | None,
+    ) -> dict[str, Any]:
+        rows: dict[str, Any] = {}
+        for servo_id in servo_ids:
+            tel = telemetry_by_id.get(int(servo_id))
+            reported = getattr(tel, "operating_mode", None) if tel is not None else None
+            wrong = (
+                preferred_mode is not None
+                and reported is not None
+                and int(reported) != int(preferred_mode)
+            )
+            rows[str(int(servo_id))] = {
+                "operating_mode_present": reported is not None,
+                "reported_operating_mode": reported,
+                "preferred_operating_mode": preferred_mode,
+                "wrong_operating_mode": bool(wrong),
+            }
+        return rows
 
     def _displacement_rejection_reason(
         self,
@@ -3799,8 +3937,12 @@ class ServoService:
             or "position limits are unavailable" in lowered
         ):
             return f"stale/missing telemetry: servo {servo_id} blocked motion: {detail}"
-        if "operating mode" in lowered:
+        if "operating mode unavailable after targeted read" in lowered:
+            return f"operating mode telemetry unavailable: servo {servo_id}: {detail}"
+        if "operating mode" in lowered and "is not" in lowered:
             return f"wrong operating mode: servo {servo_id} is not in Position Control Mode: {detail}"
+        if "operating mode" in lowered:
+            return f"servo {servo_id} operating mode check blocked motion: {detail}"
         if "torque enable" in lowered or "torque state" in lowered:
             return f"torque off/unavailable: servo {servo_id} blocked motion: {detail}"
         if "current threshold exceeded" in lowered or "current magnitude threshold exceeded" in lowered:
@@ -3943,7 +4085,7 @@ class ServoService:
         if expected_operating_mode is None:
             pass
         elif telemetry.operating_mode is None:
-            errors.append("Operating Mode is unavailable.")
+            errors.append("Operating mode unavailable after targeted read.")
         elif int(telemetry.operating_mode) != int(expected_operating_mode):
             errors.append(
                 f"Operating Mode {telemetry.operating_mode} is not {self.operating_mode_label(expected_operating_mode)}."
@@ -4194,6 +4336,9 @@ class ServoService:
                 raw_goals_by_servo,
                 list(pair_notes),
             )
+        pref_mode = motion_profile.preferred_operating_mode
+        if pref_mode is not None:
+            command_metadata["preferred_operating_mode_experiment"] = int(pref_mode)
         command_metadata.setdefault("pre_motion_read_source", "experiment_owned_minimal_read")
         if prevalidated_telemetry_by_id is not None:
             telemetry_by_id = {int(k): v for k, v in dict(prevalidated_telemetry_by_id).items()}
@@ -4211,10 +4356,20 @@ class ServoService:
                 attempts=bus_attempts,
             )
             command_metadata["pre_motion_telemetry_profile"] = "minimal"
+        self._hydrate_operating_modes_for_simple_experiment_motion(
+            list(servo_ids),
+            telemetry_by_id,
+            preferred_mode=pref_mode,
+            command_metadata=command_metadata,
+        )
         configuration_notes = self._ensure_simple_single_segment_experiment_configuration(
             list(servo_ids),
             telemetry_by_id=telemetry_by_id,
         )
+        if configuration_notes:
+            command_metadata["mode_verified_by_configure"] = True
+            command_metadata["mode_verified_at_monotonic"] = float(self._time_fn())
+            command_metadata["mode_verified_source"] = "single_segment_experiment_configure"
         if prevalidated_telemetry_by_id is None and (configuration_notes or not chase_tight_loop_writes):
             telemetry_by_id = self._run_with_retry(
                 action="read minimal telemetry after simple experiment mode configuration",
@@ -4223,6 +4378,12 @@ class ServoService:
             )
             command_metadata["pre_motion_read_source"] = "experiment_owned_minimal_read_after_configuration"
             command_metadata["pre_motion_telemetry_profile"] = "minimal"
+            self._hydrate_operating_modes_for_simple_experiment_motion(
+                list(servo_ids),
+                telemetry_by_id,
+                preferred_mode=pref_mode,
+                command_metadata=command_metadata,
+            )
         command_metadata.update(self._telemetry_batch_metadata(telemetry_by_id, prefix="pre_motion"))
         configuration_summary = self.single_segment_motion_configuration_summary(
             list(servo_ids),

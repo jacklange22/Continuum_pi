@@ -36,8 +36,8 @@ class PenprobeChasingDemoConfig:
     loop_period_s: float = 0.04
     max_duration_s: float = 30.0
     max_iterations: int = 750
-    max_tick_delta_from_startup: int = 500
-    hard_max_tick_delta_from_startup: int = 500
+    max_tick_delta_from_startup: int = 250
+    hard_max_tick_delta_from_startup: int = 800
     max_step_ticks: int = 25
     max_tick_step_per_cycle: int = 25
     max_target_radius_mm: float = 45.0
@@ -66,12 +66,16 @@ class PenprobeChasingDemoConfig:
         mode = mode.strip().lower()
         if mode not in SUPPORTED_MAPPING_MODES:
             mode = MAPPING_PAIRED_XY_PROPORTIONAL
+        hard_cap = max(1, int(payload.get("hard_max_tick_delta_from_startup", 800)))
+        max_delta = max(0, int(payload.get("max_tick_delta_from_startup", 250)))
+        if max_delta > hard_cap:
+            max_delta = hard_cap
         return cls(
             loop_period_s=max(0.02, float(payload.get("loop_period_s", payload.get("loop_target_period_s", 0.04)))),
             max_duration_s=max(0.0, float(payload.get("max_duration_s", 30.0))),
             max_iterations=max(1, int(payload.get("max_iterations", 750))),
-            max_tick_delta_from_startup=max(0, int(payload.get("max_tick_delta_from_startup", 500))),
-            hard_max_tick_delta_from_startup=max(0, int(payload.get("hard_max_tick_delta_from_startup", 500))),
+            max_tick_delta_from_startup=max_delta,
+            hard_max_tick_delta_from_startup=hard_cap,
             max_step_ticks=max(1, min(100, int(payload.get("max_step_ticks", payload.get("max_tick_step_per_cycle", 25))))),
             max_tick_step_per_cycle=max(1, min(100, int(payload.get("max_tick_step_per_cycle", payload.get("max_step_ticks", 25))))),
             max_target_radius_mm=max(0.0, float(payload.get("max_target_radius_mm", 45.0))),
@@ -135,6 +139,9 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
         self._mapping_mode_used = str(config.mapping_mode)
         self._mapping_warnings: list[str] = []
         self._chase_perf: dict[str, Any] = {}
+        self._chase_clamp_counter: Counter = Counter()
+        self._chase_per_servo_max_abs_delta: dict[int, int] = {}
+        self._chase_max_abs_step: int = 0
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None = None) -> "PenprobeChasingDemoExperiment":
@@ -158,6 +165,10 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
             raise RuntimeError(
                 "max_tick_delta_from_startup exceeds the configured hard cap: "
                 f"{self.config.max_tick_delta_from_startup} > {self.config.hard_max_tick_delta_from_startup}."
+            )
+        if int(self.config.max_tick_delta_from_startup) > 300:
+            session.add_warning(
+                "Large penprobe demo travel. Confirm spine is clear and tendon routing is safe."
             )
         calibration_summary = session.context.servo_service.neutral_calibration.get_calibration_summary()
         if hasattr(calibration_summary, "servo_entries"):
@@ -192,6 +203,9 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
         )
         self._mapping_mode_used, self._mapping_warnings = _resolve_mapping_mode(self.config, session.context.project_root)
         self._current_tick_delta_by_servo = {int(servo_id): 0 for servo_id in servo_ids}
+        self._chase_clamp_counter: Counter = Counter()
+        self._chase_per_servo_max_abs_delta = {int(s): 0 for s in servo_ids}
+        self._chase_max_abs_step = 0
         perf: dict[str, Any] = {
             "control_loop_dt_s": [],
             "servo_write_dt_s": [],
@@ -287,11 +301,12 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                     skipped_write_reason: str | None = None
                     desired_delta_by_servo = {int(servo_id): 0 for servo_id in servo_ids}
                     mapping_debug: dict[str, Any] = {}
-                    bounded_candidate_delta = dict(self._current_tick_delta_by_servo)
-                    raw_bound_clips: dict[int, str] = {}
                     command_result_message: dict[str, Any] = {}
 
                     stable_before = dict(self._current_tick_delta_by_servo)
+                    bounded_candidate_delta = dict(stable_before)
+                    raw_bound_clips: dict[int, str] = {}
+                    step_clamp_reasons: dict[int, list[str]] = {}
 
                     command_write_duration_s = 0.0
                     telemetry_for_sample = dict(last_known_telemetry)
@@ -346,16 +361,23 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                             mapper=mapper,
                             config=self.config,
                         )
-                        stepped_delta_by_servo = _step_and_clamp_tick_deltas(
+                        stepped_delta_by_servo, step_clamp_reasons = _step_and_clamp_tick_deltas(
                             current_delta_by_servo=self._current_tick_delta_by_servo,
                             desired_delta_by_servo=desired_delta_by_servo,
                             max_step_ticks=max_step,
                             max_abs_delta_ticks=int(self.config.max_tick_delta_from_startup),
                         )
+                        for _sid, _reasons in step_clamp_reasons.items():
+                            for _tag in _reasons:
+                                self._chase_clamp_counter[f"step:{_tag}"] += 1
                         bounded_candidate_delta, raw_bound_clips = _clamp_tick_deltas_to_startup_raw_bounds(
                             stepped_delta_by_servo,
                             startup_reference_by_servo=self._startup_reference_by_servo,
                         )
+                        for _clip in raw_bound_clips.values():
+                            self._chase_clamp_counter[f"raw_bound:{_clip}"] += 1
+                        if bool(mapping_debug.get("per_cycle_l2_vector_cap_hit")):
+                            self._chase_clamp_counter["xy_mapping_l2_vector_cap"] += 1
                         hypo_command_ticks = {
                             int(servo_id): int(self._startup_reference_by_servo[int(servo_id)] + bounded_candidate_delta[int(servo_id)])
                             for servo_id in servo_ids
@@ -400,6 +422,9 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                             self._current_tick_delta_by_servo = dict(bounded_candidate_delta)
                             positions_by_id = dict(command_result.positions_by_id)
                             clamp_reasons_by_id = dict(command_result.clamp_reasons_by_id)
+                            for _crs in clamp_reasons_by_id.values():
+                                if str(_crs or "").strip():
+                                    self._chase_clamp_counter[f"experiment_displacement:{_crs}"] += 1
                             command_result_message = {
                                 "servo_command_positions_by_id": {str(k): int(v) for k, v in positions_by_id.items()},
                                 "servo_clamp_reasons_by_id": {str(k): str(v) for k, v in clamp_reasons_by_id.items()},
@@ -480,6 +505,29 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                     commanded_tick_step_norm = planned_tick_step_norm
                     saturated_flag = bool(saturation_event)
 
+                    for _sid in servo_ids:
+                        ad = abs(int(bounded_applied_delta[int(_sid)]))
+                        if ad > int(self._chase_per_servo_max_abs_delta.get(int(_sid), 0)):
+                            self._chase_per_servo_max_abs_delta[int(_sid)] = ad
+                    for _sid in servo_ids:
+                        stp = abs(int(commanded_step_by_servo[int(_sid)]))
+                        if stp > int(self._chase_max_abs_step):
+                            self._chase_max_abs_step = stp
+
+                    primary_motion_limit = (
+                        "tracking_hold"
+                        if transient_hold
+                        else _chase_motion_limiter_summary(
+                            raw_bound_clips=raw_bound_clips,
+                            step_clamp_reasons=step_clamp_reasons,
+                            mapping_debug=mapping_debug,
+                            skipped_write_reason=skipped_write_reason,
+                        )
+                    )
+                    cap_ticks = int(self.config.max_tick_delta_from_startup)
+                    headroom_ticks = max(0, cap_ticks - int(max_tick_delta_used))
+                    delta_tokens = ",".join(f"{int(sid)}:{int(bounded_applied_delta[int(sid)]):+d}" for sid in servo_ids)
+
                     chase_line = (
                         f"Control: {instantaneous_control_hz:.1f} Hz, "
                         f"Servo writes: {burst_servo_hz:.1f} Hz"
@@ -490,6 +538,10 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                         chase_line += ", Tracker age: n/a ms"
                     else:
                         chase_line += f", Tracker age: {float(tracker_age_s) * 1000.0:.0f} ms"
+                    chase_line += (
+                        f" | Δticks[{delta_tokens}] cap={cap_ticks} headroom={headroom_ticks} "
+                        f"stepCfg={max_step} limiter={primary_motion_limit}"
+                    )
 
                     chase_instrument_extra = {
                         "actual_control_hz": float(instantaneous_control_hz),
@@ -507,6 +559,11 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                         "bus_ownership_snapshot": _bus_ownership_dict(session.context.servo_service),
                         "chase_live_status_line": chase_line,
                         "planned_tick_step_norm": planned_tick_step_norm,
+                        "primary_motion_limiter": primary_motion_limit,
+                        "tick_delta_tokens": delta_tokens,
+                        "tick_delta_cap_ticks": int(cap_ticks),
+                        "tick_delta_headroom_ticks": int(headroom_ticks),
+                        "max_tick_step_per_cycle": int(max_step),
                     }
 
                     sample = _build_chasing_sample(
@@ -527,6 +584,8 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                         loop_dt_s=float(loop_completed_dt_s),
                         mapping_debug={
                             **dict(mapping_debug),
+                            "step_clamp_reasons_by_servo": {str(k): list(v) for k, v in step_clamp_reasons.items()},
+                            "primary_motion_limiter": primary_motion_limit,
                             **command_result_message,
                             "command_compute_duration_s": float(command_compute_duration_s),
                             "servo_command_write_duration_s": float(command_write_duration_s),
@@ -610,6 +669,9 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
             f"Saturation sample fraction (distance-to-cap exhausted while tracking): "
             f"{em.get('chase_saturation_fraction')}",
             f"Skipped write counts: {em.get('chase_skipped_write_counts')}",
+            f"Clamp / saturation counts by reason: {em.get('chase_clamp_counts_by_reason')}",
+            f"Max abs commanded step (ticks): {em.get('chase_max_abs_commanded_step_ticks')}",
+            f"Max abs delta from startup by servo (ticks): {em.get('chase_max_abs_delta_ticks_by_servo')}",
             "",
             "This MVP uses the 0A coil origin in robot frame as the controlled point and the 0B robot-frame "
             "tool origin as the target. It does not claim physical tip chasing unless a validated T_robot_tip "
@@ -675,6 +737,12 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
         session.set_metric(
             "chase_skipped_write_counts",
             {str(reason): int(count) for reason, count in sorted(skipped.items())},
+        )
+        session.set_metric("chase_clamp_counts_by_reason", dict(self._chase_clamp_counter))
+        session.set_metric("chase_max_abs_commanded_step_ticks", int(self._chase_max_abs_step))
+        session.set_metric(
+            "chase_max_abs_delta_ticks_by_servo",
+            {str(k): int(v) for k, v in sorted(self._chase_per_servo_max_abs_delta.items())},
         )
         session.set_metric(
             "achieved_mean_gui_hz",
@@ -905,7 +973,9 @@ def paired_xy_proportional_tick_request(
     raw_axis_x_ticks = float(clamped_x) * gain * int(config.x_axis_sign) * (-1 if config.flip_x else 1)
     raw_axis_y_ticks = float(clamped_y) * gain * int(config.y_axis_sign) * (-1 if config.flip_y else 1)
     cap = float(config.max_tick_step_per_cycle)
+    raw_vec_norm = float(math.hypot(raw_axis_x_ticks, raw_axis_y_ticks))
     axis_x_ticks, axis_y_ticks = _clamp_xy_tick_vector_l2(raw_axis_x_ticks, raw_axis_y_ticks, cap)
+    per_cycle_l2_vector_cap_hit = raw_vec_norm > cap + 1e-6
     request_cm_by_servo = {int(servo_id): 0.0 for servo_id in servo_ids}
     _apply_axis_pair_request(
         request_cm_by_servo,
@@ -925,6 +995,8 @@ def paired_xy_proportional_tick_request(
         "raw_axis_request_ticks_xy": [raw_axis_x_ticks, raw_axis_y_ticks],
         "norm_clamped_axis_request_ticks_xy": [axis_x_ticks, axis_y_ticks],
         "tick_norm_cap_per_cycle": cap,
+        "per_cycle_l2_vector_cap_hit": bool(per_cycle_l2_vector_cap_hit),
+        "raw_axis_vector_norm_ticks": raw_vec_norm,
         "request_ticks_by_servo": {str(k): int(v) for k, v in request_ticks.items()},
         "lower_tick_means_tension": True,
         "proportional_gain_ticks_per_mm": float(config.proportional_gain_ticks_per_mm),
@@ -946,24 +1018,53 @@ def _clamp_xy(x_mm: float, y_mm: float, max_radius_mm: float) -> tuple[float, fl
     return float(x_mm) * scale, float(y_mm) * scale, float(max_radius_mm)
 
 
+def _chase_motion_limiter_summary(
+    *,
+    raw_bound_clips: dict[int, str],
+    step_clamp_reasons: dict[int, list[str]],
+    mapping_debug: dict[str, Any],
+    skipped_write_reason: str | None,
+) -> str:
+    """Single primary label for why motion might be capped this cycle (HUD / diagnostics)."""
+    token = str(skipped_write_reason or "").strip()
+    if token and token not in {"servo_written"}:
+        return f"write_gate:{token}"
+    if raw_bound_clips:
+        return "startup_raw_bounds:" + str(next(iter(raw_bound_clips.values())))
+    if any("max_tick_delta_from_startup" in r for rs in step_clamp_reasons.values() for r in rs):
+        return "max_tick_delta_from_startup"
+    if bool(mapping_debug.get("per_cycle_l2_vector_cap_hit")):
+        return "per_cycle_xy_vector_l2_cap"
+    if any("per_cycle_step_limit" in r for rs in step_clamp_reasons.values() for r in rs):
+        return "max_tick_step_per_cycle"
+    return "none"
+
+
 def _step_and_clamp_tick_deltas(
     *,
     current_delta_by_servo: dict[int, int],
     desired_delta_by_servo: dict[int, int],
     max_step_ticks: int,
     max_abs_delta_ticks: int,
-) -> dict[int, int]:
+) -> tuple[dict[int, int], dict[int, list[str]]]:
     output: dict[int, int] = {}
+    reasons: dict[int, list[str]] = {int(sid): [] for sid in desired_delta_by_servo}
     for servo_id, desired in desired_delta_by_servo.items():
-        current = int(current_delta_by_servo.get(int(servo_id), 0))
+        sid = int(servo_id)
+        current = int(current_delta_by_servo.get(sid, 0))
         diff = int(desired) - current
         if diff > int(max_step_ticks):
             diff = int(max_step_ticks)
+            reasons[sid].append("per_cycle_step_limit")
         elif diff < -int(max_step_ticks):
             diff = -int(max_step_ticks)
+            reasons[sid].append("per_cycle_step_limit")
         stepped = current + diff
-        output[int(servo_id)] = max(-int(max_abs_delta_ticks), min(int(max_abs_delta_ticks), int(stepped)))
-    return output
+        clamped = max(-int(max_abs_delta_ticks), min(int(max_abs_delta_ticks), int(stepped)))
+        if clamped != int(stepped):
+            reasons[sid].append("max_tick_delta_from_startup")
+        output[sid] = int(clamped)
+    return output, reasons
 
 
 def _clamp_tick_deltas_to_startup_raw_bounds(
