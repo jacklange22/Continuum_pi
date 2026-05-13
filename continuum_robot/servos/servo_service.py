@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields, replace
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
 import threading
@@ -51,6 +52,14 @@ SINGLE_SEGMENT_WORKFLOW_CURRENT_AWARE = "current_aware_validation"
 
 
 LOG = logging.getLogger(__name__)
+
+
+class ServoTelemetryRetryError(RuntimeError):
+    """Raised when a post-motion packet/status telemetry retry cannot recover."""
+
+    def __init__(self, message: str, *, context: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.context = dict(context or {})
 
 
 def command_crosses_wrap_boundary(
@@ -558,6 +567,7 @@ class ServoService:
         self._last_goal_positions_by_id: dict[int, int] = {}
         self._last_goal_command_monotonic_s: dict[int, float] = {}
         self._last_telemetry_by_id: dict[int, ServoTelemetry] = {}
+        self._telemetry_read_sequence_index = 0
         self._last_single_segment_motion_configuration_by_servo: dict[int, dict[str, int | None]] = {}
         self.motor_control_supervisor = motor_control_supervisor or MotorControlSupervisor(
             configured_servo_ids_provider=self._configured_servo_ids_for_supervisor,
@@ -1181,20 +1191,87 @@ class ServoService:
         )
 
     def read_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
+        started = float(self._time_fn())
         telemetry = self._guard_bus_call(
             "read servo telemetry",
             lambda: self.dxl_bus.read_telemetry(servo_ids),
         )
+        self._annotate_telemetry_read(telemetry, source="live_read", started_at=started)
         self._record_telemetry_cache(telemetry)
         return telemetry
 
     def read_live_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
+        started = float(self._time_fn())
         telemetry = self._guard_bus_call(
             "read live servo telemetry",
             lambda: self.dxl_bus.read_live_telemetry(servo_ids),
         )
+        self._annotate_telemetry_read(telemetry, source="live_read", started_at=started)
         self._record_telemetry_cache(telemetry)
         return telemetry
+
+    def read_minimal_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
+        """Read a small motion-health telemetry profile for tight command loops."""
+        started = float(self._time_fn())
+        reader = getattr(self.dxl_bus, "read_minimal_telemetry", None)
+        telemetry = self._guard_bus_call(
+            "read minimal servo telemetry",
+            lambda: reader(servo_ids) if callable(reader) else self.dxl_bus.read_live_telemetry(servo_ids),
+        )
+        self._annotate_telemetry_read(telemetry, source="live_read", started_at=started)
+        self._record_telemetry_cache(telemetry)
+        return telemetry
+
+    def _annotate_telemetry_read(
+        self,
+        telemetry_by_id: dict[int, ServoTelemetry],
+        *,
+        source: str,
+        started_at: float,
+    ) -> None:
+        with self._bus_state_lock:
+            self._telemetry_read_sequence_index += 1
+            sequence_index = int(self._telemetry_read_sequence_index)
+            owner = self._exclusive_bus_owner
+        read_source = "experiment_owned" if owner else str(source or "live_read")
+        completed_at = float(self._time_fn())
+        wall_time = datetime.now(timezone.utc).isoformat()
+        for telemetry in dict(telemetry_by_id or {}).values():
+            if telemetry is None:
+                continue
+            if telemetry.last_read_attempt_monotonic_s is None:
+                telemetry.last_read_attempt_monotonic_s = float(started_at)
+            if telemetry.last_read_monotonic_s is None:
+                telemetry.last_read_monotonic_s = completed_at
+            if telemetry.read_duration_ms is None:
+                telemetry.read_duration_ms = max(
+                    0.0,
+                    (float(telemetry.last_read_monotonic_s) - float(telemetry.last_read_attempt_monotonic_s)) * 1000.0,
+                )
+            packet_ok = (
+                telemetry.present_position is not None
+                and telemetry.hardware_error_code in (None, 0)
+                and not telemetry.hardware_error
+                and not telemetry.telemetry_error
+                and not telemetry.identity_error
+            )
+            if packet_ok and telemetry.last_valid_packet_monotonic_s is None:
+                telemetry.last_valid_packet_monotonic_s = float(telemetry.last_read_monotonic_s)
+            if packet_ok and not telemetry.last_valid_packet_wall_time:
+                telemetry.last_valid_packet_wall_time = wall_time
+            if telemetry.last_valid_packet_monotonic_s is not None:
+                telemetry.packet_age_s = max(0.0, completed_at - float(telemetry.last_valid_packet_monotonic_s))
+            telemetry.read_source = read_source
+            telemetry.bus_owner = owner
+            telemetry.read_sequence_index = sequence_index
+            if telemetry.telemetry_error_code is None and (
+                telemetry.telemetry_error or telemetry.identity_error or telemetry.hardware_error
+            ):
+                telemetry.telemetry_error_code = self._classify_telemetry_error_code(telemetry)
+            if telemetry.telemetry_error_detail is None:
+                telemetry.telemetry_error_detail = (
+                    telemetry.telemetry_error or telemetry.identity_error or telemetry.hardware_error
+                )
 
     def set_servo_torque_enabled(self, servo_id: int, enabled: bool) -> None:
         self._guard_bus_call(
@@ -1296,12 +1373,18 @@ class ServoService:
     def telemetry_age_s(self, telemetry: ServoTelemetry | None) -> float | None:
         if telemetry is None:
             return None
-        return self.safety_guard.telemetry_age_s(telemetry.last_read_monotonic_s)
+        timestamp = telemetry.last_valid_packet_monotonic_s
+        if timestamp is None:
+            timestamp = telemetry.last_read_monotonic_s
+        return self.safety_guard.telemetry_age_s(timestamp)
 
     def telemetry_is_fresh(self, telemetry: ServoTelemetry | None) -> bool | None:
         if telemetry is None:
             return None
-        return self.safety_guard.telemetry_is_fresh(telemetry.last_read_monotonic_s)
+        timestamp = telemetry.last_valid_packet_monotonic_s
+        if timestamp is None:
+            timestamp = telemetry.last_read_monotonic_s
+        return self.safety_guard.telemetry_is_fresh(timestamp)
 
     def telemetry_freshness_threshold_s(self) -> float:
         return float(self.safety_guard.telemetry_stale_after_s)
@@ -1351,6 +1434,31 @@ class ServoService:
                                 value = getattr(previous, item.name)
                             merged[item.name] = value
                         self._last_telemetry_by_id[int(servo_id)] = ServoTelemetry(**merged)
+
+    @staticmethod
+    def _classify_telemetry_error_code(telemetry: ServoTelemetry) -> str | None:
+        detail = " | ".join(
+            str(value)
+            for value in (
+                telemetry.telemetry_error,
+                telemetry.identity_error,
+                telemetry.hardware_error,
+            )
+            if value
+        ).lower()
+        if not detail:
+            return None
+        if "incorrect status packet" in detail:
+            return "incorrect_status_packet"
+        if "no status packet" in detail:
+            return "no_status_packet"
+        if "txrx" in detail or "comm_" in detail or "packet timeout" in detail:
+            return "tx_rx_error"
+        if "missing servo" in detail:
+            return "servo_missing"
+        if "hardware_status" in detail or "hardware error" in detail:
+            return "hardware_error"
+        return "telemetry_error"
 
     def _guard_bus_call(self, action: str, fn: Callable[[], object]):
         self._assert_bus_access(action=action)
@@ -2484,7 +2592,9 @@ class ServoService:
             errors.append(str(current.hardware_error))
         if self.dxl_bus.config.require_fresh_telemetry_for_motion:
             try:
-                self.safety_guard.validate_telemetry_freshness(current.last_read_monotonic_s)
+                self.safety_guard.validate_telemetry_freshness(
+                    current.last_valid_packet_monotonic_s or current.last_read_monotonic_s
+                )
             except ValueError as exc:
                 errors.append(str(exc))
         if self.dxl_bus.config.require_voltage_for_motion:
@@ -3294,6 +3404,8 @@ class ServoService:
     def _telemetry_payload_by_servo(telemetry_by_id: dict[int, ServoTelemetry]) -> dict[int, dict[str, Any]]:
         payload: dict[int, dict[str, Any]] = {}
         for servo_id, telemetry in sorted(dict(telemetry_by_id or {}).items()):
+            now = time.monotonic()
+            last_valid = telemetry.last_valid_packet_monotonic_s
             payload[int(servo_id)] = {
                 "position_tick": telemetry.present_position,
                 "current_ma": telemetry.present_current_ma,
@@ -3306,6 +3418,20 @@ class ServoService:
                 "hardware_error_code": telemetry.hardware_error_code,
                 "hardware_error": telemetry.hardware_error,
                 "telemetry_error": telemetry.telemetry_error,
+                "last_valid_packet_monotonic_s": telemetry.last_valid_packet_monotonic_s,
+                "last_valid_packet_wall_time": telemetry.last_valid_packet_wall_time,
+                "last_read_attempt_monotonic_s": telemetry.last_read_attempt_monotonic_s,
+                "read_duration_ms": telemetry.read_duration_ms,
+                "packet_age_s": (
+                    max(0.0, now - float(last_valid))
+                    if last_valid is not None
+                    else telemetry.packet_age_s
+                ),
+                "read_source": telemetry.read_source,
+                "telemetry_error_code": telemetry.telemetry_error_code,
+                "telemetry_error_detail": telemetry.telemetry_error_detail,
+                "bus_owner": telemetry.bus_owner,
+                "read_sequence_index": telemetry.read_sequence_index,
             }
         return payload
 
@@ -3406,6 +3532,24 @@ class ServoService:
         return f"internal software/config inconsistency: servo {servo_id} blocked motion: {detail}"
 
     @staticmethod
+    def _assessment_blocked_only_by_stale_telemetry(assessment: ServoMotionAssessment) -> bool:
+        reasons = [str(reason).strip().lower() for reason in assessment.blocking_reasons if str(reason).strip()]
+        if not reasons:
+            return False
+        return all(("telemetry is stale" in reason or "telemetry freshness" in reason) for reason in reasons)
+
+    def _experiment_owned_stale_override_allowed(self, telemetry: ServoTelemetry) -> bool:
+        return bool(
+            str(getattr(telemetry, "read_source", "") or "") == "experiment_owned"
+            and telemetry.present_position is not None
+            and telemetry.hardware_error_code in (None, 0)
+            and not telemetry.hardware_error
+            and not telemetry.telemetry_error
+            and not telemetry.identity_error
+            and telemetry.last_valid_packet_monotonic_s is not None
+        )
+
+    @staticmethod
     def _non_mode_blocking_reasons(assessment: ServoMotionAssessment) -> list[str]:
         reasons: list[str] = []
         for reason in assessment.blocking_reasons:
@@ -3429,7 +3573,9 @@ class ServoService:
         safe_max: int | None = None
         if self.dxl_bus.config.require_fresh_telemetry_for_motion:
             try:
-                self.safety_guard.validate_telemetry_freshness(telemetry.last_read_monotonic_s)
+                self.safety_guard.validate_telemetry_freshness(
+                    telemetry.last_valid_packet_monotonic_s or telemetry.last_read_monotonic_s
+                )
             except ValueError as exc:
                 errors.append(str(exc))
         if telemetry.present_position is None:
@@ -3525,6 +3671,110 @@ class ServoService:
                 f"post-move unsafe temperature: servo {telemetry.servo_id}: {exc}"
             ) from exc
 
+    def _packet_error_servo_ids(
+        self,
+        telemetry_by_id: dict[int, ServoTelemetry],
+        servo_ids: list[int],
+    ) -> list[int]:
+        failed: list[int] = []
+        for servo_id in [int(value) for value in servo_ids]:
+            telemetry = dict(telemetry_by_id or {}).get(int(servo_id))
+            if telemetry is None:
+                failed.append(int(servo_id))
+                continue
+            if self._is_packet_status_error(telemetry.telemetry_error) or self._is_packet_status_error(telemetry.hardware_error):
+                failed.append(int(servo_id))
+        return failed
+
+    @staticmethod
+    def _is_packet_status_error(message: str | None) -> bool:
+        if not message:
+            return False
+        lowered = str(message).lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "incorrect status packet",
+                "no status packet",
+                "txrxresult",
+                "packet timeout",
+                "status packet",
+            )
+        )
+
+    def _cached_telemetry_allows_packet_retry(self, telemetry: ServoTelemetry | None) -> bool:
+        if telemetry is None or self.telemetry_is_fresh(telemetry) is False:
+            return False
+        if telemetry.present_position is None:
+            return False
+        if telemetry.hardware_error or telemetry.telemetry_error:
+            return False
+        try:
+            self.safety_guard.validate_currents([telemetry.present_current_ma], require_present=False)
+            self.safety_guard.validate_voltage(telemetry.present_voltage_mv, require_present=False)
+            self.safety_guard.validate_temperature(telemetry.present_temperature_c, require_present=False)
+        except ValueError:
+            return False
+        return True
+
+    def _packet_retry_failure_context(
+        self,
+        *,
+        failed_servo_ids: list[int],
+        telemetry_by_id: dict[int, ServoTelemetry],
+        previous_telemetry_by_id: dict[int, ServoTelemetry],
+        payload: dict[int, int],
+        resolved_displacements: list[float],
+        retry_count: int,
+        recovered_packet_error_count: int,
+    ) -> dict[str, Any]:
+        failed = [int(value) for value in failed_servo_ids]
+        first_failed = failed[0] if failed else None
+        telemetry = dict(telemetry_by_id or {}).get(int(first_failed)) if first_failed is not None else None
+        return {
+            "failure_category": "servo_telemetry_packet_error",
+            "failure_reason": self._format_unrecovered_packet_error(failed, telemetry_by_id),
+            "failed_servo_id": first_failed,
+            "failed_servo_ids": failed,
+            "telemetry_error_code": (
+                (telemetry.telemetry_error or telemetry.hardware_error)
+                if telemetry is not None
+                else "missing telemetry result"
+            ),
+            "missing_fields": (
+                self._missing_telemetry_fields(telemetry)
+                if telemetry is not None
+                else "telemetry"
+            ),
+            "failed_telemetry_snapshot": (
+                self._telemetry_payload_by_servo({int(first_failed): telemetry}).get(int(first_failed), {})
+                if telemetry is not None and first_failed is not None
+                else {}
+            ),
+            "last_valid_telemetry_by_servo": self._telemetry_payload_by_servo(previous_telemetry_by_id),
+            "last_commanded_goal_ticks": {str(servo_id): int(goal) for servo_id, goal in sorted(payload.items())},
+            "last_resolved_cable_command_cm": [float(value) for value in resolved_displacements],
+            "retry_count": int(retry_count),
+            "recovered_packet_error_count": int(recovered_packet_error_count),
+        }
+
+    @staticmethod
+    def _format_unrecovered_packet_error(
+        failed_servo_ids: list[int],
+        telemetry_by_id: dict[int, ServoTelemetry],
+    ) -> str:
+        parts = []
+        for servo_id in [int(value) for value in failed_servo_ids]:
+            telemetry = dict(telemetry_by_id or {}).get(int(servo_id))
+            reason = (
+                telemetry.telemetry_error or telemetry.hardware_error
+                if telemetry is not None
+                else "missing telemetry result"
+            )
+            parts.append(f"servo {servo_id}: {reason}")
+        detail = "; ".join(parts) if parts else "unknown servo"
+        return f"Unrecovered post-motion telemetry packet/status error after retry: {detail}"
+
     def _command_simple_single_segment_experiment_motion(
         self,
         *,
@@ -3536,6 +3786,11 @@ class ServoService:
         motion_profile: SingleSegmentMotionProfile,
         command_metadata: dict[str, Any] | None = None,
         chase_tight_loop_writes: bool = False,
+        telemetry_retry_count: int = 0,
+        telemetry_retry_delay_s: float = 0.02,
+        allow_recovered_packet_errors: bool = False,
+        prevalidated_telemetry_by_id: dict[int, ServoTelemetry] | None = None,
+        skip_post_command_telemetry: bool = False,
     ) -> ServoCommandResult:
         command_metadata = dict(command_metadata or {})
         raw_goals_by_servo = {
@@ -3553,21 +3808,33 @@ class ServoService:
                 raw_goals_by_servo,
                 list(pair_notes),
             )
-        telemetry_by_id = self._run_with_retry(
-            action="read telemetry before simple experiment motion",
-            fn=lambda: self.read_live_telemetry(servo_ids),
-            attempts=bus_attempts,
-        )
+        command_metadata.setdefault("pre_motion_read_source", "experiment_owned_live_read")
+        if prevalidated_telemetry_by_id is not None:
+            telemetry_by_id = {int(k): v for k, v in dict(prevalidated_telemetry_by_id).items()}
+            missing_prevalidated = [int(servo_id) for servo_id in servo_ids if int(servo_id) not in telemetry_by_id]
+            if missing_prevalidated:
+                raise RuntimeError(
+                    "Simple experiment motion missing prevalidated telemetry for servo ID(s): "
+                    + ", ".join(str(value) for value in missing_prevalidated)
+                )
+            command_metadata["pre_motion_read_source"] = "prevalidated_experiment_owned_health_read"
+        else:
+            telemetry_by_id = self._run_with_retry(
+                action="read telemetry before simple experiment motion",
+                fn=lambda: self.read_live_telemetry(servo_ids),
+                attempts=bus_attempts,
+            )
         configuration_notes = self._ensure_simple_single_segment_experiment_configuration(
             list(servo_ids),
             telemetry_by_id=telemetry_by_id,
         )
-        if configuration_notes or not chase_tight_loop_writes:
+        if prevalidated_telemetry_by_id is None and (configuration_notes or not chase_tight_loop_writes):
             telemetry_by_id = self._run_with_retry(
                 action="read telemetry after simple experiment mode configuration",
                 fn=lambda: self.read_live_telemetry(servo_ids),
                 attempts=bus_attempts,
             )
+            command_metadata["pre_motion_read_source"] = "experiment_owned_live_read_after_configuration"
         configuration_summary = self.single_segment_motion_configuration_summary(
             list(servo_ids),
             workflow=motion_profile.workflow,
@@ -3585,15 +3852,22 @@ class ServoService:
         clamp_reasons: dict[int, str] = {}
         debug_entries: dict[int, ServoDisplacementDebugEntry] = {}
         rejection_reasons: list[str] = []
+        stale_age_override_servo_ids: list[int] = []
         for index, servo_id in enumerate(servo_ids):
             assessment = assessments[int(servo_id)]
+            stale_only_recovered_by_fresh_read = (
+                self._assessment_blocked_only_by_stale_telemetry(assessment)
+                and self._experiment_owned_stale_override_allowed(assessment.telemetry)
+            )
+            if stale_only_recovered_by_fresh_read:
+                stale_age_override_servo_ids.append(int(servo_id))
             current_position = assessment.telemetry.present_position
             current_ma = assessment.telemetry.present_current_ma
             raw_goal_tick = int(raw_goals[index])
             clamp_reason: str | None = None
             effective_min_tick = assessment.safe_min_tick
             effective_max_tick = assessment.safe_max_tick
-            if not assessment.ready:
+            if not assessment.ready and not stale_only_recovered_by_fresh_read:
                 clamp_reason = self._summarize_simple_experiment_motion_block(
                     assessment,
                     servo_id=int(servo_id),
@@ -3643,22 +3917,48 @@ class ServoService:
             if pair_notes:
                 lead = f"{lead} after antagonistic-pair projection ({'; '.join(pair_notes)})"
             LOG.warning(
-                "Simple experiment motion rejected | workflow=%s | reasons=%s | raw_goals=%s",
+                "Simple experiment motion rejected | workflow=%s | reasons=%s | raw_goals=%s | telemetry=%s",
                 motion_profile.workflow,
                 rejection_reasons,
                 raw_goals_by_servo,
+                self._telemetry_payload_by_servo(telemetry_by_id),
             )
             raise RuntimeError(f"{lead}: {'; '.join(rejection_reasons)}.")
+        if stale_age_override_servo_ids:
+            command_metadata["stale_cached_telemetry_recovered_by_fresh_read"] = True
+            command_metadata["stale_age_override_servo_ids"] = list(stale_age_override_servo_ids)
+            LOG.warning(
+                "Simple experiment motion accepted after experiment-owned fresh read despite stale age threshold | workflow=%s | servo_ids=%s | telemetry=%s",
+                motion_profile.workflow,
+                stale_age_override_servo_ids,
+                self._telemetry_payload_by_servo(telemetry_by_id),
+            )
         self._run_with_retry(
             action="write goal positions for simple experiment motion",
             fn=lambda: self._write_goal_positions(payload),
             attempts=bus_attempts,
         )
-        telemetry = self._run_with_retry(
-            action="read telemetry after simple experiment motion",
-            fn=lambda: self.read_live_telemetry(servo_ids),
-            attempts=bus_attempts,
-        )
+        if skip_post_command_telemetry:
+            telemetry = dict(telemetry_by_id)
+            telemetry_retry_metadata = {
+                "telemetry_retry_count": 0,
+                "recovered_packet_error_count": 0,
+                "unrecovered_packet_error_count": 0,
+                "post_motion_telemetry_skipped": True,
+                "post_motion_telemetry_policy": "deferred_to_lower_rate_health_check",
+            }
+        else:
+            telemetry, telemetry_retry_metadata = self._read_post_simple_experiment_telemetry(
+                servo_ids=list(servo_ids),
+                previous_telemetry_by_id=telemetry_by_id,
+                payload=payload,
+                resolved_displacements=resolved_displacements,
+                bus_attempts=bus_attempts,
+                telemetry_retry_count=int(telemetry_retry_count),
+                telemetry_retry_delay_s=float(telemetry_retry_delay_s),
+                allow_recovered_packet_errors=bool(allow_recovered_packet_errors),
+            )
+        command_metadata.update(telemetry_retry_metadata)
         for servo_id in servo_ids:
             try:
                 self._validate_post_simple_single_segment_motion(telemetry[int(servo_id)])
@@ -3712,6 +4012,108 @@ class ServoService:
             command_metadata=command_metadata,
         )
 
+    def _read_post_simple_experiment_telemetry(
+        self,
+        *,
+        servo_ids: list[int],
+        previous_telemetry_by_id: dict[int, ServoTelemetry],
+        payload: dict[int, int],
+        resolved_displacements: list[float],
+        bus_attempts: int,
+        telemetry_retry_count: int,
+        telemetry_retry_delay_s: float,
+        allow_recovered_packet_errors: bool,
+    ) -> tuple[dict[int, ServoTelemetry], dict[str, Any]]:
+        metadata: dict[str, Any] = {
+            "telemetry_retry_count": 0,
+            "recovered_packet_error_count": 0,
+            "unrecovered_packet_error_count": 0,
+        }
+        telemetry = self._run_with_retry(
+            action="read telemetry after simple experiment motion",
+            fn=lambda: self.read_live_telemetry(servo_ids),
+            attempts=bus_attempts,
+        )
+        packet_error_ids = self._packet_error_servo_ids(telemetry, servo_ids)
+        if not packet_error_ids:
+            return telemetry, metadata
+        if not allow_recovered_packet_errors or int(telemetry_retry_count) <= 0:
+            metadata["unrecovered_packet_error_count"] = len(packet_error_ids)
+            raise ServoTelemetryRetryError(
+                self._format_unrecovered_packet_error(packet_error_ids, telemetry),
+                context=self._packet_retry_failure_context(
+                    failed_servo_ids=packet_error_ids,
+                    telemetry_by_id=telemetry,
+                    previous_telemetry_by_id=previous_telemetry_by_id,
+                    payload=payload,
+                    resolved_displacements=resolved_displacements,
+                    retry_count=0,
+                    recovered_packet_error_count=0,
+                ),
+            )
+        unsafe_retry_ids = [
+            int(servo_id)
+            for servo_id in packet_error_ids
+            if not self._cached_telemetry_allows_packet_retry(previous_telemetry_by_id.get(int(servo_id)))
+        ]
+        if unsafe_retry_ids:
+            metadata["unrecovered_packet_error_count"] = len(packet_error_ids)
+            raise ServoTelemetryRetryError(
+                "Post-motion telemetry packet/status error cannot be retried because the previous cached telemetry "
+                f"was not fresh and safe for servo(s) {unsafe_retry_ids}.",
+                context=self._packet_retry_failure_context(
+                    failed_servo_ids=unsafe_retry_ids,
+                    telemetry_by_id=telemetry,
+                    previous_telemetry_by_id=previous_telemetry_by_id,
+                    payload=payload,
+                    resolved_displacements=resolved_displacements,
+                    retry_count=0,
+                    recovered_packet_error_count=0,
+                ),
+            )
+        latest = dict(telemetry)
+        for attempt in range(1, max(0, int(telemetry_retry_count)) + 1):
+            if float(telemetry_retry_delay_s) > 0.0:
+                self._sleep_fn(float(telemetry_retry_delay_s))
+            retry_telemetry = self._run_with_retry(
+                action="retry post-motion telemetry after packet/status error",
+                fn=lambda: self.read_live_telemetry(packet_error_ids),
+                attempts=1,
+            )
+            metadata["telemetry_retry_count"] = int(metadata["telemetry_retry_count"]) + 1
+            for servo_id, item in retry_telemetry.items():
+                latest[int(servo_id)] = item
+            remaining = self._packet_error_servo_ids(latest, servo_ids)
+            if not remaining:
+                recovered = len(packet_error_ids)
+                metadata.update(
+                    {
+                        "packet_error_recovered": True,
+                        "recovered_packet_error_count": recovered,
+                        "packet_error_recovered_servo_ids": [int(value) for value in packet_error_ids],
+                    }
+                )
+                LOG.warning(
+                    "packet_error_recovered | servo_ids=%s | retry_count=%s | target_servo_ids=%s",
+                    packet_error_ids,
+                    attempt,
+                    sorted(payload),
+                )
+                return latest, metadata
+        metadata["unrecovered_packet_error_count"] = len(self._packet_error_servo_ids(latest, servo_ids))
+        raise ServoTelemetryRetryError(
+            self._format_unrecovered_packet_error(self._packet_error_servo_ids(latest, servo_ids), latest),
+            context=self._packet_retry_failure_context(
+                failed_servo_ids=self._packet_error_servo_ids(latest, servo_ids),
+                telemetry_by_id=latest,
+                previous_telemetry_by_id=previous_telemetry_by_id,
+                payload=payload,
+                resolved_displacements=resolved_displacements,
+                retry_count=int(metadata["telemetry_retry_count"]),
+                recovered_packet_error_count=int(metadata["recovered_packet_error_count"]),
+            ),
+        )
+
     def command_displacement(
         self,
         tendon_displacements_cm: list[float],
@@ -3721,6 +4123,11 @@ class ServoService:
         motion_workflow: str = SINGLE_SEGMENT_WORKFLOW_EXPERIMENT,
         parallel_mirror_pairs: dict[int, int] | None = None,
         chase_tight_loop_writes: bool = False,
+        telemetry_retry_count: int = 0,
+        telemetry_retry_delay_s: float = 0.02,
+        allow_recovered_packet_errors: bool = False,
+        prevalidated_telemetry_by_id: dict[int, ServoTelemetry] | None = None,
+        skip_post_command_telemetry: bool = False,
     ) -> ServoCommandResult:
         """Compute and send safe goal position ticks.
 
@@ -3763,6 +4170,11 @@ class ServoService:
                 motion_profile=motion_profile,
                 command_metadata=command_metadata,
                 chase_tight_loop_writes=bool(chase_tight_loop_writes),
+                telemetry_retry_count=int(telemetry_retry_count),
+                telemetry_retry_delay_s=float(telemetry_retry_delay_s),
+                allow_recovered_packet_errors=bool(allow_recovered_packet_errors),
+                prevalidated_telemetry_by_id=prevalidated_telemetry_by_id,
+                skip_post_command_telemetry=bool(skip_post_command_telemetry),
             )
         configuration_notes: list[str] = []
         configuration_summary: SingleSegmentMotionConfigurationSummary | None = None
@@ -3919,7 +4331,23 @@ class ServoService:
         except Exception as exc:
             raise RuntimeError(f"Displacement command failed during goal write: {exc}") from exc
         try:
-            telemetry = self.read_telemetry(servo_ids)
+            if int(telemetry_retry_count) > 0 and bool(allow_recovered_packet_errors):
+                previous_telemetry = telemetry_by_id or {
+                    int(servo_id): assessments[int(servo_id)].telemetry for servo_id in servo_ids
+                }
+                telemetry, telemetry_retry_metadata = self._read_post_simple_experiment_telemetry(
+                    servo_ids=list(servo_ids),
+                    previous_telemetry_by_id=previous_telemetry,
+                    payload=payload,
+                    resolved_displacements=resolved_displacements,
+                    bus_attempts=1,
+                    telemetry_retry_count=int(telemetry_retry_count),
+                    telemetry_retry_delay_s=float(telemetry_retry_delay_s),
+                    allow_recovered_packet_errors=bool(allow_recovered_packet_errors),
+                )
+                command_metadata.update(telemetry_retry_metadata)
+            else:
+                telemetry = self.read_telemetry(servo_ids)
         except Exception as exc:
             raise RuntimeError(f"Displacement command failed during post-command telemetry read: {exc}") from exc
         for servo_id in servo_ids:
@@ -5437,7 +5865,9 @@ class ServoService:
             raise RuntimeError(f"Servo {servo_id} reported an error during neutral capture: {telemetry.hardware_error}")
         try:
             if self.dxl_bus.config.require_fresh_telemetry_for_motion:
-                self.safety_guard.validate_telemetry_freshness(telemetry.last_read_monotonic_s)
+                self.safety_guard.validate_telemetry_freshness(
+                    telemetry.last_valid_packet_monotonic_s or telemetry.last_read_monotonic_s
+                )
             self.safety_guard.validate_voltage(telemetry.present_voltage_mv, require_present=True)
             self.safety_guard.validate_temperature(telemetry.present_temperature_c, require_present=True)
         except ValueError as exc:

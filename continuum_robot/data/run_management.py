@@ -338,7 +338,7 @@ def detail_pairs_for_run(summary: ManagedRunSummary, *, project_root: Path | Non
             path_text = str(summary.run_dir)
     else:
         path_text = str(path)
-    return [
+    pairs = [
         ("Experiment", summary.experiment_name),
         ("Run ID", summary.run_id),
         ("Run Path", path_text),
@@ -371,6 +371,14 @@ def detail_pairs_for_run(summary: ManagedRunSummary, *, project_root: Path | Non
         ("Intended Use", summary.review.intended_use or "n/a"),
         ("Review Notes", summary.review.notes or "n/a"),
     ]
+    failure_context = _read_json(path / "failure_context.json")
+    if failure_context:
+        pairs.append(("Failure Context", str(failure_context.get("failure_reason") or failure_context.get("failure_category") or "present")))
+    quality = _read_json(path / "dataset_quality_summary.json")
+    if quality:
+        pairs.append(("Dataset Quality", str(quality.get("recommendation") or "present")))
+        pairs.append(("Recovered Packet Errors", str(quality.get("recovered_packet_error_count", 0))))
+    return pairs
 
 
 def archive_run(run_dir: Path, *, project_root: Path, force: bool = False) -> MoveRunResult:

@@ -213,6 +213,7 @@ def test_ann_training_window_launches_and_training_stays_async(tmp_path: Path, m
         window.show()
         window._refresh_state()
         assert window.dataset_list.count() == 1
+        assert window.run_sweep_button.text() == "Run Model Sweep"
         controller.train()
         assert controller.refresh().training_active is True
         QApplication.processEvents()

@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 from continuum_robot.config.schemas import RobotConfig, RobotSegmentConfig
 from continuum_robot.gui.controllers.system_controller import SystemViewState
 from continuum_robot.gui.theme import chip_stylesheet, grouped_workspace_stylesheet, semantic_chip_colors
-from continuum_robot.gui.view_utils import set_text_document
+from continuum_robot.gui.view_utils import editable_update_blocked, set_combo_value, set_spinbox_value, set_text_document
 from continuum_robot.gui.widgets.no_wheel_combo_box import NoWheelComboBox
 
 
@@ -837,21 +837,18 @@ class SystemTab(QWidget):
             self.robot_config_combo.clear()
             for robot_config in state.available_robot_configs:
                 self.robot_config_combo.addItem(robot_config, robot_config)
-            index = self.robot_config_combo.findData(values["robot_config"])
-            if index >= 0:
-                self.robot_config_combo.setCurrentIndex(index)
+            if not editable_update_blocked(self.robot_config_combo):
+                index = self.robot_config_combo.findData(values["robot_config"])
+                if index >= 0:
+                    self.robot_config_combo.setCurrentIndex(index)
             self.robot_config_combo.blockSignals(False)
 
             self.operating_mode_combo.blockSignals(True)
-            mode_index = self.operating_mode_combo.findData(values["operating_mode"])
-            if mode_index >= 0:
-                self.operating_mode_combo.setCurrentIndex(mode_index)
+            set_combo_value(self.operating_mode_combo, str(values["operating_mode"]), block_signals=False)
             self.operating_mode_combo.blockSignals(False)
 
             self.selected_servo_combo.blockSignals(True)
-            servo_index = self.selected_servo_combo.findData(int(values["selected_servo_id"]))
-            if servo_index >= 0:
-                self.selected_servo_combo.setCurrentIndex(servo_index)
+            set_combo_value(self.selected_servo_combo, int(values["selected_servo_id"]), block_signals=False)
             self.selected_servo_combo.blockSignals(False)
 
             self.active_segment_combo.blockSignals(True)
@@ -861,23 +858,20 @@ class SystemTab(QWidget):
                     str(segment.get("display", segment.get("key", ""))),
                     str(segment.get("key", "")),
                 )
-            segment_index = self.active_segment_combo.findData(values["active_segment"])
-            if segment_index >= 0:
-                self.active_segment_combo.setCurrentIndex(segment_index)
+            if not editable_update_blocked(self.active_segment_combo):
+                segment_index = self.active_segment_combo.findData(values["active_segment"])
+                if segment_index >= 0:
+                    self.active_segment_combo.setCurrentIndex(segment_index)
             self.active_segment_combo.blockSignals(False)
 
-            self.mock_mode_combo.blockSignals(True)
-            self.mock_mode_combo.setCurrentIndex(0 if values["mock_mode"] else 1)
-            self.mock_mode_combo.blockSignals(False)
+            set_combo_value(self.mock_mode_combo, bool(values["mock_mode"]), block_signals=True)
 
-            self.baudrate_spin.setValue(int(values["baudrate"]))
-            self.poll_rate_spin.setValue(int(values["poll_rate_hz"]))
+            set_spinbox_value(self.baudrate_spin, int(values["baudrate"]), block_signals=True)
+            set_spinbox_value(self.poll_rate_spin, int(values["poll_rate_hz"]), block_signals=True)
             self.figure_quality_combo.blockSignals(True)
-            figure_quality_index = self.figure_quality_combo.findData(str(values["figure_output_quality"]))
-            if figure_quality_index >= 0:
-                self.figure_quality_combo.setCurrentIndex(figure_quality_index)
+            set_combo_value(self.figure_quality_combo, str(values["figure_output_quality"]), block_signals=False)
             self.figure_quality_combo.blockSignals(False)
-            self.telemetry_freshness_spin.setValue(float(values["telemetry_freshness_timeout_s"]))
+            set_spinbox_value(self.telemetry_freshness_spin, float(values["telemetry_freshness_timeout_s"]), block_signals=True)
             self._sync_operating_mode_visibility()
         finally:
             self._updating_parameter_widgets = False

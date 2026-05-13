@@ -49,6 +49,8 @@ class PenprobeChasingDemoConfig:
     stale_tracker_persist_cycles_before_stop: int = 12
     gui_status_nominal_hz: float = 8.0
     max_servo_write_hz: float = 25.0
+    telemetry_health_hz: float = 3.0
+    max_consecutive_telemetry_health_failures: int = 2
     saturation_stop_cycles: int = 40
     x_axis_sign: int = 1
     y_axis_sign: int = 1
@@ -81,6 +83,11 @@ class PenprobeChasingDemoConfig:
             stale_tracker_persist_cycles_before_stop=max(1, int(payload.get("stale_tracker_persist_cycles_before_stop", 12))),
             gui_status_nominal_hz=max(1.0, float(payload.get("gui_status_nominal_hz", 8.0))),
             max_servo_write_hz=max(1.0, float(payload.get("max_servo_write_hz", 25.0))),
+            telemetry_health_hz=max(0.2, float(payload.get("telemetry_health_hz", 3.0))),
+            max_consecutive_telemetry_health_failures=max(
+                1,
+                int(payload.get("max_consecutive_telemetry_health_failures", 2)),
+            ),
             saturation_stop_cycles=max(1, int(payload.get("saturation_stop_cycles", 40))),
             x_axis_sign=(1 if int(payload.get("x_axis_sign", 1)) >= 0 else -1),
             y_axis_sign=(1 if int(payload.get("y_axis_sign", 1)) >= 0 else -1),
@@ -191,11 +198,14 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
             "tracker_age_s": [],
             "command_compute_s": [],
             "servo_command_write_s": [],
+            "telemetry_health_dt_s": [],
             "commanded_tick_step_norm": [],
             "command_saturated_bool": [],
             "skipped_write_reason": [],
             "actual_control_hz_instant": [],
             "actual_servo_write_hz_instant": [],
+            "actual_telemetry_health_hz_instant": [],
+            "telemetry_health_failure_count": [],
         }
         total = int(self.config.max_iterations)
         deadline = (
@@ -206,6 +216,9 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
         start_monotonic = float(session.context.monotonic_fn())
         self._stop_reason = "running"
         last_servo_write_monotonic = start_monotonic - (1.0 / max(1e-6, float(self.config.max_servo_write_hz)))
+        telemetry_health_period_s = 1.0 / max(1e-6, float(self.config.telemetry_health_hz))
+        last_telemetry_health_monotonic = start_monotonic - telemetry_health_period_s
+        consecutive_telemetry_health_failures = 0
         saturated_cycles = 0
         stale_tracker_cycles = 0
         last_good_tip: ChasingPose | None = None
@@ -224,6 +237,7 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                 reason="bounded active single-segment 0A-to-0B chasing demo",
             ):
                 last_known_telemetry = _validate_servo_telemetry_ready(session.context.servo_service, servo_ids)
+                last_telemetry_health_monotonic = float(session.context.monotonic_fn())
 
                 for iteration in range(total):
                     session.raise_if_stop_requested()
@@ -281,6 +295,35 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
 
                     command_write_duration_s = 0.0
                     telemetry_for_sample = dict(last_known_telemetry)
+                    health_age_by_servo = {
+                        int(servo_id): session.context.servo_service.telemetry_age_s(last_known_telemetry.get(int(servo_id)))
+                        for servo_id in servo_ids
+                    }
+                    health_now = float(session.context.monotonic_fn())
+                    if health_now + 1e-12 >= last_telemetry_health_monotonic + telemetry_health_period_s:
+                        health_started = float(session.context.monotonic_fn())
+                        try:
+                            last_known_telemetry = _validate_servo_telemetry_ready(
+                                session.context.servo_service,
+                                servo_ids,
+                                minimal=True,
+                                require_full_health=False,
+                            )
+                            telemetry_for_sample = dict(last_known_telemetry)
+                            consecutive_telemetry_health_failures = 0
+                            health_dt = max(1e-9, float(session.context.monotonic_fn()) - health_started)
+                            perf["telemetry_health_dt_s"].append(float(health_dt))
+                            perf["actual_telemetry_health_hz_instant"].append(1.0 / health_dt)
+                            last_telemetry_health_monotonic = float(session.context.monotonic_fn())
+                        except Exception as exc:
+                            consecutive_telemetry_health_failures += 1
+                            perf["telemetry_health_failure_count"].append(consecutive_telemetry_health_failures)
+                            if consecutive_telemetry_health_failures >= int(self.config.max_consecutive_telemetry_health_failures):
+                                raise RuntimeError(f"telemetry_health_failed:{exc}") from exc
+                    health_age_by_servo = {
+                        int(servo_id): session.context.servo_service.telemetry_age_s(last_known_telemetry.get(int(servo_id)))
+                        for servo_id in servo_ids
+                    }
 
                     if transient_hold:
                         skipped_write_reason = "tracking_hold"
@@ -348,9 +391,10 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                                 servo_ids,
                                 motion_workflow=SINGLE_SEGMENT_WORKFLOW_EXPERIMENT,
                                 chase_tight_loop_writes=True,
+                                prevalidated_telemetry_by_id=dict(last_known_telemetry),
+                                skip_post_command_telemetry=True,
                             )
                             command_write_duration_s = max(0.0, float(session.context.monotonic_fn()) - t_wr_start)
-                            last_known_telemetry = dict(command_result.telemetry_by_id)
                             telemetry_for_sample = dict(last_known_telemetry)
                             last_servo_write_monotonic = float(session.context.monotonic_fn())
                             self._current_tick_delta_by_servo = dict(bounded_candidate_delta)
@@ -455,6 +499,11 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                         "commanded_tick_step_norm": float(commanded_tick_step_norm),
                         "command_saturated_true_false": bool(saturated_flag),
                         "skipped_write_reason": skipped_token,
+                        "telemetry_health_hz": float(self.config.telemetry_health_hz),
+                        "last_valid_packet_age_by_servo": {
+                            str(k): (None if v is None else float(v)) for k, v in health_age_by_servo.items()
+                        },
+                        "telemetry_health_failure_count": int(consecutive_telemetry_health_failures),
                         "bus_ownership_snapshot": _bus_ownership_dict(session.context.servo_service),
                         "chase_live_status_line": chase_line,
                         "planned_tick_step_norm": planned_tick_step_norm,
@@ -519,6 +568,7 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
         em = dict(summary.experiment_metrics or {})
         hz_ctrl = em.get("achieved_mean_control_hz")
         hz_servo = em.get("achieved_mean_servo_write_hz")
+        hz_health = em.get("achieved_mean_telemetry_health_hz")
         hz_gui = em.get("achieved_mean_gui_hz")
         lines = [
             "Penprobe Chasing Demo Summary",
@@ -543,6 +593,11 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                 f"Achieved mean servo write Hz: {float(hz_servo):.2f}"
                 if isinstance(hz_servo, (int, float))
                 else "Achieved mean servo write Hz: n/a"
+            ),
+            (
+                f"Achieved mean telemetry health Hz: {float(hz_health):.2f}"
+                if isinstance(hz_health, (int, float))
+                else "Achieved mean telemetry health Hz: n/a"
             ),
             (
                 f"Mean GUI telemetry Hz snapshot: {float(hz_gui):.2f}"
@@ -583,6 +638,7 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
         perf = dict(getattr(self, "_chase_perf", {}) or {})
         ctrl_dts = list(perf.get("control_loop_dt_s") or [])
         servo_dts = list(perf.get("servo_write_dt_s") or [])
+        health_dts = list(perf.get("telemetry_health_dt_s") or [])
         trackers = list(perf.get("tracker_age_s") or [])
         norms = list(perf.get("commanded_tick_step_norm") or [])
         saturation_flags = list(perf.get("command_saturated_bool") or [])
@@ -597,9 +653,12 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
 
         mean_ctrl_hz = float(len(ctrl_dts) / sum(ctrl_dts)) if ctrl_dts and sum(ctrl_dts) > 1e-12 else None
         mean_servo_hz = float(len(servo_dts) / sum(servo_dts)) if servo_dts and sum(servo_dts) > 1e-12 else None
+        mean_health_hz = float(len(health_dts) / sum(health_dts)) if health_dts and sum(health_dts) > 1e-12 else None
 
         session.set_metric("achieved_mean_control_hz", mean_ctrl_hz)
         session.set_metric("achieved_mean_servo_write_hz", mean_servo_hz)
+        session.set_metric("achieved_mean_telemetry_health_hz", mean_health_hz)
+        session.set_metric("configured_telemetry_health_hz", float(self.config.telemetry_health_hz))
         session.set_metric("mean_tracker_age_s", float(sum(trackers)) / len(trackers) if trackers else None)
         session.set_metric("max_tracker_age_s", float(max(trackers)) if trackers else None)
         session.set_metric(
@@ -735,8 +794,19 @@ def _command_tick_step_norm(servo_ids: list[int], step_by_id: dict[int, int]) ->
     return float(math.sqrt(sum(component * component for component in vec)))
 
 
-def _validate_servo_telemetry_ready(servo_service, servo_ids: list[int]) -> dict[int, Any]:
-    telemetry = servo_service.read_live_telemetry([int(value) for value in servo_ids])
+def _validate_servo_telemetry_ready(
+    servo_service,
+    servo_ids: list[int],
+    *,
+    minimal: bool = False,
+    require_full_health: bool = True,
+) -> dict[int, Any]:
+    reader = getattr(servo_service, "read_minimal_telemetry", None) if minimal else None
+    telemetry = (
+        reader([int(value) for value in servo_ids])
+        if callable(reader)
+        else servo_service.read_live_telemetry([int(value) for value in servo_ids])
+    )
     for servo_id in servo_ids:
         current = telemetry.get(int(servo_id))
         if current is None:
@@ -745,10 +815,13 @@ def _validate_servo_telemetry_ready(servo_service, servo_ids: list[int]) -> dict
             raise RuntimeError(f"missing_position:{servo_id}")
         if current.hardware_error_code not in (None, 0) or current.hardware_error:
             raise RuntimeError(f"hardware_error:{servo_id}:{current.hardware_error or current.hardware_error_code}")
-        servo_service.safety_guard.validate_telemetry_freshness(current.last_read_monotonic_s)
-        servo_service.safety_guard.validate_currents([current.present_current_ma], require_present=True)
-        servo_service.safety_guard.validate_voltage(current.present_voltage_mv, require_present=True)
-        servo_service.safety_guard.validate_temperature(current.present_temperature_c, require_present=True)
+        servo_service.safety_guard.validate_telemetry_freshness(
+            getattr(current, "last_valid_packet_monotonic_s", None) or current.last_read_monotonic_s
+        )
+        servo_service.safety_guard.validate_currents([current.present_current_ma], require_present=bool(require_full_health))
+        if require_full_health:
+            servo_service.safety_guard.validate_voltage(current.present_voltage_mv, require_present=True)
+            servo_service.safety_guard.validate_temperature(current.present_temperature_c, require_present=True)
     return telemetry
 
 
@@ -792,6 +865,8 @@ def _classify_stop_reason(exc: Exception) -> str:
         return "robot_frame_transform_unavailable"
     if "missing_position" in message or "missing_telemetry" in message:
         return "servo_telemetry_missing"
+    if "telemetry_health_failed" in message:
+        return "servo_telemetry_health_failed"
     if "hardware_error" in message:
         return "servo_hardware_error"
     if "wrap_risk" in message:

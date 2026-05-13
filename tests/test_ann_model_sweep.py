@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -28,6 +29,35 @@ def test_parse_sweep_extra_hidden_layers_groups() -> None:
     assert err is None and g == [[48, 48], [96]]
     g2, err2 = parse_sweep_extra_hidden_layers_groups("64,64\n32")
     assert err2 is None and g2 == [[64, 64], [32]]
+
+
+def test_ann_model_sweep_cli_no_linear_excludes_ridge_baseline(monkeypatch, tmp_path: Path) -> None:
+    import scripts.ann_model_sweep as cli
+
+    captured: dict[str, object] = {}
+
+    def _fake_run_model_sweep(**kwargs):
+        captured.update(kwargs)
+        root = tmp_path / "sweep"
+        root.mkdir()
+        summary = root / "model_sweep_summary.json"
+        summary.write_text("{}", encoding="utf-8")
+        return SimpleNamespace(sweep_root=root, summary_json_path=summary, best_model={})
+
+    monkeypatch.setattr(cli, "run_model_sweep", _fake_run_model_sweep)
+    assert cli.main(
+        [
+            "--project-root",
+            str(tmp_path),
+            "--dataset-path",
+            str(tmp_path),
+            "--backend",
+            "cpu",
+            "--no-linear",
+        ]
+    ) == 0
+
+    assert captured["include_linear_baseline"] is False
     assert parse_sweep_extra_hidden_layers_groups("bad")[0] is None
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import time
 
 from continuum_robot.hardware.dxl_bus import DxlBus, ServoPingResult, ServoTelemetry
@@ -128,6 +129,20 @@ class MockDxlBus(DxlBus):
             include_limits=False,
         )
 
+    def read_minimal_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
+        telemetry = self.read_telemetry(
+            servo_ids,
+            include_reported_id=False,
+            include_identity=False,
+            include_limits=False,
+        )
+        for item in telemetry.values():
+            item.present_voltage_raw_unit = None
+            item.present_voltage_mv = None
+            item.present_temperature_c = None
+            item.read_source = "live_read"
+        return telemetry
+
     def read_telemetry(
         self,
         servo_ids: list[int],
@@ -138,7 +153,10 @@ class MockDxlBus(DxlBus):
     ) -> dict[int, ServoTelemetry]:
         result: dict[int, ServoTelemetry] = {}
         for servo_id in servo_ids:
+            read_started_at = time.monotonic()
             telemetry = self._state.get(servo_id)
+            completed_at = time.monotonic()
+            wall_time = datetime.now(timezone.utc).isoformat()
             if telemetry is None:
                 result[servo_id] = ServoTelemetry(
                     servo_id=servo_id,
@@ -150,9 +168,26 @@ class MockDxlBus(DxlBus):
                     hardware_error="missing",
                     identity_error="missing servo",
                     telemetry_error="missing servo",
-                    last_read_monotonic_s=time.monotonic(),
+                    last_read_monotonic_s=completed_at,
+                    last_valid_packet_monotonic_s=None,
+                    last_valid_packet_wall_time=None,
+                    last_read_attempt_monotonic_s=read_started_at,
+                    read_duration_ms=max(0.0, (completed_at - read_started_at) * 1000.0),
+                    packet_age_s=None,
+                    read_source="live_read",
+                    telemetry_error_code="servo_missing",
+                    telemetry_error_detail="missing servo",
                 )
             else:
+                valid_packet_time = (
+                    telemetry.last_valid_packet_monotonic_s
+                    if telemetry.last_valid_packet_monotonic_s is not None
+                    else (
+                        telemetry.last_read_monotonic_s
+                        if telemetry.last_read_monotonic_s is not None
+                        else completed_at
+                    )
+                )
                 result[servo_id] = ServoTelemetry(
                     servo_id=servo_id,
                     reported_servo_id=(
@@ -181,7 +216,17 @@ class MockDxlBus(DxlBus):
                     last_read_monotonic_s=(
                         telemetry.last_read_monotonic_s
                         if telemetry.last_read_monotonic_s is not None
-                        else time.monotonic()
+                        else completed_at
                     ),
+                    last_valid_packet_monotonic_s=valid_packet_time,
+                    last_valid_packet_wall_time=telemetry.last_valid_packet_wall_time or wall_time,
+                    last_read_attempt_monotonic_s=read_started_at,
+                    read_duration_ms=max(0.0, (completed_at - read_started_at) * 1000.0),
+                    packet_age_s=max(0.0, completed_at - float(valid_packet_time)),
+                    read_source="live_read",
+                    telemetry_error_code=telemetry.telemetry_error_code,
+                    telemetry_error_detail=telemetry.telemetry_error_detail or telemetry.telemetry_error,
+                    bus_owner=telemetry.bus_owner,
+                    read_sequence_index=telemetry.read_sequence_index,
                 )
         return result

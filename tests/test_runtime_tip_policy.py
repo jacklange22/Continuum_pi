@@ -9,6 +9,7 @@ from continuum_robot.tracking.runtime_tip_policy import (
     TRUST_LOWER,
     TRUST_THESIS,
     WORKFLOW_MODELING_DATASET,
+    WORKFLOW_PENPROBE_CHASING,
     WORKFLOW_REPEATABILITY,
     evaluate_runtime_tip_trust,
 )
@@ -108,6 +109,16 @@ def test_single_segment_repeatability_platform_alias_resolves_to_repeatability()
 
     assert evaluation.requested_workflow == "single_segment_repeatability_platform"
     assert evaluation.workflow == WORKFLOW_REPEATABILITY
+
+
+def test_penprobe_chasing_demo_alias_resolves_to_penprobe_chasing() -> None:
+    evaluation = evaluate_runtime_tip_trust(
+        snapshot=_snapshot(mode="coil_as_tip", state="coil_as_tip"),
+        workflow="penprobe_chasing_demo",
+    )
+
+    assert evaluation.requested_workflow == "penprobe_chasing_demo"
+    assert evaluation.workflow == WORKFLOW_PENPROBE_CHASING
     assert evaluation.allowed_for_workflow is True
 
 

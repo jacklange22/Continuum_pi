@@ -31,6 +31,7 @@ from continuum_robot.gui.theme import grouped_workspace_stylesheet
 from continuum_robot.gui.view_utils import (
     ResponsiveSplitterController,
     preserve_scroll_position,
+    set_spinbox_value,
     set_text_document,
 )
 
@@ -675,9 +676,7 @@ class ServosTab(QWidget):
         if len(self.displacement_inputs) != len(state.tendon_displacements_cm):
             self._rebuild_displacement_inputs(len(state.tendon_displacements_cm))
         for spin, value in zip(self.displacement_inputs, state.tendon_displacements_cm):
-            spin.blockSignals(True)
-            spin.setValue(value)
-            spin.blockSignals(False)
+            set_spinbox_value(spin, float(value), skip_if_editing=True, block_signals=True)
 
         sorted_servo_ids = sorted(state.telemetry)
         def _rebuild_calibration_table() -> None:
@@ -874,9 +873,7 @@ class ServosTab(QWidget):
 
     @staticmethod
     def _set_servo_spin_value(spin: QSpinBox, value: int) -> None:
-        spin.blockSignals(True)
-        spin.setValue(int(value))
-        spin.blockSignals(False)
+        set_spinbox_value(spin, int(value), skip_if_editing=True, block_signals=True)
 
     def _safe_call(self, fn, *args, **kwargs) -> None:
         try:

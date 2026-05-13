@@ -23,6 +23,7 @@ from continuum_robot.servos.neutral_calibration_service import NeutralCalibratio
 from continuum_robot.servos.pretension_validation_service import PretensionValidationService
 from continuum_robot.servos.safety_guard import SafetyGuard
 from continuum_robot.servos.servo_service import ServoService
+from continuum_robot.diagnostics.servo_transport_diagnostic import run_diagnostic
 from continuum_robot.servos.transport_diagnostics import (
     SOAK_COORDINATED,
     SOAK_ONE_SERVO,
@@ -121,6 +122,24 @@ def test_static_soak_writes_clean_summary_bundle(tmp_path: Path) -> None:
     assert (result.output_dir / "manifest.json").exists()
     assert (result.output_dir / "plots" / "failure_type_histogram.svg").exists()
     assert "bench supply current is not measured" in (result.output_dir / "servo_transport_summary.txt").read_text(encoding="utf-8")
+
+
+def test_servo_transport_diagnostic_reports_minimal_schema(tmp_path: Path) -> None:
+    service = _service(tmp_path, servo_ids=[5, 6, 7, 8])
+
+    result = run_diagnostic(
+        service,
+        servo_ids=[5, 6, 7, 8],
+        duration_s=0.0,
+        read_rate_hz=5.0,
+        fields="minimal",
+    )
+
+    assert result.fields == "minimal"
+    assert result.sample_count == 1
+    assert result.success_count_by_servo == {"5": 1, "6": 1, "7": 1, "8": 1}
+    assert result.failure_count_by_type == {}
+    assert "stable" in result.recommended_next_action.lower()
 
 
 def test_one_servo_motion_soak_summary_generation(tmp_path: Path) -> None:

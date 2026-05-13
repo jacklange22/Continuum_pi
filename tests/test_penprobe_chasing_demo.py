@@ -170,8 +170,12 @@ class _ServoService:
         )
         self.safety_guard = _SafetyGuard()
         self.commanded_servo_ids = []
+        self.live_read_count = 0
+        self.minimal_read_count = 0
+        self.command_count = 0
 
     def read_live_telemetry(self, servo_ids):
+        self.live_read_count += 1
         return {
             int(servo_id): ServoTelemetry(
                 servo_id=int(servo_id),
@@ -186,6 +190,10 @@ class _ServoService:
             for servo_id in servo_ids
         }
 
+    def read_minimal_telemetry(self, servo_ids):
+        self.minimal_read_count += 1
+        return self.read_live_telemetry(servo_ids)
+
     @contextmanager
     def exclusive_bus_operation(self, *, owner, reason):
         assert owner == "penprobe_chasing_demo"
@@ -193,10 +201,19 @@ class _ServoService:
         yield
 
     def command_displacement(
-        self, tendon_displacements_cm, neutral_ticks, servo_ids, *, motion_workflow, chase_tight_loop_writes=False
+        self,
+        tendon_displacements_cm,
+        neutral_ticks,
+        servo_ids,
+        *,
+        motion_workflow,
+        chase_tight_loop_writes=False,
+        prevalidated_telemetry_by_id=None,
+        skip_post_command_telemetry=False,
     ):
+        self.command_count += 1
         self.commanded_servo_ids = [int(value) for value in servo_ids]
-        telemetry = self.read_live_telemetry(servo_ids)
+        telemetry = prevalidated_telemetry_by_id or self.read_live_telemetry(servo_ids)
         return SimpleNamespace(
             positions_by_id={int(servo_id): int(neutral_ticks[index]) for index, servo_id in enumerate(servo_ids)},
             telemetry_by_id=telemetry,
@@ -436,6 +453,31 @@ def test_servo_rate_gate_skips_extra_writes_under_fast_control_loop() -> None:
     assert sum(value == "servo_written" for value in reasons) >= 5
 
 
+def test_penprobe_chase_decouples_write_loop_from_telemetry_health_reads() -> None:
+    experiment = PenprobeChasingDemoExperiment(
+        PenprobeChasingDemoConfig.from_dict(
+            {
+                "max_iterations": 20,
+                "max_duration_s": 0.0,
+                "loop_period_s": 0.02,
+                "max_servo_write_hz": 25.0,
+                "telemetry_health_hz": 1.0,
+                "saturation_stop_cycles": 99999,
+            }
+        )
+    )
+    servo = _ServoService([5, 6, 7, 8])
+    session = _session(active_segment="segment_b", tracking=_TrackingService([_snapshot()]), servo=servo)
+
+    experiment.precheck(session)
+    experiment.execute(session)
+
+    assert servo.command_count > 1
+    assert servo.minimal_read_count < servo.command_count
+    assert session.metrics["configured_telemetry_health_hz"] == 1.0
+    assert all("last_valid_packet_age_by_servo" in row.extra for row in session.samples)
+
+
 def test_legacy_mapping_mode_requires_configured_existing_files(tmp_path: Path) -> None:
     config = PenprobeChasingDemoConfig.from_dict({"mapping_mode": MAPPING_LEGACY_POLYNOMIAL_WORKSPACE})
 
@@ -512,4 +554,3 @@ def test_servo_write_allowed_respects_spacing() -> None:
     assert ok is True and reason is None
     ok, reason = _servo_write_allowed(now_s=0.05, last_write_monotonic_s=0.0, max_hz=10.0)
     assert ok is False and reason == "rate_limit"
-

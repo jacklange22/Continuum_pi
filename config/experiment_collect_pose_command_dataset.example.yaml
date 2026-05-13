@@ -23,3 +23,9 @@ run_trust_mode: "thesis_trusted"  # thesis_trusted | servo_only
 export_legacy_dat: true
 run_label: "upgraded_robot_modeling"
 dataset_tag: "baseline_v1"
+post_write_settle_s: 0.0
+telemetry_retry_count: 2
+telemetry_retry_delay_s: 0.03
+allow_recovered_packet_errors: true
+max_recovered_packet_errors_per_run:
+max_current_warning_ma:

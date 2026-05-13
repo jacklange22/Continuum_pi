@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 from continuum_robot.gui.controllers.ann_training_controller import AnnTrainingController, AnnTrainingViewState
 from continuum_robot.modeling.ann_training import format_hidden_layers_for_ann_ui
 from continuum_robot.gui.theme import COLORS
+from continuum_robot.gui.view_utils import editable_update_blocked, set_line_edit_text, set_spinbox_value
 from continuum_robot.gui.widgets.experiment_results_widget import ExperimentResultsWidget
 
 
@@ -549,24 +550,15 @@ class AnnTrainingWindow(QWidget):
 
     @staticmethod
     def _set_line_text(widget: QLineEdit, value: str) -> None:
-        if widget.text() == value:
-            return
-        with QSignalBlocker(widget):
-            widget.setText(value)
+        set_line_edit_text(widget, str(value), skip_if_focused=True, block_signals=True)
 
     @staticmethod
     def _set_spin(widget: QSpinBox, value: int) -> None:
-        if widget.value() == value:
-            return
-        with QSignalBlocker(widget):
-            widget.setValue(value)
+        set_spinbox_value(widget, int(value), skip_if_editing=True, block_signals=True)
 
     @staticmethod
     def _set_double(widget: QDoubleSpinBox, value: float) -> None:
-        if abs(widget.value() - value) < 1e-12:
-            return
-        with QSignalBlocker(widget):
-            widget.setValue(value)
+        set_spinbox_value(widget, float(value), skip_if_editing=True, block_signals=True)
 
     @staticmethod
     def _set_checkbox(widget: QCheckBox, value: bool) -> None:
@@ -577,6 +569,8 @@ class AnnTrainingWindow(QWidget):
 
     @staticmethod
     def _set_combo(widget: QComboBox, value: str) -> None:
+        if editable_update_blocked(widget):
+            return
         for index in range(widget.count()):
             if widget.itemData(index) == value:
                 with QSignalBlocker(widget):

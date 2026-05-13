@@ -1,0 +1,21 @@
+{
+  "hidden_layers": [
+    64,
+    64
+  ],
+  "learning_rate": 0.001,
+  "batch_size": 64,
+  "epochs": 256,
+  "loss_kind": "pose",
+  "pose_orientation_scale": 10.0,
+  "random_seed": 0,
+  "train_ratio": 0.7,
+  "validation_ratio": 0.15,
+  "test_ratio": 0.15,
+  "checkpointing": false,
+  "artifact_name": "legacy_ann_full_pose",
+  "artifact_root": "/Users/jacklange/Continuum/pi_code/data/models/ann",
+  "model_sweep_include_linear_baseline": true,
+  "model_sweep_extra_hidden_layers_text": "",
+  "linear_ridge_alpha": 1e-06
+}

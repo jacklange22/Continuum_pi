@@ -19,6 +19,7 @@ from continuum_robot.servos.servo_service import (
     PretensionParameters,
     ServoBusBusyError,
     ServoService,
+    ServoTelemetryRetryError,
     is_wrap_risk,
 )
 
@@ -98,6 +99,36 @@ class _StaleTelemetryBus(MockDxlBus):
         result = super().read_telemetry(servo_ids, **kwargs)
         for servo_id in servo_ids:
             result[int(servo_id)].last_read_monotonic_s = self._state[int(servo_id)].last_read_monotonic_s
+            result[int(servo_id)].last_valid_packet_monotonic_s = self._state[int(servo_id)].last_read_monotonic_s
+        return result
+
+
+class _StaleThenFreshBus(MockDxlBus):
+    def __init__(self, servo_ids: list[int]) -> None:
+        super().__init__(servo_ids)
+        self.read_calls = 0
+
+    def read_telemetry(self, servo_ids: list[int], **kwargs) -> dict[int, object]:
+        self.read_calls += 1
+        result = super().read_telemetry(servo_ids, **kwargs)
+        for servo_id in servo_ids:
+            telemetry = result[int(servo_id)]
+            if self.read_calls == 1:
+                telemetry.last_read_monotonic_s = 0.0
+                telemetry.last_valid_packet_monotonic_s = 0.0
+            else:
+                telemetry.last_read_monotonic_s = 10.0
+                telemetry.last_valid_packet_monotonic_s = 10.0
+        return result
+
+
+class _MissingPositionLiveReadBus(MockDxlBus):
+    def read_telemetry(self, servo_ids: list[int], **kwargs) -> dict[int, object]:
+        result = super().read_telemetry(servo_ids, **kwargs)
+        for servo_id in servo_ids:
+            result[int(servo_id)].present_position = None
+            result[int(servo_id)].telemetry_error = "mock fresh_read_failed missing position"
+            result[int(servo_id)].telemetry_error_code = "missing_position"
         return result
 
 
@@ -106,6 +137,31 @@ class _StalePretensionBus(_PretensionBus):
         result = super().read_telemetry(servo_ids, **kwargs)
         for servo_id in servo_ids:
             result[int(servo_id)].last_read_monotonic_s = self._state[int(servo_id)].last_read_monotonic_s
+        return result
+
+
+class _PacketErrorAfterGoalBus(MockDxlBus):
+    def __init__(self, servo_ids: list[int], *, failed_servo_id: int, failures: int) -> None:
+        super().__init__(servo_ids)
+        self.failed_servo_id = int(failed_servo_id)
+        self.failures_remaining = int(failures)
+        self.goal_written = False
+        self.post_goal_read_count = 0
+
+    def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
+        super().write_goal_positions(positions_by_id)
+        self.goal_written = True
+
+    def read_telemetry(self, servo_ids: list[int], **kwargs) -> dict[int, object]:
+        result = super().read_telemetry(servo_ids, **kwargs)
+        if self.goal_written and self.failed_servo_id in [int(value) for value in servo_ids]:
+            self.post_goal_read_count += 1
+            if self.failures_remaining > 0:
+                self.failures_remaining -= 1
+                telemetry = result[self.failed_servo_id]
+                telemetry.present_position = None
+                telemetry.telemetry_error = "[TxRxResult] Incorrect status packet!"
+                telemetry.hardware_error = "[TxRxResult] Incorrect status packet!"
         return result
 
 
@@ -360,6 +416,108 @@ def test_servo_service_single_segment_displacement_projects_antagonistic_pairs(t
     assert result.resolved_displacements_cm == pytest.approx([0.5, 0.0, -0.5, 0.0])
     assert result.positions_by_id[1] == neutral[1] + projected_ticks
     assert result.positions_by_id[3] == neutral[3] - projected_ticks
+
+
+def test_simple_experiment_motion_recovers_one_packet_status_error(tmp_path: Path, caplog) -> None:
+    bus = _PacketErrorAfterGoalBus([5, 6, 7, 8], failed_servo_id=7, failures=1)
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[5, 6, 7, 8])
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([5, 6, 7, 8])
+
+    with caplog.at_level(logging.WARNING):
+        result = service.command_displacement(
+            tendon_displacements_cm=[0.1, 0.0, -0.1, 0.0],
+            neutral_ticks=[neutral[servo_id] for servo_id in [5, 6, 7, 8]],
+            servo_ids=[5, 6, 7, 8],
+            telemetry_retry_count=2,
+            telemetry_retry_delay_s=0.0,
+            allow_recovered_packet_errors=True,
+        )
+
+    assert result.command_metadata["packet_error_recovered"] is True
+    assert result.command_metadata["recovered_packet_error_count"] == 1
+    assert result.command_metadata["telemetry_retry_count"] == 1
+    assert result.telemetry_by_id[7].present_position == result.positions_by_id[7]
+    assert "packet_error_recovered" in caplog.text
+
+
+def test_simple_experiment_motion_stale_experiment_owned_read_allows_command(tmp_path: Path) -> None:
+    bus = _StaleTelemetryBus([5, 6, 7, 8])
+    clock = {"value": 0.0}
+    service = _build_service(
+        tmp_path,
+        dxl_bus=bus,
+        context_servo_ids=[5, 6, 7, 8],
+        time_fn=lambda: clock["value"],
+    )
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([5, 6, 7, 8])
+    for telemetry in bus._state.values():
+        telemetry.last_read_monotonic_s = 0.0
+    clock["value"] = 10.0
+
+    with service.exclusive_bus_operation(owner="unit_test_experiment", reason="stale cache recovery"):
+        result = service.command_displacement(
+            tendon_displacements_cm=[0.1, 0.0, -0.1, 0.0],
+            neutral_ticks=[neutral[servo_id] for servo_id in [5, 6, 7, 8]],
+            servo_ids=[5, 6, 7, 8],
+        )
+
+    assert result.positions_by_id
+    assert result.command_metadata["stale_cached_telemetry_recovered_by_fresh_read"] is True
+    assert result.command_metadata["stale_age_override_servo_ids"] == [5, 6, 7, 8]
+    assert result.telemetry_by_id[7].read_source == "experiment_owned"
+
+
+def test_simple_experiment_motion_fresh_read_failure_blocks_command(tmp_path: Path) -> None:
+    bus = _MissingPositionLiveReadBus([5, 6, 7, 8])
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[5, 6, 7, 8])
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = {servo_id: 2048 for servo_id in [5, 6, 7, 8]}
+
+    with service.exclusive_bus_operation(owner="unit_test_experiment", reason="fresh read failure"):
+        with pytest.raises(RuntimeError, match="stale/missing telemetry"):
+            service.command_displacement(
+                tendon_displacements_cm=[0.1, 0.0, -0.1, 0.0],
+                neutral_ticks=[neutral[servo_id] for servo_id in [5, 6, 7, 8]],
+                servo_ids=[5, 6, 7, 8],
+            )
+
+
+def test_live_telemetry_records_packet_timing_metadata(tmp_path: Path) -> None:
+    service = _build_service(tmp_path, dxl_bus=MockDxlBus([5]), context_servo_ids=[5])
+    service.connect("/dev/mock-openrb", 115200)
+
+    with service.exclusive_bus_operation(owner="unit_test_experiment", reason="timing metadata"):
+        telemetry = service.read_live_telemetry([5])[5]
+
+    assert telemetry.last_valid_packet_monotonic_s is not None
+    assert telemetry.last_read_attempt_monotonic_s is not None
+    assert telemetry.read_duration_ms is not None
+    assert telemetry.read_source == "experiment_owned"
+    assert telemetry.bus_owner == "unit_test_experiment"
+    assert telemetry.read_sequence_index is not None
+
+
+def test_simple_experiment_motion_repeated_packet_status_error_fails(tmp_path: Path) -> None:
+    bus = _PacketErrorAfterGoalBus([5, 6, 7, 8], failed_servo_id=7, failures=3)
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[5, 6, 7, 8])
+    service.connect("/dev/mock-openrb", 115200)
+    neutral = service.capture_neutral_setpoints([5, 6, 7, 8])
+
+    with pytest.raises(ServoTelemetryRetryError) as excinfo:
+        service.command_displacement(
+            tendon_displacements_cm=[0.1, 0.0, -0.1, 0.0],
+            neutral_ticks=[neutral[servo_id] for servo_id in [5, 6, 7, 8]],
+            servo_ids=[5, 6, 7, 8],
+            telemetry_retry_count=2,
+            telemetry_retry_delay_s=0.0,
+            allow_recovered_packet_errors=True,
+        )
+
+    assert excinfo.value.context["failed_servo_id"] == 7
+    assert excinfo.value.context["retry_count"] == 2
+    assert "Incorrect status packet" in str(excinfo.value.context["telemetry_error_code"])
 
 
 def test_parallel_single_displacement_expands_to_all_8_servo_goals(tmp_path: Path) -> None:

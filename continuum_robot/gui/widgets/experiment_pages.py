@@ -82,7 +82,7 @@ from continuum_robot.experiments.single_segment_repeatability import (
 )
 from continuum_robot.gui.controllers.experiment_controller import ExperimentViewState
 from continuum_robot.gui.theme import COLORS, chip_stylesheet, semantic_chip_colors
-from continuum_robot.gui.view_utils import preserve_scroll_position, set_line_edit_text, set_text_document
+from continuum_robot.gui.view_utils import editable_update_blocked, preserve_scroll_position, set_line_edit_text, set_spinbox_value, set_text_document
 from continuum_robot.gui.widgets.experiment_3d_widget import Experiment3DWidget, VIS_MODE_PROJECTION
 from continuum_robot.gui.widgets.grid_accuracy_preview_widget import GridAccuracyPreviewWidget
 from continuum_robot.gui.widgets.experiment_preflight_widget import ExperimentPreflightWidget
@@ -492,12 +492,10 @@ class ExperimentPageBase(QWidget):
             widget.setChecked(bool(value))
 
     def _set_spin(self, widget: QSpinBox, value: int) -> None:
-        with QSignalBlocker(widget):
-            widget.setValue(int(value))
+        set_spinbox_value(widget, int(value), skip_if_editing=True, block_signals=True)
 
     def _set_double(self, widget: QDoubleSpinBox, value: float) -> None:
-        with QSignalBlocker(widget):
-            widget.setValue(float(value))
+        set_spinbox_value(widget, float(value), skip_if_editing=True, block_signals=True)
 
     def _set_combo_value(self, widget: QComboBox, value: str) -> None:
         target = str(value)
@@ -505,6 +503,8 @@ class ExperimentPageBase(QWidget):
         if index < 0:
             index = widget.findText(target)
         if index < 0:
+            return
+        if editable_update_blocked(widget):
             return
         with QSignalBlocker(widget):
             widget.setCurrentIndex(index)
@@ -2888,6 +2888,46 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         protocol_form.addRow("Repeatability Blocks", self.repeatability_blocks_spin)
         protocol_card.body_layout.addLayout(protocol_form)
 
+        stability_card = ExperimentCard("Run Stability", "Bounded telemetry retry and warning-only load reporting for long modeling runs.")
+        stability_form = QFormLayout()
+        self.post_write_settle_spin = QDoubleSpinBox()
+        self.post_write_settle_spin.setRange(0.0, 1.0)
+        self.post_write_settle_spin.setDecimals(3)
+        self.post_write_settle_spin.setSingleStep(0.01)
+        self.post_write_settle_spin.valueChanged.connect(lambda value: self.controller.set_config_value("post_write_settle_s", float(value)))
+        self.telemetry_retry_count_spin = QSpinBox()
+        self.telemetry_retry_count_spin.setRange(0, 5)
+        self.telemetry_retry_count_spin.valueChanged.connect(lambda value: self.controller.set_config_value("telemetry_retry_count", int(value)))
+        self.telemetry_retry_delay_spin = QDoubleSpinBox()
+        self.telemetry_retry_delay_spin.setRange(0.0, 0.5)
+        self.telemetry_retry_delay_spin.setDecimals(3)
+        self.telemetry_retry_delay_spin.setSingleStep(0.01)
+        self.telemetry_retry_delay_spin.valueChanged.connect(lambda value: self.controller.set_config_value("telemetry_retry_delay_s", float(value)))
+        self.allow_recovered_packet_errors_check = QCheckBox("Continue after recovered packet errors")
+        self.allow_recovered_packet_errors_check.toggled.connect(
+            lambda value: self.controller.set_config_value("allow_recovered_packet_errors", bool(value))
+        )
+        self.max_recovered_packet_errors_spin = QSpinBox()
+        self.max_recovered_packet_errors_spin.setRange(0, 10000)
+        self.max_recovered_packet_errors_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value(
+                "max_recovered_packet_errors_per_run",
+                None if int(value) <= 0 else int(value),
+            )
+        )
+        self.max_current_warning_spin = QSpinBox()
+        self.max_current_warning_spin.setRange(0, 3000)
+        self.max_current_warning_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_current_warning_ma", None if int(value) <= 0 else int(value))
+        )
+        stability_form.addRow("Post-Write Settle (s)", self.post_write_settle_spin)
+        stability_form.addRow("Telemetry Retries", self.telemetry_retry_count_spin)
+        stability_form.addRow("Retry Delay (s)", self.telemetry_retry_delay_spin)
+        stability_form.addRow("Recovered Packet Errors", self.allow_recovered_packet_errors_check)
+        stability_form.addRow("Max Recovered / Run (0=off)", self.max_recovered_packet_errors_spin)
+        stability_form.addRow("Current Warning mA (0=off)", self.max_current_warning_spin)
+        stability_card.body_layout.addLayout(stability_form)
+
         trust_card = ExperimentCard("Trust Policy", "Default behavior blocks low-trust modeling runs. Only enable overrides deliberately, and the saved summary will record them as lower-trust data.")
         trust_form = QFormLayout()
         self.allow_lower_trust_runtime_tip_check = QCheckBox("Allow quick runtime-tip override / coil-as-tip")
@@ -2916,6 +2956,7 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
 
         self.parameter_layout.addWidget(collection_card)
         self.parameter_layout.addWidget(protocol_card)
+        self.parameter_layout.addWidget(stability_card)
         self.parameter_layout.addWidget(trust_card)
         self.parameter_layout.addWidget(summary_card)
 
@@ -2942,6 +2983,17 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         self._set_spin(self.hysteresis_cycles_spin, int(self.controller.get_config_value("hysteresis_cycle_count", 2)))
         self._set_spin(self.hysteresis_prior_spin, int(self.controller.get_config_value("hysteresis_prior_family_count", 4)))
         self._set_spin(self.repeatability_blocks_spin, int(self.controller.get_config_value("repeatability_block_count", 3)))
+        self._set_double(self.post_write_settle_spin, float(self.controller.get_config_value("post_write_settle_s", 0.0)))
+        self._set_spin(self.telemetry_retry_count_spin, int(self.controller.get_config_value("telemetry_retry_count", 2)))
+        self._set_double(self.telemetry_retry_delay_spin, float(self.controller.get_config_value("telemetry_retry_delay_s", 0.03)))
+        self._set_checkbox(
+            self.allow_recovered_packet_errors_check,
+            bool(self.controller.get_config_value("allow_recovered_packet_errors", True)),
+        )
+        max_recovered = self.controller.get_config_value("max_recovered_packet_errors_per_run", None)
+        self._set_spin(self.max_recovered_packet_errors_spin, 0 if max_recovered in (None, "") else int(max_recovered))
+        current_warning = self.controller.get_config_value("max_current_warning_ma", None)
+        self._set_spin(self.max_current_warning_spin, 0 if current_warning in (None, "") else int(current_warning))
         self._set_checkbox(self.allow_lower_trust_runtime_tip_check, bool(self.controller.get_config_value("allow_lower_trust_runtime_tip", False)))
         self._set_checkbox(self.allow_lower_trust_pretension_check, bool(self.controller.get_config_value("allow_lower_trust_pretension", False)))
         self._set_checkbox(self.allow_no_tracker_test_check, bool(self.controller.get_config_value("allow_no_tracker_test_run", False)))

@@ -2868,6 +2868,9 @@ def test_experiment_workspace_loads_motor_babble_page_and_summary(tmp_path: Path
     assert page.dataset_mode_combo.count() == 3
     assert page.dataset_mode_combo.currentData() == "workspace_coverage"
     assert page.run_button.text() == "Run Motor Babble Dataset"
+    assert page.telemetry_retry_count_spin.value() == 2
+    assert page.allow_recovered_packet_errors_check.isChecked() is True
+    assert page.open_training_button.text() == "Open ANN Training Popout"
     assert page.collection_summary_widget._pairs_signature is not None
     assert page.viewer_3d is None
 

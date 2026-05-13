@@ -1,0 +1,111 @@
+{
+  "schema_version": "1.0",
+  "created_at_utc": "2026-05-13T03:12:41.012322+00:00",
+  "warnings": [
+    "All models were trained and compared on one grouped train/validation/test split from this dataset only. Metrics do not assess cross-session or cross-run generalization."
+  ],
+  "rows": [
+    {
+      "model_key": "linear_ridge_full_pose",
+      "model_label": "linear_ridge",
+      "artifact_subdir": "linear_ridge_full_pose",
+      "validation_loss_mean": 57.45893859863281,
+      "test_loss": 70.03336715698242,
+      "test_position_rmse_xyz_mm": 19.813603987198796,
+      "test_position_rmse_xy_mm": 18.040778781080434,
+      "test_position_rmse_z_mm": 8.192020747877654,
+      "test_position_error_l2_mean_mm": 16.360509286062957,
+      "test_position_error_l2_median_mm": 12.748943822910771,
+      "test_position_error_l2_p95_mm": 37.44639217963906,
+      "test_position_error_l2_max_mm": 43.710319314355274,
+      "test_tangent_angular_error_mean_rad": 0.38961633049249933,
+      "test_tangent_angular_error_median_rad": 0.2692041535392141,
+      "training_wall_time_s": 0.5532251670956612,
+      "hidden_layers": []
+    },
+    {
+      "model_key": "legacy_ann_ann_32_32",
+      "model_label": "ANN [32, 32]",
+      "artifact_subdir": "ann_32_32",
+      "validation_loss_mean": 49.30874061584473,
+      "test_loss": 63.711669921875,
+      "test_position_rmse_xyz_mm": 18.957002620558967,
+      "test_position_rmse_xy_mm": 18.20366367079345,
+      "test_position_rmse_z_mm": 5.290990201891729,
+      "test_position_error_l2_mean_mm": 13.461471448891858,
+      "test_position_error_l2_median_mm": 5.778872644978507,
+      "test_position_error_l2_p95_mm": 39.16171306534158,
+      "test_position_error_l2_max_mm": 46.10792877386109,
+      "test_tangent_angular_error_mean_rad": 0.33105457730553994,
+      "test_tangent_angular_error_median_rad": 0.11515290952496413,
+      "training_wall_time_s": 5.640455124899745,
+      "hidden_layers": [
+        32,
+        32
+      ]
+    },
+    {
+      "model_key": "legacy_ann_ann_64_64",
+      "model_label": "ANN [64, 64]",
+      "artifact_subdir": "ann_64_64",
+      "validation_loss_mean": 49.64360427856445,
+      "test_loss": 64.46576309204102,
+      "test_position_rmse_xyz_mm": 19.049597583586333,
+      "test_position_rmse_xy_mm": 18.241721674283,
+      "test_position_rmse_z_mm": 5.488784788509395,
+      "test_position_error_l2_mean_mm": 13.03444967372729,
+      "test_position_error_l2_median_mm": 5.103740336069787,
+      "test_position_error_l2_p95_mm": 40.610032366385155,
+      "test_position_error_l2_max_mm": 48.269002898023075,
+      "test_tangent_angular_error_mean_rad": 0.3262421665358056,
+      "test_tangent_angular_error_median_rad": 0.13055060077353073,
+      "training_wall_time_s": 5.627910624956712,
+      "hidden_layers": [
+        64,
+        64
+      ]
+    },
+    {
+      "model_key": "legacy_ann_ann_128_128",
+      "model_label": "ANN [128, 128]",
+      "artifact_subdir": "ann_128_128",
+      "validation_loss_mean": 48.19805335998535,
+      "test_loss": 63.11874961853027,
+      "test_position_rmse_xyz_mm": 18.866606913823553,
+      "test_position_rmse_xy_mm": 18.094335075262876,
+      "test_position_rmse_z_mm": 5.342648652573587,
+      "test_position_error_l2_mean_mm": 12.495638032479155,
+      "test_position_error_l2_median_mm": 4.683423993998276,
+      "test_position_error_l2_p95_mm": 40.3637996740658,
+      "test_position_error_l2_max_mm": 48.02407883459082,
+      "test_tangent_angular_error_mean_rad": 0.30757666881095364,
+      "test_tangent_angular_error_median_rad": 0.09091117217389147,
+      "training_wall_time_s": 5.610649874899536,
+      "hidden_layers": [
+        128,
+        128
+      ]
+    }
+  ],
+  "best_model": {
+    "model_key": "legacy_ann_ann_128_128",
+    "model_label": "ANN [128, 128]",
+    "artifact_subdir": "ann_128_128",
+    "validation_loss_mean": 48.19805335998535,
+    "test_loss": 63.11874961853027,
+    "test_position_rmse_xyz_mm": 18.866606913823553,
+    "test_position_rmse_xy_mm": 18.094335075262876,
+    "test_position_rmse_z_mm": 5.342648652573587,
+    "test_position_error_l2_mean_mm": 12.495638032479155,
+    "test_position_error_l2_median_mm": 4.683423993998276,
+    "test_position_error_l2_p95_mm": 40.3637996740658,
+    "test_position_error_l2_max_mm": 48.02407883459082,
+    "test_tangent_angular_error_mean_rad": 0.30757666881095364,
+    "test_tangent_angular_error_median_rad": 0.09091117217389147,
+    "training_wall_time_s": 5.610649874899536,
+    "hidden_layers": [
+      128,
+      128
+    ]
+  }
+}

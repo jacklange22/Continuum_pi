@@ -7,6 +7,7 @@ handled separately by :mod:`continuum_robot.hardware.openrb_client`.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import importlib
 import time
 from typing import Any, Callable
@@ -48,6 +49,16 @@ class ServoTelemetry:
     identity_error: str | None = None
     telemetry_error: str | None = None
     last_read_monotonic_s: float | None = None
+    last_valid_packet_monotonic_s: float | None = None
+    last_valid_packet_wall_time: str | None = None
+    last_read_attempt_monotonic_s: float | None = None
+    read_duration_ms: float | None = None
+    packet_age_s: float | None = None
+    read_source: str = "unavailable"
+    telemetry_error_code: str | None = None
+    telemetry_error_detail: str | None = None
+    bus_owner: str | None = None
+    read_sequence_index: int | None = None
 
 
 @dataclass
@@ -532,6 +543,7 @@ class DxlBus:
 
         result: dict[int, ServoTelemetry] = {}
         for servo_id in servo_ids:
+            read_started_at = time.monotonic()
             reported_id_raw: int | None = None
             reported_id_error: str | None = None
             if include_reported_id:
@@ -596,6 +608,9 @@ class DxlBus:
                 telemetry_messages.append(f"hardware_status=0x{int(hardware_raw):02X}")
             hardware_messages = [*identity_messages, *telemetry_messages]
 
+            completed_at = time.monotonic()
+            error_detail = " | ".join(hardware_messages) or None
+            packet_valid = bool(position_raw is not None and not telemetry_messages and not identity_messages)
             result[int(servo_id)] = ServoTelemetry(
                 servo_id=int(servo_id),
                 reported_servo_id=int(reported_id_raw) if reported_id_raw is not None else None,
@@ -630,14 +645,83 @@ class DxlBus:
                 ),
                 present_temperature_c=int(temperature_raw) if temperature_raw is not None else None,
                 hardware_error_code=int(hardware_raw) if hardware_raw is not None else None,
-                hardware_error=" | ".join(hardware_messages) or None,
+                hardware_error=error_detail,
                 identity_error=" | ".join(identity_messages) or None,
                 telemetry_error=" | ".join(telemetry_messages) or None,
-                last_read_monotonic_s=None,
+                last_read_monotonic_s=completed_at,
+                last_valid_packet_monotonic_s=completed_at if packet_valid else None,
+                last_valid_packet_wall_time=(
+                    datetime.now(timezone.utc).isoformat() if packet_valid else None
+                ),
+                last_read_attempt_monotonic_s=read_started_at,
+                read_duration_ms=max(0.0, (completed_at - read_started_at) * 1000.0),
+                packet_age_s=0.0 if packet_valid else None,
+                read_source="live_read",
+                telemetry_error_code="packet_or_status_error" if telemetry_messages else None,
+                telemetry_error_detail=error_detail,
             )
-        completed_at = time.monotonic()
-        for telemetry in result.values():
-            telemetry.last_read_monotonic_s = completed_at
+        return result
+
+    def read_minimal_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
+        """Return the smallest health-check read useful during high-rate command loops."""
+        if not self.is_connected:
+            return {
+                sid: ServoTelemetry(servo_id=sid, hardware_error="disconnected")
+                for sid in servo_ids
+            }
+
+        result: dict[int, ServoTelemetry] = {}
+        for servo_id in servo_ids:
+            read_started_at = time.monotonic()
+            operating_mode_raw, operating_mode_error = self._read1(servo_id, self.config.control_table["operating_mode"])
+            torque_enabled_raw, torque_enabled_error = self._read1(servo_id, self.config.control_table["torque_enable"])
+            position_raw, position_error = self._read4(servo_id, self.config.control_table["present_position"])
+            current_raw, current_error = self._read2(servo_id, self.config.control_table["present_current"])
+            hardware_raw, hardware_status_error = self._read1(
+                servo_id, self.config.control_table["hardware_error_status"]
+            )
+            telemetry_messages = [
+                message
+                for message in (
+                    position_error,
+                    current_error,
+                    operating_mode_error,
+                    torque_enabled_error,
+                    hardware_status_error,
+                )
+                if message
+            ]
+            if hardware_raw not in (None, 0):
+                telemetry_messages.append(f"hardware_status=0x{int(hardware_raw):02X}")
+            completed_at = time.monotonic()
+            error_detail = " | ".join(telemetry_messages) or None
+            packet_valid = bool(position_raw is not None and not telemetry_messages)
+            result[int(servo_id)] = ServoTelemetry(
+                servo_id=int(servo_id),
+                operating_mode=int(operating_mode_raw) if operating_mode_raw is not None else None,
+                torque_enabled=(bool(torque_enabled_raw) if torque_enabled_raw is not None else None),
+                present_position=_signed32(position_raw) if position_raw is not None else None,
+                present_current_raw_unit=(_signed16(current_raw) if current_raw is not None else None),
+                present_current_ma=(
+                    int(round(_signed16(current_raw) * self.config.current_scale_ma_per_unit))
+                    if current_raw is not None
+                    else None
+                ),
+                hardware_error_code=int(hardware_raw) if hardware_raw is not None else None,
+                hardware_error=error_detail,
+                telemetry_error=error_detail,
+                last_read_monotonic_s=completed_at,
+                last_valid_packet_monotonic_s=completed_at if packet_valid else None,
+                last_valid_packet_wall_time=(
+                    datetime.now(timezone.utc).isoformat() if packet_valid else None
+                ),
+                last_read_attempt_monotonic_s=read_started_at,
+                read_duration_ms=max(0.0, (completed_at - read_started_at) * 1000.0),
+                packet_age_s=0.0 if packet_valid else None,
+                read_source="live_read",
+                telemetry_error_code="packet_or_status_error" if telemetry_messages else None,
+                telemetry_error_detail=error_detail,
+            )
         return result
 
     def _require_connected(self) -> None:

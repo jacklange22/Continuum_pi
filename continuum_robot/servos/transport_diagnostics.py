@@ -577,6 +577,16 @@ def _telemetry_payload(telemetry: ServoTelemetry | None, *, servo_service) -> di
         "telemetry_error": telemetry.telemetry_error,
         "telemetry_age_s": age_s,
         "last_read_monotonic_s": telemetry.last_read_monotonic_s,
+        "last_valid_packet_monotonic_s": getattr(telemetry, "last_valid_packet_monotonic_s", None),
+        "last_valid_packet_wall_time": getattr(telemetry, "last_valid_packet_wall_time", None),
+        "last_read_attempt_monotonic_s": getattr(telemetry, "last_read_attempt_monotonic_s", None),
+        "read_duration_ms": getattr(telemetry, "read_duration_ms", None),
+        "packet_age_s": getattr(telemetry, "packet_age_s", None),
+        "read_source": getattr(telemetry, "read_source", None),
+        "telemetry_error_code": getattr(telemetry, "telemetry_error_code", None),
+        "telemetry_error_detail": getattr(telemetry, "telemetry_error_detail", None),
+        "bus_owner": getattr(telemetry, "bus_owner", None),
+        "read_sequence_index": getattr(telemetry, "read_sequence_index", None),
     }
 
 

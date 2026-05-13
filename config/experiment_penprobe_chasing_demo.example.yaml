@@ -12,6 +12,8 @@ proportional_gain_ticks_per_mm: 8.0
 displacement_gain_cm_per_mm: 0.002
 stale_tracker_timeout_s: 0.2
 max_servo_write_hz: 25.0
+telemetry_health_hz: 3.0
+max_consecutive_telemetry_health_failures: 2
 saturation_stop_cycles: 40
 x_axis_sign: 1
 y_axis_sign: 1

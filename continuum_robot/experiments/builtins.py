@@ -40,7 +40,7 @@ from continuum_robot.experiments.schedules import (
 from continuum_robot.experiments.sample_builders import sample_from_tracking_snapshot
 from continuum_robot.experiments.schemas import ExperimentMetadata, ExperimentSummary, ExperimentTimeseriesSample
 from continuum_robot.servos.segment_readiness import evaluate_selected_segment_readiness
-from continuum_robot.servos.servo_service import PretensionParameters
+from continuum_robot.servos.servo_service import PretensionParameters, ServoTelemetryRetryError
 from continuum_robot.tracking.timing_benchmark import (
     compute_servo_tracker_sync_summary,
     compute_servo_sync_summary,
@@ -163,6 +163,12 @@ class CollectPoseCommandDatasetConfig:
     export_legacy_dat: bool = True
     run_label: str = ""
     dataset_tag: str = ""
+    post_write_settle_s: float = 0.0
+    telemetry_retry_count: int = 2
+    telemetry_retry_delay_s: float = 0.03
+    allow_recovered_packet_errors: bool = True
+    max_recovered_packet_errors_per_run: int | None = None
+    max_current_warning_ma: int | None = None
     legacy_schedule_override: bool = False
     command_points: list[dict[str, Any]] = field(default_factory=list)
     command_schedule: CommandScheduleConfig = field(
@@ -199,6 +205,20 @@ class CollectPoseCommandDatasetConfig:
             export_legacy_dat=bool(payload.get("export_legacy_dat", True)),
             run_label=str(payload.get("run_label", "") or ""),
             dataset_tag=str(payload.get("dataset_tag", "") or ""),
+            post_write_settle_s=max(0.0, float(payload.get("post_write_settle_s", payload.get("post_command_settle_s", 0.0)))),
+            telemetry_retry_count=max(0, int(payload.get("telemetry_retry_count", 2))),
+            telemetry_retry_delay_s=max(0.0, float(payload.get("telemetry_retry_delay_s", 0.03))),
+            allow_recovered_packet_errors=bool(payload.get("allow_recovered_packet_errors", True)),
+            max_recovered_packet_errors_per_run=(
+                None
+                if payload.get("max_recovered_packet_errors_per_run") in (None, "")
+                else max(0, int(payload.get("max_recovered_packet_errors_per_run")))
+            ),
+            max_current_warning_ma=(
+                None
+                if payload.get("max_current_warning_ma") in (None, "")
+                else max(0, int(payload.get("max_current_warning_ma")))
+            ),
             legacy_schedule_override=bool(
                 ("command_schedule" in payload)
                 or ("schedule" in payload)
@@ -5269,6 +5289,20 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         session.set_metric("run_label", str(self.config.run_label or ""))
         session.set_metric("dataset_tag", str(self.config.dataset_tag or ""))
         session.set_metric(
+            "dataset_stability_parameters",
+            {
+                "post_write_settle_s": float(self.config.post_write_settle_s),
+                "telemetry_retry_count": int(self.config.telemetry_retry_count),
+                "telemetry_retry_delay_s": float(self.config.telemetry_retry_delay_s),
+                "allow_recovered_packet_errors": bool(self.config.allow_recovered_packet_errors),
+                "max_recovered_packet_errors_per_run": self.config.max_recovered_packet_errors_per_run,
+                "max_current_warning_ma": self.config.max_current_warning_ma,
+            },
+        )
+        session.set_metric("recovered_packet_error_count", 0)
+        session.set_metric("unrecovered_packet_error_count", 0)
+        session.set_metric("servo_telemetry_retry_count", 0)
+        session.set_metric(
             "active_segment",
             {
                 "key": session.context.settings.robot.active_segment_key(),
@@ -5489,8 +5523,19 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 servo_ids=command_servo_ids,
                 motion_workflow="experiment_motion",
                 parallel_mirror_pairs=parallel_mirror_pairs or None,
+                telemetry_retry_count=int(self.config.telemetry_retry_count),
+                telemetry_retry_delay_s=float(self.config.telemetry_retry_delay_s),
+                allow_recovered_packet_errors=bool(self.config.allow_recovered_packet_errors),
             )
+            if float(self.config.post_write_settle_s) > 0.0:
+                session.context.sleep_fn(float(self.config.post_write_settle_s))
         except Exception as exc:
+            self._record_failure_context(
+                session=session,
+                exc=exc,
+                requested_cable_command_cm=requested_cable_command_cm,
+                servo_ids=command_servo_ids,
+            )
             LOG.exception(
                 "Collect-pose command failed | requested_cable_cm=%s | servo_ids=%s | error=%s",
                 requested_cable_command_cm,
@@ -5506,7 +5551,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             {str(servo_id): str(reason) for servo_id, reason in sorted(command.clamp_reasons_by_id.items())},
             motion_profile,
         )
-        return {
+        result = {
             "requested_cable_command_cm": list(requested_cable_command_cm),
             "resolved_cable_command_cm": list(command.resolved_displacements_cm or requested_cable_command_cm),
             "requested_pair_command_cm": list(requested_pair_command_cm),
@@ -5535,6 +5580,96 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             "message": str(command.message or ""),
             "motion_profile": motion_profile,
         }
+        self._record_command_retry_metrics(session, command.command_metadata or {})
+        return result
+
+    def _record_command_retry_metrics(self, session: ExperimentSession, metadata: dict[str, Any]) -> None:
+        retry_count = int(metadata.get("telemetry_retry_count", 0) or 0)
+        recovered = int(metadata.get("recovered_packet_error_count", 0) or 0)
+        unrecovered = int(metadata.get("unrecovered_packet_error_count", 0) or 0)
+        session.set_metric(
+            "servo_telemetry_retry_count",
+            int(session.metrics.get("servo_telemetry_retry_count", 0) or 0) + retry_count,
+        )
+        session.set_metric(
+            "recovered_packet_error_count",
+            int(session.metrics.get("recovered_packet_error_count", 0) or 0) + recovered,
+        )
+        session.set_metric(
+            "unrecovered_packet_error_count",
+            int(session.metrics.get("unrecovered_packet_error_count", 0) or 0) + unrecovered,
+        )
+        max_recovered = self.config.max_recovered_packet_errors_per_run
+        if max_recovered is not None and int(session.metrics.get("recovered_packet_error_count", 0) or 0) > int(max_recovered):
+            raise RuntimeError(
+                "Collect-pose stopped: recovered packet error count exceeded "
+                f"max_recovered_packet_errors_per_run={int(max_recovered)}."
+            )
+
+    def _record_failure_context(
+        self,
+        *,
+        session: ExperimentSession,
+        exc: Exception,
+        requested_cable_command_cm: list[float],
+        servo_ids: list[int],
+    ) -> None:
+        retry_error = _find_servo_telemetry_retry_error(exc)
+        base = dict(retry_error.context if retry_error is not None else {})
+        servo_service = session.context.servo_service
+        tracker_age_s = None
+        if session.context.tracking_service is not None:
+            try:
+                reader = getattr(session.context.tracking_service, "peek_snapshot", None)
+                snapshot = reader() if callable(reader) else session.context.tracking_service.get_snapshot()
+                tracker_age_s = getattr(snapshot, "tracker_data_age_s", None)
+            except Exception:
+                tracker_age_s = None
+        bus_owner = {}
+        try:
+            owner = servo_service.bus_ownership_status()
+            bus_owner = {
+                "active": bool(owner.active),
+                "owner": owner.owner,
+                "reason": owner.reason,
+                "servo_id": owner.servo_id,
+                "held_by_current_thread": bool(owner.held_by_current_thread),
+            }
+        except Exception:
+            bus_owner = {}
+        if "last_valid_telemetry_by_servo" not in base:
+            try:
+                base["last_valid_telemetry_by_servo"] = _servo_feedback_payload(
+                    servo_service.last_known_telemetry([int(value) for value in servo_ids]),
+                    servo_service=servo_service,
+                )
+            except Exception:
+                base["last_valid_telemetry_by_servo"] = {}
+        context = {
+            "failure_category": base.get("failure_category", "collect_pose_command_failure"),
+            "failure_reason": base.get("failure_reason", str(exc)),
+            "sample_index_at_failure": int(len(session.samples)),
+            "progress_fraction_at_failure": (
+                float(session.completed_progress_steps) / float(session.total_progress_steps)
+                if int(session.total_progress_steps or 0) > 0
+                else None
+            ),
+            "failed_servo_id": base.get("failed_servo_id"),
+            "telemetry_error_code": base.get("telemetry_error_code"),
+            "missing_fields": base.get("missing_fields"),
+            "last_valid_telemetry_by_servo": base.get("last_valid_telemetry_by_servo", {}),
+            "last_commanded_goal_ticks": base.get("last_commanded_goal_ticks", servo_service.last_goal_positions()),
+            "last_resolved_cable_command_cm": base.get("last_resolved_cable_command_cm", list(requested_cable_command_cm)),
+            "tracker_age_s": None if tracker_age_s is None else float(tracker_age_s),
+            "bus_owner": bus_owner,
+            "retry_count": int(base.get("retry_count", 0) or 0),
+            "recovered_packet_error_count": int(
+                session.metrics.get("recovered_packet_error_count", base.get("recovered_packet_error_count", 0)) or 0
+            ),
+        }
+        session.set_metric("failure_category", context["failure_category"])
+        session.set_metric("failure_reason", context["failure_reason"])
+        session.set_metric("failure_context", context)
 
     def _capture_dataset_sample(
         self,
@@ -5853,12 +5988,178 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             summary=summary,
             samples=session.samples,
         )
+        failure_context = dict(session.metrics.get("failure_context", {}) or {})
+        if failure_context:
+            (paths.output_dir / "failure_context.json").write_text(
+                json.dumps(failure_context, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        quality = _collect_pose_dataset_quality_summary(
+            samples=list(session.samples),
+            metrics=summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else dict(session.metrics),
+            max_current_warning_ma=self.config.max_current_warning_ma,
+        )
+        (paths.output_dir / "dataset_quality_summary.json").write_text(
+            json.dumps(quality, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        (paths.output_dir / "dataset_quality_summary.txt").write_text(
+            _render_collect_pose_dataset_quality_summary(quality),
+            encoding="utf-8",
+        )
 
 
 def _configured_collect_pose_servo_ids(session: ExperimentSession) -> list[int]:
     robot = session.context.settings.robot
     servo_ids = [int(value) for value in robot.operating_context().commanded_servo_ids]
     return list(servo_ids)
+
+
+def _find_servo_telemetry_retry_error(exc: BaseException | None) -> ServoTelemetryRetryError | None:
+    current = exc
+    seen = 0
+    while current is not None and seen < 8:
+        if isinstance(current, ServoTelemetryRetryError):
+            return current
+        current = current.__cause__ or current.__context__
+        seen += 1
+    return None
+
+
+def _collect_pose_dataset_quality_summary(
+    *,
+    samples: list[ExperimentTimeseriesSample],
+    metrics: dict[str, Any],
+    max_current_warning_ma: int | None,
+) -> dict[str, Any]:
+    accepted = [sample for sample in samples if bool(sample.extra.get("capture_accepted"))]
+    rejected = [sample for sample in samples if sample.extra.get("capture_accepted") is False]
+    failure_context = dict(metrics.get("failure_context", {}) or {})
+    commands = [
+        list(sample.extra.get("resolved_cable_command_cm") or sample.commanded_cable_deltas_cm or [])
+        for sample in samples
+    ]
+    commands = [values for values in commands if values]
+    xyz_values = [
+        list(sample.pose_in_robot_frame.get("tip", {}).get("translation_mm", []))
+        for sample in accepted
+        if isinstance(sample.pose_in_robot_frame.get("tip"), dict)
+    ]
+    xyz_values = [values for values in xyz_values if len(values) == 3]
+    deltas = [
+        b - a
+        for a, b in zip(
+            [float(sample.monotonic_time_s) for sample in samples],
+            [float(sample.monotonic_time_s) for sample in samples][1:],
+        )
+        if b >= a
+    ]
+    current_values = _collect_pose_current_values(samples)
+    max_abs_current = max((abs(int(value)) for value in current_values), default=None)
+    trainable = bool(metrics.get("valid_for_model_training"))
+    failure_category = str(failure_context.get("failure_category") or metrics.get("failure_category") or "")
+    if "telemetry" in failure_category:
+        recommendation = "failed_due_to_telemetry"
+    elif trainable and len(accepted) >= max(20, int(metrics.get("command_step_count", 0) or 0)):
+        recommendation = "good_for_training"
+    elif len(accepted) > 0:
+        recommendation = "needs_more_coverage"
+    else:
+        recommendation = "good_for_debug"
+    high_current_warning = (
+        max_abs_current is not None
+        and max_current_warning_ma is not None
+        and int(max_abs_current) >= int(max_current_warning_ma)
+    )
+    return {
+        "schema_version": "collect_pose_dataset_quality_v1",
+        "accepted_sample_count": int(len(accepted)),
+        "rejected_sample_count": int(len(rejected)),
+        "failure_count": 1 if failure_context else 0,
+        "recovered_packet_error_count": int(metrics.get("recovered_packet_error_count", 0) or 0),
+        "unrecovered_packet_error_count": int(metrics.get("unrecovered_packet_error_count", 0) or 0),
+        "tracker_stale_count": sum(
+            1
+            for sample in rejected
+            if "stale" in str(sample.extra.get("capture_rejection_reason", "")).lower()
+            or "tracker_age" in str(sample.extra.get("capture_rejection_reason", "")).lower()
+        ),
+        "servo_telemetry_retry_count": int(metrics.get("servo_telemetry_retry_count", 0) or 0),
+        "command_range_per_tendon_cm": _range_by_index(commands, prefix="tendon"),
+        "measured_xyz_range_mm": _range_by_index(xyz_values, prefix="axis", labels=["x", "y", "z"]),
+        "sample_rate_stats": _sample_rate_stats(deltas),
+        "max_abs_current_ma": max_abs_current,
+        "max_current_warning_ma": max_current_warning_ma,
+        "high_current_warning": bool(high_current_warning),
+        "trainability_status": {
+            "valid_for_model_training": trainable,
+            "not_model_training_ready": bool(metrics.get("not_model_training_ready")),
+            "run_trust_mode": str(metrics.get("run_trust_mode", "unknown")),
+        },
+        "recommendation": recommendation,
+    }
+
+
+def _render_collect_pose_dataset_quality_summary(quality: dict[str, Any]) -> str:
+    lines = [
+        "Collect-Pose Dataset Quality Summary",
+        f"Accepted samples: {quality.get('accepted_sample_count')}",
+        f"Rejected samples: {quality.get('rejected_sample_count')}",
+        f"Failures: {quality.get('failure_count')}",
+        f"Recovered packet errors: {quality.get('recovered_packet_error_count')}",
+        f"Unrecovered packet errors: {quality.get('unrecovered_packet_error_count')}",
+        f"Telemetry retries: {quality.get('servo_telemetry_retry_count')}",
+        f"Tracker stale count: {quality.get('tracker_stale_count')}",
+        f"Max abs current (mA): {quality.get('max_abs_current_ma')}",
+        f"Recommendation: {quality.get('recommendation')}",
+    ]
+    return "\n".join(lines).strip() + "\n"
+
+
+def _range_by_index(
+    values: list[list[float]],
+    *,
+    prefix: str,
+    labels: list[str] | None = None,
+) -> dict[str, dict[str, float]]:
+    if not values:
+        return {}
+    width = max(len(row) for row in values)
+    result: dict[str, dict[str, float]] = {}
+    for index in range(width):
+        series = [float(row[index]) for row in values if len(row) > index]
+        if not series:
+            continue
+        key = labels[index] if labels is not None and index < len(labels) else f"{prefix}_{index + 1}"
+        result[key] = {"min": min(series), "max": max(series), "span": max(series) - min(series)}
+    return result
+
+
+def _sample_rate_stats(deltas: list[float]) -> dict[str, Any]:
+    if not deltas:
+        return {"sample_count": 0, "mean_dt_s": None, "min_dt_s": None, "max_dt_s": None, "mean_hz": None}
+    mean_dt = sum(deltas) / len(deltas)
+    return {
+        "sample_count": int(len(deltas) + 1),
+        "mean_dt_s": float(mean_dt),
+        "min_dt_s": float(min(deltas)),
+        "max_dt_s": float(max(deltas)),
+        "mean_hz": (1.0 / mean_dt if mean_dt > 0.0 else None),
+    }
+
+
+def _collect_pose_current_values(samples: list[ExperimentTimeseriesSample]) -> list[int]:
+    currents: list[int] = []
+    for sample in samples:
+        for key in ("servo_feedback_at_command", "servo_feedback_at_capture"):
+            feedback = dict(sample.extra.get(key, {}) or {})
+            for item in feedback.values():
+                if not isinstance(item, dict):
+                    continue
+                current = item.get("present_current_ma")
+                if current is not None:
+                    currents.append(int(current))
+    return currents
 
 
 def _load_collect_pose_neutral_ticks(session: ExperimentSession, *, servo_ids: list[int]) -> list[int]:
@@ -6725,6 +7026,16 @@ def _servo_feedback_payload(telemetry_by_id: dict[int, Any], *, servo_service) -
             "present_voltage_raw_unit": telemetry.present_voltage_raw_unit,
             "present_voltage_mv": telemetry.present_voltage_mv,
             "present_temperature_c": telemetry.present_temperature_c,
+            "last_valid_packet_monotonic_s": getattr(telemetry, "last_valid_packet_monotonic_s", None),
+            "last_valid_packet_wall_time": getattr(telemetry, "last_valid_packet_wall_time", None),
+            "last_read_attempt_monotonic_s": getattr(telemetry, "last_read_attempt_monotonic_s", None),
+            "read_duration_ms": getattr(telemetry, "read_duration_ms", None),
+            "packet_age_s": getattr(telemetry, "packet_age_s", None),
+            "read_source": getattr(telemetry, "read_source", None),
+            "telemetry_error_code": getattr(telemetry, "telemetry_error_code", None),
+            "telemetry_error_detail": getattr(telemetry, "telemetry_error_detail", None),
+            "bus_owner": getattr(telemetry, "bus_owner", None),
+            "read_sequence_index": getattr(telemetry, "read_sequence_index", None),
         }
     return payload
 

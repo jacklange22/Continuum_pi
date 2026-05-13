@@ -1726,12 +1726,13 @@ def _classify_repeatability_telemetry(
                 "torque_enabled": None,
                 "operating_mode": None,
                 "hardware_error": "telemetry_missing",
-                "present_voltage_mv": None,
-                "present_temperature_c": None,
-                "telemetry_error": "telemetry_missing",
-                "telemetry_age_s": None,
-                "telemetry_fresh": None,
-            }
+            "present_voltage_mv": None,
+            "present_temperature_c": None,
+            "telemetry_error": "telemetry_missing",
+            "telemetry_age_s": None,
+            "telemetry_fresh": None,
+            "read_source": "unavailable",
+        }
             continue
 
         telemetry_age_s = session.context.servo_service.telemetry_age_s(telemetry)
@@ -1747,6 +1748,16 @@ def _classify_repeatability_telemetry(
             "telemetry_error": telemetry.telemetry_error,
             "telemetry_age_s": telemetry_age_s,
             "telemetry_fresh": telemetry_fresh,
+            "last_valid_packet_monotonic_s": getattr(telemetry, "last_valid_packet_monotonic_s", None),
+            "last_valid_packet_wall_time": getattr(telemetry, "last_valid_packet_wall_time", None),
+            "last_read_attempt_monotonic_s": getattr(telemetry, "last_read_attempt_monotonic_s", None),
+            "read_duration_ms": getattr(telemetry, "read_duration_ms", None),
+            "packet_age_s": getattr(telemetry, "packet_age_s", None),
+            "read_source": getattr(telemetry, "read_source", None),
+            "telemetry_error_code": getattr(telemetry, "telemetry_error_code", None),
+            "telemetry_error_detail": getattr(telemetry, "telemetry_error_detail", None),
+            "bus_owner": getattr(telemetry, "bus_owner", None),
+            "read_sequence_index": getattr(telemetry, "read_sequence_index", None),
         }
         missing_fields: list[str] = []
         if telemetry.present_position is None:

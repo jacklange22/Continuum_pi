@@ -55,6 +55,15 @@ def _write_run(root: Path, experiment: str, name: str, *, sample_bytes: int = 0)
     )
     (run_dir / "config_snapshot.yaml").write_text("runtime:\n  mock_mode: true\n", encoding="utf-8")
     (run_dir / "metrics.csv").write_text("metric,value\nrmse,1.0\n", encoding="utf-8")
+    (run_dir / "failure_context.json").write_text(
+        json.dumps({"failure_category": "servo_telemetry_packet_error", "failed_servo_id": 7}),
+        encoding="utf-8",
+    )
+    (run_dir / "dataset_quality_summary.json").write_text(
+        json.dumps({"recommendation": "failed_due_to_telemetry", "recovered_packet_error_count": 1}),
+        encoding="utf-8",
+    )
+    (run_dir / "dataset_quality_summary.txt").write_text("Recommendation: failed_due_to_telemetry\n", encoding="utf-8")
     (run_dir / "run_review.json").write_text(
         json.dumps({"review_status": "debug", "include_in_evidence_index": False}),
         encoding="utf-8",
@@ -86,6 +95,9 @@ def test_export_run_bundle_writes_manifest_report_figures_and_trust_block(tmp_pa
     assert (result.bundle_dir / "trust_provenance.json").exists()
     assert (result.bundle_dir / "README.txt").exists()
     assert (result.bundle_dir / "run_review.json").exists()
+    assert (result.bundle_dir / "failure_context.json").exists()
+    assert (result.bundle_dir / "dataset_quality_summary.json").exists()
+    assert (result.bundle_dir / "dataset_quality_summary.txt").exists()
     assert (result.bundle_dir / "modeling_workspace_coverage_report.png").exists()
     assert not (result.bundle_dir / "dashboard.png").exists()
     manifest = json.loads((result.bundle_dir / "manifest.json").read_text(encoding="utf-8"))

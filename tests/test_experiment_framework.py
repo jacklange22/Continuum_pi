@@ -67,6 +67,28 @@ def _servo_service(tmp_path: Path) -> ServoService:
     )
 
 
+class _CollectPosePacketErrorBus(MockDxlBus):
+    def __init__(self, *, failed_servo_id: int = 3, failures: int = 3) -> None:
+        super().__init__([1, 2, 3, 4])
+        self.failed_servo_id = int(failed_servo_id)
+        self.failures_remaining = int(failures)
+        self.goal_written = False
+
+    def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
+        super().write_goal_positions(positions_by_id)
+        self.goal_written = True
+
+    def read_telemetry(self, servo_ids: list[int], **kwargs):
+        result = super().read_telemetry(servo_ids, **kwargs)
+        if self.goal_written and self.failed_servo_id in [int(value) for value in servo_ids] and self.failures_remaining > 0:
+            self.failures_remaining -= 1
+            telemetry = result[self.failed_servo_id]
+            telemetry.present_position = None
+            telemetry.telemetry_error = "[TxRxResult] Incorrect status packet!"
+            telemetry.hardware_error = "[TxRxResult] Incorrect status packet!"
+        return result
+
+
 class _PretensionExperimentBus(MockDxlBus):
     def __init__(self) -> None:
         super().__init__([1, 2, 3, 4])
@@ -1378,6 +1400,58 @@ def test_collect_pose_command_dataset_runs_servo_only_without_tracker_when_expli
     assert all(row["tool_0A_translation_mm"] == [] for row in export_rows)
     assert all("servo_only" in row["tracker_status_flags"] for row in export_rows)
     assert all(row["servo_feedback_at_capture"] for row in export_rows)
+
+
+def test_collect_pose_packet_status_failure_writes_failure_context_and_quality(tmp_path: Path) -> None:
+    settings = _settings()
+    bus = _CollectPosePacketErrorBus(failed_servo_id=3, failures=3)
+    servo_service = ServoService(
+        dxl_bus=bus,
+        mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
+        safety_guard=SafetyGuard(min_offset_ticks=-600, max_offset_ticks=600, max_current_ma=850),
+        neutral_calibration=NeutralCalibrationService(path=tmp_path / "neutral.json"),
+        pretension_validation=PretensionValidationService(),
+        sleep_fn=lambda _seconds: None,
+    )
+    servo_service.connect("/dev/mock-openrb", 115200)
+    for servo_id in [1, 2, 3, 4]:
+        servo_service.save_startup_calibration(servo_id=servo_id)
+    servo_service.capture_manual_pretension_state(note="packet error test")
+    servo_service.accept_manual_pretension_state()
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_DisconnectedTrackingService(),
+        servo_service=servo_service,
+    )
+
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dry_run": False,
+            "sample_count_target": 1,
+            "samples_per_command": 1,
+            "allow_no_tracker_test_run": True,
+            "run_trust_mode": "servo_only",
+            "telemetry_retry_count": 2,
+            "telemetry_retry_delay_s": 0.0,
+        },
+    )
+
+    assert result.success is False
+    failure_context_path = result.paths.output_dir / "failure_context.json"
+    quality_path = result.paths.output_dir / "dataset_quality_summary.json"
+    assert failure_context_path.exists()
+    assert quality_path.exists()
+    failure_context = json.loads(failure_context_path.read_text(encoding="utf-8"))
+    assert failure_context["failed_servo_id"] == 3
+    assert failure_context["sample_index_at_failure"] == 0
+    assert failure_context["retry_count"] == 2
+    assert "Incorrect status packet" in failure_context["telemetry_error_code"]
+    assert result.summary.experiment_metrics["failure_context"]["failed_servo_id"] == 3
+    quality = json.loads(quality_path.read_text(encoding="utf-8"))
+    assert quality["recommendation"] == "failed_due_to_telemetry"
+    assert quality["failure_count"] == 1
 
 
 def test_collect_pose_command_dataset_blocks_without_tracker_when_override_disabled(tmp_path: Path) -> None:

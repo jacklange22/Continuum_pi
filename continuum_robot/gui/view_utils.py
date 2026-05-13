@@ -6,7 +6,7 @@ from contextlib import nullcontext
 from typing import Callable
 
 from PySide6.QtCore import QSignalBlocker, Qt
-from PySide6.QtWidgets import QLineEdit, QPlainTextEdit, QSplitter, QTextEdit
+from PySide6.QtWidgets import QComboBox, QDoubleSpinBox, QLineEdit, QPlainTextEdit, QSpinBox, QSplitter, QTextEdit
 
 
 TextDocumentWidget = QPlainTextEdit | QTextEdit
@@ -81,7 +81,7 @@ def set_text_document(
     new_text = str(text)
     if widget.toPlainText() == new_text:
         return False
-    if skip_if_focused and widget.hasFocus():
+    if skip_if_focused and editable_update_blocked(widget):
         return False
 
     def _apply() -> None:
@@ -109,9 +109,74 @@ def set_line_edit_text(
     new_text = str(text)
     if widget.text() == new_text:
         return False
-    if skip_if_focused and widget.hasFocus():
+    if skip_if_focused and editable_update_blocked(widget):
         return False
     context = QSignalBlocker(widget) if block_signals else nullcontext()
     with context:
         widget.setText(new_text)
+    return True
+
+
+def editable_update_blocked(widget) -> bool:
+    """Return True when a background refresh should not overwrite an editable widget."""
+    if widget.hasFocus():
+        return True
+    is_modified = getattr(widget, "isModified", None)
+    if callable(is_modified) and bool(is_modified()):
+        return True
+    document = getattr(widget, "document", lambda: None)()
+    if document is not None and getattr(document, "isModified", lambda: False)():
+        return True
+    view = getattr(widget, "view", lambda: None)()
+    if view is not None and getattr(view, "isVisible", lambda: False)():
+        return True
+    qt_property = getattr(widget, "property", lambda _name: None)("popup_open")
+    if bool(qt_property) or bool(getattr(widget, "popup_open", False)):
+        return True
+    return False
+
+
+def set_spinbox_value(
+    widget: QSpinBox | QDoubleSpinBox,
+    value: int | float,
+    *,
+    skip_if_editing: bool = True,
+    block_signals: bool = False,
+) -> bool:
+    """Update a spinbox without clobbering in-progress operator edits."""
+    numeric_value = float(value) if isinstance(widget, QDoubleSpinBox) else int(value)
+    if skip_if_editing and editable_update_blocked(widget):
+        return False
+    if isinstance(widget, QDoubleSpinBox):
+        if abs(float(widget.value()) - float(numeric_value)) < 1e-12:
+            return False
+    elif int(widget.value()) == int(numeric_value):
+        return False
+    context = QSignalBlocker(widget) if block_signals else nullcontext()
+    with context:
+        widget.setValue(numeric_value)
+    return True
+
+
+def set_combo_value(
+    widget: QComboBox,
+    value: str | int | bool,
+    *,
+    skip_if_editing: bool = True,
+    block_signals: bool = False,
+) -> bool:
+    """Set a combo by data/text while preserving active popup/focused edits."""
+    if skip_if_editing and editable_update_blocked(widget):
+        return False
+    target = value
+    index = widget.findData(target)
+    if index < 0:
+        index = widget.findData(str(target))
+    if index < 0:
+        index = widget.findText(str(target))
+    if index < 0 or widget.currentIndex() == index:
+        return False
+    context = QSignalBlocker(widget) if block_signals else nullcontext()
+    with context:
+        widget.setCurrentIndex(index)
     return True
