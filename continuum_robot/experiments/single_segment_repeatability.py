@@ -317,7 +317,11 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
         if not self._neutral_ticks or not self._servo_ids:
             return
         try:
-            self._command_target(session, self._targets[0])
+            with session.context.servo_service.exclusive_bus_operation(
+                owner=self.name,
+                reason="repeatability finalize return to center",
+            ):
+                self._command_target(session, self._targets[0])
         except Exception as exc:
             session.add_warning(f"Could not return robot to center target during finalize: {exc}")
 
@@ -1753,6 +1757,12 @@ def _classify_repeatability_telemetry(
             "last_read_attempt_monotonic_s": getattr(telemetry, "last_read_attempt_monotonic_s", None),
             "read_duration_ms": getattr(telemetry, "read_duration_ms", None),
             "packet_age_s": getattr(telemetry, "packet_age_s", None),
+            "read_batch_started_monotonic_s": getattr(telemetry, "read_batch_started_monotonic_s", None),
+            "read_batch_completed_monotonic_s": getattr(telemetry, "read_batch_completed_monotonic_s", None),
+            "read_batch_duration_ms": getattr(telemetry, "read_batch_duration_ms", None),
+            "snapshot_age_s": getattr(telemetry, "snapshot_age_s", None),
+            "per_servo_packet_age_s": getattr(telemetry, "per_servo_packet_age_s", None),
+            "freshness_decision_source": getattr(telemetry, "freshness_decision_source", None),
             "read_source": getattr(telemetry, "read_source", None),
             "telemetry_error_code": getattr(telemetry, "telemetry_error_code", None),
             "telemetry_error_detail": getattr(telemetry, "telemetry_error_detail", None),

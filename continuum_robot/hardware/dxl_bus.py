@@ -54,6 +54,12 @@ class ServoTelemetry:
     last_read_attempt_monotonic_s: float | None = None
     read_duration_ms: float | None = None
     packet_age_s: float | None = None
+    read_batch_started_monotonic_s: float | None = None
+    read_batch_completed_monotonic_s: float | None = None
+    read_batch_duration_ms: float | None = None
+    snapshot_age_s: float | None = None
+    per_servo_packet_age_s: float | None = None
+    freshness_decision_source: str | None = None
     read_source: str = "unavailable"
     telemetry_error_code: str | None = None
     telemetry_error_detail: str | None = None

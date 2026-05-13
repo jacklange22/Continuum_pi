@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
@@ -5340,98 +5341,105 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             pair_limits=pair_limits,
         )
 
-        neutral_command = self._issue_command(
-            session,
-            tendon_displacement_cm=zero_vector,
-            servo_ids=servo_ids,
-            neutral_ticks=neutral_ticks,
-        )
-        neutral_sample = self._capture_dataset_sample(
-            session=session,
-            command_result=neutral_command,
-            phase="initial_neutral",
-            step_index=-1,
-            sample_index=0,
-            servo_ids=servo_ids,
-            previous_pair_command_cm=None,
-            block_index=None,
-            prior_family=None,
-            step_metadata={"role": "initial_neutral"},
-        )
-        session.add_sample(neutral_sample)
-        accepted_count += int(bool(neutral_sample.extra.get("capture_accepted")))
-        rejected_count += int(not bool(neutral_sample.extra.get("capture_accepted")))
-        progress += 1
-        session.update_progress(progress, total, {"phase": "initial_neutral", "step_index": -1})
-
-        previous_pair_command_cm = [0.0, 0.0]
-        for step in command_steps:
-            session.raise_if_stop_requested()
-            command_result = self._issue_command(
+        command_owner = contextlib.nullcontext()
+        if not self.config.dry_run and getattr(session.context.servo_service, "is_connected", False):
+            command_owner = session.context.servo_service.exclusive_bus_operation(
+                owner=self.name,
+                reason="collect-pose dataset experiment motion",
+            )
+        with command_owner:
+            neutral_command = self._issue_command(
                 session,
-                tendon_displacement_cm=list(step.cable_command_cm),
+                tendon_displacement_cm=zero_vector,
                 servo_ids=servo_ids,
                 neutral_ticks=neutral_ticks,
             )
-            settle_time_s = float(step.settle_time_s if step.settle_time_s is not None else self.config.settle_time_s)
-            if settle_time_s > 0.0:
-                session.context.sleep_fn(settle_time_s)
-            for sample_index in range(samples_per_command):
-                sample = self._capture_dataset_sample(
-                    session=session,
-                    command_result=command_result,
-                    phase=str(step.phase),
-                    step_index=int(step.index),
-                    sample_index=int(sample_index),
-                    servo_ids=servo_ids,
-                    previous_pair_command_cm=list(previous_pair_command_cm),
-                    block_index=step.block_index,
-                    prior_family=step.prior_family,
-                    step_metadata={
-                        "label": step.label,
-                        **dict(step.metadata or {}),
-                    },
-                )
-                session.add_sample(sample)
-                accepted_count += int(bool(sample.extra.get("capture_accepted")))
-                rejected_count += int(not bool(sample.extra.get("capture_accepted")))
-                progress += 1
-                session.update_progress(
-                    progress,
-                    total,
-                    {
-                        "phase": str(step.phase),
-                        "step_index": int(step.index),
-                        "command_label": str(step.label),
-                        "accepted_samples": int(accepted_count),
-                        "rejected_samples": int(rejected_count),
-                    },
-                )
-            previous_pair_command_cm = list(step.pair_command_cm)
+            neutral_sample = self._capture_dataset_sample(
+                session=session,
+                command_result=neutral_command,
+                phase="initial_neutral",
+                step_index=-1,
+                sample_index=0,
+                servo_ids=servo_ids,
+                previous_pair_command_cm=None,
+                block_index=None,
+                prior_family=None,
+                step_metadata={"role": "initial_neutral"},
+            )
+            session.add_sample(neutral_sample)
+            accepted_count += int(bool(neutral_sample.extra.get("capture_accepted")))
+            rejected_count += int(not bool(neutral_sample.extra.get("capture_accepted")))
+            progress += 1
+            session.update_progress(progress, total, {"phase": "initial_neutral", "step_index": -1})
 
-        final_command = self._issue_command(
-            session,
-            tendon_displacement_cm=zero_vector,
-            servo_ids=servo_ids,
-            neutral_ticks=neutral_ticks,
-        )
-        final_sample = self._capture_dataset_sample(
-            session=session,
-            command_result=final_command,
-            phase="final_neutral",
-            step_index=len(command_steps),
-            sample_index=0,
-            servo_ids=servo_ids,
-            previous_pair_command_cm=list(previous_pair_command_cm),
-            block_index=None,
-            prior_family=None,
-            step_metadata={"role": "final_neutral"},
-        )
-        session.add_sample(final_sample)
-        accepted_count += int(bool(final_sample.extra.get("capture_accepted")))
-        rejected_count += int(not bool(final_sample.extra.get("capture_accepted")))
-        progress += 1
-        session.update_progress(progress, total, {"phase": "final_neutral", "step_index": len(command_steps)})
+            previous_pair_command_cm = [0.0, 0.0]
+            for step in command_steps:
+                session.raise_if_stop_requested()
+                command_result = self._issue_command(
+                    session,
+                    tendon_displacement_cm=list(step.cable_command_cm),
+                    servo_ids=servo_ids,
+                    neutral_ticks=neutral_ticks,
+                )
+                settle_time_s = float(step.settle_time_s if step.settle_time_s is not None else self.config.settle_time_s)
+                if settle_time_s > 0.0:
+                    session.context.sleep_fn(settle_time_s)
+                for sample_index in range(samples_per_command):
+                    sample = self._capture_dataset_sample(
+                        session=session,
+                        command_result=command_result,
+                        phase=str(step.phase),
+                        step_index=int(step.index),
+                        sample_index=int(sample_index),
+                        servo_ids=servo_ids,
+                        previous_pair_command_cm=list(previous_pair_command_cm),
+                        block_index=step.block_index,
+                        prior_family=step.prior_family,
+                        step_metadata={
+                            "label": step.label,
+                            **dict(step.metadata or {}),
+                        },
+                    )
+                    session.add_sample(sample)
+                    accepted_count += int(bool(sample.extra.get("capture_accepted")))
+                    rejected_count += int(not bool(sample.extra.get("capture_accepted")))
+                    progress += 1
+                    session.update_progress(
+                        progress,
+                        total,
+                        {
+                            "phase": str(step.phase),
+                            "step_index": int(step.index),
+                            "command_label": str(step.label),
+                            "accepted_samples": int(accepted_count),
+                            "rejected_samples": int(rejected_count),
+                        },
+                    )
+                previous_pair_command_cm = list(step.pair_command_cm)
+
+            final_command = self._issue_command(
+                session,
+                tendon_displacement_cm=zero_vector,
+                servo_ids=servo_ids,
+                neutral_ticks=neutral_ticks,
+            )
+            final_sample = self._capture_dataset_sample(
+                session=session,
+                command_result=final_command,
+                phase="final_neutral",
+                step_index=len(command_steps),
+                sample_index=0,
+                servo_ids=servo_ids,
+                previous_pair_command_cm=list(previous_pair_command_cm),
+                block_index=None,
+                prior_family=None,
+                step_metadata={"role": "final_neutral"},
+            )
+            session.add_sample(final_sample)
+            accepted_count += int(bool(final_sample.extra.get("capture_accepted")))
+            rejected_count += int(not bool(final_sample.extra.get("capture_accepted")))
+            progress += 1
+            session.update_progress(progress, total, {"phase": "final_neutral", "step_index": len(command_steps)})
         session.set_metric("accepted_sample_count", int(accepted_count))
         session.set_metric("rejected_sample_count", int(rejected_count))
         session.set_metric("registration_loaded", session.context.registration_path.exists())
@@ -5439,12 +5447,27 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
     def finalize(self, session: ExperimentSession) -> None:
         try:
             if not self.config.dry_run and session.context.servo_service.is_connected and self._initial_neutral_ticks:
-                self._issue_command(
-                    session,
-                    tendon_displacement_cm=[0.0, 0.0, 0.0, 0.0],
-                    servo_ids=list(self._servo_ids),
-                    neutral_ticks=list(self._initial_neutral_ticks),
-                )
+                failure_context = dict(session.metrics.get("failure_context", {}) or {})
+                if (
+                    session.stage_pass_fail.get("execute") == "failed"
+                    and not session.samples
+                    and str(failure_context.get("failure_category", "")) == "simple_experiment_motion_rejected"
+                ):
+                    session.add_warning(
+                        "Skipping collect-pose finalize neutral command because execute failed before any "
+                        "sample or goal write; primary command failure is preserved in failure_context.json."
+                    )
+                    return
+                with session.context.servo_service.exclusive_bus_operation(
+                    owner=self.name,
+                    reason="collect-pose finalize neutral return",
+                ):
+                    self._issue_command(
+                        session,
+                        tendon_displacement_cm=[0.0, 0.0, 0.0, 0.0],
+                        servo_ids=list(self._servo_ids),
+                        neutral_ticks=list(self._initial_neutral_ticks),
+                    )
         finally:
             if self._tracking_started_here and session.context.tracking_service is not None:
                 session.context.tracking_service.stop()
@@ -5660,6 +5683,15 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             "last_valid_telemetry_by_servo": base.get("last_valid_telemetry_by_servo", {}),
             "last_commanded_goal_ticks": base.get("last_commanded_goal_ticks", servo_service.last_goal_positions()),
             "last_resolved_cable_command_cm": base.get("last_resolved_cable_command_cm", list(requested_cable_command_cm)),
+            "command_metadata": dict(base.get("command_metadata", {}) or {}),
+            "telemetry_snapshot_fields": {
+                "read_batch_started_monotonic_s": True,
+                "read_batch_completed_monotonic_s": True,
+                "read_batch_duration_ms": True,
+                "snapshot_age_s": True,
+                "per_servo_packet_age_s": True,
+                "freshness_decision_source": True,
+            },
             "tracker_age_s": None if tracker_age_s is None else float(tracker_age_s),
             "bus_owner": bus_owner,
             "retry_count": int(base.get("retry_count", 0) or 0),
@@ -7031,6 +7063,12 @@ def _servo_feedback_payload(telemetry_by_id: dict[int, Any], *, servo_service) -
             "last_read_attempt_monotonic_s": getattr(telemetry, "last_read_attempt_monotonic_s", None),
             "read_duration_ms": getattr(telemetry, "read_duration_ms", None),
             "packet_age_s": getattr(telemetry, "packet_age_s", None),
+            "read_batch_started_monotonic_s": getattr(telemetry, "read_batch_started_monotonic_s", None),
+            "read_batch_completed_monotonic_s": getattr(telemetry, "read_batch_completed_monotonic_s", None),
+            "read_batch_duration_ms": getattr(telemetry, "read_batch_duration_ms", None),
+            "snapshot_age_s": getattr(telemetry, "snapshot_age_s", None),
+            "per_servo_packet_age_s": getattr(telemetry, "per_servo_packet_age_s", None),
+            "freshness_decision_source": getattr(telemetry, "freshness_decision_source", None),
             "read_source": getattr(telemetry, "read_source", None),
             "telemetry_error_code": getattr(telemetry, "telemetry_error_code", None),
             "telemetry_error_detail": getattr(telemetry, "telemetry_error_detail", None),

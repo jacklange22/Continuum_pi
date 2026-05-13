@@ -18,6 +18,7 @@ class ServoTransportDiagnosticResult:
     servo_ids: list[int]
     duration_s: float
     read_rate_hz: float
+    achieved_read_rate_hz: float | None
     fields: str
     sample_count: int
     success_count_by_servo: dict[str, int]
@@ -47,6 +48,7 @@ def run_diagnostic(
     fields_name = "full" if str(fields).strip().lower() == "full" else "minimal"
     read_fn = servo_service.read_telemetry if fields_name == "full" else servo_service.read_minimal_telemetry
     period_s = 1.0 / max(1e-6, float(read_rate_hz))
+    run_started = time.monotonic()
     deadline = time.monotonic() + max(0.0, float(duration_s))
     sample_count = 0
     successes: Counter[int] = Counter()
@@ -100,11 +102,14 @@ def run_diagnostic(
             if sleep_s > 0:
                 time.sleep(sleep_s)
 
+    elapsed_s = max(0.0, time.monotonic() - run_started)
+    achieved_read_rate_hz = (float(sample_count) / elapsed_s) if elapsed_s > 0.0 else None
     recommendation = _recommendation(failures=failures, durations=durations, read_rate_hz=float(read_rate_hz))
     return ServoTransportDiagnosticResult(
         servo_ids=resolved_ids,
         duration_s=float(duration_s),
         read_rate_hz=float(read_rate_hz),
+        achieved_read_rate_hz=achieved_read_rate_hz,
         fields=fields_name,
         sample_count=int(sample_count),
         success_count_by_servo={str(sid): int(successes[int(sid)]) for sid in resolved_ids},

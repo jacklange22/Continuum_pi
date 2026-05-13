@@ -142,6 +142,38 @@ class _StaleDisplayMinimalBus(MockDxlBus):
         return super().read_telemetry(servo_ids, **kwargs)
 
 
+class _PreMotionTelemetryProfileBus(MockDxlBus):
+    def __init__(self, servo_ids: list[int]) -> None:
+        super().__init__(servo_ids)
+        self.minimal_read_count = 0
+        self.live_read_count = 0
+        self.full_read_count = 0
+
+    def read_minimal_telemetry(self, servo_ids: list[int]) -> dict[int, object]:
+        self.minimal_read_count += 1
+        return MockDxlBus.read_telemetry(
+            self,
+            servo_ids,
+            include_reported_id=False,
+            include_identity=False,
+            include_limits=False,
+        )
+
+    def read_live_telemetry(self, servo_ids: list[int]) -> dict[int, object]:
+        self.live_read_count += 1
+        return MockDxlBus.read_telemetry(
+            self,
+            servo_ids,
+            include_reported_id=False,
+            include_identity=False,
+            include_limits=False,
+        )
+
+    def read_telemetry(self, servo_ids: list[int], **kwargs) -> dict[int, object]:
+        self.full_read_count += 1
+        return MockDxlBus.read_telemetry(self, servo_ids, **kwargs)
+
+
 class _MissingPositionLiveReadBus(MockDxlBus):
     def read_telemetry(self, servo_ids: list[int], **kwargs) -> dict[int, object]:
         result = super().read_telemetry(servo_ids, **kwargs)
@@ -481,12 +513,38 @@ def test_simple_experiment_motion_stale_experiment_owned_read_allows_command(tmp
             tendon_displacements_cm=[0.1, 0.0, -0.1, 0.0],
             neutral_ticks=[neutral[servo_id] for servo_id in [5, 6, 7, 8]],
             servo_ids=[5, 6, 7, 8],
-        )
+    )
 
     assert result.positions_by_id
-    assert result.command_metadata["stale_cached_telemetry_recovered_by_fresh_read"] is True
-    assert result.command_metadata["stale_age_override_servo_ids"] == [5, 6, 7, 8]
+    assert result.command_metadata["pre_motion_telemetry_profile"] == "minimal"
+    assert result.command_metadata["pre_motion_bus_owners"] == ["unit_test_experiment"]
+    assert result.command_metadata["pre_motion_freshness_decision_sources"] == [
+        "experiment_owned_read_batch_completed"
+    ]
     assert result.telemetry_by_id[7].read_source == "experiment_owned"
+
+
+def test_simple_experiment_motion_uses_minimal_pre_motion_telemetry(tmp_path: Path) -> None:
+    bus = _PreMotionTelemetryProfileBus([5, 6, 7, 8])
+    service = _build_service(tmp_path, dxl_bus=bus, context_servo_ids=[5, 6, 7, 8])
+    service.connect("/dev/mock-openrb", 57600)
+    neutral = service.capture_neutral_setpoints([5, 6, 7, 8])
+    bus.minimal_read_count = 0
+    bus.live_read_count = 0
+    bus.full_read_count = 0
+
+    with service.exclusive_bus_operation(owner="unit_test_experiment", reason="minimal pre-motion"):
+        result = service.command_displacement(
+            tendon_displacements_cm=[0.0, 0.0, 0.0, 0.0],
+            neutral_ticks=[neutral[servo_id] for servo_id in [5, 6, 7, 8]],
+            servo_ids=[5, 6, 7, 8],
+        )
+
+    assert result.positions_by_id == {servo_id: neutral[servo_id] for servo_id in [5, 6, 7, 8]}
+    assert bus.minimal_read_count >= 1
+    assert bus.live_read_count >= 1
+    assert bus.full_read_count == 0
+    assert result.command_metadata["pre_motion_telemetry_profile"] == "minimal"
 
 
 def test_simple_experiment_motion_fresh_read_failure_blocks_command(tmp_path: Path) -> None:
@@ -514,6 +572,12 @@ def test_live_telemetry_records_packet_timing_metadata(tmp_path: Path) -> None:
     assert telemetry.last_valid_packet_monotonic_s is not None
     assert telemetry.last_read_attempt_monotonic_s is not None
     assert telemetry.read_duration_ms is not None
+    assert telemetry.read_batch_started_monotonic_s is not None
+    assert telemetry.read_batch_completed_monotonic_s is not None
+    assert telemetry.read_batch_duration_ms is not None
+    assert telemetry.snapshot_age_s is not None
+    assert telemetry.per_servo_packet_age_s is not None
+    assert telemetry.freshness_decision_source == "experiment_owned_current_batch_packet_ok"
     assert telemetry.read_source == "experiment_owned"
     assert telemetry.bus_owner == "unit_test_experiment"
     assert telemetry.read_sequence_index is not None

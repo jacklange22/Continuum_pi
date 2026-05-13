@@ -49,6 +49,49 @@ class _CountingBus(MockDxlBus):
         return super().read_telemetry(servo_ids, **kwargs)
 
 
+class _ExperimentProfileBus(MockDxlBus):
+    def __init__(self, servo_ids: list[int] | None = None) -> None:
+        super().__init__(servo_ids or [1, 2, 3, 4])
+        self.minimal_read_count = 0
+        self.live_read_count = 0
+        self.full_read_count = 0
+
+    def read_minimal_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
+        self.minimal_read_count += 1
+        return MockDxlBus.read_telemetry(
+            self,
+            servo_ids,
+            include_reported_id=False,
+            include_identity=False,
+            include_limits=False,
+        )
+
+    def read_live_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
+        self.live_read_count += 1
+        return MockDxlBus.read_telemetry(
+            self,
+            servo_ids,
+            include_reported_id=False,
+            include_identity=False,
+            include_limits=False,
+        )
+
+    def read_telemetry(self, servo_ids: list[int], **kwargs) -> dict[int, ServoTelemetry]:
+        self.full_read_count += 1
+        return MockDxlBus.read_telemetry(self, servo_ids, **kwargs)
+
+
+class _MissingPositionMinimalBus(_ExperimentProfileBus):
+    def read_minimal_telemetry(self, servo_ids: list[int]) -> dict[int, ServoTelemetry]:
+        result = super().read_minimal_telemetry(servo_ids)
+        failed_id = int(servo_ids[0])
+        result[failed_id].present_position = None
+        result[failed_id].telemetry_error = "mock missing position during pre-motion minimal read"
+        result[failed_id].telemetry_error_code = "missing_position"
+        result[failed_id].telemetry_error_detail = result[failed_id].telemetry_error
+        return result
+
+
 def _settings(tmp_path: Path, servo_ids: list[int] | None = None) -> Settings:
     ids = servo_ids or [1, 2, 3, 4]
     return Settings(
@@ -137,6 +180,8 @@ def test_servo_transport_diagnostic_reports_minimal_schema(tmp_path: Path) -> No
 
     assert result.fields == "minimal"
     assert result.sample_count == 1
+    assert result.achieved_read_rate_hz is not None
+    assert result.achieved_read_rate_hz > 0.0
     assert result.success_count_by_servo == {"5": 1, "6": 1, "7": 1, "8": 1}
     assert result.failure_count_by_type == {}
     assert "stable" in result.recommended_next_action.lower()
@@ -241,3 +286,88 @@ def test_experiment_summary_status_cannot_claim_success_when_run_failed(tmp_path
     assert result.success is False
     assert result.summary.success is False
     assert result.summary.status != "success"
+
+
+def test_collect_pose_servo_only_motion_uses_experiment_owned_minimal_reads(tmp_path: Path) -> None:
+    bus = _ExperimentProfileBus([1, 2, 3, 4])
+    service = _service(tmp_path, bus=bus)
+    bus.minimal_read_count = 0
+    bus.live_read_count = 0
+    bus.full_read_count = 0
+    runner = ExperimentRunner(
+        project_root=tmp_path,
+        settings=_settings(tmp_path),
+        tracking_service=None,
+        servo_service=service,
+        output_dir=tmp_path / "data" / "experiments",
+        registration_path=tmp_path / "missing_registration.json",
+        sleep_fn=lambda _seconds: None,
+    )
+
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dry_run": False,
+            "allow_no_tracker_test_run": True,
+            "run_trust_mode": "servo_only",
+            "allow_lower_trust_pretension": True,
+            "export_legacy_dat": False,
+            "settle_time_s": 0.0,
+            "post_write_settle_s": 0.0,
+            "command_points": [
+                {"tendon_displacement_cm": [0.0, 0.0, 0.0, 0.0], "settle_time_s": 0.0}
+            ],
+        },
+    )
+
+    assert result.success is True
+    assert bus.minimal_read_count >= 1
+    sample_rows = [
+        json.loads(line)
+        for line in (result.paths.output_dir / "samples.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert sample_rows
+    command_metadata = sample_rows[0]["extra"]["command_metadata"]
+    assert command_metadata["pre_motion_telemetry_profile"] == "minimal"
+    assert command_metadata["pre_motion_bus_owners"] == ["collect_pose_command_dataset"]
+    servo_feedback = sample_rows[0]["extra"]["servo_feedback_at_command"]
+    assert {row["bus_owner"] for row in servo_feedback.values()} == {"collect_pose_command_dataset"}
+
+
+def test_collect_pose_initial_command_failure_writes_context_without_finalize_masking(tmp_path: Path) -> None:
+    bus = _MissingPositionMinimalBus([1, 2, 3, 4])
+    service = _service(tmp_path, bus=bus)
+    runner = ExperimentRunner(
+        project_root=tmp_path,
+        settings=_settings(tmp_path),
+        tracking_service=None,
+        servo_service=service,
+        output_dir=tmp_path / "data" / "experiments",
+        registration_path=tmp_path / "missing_registration.json",
+        sleep_fn=lambda _seconds: None,
+    )
+
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dry_run": False,
+            "allow_no_tracker_test_run": True,
+            "run_trust_mode": "servo_only",
+            "allow_lower_trust_pretension": True,
+            "export_legacy_dat": False,
+            "command_points": [
+                {"tendon_displacement_cm": [0.0, 0.0, 0.0, 0.0], "settle_time_s": 0.0}
+            ],
+        },
+    )
+
+    assert result.success is False
+    assert "Finalize failed" not in result.message
+    assert result.summary.stage_pass_fail.get("execute") == "failed"
+    assert result.summary.stage_pass_fail.get("finalize") == "passed"
+    failure_context = json.loads((result.paths.output_dir / "failure_context.json").read_text(encoding="utf-8"))
+    assert failure_context["failure_category"] == "simple_experiment_motion_rejected"
+    assert failure_context["command_metadata"]["pre_motion_telemetry_profile"] == "minimal"
+    assert failure_context["command_metadata"]["pre_motion_bus_owners"] == ["collect_pose_command_dataset"]
+    assert failure_context["telemetry_snapshot_fields"]["read_batch_completed_monotonic_s"] is True

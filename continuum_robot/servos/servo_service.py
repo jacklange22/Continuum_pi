@@ -1246,6 +1246,7 @@ class ServoService:
             owner = self._exclusive_bus_owner
         read_source = "experiment_owned" if owner else str(source or "live_read")
         completed_at = float(self._time_fn())
+        batch_duration_ms = max(0.0, (completed_at - float(started_at)) * 1000.0)
         wall_time = datetime.now(timezone.utc).isoformat()
         for telemetry in dict(telemetry_by_id or {}).values():
             if telemetry is None:
@@ -1271,7 +1272,18 @@ class ServoService:
             if packet_ok and not telemetry.last_valid_packet_wall_time:
                 telemetry.last_valid_packet_wall_time = wall_time
             if telemetry.last_valid_packet_monotonic_s is not None:
-                telemetry.packet_age_s = max(0.0, completed_at - float(telemetry.last_valid_packet_monotonic_s))
+                packet_age = max(0.0, completed_at - float(telemetry.last_valid_packet_monotonic_s))
+                telemetry.packet_age_s = packet_age
+                telemetry.per_servo_packet_age_s = packet_age
+            telemetry.read_batch_started_monotonic_s = float(started_at)
+            telemetry.read_batch_completed_monotonic_s = completed_at
+            telemetry.read_batch_duration_ms = batch_duration_ms
+            telemetry.snapshot_age_s = 0.0
+            telemetry.freshness_decision_source = (
+                f"{read_source}_current_batch_packet_ok"
+                if packet_ok
+                else self._classify_telemetry_error_code(telemetry) or "packet_not_valid"
+            )
             telemetry.read_source = read_source
             telemetry.bus_owner = owner
             telemetry.read_sequence_index = sequence_index
@@ -3550,6 +3562,12 @@ class ServoService:
                     if last_valid is not None
                     else telemetry.packet_age_s
                 ),
+                "read_batch_started_monotonic_s": getattr(telemetry, "read_batch_started_monotonic_s", None),
+                "read_batch_completed_monotonic_s": getattr(telemetry, "read_batch_completed_monotonic_s", None),
+                "read_batch_duration_ms": getattr(telemetry, "read_batch_duration_ms", None),
+                "snapshot_age_s": getattr(telemetry, "snapshot_age_s", None),
+                "per_servo_packet_age_s": getattr(telemetry, "per_servo_packet_age_s", None),
+                "freshness_decision_source": getattr(telemetry, "freshness_decision_source", None),
                 "read_source": telemetry.read_source,
                 "telemetry_error_code": telemetry.telemetry_error_code,
                 "telemetry_error_detail": telemetry.telemetry_error_detail,
@@ -3557,6 +3575,123 @@ class ServoService:
                 "read_sequence_index": telemetry.read_sequence_index,
             }
         return payload
+
+    @staticmethod
+    def _telemetry_batch_metadata(
+        telemetry_by_id: dict[int, ServoTelemetry],
+        *,
+        prefix: str,
+    ) -> dict[str, Any]:
+        telemetry_values = [item for item in dict(telemetry_by_id or {}).values() if item is not None]
+        sequence_indexes = sorted(
+            {
+                int(item.read_sequence_index)
+                for item in telemetry_values
+                if item.read_sequence_index is not None
+            }
+        )
+        batch_started = [
+            float(item.read_batch_started_monotonic_s)
+            for item in telemetry_values
+            if item.read_batch_started_monotonic_s is not None
+        ]
+        batch_completed = [
+            float(item.read_batch_completed_monotonic_s)
+            for item in telemetry_values
+            if item.read_batch_completed_monotonic_s is not None
+        ]
+        batch_durations = [
+            float(item.read_batch_duration_ms)
+            for item in telemetry_values
+            if item.read_batch_duration_ms is not None
+        ]
+        owners = sorted(
+            {
+                str(item.bus_owner)
+                for item in telemetry_values
+                if item.bus_owner not in (None, "")
+            }
+        )
+        read_sources = sorted(
+            {
+                str(item.read_source)
+                for item in telemetry_values
+                if item.read_source not in (None, "")
+            }
+        )
+        decision_sources = sorted(
+            {
+                str(item.freshness_decision_source)
+                for item in telemetry_values
+                if item.freshness_decision_source not in (None, "")
+            }
+        )
+        packet_ok_ids = [
+            int(servo_id)
+            for servo_id, item in sorted(dict(telemetry_by_id or {}).items())
+            if item is not None
+            and item.present_position is not None
+            and item.hardware_error_code in (None, 0)
+            and not item.hardware_error
+            and not item.telemetry_error
+            and not item.identity_error
+        ]
+        return {
+            f"{prefix}_read_sequence_indexes": sequence_indexes,
+            f"{prefix}_read_batch_started_monotonic_s": min(batch_started) if batch_started else None,
+            f"{prefix}_read_batch_completed_monotonic_s": max(batch_completed) if batch_completed else None,
+            f"{prefix}_read_batch_duration_ms": max(batch_durations) if batch_durations else None,
+            f"{prefix}_read_sources": read_sources,
+            f"{prefix}_bus_owners": owners,
+            f"{prefix}_freshness_decision_sources": decision_sources,
+            f"{prefix}_packet_ok_servo_ids": packet_ok_ids,
+        }
+
+    def _simple_motion_failure_context(
+        self,
+        *,
+        failure_reason: str,
+        failure_category: str,
+        servo_ids: list[int],
+        telemetry_by_id: dict[int, ServoTelemetry],
+        raw_goals_by_servo: dict[int, int],
+        resolved_displacements: list[float],
+        command_metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        packet_errors = self._packet_error_servo_ids(telemetry_by_id, servo_ids)
+        first_failed = int(packet_errors[0]) if packet_errors else None
+        return {
+            "failure_category": str(failure_category),
+            "failure_reason": str(failure_reason),
+            "failed_servo_id": first_failed,
+            "telemetry_error_code": (
+                getattr(telemetry_by_id.get(first_failed), "telemetry_error_code", None)
+                if first_failed is not None
+                else None
+            ),
+            "missing_fields": {
+                str(servo_id): self._missing_motion_fields(telemetry_by_id.get(int(servo_id)))
+                for servo_id in servo_ids
+                if self._missing_motion_fields(telemetry_by_id.get(int(servo_id)))
+            },
+            "last_valid_telemetry_by_servo": self._telemetry_payload_by_servo(telemetry_by_id),
+            "last_commanded_goal_ticks": {str(k): int(v) for k, v in sorted(raw_goals_by_servo.items())},
+            "last_resolved_cable_command_cm": list(resolved_displacements),
+            "command_metadata": dict(command_metadata or {}),
+        }
+
+    @staticmethod
+    def _missing_motion_fields(telemetry: ServoTelemetry | None) -> list[str]:
+        if telemetry is None:
+            return ["telemetry"]
+        missing: list[str] = []
+        if telemetry.present_position is None:
+            missing.append("present_position")
+        if telemetry.hardware_error_code is None:
+            missing.append("hardware_error_status")
+        if telemetry.operating_mode is None:
+            missing.append("operating_mode")
+        return missing
 
     def _displacement_rejection_reason(
         self,
@@ -3672,6 +3807,61 @@ class ServoService:
             and telemetry.last_valid_packet_monotonic_s is not None
         )
 
+    def _validate_simple_motion_snapshot_freshness(self, telemetry: ServoTelemetry) -> None:
+        if not self.dxl_bus.config.require_fresh_telemetry_for_motion:
+            return
+        if (
+            self._runtime_packet_read_ok(telemetry)
+            and str(getattr(telemetry, "read_source", "") or "") == "experiment_owned"
+            and getattr(telemetry, "read_batch_completed_monotonic_s", None) is not None
+        ):
+            telemetry.freshness_decision_source = "experiment_owned_read_batch_completed"
+            telemetry.snapshot_age_s = self.safety_guard.telemetry_age_s(
+                telemetry.read_batch_completed_monotonic_s
+            )
+            self.safety_guard.validate_telemetry_freshness(
+                telemetry.read_batch_completed_monotonic_s
+            )
+            return
+        telemetry.freshness_decision_source = "per_servo_last_valid_packet"
+        self.safety_guard.validate_telemetry_freshness(
+            telemetry.last_valid_packet_monotonic_s or telemetry.last_read_monotonic_s
+        )
+
+    def _simple_experiment_safe_bounds_for_servo(
+        self,
+        *,
+        servo_id: int,
+        telemetry: ServoTelemetry,
+    ) -> tuple[int, int]:
+        raw_min, raw_max = self.raw_position_range()
+        cached = self.last_known_telemetry([int(servo_id)]).get(int(servo_id))
+        position_min = (
+            telemetry.min_position_limit
+            if telemetry.min_position_limit is not None
+            else (
+                cached.min_position_limit
+                if cached is not None and cached.min_position_limit is not None
+                else raw_min
+            )
+        )
+        position_max = (
+            telemetry.max_position_limit
+            if telemetry.max_position_limit is not None
+            else (
+                cached.max_position_limit
+                if cached is not None and cached.max_position_limit is not None
+                else raw_max
+            )
+        )
+        safe_min = int(position_min) + int(self.safety_guard.software_position_margin_ticks)
+        safe_max = int(position_max) - int(self.safety_guard.software_position_margin_ticks)
+        safe_min = max(int(raw_min), int(safe_min))
+        safe_max = min(int(raw_max), int(safe_max))
+        if safe_min > safe_max:
+            raise ValueError("Software safety margin exceeds the servo hardware position range.")
+        return int(safe_min), int(safe_max)
+
     @staticmethod
     def _non_mode_blocking_reasons(assessment: ServoMotionAssessment) -> list[str]:
         reasons: list[str] = []
@@ -3696,9 +3886,7 @@ class ServoService:
         safe_max: int | None = None
         if self.dxl_bus.config.require_fresh_telemetry_for_motion:
             try:
-                self.safety_guard.validate_telemetry_freshness(
-                    telemetry.last_valid_packet_monotonic_s or telemetry.last_read_monotonic_s
-                )
+                self._validate_simple_motion_snapshot_freshness(telemetry)
             except ValueError as exc:
                 errors.append(str(exc))
         if telemetry.present_position is None:
@@ -3741,7 +3929,7 @@ class ServoService:
         if telemetry.torque_enabled is None and not self.dxl_bus.config.auto_torque_enable_on_write:
             errors.append("Torque Enable state is unavailable and auto torque enable is disabled.")
         try:
-            safe_min, safe_max = self._hardware_safe_bounds_for_servo(
+            safe_min, safe_max = self._simple_experiment_safe_bounds_for_servo(
                 servo_id=int(servo_id),
                 telemetry=telemetry,
             )
@@ -3982,7 +4170,7 @@ class ServoService:
                 raw_goals_by_servo,
                 list(pair_notes),
             )
-        command_metadata.setdefault("pre_motion_read_source", "experiment_owned_live_read")
+        command_metadata.setdefault("pre_motion_read_source", "experiment_owned_minimal_read")
         if prevalidated_telemetry_by_id is not None:
             telemetry_by_id = {int(k): v for k, v in dict(prevalidated_telemetry_by_id).items()}
             missing_prevalidated = [int(servo_id) for servo_id in servo_ids if int(servo_id) not in telemetry_by_id]
@@ -3994,21 +4182,24 @@ class ServoService:
             command_metadata["pre_motion_read_source"] = "prevalidated_experiment_owned_health_read"
         else:
             telemetry_by_id = self._run_with_retry(
-                action="read telemetry before simple experiment motion",
-                fn=lambda: self.read_live_telemetry(servo_ids),
+                action="read minimal telemetry before simple experiment motion",
+                fn=lambda: self.read_minimal_telemetry(servo_ids),
                 attempts=bus_attempts,
             )
+            command_metadata["pre_motion_telemetry_profile"] = "minimal"
         configuration_notes = self._ensure_simple_single_segment_experiment_configuration(
             list(servo_ids),
             telemetry_by_id=telemetry_by_id,
         )
         if prevalidated_telemetry_by_id is None and (configuration_notes or not chase_tight_loop_writes):
             telemetry_by_id = self._run_with_retry(
-                action="read telemetry after simple experiment mode configuration",
-                fn=lambda: self.read_live_telemetry(servo_ids),
+                action="read minimal telemetry after simple experiment mode configuration",
+                fn=lambda: self.read_minimal_telemetry(servo_ids),
                 attempts=bus_attempts,
             )
-            command_metadata["pre_motion_read_source"] = "experiment_owned_live_read_after_configuration"
+            command_metadata["pre_motion_read_source"] = "experiment_owned_minimal_read_after_configuration"
+            command_metadata["pre_motion_telemetry_profile"] = "minimal"
+        command_metadata.update(self._telemetry_batch_metadata(telemetry_by_id, prefix="pre_motion"))
         configuration_summary = self.single_segment_motion_configuration_summary(
             list(servo_ids),
             workflow=motion_profile.workflow,
@@ -4021,6 +4212,7 @@ class ServoService:
             )
             for servo_id in servo_ids
         }
+        command_metadata.update(self._telemetry_batch_metadata(telemetry_by_id, prefix="pre_motion"))
 
         payload: dict[int, int] = {}
         clamp_reasons: dict[int, str] = {}
@@ -4097,7 +4289,18 @@ class ServoService:
                 raw_goals_by_servo,
                 self._telemetry_payload_by_servo(telemetry_by_id),
             )
-            raise RuntimeError(f"{lead}: {'; '.join(rejection_reasons)}.")
+            raise ServoTelemetryRetryError(
+                f"{lead}: {'; '.join(rejection_reasons)}.",
+                context=self._simple_motion_failure_context(
+                    failure_reason=f"{lead}: {'; '.join(rejection_reasons)}.",
+                    failure_category="simple_experiment_motion_rejected",
+                    servo_ids=list(servo_ids),
+                    telemetry_by_id=telemetry_by_id,
+                    raw_goals_by_servo=raw_goals_by_servo,
+                    resolved_displacements=resolved_displacements,
+                    command_metadata=command_metadata,
+                ),
+            )
         if stale_age_override_servo_ids:
             command_metadata["stale_cached_telemetry_recovered_by_fresh_read"] = True
             command_metadata["stale_age_override_servo_ids"] = list(stale_age_override_servo_ids)
@@ -4133,6 +4336,7 @@ class ServoService:
                 allow_recovered_packet_errors=bool(allow_recovered_packet_errors),
             )
         command_metadata.update(telemetry_retry_metadata)
+        command_metadata.update(self._telemetry_batch_metadata(telemetry, prefix="post_motion"))
         for servo_id in servo_ids:
             try:
                 self._validate_post_simple_single_segment_motion(telemetry[int(servo_id)])
