@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import json
+from dataclasses import replace
 from pathlib import Path
 import threading
 
@@ -181,6 +182,39 @@ class _MissingPositionLiveReadBus(MockDxlBus):
             result[int(servo_id)].present_position = None
             result[int(servo_id)].telemetry_error = "mock fresh_read_failed missing position"
             result[int(servo_id)].telemetry_error_code = "missing_position"
+        return result
+
+
+class _MinimalStripPositionBus(MockDxlBus):
+    """After ``arm_faulting_live_reads()``, live reads omit Present Position (precheck path)."""
+
+    def __init__(self, servo_ids: list[int] | None = None) -> None:
+        super().__init__(servo_ids or [1, 2, 3, 4])
+        self._fault_live_reads = False
+
+    def arm_faulting_live_reads(self) -> None:
+        self._fault_live_reads = True
+
+    def read_live_telemetry(self, servo_ids: list[int]) -> dict[int, object]:
+        result = super().read_live_telemetry(servo_ids)
+        if not self._fault_live_reads:
+            return result
+        for servo_id in servo_ids:
+            tel = result[int(servo_id)]
+            tel.present_position = None
+            tel.telemetry_error = "mock_live_read_missing_position"
+            tel.telemetry_error_code = "missing_position"
+        return result
+
+    def read_minimal_telemetry(self, servo_ids: list[int]) -> dict[int, object]:
+        result = super().read_minimal_telemetry(servo_ids)
+        if not self._fault_live_reads:
+            return result
+        for servo_id in servo_ids:
+            tel = result[int(servo_id)]
+            tel.present_position = None
+            tel.telemetry_error = "mock_minimal_read_missing_position"
+            tel.telemetry_error_code = "missing_position"
         return result
 
 
@@ -2101,3 +2135,83 @@ def test_servo_service_pretension_fails_on_unsafe_voltage_temperature_and_fault(
     assert result.success is False
     assert result.status == "arming_failed"
     assert result.primary_reason == "Servo hardware error is active."
+
+
+def _poison_last_known_positions_for_gui_stale_cache(service: ServoService, servo_ids: list[int]) -> None:
+    """Simulate GUI/System cache rows missing Present Position without affecting the next live bus read."""
+    with service._bus_state_lock:
+        for servo_id in servo_ids:
+            old = service._last_telemetry_by_id.get(int(servo_id))
+            if old is None:
+                continue
+            service._last_telemetry_by_id[int(servo_id)] = replace(
+                old,
+                present_position=None,
+                telemetry_error="mock_stale_gui_cache_missing_position",
+            )
+
+
+def _prime_simple_segment_modeling_service(tmp_path: Path, *, bus: MockDxlBus) -> ServoService:
+    service = _build_service(tmp_path, dxl_bus=bus)
+    service.connect("/dev/mock-openrb", 115200)
+    for servo_id in [1, 2, 3, 4]:
+        service.set_servo_torque_enabled(servo_id, True)
+        service.save_startup_calibration(servo_id=servo_id)
+    service.capture_manual_pretension_state(note="coordinated precheck test")
+    service.accept_manual_pretension_state()
+    return service
+
+
+def test_coordinated_motion_precheck_assessments_are_experiment_owned_and_release_bus(tmp_path: Path) -> None:
+    service = _prime_simple_segment_modeling_service(tmp_path, bus=MockDxlBus([1, 2, 3, 4]))
+    assessments = service.coordinated_motion_precheck_assessments(
+        [1, 2, 3, 4],
+        owner="unit_test_precheck",
+        reason="coordinated_motion_precheck_assessments coverage",
+    )
+    assert all(row.ready for row in assessments.values())
+    assert assessments[1].telemetry.read_source == "experiment_owned"
+    assert assessments[1].telemetry.bus_owner == "unit_test_precheck"
+    bus_status = service.bus_ownership_status()
+    assert bus_status.active is False
+
+
+def test_coordinated_motion_precheck_passes_when_gui_cache_omits_position(tmp_path: Path) -> None:
+    service = _prime_simple_segment_modeling_service(tmp_path, bus=MockDxlBus([1, 2, 3, 4]))
+    _poison_last_known_positions_for_gui_stale_cache(service, [1, 2, 3, 4])
+    assert service.last_known_telemetry([1])[1].present_position is None
+    assessments = service.coordinated_motion_precheck_assessments(
+        [1, 2, 3, 4],
+        owner="unit_test_precheck",
+        reason="stale cache vs fresh minimal batch",
+    )
+    assert all(row.ready for row in assessments.values())
+    assert assessments[1].telemetry.present_position is not None
+    assert assessments[1].telemetry.read_source == "experiment_owned"
+
+
+def test_coordinated_motion_precheck_fails_when_live_read_lacks_position(tmp_path: Path) -> None:
+    bus = _MinimalStripPositionBus()
+    service = _prime_simple_segment_modeling_service(tmp_path, bus=bus)
+    bus.arm_faulting_live_reads()
+    assessments = service.coordinated_motion_precheck_assessments(
+        [1, 2, 3, 4],
+        owner="unit_test_precheck",
+        reason="live read fault",
+    )
+    assert not assessments[1].ready
+    assert "Present Position is unavailable" in assessments[1].reason
+
+
+def test_command_displacement_succeeds_after_stale_gui_cache_poison(tmp_path: Path) -> None:
+    service = _prime_simple_segment_modeling_service(tmp_path, bus=MockDxlBus([1, 2, 3, 4]))
+    _poison_last_known_positions_for_gui_stale_cache(service, [1, 2, 3, 4])
+    neutral = service.resolve_startup_reference_ticks([1, 2, 3, 4])
+    ticks = [int(neutral.ticks_by_servo[sid]) for sid in [1, 2, 3, 4]]
+    result = service.command_displacement(
+        tendon_displacements_cm=[0.0, 0.0, 0.0, 0.0],
+        neutral_ticks=ticks,
+        servo_ids=[1, 2, 3, 4],
+    )
+    assert set(result.positions_by_id) == {1, 2, 3, 4}
+    assert all(result.positions_by_id[sid] is not None for sid in (1, 2, 3, 4))

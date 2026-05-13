@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -57,14 +58,27 @@ def _settings() -> Settings:
     )
 
 
-def _servo_service(tmp_path: Path) -> ServoService:
+def _servo_service(tmp_path: Path, *, dxl_bus: MockDxlBus | None = None) -> ServoService:
     return ServoService(
-        dxl_bus=MockDxlBus([1, 2, 3, 4]),
+        dxl_bus=dxl_bus or MockDxlBus([1, 2, 3, 4]),
         mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
         safety_guard=SafetyGuard(min_offset_ticks=-600, max_offset_ticks=600, max_current_ma=850),
         neutral_calibration=NeutralCalibrationService(path=tmp_path / "neutral.json"),
         pretension_validation=PretensionValidationService(),
     )
+
+
+def _poison_last_known_positions_for_gui_stale_cache(service: ServoService, servo_ids: list[int]) -> None:
+    with service._bus_state_lock:
+        for servo_id in servo_ids:
+            old = service._last_telemetry_by_id.get(int(servo_id))
+            if old is None:
+                continue
+            service._last_telemetry_by_id[int(servo_id)] = replace(
+                old,
+                present_position=None,
+                telemetry_error="mock_stale_gui_cache_missing_position",
+            )
 
 
 class _CollectPosePacketErrorBus(MockDxlBus):
@@ -86,6 +100,39 @@ class _CollectPosePacketErrorBus(MockDxlBus):
             telemetry.present_position = None
             telemetry.telemetry_error = "[TxRxResult] Incorrect status packet!"
             telemetry.hardware_error = "[TxRxResult] Incorrect status packet!"
+        return result
+
+
+class _MinimalStripPositionBus(MockDxlBus):
+    """After ``arm_faulting_live_reads()``, coordinated precheck live reads omit Present Position."""
+
+    def __init__(self, servo_ids: list[int] | None = None) -> None:
+        super().__init__(servo_ids or [1, 2, 3, 4])
+        self._fault_live_reads = False
+
+    def arm_faulting_live_reads(self) -> None:
+        self._fault_live_reads = True
+
+    def read_live_telemetry(self, servo_ids: list[int]):
+        result = super().read_live_telemetry(servo_ids)
+        if not self._fault_live_reads:
+            return result
+        for servo_id in servo_ids:
+            tel = result[int(servo_id)]
+            tel.present_position = None
+            tel.telemetry_error = "mock_live_read_missing_position"
+            tel.telemetry_error_code = "missing_position"
+        return result
+
+    def read_minimal_telemetry(self, servo_ids: list[int]):
+        result = super().read_minimal_telemetry(servo_ids)
+        if not self._fault_live_reads:
+            return result
+        for servo_id in servo_ids:
+            tel = result[int(servo_id)]
+            tel.present_position = None
+            tel.telemetry_error = "mock_minimal_read_missing_position"
+            tel.telemetry_error_code = "missing_position"
         return result
 
 
@@ -369,8 +416,8 @@ def _tracking_service(settings: Settings, tmp_path: Path, registration_path: Pat
     )
 
 
-def _ready_modeling_servo_service(tmp_path: Path) -> ServoService:
-    service = _servo_service(tmp_path)
+def _ready_modeling_servo_service(tmp_path: Path, *, dxl_bus: MockDxlBus | None = None) -> ServoService:
+    service = _servo_service(tmp_path, dxl_bus=dxl_bus)
     service.connect("/dev/mock-openrb", 115200)
     for servo_id in [1, 2, 3, 4]:
         service.save_startup_calibration(servo_id=servo_id)
@@ -1558,3 +1605,68 @@ def test_collect_pose_command_dataset_blocks_lower_trust_runtime_tip_by_default(
     assert "runtime tip policy" in result.message.lower()
     bundle = runner.load_dataset(result.paths.output_dir)
     assert bundle.summary.status == "invalid_due_to_insufficient_samples"
+
+
+def test_collect_pose_command_dataset_servo_precheck_passes_with_stale_gui_telemetry_cache(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    servo_service = _ready_modeling_servo_service(tmp_path)
+    _poison_last_known_positions_for_gui_stale_cache(servo_service, [1, 2, 3, 4])
+    assert servo_service.last_known_telemetry([1])[1].present_position is None
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_DisconnectedTrackingService(),
+        servo_service=servo_service,
+    )
+
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dataset_mode": "workspace_coverage",
+            "dry_run": False,
+            "sample_count_target": 1,
+            "samples_per_command": 1,
+            "allow_no_tracker_test_run": True,
+            "run_trust_mode": "servo_only",
+        },
+    )
+
+    assert result.success is True
+
+
+def test_collect_pose_command_dataset_servo_precheck_failure_writes_precheck_failure_context(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    bus = _MinimalStripPositionBus()
+    servo_service = _ready_modeling_servo_service(tmp_path, dxl_bus=bus)
+    bus.arm_faulting_live_reads()
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_DisconnectedTrackingService(),
+        servo_service=servo_service,
+    )
+
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dry_run": False,
+            "sample_count_target": 1,
+            "samples_per_command": 1,
+            "allow_no_tracker_test_run": True,
+            "run_trust_mode": "servo_only",
+        },
+    )
+
+    assert result.success is False
+    assert "Servo precheck failed" in result.message
+    assert "Present Position is unavailable" in result.message
+    ctx_path = result.paths.output_dir / "precheck_failure_context.json"
+    assert ctx_path.exists()
+    ctx = json.loads(ctx_path.read_text(encoding="utf-8"))
+    assert ctx["experiment"] == "collect_pose_command_dataset"
+    assert ctx["failed_servo_id"] == 1
+    assert "present_position" in ctx["missing_fields"]
+    assert ctx["fresh_precheck_read_attempted"] is True
+    assert ctx["telemetry_read_source"] == "experiment_owned"

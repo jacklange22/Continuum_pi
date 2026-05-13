@@ -6026,6 +6026,12 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 json.dumps(failure_context, indent=2, sort_keys=True),
                 encoding="utf-8",
             )
+        precheck_ctx = dict(session.metrics.get("precheck_failure_context", {}) or {})
+        if precheck_ctx:
+            (paths.output_dir / "precheck_failure_context.json").write_text(
+                json.dumps(precheck_ctx, indent=2, sort_keys=False),
+                encoding="utf-8",
+            )
         quality = _collect_pose_dataset_quality_summary(
             samples=list(session.samples),
             metrics=summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else dict(session.metrics),
@@ -6199,6 +6205,39 @@ def _load_collect_pose_neutral_ticks(session: ExperimentSession, *, servo_ids: l
     return [int(reference.ticks_by_servo[servo_id]) for servo_id in servo_ids if servo_id in reference.ticks_by_servo]
 
 
+def _record_collect_pose_servo_precheck_failure(
+    session: ExperimentSession,
+    *,
+    failed_servo_id: int,
+    assessment: Any,
+    fresh_precheck_read_attempted: bool,
+) -> None:
+    tel = assessment.telemetry
+    bus = session.context.servo_service.bus_ownership_status()
+    missing: list[str] = []
+    if getattr(tel, "present_position", None) is None:
+        missing.append("present_position")
+    if getattr(tel, "operating_mode", None) is None:
+        missing.append("operating_mode")
+    if getattr(tel, "hardware_error_code", None) is None and getattr(tel, "hardware_error", None):
+        missing.append("hardware_error_status")
+    session.set_metric(
+        "precheck_failure_context",
+        {
+            "experiment": "collect_pose_command_dataset",
+            "failed_servo_id": int(failed_servo_id),
+            "missing_fields": missing,
+            "telemetry_read_source": getattr(tel, "read_source", None),
+            "telemetry_bus_owner_during_read": getattr(tel, "bus_owner", None),
+            "fresh_precheck_read_attempted": bool(fresh_precheck_read_attempted),
+            "exclusive_bus_owner_snapshot": bus.owner,
+            "exclusive_bus_active": bool(bus.active),
+            "assessment_reason": assessment.reason,
+            "assessment_blocking_reasons": list(assessment.blocking_reasons),
+        },
+    )
+
+
 def _precheck_collect_pose_command_dataset(
     *,
     session: ExperimentSession,
@@ -6209,7 +6248,9 @@ def _precheck_collect_pose_command_dataset(
     tracking_service = session.context.tracking_service
     servo_only_mode = _collect_pose_servo_only_test_mode(config=config, tracking_service=tracking_service)
     if tracking_service is None and not servo_only_mode:
-        raise RuntimeError("Motor Babble modeling dataset collection requires tracking_service.")
+        raise RuntimeError(
+            "Tracker precheck failed: Motor Babble modeling dataset collection requires tracking_service."
+        )
     parallel_single = _collect_pose_parallel_single_mode(session)
     expected_count = 8 if parallel_single else 4
     if len(servo_ids) != expected_count:
@@ -6230,7 +6271,10 @@ def _precheck_collect_pose_command_dataset(
     if not config.dry_run and bool(session.context.settings.runtime.mock_mode) and not servo_only_mode:
         raise RuntimeError("Thesis-grade modeling datasets require live runtime mode. Disable mock mode or switch to dry_run.")
     if (not config.dry_run) and not servo_only_mode and snapshot.canonical_state != "streaming_healthy":
-        raise RuntimeError(f"Tracker must be streaming healthy before modeling dataset collection; current state is {snapshot.canonical_state}.")
+        raise RuntimeError(
+            "Tracker precheck failed: Tracker must be streaming healthy before modeling dataset collection; "
+            f"current state is {snapshot.canonical_state}."
+        )
     if servo_only_mode:
         runtime_tip_policy = None
     else:
@@ -6258,27 +6302,43 @@ def _precheck_collect_pose_command_dataset(
                     "An accepted pretension/startup artifact is required before servo-only motion testing. "
                     + pretension_source.message
                 )
+            assessments = session.context.servo_service.coordinated_motion_precheck_assessments(
+                list(servo_ids),
+                owner="collect_pose_command_dataset_precheck",
+                reason="coordinated motion readiness before modeling dataset collection (servo-only path)",
+            )
             for servo_id in servo_ids:
-                assessment = session.context.servo_service.assess_experiment_motion(int(servo_id))
+                assessment = assessments[int(servo_id)]
                 if not assessment.ready:
-                    raise RuntimeError(f"Servo {servo_id} is not ready for coordinated motion: {assessment.reason}")
+                    _record_collect_pose_servo_precheck_failure(
+                        session,
+                        failed_servo_id=int(servo_id),
+                        assessment=assessment,
+                        fresh_precheck_read_attempted=True,
+                    )
+                    raise RuntimeError(
+                        f"Servo precheck failed: Servo {servo_id} is not ready for coordinated motion: {assessment.reason}"
+                    )
         if config.dataset_mode not in {"workspace_coverage", "hysteresis_path_dependence", "repeatability_linked"}:
             if not config.command_points and not bool(config.legacy_schedule_override):
                 raise RuntimeError(f"Unsupported modeling dataset mode: {config.dataset_mode}")
         return
     if config.require_robot_frame_tip and snapshot.registration_state != "loaded":
-        raise RuntimeError("Accepted base registration must be loaded before modeling dataset collection.")
+        raise RuntimeError(
+            "Tracker precheck failed: Accepted base registration must be loaded before modeling dataset collection."
+        )
     if config.require_robot_frame_tip:
         if not runtime_tip_policy.allowed_for_workflow:
             raise RuntimeError(
-                "Motor Babble requires the shared runtime tip policy to allow modeling data. "
+                "Tracker precheck failed: Motor Babble requires the shared runtime tip policy to allow modeling data. "
                 f"Current mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}, "
                 f"reasons={runtime_tip_policy.reasons or ['policy_not_allowed']}. "
                 "Enable the lower-trust override only when you intend a lower-trust modeling dataset."
             )
         if snapshot.tip_pose_status not in {"ok", "coil_as_tip"} or snapshot.T_robot_tip is None:
             raise RuntimeError(
-                f"Live robot-frame tip pose must be active before modeling dataset collection; tip pose status is {snapshot.tip_pose_status}."
+                "Tracker precheck failed: Live robot-frame tip pose must be active before modeling dataset collection; "
+                f"tip pose status is {snapshot.tip_pose_status}."
             )
     gate = _modeling_tracker_gate_status(
         snapshot=snapshot,
@@ -6310,10 +6370,23 @@ def _precheck_collect_pose_command_dataset(
                 + pretension_source.message
             )
     if not config.dry_run:
+        assessments = session.context.servo_service.coordinated_motion_precheck_assessments(
+            list(servo_ids),
+            owner="collect_pose_command_dataset_precheck",
+            reason="coordinated motion readiness before modeling dataset collection",
+        )
         for servo_id in servo_ids:
-            assessment = session.context.servo_service.assess_experiment_motion(int(servo_id))
+            assessment = assessments[int(servo_id)]
             if not assessment.ready:
-                raise RuntimeError(f"Servo {servo_id} is not ready for coordinated motion: {assessment.reason}")
+                _record_collect_pose_servo_precheck_failure(
+                    session,
+                    failed_servo_id=int(servo_id),
+                    assessment=assessment,
+                    fresh_precheck_read_attempted=True,
+                )
+                raise RuntimeError(
+                    f"Servo precheck failed: Servo {servo_id} is not ready for coordinated motion: {assessment.reason}"
+                )
     if config.dataset_mode not in {"workspace_coverage", "hysteresis_path_dependence", "repeatability_linked"}:
         if not config.command_points and not bool(config.legacy_schedule_override):
             raise RuntimeError(f"Unsupported modeling dataset mode: {config.dataset_mode}")

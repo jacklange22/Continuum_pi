@@ -687,6 +687,40 @@ def test_repeatability_precheck_records_coil_as_tip_as_thesis_trusted(tmp_path: 
     assert provenance["thesis_trusted_runtime_tip"] is True
 
 
+def test_repeatability_precheck_motion_assessment_uses_experiment_owned_telemetry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = _servo_service(tmp_path)
+    pivot_tip_file = tmp_path / "tools" / "penprobe_08_09_24c"
+    pivot_tip_file.parent.mkdir(parents=True, exist_ok=True)
+    pivot_tip_file.write_text("0,0,0\n", encoding="utf-8")
+    experiment = SingleSegmentRepeatabilityExperiment(SingleSegmentRepeatabilityConfig())
+    session = _session(
+        tmp_path,
+        service=service,
+        snapshot=_tracking_snapshot(
+            runtime_tip_state="coil_as_tip",
+            tip_pose_status="coil_as_tip",
+            runtime_tip_mode="coil_as_tip",
+        ),
+    )
+    experiment.setup(session)
+
+    sources: list[str | None] = []
+    orig = ServoService.assess_experiment_motion
+
+    def _wrap(self, servo_id: int, *, telemetry=None):
+        sources.append(getattr(telemetry, "read_source", None) if telemetry is not None else None)
+        return orig(self, int(servo_id), telemetry=telemetry)
+
+    monkeypatch.setattr(ServoService, "assess_experiment_motion", _wrap)
+    experiment.precheck(session)
+
+    motion_sources = [value for value in sources if value is not None]
+    assert motion_sources
+    assert all(value == "experiment_owned" for value in motion_sources)
+
+
 def test_experiment_registration_and_custom_page_routing(tmp_path: Path) -> None:
     pytest.importorskip("PySide6")
     from continuum_robot.experiments.experiment_runner import ExperimentRunner

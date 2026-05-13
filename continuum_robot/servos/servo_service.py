@@ -3351,7 +3351,7 @@ class ServoService:
         telemetry: ServoTelemetry | None = None,
     ) -> ServoMotionAssessment:
         """Return readiness for ordinary experiment-motion commands."""
-        current = telemetry or self.read_telemetry([int(servo_id)])[int(servo_id)]
+        current = telemetry or self.read_live_telemetry([int(servo_id)])[int(servo_id)]
         configured_ids = self._configured_single_segment_servo_ids()
         use_simple_single_segment_assessment = (
             str(self.neutral_calibration.context.robot_mode or "").strip().lower().replace("-", "_") in {"4_servo", "8_servo", "single_segment"}
@@ -3372,6 +3372,30 @@ class ServoService:
             require_calibrated_bounds=False,
             telemetry=current,
         )
+
+    def coordinated_motion_precheck_assessments(
+        self,
+        servo_ids: list[int],
+        *,
+        owner: str,
+        reason: str | None = None,
+    ) -> dict[int, ServoMotionAssessment]:
+        """Assess coordinated-motion readiness using one experiment-owned live telemetry batch read.
+
+        GUI/System ``last_known_telemetry`` can lag when the bus is busy; callers that gate live motion
+        should use this path so freshness and ``read_source`` reflect the current batch read.
+
+        This uses ``read_live_telemetry`` (not the display ``read_minimal_telemetry`` profile) so voltage
+        and temperature fields required by motion readiness checks are present on mocks and hardware.
+        """
+        ids = [int(sid) for sid in servo_ids]
+        owner_name = str(owner or "experiment_precheck").strip() or "experiment_precheck"
+        with self.exclusive_bus_operation(owner=owner_name, reason=reason):
+            telemetry_by_id = self.read_live_telemetry(ids)
+            return {
+                int(sid): self.assess_experiment_motion(int(sid), telemetry=telemetry_by_id[int(sid)])
+                for sid in ids
+            }
 
     def plan_jog_action(self, *, servo_id: int, action: str) -> ServoMotionPlan:
         action_name = str(action).strip().lower()

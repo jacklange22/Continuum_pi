@@ -421,6 +421,12 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
             write_single_segment_repeatability_outputs,
         )
 
+        precheck_ctx = dict(session.metrics.get("precheck_failure_context", {}) or {})
+        if precheck_ctx:
+            (paths.output_dir / "precheck_failure_context.json").write_text(
+                json.dumps(precheck_ctx, indent=2, sort_keys=False),
+                encoding="utf-8",
+            )
         write_single_segment_repeatability_outputs(
             output_dir=paths.output_dir,
             metadata=session.metadata,
@@ -1148,13 +1154,21 @@ def _precheck_single_segment_repeatability(
     snapshot = session.context.tracking_service.get_snapshot()
     backend_name = str(snapshot.selected_backend_name or snapshot.backend_identity or "").lower()
     if "bridge" in backend_name:
-        raise RuntimeError("Single-segment repeatability must use the active Python NDI tracker backend, not tracker_bridge.")
+        raise RuntimeError(
+            "Tracker precheck failed: Single-segment repeatability must use the active Python NDI tracker backend, "
+            "not tracker_bridge."
+        )
     if bool(settings.runtime.mock_mode):
-        raise RuntimeError("Single-segment repeatability is a live thesis experiment. Disable mock mode before running.")
+        raise RuntimeError(
+            "Tracker precheck failed: Single-segment repeatability is a live thesis experiment. "
+            "Disable mock mode before running."
+        )
     if snapshot.canonical_state != "streaming_healthy":
-        raise RuntimeError(f"Tracker must be connected and healthy; current state is {snapshot.canonical_state}.")
+        raise RuntimeError(
+            f"Tracker precheck failed: Tracker must be connected and healthy; current state is {snapshot.canonical_state}."
+        )
     if snapshot.registration_state != "loaded":
-        raise RuntimeError("Accepted base registration must be loaded before repeatability.")
+        raise RuntimeError("Tracker precheck failed: Accepted base registration must be loaded before repeatability.")
     pivot_tip_file = getattr(settings.registration, "penprobe_file", None)
     if not pivot_tip_file:
         raise RuntimeError("No 0B pen-probe pivot tip file is configured.")
@@ -1249,7 +1263,7 @@ def _precheck_single_segment_repeatability(
         owner="single_segment_repeatability_precheck",
         reason="single-segment repeatability preflight telemetry validation",
     ):
-        telemetry_report = _read_servo_telemetry_payload(
+        telemetry_report, telemetry_by_id = _read_servo_telemetry_payload_pair(
             session,
             servo_ids,
             stage="preflight",
@@ -1272,10 +1286,41 @@ def _precheck_single_segment_repeatability(
             servo_ids,
             float(telemetry_report.get("freshness_threshold_s", 0.0) or 0.0),
         )
-    for servo_id in servo_ids:
-        assessment = session.context.servo_service.assess_experiment_motion(int(servo_id))
-        if not assessment.ready:
-            raise RuntimeError(f"Servo {servo_id} is not ready for repeatability commands: {assessment.reason}")
+        if telemetry_by_id is None:
+            raise RuntimeError(
+                "preflight_telemetry_invalid: code=internal detail=Preflight reported ok but raw telemetry missing."
+            )
+        for servo_id in servo_ids:
+            assessment = session.context.servo_service.assess_experiment_motion(
+                int(servo_id),
+                telemetry=telemetry_by_id[int(servo_id)],
+            )
+            if not assessment.ready:
+                tel = assessment.telemetry
+                bus = session.context.servo_service.bus_ownership_status()
+                missing: list[str] = []
+                if getattr(tel, "present_position", None) is None:
+                    missing.append("present_position")
+                if getattr(tel, "operating_mode", None) is None:
+                    missing.append("operating_mode")
+                session.set_metric(
+                    "precheck_failure_context",
+                    {
+                        "experiment": "single_segment_repeatability",
+                        "failed_servo_id": int(servo_id),
+                        "missing_fields": missing,
+                        "telemetry_read_source": getattr(tel, "read_source", None),
+                        "telemetry_bus_owner_during_read": getattr(tel, "bus_owner", None),
+                        "fresh_precheck_read_attempted": True,
+                        "exclusive_bus_owner_snapshot": bus.owner,
+                        "exclusive_bus_active": bool(bus.active),
+                        "assessment_reason": assessment.reason,
+                        "assessment_blocking_reasons": list(assessment.blocking_reasons),
+                    },
+                )
+                raise RuntimeError(
+                    f"Servo precheck failed: Servo {servo_id} is not ready for repeatability commands: {assessment.reason}"
+                )
 
 
 def _record_repeatability_run_provenance(
@@ -1847,22 +1892,37 @@ def _read_servo_telemetry_payload(
     *,
     stage: str,
 ) -> dict[str, Any]:
+    report, _raw = _read_servo_telemetry_payload_pair(session, servo_ids, stage=stage)
+    return report
+
+
+def _read_servo_telemetry_payload_pair(
+    session: ExperimentSession,
+    servo_ids: list[int],
+    *,
+    stage: str,
+) -> tuple[dict[str, Any], dict[int, Any] | None]:
+    """Classify live telemetry; on success return ``(report, telemetry_by_id)`` for motion assessment."""
     try:
         telemetry_by_id = session.context.servo_service.read_live_telemetry([int(value) for value in servo_ids])
     except Exception as exc:
-        return _classify_repeatability_telemetry(
-            session=session,
-            servo_ids=servo_ids,
-            telemetry_by_id=None,
-            stage=stage,
-            read_error=exc,
+        return (
+            _classify_repeatability_telemetry(
+                session=session,
+                servo_ids=servo_ids,
+                telemetry_by_id=None,
+                stage=stage,
+                read_error=exc,
+            ),
+            None,
         )
-    return _classify_repeatability_telemetry(
+    report = _classify_repeatability_telemetry(
         session=session,
         servo_ids=servo_ids,
         telemetry_by_id=telemetry_by_id,
         stage=stage,
     )
+    return report, telemetry_by_id if bool(report.get("ok", False)) else None
 
 
 def _extract_repeatability_position(
