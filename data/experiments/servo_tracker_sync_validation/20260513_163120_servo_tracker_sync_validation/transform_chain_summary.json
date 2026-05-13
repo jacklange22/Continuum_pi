@@ -1,0 +1,93 @@
+{
+  "generated_at_utc": "2026-05-13T16:31:34.520Z",
+  "provenance_note": "experiment_run:servo_tracker_sync_validation:ef75bc173b39",
+  "reasons": [],
+  "registration": {
+    "artifact_exists": true,
+    "artifact_path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+    "coil_tool_id": "0A",
+    "fre_mm": 0.6346530796834196,
+    "measurement_tool_id": "0B",
+    "state": "loaded",
+    "stored_timestamp_utc": "2026-05-13T13:42:53.573Z"
+  },
+  "runtime_tip": {
+    "allowed_for_workflow": false,
+    "calibration_state": "loaded",
+    "coil_tool_id": "0A",
+    "identity_fallback": false,
+    "measurement_tool_id": "0B",
+    "mode": "latest_accepted",
+    "mode_message": "Latest accepted runtime tip artifact is active but marked lower_trust by policy. (2026-04-17T22:55:56.544Z) Source=runtime_tip_calibration_hat.",
+    "policy": {
+      "allowed_for_workflow": false,
+      "allowed_workflows": {
+        "modeling_dataset": true,
+        "penprobe_chasing": false,
+        "pretension_validation": true,
+        "repeatability": false,
+        "transform_chain_validation": true
+      },
+      "calibration_state": "loaded",
+      "canonical_workflow": "generic",
+      "intended_use": "Accepted runtime tip calibration artifact for validation and lower-trust data collection; not thesis-trusted until the calibration workflow is independently validated.",
+      "mode": "latest_accepted",
+      "reasons": [],
+      "requested_workflow": "servo_tracker_sync_validation",
+      "requires_lower_trust_override": false,
+      "status_message": "Latest accepted runtime tip artifact is active but marked lower_trust by policy.",
+      "thesis_trusted": false,
+      "tip_pose_status": "ok",
+      "trust_label": "lower_trust",
+      "trust_level": "lower_trust",
+      "uses_calibrated_tip_transform": true,
+      "uses_coil_as_tip": false,
+      "uses_identity_transform": false,
+      "warnings": [
+        "Latest accepted runtime tip calibration is loaded but currently lower-trust than coil-as-tip; runs must record this explicitly."
+      ],
+      "workflow": "generic"
+    },
+    "selected_artifact_exists": true,
+    "selected_artifact_kind": "runtime_tip_calibration_hat",
+    "selected_artifact_path": "/home/continuum-pi/Continuum_pi/data/runtime_tip_calibration/latest_runtime_tip_calibration.json",
+    "stored_timestamp_utc": "2026-04-17T22:55:56.544Z",
+    "thesis_trusted": false,
+    "tip_pose_status": "ok",
+    "trust_label": "lower_trust",
+    "uses_calibrated_tip_transform": true,
+    "uses_coil_as_tip": false,
+    "uses_identity_transform": false,
+    "workflow": "generic"
+  },
+  "schema_version": "1.0",
+  "tracker": {
+    "backend_identity": "ndi_tracker_python",
+    "canonical_state": "streaming_healthy",
+    "configured_backend_name": "ndi",
+    "last_frame_number": 30392,
+    "registration_tool_id": "0B",
+    "runtime_coil_tool_id": "0A",
+    "selected_backend_name": "ndi",
+    "tracker_data_age_s": 0.03141897195018828
+  },
+  "transform_chain": {
+    "active_transforms": {
+      "T_aurora_coil_0A": true,
+      "T_coil_tip": true,
+      "T_robot_aurora": true,
+      "T_robot_tip": true
+    },
+    "expression": "T_robot_tip = T_robot_aurora @ T_aurora_coil_0A @ T_coil_tip",
+    "frame_conventions": {
+      "T_A_B": "maps coordinates from frame B into frame A",
+      "aurora": "NDI Aurora tracker frame",
+      "coil_0A": "runtime 0A coil frame",
+      "robot": "registered robot/body frame",
+      "tip": "declared runtime tip frame; coil origin when runtime_tip.mode is coil_as_tip"
+    }
+  },
+  "warnings": [
+    "Latest accepted runtime tip calibration is loaded but currently lower-trust than coil-as-tip; runs must record this explicitly."
+  ]
+}

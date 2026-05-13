@@ -1,0 +1,62 @@
+{
+  "active_segment_key": "segment_b",
+  "active_segment_label": "Spine 2",
+  "artifact_path": "/home/continuum-pi/Continuum_pi/data/calibration/servo_mapping_checks/20260513_134103_segment_b_servo_mapping_check.json",
+  "confirmed_by_operator": false,
+  "entries": [
+    {
+      "axis_label": "",
+      "expected_sign_confirmed": null,
+      "expected_tendon_position": "",
+      "notes": "",
+      "observed_tendon_behavior": "",
+      "positive_tendon_direction": "",
+      "servo_id": 5,
+      "tiny_jog_direction": "tighten_fine_then_loosen_fine"
+    },
+    {
+      "axis_label": "",
+      "expected_sign_confirmed": null,
+      "expected_tendon_position": "",
+      "notes": "",
+      "observed_tendon_behavior": "",
+      "positive_tendon_direction": "",
+      "servo_id": 6,
+      "tiny_jog_direction": "tighten_fine_then_loosen_fine"
+    },
+    {
+      "axis_label": "",
+      "expected_sign_confirmed": null,
+      "expected_tendon_position": "",
+      "notes": "",
+      "observed_tendon_behavior": "",
+      "positive_tendon_direction": "",
+      "servo_id": 7,
+      "tiny_jog_direction": "tighten_fine_then_loosen_fine"
+    },
+    {
+      "axis_label": "",
+      "expected_sign_confirmed": null,
+      "expected_tendon_position": "",
+      "notes": "",
+      "observed_tendon_behavior": "",
+      "positive_tendon_direction": "",
+      "servo_id": 8,
+      "tiny_jog_direction": "tighten_fine_then_loosen_fine"
+    }
+  ],
+  "expected_servo_ids": [
+    5,
+    6,
+    7,
+    8
+  ],
+  "lower_tick_means_tension": true,
+  "mock_mode": false,
+  "notes": "",
+  "operating_mode": "single_segment",
+  "operator": "",
+  "schema_version": 1,
+  "source": "tiny_jog_sign_mapping_check",
+  "timestamp_utc": "2026-05-13T13:41:03Z"
+}

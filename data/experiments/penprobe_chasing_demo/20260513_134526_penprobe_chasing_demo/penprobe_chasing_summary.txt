@@ -1,0 +1,22 @@
+Penprobe Chasing Demo Summary
+
+Status: invalid_due_to_insufficient_samples
+Success: False
+Stop reason: failed
+Mapping mode: paired_xy_proportional
+Active segment: Spine 2 (segment_b)
+Active servos: [5, 6, 7, 8]
+Max tick delta cap: 500
+Max tick delta used: 0
+Final XY error mm: None
+
+Loop instrumentation (session mean / max aggregates):
+Achieved mean control Hz: n/a
+Achieved mean servo write Hz: n/a
+Mean GUI telemetry Hz snapshot: n/a
+Mean / max tracker age (s): 0.03705467702820897 / 0.03705467702820897
+Mean / max commanded tick step norm (ticks/cycle planned): None / None
+Saturation sample fraction (distance-to-cap exhausted while tracking): None
+Skipped write counts: {}
+
+This MVP uses the 0A coil origin in robot frame as the controlled point and the 0B robot-frame tool origin as the target. It does not claim physical tip chasing unless a validated T_robot_tip transform is explicitly used.
