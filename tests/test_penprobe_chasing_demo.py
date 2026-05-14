@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,6 +21,7 @@ from continuum_robot.config.settings import Settings
 from continuum_robot.experiments.builtins import register_builtin_experiments
 from continuum_robot.experiments.framework import ExperimentContext, ExperimentSession
 from continuum_robot.experiments.penprobe_chasing_demo import (
+    MAPPING_AGGRESSIVE_TICK_DEMO,
     MAPPING_LEGACY_POLYNOMIAL_WORKSPACE,
     MAPPING_PAIRED_XY_PROPORTIONAL,
     PenprobeChasingDemoConfig,
@@ -27,8 +29,10 @@ from continuum_robot.experiments.penprobe_chasing_demo import (
     _chase_motion_limiter_summary,
     _clamp_tick_deltas_to_startup_raw_bounds,
     _extract_robot_frame_tool_pose,
+    _penprobe_write_goals_with_retry,
     _resolve_mapping_mode,
     _step_and_clamp_tick_deltas,
+    aggressive_tick_demo_cycle,
     paired_xy_proportional_tick_request,
     _servo_write_allowed,
 )
@@ -108,6 +112,7 @@ def _snapshot(*, stale: bool = False, missing_0b: bool = False):
         normalized_live_tool_ids=list(tools),
         canonical_state="mock",
         registration_state="loaded",
+        runtime_tip_mode="coil_as_tip",
     )
 
 
@@ -174,7 +179,10 @@ class _ServoService:
         self.live_read_count = 0
         self.minimal_read_count = 0
         self.command_count = 0
+        self.goal_writes: list[dict[int, int]] = []
 
+    def _write_goal_positions(self, goals: dict[int, int]) -> None:
+        self.goal_writes.append({int(k): int(v) for k, v in dict(goals).items()})
     def read_live_telemetry(self, servo_ids):
         self.live_read_count += 1
         return {
@@ -283,6 +291,7 @@ def test_penprobe_chasing_demo_config_goal_write_retry_attempts() -> None:
     assert PenprobeChasingDemoConfig.from_dict({}).goal_write_retry_attempts == 2
     cfg = PenprobeChasingDemoConfig.from_dict({"goal_write_retry_attempts": 5})
     assert cfg.goal_write_retry_attempts == 5
+    assert PenprobeChasingDemoConfig.from_dict({}).mapping_mode == MAPPING_AGGRESSIVE_TICK_DEMO
 
 
 @pytest.mark.parametrize("mode", ["one_servo", "dual_segment", "parallel_single"])
@@ -472,6 +481,7 @@ def test_tracker_loss_stops_and_records_failure_metrics() -> None:
                 "max_iterations": 30,
                 "max_duration_s": 0.0,
                 "stale_tracker_persist_cycles_before_stop": 3,
+                "mapping_mode": MAPPING_PAIRED_XY_PROPORTIONAL,
             }
         )
     )
@@ -509,6 +519,7 @@ def test_servo_rate_gate_skips_extra_writes_under_fast_control_loop() -> None:
                 "loop_period_s": 0.02,
                 "max_servo_write_hz": 2.0,
                 "saturation_stop_cycles": 99999,
+                "mapping_mode": MAPPING_PAIRED_XY_PROPORTIONAL,
             }
         )
     )
@@ -531,6 +542,7 @@ def test_penprobe_chase_decouples_write_loop_from_telemetry_health_reads() -> No
                 "max_servo_write_hz": 25.0,
                 "telemetry_health_hz": 1.0,
                 "saturation_stop_cycles": 99999,
+                "mapping_mode": MAPPING_PAIRED_XY_PROPORTIONAL,
             }
         )
     )
@@ -573,6 +585,13 @@ def test_fallback_mapping_works_without_legacy_files() -> None:
     mode, warnings = _resolve_mapping_mode(config, Path.cwd())
 
     assert mode == MAPPING_PAIRED_XY_PROPORTIONAL
+    assert warnings == []
+
+
+def test_resolve_mapping_selects_aggressive_tick_demo() -> None:
+    config = PenprobeChasingDemoConfig.from_dict({})
+    mode, warnings = _resolve_mapping_mode(config, Path.cwd())
+    assert mode == MAPPING_AGGRESSIVE_TICK_DEMO
     assert warnings == []
 
 
@@ -622,3 +641,152 @@ def test_servo_write_allowed_respects_spacing() -> None:
     assert ok is True and reason is None
     ok, reason = _servo_write_allowed(now_s=0.05, last_write_monotonic_s=0.0, max_hz=10.0)
     assert ok is False and reason == "rate_limit"
+
+
+def test_chase_motion_limiter_prefers_global_limiter_reason() -> None:
+    assert (
+        _chase_motion_limiter_summary(
+            raw_bound_clips={},
+            step_clamp_reasons={},
+            mapping_debug={"global_limiter_reason": "aggressive_current_limit_ma"},
+            skipped_write_reason=None,
+        )
+        == "aggressive_current_limit_ma"
+    )
+
+
+def test_aggressive_tick_demo_accumulates_beyond_300_ticks() -> None:
+    cfg = PenprobeChasingDemoConfig.from_dict(
+        {
+            "mapping_mode": MAPPING_AGGRESSIVE_TICK_DEMO,
+            "max_tick_step_per_cycle": 100,
+            "max_tick_delta_from_startup": 800,
+            "proportional_gain_ticks_per_mm": 30.0,
+            "aggressive_current_limit_ma": 0,
+        }
+    )
+    startup = {5: 2000, 6: 2000, 7: 2000, 8: 2000}
+    internal = dict(startup)
+    tele = {
+        sid: ServoTelemetry(
+            servo_id=sid,
+            present_position=2000,
+            present_current_ma=10,
+            present_voltage_mv=12000,
+            present_temperature_c=25,
+            hardware_error_code=0,
+            hardware_error=None,
+            last_read_monotonic_s=1.0,
+        )
+        for sid in (5, 6, 7, 8)
+    }
+    pairs = {"axis_a": [5, 7], "axis_b": [6, 8]}
+    max_used = 0
+    for _ in range(60):
+        internal, _des, cmd, _dbg, _clips, _rs, _gl = aggressive_tick_demo_cycle(
+            tip_xy_mm=[0.0, 0.0],
+            target_xy_mm=[50.0, 40.0],
+            servo_ids=[5, 6, 7, 8],
+            pairs=pairs,
+            config=cfg,
+            internal_goals=internal,
+            startup_ref=startup,
+            telemetry_by_id=tele,
+            max_step_ticks=100,
+        )
+        max_used = max(max_used, max(abs(int(v)) for v in cmd.values()))
+    assert max_used > 300
+
+
+def test_aggressive_current_limit_blocks_when_peak_exceeds_ma() -> None:
+    cfg = PenprobeChasingDemoConfig.from_dict(
+        {
+            "mapping_mode": MAPPING_AGGRESSIVE_TICK_DEMO,
+            "max_tick_step_per_cycle": 50,
+            "max_tick_delta_from_startup": 800,
+            "proportional_gain_ticks_per_mm": 10.0,
+            "aggressive_current_limit_ma": 500,
+        }
+    )
+    startup = {5: 2000, 6: 2000, 7: 2000, 8: 2000}
+    tele = {
+        sid: ServoTelemetry(
+            servo_id=sid,
+            present_position=2000,
+            present_current_ma=600,
+            present_voltage_mv=12000,
+            present_temperature_c=25,
+            hardware_error_code=0,
+            hardware_error=None,
+            last_read_monotonic_s=1.0,
+        )
+        for sid in (5, 6, 7, 8)
+    }
+    work, _d, cmd, dbg, _, _, gl = aggressive_tick_demo_cycle(
+        tip_xy_mm=[0.0, 0.0],
+        target_xy_mm=[20.0, 0.0],
+        servo_ids=[5, 6, 7, 8],
+        pairs={"axis_a": [5, 7], "axis_b": [6, 8]},
+        config=cfg,
+        internal_goals=dict(startup),
+        startup_ref=startup,
+        telemetry_by_id=tele,
+        max_step_ticks=50,
+    )
+    assert gl == "aggressive_current_limit_ma"
+    assert dbg["global_limiter_reason"] == "aggressive_current_limit_ma"
+    assert cmd == {5: 0, 6: 0, 7: 0, 8: 0}
+    assert work == startup
+
+
+def test_penprobe_goal_write_retry_recovers_status_packet_error() -> None:
+    class _Flaky:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def _write_goal_positions(self, goals: dict[int, int]) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("[TxRxResult] Incorrect status packet!")
+
+    svc = _Flaky()
+    recovered = _penprobe_write_goals_with_retry(svc, {5: 2100}, attempts=3)
+    assert recovered == 1
+    assert svc.calls == 2
+
+
+def test_aggressive_execute_writes_goal_positions() -> None:
+    experiment = PenprobeChasingDemoExperiment(
+        PenprobeChasingDemoConfig.from_dict(
+            {
+                "max_iterations": 6,
+                "max_duration_s": 0.0,
+                "mapping_mode": MAPPING_AGGRESSIVE_TICK_DEMO,
+                "max_tick_step_per_cycle": 40,
+                "max_tick_delta_from_startup": 800,
+                "proportional_gain_ticks_per_mm": 12.0,
+                "saturation_stop_cycles": 99999,
+                "max_servo_write_hz": 50.0,
+            }
+        )
+    )
+    servo = _ServoService([5, 6, 7, 8])
+    session = _session(active_segment="segment_b", tracking=_TrackingService([_snapshot()]), servo=servo)
+    experiment.precheck(session)
+    experiment.execute(session)
+    assert servo.goal_writes
+    assert session.metrics.get("mapping_mode_used") == MAPPING_AGGRESSIVE_TICK_DEMO
+
+
+def test_recent_penprobe_audit_fixture_shows_paired_l2_cap() -> None:
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "data/experiments/penprobe_chasing_demo/20260513_225832_penprobe_chasing_demo/summary.json"
+    )
+    if not path.exists():
+        pytest.skip("fixture summary not present in checkout")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    em = data.get("experiment_metrics") or {}
+    clamps = em.get("chase_clamp_counts_by_reason") or {}
+    assert em.get("mapping_mode_used") == "paired_xy_proportional"
+    assert int(clamps.get("xy_mapping_l2_vector_cap", 0)) > 0

@@ -1,13 +1,12 @@
-# Penprobe chasing demo (single-segment 0A coil chases live 0B XY target).
-# Defaults below are conservative. Uncomment / copy alternate blocks only when
-# the spine and tendon routing are confirmed clear for larger motion.
+# Penprobe chasing demo (single-segment 0A coil origin chases live 0B tool-origin XY in robot frame).
+# Default mapping is aggressive_tick_demo (direct goal ticks; no paired XY L2 vector cap).
+# use_calibrated_runtime_tip defaults false → runtime tip coil_as_tip for demo; summary treats
+# invalid transform samples as non-fatal unless use_calibrated_runtime_tip is true.
 #
-# --- Conservative lab tuning (recommended first) ---
-# max_tick_step_per_cycle: 25
-# max_tick_delta_from_startup: 250
-# proportional_gain_ticks_per_mm: 8
+# --- Conservative paired mapping (legacy envelope) ---
+# mapping_mode: paired_xy_proportional
 #
-# --- Larger visible demo (optional; not the default) ---
+# --- Larger visible aggressive demo ---
 # max_tick_step_per_cycle: 50   # or up to 100 in GUI
 # max_tick_delta_from_startup: 600
 # hard_max_tick_delta_from_startup: 800   # YAML hard cap; GUI spin max is 800
@@ -34,5 +33,9 @@ x_axis_sign: 1
 y_axis_sign: 1
 flip_x: false
 flip_y: false
-mapping_mode: paired_xy_proportional
+mapping_mode: aggressive_tick_demo
+aggressive_tick_demo: true
+aggressive_current_limit_ma: 500
+goal_write_retry_attempts: 2
+use_calibrated_runtime_tip: false
 legacy_polynomial_workspace: {}

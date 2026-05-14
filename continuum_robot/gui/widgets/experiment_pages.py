@@ -62,6 +62,7 @@ from continuum_robot.experiments.builtins import (
     TrackerTimingValidationConfig,
 )
 from continuum_robot.experiments.penprobe_chasing_demo import (
+    MAPPING_AGGRESSIVE_TICK_DEMO,
     MAPPING_LEGACY_POLYNOMIAL_WORKSPACE,
     MAPPING_PAIRED_XY_PROPORTIONAL,
     PenprobeChasingDemoConfig,
@@ -3151,10 +3152,21 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
         self.max_iterations_spin.setRange(1, 20000)
         self.max_iterations_spin.valueChanged.connect(lambda value: self.controller.set_config_value("max_iterations", int(value)))
         self.mapping_mode_combo = NoWheelComboBox()
+        self.mapping_mode_combo.addItem("Aggressive Tick Demo", MAPPING_AGGRESSIVE_TICK_DEMO)
         self.mapping_mode_combo.addItem("Paired XY Proportional", MAPPING_PAIRED_XY_PROPORTIONAL)
         self.mapping_mode_combo.addItem("Legacy Polynomial Workspace", MAPPING_LEGACY_POLYNOMIAL_WORKSPACE)
         self.mapping_mode_combo.currentIndexChanged.connect(
             lambda _index: self.controller.set_config_value("mapping_mode", str(self.mapping_mode_combo.currentData()))
+        )
+        self.aggressive_current_limit_spin = QSpinBox()
+        self.aggressive_current_limit_spin.setRange(0, 5000)
+        self.aggressive_current_limit_spin.setSingleStep(50)
+        self.aggressive_current_limit_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("aggressive_current_limit_ma", int(value))
+        )
+        self.use_calibrated_tip_checkbox = QCheckBox("Use calibrated runtime tip (thesis transforms; stricter)")
+        self.use_calibrated_tip_checkbox.toggled.connect(
+            lambda value: self.controller.set_config_value("use_calibrated_runtime_tip", bool(value))
         )
         self.max_radius_spin = QDoubleSpinBox()
         self.max_radius_spin.setRange(0.0, 300.0)
@@ -3202,6 +3214,8 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
         form.addRow("Max Duration (s)", self.duration_spin)
         form.addRow("Max Iterations", self.max_iterations_spin)
         form.addRow("Mapping Mode", self.mapping_mode_combo)
+        form.addRow("Aggressive current limit (mA, 0=off)", self.aggressive_current_limit_spin)
+        form.addRow("Runtime tip", self.use_calibrated_tip_checkbox)
         form.addRow("Max Target Radius (mm)", self.max_radius_spin)
         form.addRow("Gain (ticks/mm)", self.gain_spin)
         form.addRow("Max Step / Cycle (ticks)", self.max_step_spin)
@@ -3239,6 +3253,9 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
         self._set_double(self.duration_spin, float(config.max_duration_s))
         self._set_spin(self.max_iterations_spin, int(config.max_iterations))
         self._set_combo_value(self.mapping_mode_combo, str(config.mapping_mode))
+        self._set_spin(self.aggressive_current_limit_spin, int(config.aggressive_current_limit_ma))
+        with QSignalBlocker(self.use_calibrated_tip_checkbox):
+            self.use_calibrated_tip_checkbox.setChecked(bool(config.use_calibrated_runtime_tip))
         self._set_double(self.max_radius_spin, float(config.max_target_radius_mm))
         self._set_double(self.gain_spin, float(config.proportional_gain_ticks_per_mm))
         self._set_spin(self.max_step_spin, int(config.max_tick_step_per_cycle))
@@ -3289,6 +3306,9 @@ class PenprobeChasingDemoPage(ExperimentPageBase):
                 ("Goal Ticks", str(goal_by_servo or "n/a")),
                 ("Max Delta Used", f"{int(max_delta)} ticks" if max_delta is not None else "n/a"),
                 ("Distance To Cap", f"{int(distance_to_cap)} ticks" if distance_to_cap is not None else "n/a"),
+                ("Sample mapping_mode", str(extra.get("mapping_mode") or "n/a")),
+                ("Aggressive enabled", str(extra.get("aggressive_mode_enabled"))),
+                ("Global limiter", str(extra.get("global_limiter_reason") or "n/a")),
                 ("Tracker Freshness", f"{float(getattr(last_sample, 'freshness_s', 0.0)):.3f} s" if last_sample is not None and getattr(last_sample, "freshness_s", None) is not None else "n/a"),
                 ("Control Hz (instant)", f"{float(control_hz):.1f} Hz" if isinstance(control_hz, (int, float)) else "n/a"),
                 ("Servo writes Hz", f"{float(write_rate):.1f} Hz" if isinstance(write_rate, (int, float)) else "n/a"),

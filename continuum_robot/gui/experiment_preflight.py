@@ -30,6 +30,8 @@ from continuum_robot.experiments.single_segment_repeatability import (
     repeatability_target_tick_profile,
 )
 from continuum_robot.experiments.penprobe_chasing_demo import (
+    MAPPING_AGGRESSIVE_TICK_DEMO,
+    MAPPING_PAIRED_XY_PROPORTIONAL,
     PenprobeChasingDemoConfig,
     _validate_legacy_mapping_config,
 )
@@ -1662,8 +1664,24 @@ def evaluate_preflight(
                         "Legacy polynomial workspace files are present, but v1 still runs through the bounded paired-command safety envelope.",
                     )
                 )
+            elif str(config.mapping_mode).strip().lower() == MAPPING_AGGRESSIVE_TICK_DEMO:
+                checks.append(
+                    _ok(
+                        "mapping",
+                        "Mapping Mode",
+                        "aggressive_tick_demo: direct goal writes; per-axis max_tick_step_per_cycle; bypasses paired XY L2 vector cap.",
+                    )
+                )
+            elif str(config.mapping_mode).strip().lower() == MAPPING_PAIRED_XY_PROPORTIONAL:
+                checks.append(
+                    _ok(
+                        "mapping",
+                        "Mapping Mode",
+                        "Using bounded paired_xy_proportional mapping (displacement command envelope).",
+                    )
+                )
             else:
-                checks.append(_ok("mapping", "Mapping Mode", "Using bounded paired_xy_proportional fallback mapping."))
+                checks.append(_ok("mapping", "Mapping Mode", f"Using mapping_mode={config.mapping_mode!r}."))
         except Exception as exc:
             checks.append(_blocked("mapping", "Mapping Mode", str(exc)))
         checks.append(

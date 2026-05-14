@@ -16,6 +16,7 @@ from continuum_robot.experiments.framework import BaseExperiment, ExperimentHard
 from continuum_robot.experiments.schemas import ExperimentTimeseriesSample
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
 from continuum_robot.servos.segment_readiness import evaluate_selected_segment_readiness
+from continuum_robot.tracking.runtime_tip_policy import evaluate_runtime_tip_trust
 from continuum_robot.servos.servo_service import (
     RAW_POSITION_MAX_TICK,
     RAW_POSITION_MIN_TICK,
@@ -26,7 +27,12 @@ from continuum_robot.servos.servo_service import (
 
 MAPPING_PAIRED_XY_PROPORTIONAL = "paired_xy_proportional"
 MAPPING_LEGACY_POLYNOMIAL_WORKSPACE = "legacy_polynomial_workspace"
-SUPPORTED_MAPPING_MODES = {MAPPING_PAIRED_XY_PROPORTIONAL, MAPPING_LEGACY_POLYNOMIAL_WORKSPACE}
+MAPPING_AGGRESSIVE_TICK_DEMO = "aggressive_tick_demo"
+SUPPORTED_MAPPING_MODES = {
+    MAPPING_PAIRED_XY_PROPORTIONAL,
+    MAPPING_LEGACY_POLYNOMIAL_WORKSPACE,
+    MAPPING_AGGRESSIVE_TICK_DEMO,
+}
 
 
 @dataclass
@@ -49,24 +55,29 @@ class PenprobeChasingDemoConfig:
     stale_tracker_persist_cycles_before_stop: int = 12
     gui_status_nominal_hz: float = 8.0
     max_servo_write_hz: float = 25.0
-    goal_write_retry_attempts: int = 2
+    goal_write_retry_attempts: int = 2  # packet-error retries per goal batch
     telemetry_health_hz: float = 3.0
     max_consecutive_telemetry_health_failures: int = 2
     saturation_stop_cycles: int = 40
+    use_calibrated_runtime_tip: bool = False  # if False, adopt coil_as_tip when policy blocks penprobe
+    allow_lower_trust_runtime_tip: bool = True  # transform-chain + policy override hint
+    aggressive_current_limit_ma: int = 500  # absolute mA; block tightening cycle when exceeded
     x_axis_sign: int = 1
     y_axis_sign: int = 1
     flip_x: bool = False
     flip_y: bool = False
-    mapping_mode: str = MAPPING_PAIRED_XY_PROPORTIONAL
+    mapping_mode: str = MAPPING_AGGRESSIVE_TICK_DEMO
     legacy_polynomial_workspace: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "PenprobeChasingDemoConfig":
         payload = dict(payload or {})
-        mode = str(payload.get("mapping_mode", MAPPING_PAIRED_XY_PROPORTIONAL) or MAPPING_PAIRED_XY_PROPORTIONAL)
+        mode = str(payload.get("mapping_mode", MAPPING_AGGRESSIVE_TICK_DEMO) or MAPPING_AGGRESSIVE_TICK_DEMO)
         mode = mode.strip().lower()
         if mode not in SUPPORTED_MAPPING_MODES:
             mode = MAPPING_PAIRED_XY_PROPORTIONAL
+        if bool(payload.get("aggressive_tick_demo", False)) and mode == MAPPING_PAIRED_XY_PROPORTIONAL:
+            mode = MAPPING_AGGRESSIVE_TICK_DEMO
         hard_cap = max(1, int(payload.get("hard_max_tick_delta_from_startup", 800)))
         max_delta = max(0, int(payload.get("max_tick_delta_from_startup", 250)))
         if max_delta > hard_cap:
@@ -89,6 +100,9 @@ class PenprobeChasingDemoConfig:
             gui_status_nominal_hz=max(1.0, float(payload.get("gui_status_nominal_hz", 8.0))),
             max_servo_write_hz=max(1.0, float(payload.get("max_servo_write_hz", 25.0))),
             goal_write_retry_attempts=max(1, int(payload.get("goal_write_retry_attempts", 2))),
+            use_calibrated_runtime_tip=bool(payload.get("use_calibrated_runtime_tip", False)),
+            allow_lower_trust_runtime_tip=bool(payload.get("allow_lower_trust_runtime_tip", True)),
+            aggressive_current_limit_ma=max(0, int(payload.get("aggressive_current_limit_ma", 500))),
             telemetry_health_hz=max(0.2, float(payload.get("telemetry_health_hz", 3.0))),
             max_consecutive_telemetry_health_failures=max(
                 1,
@@ -144,6 +158,10 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
         self._chase_clamp_counter: Counter = Counter()
         self._chase_per_servo_max_abs_delta: dict[int, int] = {}
         self._chase_max_abs_step: int = 0
+        self._internal_goal_ticks: dict[int, int] = {}
+        self._prior_runtime_tip_mode: str | None = None
+        self._demo_runtime_tip_coil_adopted: bool = False
+        self._last_chase_diag: dict[str, Any] = {}
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None = None) -> "PenprobeChasingDemoExperiment":
@@ -191,9 +209,44 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
         )
         _validate_legacy_mapping_config(self.config, session.context.project_root)
         snapshot = session.context.tracking_service.get_snapshot()
+        prior_mode = str(getattr(snapshot, "runtime_tip_mode", "") or "")
+        policy = evaluate_runtime_tip_trust(
+            snapshot=snapshot,
+            workflow=self.name,
+            allow_lower_trust=bool(self.config.allow_lower_trust_runtime_tip),
+        )
+        if not bool(self.config.use_calibrated_runtime_tip):
+            if prior_mode.strip().lower() != "coil_as_tip":
+                self._prior_runtime_tip_mode = prior_mode
+                setter = getattr(session.context.tracking_service, "set_runtime_tip_mode", None)
+                if callable(setter):
+                    setter("coil_as_tip")
+                self._demo_runtime_tip_coil_adopted = True
+                session.add_warning(
+                    "Penprobe chasing demo uses runtime_tip_mode=coil_as_tip by default: controlled point is the 0A coil "
+                    "origin in robot frame; target is the 0B tool origin. This is not validated physical-tip chasing. "
+                    f"Prior tracking runtime tip mode was {prior_mode!r}."
+                )
+        elif not bool(policy.allowed_for_workflow):
+            raise RuntimeError(
+                "penprobe_chasing_demo: use_calibrated_runtime_tip=True but current runtime tip policy blocks this "
+                f"workflow (mode={policy.mode}, trust={policy.trust_label}). Switch tracking to a demo-safe tip path or "
+                "clear use_calibrated_runtime_tip."
+            )
+        if self._demo_runtime_tip_coil_adopted:
+            snapshot = session.context.tracking_service.get_snapshot()
         _extract_robot_frame_tool_pose(snapshot, "0A", max_tracker_age_s=float(self.config.loop_period_s) * 4.0)
         _extract_robot_frame_tool_pose(snapshot, "0B", max_tracker_age_s=float(self.config.loop_period_s) * 4.0)
         _validate_servo_telemetry_ready(session.context.servo_service, servo_ids)
+        session.set_metric(
+            "penprobe_demo_frame_contract",
+            {
+                "controlled_point": "0A coil origin in robot frame",
+                "target": "0B tool origin in robot frame",
+                "physical_tip_chasing": False,
+                "runtime_tip_mode_for_demo": "coil_as_tip" if not bool(self.config.use_calibrated_runtime_tip) else "use_calibrated_runtime_tip",
+            },
+        )
 
     def execute(self, session: ExperimentSession) -> None:
         context = session.context.settings.robot.operating_context()
@@ -204,6 +257,9 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
             ticks_per_rev=int(session.context.settings.robot.ticks_per_revolution),
         )
         self._mapping_mode_used, self._mapping_warnings = _resolve_mapping_mode(self.config, session.context.project_root)
+        aggressive_mode = str(self._mapping_mode_used).strip().lower() == MAPPING_AGGRESSIVE_TICK_DEMO
+        if aggressive_mode:
+            self._internal_goal_ticks = {int(sid): int(self._startup_reference_by_servo[int(sid)]) for sid in servo_ids}
         self._current_tick_delta_by_servo = {int(servo_id): 0 for servo_id in servo_ids}
         self._chase_clamp_counter: Counter = Counter()
         self._chase_per_servo_max_abs_delta = {int(s): 0 for s in servo_ids}
@@ -222,6 +278,7 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
             "actual_servo_write_hz_instant": [],
             "actual_telemetry_health_hz_instant": [],
             "telemetry_health_failure_count": [],
+            "recovered_goal_write_retries": [],
         }
         total = int(self.config.max_iterations)
         deadline = (
@@ -355,95 +412,156 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                     else:
                         assert tip_pose is not None and tgt_pose is not None
                         _validate_cached_chase_telemetry(session.context.servo_service, servo_ids, last_known_telemetry)
-                        desired_delta_by_servo, mapping_debug = paired_xy_proportional_tick_request(
-                            tip_xy_mm=tip_pose.position_mm[:2],
-                            target_xy_mm=tgt_pose.position_mm[:2],
-                            servo_ids=servo_ids,
-                            pairs=pairs,
-                            mapper=mapper,
-                            config=self.config,
-                        )
-                        stepped_delta_by_servo, step_clamp_reasons = _step_and_clamp_tick_deltas(
-                            current_delta_by_servo=self._current_tick_delta_by_servo,
-                            desired_delta_by_servo=desired_delta_by_servo,
-                            max_step_ticks=max_step,
-                            max_abs_delta_ticks=int(self.config.max_tick_delta_from_startup),
-                        )
-                        for _sid, _reasons in step_clamp_reasons.items():
-                            for _tag in _reasons:
-                                self._chase_clamp_counter[f"step:{_tag}"] += 1
-                        bounded_candidate_delta, raw_bound_clips = _clamp_tick_deltas_to_startup_raw_bounds(
-                            stepped_delta_by_servo,
-                            startup_reference_by_servo=self._startup_reference_by_servo,
-                        )
-                        for _clip in raw_bound_clips.values():
-                            self._chase_clamp_counter[f"raw_bound:{_clip}"] += 1
-                        if bool(mapping_debug.get("per_cycle_l2_vector_cap_hit")):
-                            self._chase_clamp_counter["xy_mapping_l2_vector_cap"] += 1
-                        hypo_command_ticks = {
-                            int(servo_id): int(self._startup_reference_by_servo[int(servo_id)] + bounded_candidate_delta[int(servo_id)])
-                            for servo_id in servo_ids
-                        }
-                        wrap_risk_payload: dict[str, int] = {}
-                        for servo_id in servo_ids:
-                            telem = last_known_telemetry[int(servo_id)]
-                            present = telem.present_position
-                            if present is None:
-                                raise RuntimeError(f"missing_position:{servo_id}")
-                            hypo = hypo_command_ticks[int(servo_id)]
-                            if is_wrap_risk(int(present), int(hypo), (RAW_POSITION_MIN_TICK, RAW_POSITION_MAX_TICK)):
-                                wrap_risk_payload[str(int(servo_id))] = int(hypo)
-                        if wrap_risk_payload:
-                            raise RuntimeError("wrap_risk:" + json.dumps(wrap_risk_payload, sort_keys=True))
-
-                        tendon_displacements_cm = [
-                            float(mapper.ticks_to_displacement_mm(bounded_candidate_delta[int(servo_id)]) / 10.0)
-                            for servo_id in servo_ids
-                        ]
-
-                        now_cmd = float(session.context.monotonic_fn())
-                        ok_write, gate_reason = _servo_write_allowed(
-                            now_s=now_cmd,
-                            last_write_monotonic_s=float(last_servo_write_monotonic),
-                            max_hz=float(self.config.max_servo_write_hz),
-                        )
-                        if ok_write:
-                            t_wr_start = float(session.context.monotonic_fn())
-                            command_result = session.context.servo_service.command_displacement(
-                                tendon_displacements_cm,
-                                [int(self._startup_reference_by_servo[int(servo_id)]) for servo_id in servo_ids],
-                                servo_ids,
-                                motion_workflow=SINGLE_SEGMENT_WORKFLOW_EXPERIMENT,
-                                chase_tight_loop_writes=True,
-                                prevalidated_telemetry_by_id=dict(last_known_telemetry),
-                                skip_post_command_telemetry=True,
-                                write_goal_attempts=int(self.config.goal_write_retry_attempts),
+                        if aggressive_mode:
+                            proposed_internal, desired_delta_by_servo, bounded_candidate_delta, mapping_debug, raw_bound_clips, step_clamp_reasons, _aggr_gl = aggressive_tick_demo_cycle(
+                                tip_xy_mm=tip_pose.position_mm[:2],
+                                target_xy_mm=tgt_pose.position_mm[:2],
+                                servo_ids=servo_ids,
+                                pairs=pairs,
+                                config=self.config,
+                                internal_goals=self._internal_goal_ticks,
+                                startup_ref=self._startup_reference_by_servo,
+                                telemetry_by_id=last_known_telemetry,
+                                max_step_ticks=max_step,
                             )
-                            command_write_duration_s = max(0.0, float(session.context.monotonic_fn()) - t_wr_start)
-                            telemetry_for_sample = dict(last_known_telemetry)
-                            last_servo_write_monotonic = float(session.context.monotonic_fn())
-                            self._current_tick_delta_by_servo = dict(bounded_candidate_delta)
-                            positions_by_id = dict(command_result.positions_by_id)
-                            clamp_reasons_by_id = dict(command_result.clamp_reasons_by_id)
-                            for _crs in clamp_reasons_by_id.values():
-                                if str(_crs or "").strip():
-                                    self._chase_clamp_counter[f"experiment_displacement:{_crs}"] += 1
-                            command_result_message = {
-                                "servo_command_positions_by_id": {str(k): int(v) for k, v in positions_by_id.items()},
-                                "servo_clamp_reasons_by_id": {str(k): str(v) for k, v in clamp_reasons_by_id.items()},
-                            }
-                            perf["servo_command_write_s"].append(float(command_write_duration_s))
-                            if command_write_duration_s > 1e-9:
-                                perf["servo_write_dt_s"].append(float(command_write_duration_s))
-                                last_burst_servo_write_hz = 1.0 / float(command_write_duration_s)
-                                perf["actual_servo_write_hz_instant"].append(last_burst_servo_write_hz)
-                        else:
-                            skipped_write_reason = gate_reason or "rate_limit"
+                            for _sid, _reasons in step_clamp_reasons.items():
+                                for _tag in _reasons:
+                                    self._chase_clamp_counter[f"aggressive:{_tag}"] += 1
+                            for _clip in raw_bound_clips.values():
+                                self._chase_clamp_counter[f"raw_bound:{_clip}"] += 1
+                            hypo_command_ticks = {int(servo_id): int(proposed_internal[int(servo_id)]) for servo_id in servo_ids}
                             tendon_displacements_cm = [
-                                float(mapper.ticks_to_displacement_mm(stable_before[int(servo_id)]) / 10.0)
+                                float(mapper.ticks_to_displacement_mm(bounded_candidate_delta[int(servo_id)]) / 10.0)
                                 for servo_id in servo_ids
                             ]
-                            self._current_tick_delta_by_servo = dict(stable_before)
+                            now_cmd = float(session.context.monotonic_fn())
+                            ok_write, gate_reason = _servo_write_allowed(
+                                now_s=now_cmd,
+                                last_write_monotonic_s=float(last_servo_write_monotonic),
+                                max_hz=float(self.config.max_servo_write_hz),
+                            )
+                            if ok_write:
+                                t_wr_start = float(session.context.monotonic_fn())
+                                recovered = _penprobe_write_goals_with_retry(
+                                    session.context.servo_service,
+                                    hypo_command_ticks,
+                                    attempts=int(self.config.goal_write_retry_attempts),
+                                )
+                                command_write_duration_s = max(0.0, float(session.context.monotonic_fn()) - t_wr_start)
+                                telemetry_for_sample = dict(last_known_telemetry)
+                                last_servo_write_monotonic = float(session.context.monotonic_fn())
+                                self._internal_goal_ticks = dict(proposed_internal)
+                                self._current_tick_delta_by_servo = dict(bounded_candidate_delta)
+                                command_result_message = {
+                                    "servo_command_positions_by_id": {str(k): int(hypo_command_ticks[int(k)]) for k in hypo_command_ticks},
+                                    "servo_clamp_reasons_by_id": {},
+                                }
+                                if recovered > 0:
+                                    perf["recovered_goal_write_retries"].append(int(recovered))
+                                    command_result_message["recovered_write_packet_error"] = int(recovered)
+                                perf["servo_command_write_s"].append(float(command_write_duration_s))
+                                if command_write_duration_s > 1e-9:
+                                    perf["servo_write_dt_s"].append(float(command_write_duration_s))
+                                    last_burst_servo_write_hz = 1.0 / float(command_write_duration_s)
+                                    perf["actual_servo_write_hz_instant"].append(last_burst_servo_write_hz)
+                            else:
+                                skipped_write_reason = gate_reason or "rate_limit"
+                                tendon_displacements_cm = [
+                                    float(mapper.ticks_to_displacement_mm(stable_before[int(servo_id)]) / 10.0)
+                                    for servo_id in servo_ids
+                                ]
+                                self._current_tick_delta_by_servo = dict(stable_before)
+                                bounded_candidate_delta = dict(stable_before)
+                        else:
+                            desired_delta_by_servo, mapping_debug = paired_xy_proportional_tick_request(
+                                tip_xy_mm=tip_pose.position_mm[:2],
+                                target_xy_mm=tgt_pose.position_mm[:2],
+                                servo_ids=servo_ids,
+                                pairs=pairs,
+                                mapper=mapper,
+                                config=self.config,
+                            )
+                            stepped_delta_by_servo, step_clamp_reasons = _step_and_clamp_tick_deltas(
+                                current_delta_by_servo=self._current_tick_delta_by_servo,
+                                desired_delta_by_servo=desired_delta_by_servo,
+                                max_step_ticks=max_step,
+                                max_abs_delta_ticks=int(self.config.max_tick_delta_from_startup),
+                            )
+                            for _sid, _reasons in step_clamp_reasons.items():
+                                for _tag in _reasons:
+                                    self._chase_clamp_counter[f"step:{_tag}"] += 1
+                            bounded_candidate_delta, raw_bound_clips = _clamp_tick_deltas_to_startup_raw_bounds(
+                                stepped_delta_by_servo,
+                                startup_reference_by_servo=self._startup_reference_by_servo,
+                            )
+                            for _clip in raw_bound_clips.values():
+                                self._chase_clamp_counter[f"raw_bound:{_clip}"] += 1
+                            if bool(mapping_debug.get("per_cycle_l2_vector_cap_hit")):
+                                self._chase_clamp_counter["xy_mapping_l2_vector_cap"] += 1
+                            hypo_command_ticks = {
+                                int(servo_id): int(self._startup_reference_by_servo[int(servo_id)] + bounded_candidate_delta[int(servo_id)])
+                                for servo_id in servo_ids
+                            }
+                            wrap_risk_payload: dict[str, int] = {}
+                            for servo_id in servo_ids:
+                                telem = last_known_telemetry[int(servo_id)]
+                                present = telem.present_position
+                                if present is None:
+                                    raise RuntimeError(f"missing_position:{servo_id}")
+                                hypo = hypo_command_ticks[int(servo_id)]
+                                if is_wrap_risk(int(present), int(hypo), (RAW_POSITION_MIN_TICK, RAW_POSITION_MAX_TICK)):
+                                    wrap_risk_payload[str(int(servo_id))] = int(hypo)
+                            if wrap_risk_payload:
+                                raise RuntimeError("wrap_risk:" + json.dumps(wrap_risk_payload, sort_keys=True))
+
+                            tendon_displacements_cm = [
+                                float(mapper.ticks_to_displacement_mm(bounded_candidate_delta[int(servo_id)]) / 10.0)
+                                for servo_id in servo_ids
+                            ]
+
+                            now_cmd = float(session.context.monotonic_fn())
+                            ok_write, gate_reason = _servo_write_allowed(
+                                now_s=now_cmd,
+                                last_write_monotonic_s=float(last_servo_write_monotonic),
+                                max_hz=float(self.config.max_servo_write_hz),
+                            )
+                            if ok_write:
+                                t_wr_start = float(session.context.monotonic_fn())
+                                command_result = session.context.servo_service.command_displacement(
+                                    tendon_displacements_cm,
+                                    [int(self._startup_reference_by_servo[int(servo_id)]) for servo_id in servo_ids],
+                                    servo_ids,
+                                    motion_workflow=SINGLE_SEGMENT_WORKFLOW_EXPERIMENT,
+                                    chase_tight_loop_writes=True,
+                                    prevalidated_telemetry_by_id=dict(last_known_telemetry),
+                                    skip_post_command_telemetry=True,
+                                    write_goal_attempts=int(self.config.goal_write_retry_attempts),
+                                )
+                                command_write_duration_s = max(0.0, float(session.context.monotonic_fn()) - t_wr_start)
+                                telemetry_for_sample = dict(last_known_telemetry)
+                                last_servo_write_monotonic = float(session.context.monotonic_fn())
+                                self._current_tick_delta_by_servo = dict(bounded_candidate_delta)
+                                positions_by_id = dict(command_result.positions_by_id)
+                                clamp_reasons_by_id = dict(command_result.clamp_reasons_by_id)
+                                for _crs in clamp_reasons_by_id.values():
+                                    if str(_crs or "").strip():
+                                        self._chase_clamp_counter[f"experiment_displacement:{_crs}"] += 1
+                                command_result_message = {
+                                    "servo_command_positions_by_id": {str(k): int(v) for k, v in positions_by_id.items()},
+                                    "servo_clamp_reasons_by_id": {str(k): str(v) for k, v in clamp_reasons_by_id.items()},
+                                }
+                                perf["servo_command_write_s"].append(float(command_write_duration_s))
+                                if command_write_duration_s > 1e-9:
+                                    perf["servo_write_dt_s"].append(float(command_write_duration_s))
+                                    last_burst_servo_write_hz = 1.0 / float(command_write_duration_s)
+                                    perf["actual_servo_write_hz_instant"].append(last_burst_servo_write_hz)
+                            else:
+                                skipped_write_reason = gate_reason or "rate_limit"
+                                tendon_displacements_cm = [
+                                    float(mapper.ticks_to_displacement_mm(stable_before[int(servo_id)]) / 10.0)
+                                    for servo_id in servo_ids
+                                ]
+                                self._current_tick_delta_by_servo = dict(stable_before)
 
                     bounded_applied_delta = dict(self._current_tick_delta_by_servo)
                     commanded_ticks = {
@@ -492,6 +610,20 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                         )
                         for servo_id in servo_ids
                     }
+                    actual_delta_from_startup_by_servo: dict[str, int | None] = {}
+                    current_abs_by_servo: dict[str, int | None] = {}
+                    for servo_id in servo_ids:
+                        sid = int(servo_id)
+                        pv = measured_ticks.get(sid)
+                        if pv is not None:
+                            actual_delta_from_startup_by_servo[str(sid)] = int(pv) - int(self._startup_reference_by_servo[sid])
+                        else:
+                            actual_delta_from_startup_by_servo[str(sid)] = None
+                        telem = telemetry_for_sample.get(sid)
+                        if telem is not None and getattr(telem, "present_current_ma", None) is not None:
+                            current_abs_by_servo[str(sid)] = abs(int(telem.present_current_ma))
+                        else:
+                            current_abs_by_servo[str(sid)] = None
 
                     sleep_remaining = loop_period_s - (float(session.context.monotonic_fn()) - iteration_start_mono)
                     if sleep_remaining > 0.0:
@@ -527,6 +659,14 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                             skipped_write_reason=skipped_write_reason,
                         )
                     )
+                    tiny_motion_explanation: str | None = None
+                    if aggressive_mode and error_norm > 50.0 and max_tick_delta_used < 100:
+                        tiny_motion_explanation = (
+                            f"xy_error_norm_mm={error_norm:.1f} exceeds 50 mm but max_abs_tick_delta_from_startup_used="
+                            f"{max_tick_delta_used} is under 100 ticks because primary_motion_limiter={primary_motion_limit!r} "
+                            f"(global_limiter_reason={mapping_debug.get('global_limiter_reason')!r}, "
+                            f"skipped_write_reason={skipped_token!r})."
+                        )
                     cap_ticks = int(self.config.max_tick_delta_from_startup)
                     headroom_ticks = max(0, cap_ticks - int(max_tick_delta_used))
                     delta_tokens = ",".join(f"{int(sid)}:{int(bounded_applied_delta[int(sid)]):+d}" for sid in servo_ids)
@@ -567,6 +707,22 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                         "tick_delta_cap_ticks": int(cap_ticks),
                         "tick_delta_headroom_ticks": int(headroom_ticks),
                         "max_tick_step_per_cycle": int(max_step),
+                        "tiny_motion_explanation_if_applicable": tiny_motion_explanation,
+                        "aggressive_mode_enabled": bool(aggressive_mode),
+                        "desired_tick_delta_from_startup_by_servo": (
+                            dict(mapping_debug.get("desired_tick_delta_from_startup_by_servo") or {}) if aggressive_mode else None
+                        ),
+                        "commanded_tick_delta_from_startup_by_servo": (
+                            dict(mapping_debug.get("commanded_tick_delta_from_startup_by_servo") or {}) if aggressive_mode else None
+                        ),
+                        "actual_tick_delta_from_startup_by_servo": actual_delta_from_startup_by_servo if aggressive_mode else None,
+                        "limiter_reason_by_servo": (dict(mapping_debug.get("limiter_reason_by_servo") or {}) if aggressive_mode else None),
+                        "global_limiter_reason": (mapping_debug.get("global_limiter_reason") if aggressive_mode else None),
+                        "current_abs_by_servo": current_abs_by_servo if aggressive_mode else None,
+                        "current_limit_ma": int(self.config.aggressive_current_limit_ma) if aggressive_mode else None,
+                        "internal_goal_ticks_by_servo": (
+                            {str(k): int(v) for k, v in sorted(self._internal_goal_ticks.items())} if aggressive_mode else None
+                        ),
                     }
 
                     sample = _build_chasing_sample(
@@ -626,6 +782,17 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
             metrics["final_target_xy_mm"] = last.extra.get("target_xy_mm")
         return metrics
 
+    def finalize(self, session: ExperimentSession) -> None:
+        tracking = session.context.tracking_service
+        if tracking is not None and self._prior_runtime_tip_mode is not None:
+            setter = getattr(tracking, "set_runtime_tip_mode", None)
+            if callable(setter):
+                try:
+                    setter(str(self._prior_runtime_tip_mode))
+                except Exception:
+                    pass
+            self._prior_runtime_tip_mode = None
+
     def write_outputs(self, session: ExperimentSession, paths, summary) -> None:
         em = dict(summary.experiment_metrics or {})
         hz_ctrl = em.get("achieved_mean_control_hz")
@@ -675,6 +842,8 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
             f"Clamp / saturation counts by reason: {em.get('chase_clamp_counts_by_reason')}",
             f"Max abs commanded step (ticks): {em.get('chase_max_abs_commanded_step_ticks')}",
             f"Max abs delta from startup by servo (ticks): {em.get('chase_max_abs_delta_ticks_by_servo')}",
+            f"Aggressive tick demo enabled: {em.get('aggressive_mode_enabled')}",
+            f"Recovered goal write packet retries (total): {em.get('recovered_write_packet_error_total')}",
             "",
             "This MVP uses the 0A coil origin in robot frame as the controlled point and the 0B robot-frame "
             "tool origin as the target. It does not claim physical tip chasing unless a validated T_robot_tip "
@@ -750,6 +919,24 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
         session.set_metric(
             "achieved_mean_gui_hz",
             float(sum(gui_samples)) / len(gui_samples) if gui_samples else None,
+        )
+        session.set_metric("aggressive_mode_enabled", str(self._mapping_mode_used).strip().lower() == MAPPING_AGGRESSIVE_TICK_DEMO)
+        session.set_metric(
+            "internal_goal_ticks_by_servo",
+            {str(k): int(v) for k, v in sorted((self._internal_goal_ticks or {}).items())},
+        )
+        session.set_metric("runtime_tip_demo_coil_as_tip_adopted", bool(self._demo_runtime_tip_coil_adopted))
+        session.set_metric(
+            "summary_requirements",
+            {
+                "min_sample_count": 1,
+                "invalid_transforms_are_fatal": bool(self.config.use_calibrated_runtime_tip),
+            },
+        )
+        recovered_writes = list((perf.get("recovered_goal_write_retries") or []))
+        session.set_metric(
+            "recovered_write_packet_error_total",
+            int(sum(int(x) for x in recovered_writes)) if recovered_writes else 0,
         )
 
 
@@ -942,11 +1129,175 @@ def _classify_stop_reason(exc: Exception) -> str:
         return "servo_hardware_error"
     if "wrap_risk" in message:
         return "wrap_risk"
-    if "saturation_limit_persisted" in message:
-        return "saturation_limit_persisted"
+    if "penprobe goal write failed" in message.lower():
+        return "penprobe_goal_write_failed"
     if "stopped by operator" in message.lower():
         return "operator_stop"
     return "failed"
+
+
+def _penprobe_write_goals_with_retry(servo_service, goals: dict[int, int], *, attempts: int) -> int:
+    """Write absolute goal ticks with bounded retries on packet/status errors. Returns recovered retry count."""
+    writer = getattr(servo_service, "_write_goal_positions", None)
+    if writer is None or not callable(writer):
+        raise RuntimeError("penprobe_chasing_demo requires ServoService._write_goal_positions for aggressive/direct writes.")
+    attempts = max(1, int(attempts))
+    last_exc: BaseException | None = None
+    recovered = 0
+    for idx in range(attempts):
+        try:
+            writer({int(k): int(v) for k, v in dict(goals).items()})
+            if idx > 0:
+                recovered += int(idx)
+            return recovered
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc).lower()
+            if idx >= attempts - 1:
+                break
+            if "incorrect status packet" not in msg and "txrxresult" not in msg and "status packet" not in msg:
+                raise
+    assert last_exc is not None
+    raise RuntimeError(f"penprobe goal write failed after {attempts} attempt(s): {last_exc}") from last_exc
+
+
+def aggressive_tick_demo_cycle(
+    *,
+    tip_xy_mm: list[float],
+    target_xy_mm: list[float],
+    servo_ids: list[int],
+    pairs: dict[str, list[int]],
+    config: PenprobeChasingDemoConfig,
+    internal_goals: dict[int, int],
+    startup_ref: dict[int, int],
+    telemetry_by_id: dict[int, Any],
+    max_step_ticks: int,
+) -> tuple[dict[int, int], dict[int, int], dict[int, int], dict[str, Any], dict[int, str], dict[int, list[str]], str | None]:
+    """Direct tick-space chase: per-axis step cap only (no paired XY L2 vector cap)."""
+    reasons: dict[int, list[str]] = {int(s): [] for s in servo_ids}
+    clips: dict[int, str] = {}
+    prev_abs = {int(s): int(internal_goals[int(s)]) for s in servo_ids}
+    limit_ma = int(config.aggressive_current_limit_ma)
+    if limit_ma > 0:
+        peak = max(abs(int(telemetry_by_id[int(s)].present_current_ma or 0)) for s in servo_ids)
+        if peak >= limit_ma:
+            delta_cmd = {int(s): int(prev_abs[int(s)]) - int(startup_ref[int(s)]) for s in servo_ids}
+            dbg = {
+                "mapping_mode": MAPPING_AGGRESSIVE_TICK_DEMO,
+                "aggressive_bypasses_xy_l2_cap": True,
+                "per_cycle_l2_vector_cap_hit": False,
+                "current_peak_ma": int(peak),
+                "global_limiter_reason": "aggressive_current_limit_ma",
+                "limiter_reason_by_servo": {},
+            }
+            return dict(prev_abs), dict(delta_cmd), dict(delta_cmd), dbg, {}, reasons, "aggressive_current_limit_ma"
+
+    error_x = float(target_xy_mm[0]) - float(tip_xy_mm[0])
+    error_y = float(target_xy_mm[1]) - float(tip_xy_mm[1])
+    if float(math.hypot(error_x, error_y)) <= float(config.xy_deadband_mm):
+        error_x = 0.0
+        error_y = 0.0
+    clamped_x, clamped_y, _clamped_radius = _clamp_xy(error_x, error_y, float(config.max_target_radius_mm))
+    gain = float(config.proportional_gain_ticks_per_mm)
+    raw_axis_x = float(clamped_x) * gain * int(config.x_axis_sign) * (-1 if config.flip_x else 1)
+    raw_axis_y = float(clamped_y) * gain * int(config.y_axis_sign) * (-1 if config.flip_y else 1)
+    step_x = int(round(max(-max_step_ticks, min(max_step_ticks, raw_axis_x))))
+    step_y = int(round(max(-max_step_ticks, min(max_step_ticks, raw_axis_y))))
+    axis_a = list(dict(pairs or {}).get("axis_a", []))
+    axis_b = list(dict(pairs or {}).get("axis_b", []))
+    if len(axis_a) != 2 or len(axis_b) != 2:
+        if len(servo_ids) != 4:
+            raise ValueError(f"aggressive_tick_demo requires four servos; found {servo_ids}.")
+        axis_a = [int(servo_ids[0]), int(servo_ids[2])]
+        axis_b = [int(servo_ids[1]), int(servo_ids[3])]
+
+    work = dict(prev_abs)
+    work[int(axis_a[0])] -= step_x
+    work[int(axis_a[1])] += step_x
+    work[int(axis_b[0])] -= step_y
+    work[int(axis_b[1])] += step_y
+    desired_delta = {int(s): int(work[int(s)]) - int(startup_ref[int(s)]) for s in servo_ids}
+
+    max_abs = int(config.max_tick_delta_from_startup)
+    for sid in servo_ids:
+        sid = int(sid)
+        lo = int(startup_ref[sid]) - max_abs
+        hi = int(startup_ref[sid]) + max_abs
+        g = int(work[sid])
+        if g < lo:
+            work[sid] = lo
+            reasons[sid].append("max_tick_delta_from_startup")
+        elif g > hi:
+            work[sid] = hi
+            reasons[sid].append("max_tick_delta_from_startup")
+
+    for sid in servo_ids:
+        sid = int(sid)
+        telem = telemetry_by_id[int(sid)]
+        mn = int(telem.min_position_limit) if telem.min_position_limit is not None else RAW_POSITION_MIN_TICK
+        mx = int(telem.max_position_limit) if telem.max_position_limit is not None else RAW_POSITION_MAX_TICK
+        g = int(work[sid])
+        if g < mn:
+            work[sid] = mn
+            clips[sid] = f"hardware_min_{mn}"
+        elif g > mx:
+            work[sid] = mx
+            clips[sid] = f"hardware_max_{mx}"
+
+    for sid in servo_ids:
+        sid = int(sid)
+        g = int(work[sid])
+        cg = max(RAW_POSITION_MIN_TICK, min(RAW_POSITION_MAX_TICK, g))
+        if cg != g:
+            clips[sid] = clips.get(sid, f"raw_clamp_{g}_to_{cg}")
+            work[sid] = cg
+
+    wrap_hit = False
+    for sid in servo_ids:
+        sid = int(sid)
+        present = telemetry_by_id[int(sid)].present_position
+        if present is None:
+            raise RuntimeError(f"missing_position:{sid}")
+        if is_wrap_risk(int(present), int(work[sid]), (RAW_POSITION_MIN_TICK, RAW_POSITION_MAX_TICK)):
+            wrap_hit = True
+            break
+    global_limiter: str | None = None
+    if wrap_hit:
+        work = dict(prev_abs)
+        for sid in servo_ids:
+            reasons[int(sid)].append("wrap_guard")
+        global_limiter = "wrap_guard"
+
+    commanded_delta = {int(s): int(work[int(s)]) - int(startup_ref[int(s)]) for s in servo_ids}
+    dbg = {
+        "mapping_mode": MAPPING_AGGRESSIVE_TICK_DEMO,
+        "aggressive_bypasses_xy_l2_cap": True,
+        "per_cycle_l2_vector_cap_hit": False,
+        "step_axis_x_ticks": int(step_x),
+        "step_axis_y_ticks": int(step_y),
+        "xy_error_mm": [float(error_x), float(error_y)],
+        "clamped_xy_error_mm": [float(clamped_x), float(clamped_y)],
+        "desired_tick_delta_from_startup_by_servo": {str(int(s)): int(desired_delta[int(s)]) for s in servo_ids},
+        "commanded_tick_delta_from_startup_by_servo": {str(int(s)): int(commanded_delta[int(s)]) for s in servo_ids},
+        "internal_goal_ticks_by_servo": {str(int(s)): int(work[int(s)]) for s in servo_ids},
+        "global_limiter_reason": global_limiter,
+    }
+    if clips and global_limiter is None:
+        global_limiter = "hardware_or_raw_bounds"
+    elif any("max_tick_delta_from_startup" in r for rs in reasons.values() for r in rs) and global_limiter is None:
+        global_limiter = "max_tick_delta_from_startup"
+    dbg["global_limiter_reason"] = global_limiter
+    lim_by: dict[str, str] = {}
+    for sid in servo_ids:
+        sid = int(sid)
+        parts = list(reasons.get(sid, []))
+        clip = clips.get(sid)
+        if clip is not None:
+            parts.append(str(clip))
+        if parts:
+            lim_by[str(sid)] = ",".join(parts)
+    dbg["limiter_reason_by_servo"] = lim_by
+    return work, desired_delta, commanded_delta, dbg, clips, reasons, global_limiter
 
 
 def paired_xy_proportional_tick_request(
@@ -1029,6 +1380,9 @@ def _chase_motion_limiter_summary(
     skipped_write_reason: str | None,
 ) -> str:
     """Single primary label for why motion might be capped this cycle (HUD / diagnostics)."""
+    gl = str((mapping_debug or {}).get("global_limiter_reason") or "").strip()
+    if gl:
+        return gl
     token = str(skipped_write_reason or "").strip()
     if token and token not in {"servo_written"}:
         return f"write_gate:{token}"
@@ -1088,12 +1442,15 @@ def _clamp_tick_deltas_to_startup_raw_bounds(
 
 
 def _resolve_mapping_mode(config: PenprobeChasingDemoConfig, project_root: Path) -> tuple[str, list[str]]:
-    if str(config.mapping_mode) != MAPPING_LEGACY_POLYNOMIAL_WORKSPACE:
-        return MAPPING_PAIRED_XY_PROPORTIONAL, []
-    _validate_legacy_mapping_config(config, project_root)
-    return MAPPING_LEGACY_POLYNOMIAL_WORKSPACE, [
-        "legacy_polynomial_workspace files are present, but v1 still uses the bounded paired command safety envelope."
-    ]
+    mode = str(config.mapping_mode or "").strip().lower()
+    if mode == MAPPING_LEGACY_POLYNOMIAL_WORKSPACE:
+        _validate_legacy_mapping_config(config, project_root)
+        return MAPPING_LEGACY_POLYNOMIAL_WORKSPACE, [
+            "legacy_polynomial_workspace files are present, but v1 still uses the bounded paired command safety envelope."
+        ]
+    if mode == MAPPING_AGGRESSIVE_TICK_DEMO:
+        return MAPPING_AGGRESSIVE_TICK_DEMO, []
+    return MAPPING_PAIRED_XY_PROPORTIONAL, []
 
 
 def _validate_legacy_mapping_config(config: PenprobeChasingDemoConfig, project_root: Path) -> None:

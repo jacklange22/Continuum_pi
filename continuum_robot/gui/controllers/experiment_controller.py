@@ -1859,7 +1859,7 @@ class ExperimentController:
             return (
                 f"0A-to-0B XY chase, cap {int(config_payload.get('max_tick_delta_from_startup', 500) or 500)} ticks, "
                 f"period {float(config_payload.get('loop_period_s', 0.075) or 0.075):.3f}s, "
-                f"mapping {str(config_payload.get('mapping_mode', 'paired_xy_proportional'))}"
+                f"mapping {str(config_payload.get('mapping_mode', 'aggressive_tick_demo'))}"
             )
         if experiment_name == "tracker_timing_validation":
             tool_ids = ",".join(str(value) for value in (config_payload.get("requested_tool_ids") or ["0A", "0B"]))
