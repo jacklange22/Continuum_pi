@@ -1,6 +1,6 @@
 {
-  "current_registration_path": "/home/continuum-pi/Continuum_pi/data/registrations/20260513_134253_registration.json",
-  "current_timestamp_utc": "2026-05-13T13:42:53.573Z",
+  "current_registration_path": "/home/continuum-pi/Continuum_pi/data/registrations/20260514_025335_registration.json",
+  "current_timestamp_utc": "2026-05-14T02:53:35.354Z",
   "history_run_count": 6,
   "comparison_count": 5,
   "comparisons_to_recent_runs": [
@@ -8,122 +8,122 @@
       "path": "/home/continuum-pi/Continuum_pi/data/registrations/registration_20260420T151038_270547Z.json",
       "timestamp_utc": "2026-04-20T15:10:16.402Z",
       "fre_mm": 0.5489925967240922,
-      "fre_delta_mm": 0.08566048295932738,
-      "translation_delta_mm": 79.00786841176532,
-      "rotation_delta_deg": 1.0886498772829916
+      "fre_delta_mm": 0.025520494129525728,
+      "translation_delta_mm": 79.3398077935252,
+      "rotation_delta_deg": 0.7403677100207368
     },
     {
       "path": "/home/continuum-pi/Continuum_pi/data/registrations/registration_20260419T225301_998672Z.json",
       "timestamp_utc": "2026-04-19T22:52:43.513Z",
       "fre_mm": 1.4871893089498147,
-      "fre_delta_mm": 0.8525362292663952,
-      "translation_delta_mm": 79.50133170888783,
-      "rotation_delta_deg": 1.3768236693412808
+      "fre_delta_mm": 0.9637172063552483,
+      "translation_delta_mm": 79.82007679677773,
+      "rotation_delta_deg": 1.2285781775020332
     },
     {
       "path": "/home/continuum-pi/Continuum_pi/data/registrations/registration_20260401T193748Z.json",
       "timestamp_utc": "2026-04-01T19:37:30.115Z",
       "fre_mm": 0.7175823132483328,
-      "fre_delta_mm": 0.08292923356491322,
-      "translation_delta_mm": 400.686078571336,
-      "rotation_delta_deg": 96.61470410721212
+      "fre_delta_mm": 0.19411021065376632,
+      "translation_delta_mm": 400.6888673003541,
+      "rotation_delta_deg": 96.27562656637791
+    },
+    {
+      "path": "/home/continuum-pi/Continuum_pi/data/registrations/20260513_134253_registration.json",
+      "timestamp_utc": "2026-05-13T13:42:53.573Z",
+      "fre_mm": 0.6346530796834196,
+      "fre_delta_mm": 0.1111809770888531,
+      "translation_delta_mm": 0.631304437410349,
+      "rotation_delta_deg": 0.3580552368680324
     },
     {
       "path": "/home/continuum-pi/Continuum_pi/data/registrations/20260513_131825_registration.json",
       "timestamp_utc": "2026-05-13T13:18:25.833Z",
       "fre_mm": 0.4593692771875257,
-      "fre_delta_mm": 0.17528380249589387,
-      "translation_delta_mm": 72.0569771595092,
-      "rotation_delta_deg": 13.955014371857045
-    },
-    {
-      "path": "/home/continuum-pi/Continuum_pi/data/registrations/20260513_000403_registration.json",
-      "timestamp_utc": "2026-05-13T00:04:03.103Z",
-      "fre_mm": 0.6131527004980453,
-      "fre_delta_mm": 0.021500379185374285,
-      "translation_delta_mm": 38.90681850170383,
-      "rotation_delta_deg": 7.319515291194927
+      "fre_delta_mm": 0.06410282540704076,
+      "translation_delta_mm": 72.00458996100855,
+      "rotation_delta_deg": 13.613622271394853
     }
   ],
   "fre_summary_mm": {
     "count": 6,
-    "mean": 0.7434898793818716,
-    "std": 0.3418447460088622,
+    "mean": 0.7285431130646253,
+    "std": 0.3491004127769356,
     "min": 0.4593692771875257,
     "max": 1.4871893089498147
   },
   "translation_delta_summary_mm": {
     "count": 5,
-    "mean": 134.03181487064043,
-    "std": 134.16061275280063,
-    "min": 38.90681850170383,
-    "max": 400.686078571336
+    "mean": 126.4969292578152,
+    "std": 140.28208160806568,
+    "min": 0.631304437410349,
+    "max": 400.6888673003541
   },
   "rotation_delta_summary_deg": {
     "count": 5,
-    "mean": 24.07094146337767,
-    "std": 36.5752606750681,
-    "min": 1.0886498772829916,
-    "max": 96.61470410721212
+    "mean": 22.44324999243271,
+    "std": 37.25054464895685,
+    "min": 0.3580552368680324,
+    "max": 96.27562656637791
   },
   "per_landmark_residual_summary_mm_by_label": {
     "L1": {
       "count": 6,
-      "mean_mm": 0.8236435031731881,
-      "std_mm": 0.2950217223379116,
+      "mean_mm": 0.7919894331636533,
+      "std_mm": 0.29549893370941344,
       "max_mm": 1.3966949033727267,
       "min_mm": 0.499199943794517
     },
     "L2": {
       "count": 6,
-      "mean_mm": 0.6040071989805164,
-      "std_mm": 0.465292843512402,
+      "mean_mm": 0.601813280621346,
+      "std_mm": 0.4672551932172834,
       "max_mm": 1.4304345126993414,
       "min_mm": 0.13862136903609049
     },
     "L3": {
       "count": 6,
-      "mean_mm": 0.7851276453360124,
-      "std_mm": 0.49038286633107864,
+      "mean_mm": 0.7675217766270982,
+      "std_mm": 0.4918983732380223,
       "max_mm": 1.787339202978498,
       "min_mm": 0.2982517126497953
     },
     "L4": {
       "count": 6,
-      "mean_mm": 0.5790360523499253,
-      "std_mm": 0.37364158744821024,
+      "mean_mm": 0.597621859040056,
+      "std_mm": 0.3567990571724272,
       "max_mm": 1.286641825795332,
-      "min_mm": 0.2016074597360256
+      "min_mm": 0.31312229987681073
     }
   },
   "worst_landmark_by_mean_residual": "L1",
-  "worst_landmark_mean_residual_mm": 0.8236435031731881,
-  "generated_at_utc": "2026-05-13T13:43:00.014Z",
+  "worst_landmark_mean_residual_mm": 0.7919894331636533,
+  "generated_at_utc": "2026-05-14T02:53:38.996Z",
   "validation_kind": "repeated_registration_comparison",
-  "current_record_timestamp_utc": "2026-05-13T13:42:53.573Z",
+  "current_record_timestamp_utc": "2026-05-14T02:53:35.354Z",
   "registration_mode": "simple",
-  "current_fre_mm": 0.6346530796834196,
+  "current_fre_mm": 0.5234721025945664,
   "runtime_application": {
-    "state": "registration_loaded_waiting_for_live_pose",
-    "message": "Tracking loaded this accepted registration; live pose is waiting on runtime status 'missing_registration'.",
+    "state": "coil_as_tip_override",
+    "message": "Tracking is using the explicit coil-as-tip override. Tip pose is available, but T_coil_tip is identity and this mode is lower trust.",
     "registration_state": "loaded",
-    "tip_pose_status": "missing_registration",
+    "tip_pose_status": "identity_tip_fallback",
     "registration_path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
     "loaded_latest_registration": true,
     "timestamp_matches_latest": true,
     "role_match": true,
-    "stored_registration_timestamp_utc": "2026-05-13T13:42:53.573Z",
-    "stored_registration_fre_mm": 0.6346530796834196,
+    "stored_registration_timestamp_utc": "2026-05-14T02:53:35.354Z",
+    "stored_registration_fre_mm": 0.5234721025945664,
     "stored_registration_measurement_tool_id": "0B",
     "stored_registration_coil_tool_id": "0A",
-    "runtime_tip_calibration_state": "loaded",
-    "runtime_tip_calibration_path": "/home/continuum-pi/Continuum_pi/data/runtime_tip_calibration/latest_runtime_tip_calibration.json",
-    "runtime_tip_mode": "latest_accepted",
-    "runtime_tip_trust_level": "lower_trust",
-    "runtime_tip_mode_message": "Latest accepted runtime tip artifact is active but marked lower_trust by policy. (2026-04-17T22:55:56.544Z) Source=runtime_tip_calibration_hat.",
-    "stored_runtime_tip_timestamp_utc": "2026-04-17T22:55:56.544Z",
+    "runtime_tip_calibration_state": "coil_as_tip",
+    "runtime_tip_calibration_path": null,
+    "runtime_tip_mode": "coil_as_tip",
+    "runtime_tip_trust_level": "thesis_trusted",
+    "runtime_tip_mode_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.",
+    "stored_runtime_tip_timestamp_utc": null,
     "stored_runtime_tip_measurement_tool_id": "0B",
     "stored_runtime_tip_coil_tool_id": "0A",
-    "runtime_tip_identity_fallback": false
+    "runtime_tip_identity_fallback": true
   }
 }

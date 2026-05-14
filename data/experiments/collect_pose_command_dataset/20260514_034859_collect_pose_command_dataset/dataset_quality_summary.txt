@@ -1,0 +1,13 @@
+Collect-Pose Dataset Quality Summary
+Accepted samples: 710
+Rejected samples: 0
+Failures: 1
+Dropped post-motion samples: 0
+Next command index to resume: 709
+Recovered packet errors: 0
+Unrecovered packet errors: 1
+Telemetry retries: 0
+Write-goal packet errors: 0
+Tracker stale count: 0
+Max abs current (mA): 338
+Recommendation: failed_due_to_telemetry

@@ -1,0 +1,31 @@
+{
+  "accepted_sample_count": 0,
+  "command_range_per_tendon_cm": {},
+  "dropped_post_motion_telemetry_samples": 0,
+  "failure_count": 0,
+  "high_current_warning": false,
+  "max_abs_current_ma": null,
+  "max_current_warning_ma": null,
+  "measured_xyz_range_mm": {},
+  "next_command_index_to_resume": 0,
+  "recommendation": "good_for_debug",
+  "recovered_packet_error_count": 0,
+  "rejected_sample_count": 0,
+  "sample_rate_stats": {
+    "max_dt_s": null,
+    "mean_dt_s": null,
+    "mean_hz": null,
+    "min_dt_s": null,
+    "sample_count": 0
+  },
+  "schema_version": "collect_pose_dataset_quality_v1",
+  "servo_telemetry_retry_count": 0,
+  "tracker_stale_count": 0,
+  "trainability_status": {
+    "not_model_training_ready": true,
+    "run_trust_mode": "thesis_trusted",
+    "valid_for_model_training": false
+  },
+  "unrecovered_packet_error_count": 0,
+  "write_goal_packet_error_count": 0
+}
