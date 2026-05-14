@@ -1,6 +1,8 @@
 dataset_mode: "workspace_coverage"
 dry_run: false
-sample_count_target: 180
+sample_count_target: 4092
+continue_until_valid_samples: True
+target_valid_sample_count:
 samples_per_command: 1
 settle_time_s: 0.15
 max_tracker_age_s: 0.15
@@ -25,10 +27,10 @@ run_label: "upgraded_robot_modeling"
 dataset_tag: "baseline_v1"
 post_write_settle_s: 0.0
 telemetry_retry_count: 2
-telemetry_retry_delay_s: 0.03
+telemetry_retry_delay_s: 0.07
 allow_recovered_packet_errors: true
 max_recovered_packet_errors_per_run:
-max_current_warning_ma:
+max_current_warning_ma: 800
 
 # Long unattended runs: recoverable post-motion packet errors (drop sample + resync), chunking, health.
 long_run_recovery_enabled: true
