@@ -5379,11 +5379,52 @@ def _collect_pose_parallel_command_metadata(
     if _collect_pose_parallel_single_mode(session) and len(cable_command_cm) == 4:
         context = session.context.settings.robot.operating_context()
         mirror_pairs = {int(k): int(v) for k, v in dict(context.mirror_pairs or {}).items()}
+        segments = dict(context.segments or {})
+        segment_order = list(context.segment_order or [])
+        segment_a_key = segment_order[0] if len(segment_order) >= 1 else "segment_a"
+        segment_b_key = segment_order[1] if len(segment_order) >= 2 else "segment_b"
+        segment_a = segments.get(segment_a_key)
+        segment_b = segments.get(segment_b_key)
+        shared = [float(value) for value in cable_command_cm]
         parallel_command_metadata = {
             "operating_mode": "parallel_single",
             "mirrored_parallel": True,
+            "parallel_single_demo": True,
+            "true_two_segment_control": False,
             "mirror_pairs": {str(k): int(v) for k, v in sorted(mirror_pairs.items())},
             "commanded_servo_ids": list(servo_ids),
+            "shared_4_tendon_command_cm": list(shared),
+            "segment_a_command_cm": list(shared),
+            "segment_b_command_cm": list(shared),
+            "segment_order": segment_order,
+            "segment_a": {
+                "key": str(segment_a.key if segment_a is not None else segment_a_key),
+                "label": str(segment_a.label if segment_a is not None else "Segment A"),
+                "segment_label": str(
+                    (segment_a.segment_label if segment_a is not None else "")
+                    or (segment_a.label if segment_a is not None else "Segment A")
+                ),
+                "segment_role": str(segment_a.segment_role if segment_a is not None else "proximal"),
+                "servo_ids": [int(value) for value in (segment_a.servo_ids if segment_a is not None else [1, 2, 3, 4])],
+                "pairs": {
+                    str(key): [int(value) for value in values]
+                    for key, values in dict(segment_a.pairs if segment_a is not None else {}).items()
+                },
+            },
+            "segment_b": {
+                "key": str(segment_b.key if segment_b is not None else segment_b_key),
+                "label": str(segment_b.label if segment_b is not None else "Segment B"),
+                "segment_label": str(
+                    (segment_b.segment_label if segment_b is not None else "")
+                    or (segment_b.label if segment_b is not None else "Segment B")
+                ),
+                "segment_role": str(segment_b.segment_role if segment_b is not None else "distal"),
+                "servo_ids": [int(value) for value in (segment_b.servo_ids if segment_b is not None else [5, 6, 7, 8])],
+                "pairs": {
+                    str(key): [int(value) for value in values]
+                    for key, values in dict(segment_b.pairs if segment_b is not None else {}).items()
+                },
+            },
         }
     return parallel_command_metadata
 
@@ -5922,18 +5963,27 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         progress = 0
         zero_vector = [0.0, 0.0, 0.0, 0.0]
         servo_only_mode = _collect_pose_servo_only_test_mode(config=self.config, tracking_service=session.context.tracking_service)
+        parallel_single_demo = _collect_pose_parallel_single_mode(session)
+        parallel_single_demo = _collect_pose_parallel_single_mode(session)
         run_trust_mode = "servo_only" if servo_only_mode else str(self.config.run_trust_mode or "thesis_trusted")
         session.set_metric("dataset_mode", str(self.config.dataset_mode or "workspace_coverage"))
         session.set_metric("dry_run", bool(self.config.dry_run))
         session.set_metric("run_trust_mode", run_trust_mode)
         session.set_metric("tracker_connected", bool(session.context.tracking_service is not None))
-        session.set_metric("valid_for_model_training", not bool(servo_only_mode))
-        session.set_metric("valid_for_thesis_repeatability", not bool(servo_only_mode))
-        session.set_metric("not_model_training_ready", bool(servo_only_mode))
+        session.set_metric("parallel_single_demo", bool(parallel_single_demo))
+        session.set_metric("true_two_segment_control", False)
+        session.set_metric("valid_for_model_training", not bool(servo_only_mode or parallel_single_demo))
+        session.set_metric("valid_for_thesis_repeatability", not bool(servo_only_mode or parallel_single_demo))
+        session.set_metric("not_model_training_ready", bool(servo_only_mode or parallel_single_demo))
         if servo_only_mode:
             session.add_warning(
                 "Tracker is not connected. This run is allowed as a servo-only hardware test. "
                 "Tip position, robot-frame pose, modeling labels, and thesis repeatability metrics will not be produced."
+            )
+        if parallel_single_demo:
+            session.add_warning(
+                "Parallel Single Demo mode is active: the same single-segment command is sent to Spine 1 and Spine 2. "
+                "This is synchronized demo playback, not true two-segment kinematics/control."
             )
         session.set_metric("run_label", str(self.config.run_label or ""))
         session.set_metric("dataset_tag", str(self.config.dataset_tag or ""))
@@ -6260,12 +6310,11 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         if _collect_pose_parallel_single_mode(session) and len(requested_cable_command_cm) == 4:
             context = session.context.settings.robot.operating_context()
             parallel_mirror_pairs = {int(k): int(v) for k, v in dict(context.mirror_pairs or {}).items()}
-            parallel_command_metadata = {
-                "operating_mode": "parallel_single",
-                "mirrored_parallel": True,
-                "mirror_pairs": {str(k): int(v) for k, v in sorted(parallel_mirror_pairs.items())},
-                "commanded_servo_ids": list(command_servo_ids),
-            }
+            parallel_command_metadata = _collect_pose_parallel_command_metadata(
+                session,
+                servo_ids=command_servo_ids,
+                cable_command_cm=requested_cable_command_cm,
+            )
             if self.config.dry_run or not servo_service.is_connected:
                 requested_cable_command_cm = _mirror_parallel_single_displacements(
                     requested_cable_command_cm,
@@ -6278,6 +6327,21 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 raise RuntimeError("Dry-run modeling command dimensions do not match the configured servo set.")
             goals = servo_service.mapper.to_goal_positions(requested_cable_command_cm, command_neutral_ticks)
             commanded_motor_values = {str(servo_id): int(goal) for servo_id, goal in zip(command_servo_ids, goals)}
+            command_metadata = dict(parallel_command_metadata)
+            if command_metadata.get("parallel_single_demo"):
+                segment_a_ids = [int(value) for value in command_metadata.get("segment_a", {}).get("servo_ids", [])]
+                segment_b_ids = [int(value) for value in command_metadata.get("segment_b", {}).get("servo_ids", [])]
+                command_metadata["segment_a_goal_ticks"] = {
+                    str(servo_id): int(commanded_motor_values[str(servo_id)])
+                    for servo_id in segment_a_ids
+                    if str(servo_id) in commanded_motor_values
+                }
+                command_metadata["segment_b_goal_ticks"] = {
+                    str(servo_id): int(commanded_motor_values[str(servo_id)])
+                    for servo_id in segment_b_ids
+                    if str(servo_id) in commanded_motor_values
+                }
+                command_metadata["all_8_goal_ticks"] = dict(commanded_motor_values)
             return {
                 "requested_cable_command_cm": list(requested_cable_command_cm),
                 "resolved_cable_command_cm": list(requested_cable_command_cm),
@@ -6289,7 +6353,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 "clamp_reasons_by_servo": {},
                 "servo_debug": {},
                 "servo_feedback": {},
-                "command_metadata": dict(parallel_command_metadata),
+                "command_metadata": command_metadata,
                 "message": "Dry-run command resolved through the tendon-displacement mapper only.",
                 "motion_profile": {
                     "operating_mode_label": "dry_run",
@@ -6329,6 +6393,25 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             )
             raise
         motion_profile = _servo_motion_profile_from_result(command)
+        command_metadata = {**dict(parallel_command_metadata), **dict(command.command_metadata or {})}
+        if command_metadata.get("parallel_single_demo"):
+            segment_a_ids = [int(value) for value in command_metadata.get("segment_a", {}).get("servo_ids", [])]
+            segment_b_ids = [int(value) for value in command_metadata.get("segment_b", {}).get("servo_ids", [])]
+            final_goal_ticks = {
+                str(servo_id): int(goal)
+                for servo_id, goal in sorted(command.positions_by_id.items())
+            }
+            command_metadata["segment_a_goal_ticks"] = {
+                str(servo_id): int(final_goal_ticks[str(servo_id)])
+                for servo_id in segment_a_ids
+                if str(servo_id) in final_goal_ticks
+            }
+            command_metadata["segment_b_goal_ticks"] = {
+                str(servo_id): int(final_goal_ticks[str(servo_id)])
+                for servo_id in segment_b_ids
+                if str(servo_id) in final_goal_ticks
+            }
+            command_metadata["all_8_goal_ticks"] = dict(final_goal_ticks)
         LOG.info(
             "Collect-pose command success | resolved_cable_cm=%s | final_goals=%s | clamp_reasons=%s | motion_profile=%s",
             list(command.resolved_displacements_cm or requested_cable_command_cm),
@@ -6361,7 +6444,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             },
             "servo_debug": _servo_debug_payload(command),
             "servo_feedback": _servo_feedback_payload(command.telemetry_by_id, servo_service=servo_service),
-            "command_metadata": dict(command.command_metadata or parallel_command_metadata),
+            "command_metadata": command_metadata,
             "message": str(command.message or ""),
             "motion_profile": motion_profile,
         }
@@ -6742,6 +6825,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             and len(sample.extra.get("resolved_pair_command_cm")) == 2
         ]
         servo_only_mode = _collect_pose_servo_only_test_mode(config=self.config, tracking_service=session.context.tracking_service)
+        parallel_single_demo = _collect_pose_parallel_single_mode(session)
         snapshot = session.context.tracking_service.get_snapshot() if session.context.tracking_service is not None else None
         runtime_tip_policy = (
             evaluate_runtime_tip_trust(
@@ -6791,9 +6875,11 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             "tracker_connected": bool(session.context.tracking_service is not None),
             "registration_available": bool(snapshot is not None and getattr(snapshot, "registration_state", None) == "loaded"),
             "run_trust_mode": "servo_only" if servo_only_mode else str(self.config.run_trust_mode or "thesis_trusted"),
-            "valid_for_model_training": bool(base_train and (drops == 0 or allow_partial)),
-            "valid_for_thesis_repeatability": bool(base_train and (drops == 0 or allow_partial)),
-            "not_model_training_ready": bool(servo_only_mode or not robot_positions),
+            "valid_for_model_training": bool((not parallel_single_demo) and base_train and (drops == 0 or allow_partial)),
+            "valid_for_thesis_repeatability": bool((not parallel_single_demo) and base_train and (drops == 0 or allow_partial)),
+            "not_model_training_ready": bool(servo_only_mode or parallel_single_demo or not robot_positions),
+            "parallel_single_demo": bool(parallel_single_demo),
+            "true_two_segment_control": False,
             "runtime_tip_mode_used": runtime_tip_mode,
             "runtime_tip_trust_level": runtime_tip_policy.trust_label if runtime_tip_policy is not None else "servo_only",
             "runtime_tip_policy": runtime_tip_policy.to_dict() if runtime_tip_policy is not None else None,
@@ -7836,6 +7922,7 @@ def _record_collect_pose_run_provenance(
     pair_limits: dict[str, Any],
 ) -> None:
     servo_only_mode = _collect_pose_servo_only_test_mode(config=config, tracking_service=session.context.tracking_service)
+    parallel_single_demo = _collect_pose_parallel_single_mode(session)
     snapshot = session.context.tracking_service.get_snapshot() if session.context.tracking_service is not None else None
     runtime_tip_policy = (
         evaluate_runtime_tip_trust(
@@ -7889,8 +7976,10 @@ def _record_collect_pose_run_provenance(
         "run_label": str(config.run_label or ""),
         "dataset_tag": str(config.dataset_tag or ""),
         "run_trust_mode": "servo_only" if servo_only_mode else str(config.run_trust_mode or "thesis_trusted"),
-        "valid_for_model_training": not bool(servo_only_mode),
-        "valid_for_thesis_repeatability": not bool(servo_only_mode),
+        "valid_for_model_training": not bool(servo_only_mode or parallel_single_demo),
+        "valid_for_thesis_repeatability": not bool(servo_only_mode or parallel_single_demo),
+        "parallel_single_demo": bool(parallel_single_demo),
+        "true_two_segment_control": False,
         "tracker_connected": bool(snapshot is not None),
         "backend_identity": str(getattr(snapshot, "backend_identity", "") or ""),
         "selected_backend_name": str(getattr(snapshot, "selected_backend_name", "") or ""),
@@ -7961,6 +8050,39 @@ def _record_collect_pose_run_provenance(
             "pretension_message": pretension_source.message,
         },
     }
+    if parallel_single_demo:
+        operating_context = session.context.settings.robot.operating_context()
+        segments = dict(operating_context.segments or {})
+        segment_order = list(operating_context.segment_order or [])
+        segment_a_key = segment_order[0] if len(segment_order) >= 1 else "segment_a"
+        segment_b_key = segment_order[1] if len(segment_order) >= 2 else "segment_b"
+        segment_a = segments.get(segment_a_key)
+        segment_b = segments.get(segment_b_key)
+        sign_mapping_info = session.metadata.backend_info.get("servo_sign_mapping_check")
+        sign_mapping_path = None
+        if isinstance(sign_mapping_info, dict):
+            sign_mapping_path = sign_mapping_info.get("path")
+        startup_artifact_path = str(servo_calibration_summary.path)
+        provenance["parallel_single"] = {
+            "warning": "This is not two-segment kinematics. It is synchronized single-segment command playback.",
+            "segment_order": segment_order,
+            "segment_a": {
+                "key": str(segment_a.key if segment_a is not None else segment_a_key),
+                "label": str(segment_a.label if segment_a is not None else "Segment A"),
+                "segment_role": str(segment_a.segment_role if segment_a is not None else "proximal"),
+                "servo_ids": [int(value) for value in (segment_a.servo_ids if segment_a is not None else [1, 2, 3, 4])],
+                "startup_artifact_path": startup_artifact_path,
+            },
+            "segment_b": {
+                "key": str(segment_b.key if segment_b is not None else segment_b_key),
+                "label": str(segment_b.label if segment_b is not None else "Segment B"),
+                "segment_role": str(segment_b.segment_role if segment_b is not None else "distal"),
+                "servo_ids": [int(value) for value in (segment_b.servo_ids if segment_b is not None else [5, 6, 7, 8])],
+                "startup_artifact_path": startup_artifact_path,
+            },
+            "mapping_confirmation_path": str(sign_mapping_path or ""),
+            "pose_label_scope_note": "Pose label corresponds only to tracked coil/tool, not both spines.",
+        }
     session.metadata.backend_info["run_provenance"] = {
         "dataset_mode": provenance["dataset_mode"],
         "run_label": provenance["run_label"],
@@ -7968,6 +8090,8 @@ def _record_collect_pose_run_provenance(
         "run_trust_mode": provenance["run_trust_mode"],
         "valid_for_model_training": provenance["valid_for_model_training"],
         "valid_for_thesis_repeatability": provenance["valid_for_thesis_repeatability"],
+        "parallel_single_demo": provenance.get("parallel_single_demo", False),
+        "true_two_segment_control": provenance.get("true_two_segment_control", False),
         "tracker_connected": provenance["tracker_connected"],
         "backend_identity": provenance["backend_identity"],
         "selected_backend_name": provenance["selected_backend_name"],

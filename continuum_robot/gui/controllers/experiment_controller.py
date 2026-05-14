@@ -756,7 +756,10 @@ class ExperimentController:
                 "two-segment collect-pose dataset, and supporting validation/diagnostics."
             )
         if mode == "parallel_single":
-            return "Showing parallel_single mirrored testing workflows only; pretension/control/chasing are hidden."
+            return (
+                "Showing parallel_single demo workflows only: synchronized single-segment command playback "
+                "across Spine 1 and Spine 2; pretension/control/chasing are hidden."
+            )
         if mode == "one_servo":
             return "Showing one_servo-safe diagnostics/validation only; multi-servo experiments are hidden."
         return f"Showing {len(visible_options)} workflow(s) for operating_mode={mode}."

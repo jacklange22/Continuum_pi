@@ -874,7 +874,32 @@ def evaluate_preflight(
             if expected_dims != 8 or not operating_context.mirror_pairs:
                 checks.append(_blocked("single_segment", "Parallel Single", f"Parallel-single Motor Babble requires 8 commanded servos and mirror pairs; found {commanded_servo_ids}."))
             else:
-                checks.append(_ok("single_segment", "Parallel Single", f"Parallel-single mode will mirror commands across {operating_context.mirror_pairs}."))
+                checks.append(
+                    _ok(
+                        "single_segment",
+                        "Parallel Single Demo",
+                        "Parallel Single Demo: the same single-segment command is sent to Spine 1 and Spine 2. "
+                        f"Mirror pairs: {operating_context.mirror_pairs}.",
+                    )
+                )
+                checks.append(
+                    _warning(
+                        "parallel_single_scope",
+                        "Parallel Single Scope",
+                        "This is not two-segment kinematics. It is synchronized single-segment command playback.",
+                    )
+                )
+                amplitude_cm = abs(float(config.workspace_amplitude_cm))
+                if amplitude_cm > 0.25:
+                    checks.append(
+                        _warning(
+                            "parallel_single_amplitude",
+                            "Parallel Single Amplitude",
+                            "Start parallel_single demo conservatively at ±0.25 cm and increase only after both spines "
+                            "move correctly. Current workspace_amplitude_cm is "
+                            f"±{amplitude_cm:.2f} cm.",
+                        )
+                    )
         elif expected_dims != 4:
             checks.append(_blocked("single_segment", "Single Segment", f"Motor Babble currently supports exactly 4 active segment servos; found {commanded_servo_ids}."))
         else:

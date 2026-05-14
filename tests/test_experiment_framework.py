@@ -16,6 +16,7 @@ from continuum_robot.config.schemas import (
     ExperimentConfig,
     RegistrationWorkflowConfig,
     RobotConfig,
+    RobotSegmentConfig,
     RuntimeConfig,
     SafetyConfig,
     SerialConfig,
@@ -44,6 +45,53 @@ def _settings() -> Settings:
         runtime=RuntimeConfig(mock_mode=True, poll_rate_hz=20, robot_config="robot_4servo.yaml"),
         robot=RobotConfig(mode="4-servo", spool_diameter_cm=1.2, ticks_per_revolution=4096, servo_ids=[1, 2, 3, 4]),
         serial=SerialConfig(aurora_port="/dev/mock-aurora", openrb_port="/dev/mock-openrb", baudrate=115200),
+        safety=SafetyConfig(
+            position_min_offset_ticks=-600,
+            position_max_offset_ticks=600,
+            max_current_ma=850,
+            pretension_current_balance_tolerance_ma=120,
+        ),
+        registration=RegistrationWorkflowConfig(capture_tool_id="0B", coil_tool_id="0A", max_fre_mm=None),
+        experiment=ExperimentConfig(default_settle_time_s=0.0, sample_count_per_point=1, output_dir="data/experiments"),
+        calibration=CalibrationConfig(
+            neutral_setpoints_path="config/neutral_setpoints.json",
+            latest_registration_path="data/registrations/latest_registration.json",
+        ),
+    )
+
+
+def _parallel_single_settings() -> Settings:
+    return Settings(
+        runtime=RuntimeConfig(mock_mode=False, poll_rate_hz=20, robot_config="robot_8servo.yaml"),
+        robot=RobotConfig(
+            mode="parallel_single",
+            spool_diameter_cm=1.2,
+            ticks_per_revolution=4096,
+            servo_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+            tendon_to_servo=[1, 2, 3, 4, 5, 6, 7, 8],
+            active_segment="segment_a",
+            segments={
+                "segment_a": RobotSegmentConfig(
+                    key="segment_a",
+                    label="Spine 1",
+                    segment_label="Segment A",
+                    segment_role="proximal",
+                    segment_order_index=0,
+                    servo_ids=[1, 2, 3, 4],
+                    pairs={"axis_a": [1, 3], "axis_b": [2, 4]},
+                ),
+                "segment_b": RobotSegmentConfig(
+                    key="segment_b",
+                    label="Spine 2",
+                    segment_label="Segment B",
+                    segment_role="distal",
+                    segment_order_index=1,
+                    servo_ids=[5, 6, 7, 8],
+                    pairs={"axis_a": [5, 7], "axis_b": [6, 8]},
+                ),
+            },
+        ),
+        serial=SerialConfig(aurora_port="/dev/mock-aurora", openrb_port="/dev/mock-openrb", baudrate=57600),
         safety=SafetyConfig(
             position_min_offset_ticks=-600,
             position_max_offset_ticks=600,
@@ -555,6 +603,22 @@ def _ready_modeling_servo_service(tmp_path: Path, *, dxl_bus: MockDxlBus | None 
     for servo_id in [1, 2, 3, 4]:
         service.save_startup_calibration(servo_id=servo_id)
     service.capture_manual_pretension_state(note="test modeling startup")
+    service.accept_manual_pretension_state()
+    return service
+
+
+def _ready_parallel_modeling_servo_service(tmp_path: Path) -> ServoService:
+    service = ServoService(
+        dxl_bus=MockDxlBus([1, 2, 3, 4, 5, 6, 7, 8]),
+        mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
+        safety_guard=SafetyGuard(min_offset_ticks=-600, max_offset_ticks=600, max_current_ma=850),
+        neutral_calibration=NeutralCalibrationService(path=tmp_path / "neutral_parallel.json"),
+        pretension_validation=PretensionValidationService(),
+    )
+    service.connect("/dev/mock-openrb", 57600)
+    for servo_id in [1, 2, 3, 4, 5, 6, 7, 8]:
+        service.save_startup_calibration(servo_id=servo_id)
+    service.capture_manual_pretension_state(note="parallel-single demo startup")
     service.accept_manual_pretension_state()
     return service
 
@@ -1580,6 +1644,75 @@ def test_collect_pose_command_dataset_runs_servo_only_without_tracker_when_expli
     assert all(row["tool_0A_translation_mm"] == [] for row in export_rows)
     assert all("servo_only" in row["tracker_status_flags"] for row in export_rows)
     assert all(row["servo_feedback_at_capture"] for row in export_rows)
+
+
+def test_collect_pose_parallel_single_demo_records_all_8_metadata_and_non_training_valid(tmp_path: Path) -> None:
+    settings = _parallel_single_settings()
+    servo_service = _ready_parallel_modeling_servo_service(tmp_path)
+    registration_path = tmp_path / "latest_registration.json"
+    registration_path.write_text(json.dumps({"T_robot_aurora": np.eye(4).tolist()}), encoding="utf-8")
+    snapshot = _trusted_modeling_snapshot(
+        translation_mm=[0.0, 0.0, 0.0],
+        registration_path=registration_path,
+        frame_number=1,
+    )
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_SequencedTrackingService([snapshot]),
+        registration_path=registration_path,
+        servo_service=servo_service,
+    )
+
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dataset_mode": "workspace_coverage",
+            "dry_run": False,
+            "sample_count_target": 1,
+            "samples_per_command": 1,
+            "workspace_amplitude_cm": 0.25,
+        },
+    )
+
+    assert result.success is True
+    metrics = result.summary.experiment_metrics
+    assert metrics["parallel_single_demo"] is True
+    assert metrics["true_two_segment_control"] is False
+    assert metrics["valid_for_model_training"] is False
+    assert metrics["valid_for_thesis_repeatability"] is False
+    assert metrics["not_model_training_ready"] is True
+
+    bundle = runner.load_dataset(result.paths.output_dir)
+    command_samples = [
+        sample
+        for sample in bundle.samples
+        if sample.phase not in {"initial_neutral", "final_neutral"}
+    ]
+    assert command_samples
+    metadata = {}
+    for sample in command_samples:
+        candidate = dict(sample.extra.get("command_metadata", {}) or {})
+        if candidate.get("mirrored_parallel"):
+            metadata = candidate
+            break
+    assert metadata
+    assert metadata["parallel_single_demo"] is True
+    assert metadata["true_two_segment_control"] is False
+    assert len(metadata["shared_4_tendon_command_cm"]) == 4
+    assert len(metadata["segment_a_command_cm"]) == 4
+    assert len(metadata["segment_b_command_cm"]) == 4
+    assert sorted(int(value) for value in metadata["all_8_goal_ticks"].keys()) == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert sorted(int(value) for value in metadata["segment_a_goal_ticks"].keys()) == [1, 2, 3, 4]
+    assert sorted(int(value) for value in metadata["segment_b_goal_ticks"].keys()) == [5, 6, 7, 8]
+    assert metadata["segment_a"]["segment_role"] == "proximal"
+    assert metadata["segment_b"]["segment_role"] == "distal"
+
+    run_provenance = metrics["run_provenance"]
+    assert run_provenance["parallel_single_demo"] is True
+    assert run_provenance["true_two_segment_control"] is False
+    assert run_provenance["valid_for_model_training"] is False
+    assert "parallel_single" in run_provenance
 
 
 def test_collect_pose_packet_status_failure_writes_failure_context_and_quality(tmp_path: Path) -> None:

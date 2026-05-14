@@ -448,3 +448,66 @@ def test_dual_segment_pretension_preflight_blocks_automatic_two_segment_pretensi
     assert active_check.status == "blocked"
     assert "all-8 readiness and manual startup capture" in active_check.message
     assert "Automatic two-segment pretension/control is not implemented yet" in active_check.message
+
+
+def test_parallel_single_collect_pose_preflight_labels_demo_scope(tmp_path: Path) -> None:
+    settings = _settings(mode="parallel_single")
+    snapshot = SimpleNamespace(
+        selected_backend_name="mock",
+        backend_identity="mock",
+        canonical_state="mock",
+        tracker_data_age_s=0.01,
+        tracker_data_stale=False,
+        last_frame_number=1,
+        registration_state="loaded",
+        T_robot_aurora=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+        runtime_tip_mode="coil_as_tip",
+        runtime_tip_trust_level="thesis_trusted",
+        runtime_tip_mode_message="ok",
+        runtime_tip_calibration_state="loaded",
+        runtime_tip_identity_fallback=False,
+        tip_pose_status="ok",
+        T_robot_tip=[[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]],
+        tools={
+            "0A": SimpleNamespace(
+                present=True,
+                valid=True,
+                translation_mm=(0.0, 0.0, 0.0),
+                tracking_state="valid",
+            )
+        },
+        tracking_state="valid",
+    )
+
+    report = evaluate_preflight(
+        experiment_name="collect_pose_command_dataset",
+        config_payload={
+            "dataset_mode": "workspace_coverage",
+            "dry_run": False,
+            "sample_count_target": 1,
+            "samples_per_command": 1,
+            "tool_id": "0A",
+            "max_tracker_age_s": 0.15,
+        },
+        config_error=None,
+        settings=settings,
+        tracking_snapshot=snapshot,
+        servo_connected=True,
+        neutral_setpoints={servo_id: 2048 for servo_id in range(1, 9)},
+        registration_path=tmp_path / "latest_registration.json",
+        output_root=tmp_path / "data" / "experiments",
+        planned_output_dir=tmp_path / "data" / "experiments" / "collect_pose_command_dataset" / "run",
+        project_root=tmp_path,
+        servo_calibration_summary=None,
+    )
+
+    parallel_check = next(check for check in report.checks if check.key == "single_segment")
+    assert parallel_check.status == "ok"
+    assert "Parallel Single Demo" in parallel_check.label
+    assert "same single-segment command is sent to Spine 1 and Spine 2" in parallel_check.message
+    scope_warning = next(check for check in report.checks if check.key == "parallel_single_scope")
+    assert scope_warning.status == "warning"
+    assert "not two-segment kinematics" in scope_warning.message
+    amplitude_warning = next(check for check in report.checks if check.key == "parallel_single_amplitude")
+    assert amplitude_warning.status == "warning"
+    assert "±0.25 cm" in amplitude_warning.message
