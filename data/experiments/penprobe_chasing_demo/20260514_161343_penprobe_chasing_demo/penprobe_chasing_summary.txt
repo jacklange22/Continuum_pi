@@ -1,0 +1,28 @@
+Penprobe Chasing Demo Summary
+
+Status: invalid_due_to_insufficient_samples
+Success: False
+Stop reason: Telemetry is stale (0.257 s > 0.250 s).
+Mapping mode: unknown
+Active segment: None (None)
+Active servos: None
+Max tick delta cap: None
+Max tick delta used: None
+Final XY error mm: None
+
+Loop instrumentation (session mean / max aggregates):
+Achieved mean control Hz: n/a
+Achieved mean servo write Hz: n/a
+Achieved mean telemetry health Hz: n/a
+Mean GUI telemetry Hz snapshot: n/a
+Mean / max tracker age (s): None / None
+Mean / max commanded tick step norm (ticks/cycle planned): None / None
+Saturation sample fraction (distance-to-cap exhausted while tracking): None
+Skipped write counts: None
+Clamp / saturation counts by reason: None
+Max abs commanded step (ticks): None
+Max abs delta from startup by servo (ticks): None
+Aggressive tick demo enabled: None
+Recovered goal write packet retries (total): None
+
+This MVP uses the 0A coil origin in robot frame as the controlled point and the 0B robot-frame tool origin as the target. It does not claim physical tip chasing unless a validated T_robot_tip transform is explicitly used.

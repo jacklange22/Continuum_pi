@@ -1,0 +1,28 @@
+Penprobe Chasing Demo Summary
+
+Status: failed
+Success: False
+Stop reason: failed
+Mapping mode: aggressive_tick_demo
+Active segment: Spine 2 (segment_b)
+Active servos: [5, 6, 7, 8]
+Max tick delta cap: 400
+Max tick delta used: 400
+Final XY error mm: 34.51390416072615
+
+Loop instrumentation (session mean / max aggregates):
+Achieved mean control Hz: 12.67
+Achieved mean servo write Hz: 12.28
+Achieved mean telemetry health Hz: 4.71
+Mean GUI telemetry Hz snapshot: 10.01
+Mean / max tracker age (s): 0.013809649099646208 / 0.04542080299870577
+Mean / max commanded tick step norm (ticks/cycle planned): 42.32465112847154 / 150.0
+Saturation sample fraction (distance-to-cap exhausted while tracking): 0.5602836879432624
+Skipped write counts: {'rate_limit': 81, 'servo_written': 59}
+Clamp / saturation counts by reason: {'aggressive:max_tick_delta_from_startup': 184}
+Max abs commanded step (ticks): 75
+Max abs delta from startup by servo (ticks): {'5': 400, '6': 400, '7': 400, '8': 400}
+Aggressive tick demo enabled: True
+Recovered goal write packet retries (total): 0
+
+This MVP uses the 0A coil origin in robot frame as the controlled point and the 0B robot-frame tool origin as the target. It does not claim physical tip chasing unless a validated T_robot_tip transform is explicitly used.
