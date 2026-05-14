@@ -49,6 +49,7 @@ class PenprobeChasingDemoConfig:
     stale_tracker_persist_cycles_before_stop: int = 12
     gui_status_nominal_hz: float = 8.0
     max_servo_write_hz: float = 25.0
+    goal_write_retry_attempts: int = 2
     telemetry_health_hz: float = 3.0
     max_consecutive_telemetry_health_failures: int = 2
     saturation_stop_cycles: int = 40
@@ -87,6 +88,7 @@ class PenprobeChasingDemoConfig:
             stale_tracker_persist_cycles_before_stop=max(1, int(payload.get("stale_tracker_persist_cycles_before_stop", 12))),
             gui_status_nominal_hz=max(1.0, float(payload.get("gui_status_nominal_hz", 8.0))),
             max_servo_write_hz=max(1.0, float(payload.get("max_servo_write_hz", 25.0))),
+            goal_write_retry_attempts=max(1, int(payload.get("goal_write_retry_attempts", 2))),
             telemetry_health_hz=max(0.2, float(payload.get("telemetry_health_hz", 3.0))),
             max_consecutive_telemetry_health_failures=max(
                 1,
@@ -415,6 +417,7 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                                 chase_tight_loop_writes=True,
                                 prevalidated_telemetry_by_id=dict(last_known_telemetry),
                                 skip_post_command_telemetry=True,
+                                write_goal_attempts=int(self.config.goal_write_retry_attempts),
                             )
                             command_write_duration_s = max(0.0, float(session.context.monotonic_fn()) - t_wr_start)
                             telemetry_for_sample = dict(last_known_telemetry)

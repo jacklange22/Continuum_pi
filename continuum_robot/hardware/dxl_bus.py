@@ -387,7 +387,12 @@ class DxlBus:
         )
 
     def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
-        """Send goal positions in ticks."""
+        """Send goal positions in ticks.
+
+        Implementation note: goals are written sequentially (per-servo ``write4ByteTxRx``).
+        For higher throughput on multi-servo bursts, consider ``GroupSyncWrite`` (SDK) with
+        matching return-level / timing assumptions, or raising bus baud after bench validation.
+        """
         self._require_connected()
         goal_address = self.config.control_table["goal_position"]
         for servo_id, goal in positions_by_id.items():

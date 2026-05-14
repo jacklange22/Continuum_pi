@@ -211,6 +211,8 @@ class _ServoService:
         chase_tight_loop_writes=False,
         prevalidated_telemetry_by_id=None,
         skip_post_command_telemetry=False,
+        write_goal_attempts=None,
+        **kwargs,
     ):
         self.command_count += 1
         self.commanded_servo_ids = [int(value) for value in servo_ids]
@@ -275,6 +277,12 @@ def test_penprobe_chasing_demo_registered() -> None:
 
     assert descriptor.name == "penprobe_chasing_demo"
     assert descriptor.default_config_path == "config/experiment_penprobe_chasing_demo.example.yaml"
+
+
+def test_penprobe_chasing_demo_config_goal_write_retry_attempts() -> None:
+    assert PenprobeChasingDemoConfig.from_dict({}).goal_write_retry_attempts == 2
+    cfg = PenprobeChasingDemoConfig.from_dict({"goal_write_retry_attempts": 5})
+    assert cfg.goal_write_retry_attempts == 5
 
 
 @pytest.mark.parametrize("mode", ["one_servo", "dual_segment", "parallel_single"])

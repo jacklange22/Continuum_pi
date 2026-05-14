@@ -325,6 +325,8 @@ def _build_export_rows(*, samples) -> list[dict[str, Any]]:
         tip_payload = dict(sample.pose_in_robot_frame.get("tip", {}) or {})
         tool_payload = dict(sample.pose_in_tracker_frame.get("0A", {}) or {})
         extra = dict(sample.extra or {})
+        if bool(extra.get("modeling_export_exclude")):
+            continue
         rows.append(
             {
                 "sequence_index": int(sequence_index),

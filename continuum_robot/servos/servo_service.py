@@ -4319,6 +4319,7 @@ class ServoService:
         allow_recovered_packet_errors: bool = False,
         prevalidated_telemetry_by_id: dict[int, ServoTelemetry] | None = None,
         skip_post_command_telemetry: bool = False,
+        write_goal_attempts: int | None = None,
     ) -> ServoCommandResult:
         command_metadata = dict(command_metadata or {})
         raw_goals_by_servo = {
@@ -4495,10 +4496,13 @@ class ServoService:
                 stale_age_override_servo_ids,
                 self._telemetry_payload_by_servo(telemetry_by_id),
             )
+        write_attempts = int(bus_attempts)
+        if write_goal_attempts is not None:
+            write_attempts = max(int(bus_attempts), int(write_goal_attempts))
         self._run_with_retry(
             action="write goal positions for simple experiment motion",
             fn=lambda: self._write_goal_positions(payload),
-            attempts=bus_attempts,
+            attempts=write_attempts,
         )
         if skip_post_command_telemetry:
             telemetry = dict(telemetry_by_id)
@@ -4691,6 +4695,7 @@ class ServoService:
         allow_recovered_packet_errors: bool = False,
         prevalidated_telemetry_by_id: dict[int, ServoTelemetry] | None = None,
         skip_post_command_telemetry: bool = False,
+        write_goal_attempts: int | None = None,
     ) -> ServoCommandResult:
         """Compute and send safe goal position ticks.
 
@@ -4738,6 +4743,7 @@ class ServoService:
                 allow_recovered_packet_errors=bool(allow_recovered_packet_errors),
                 prevalidated_telemetry_by_id=prevalidated_telemetry_by_id,
                 skip_post_command_telemetry=bool(skip_post_command_telemetry),
+                write_goal_attempts=write_goal_attempts,
             )
         configuration_notes: list[str] = []
         configuration_summary: SingleSegmentMotionConfigurationSummary | None = None

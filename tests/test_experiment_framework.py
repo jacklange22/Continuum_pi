@@ -9,6 +9,7 @@ import time
 
 import numpy as np
 import pytest
+from unittest.mock import patch
 
 from continuum_robot.config.schemas import (
     CalibrationConfig,
@@ -101,6 +102,84 @@ class _CollectPosePacketErrorBus(MockDxlBus):
             telemetry.telemetry_error = "[TxRxResult] Incorrect status packet!"
             telemetry.hardware_error = "[TxRxResult] Incorrect status packet!"
         return result
+
+
+class _PostMotionCorruptBudgetBus(MockDxlBus):
+    """Corrupt ``read_live_telemetry`` for a servo with a bounded budget.
+
+    Arming options (mutually exclusive intent):
+
+    - ``corrupt_after_goal_writes``: after this many completed ``write_goal_positions`` calls on the bus,
+      corrupt live telemetry reads (stable for collect-pose: skips precheck-only live reads).
+    - Otherwise ``arm_after_live_reads``: corrupt only after this many ``read_live_telemetry`` events.
+    """
+
+    def __init__(
+        self,
+        *,
+        failed_servo_id: int = 3,
+        corrupt_budget: int = 40,
+        arm_after_live_reads: int = 48,
+        corrupt_after_goal_writes: int | None = None,
+    ) -> None:
+        super().__init__([1, 2, 3, 4])
+        self.failed_servo_id = int(failed_servo_id)
+        self.corrupt_budget = int(corrupt_budget)
+        self.arm_after_live_reads = int(arm_after_live_reads)
+        self.corrupt_after_goal_writes = (
+            int(corrupt_after_goal_writes) if corrupt_after_goal_writes is not None else None
+        )
+        self._live_read_events = 0
+        self._goal_writes_seen = 0
+
+    def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
+        super().write_goal_positions(positions_by_id)
+        self._goal_writes_seen += 1
+
+    def read_live_telemetry(self, servo_ids: list[int]):
+        result = super().read_live_telemetry(servo_ids)
+        self._live_read_events += 1
+        goal_armed = (
+            self.corrupt_after_goal_writes is not None
+            and self._goal_writes_seen >= int(self.corrupt_after_goal_writes)
+        )
+        read_armed = self.corrupt_after_goal_writes is None and self._live_read_events >= self.arm_after_live_reads
+        if (not goal_armed and not read_armed) or self.corrupt_budget <= 0 or self.failed_servo_id not in result:
+            return result
+        self.corrupt_budget -= 1
+        telemetry = result[self.failed_servo_id]
+        telemetry.present_position = None
+        telemetry.telemetry_error = "[TxRxResult] Incorrect status packet!"
+        telemetry.hardware_error = "[TxRxResult] Incorrect status packet!"
+        return result
+
+
+class _FlakyWriteGoalBus(MockDxlBus):
+    def __init__(self, *, fail_writes: int = 1) -> None:
+        super().__init__([1, 2, 3, 4])
+        self.fail_writes_remaining = int(fail_writes)
+        self.experiment_writes_only = False
+
+    def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
+        if self.experiment_writes_only and self.fail_writes_remaining > 0:
+            self.fail_writes_remaining -= 1
+            raise RuntimeError("Failed to write goal position for servo 3: [TxRxResult] Incorrect status packet!")
+        super().write_goal_positions(positions_by_id)
+
+
+class _AlwaysFailExperimentWriteBus(MockDxlBus):
+    """Fail goal writes once ``_goal_writes`` exceeds ``arm_after_goal_writes`` (skips pretension/setup)."""
+
+    def __init__(self, *, arm_after_goal_writes: int = 22) -> None:
+        super().__init__([1, 2, 3, 4])
+        self.arm_after_goal_writes = int(arm_after_goal_writes)
+        self._goal_writes = 0
+
+    def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
+        self._goal_writes += 1
+        if self._goal_writes > self.arm_after_goal_writes:
+            raise RuntimeError("Failed to write goal position for servo 3: [TxRxResult] Incorrect status packet!")
+        super().write_goal_positions(positions_by_id)
 
 
 class _MinimalStripPositionBus(MockDxlBus):
@@ -419,6 +498,13 @@ def _tracking_service(settings: Settings, tmp_path: Path, registration_path: Pat
 def _ready_modeling_servo_service(tmp_path: Path, *, dxl_bus: MockDxlBus | None = None) -> ServoService:
     service = _servo_service(tmp_path, dxl_bus=dxl_bus)
     service.connect("/dev/mock-openrb", 115200)
+    # Fresh temp neutral.json leaves robot_mode unset; collect-pose then skips the simple
+    # experiment-motion path and reads post-command telemetry via read_telemetry instead of
+    # read_live_telemetry. Match the usual 4-servo lab context so mock packet faults on
+    # read_live_telemetry exercise the same code path as production.
+    ctx = service.neutral_calibration.context
+    if getattr(ctx, "robot_mode", None) in (None, ""):
+        ctx.robot_mode = str(_settings().robot.mode or "4-servo").strip().lower().replace("-", "_")
     for servo_id in [1, 2, 3, 4]:
         service.save_startup_calibration(servo_id=servo_id)
     service.capture_manual_pretension_state(note="test modeling startup")
@@ -1495,10 +1581,205 @@ def test_collect_pose_packet_status_failure_writes_failure_context_and_quality(t
     assert failure_context["sample_index_at_failure"] == 0
     assert failure_context["retry_count"] == 2
     assert "Incorrect status packet" in failure_context["telemetry_error_code"]
+    assert failure_context["failure_category"] == "servo_telemetry_packet_error"
     assert result.summary.experiment_metrics["failure_context"]["failed_servo_id"] == 3
     quality = json.loads(quality_path.read_text(encoding="utf-8"))
     assert quality["recommendation"] == "failed_due_to_telemetry"
     assert quality["failure_count"] == 1
+    assert int(quality["unrecovered_packet_error_count"]) >= 1
+    assert int(quality["servo_telemetry_retry_count"]) >= 2
+    summary_disk = json.loads((result.paths.output_dir / "summary.json").read_text(encoding="utf-8"))
+    em = summary_disk["experiment_metrics"]
+    assert int(em.get("unrecovered_packet_error_count", 0)) >= 1
+    assert int(em.get("servo_telemetry_retry_count", 0)) >= 2
+    assert int(em.get("write_goal_packet_error_count", 0)) == 0
+
+
+def test_collect_pose_long_run_recovery_drops_one_sample_and_continues(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    registration_path = tmp_path / "latest_registration.json"
+    registration_path.write_text(json.dumps({"T_robot_aurora": np.eye(4).tolist()}), encoding="utf-8")
+    bus = _PostMotionCorruptBudgetBus(
+        failed_servo_id=3,
+        corrupt_budget=1,
+        corrupt_after_goal_writes=2,
+    )
+    servo_service = _ready_modeling_servo_service(tmp_path, dxl_bus=bus)
+    snap = _trusted_modeling_snapshot(
+        translation_mm=[0.0, 0.0, 0.0], registration_path=registration_path, frame_number=1
+    )
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_SequencedTrackingService([snap]),
+        registration_path=registration_path,
+        servo_service=servo_service,
+    )
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dataset_mode": "workspace_coverage",
+            "dry_run": False,
+            "sample_count_target": 2,
+            "samples_per_command": 1,
+            "telemetry_retry_count": 0,
+            "telemetry_retry_delay_s": 0.0,
+            "long_run_recovery_enabled": True,
+            "on_unrecovered_post_motion_telemetry": "drop_sample_and_resync",
+            "max_consecutive_packet_failures": 5,
+            "max_total_packet_failures": 20,
+            "resync_read_attempts": 2,
+            "resync_delay_s": 0.0,
+        },
+    )
+    assert result.success is True
+    out = result.paths.output_dir
+    events = [
+        json.loads(line)
+        for line in (out / "sample_failure_events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(events) >= 1
+    metrics = result.summary.experiment_metrics
+    assert int(metrics.get("dropped_post_motion_telemetry_samples", 0) or 0) >= 1
+    assert int(metrics.get("accepted_sample_count", 0) or 0) >= 1
+    dropped_reasons = [
+        json.loads(line).get("extra", {}).get("capture_rejection_reason")
+        for line in (out / "samples.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(r == "post_motion_telemetry_packet_error" for r in dropped_reasons)
+    export_lines = [
+        ln for ln in (out / "modeling_dataset_export.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()
+    ]
+    assert export_lines
+    assert not any("post_motion_telemetry_packet_error" in ln for ln in export_lines)
+
+
+def test_collect_pose_long_run_recovery_stops_at_max_consecutive(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    registration_path = tmp_path / "latest_registration.json"
+    registration_path.write_text(json.dumps({"T_robot_aurora": np.eye(4).tolist()}), encoding="utf-8")
+    bus = _PostMotionCorruptBudgetBus(
+        failed_servo_id=3,
+        corrupt_budget=80,
+        corrupt_after_goal_writes=2,
+    )
+    servo_service = _ready_modeling_servo_service(tmp_path, dxl_bus=bus)
+    snap = _trusted_modeling_snapshot(
+        translation_mm=[0.1, 0.0, 0.0], registration_path=registration_path, frame_number=1
+    )
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_SequencedTrackingService([snap]),
+        registration_path=registration_path,
+        servo_service=servo_service,
+    )
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dataset_mode": "workspace_coverage",
+            "dry_run": False,
+            "sample_count_target": 5,
+            "samples_per_command": 1,
+            "telemetry_retry_count": 1,
+            "telemetry_retry_delay_s": 0.0,
+            "long_run_recovery_enabled": True,
+            "on_unrecovered_post_motion_telemetry": "drop_sample_and_resync",
+            "max_consecutive_packet_failures": 2,
+            "resync_read_attempts": 2,
+            "resync_delay_s": 0.0,
+        },
+    )
+    assert result.success is False
+    assert "max_consecutive_packet_failures" in result.message or "exceeded max_consecutive_packet_failures" in result.message
+    quality = json.loads((result.paths.output_dir / "dataset_quality_summary.json").read_text(encoding="utf-8"))
+    assert int(quality["unrecovered_packet_error_count"]) >= 1
+    m = result.summary.experiment_metrics
+    assert int(m.get("next_command_index_to_resume", -1)) == 1
+
+
+def test_collect_pose_write_goal_persistent_failure_classifies_write_goal_error(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    registration_path = tmp_path / "latest_registration.json"
+    registration_path.write_text(json.dumps({"T_robot_aurora": np.eye(4).tolist()}), encoding="utf-8")
+    bus = _AlwaysFailExperimentWriteBus(arm_after_goal_writes=1)
+    servo_service = _ready_modeling_servo_service(tmp_path, dxl_bus=bus)
+    snap = _trusted_modeling_snapshot(
+        translation_mm=[0.0, 0.0, 0.0], registration_path=registration_path, frame_number=1
+    )
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_SequencedTrackingService([snap]),
+        registration_path=registration_path,
+        servo_service=servo_service,
+    )
+    import continuum_robot.experiments.builtins as collect_pose_builtins
+
+    def _noop_finalize(self, session):
+        return
+
+    with patch.object(
+        collect_pose_builtins.CollectPoseCommandDatasetExperiment,
+        "finalize",
+        _noop_finalize,
+    ):
+        result = runner.run_experiment(
+            "collect_pose_command_dataset",
+            config={
+                "dry_run": False,
+                "sample_count_target": 1,
+                "samples_per_command": 1,
+                "goal_write_retry_attempts": 2,
+            },
+        )
+    assert result.success is False
+    failure = json.loads((result.paths.output_dir / "failure_context.json").read_text(encoding="utf-8"))
+    assert failure.get("failure_category") == "write_goal_packet_error"
+    quality = json.loads((result.paths.output_dir / "dataset_quality_summary.json").read_text(encoding="utf-8"))
+    assert quality["recommendation"] == "failed_due_to_write_goal_packet_error"
+    assert int(quality.get("write_goal_packet_error_count", 0)) >= 1
+
+
+def test_collect_pose_chunk_checkpoint_and_long_run_health_fields(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    registration_path = tmp_path / "latest_registration.json"
+    registration_path.write_text(json.dumps({"T_robot_aurora": np.eye(4).tolist()}), encoding="utf-8")
+    servo_service = _ready_modeling_servo_service(tmp_path)
+    snap = _trusted_modeling_snapshot(
+        translation_mm=[0.0, 0.0, 0.0], registration_path=registration_path, frame_number=1
+    )
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_SequencedTrackingService([snap]),
+        registration_path=registration_path,
+        servo_service=servo_service,
+    )
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dry_run": False,
+            "sample_count_target": 2,
+            "samples_per_command": 1,
+            "chunk_flush_every_n_commands": 1,
+            "long_run_health_write_interval_samples": 1,
+        },
+    )
+    assert result.success is True
+    ck = json.loads((result.paths.output_dir / "collect_pose_checkpoint.json").read_text(encoding="utf-8"))
+    assert ck.get("schema_version") == "collect_pose_checkpoint_v1"
+    assert int(ck.get("next_command_index_to_resume", -1)) >= 1
+    health = json.loads((result.paths.output_dir / "long_run_health.json").read_text(encoding="utf-8"))
+    assert health.get("schema_version") == "collect_pose_long_run_health_v1"
+    assert "max_abs_current_ma" in health
+    assert "tracker_stale_count" in health
 
 
 def test_collect_pose_command_dataset_blocks_without_tracker_when_override_disabled(tmp_path: Path) -> None:

@@ -118,7 +118,7 @@ class ExperimentDatasetWriter:
             output_dir = root / str(output_dir_name)
         else:
             output_dir = root / default_experiment_output_dir_name(root, metadata.experiment_name)
-        output_dir.mkdir(parents=True, exist_ok=False)
+        output_dir.mkdir(parents=True, exist_ok=True)
         metadata_path = output_dir / "metadata.json"
         samples_path = output_dir / "samples.jsonl"
         summary_path = output_dir / "summary.json"

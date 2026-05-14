@@ -41,6 +41,7 @@ class ExperimentContext:
     servo_service: Any
     registration_path: Path
     output_root: Path
+    run_output_dir: Path | None = None
     monotonic_fn: Callable[[], float] = time.monotonic
     sleep_fn: Callable[[float], None] = time.sleep
     penprobe_live_gui_hz: Callable[[], float | None] | None = None

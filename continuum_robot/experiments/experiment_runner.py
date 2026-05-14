@@ -16,6 +16,8 @@ from continuum_robot.experiments.builtins import register_builtin_experiments
 from continuum_robot.experiments.dataset_io import (
     ExperimentDatasetLoader,
     ExperimentDatasetWriter,
+    canonical_experiment_output_root,
+    default_experiment_output_dir_name,
 )
 from continuum_robot.experiments.experiment_models import ExperimentPoint
 from continuum_robot.experiments.framework import ExperimentContext, ExperimentSession
@@ -120,6 +122,11 @@ class ExperimentRunner:
             config_used=experiment.config_dict(),
             operator_notes=operator_notes,
         )
+        root = canonical_experiment_output_root(resolved_output_root, experiment.name)
+        root.mkdir(parents=True, exist_ok=True)
+        resolved_folder_name = output_dir_name or default_experiment_output_dir_name(root, experiment.name)
+        run_output_dir = root / resolved_folder_name
+        run_output_dir.mkdir(parents=True, exist_ok=True)
         session = ExperimentSession(
             context=ExperimentContext(
                 project_root=self.project_root,
@@ -128,6 +135,7 @@ class ExperimentRunner:
                 servo_service=self.servo_service,
                 registration_path=self.registration_path,
                 output_root=resolved_output_root,
+                run_output_dir=run_output_dir,
                 monotonic_fn=self.monotonic_fn,
                 sleep_fn=self.sleep_fn,
                 penprobe_live_gui_hz=self.penprobe_live_gui_hz,
@@ -201,7 +209,7 @@ class ExperimentRunner:
             session.samples,
             summary,
             output_root=resolved_output_root,
-            output_dir_name=output_dir_name,
+            output_dir_name=resolved_folder_name,
         )
         self._write_default_review(paths.output_dir, metadata=metadata)
         try:

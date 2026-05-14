@@ -170,6 +170,18 @@ class CollectPoseCommandDatasetConfig:
     allow_recovered_packet_errors: bool = True
     max_recovered_packet_errors_per_run: int | None = None
     max_current_warning_ma: int | None = None
+    long_run_recovery_enabled: bool = False
+    max_consecutive_packet_failures: int = 3
+    max_total_packet_failures: int | None = None
+    on_unrecovered_post_motion_telemetry: str = "fail_run"
+    resync_read_attempts: int = 3
+    resync_delay_s: float = 0.05
+    return_to_neutral_on_resync_failure: bool = False
+    chunk_flush_every_n_commands: int | None = None
+    resume_from_command_index: int = 0
+    long_run_health_write_interval_samples: int = 100
+    goal_write_retry_attempts: int | None = None
+    allow_partial_dataset_after_telemetry_drops: bool = False
     legacy_schedule_override: bool = False
     command_points: list[dict[str, Any]] = field(default_factory=list)
     command_schedule: CommandScheduleConfig = field(
@@ -214,6 +226,34 @@ class CollectPoseCommandDatasetConfig:
                 None
                 if payload.get("max_recovered_packet_errors_per_run") in (None, "")
                 else max(0, int(payload.get("max_recovered_packet_errors_per_run")))
+            ),
+            long_run_recovery_enabled=bool(payload.get("long_run_recovery_enabled", False)),
+            max_consecutive_packet_failures=max(1, int(payload.get("max_consecutive_packet_failures", 3))),
+            max_total_packet_failures=(
+                None
+                if payload.get("max_total_packet_failures") in (None, "")
+                else max(0, int(payload.get("max_total_packet_failures")))
+            ),
+            on_unrecovered_post_motion_telemetry=str(
+                payload.get("on_unrecovered_post_motion_telemetry", "fail_run") or "fail_run"
+            ).strip().lower(),
+            resync_read_attempts=max(1, int(payload.get("resync_read_attempts", 3))),
+            resync_delay_s=max(0.0, float(payload.get("resync_delay_s", 0.05))),
+            return_to_neutral_on_resync_failure=bool(payload.get("return_to_neutral_on_resync_failure", False)),
+            chunk_flush_every_n_commands=(
+                None
+                if payload.get("chunk_flush_every_n_commands") in (None, "")
+                else max(1, int(payload.get("chunk_flush_every_n_commands")))
+            ),
+            resume_from_command_index=max(0, int(payload.get("resume_from_command_index", 0))),
+            long_run_health_write_interval_samples=max(1, int(payload.get("long_run_health_write_interval_samples", 100))),
+            goal_write_retry_attempts=(
+                None
+                if payload.get("goal_write_retry_attempts") in (None, "")
+                else max(1, int(payload.get("goal_write_retry_attempts")))
+            ),
+            allow_partial_dataset_after_telemetry_drops=bool(
+                payload.get("allow_partial_dataset_after_telemetry_drops", False)
             ),
             max_current_warning_ma=(
                 None
@@ -5207,6 +5247,184 @@ class PretensionValidationExperiment(BaseExperiment):
         }
 
 
+def _collect_pose_output_root(session: ExperimentSession) -> Path:
+    run_dir = getattr(session.context, "run_output_dir", None)
+    if run_dir is not None:
+        return Path(run_dir)
+    return Path(session.context.output_root)
+
+
+def _append_collect_pose_jsonl_event(output_root: Path, filename: str, event: dict[str, Any]) -> None:
+    path = Path(output_root) / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(event, separators=(",", ":"), sort_keys=True) + "\n")
+
+
+def _write_collect_pose_checkpoint(
+    *,
+    output_root: Path,
+    last_completed_command_index: int | None,
+    accepted_sample_count: int,
+    dropped_post_motion_telemetry_samples: int,
+    next_command_index_to_resume: int,
+    total_packet_failure_events: int,
+) -> None:
+    payload = {
+        "schema_version": "collect_pose_checkpoint_v1",
+        "last_completed_command_index": last_completed_command_index,
+        "accepted_sample_count": int(accepted_sample_count),
+        "dropped_post_motion_telemetry_samples": int(dropped_post_motion_telemetry_samples),
+        "next_command_index_to_resume": int(next_command_index_to_resume),
+        "total_packet_failure_events": int(total_packet_failure_events),
+    }
+    (Path(output_root) / "collect_pose_checkpoint.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def _write_collect_pose_long_run_health(
+    *,
+    output_root: Path,
+    session: ExperimentSession,
+    metrics: dict[str, Any],
+    last_command_step_index: int | None,
+    estimated_total_commands: int,
+    samples: list[ExperimentTimeseriesSample] | None = None,
+) -> None:
+    accepted = int(metrics.get("accepted_sample_count", 0) or 0)
+    dropped = int(metrics.get("dropped_post_motion_telemetry_samples", 0) or 0)
+    rate = metrics.get("mean_sample_hz_estimate")
+    remaining_cmds = max(0, int(estimated_total_commands) - int(last_command_step_index or -1) - 1)
+    sample_list = list(samples or [])
+    currents = _collect_pose_current_values(sample_list) if sample_list else []
+    max_abs_current = max((abs(int(value)) for value in currents), default=None)
+    tracker_stale = (
+        sum(
+            1
+            for sample in sample_list
+            if sample.extra.get("capture_accepted") is False
+            and (
+                "stale" in str(sample.extra.get("capture_rejection_reason", "")).lower()
+                or "tracker_age" in str(sample.extra.get("capture_rejection_reason", "")).lower()
+            )
+        )
+        if sample_list
+        else 0
+    )
+    payload = {
+        "schema_version": "collect_pose_long_run_health_v1",
+        "wall_time_utc": datetime.now(timezone.utc).isoformat(),
+        "elapsed_session_s": float(session.elapsed_s()),
+        "samples_in_session": int(len(session.samples)),
+        "accepted_sample_count": accepted,
+        "dropped_post_motion_telemetry_samples": dropped,
+        "unrecovered_packet_error_count": int(metrics.get("unrecovered_packet_error_count", 0) or 0),
+        "recovered_packet_error_count": int(metrics.get("recovered_packet_error_count", 0) or 0),
+        "servo_telemetry_retry_count": int(metrics.get("servo_telemetry_retry_count", 0) or 0),
+        "write_goal_packet_error_count": int(metrics.get("write_goal_packet_error_count", 0) or 0),
+        "rejected_sample_count": int(metrics.get("rejected_sample_count", 0) or 0),
+        "tracker_stale_count": int(tracker_stale),
+        "max_abs_current_ma": max_abs_current,
+        "last_command_step_index": last_command_step_index,
+        "next_command_index_to_resume": int(metrics.get("next_command_index_to_resume", 0) or 0),
+        "mean_sample_hz_estimate": rate,
+        "estimated_commands_remaining": remaining_cmds,
+        "recommendation": str(metrics.get("long_run_health_recommendation", "running")),
+    }
+    (Path(output_root) / "long_run_health.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+
+def _collect_pose_resync_telemetry(
+    session: ExperimentSession,
+    servo_ids: list[int],
+    *,
+    attempts: int,
+    delay_s: float,
+) -> dict[int, Any]:
+    last_exc: BaseException | None = None
+    for attempt in range(max(1, int(attempts))):
+        if attempt > 0 and float(delay_s) > 0.0:
+            session.context.sleep_fn(float(delay_s))
+        try:
+            return session.context.servo_service.read_telemetry([int(s) for s in servo_ids])
+        except Exception as exc:
+            last_exc = exc
+    raise RuntimeError(f"collect-pose resync telemetry failed after {attempts} attempt(s)") from last_exc
+
+
+def _collect_pose_parallel_command_metadata(
+    session: ExperimentSession,
+    *,
+    servo_ids: list[int],
+    cable_command_cm: list[float],
+) -> dict[str, Any]:
+    parallel_command_metadata: dict[str, Any] = {}
+    if _collect_pose_parallel_single_mode(session) and len(cable_command_cm) == 4:
+        context = session.context.settings.robot.operating_context()
+        mirror_pairs = {int(k): int(v) for k, v in dict(context.mirror_pairs or {}).items()}
+        parallel_command_metadata = {
+            "operating_mode": "parallel_single",
+            "mirrored_parallel": True,
+            "mirror_pairs": {str(k): int(v) for k, v in sorted(mirror_pairs.items())},
+            "commanded_servo_ids": list(servo_ids),
+        }
+    return parallel_command_metadata
+
+
+def _synthetic_collect_pose_command_result(
+    *,
+    exc: ServoTelemetryRetryError,
+    step: ModelingCommandStep | None,
+    parallel_command_metadata: dict[str, Any],
+    resync_feedback: dict[str, Any],
+    fallback_cable_command_cm: list[float] | None = None,
+) -> dict[str, Any]:
+    ctx = dict(exc.context or {})
+    goals_raw = ctx.get("last_commanded_goal_ticks") or {}
+    commanded = {str(k): int(v) for k, v in goals_raw.items()}
+    if step is not None:
+        requested_cm = list(step.cable_command_cm)
+        requested_pair = list(step.pair_command_cm)
+    else:
+        requested_cm = list(fallback_cable_command_cm or [0.0, 0.0, 0.0, 0.0])
+        requested_pair = _pair_command_from_cable_deltas(requested_cm)
+    resolved_cm = list(ctx.get("last_resolved_cable_command_cm") or requested_cm)
+    pair_cm = _pair_command_from_cable_deltas(resolved_cm)
+    return {
+        "requested_cable_command_cm": list(requested_cm),
+        "resolved_cable_command_cm": list(resolved_cm),
+        "requested_pair_command_cm": list(requested_pair),
+        "resolved_pair_command_cm": list(pair_cm),
+        "commanded_motor_values": dict(commanded),
+        "raw_goal_ticks_by_servo": dict(commanded),
+        "final_goal_ticks_by_servo": dict(commanded),
+        "clamp_reasons_by_servo": {},
+        "servo_debug": {},
+        "servo_feedback": dict(resync_feedback),
+        "command_metadata": {
+            **dict(parallel_command_metadata),
+            "post_motion_telemetry_unrecovered": True,
+            "synthetic_command_result_after_packet_error": True,
+            "original_failure_category": ctx.get("failure_category"),
+            "original_failure_reason": ctx.get("failure_reason"),
+        },
+        "message": "Synthetic command summary after unrecovered post-motion telemetry; goals assumed from last commanded ticks.",
+        "motion_profile": {
+            "operating_mode_label": "unknown_after_packet_error",
+            "operating_mode": None,
+            "goal_current_ma": None,
+            "profile_velocity": None,
+            "profile_acceleration": None,
+        },
+        "post_motion_telemetry_unrecovered": True,
+    }
+
+
 class CollectPoseCommandDatasetExperiment(BaseExperiment):
     """Collect thesis-grade single-segment modeling datasets."""
 
@@ -5243,6 +5461,184 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             neutral_ticks=list(self._initial_neutral_ticks),
         )
 
+    def _should_recover_collect_pose_post_motion_packet_error(self, exc: BaseException) -> bool:
+        if not bool(self.config.long_run_recovery_enabled):
+            return False
+        if str(self.config.on_unrecovered_post_motion_telemetry or "").strip().lower() != "drop_sample_and_resync":
+            return False
+        retry_error = _find_servo_telemetry_retry_error(exc)
+        if retry_error is None:
+            return False
+        return str((retry_error.context or {}).get("failure_category") or "") == "servo_telemetry_packet_error"
+
+    def _recover_collect_pose_post_motion_packet_error(
+        self,
+        session: ExperimentSession,
+        exc: ServoTelemetryRetryError,
+        *,
+        step: ModelingCommandStep | None,
+        servo_ids: list[int],
+        parallel_command_metadata: dict[str, Any],
+        zero_vector: list[float] | None,
+        step_index_for_event: int,
+    ) -> dict[str, Any]:
+        ctx = dict(exc.context or {})
+        session.set_metric(
+            "servo_telemetry_retry_count",
+            int(session.metrics.get("servo_telemetry_retry_count", 0) or 0) + int(ctx.get("retry_count", 0) or 0),
+        )
+        session.set_metric(
+            "unrecovered_packet_error_count",
+            int(session.metrics.get("unrecovered_packet_error_count", 0) or 0) + 1,
+        )
+        session.set_metric(
+            "consecutive_post_motion_packet_failures",
+            int(session.metrics.get("consecutive_post_motion_packet_failures", 0) or 0) + 1,
+        )
+        session.set_metric(
+            "total_post_motion_packet_failure_events",
+            int(session.metrics.get("total_post_motion_packet_failure_events", 0) or 0) + 1,
+        )
+        session.set_metric(
+            "dropped_post_motion_telemetry_samples",
+            int(session.metrics.get("dropped_post_motion_telemetry_samples", 0) or 0)
+            + max(1, int(self.config.samples_per_command)),
+        )
+        consecutive = int(session.metrics.get("consecutive_post_motion_packet_failures", 0) or 0)
+        if consecutive >= int(self.config.max_consecutive_packet_failures):
+            self._record_failure_context(
+                session=session,
+                exc=exc,
+                requested_cable_command_cm=list(ctx.get("last_resolved_cable_command_cm") or []),
+                servo_ids=list(servo_ids),
+                skip_packet_error_metric_bump=True,
+            )
+            raise RuntimeError(
+                "collect_pose_command_dataset: exceeded max_consecutive_packet_failures="
+                f"{int(self.config.max_consecutive_packet_failures)} during long-run recovery."
+            ) from exc
+        total_ev = int(session.metrics.get("total_post_motion_packet_failure_events", 0) or 0)
+        max_total = self.config.max_total_packet_failures
+        if max_total is not None and total_ev > int(max_total):
+            self._record_failure_context(
+                session=session,
+                exc=exc,
+                requested_cable_command_cm=list(ctx.get("last_resolved_cable_command_cm") or []),
+                servo_ids=list(servo_ids),
+                skip_packet_error_metric_bump=True,
+            )
+            raise RuntimeError(
+                f"collect_pose_command_dataset: exceeded max_total_packet_failures={int(max_total)}."
+            ) from exc
+        tracker_age_s = None
+        if session.context.tracking_service is not None:
+            try:
+                reader = getattr(session.context.tracking_service, "peek_snapshot", None)
+                snapshot = reader() if callable(reader) else session.context.tracking_service.get_snapshot()
+                tracker_age_s = getattr(snapshot, "tracker_data_age_s", None)
+            except Exception:
+                tracker_age_s = None
+        _append_collect_pose_jsonl_event(
+            _collect_pose_output_root(session),
+            "sample_failure_events.jsonl",
+            {
+                "event": "post_motion_telemetry_packet_error",
+                "step_index": int(step_index_for_event),
+                "failed_servo_id": ctx.get("failed_servo_id"),
+                "failure_reason": ctx.get("failure_reason"),
+                "last_commanded_goal_ticks": ctx.get("last_commanded_goal_ticks"),
+                "last_resolved_cable_command_cm": ctx.get("last_resolved_cable_command_cm"),
+                "tracker_age_s": tracker_age_s,
+                "consecutive_post_motion_packet_failures": consecutive,
+                "total_post_motion_packet_failure_events": total_ev,
+            },
+        )
+        try:
+            tel_map = _collect_pose_resync_telemetry(
+                session,
+                list(servo_ids),
+                attempts=int(self.config.resync_read_attempts),
+                delay_s=float(self.config.resync_delay_s),
+            )
+        except Exception as resync_exc:
+            if bool(self.config.return_to_neutral_on_resync_failure):
+                try:
+                    self._issue_command(
+                        session,
+                        tendon_displacement_cm=list(zero_vector or [0.0, 0.0, 0.0, 0.0]),
+                        servo_ids=list(servo_ids),
+                        neutral_ticks=list(self._initial_neutral_ticks),
+                        record_failure_context_on_error=False,
+                    )
+                except Exception:
+                    pass
+            self._record_failure_context(
+                session=session,
+                exc=resync_exc,
+                requested_cable_command_cm=list(ctx.get("last_resolved_cable_command_cm") or []),
+                servo_ids=list(servo_ids),
+            )
+            raise RuntimeError("collect-pose long-run resync telemetry failed after post-motion packet error.") from resync_exc
+        resync_fb = _servo_feedback_payload(tel_map, servo_service=session.context.servo_service)
+        return _synthetic_collect_pose_command_result(
+            exc=exc,
+            step=step,
+            parallel_command_metadata=parallel_command_metadata,
+            resync_feedback=resync_fb,
+            fallback_cable_command_cm=list(zero_vector) if zero_vector is not None else None,
+        )
+
+    def _dispatch_collect_pose_motion_command(
+        self,
+        session: ExperimentSession,
+        *,
+        tendon_displacement_cm: list[float],
+        servo_ids: list[int],
+        neutral_ticks: list[int],
+        step: ModelingCommandStep | None,
+        parallel_command_metadata: dict[str, Any],
+        zero_vector: list[float] | None,
+        step_index_for_event: int,
+    ) -> dict[str, Any]:
+        try:
+            result = self._issue_command(
+                session,
+                tendon_displacement_cm=list(tendon_displacement_cm),
+                servo_ids=list(servo_ids),
+                neutral_ticks=list(neutral_ticks),
+                record_failure_context_on_error=False,
+            )
+            session.set_metric("consecutive_post_motion_packet_failures", 0)
+            return result
+        except Exception as exc:
+            if not self._should_recover_collect_pose_post_motion_packet_error(exc):
+                self._record_failure_context(
+                    session=session,
+                    exc=exc,
+                    requested_cable_command_cm=list(tendon_displacement_cm),
+                    servo_ids=list(servo_ids),
+                )
+                raise
+            retry_error = _find_servo_telemetry_retry_error(exc)
+            if retry_error is None:
+                self._record_failure_context(
+                    session=session,
+                    exc=exc,
+                    requested_cable_command_cm=list(tendon_displacement_cm),
+                    servo_ids=list(servo_ids),
+                )
+                raise
+            synthetic = self._recover_collect_pose_post_motion_packet_error(
+                session,
+                retry_error,
+                step=step,
+                servo_ids=list(servo_ids),
+                parallel_command_metadata=dict(parallel_command_metadata),
+                zero_vector=zero_vector,
+                step_index_for_event=int(step_index_for_event),
+            )
+            return synthetic
+
     def execute(self, session: ExperimentSession) -> None:
         servo_ids = list(self._servo_ids)
         neutral_ticks = list(self._initial_neutral_ticks)
@@ -5263,10 +5659,12 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             servo_ids=pair_limit_servo_ids,
             neutral_ticks=pair_limit_neutral_ticks,
         )
-        command_steps = _build_collect_pose_command_steps(
+        command_steps_all = _build_collect_pose_command_steps(
             config=self.config,
             pair_limits=pair_limits,
         )
+        resume_from = max(0, int(self.config.resume_from_command_index))
+        command_steps = [step for step in command_steps_all if int(step.index) >= int(resume_from)]
         samples_per_command = max(1, int(self.config.samples_per_command))
         total = 2 + (len(command_steps) * samples_per_command)
         accepted_count = 0
@@ -5303,6 +5701,12 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         session.set_metric("recovered_packet_error_count", 0)
         session.set_metric("unrecovered_packet_error_count", 0)
         session.set_metric("servo_telemetry_retry_count", 0)
+        session.set_metric("dropped_post_motion_telemetry_samples", 0)
+        session.set_metric("consecutive_post_motion_packet_failures", 0)
+        session.set_metric("total_post_motion_packet_failure_events", 0)
+        session.set_metric("write_goal_packet_error_count", 0)
+        session.set_metric("resume_from_command_index", int(resume_from))
+        session.set_metric("next_command_index_to_resume", int(resume_from))
         session.set_metric(
             "active_segment",
             {
@@ -5314,7 +5718,8 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             },
         )
         session.set_metric("operating_context", session.context.settings.robot.operating_context().metadata())
-        session.set_metric("command_step_count", int(len(command_steps)))
+        session.set_metric("command_step_count", int(len(command_steps_all)))
+        session.set_metric("command_steps_executed_count", int(len(command_steps)))
         session.set_metric("samples_per_command", int(samples_per_command))
         session.set_metric("pair_limits_cm", pair_limits)
         session.set_metric("dataset_mode_summary", _collect_pose_mode_summary(self.config))
@@ -5329,7 +5734,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                         repeat=1,
                         label=str(step.label),
                     )
-                    for step in command_steps
+                    for step in command_steps_all
                 ]
             ),
         )
@@ -5348,11 +5753,18 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 reason="collect-pose dataset experiment motion",
             )
         with command_owner:
-            neutral_command = self._issue_command(
+            parallel_neutral_meta = _collect_pose_parallel_command_metadata(
+                session, servo_ids=servo_ids, cable_command_cm=zero_vector
+            )
+            neutral_command = self._dispatch_collect_pose_motion_command(
                 session,
                 tendon_displacement_cm=zero_vector,
                 servo_ids=servo_ids,
                 neutral_ticks=neutral_ticks,
+                step=None,
+                parallel_command_metadata=parallel_neutral_meta,
+                zero_vector=zero_vector,
+                step_index_for_event=-1,
             )
             neutral_sample = self._capture_dataset_sample(
                 session=session,
@@ -5373,13 +5785,21 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             session.update_progress(progress, total, {"phase": "initial_neutral", "step_index": -1})
 
             previous_pair_command_cm = [0.0, 0.0]
+            commands_completed_in_run = 0
             for step in command_steps:
                 session.raise_if_stop_requested()
-                command_result = self._issue_command(
+                parallel_step_meta = _collect_pose_parallel_command_metadata(
+                    session, servo_ids=servo_ids, cable_command_cm=list(step.cable_command_cm)
+                )
+                command_result = self._dispatch_collect_pose_motion_command(
                     session,
                     tendon_displacement_cm=list(step.cable_command_cm),
                     servo_ids=servo_ids,
                     neutral_ticks=neutral_ticks,
+                    step=step,
+                    parallel_command_metadata=parallel_step_meta,
+                    zero_vector=zero_vector,
+                    step_index_for_event=int(step.index),
                 )
                 settle_time_s = float(step.settle_time_s if step.settle_time_s is not None else self.config.settle_time_s)
                 if settle_time_s > 0.0:
@@ -5416,18 +5836,58 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                         },
                     )
                 previous_pair_command_cm = list(step.pair_command_cm)
+                session.set_metric("next_command_index_to_resume", int(step.index) + 1)
+                commands_completed_in_run += 1
+                chunk_n = self.config.chunk_flush_every_n_commands
+                if chunk_n is not None and commands_completed_in_run % int(chunk_n) == 0:
+                    _write_collect_pose_checkpoint(
+                        output_root=_collect_pose_output_root(session),
+                        last_completed_command_index=int(step.index),
+                        accepted_sample_count=int(accepted_count),
+                        dropped_post_motion_telemetry_samples=int(
+                            session.metrics.get("dropped_post_motion_telemetry_samples", 0) or 0
+                        ),
+                        next_command_index_to_resume=int(step.index) + 1,
+                        total_packet_failure_events=int(
+                            session.metrics.get("total_post_motion_packet_failure_events", 0) or 0
+                        ),
+                    )
+                if float(session.elapsed_s()) > 1e-6:
+                    session.set_metric("mean_sample_hz_estimate", float(accepted_count) / float(session.elapsed_s()))
+                health_n = int(self.config.long_run_health_write_interval_samples)
+                if int(accepted_count) > 0 and int(accepted_count) % health_n == 0:
+                    session.set_metric("long_run_health_recommendation", "running")
+                    _write_collect_pose_long_run_health(
+                        output_root=_collect_pose_output_root(session),
+                        session=session,
+                        metrics={
+                            **dict(session.metrics),
+                            "accepted_sample_count": int(accepted_count),
+                            "rejected_sample_count": int(rejected_count),
+                        },
+                        last_command_step_index=int(step.index),
+                        estimated_total_commands=len(command_steps_all),
+                        samples=list(session.samples),
+                    )
 
-            final_command = self._issue_command(
+            parallel_final_meta = _collect_pose_parallel_command_metadata(
+                session, servo_ids=servo_ids, cable_command_cm=zero_vector
+            )
+            final_command = self._dispatch_collect_pose_motion_command(
                 session,
                 tendon_displacement_cm=zero_vector,
                 servo_ids=servo_ids,
                 neutral_ticks=neutral_ticks,
+                step=None,
+                parallel_command_metadata=parallel_final_meta,
+                zero_vector=zero_vector,
+                step_index_for_event=len(command_steps_all),
             )
             final_sample = self._capture_dataset_sample(
                 session=session,
                 command_result=final_command,
                 phase="final_neutral",
-                step_index=len(command_steps),
+                step_index=len(command_steps_all),
                 sample_index=0,
                 servo_ids=servo_ids,
                 previous_pair_command_cm=list(previous_pair_command_cm),
@@ -5439,9 +5899,10 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             accepted_count += int(bool(final_sample.extra.get("capture_accepted")))
             rejected_count += int(not bool(final_sample.extra.get("capture_accepted")))
             progress += 1
-            session.update_progress(progress, total, {"phase": "final_neutral", "step_index": len(command_steps)})
+            session.update_progress(progress, total, {"phase": "final_neutral", "step_index": len(command_steps_all)})
         session.set_metric("accepted_sample_count", int(accepted_count))
         session.set_metric("rejected_sample_count", int(rejected_count))
+        session.set_metric("next_command_index_to_resume", int(len(command_steps_all)))
         session.set_metric("registration_loaded", session.context.registration_path.exists())
 
     def finalize(self, session: ExperimentSession) -> None:
@@ -5480,6 +5941,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         tendon_displacement_cm: list[float],
         servo_ids: list[int],
         neutral_ticks: list[int],
+        record_failure_context_on_error: bool = True,
     ) -> dict[str, Any]:
         servo_service = session.context.servo_service
         if not neutral_ticks:
@@ -5549,16 +6011,18 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 telemetry_retry_count=int(self.config.telemetry_retry_count),
                 telemetry_retry_delay_s=float(self.config.telemetry_retry_delay_s),
                 allow_recovered_packet_errors=bool(self.config.allow_recovered_packet_errors),
+                write_goal_attempts=self.config.goal_write_retry_attempts,
             )
             if float(self.config.post_write_settle_s) > 0.0:
                 session.context.sleep_fn(float(self.config.post_write_settle_s))
         except Exception as exc:
-            self._record_failure_context(
-                session=session,
-                exc=exc,
-                requested_cable_command_cm=requested_cable_command_cm,
-                servo_ids=command_servo_ids,
-            )
+            if record_failure_context_on_error:
+                self._record_failure_context(
+                    session=session,
+                    exc=exc,
+                    requested_cable_command_cm=requested_cable_command_cm,
+                    servo_ids=command_servo_ids,
+                )
             LOG.exception(
                 "Collect-pose command failed | requested_cable_cm=%s | servo_ids=%s | error=%s",
                 requested_cable_command_cm,
@@ -5636,9 +6100,42 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         exc: Exception,
         requested_cable_command_cm: list[float],
         servo_ids: list[int],
+        skip_packet_error_metric_bump: bool = False,
     ) -> None:
         retry_error = _find_servo_telemetry_retry_error(exc)
         base = dict(retry_error.context if retry_error is not None else {})
+        if retry_error is not None:
+            if not skip_packet_error_metric_bump:
+                ctx0 = dict(retry_error.context or {})
+                fc0 = str(ctx0.get("failure_category", "") or "")
+                if fc0 == "servo_telemetry_packet_error":
+                    failed_ids = ctx0.get("failed_servo_ids")
+                    if not isinstance(failed_ids, list) or not failed_ids:
+                        fid = ctx0.get("failed_servo_id")
+                        failed_ids = [fid] if fid is not None else []
+                    bump = max(1, len(failed_ids))
+                    session.set_metric(
+                        "unrecovered_packet_error_count",
+                        int(session.metrics.get("unrecovered_packet_error_count", 0) or 0) + int(bump),
+                    )
+                    session.set_metric(
+                        "servo_telemetry_retry_count",
+                        int(session.metrics.get("servo_telemetry_retry_count", 0) or 0)
+                        + int(ctx0.get("retry_count", 0) or 0),
+                    )
+                elif fc0 == "write_goal_packet_error":
+                    session.set_metric(
+                        "write_goal_packet_error_count",
+                        int(session.metrics.get("write_goal_packet_error_count", 0) or 0) + 1,
+                    )
+        else:
+            lowered = str(exc).lower()
+            if "write goal" in lowered or "write servo goal" in lowered:
+                base.setdefault("failure_category", "write_goal_packet_error")
+                session.set_metric(
+                    "write_goal_packet_error_count",
+                    int(session.metrics.get("write_goal_packet_error_count", 0) or 0) + 1,
+                )
         servo_service = session.context.servo_service
         tracker_age_s = None
         if session.context.tracking_service is not None:
@@ -5698,6 +6195,8 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             "recovered_packet_error_count": int(
                 session.metrics.get("recovered_packet_error_count", base.get("recovered_packet_error_count", 0)) or 0
             ),
+            "unrecovered_packet_error_count": int(session.metrics.get("unrecovered_packet_error_count", 0) or 0),
+            "servo_telemetry_retry_count": int(session.metrics.get("servo_telemetry_retry_count", 0) or 0),
         }
         session.set_metric("failure_category", context["failure_category"])
         session.set_metric("failure_reason", context["failure_reason"])
@@ -5741,7 +6240,12 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             allow_lower_trust_runtime_tip=bool(self.config.allow_lower_trust_runtime_tip),
         )
         accepted = bool(gate.get("accepted"))
+        synthetic_drop = bool(command_result.get("post_motion_telemetry_unrecovered"))
+        if synthetic_drop:
+            accepted = False
         status_flags = ["capture_accepted"] if accepted else ["capture_rejected"]
+        if synthetic_drop:
+            status_flags.append("post_motion_telemetry_unrecovered")
         if self.config.dry_run:
             status_flags.append("dry_run")
         live_servo_feedback = _read_collect_pose_live_servo_feedback(
@@ -5770,7 +6274,12 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 "dataset_tag": str(self.config.dataset_tag or ""),
                 "tool_id": str(self.config.tool_id or "0A"),
                 "capture_accepted": bool(accepted),
-                "capture_rejection_reason": None if accepted else str(gate.get("reason", "tracker_gate_rejected")),
+                "capture_rejection_reason": (
+                    "post_motion_telemetry_packet_error"
+                    if synthetic_drop
+                    else (None if accepted else str(gate.get("reason", "tracker_gate_rejected")))
+                ),
+                "modeling_export_exclude": bool(synthetic_drop),
                 "tracker_gate": dict(gate),
                 "runtime_tip_mode": runtime_tip_policy.mode,
                 "runtime_tip_trust_level": runtime_tip_policy.trust_label,
@@ -5957,6 +6466,14 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             or (not pretension_source.accepted or not pretension_source.usable)
             or (not strict_pretension and pretension_source.source_type not in {"manual", "algorithmic"})
         )
+        drops = int(session.metrics.get("dropped_post_motion_telemetry_samples", 0) or 0)
+        base_train = bool(
+            (not servo_only_mode)
+            and runtime_tip_policy is not None
+            and runtime_tip_policy.thesis_trusted
+            and bool(robot_positions)
+        )
+        allow_partial = bool(self.config.allow_partial_dataset_after_telemetry_drops)
         metrics = {
             **dict(session.metrics),
             "dataset_mode": str(self.config.dataset_mode or "workspace_coverage"),
@@ -5976,8 +6493,8 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             "tracker_connected": bool(session.context.tracking_service is not None),
             "registration_available": bool(snapshot is not None and getattr(snapshot, "registration_state", None) == "loaded"),
             "run_trust_mode": "servo_only" if servo_only_mode else str(self.config.run_trust_mode or "thesis_trusted"),
-            "valid_for_model_training": bool((not servo_only_mode) and runtime_tip_policy is not None and runtime_tip_policy.thesis_trusted and bool(robot_positions)),
-            "valid_for_thesis_repeatability": bool((not servo_only_mode) and runtime_tip_policy is not None and runtime_tip_policy.thesis_trusted and bool(robot_positions)),
+            "valid_for_model_training": bool(base_train and (drops == 0 or allow_partial)),
+            "valid_for_thesis_repeatability": bool(base_train and (drops == 0 or allow_partial)),
             "not_model_training_ready": bool(servo_only_mode or not robot_positions),
             "runtime_tip_mode_used": runtime_tip_mode,
             "runtime_tip_trust_level": runtime_tip_policy.trust_label if runtime_tip_policy is not None else "servo_only",
@@ -6096,8 +6613,17 @@ def _collect_pose_dataset_quality_summary(
     max_abs_current = max((abs(int(value)) for value in current_values), default=None)
     trainable = bool(metrics.get("valid_for_model_training"))
     failure_category = str(failure_context.get("failure_category") or metrics.get("failure_category") or "")
-    if "telemetry" in failure_category:
-        recommendation = "failed_due_to_telemetry"
+    unrec = int(metrics.get("unrecovered_packet_error_count", 0) or 0)
+    drops = int(metrics.get("dropped_post_motion_telemetry_samples", 0) or 0)
+    if failure_context:
+        if failure_category == "write_goal_packet_error":
+            recommendation = "failed_due_to_write_goal_packet_error"
+        elif "telemetry" in failure_category or "packet" in failure_category:
+            recommendation = "failed_due_to_telemetry"
+        else:
+            recommendation = "run_failed"
+    elif drops > 0 and unrec > 0:
+        recommendation = "partial_data_telemetry_drops_exportable"
     elif trainable and len(accepted) >= max(20, int(metrics.get("command_step_count", 0) or 0)):
         recommendation = "good_for_training"
     elif len(accepted) > 0:
@@ -6113,7 +6639,9 @@ def _collect_pose_dataset_quality_summary(
         "schema_version": "collect_pose_dataset_quality_v1",
         "accepted_sample_count": int(len(accepted)),
         "rejected_sample_count": int(len(rejected)),
-        "failure_count": 1 if failure_context else 0,
+        "failure_count": (1 if failure_context else 0),
+        "dropped_post_motion_telemetry_samples": drops,
+        "next_command_index_to_resume": int(metrics.get("next_command_index_to_resume", 0) or 0),
         "recovered_packet_error_count": int(metrics.get("recovered_packet_error_count", 0) or 0),
         "unrecovered_packet_error_count": int(metrics.get("unrecovered_packet_error_count", 0) or 0),
         "tracker_stale_count": sum(
@@ -6123,6 +6651,7 @@ def _collect_pose_dataset_quality_summary(
             or "tracker_age" in str(sample.extra.get("capture_rejection_reason", "")).lower()
         ),
         "servo_telemetry_retry_count": int(metrics.get("servo_telemetry_retry_count", 0) or 0),
+        "write_goal_packet_error_count": int(metrics.get("write_goal_packet_error_count", 0) or 0),
         "command_range_per_tendon_cm": _range_by_index(commands, prefix="tendon"),
         "measured_xyz_range_mm": _range_by_index(xyz_values, prefix="axis", labels=["x", "y", "z"]),
         "sample_rate_stats": _sample_rate_stats(deltas),
@@ -6144,9 +6673,12 @@ def _render_collect_pose_dataset_quality_summary(quality: dict[str, Any]) -> str
         f"Accepted samples: {quality.get('accepted_sample_count')}",
         f"Rejected samples: {quality.get('rejected_sample_count')}",
         f"Failures: {quality.get('failure_count')}",
+        f"Dropped post-motion samples: {quality.get('dropped_post_motion_telemetry_samples')}",
+        f"Next command index to resume: {quality.get('next_command_index_to_resume')}",
         f"Recovered packet errors: {quality.get('recovered_packet_error_count')}",
         f"Unrecovered packet errors: {quality.get('unrecovered_packet_error_count')}",
         f"Telemetry retries: {quality.get('servo_telemetry_retry_count')}",
+        f"Write-goal packet errors: {quality.get('write_goal_packet_error_count')}",
         f"Tracker stale count: {quality.get('tracker_stale_count')}",
         f"Max abs current (mA): {quality.get('max_abs_current_ma')}",
         f"Recommendation: {quality.get('recommendation')}",
