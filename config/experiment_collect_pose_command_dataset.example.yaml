@@ -31,15 +31,15 @@ max_recovered_packet_errors_per_run:
 max_current_warning_ma:
 
 # Long unattended runs: recoverable post-motion packet errors (drop sample + resync), chunking, health.
-# long_run_recovery_enabled: true
-# on_unrecovered_post_motion_telemetry: drop_sample_and_resync  # vs fail_run (default)
-# max_consecutive_packet_failures: 3
-# max_total_packet_failures: 100
-# resync_read_attempts: 3
-# resync_delay_s: 0.05
-# return_to_neutral_on_resync_failure: false
-# chunk_flush_every_n_commands: 1000
-# resume_from_command_index: 0
-# long_run_health_write_interval_samples: 100
-# goal_write_retry_attempts: 3
-# allow_partial_dataset_after_telemetry_drops: false
+long_run_recovery_enabled: true
+on_unrecovered_post_motion_telemetry: drop_sample_and_resync  # vs fail_run
+max_consecutive_packet_failures: 3
+max_total_packet_failures: 100
+resync_read_attempts: 3
+resync_delay_s: 0.05
+return_to_neutral_on_resync_failure: false
+chunk_flush_every_n_commands: 1000
+resume_from_command_index: 0
+long_run_health_write_interval_samples: 100
+goal_write_retry_attempts: 3
+allow_partial_dataset_after_telemetry_drops: false

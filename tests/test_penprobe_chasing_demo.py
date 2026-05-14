@@ -778,6 +778,62 @@ def test_aggressive_execute_writes_goal_positions() -> None:
     assert session.metrics.get("mapping_mode_used") == MAPPING_AGGRESSIVE_TICK_DEMO
 
 
+def test_aggressive_saturation_cap_is_reported_as_cap_limited_unreachable() -> None:
+    experiment = PenprobeChasingDemoExperiment(
+        PenprobeChasingDemoConfig.from_dict(
+            {
+                "max_iterations": 5,
+                "max_duration_s": 0.0,
+                "mapping_mode": MAPPING_AGGRESSIVE_TICK_DEMO,
+                "max_tick_step_per_cycle": 50,
+                "max_tick_delta_from_startup": 1,
+                "saturation_stop_cycles": 1,
+                "max_servo_write_hz": 50.0,
+            }
+        )
+    )
+    servo = _ServoService([5, 6, 7, 8])
+    session = _session(active_segment="segment_b", tracking=_TrackingService([_snapshot()]), servo=servo)
+    experiment.precheck(session)
+    experiment.execute(session)
+    assert session.metrics.get("stop_reason") == "cap_limited_target_unreachable"
+
+
+def test_penprobe_coil_as_tip_demo_metadata_is_consistent_even_from_latest_accepted_mode() -> None:
+    class _TrackingWithRuntimeTipSetter(_TrackingService):
+        def set_runtime_tip_mode(self, mode: str) -> None:
+            for snap in self._snapshots:
+                setattr(snap, "runtime_tip_mode", str(mode))
+                if str(mode) == "coil_as_tip":
+                    setattr(snap, "runtime_tip_calibration_state", "coil_as_tip")
+                    setattr(snap, "tip_pose_status", "coil_as_tip")
+
+    snap = _snapshot()
+    snap.runtime_tip_mode = "latest_accepted"
+    snap.runtime_tip_calibration_state = "loaded"
+    snap.tip_pose_status = "ok"
+    experiment = PenprobeChasingDemoExperiment(
+        PenprobeChasingDemoConfig.from_dict(
+            {
+                "max_iterations": 1,
+                "max_duration_s": 0.0,
+                "mapping_mode": MAPPING_AGGRESSIVE_TICK_DEMO,
+                "saturation_stop_cycles": 99999,
+                "use_calibrated_runtime_tip": False,
+            }
+        )
+    )
+    servo = _ServoService([5, 6, 7, 8])
+    session = _session(active_segment="segment_b", tracking=_TrackingWithRuntimeTipSetter([snap]), servo=servo)
+    experiment.precheck(session)
+    experiment.execute(session)
+    assert session.metrics.get("runtime_tip_mode_for_demo") == "coil_as_tip"
+    assert session.metrics.get("demo_controlled_point") == "0A coil origin"
+    assert session.metrics.get("demo_target_point") == "0B tool origin"
+    assert session.metrics.get("physical_tip_chasing") is False
+    assert session.metrics.get("penprobe_demo_valid_for_thesis") is False
+
+
 def test_recent_penprobe_audit_fixture_shows_paired_l2_cap() -> None:
     path = (
         Path(__file__).resolve().parents[1]

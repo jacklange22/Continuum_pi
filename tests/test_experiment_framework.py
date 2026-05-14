@@ -1602,7 +1602,7 @@ def test_collect_pose_long_run_recovery_drops_one_sample_and_continues(tmp_path:
     registration_path.write_text(json.dumps({"T_robot_aurora": np.eye(4).tolist()}), encoding="utf-8")
     bus = _PostMotionCorruptBudgetBus(
         failed_servo_id=3,
-        corrupt_budget=1,
+        corrupt_budget=3,
         corrupt_after_goal_writes=2,
     )
     servo_service = _ready_modeling_servo_service(tmp_path, dxl_bus=bus)
@@ -1623,7 +1623,7 @@ def test_collect_pose_long_run_recovery_drops_one_sample_and_continues(tmp_path:
             "dry_run": False,
             "sample_count_target": 2,
             "samples_per_command": 1,
-            "telemetry_retry_count": 0,
+            "telemetry_retry_count": 2,
             "telemetry_retry_delay_s": 0.0,
             "long_run_recovery_enabled": True,
             "on_unrecovered_post_motion_telemetry": "drop_sample_and_resync",
@@ -1641,6 +1641,9 @@ def test_collect_pose_long_run_recovery_drops_one_sample_and_continues(tmp_path:
         if line.strip()
     ]
     assert len(events) >= 1
+    packet_events = [event for event in events if event.get("event") == "post_motion_telemetry_packet_error"]
+    assert packet_events
+    assert int(packet_events[0].get("retry_count", 0) or 0) > 0
     metrics = result.summary.experiment_metrics
     assert int(metrics.get("dropped_post_motion_telemetry_samples", 0) or 0) >= 1
     assert int(metrics.get("accepted_sample_count", 0) or 0) >= 1
@@ -1655,6 +1658,18 @@ def test_collect_pose_long_run_recovery_drops_one_sample_and_continues(tmp_path:
     ]
     assert export_lines
     assert not any("post_motion_telemetry_packet_error" in ln for ln in export_lines)
+    quality = json.loads((out / "dataset_quality_summary.json").read_text(encoding="utf-8"))
+    health = json.loads((out / "long_run_health.json").read_text(encoding="utf-8"))
+    assert int(metrics.get("accepted_sample_count", 0) or 0) == int(quality.get("accepted_sample_count", 0) or 0)
+    assert int(metrics.get("dropped_post_motion_telemetry_samples", 0) or 0) == int(
+        quality.get("dropped_post_motion_telemetry_samples", 0) or 0
+    )
+    assert int(health.get("accepted_sample_count", 0) or 0) == int(quality.get("accepted_sample_count", 0) or 0)
+    assert int(health.get("dropped_post_motion_telemetry_samples", 0) or 0) == int(
+        quality.get("dropped_post_motion_telemetry_samples", 0) or 0
+    )
+    assert health.get("run_status") == "success"
+    assert health.get("run_success") is True
 
 
 def test_collect_pose_long_run_recovery_stops_at_max_consecutive(tmp_path: Path) -> None:
@@ -1697,9 +1712,13 @@ def test_collect_pose_long_run_recovery_stops_at_max_consecutive(tmp_path: Path)
     assert result.success is False
     assert "max_consecutive_packet_failures" in result.message or "exceeded max_consecutive_packet_failures" in result.message
     quality = json.loads((result.paths.output_dir / "dataset_quality_summary.json").read_text(encoding="utf-8"))
+    health = json.loads((result.paths.output_dir / "long_run_health.json").read_text(encoding="utf-8"))
     assert int(quality["unrecovered_packet_error_count"]) >= 1
     m = result.summary.experiment_metrics
     assert int(m.get("next_command_index_to_resume", -1)) == 1
+    assert health.get("run_status") != "running"
+    assert health.get("run_success") is False
+    assert int(health.get("next_command_index_to_resume", -1)) == int(m.get("next_command_index_to_resume", -2))
 
 
 def test_collect_pose_write_goal_persistent_failure_classifies_write_goal_error(tmp_path: Path) -> None:

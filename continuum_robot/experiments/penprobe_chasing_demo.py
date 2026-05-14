@@ -599,7 +599,8 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
                     else:
                         saturated_cycles = 0
                     if saturated_cycles >= int(self.config.saturation_stop_cycles):
-                        raise RuntimeError("saturation_limit_persisted")
+                        self._stop_reason = "cap_limited_target_unreachable"
+                        break
 
                     measured_ticks = {
                         int(servo_id): (
@@ -811,6 +812,11 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
             f"Max tick delta cap: {em.get('max_tick_delta_from_startup')}",
             f"Max tick delta used: {em.get('max_tick_delta_used')}",
             f"Final XY error mm: {em.get('final_error_norm_mm')}",
+            (
+                "Reached configured travel cap. Increase max_tick_delta_from_startup or move target closer."
+                if str(em.get("stop_reason", "")) == "cap_limited_target_unreachable"
+                else ""
+            ),
             "",
             "Loop instrumentation (session mean / max aggregates):",
             (
@@ -849,7 +855,7 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
             "tool origin as the target. It does not claim physical tip chasing unless a validated T_robot_tip "
             "transform is explicitly used.",
         ]
-        text = "\n".join(lines).rstrip() + "\n"
+        text = "\n".join(line for line in lines if line != "").rstrip() + "\n"
         (paths.output_dir / "penprobe_chasing_summary.txt").write_text(text, encoding="utf-8")
 
     def _record_metrics(self, *, session: ExperimentSession, context, servo_ids: list[int], pairs: dict[str, list[int]]) -> None:
@@ -926,6 +932,14 @@ class PenprobeChasingDemoExperiment(BaseExperiment):
             {str(k): int(v) for k, v in sorted((self._internal_goal_ticks or {}).items())},
         )
         session.set_metric("runtime_tip_demo_coil_as_tip_adopted", bool(self._demo_runtime_tip_coil_adopted))
+        session.set_metric(
+            "runtime_tip_mode_for_demo",
+            "coil_as_tip" if bool(self._demo_runtime_tip_coil_adopted or not self.config.use_calibrated_runtime_tip) else "calibrated_runtime_tip",
+        )
+        session.set_metric("demo_controlled_point", "0A coil origin")
+        session.set_metric("demo_target_point", "0B tool origin")
+        session.set_metric("physical_tip_chasing", False)
+        session.set_metric("penprobe_demo_valid_for_thesis", False)
         session.set_metric(
             "summary_requirements",
             {
@@ -1129,6 +1143,8 @@ def _classify_stop_reason(exc: Exception) -> str:
         return "servo_hardware_error"
     if "wrap_risk" in message:
         return "wrap_risk"
+    if "saturation_limit_persisted" in message:
+        return "cap_limited_target_unreachable"
     if "penprobe goal write failed" in message.lower():
         return "penprobe_goal_write_failed"
     if "stopped by operator" in message.lower():

@@ -5331,6 +5331,8 @@ def _write_collect_pose_long_run_health(
         "next_command_index_to_resume": int(metrics.get("next_command_index_to_resume", 0) or 0),
         "mean_sample_hz_estimate": rate,
         "estimated_commands_remaining": remaining_cmds,
+        "run_status": str(metrics.get("run_status", "running")),
+        "run_success": bool(metrics.get("run_success", False)),
         "recommendation": str(metrics.get("long_run_health_recommendation", "running")),
     }
     (Path(output_root) / "long_run_health.json").write_text(
@@ -5395,6 +5397,7 @@ def _synthetic_collect_pose_command_result(
         requested_pair = _pair_command_from_cable_deltas(requested_cm)
     resolved_cm = list(ctx.get("last_resolved_cable_command_cm") or requested_cm)
     pair_cm = _pair_command_from_cable_deltas(resolved_cm)
+    retry_count = int(ctx.get("retry_count", 0) or 0)
     return {
         "requested_cable_command_cm": list(requested_cm),
         "resolved_cable_command_cm": list(resolved_cm),
@@ -5412,6 +5415,8 @@ def _synthetic_collect_pose_command_result(
             "synthetic_command_result_after_packet_error": True,
             "original_failure_category": ctx.get("failure_category"),
             "original_failure_reason": ctx.get("failure_reason"),
+            "telemetry_retry_count": retry_count,
+            "unrecovered_packet_error_count": 1,
         },
         "message": "Synthetic command summary after unrecovered post-motion telemetry; goals assumed from last commanded ticks.",
         "motion_profile": {
@@ -5483,9 +5488,10 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         step_index_for_event: int,
     ) -> dict[str, Any]:
         ctx = dict(exc.context or {})
+        retry_count = int(ctx.get("retry_count", 0) or 0)
         session.set_metric(
             "servo_telemetry_retry_count",
-            int(session.metrics.get("servo_telemetry_retry_count", 0) or 0) + int(ctx.get("retry_count", 0) or 0),
+            int(session.metrics.get("servo_telemetry_retry_count", 0) or 0) + retry_count,
         )
         session.set_metric(
             "unrecovered_packet_error_count",
@@ -5546,6 +5552,8 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 "step_index": int(step_index_for_event),
                 "failed_servo_id": ctx.get("failed_servo_id"),
                 "failure_reason": ctx.get("failure_reason"),
+                "failure_category": ctx.get("failure_category"),
+                "retry_count": retry_count,
                 "last_commanded_goal_ticks": ctx.get("last_commanded_goal_ticks"),
                 "last_resolved_cable_command_cm": ctx.get("last_resolved_cable_command_cm"),
                 "tracker_age_s": tracker_age_s,
@@ -5579,6 +5587,20 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 servo_ids=list(servo_ids),
             )
             raise RuntimeError("collect-pose long-run resync telemetry failed after post-motion packet error.") from resync_exc
+        _append_collect_pose_jsonl_event(
+            _collect_pose_output_root(session),
+            "sample_failure_events.jsonl",
+            {
+                "event": "post_motion_telemetry_resync_success",
+                "step_index": int(step_index_for_event),
+                "failed_servo_id": ctx.get("failed_servo_id"),
+                "retry_count": retry_count,
+                "resync_read_attempts": int(self.config.resync_read_attempts),
+                "resync_delay_s": float(self.config.resync_delay_s),
+                "consecutive_post_motion_packet_failures": consecutive,
+                "total_post_motion_packet_failure_events": total_ev,
+            },
+        )
         resync_fb = _servo_feedback_payload(tel_map, servo_service=session.context.servo_service)
         return _synthetic_collect_pose_command_result(
             exc=exc,
@@ -6554,6 +6576,27 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             metrics=summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else dict(session.metrics),
             max_current_warning_ma=self.config.max_current_warning_ma,
         )
+        summary_metrics = summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else dict(session.metrics)
+        final_recommendation = _collect_pose_long_run_recommendation(
+            success=bool(summary.success),
+            metrics=dict(summary_metrics),
+        )
+        long_run_metrics = {
+            **dict(summary_metrics),
+            "accepted_sample_count": int(quality.get("accepted_sample_count", 0) or 0),
+            "rejected_sample_count": int(quality.get("rejected_sample_count", 0) or 0),
+            "run_status": str(summary.status),
+            "run_success": bool(summary.success),
+            "long_run_health_recommendation": str(final_recommendation),
+        }
+        _write_collect_pose_long_run_health(
+            output_root=paths.output_dir,
+            session=session,
+            metrics=long_run_metrics,
+            last_command_step_index=max(-1, int(long_run_metrics.get("next_command_index_to_resume", 0) or 0) - 1),
+            estimated_total_commands=int(long_run_metrics.get("command_step_count", 0) or 0),
+            samples=list(session.samples),
+        )
         (paths.output_dir / "dataset_quality_summary.json").write_text(
             json.dumps(quality, indent=2, sort_keys=True),
             encoding="utf-8",
@@ -6665,6 +6708,22 @@ def _collect_pose_dataset_quality_summary(
         },
         "recommendation": recommendation,
     }
+
+
+def _collect_pose_long_run_recommendation(*, success: bool, metrics: dict[str, Any]) -> str:
+    if bool(success):
+        if int(metrics.get("dropped_post_motion_telemetry_samples", 0) or 0) > 0:
+            return "completed_with_dropped_samples"
+        return "completed"
+    failure_context = dict(metrics.get("failure_context", {}) or {})
+    failure_category = str(
+        failure_context.get("failure_category", metrics.get("failure_category", "")) or ""
+    ).strip()
+    if failure_category in {"servo_telemetry_packet_error", "servo_telemetry_missing", "simple_experiment_motion_rejected"}:
+        return "resume_after_transport_check"
+    if failure_category == "write_goal_packet_error":
+        return "resume_after_goal_write_path_check"
+    return "investigate_failure_before_resume"
 
 
 def _render_collect_pose_dataset_quality_summary(quality: dict[str, Any]) -> str:
