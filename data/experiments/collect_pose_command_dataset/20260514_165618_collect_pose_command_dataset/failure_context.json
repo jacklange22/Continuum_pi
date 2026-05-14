@@ -1,0 +1,189 @@
+{
+  "bus_owner": {
+    "active": true,
+    "held_by_current_thread": true,
+    "owner": "collect_pose_command_dataset",
+    "reason": "collect-pose dataset experiment motion",
+    "servo_id": null
+  },
+  "command_metadata": {
+    "pre_motion_bus_owners": [
+      "collect_pose_command_dataset"
+    ],
+    "pre_motion_freshness_decision_sources": [
+      "experiment_owned_read_batch_completed",
+      "per_servo_last_valid_packet"
+    ],
+    "pre_motion_packet_ok_servo_ids": [
+      5,
+      6,
+      7
+    ],
+    "pre_motion_read_batch_completed_monotonic_s": 74062.280767454,
+    "pre_motion_read_batch_duration_ms": 297.8983319917461,
+    "pre_motion_read_batch_started_monotonic_s": 74061.982869122,
+    "pre_motion_read_sequence_indexes": [
+      7461
+    ],
+    "pre_motion_read_source": "experiment_owned_minimal_read_after_configuration",
+    "pre_motion_read_sources": [
+      "experiment_owned"
+    ],
+    "pre_motion_telemetry_profile": "minimal",
+    "preferred_operating_mode_experiment": 3
+  },
+  "failed_servo_id": 8,
+  "failure_category": "simple_experiment_motion_rejected",
+  "failure_reason": "Simple single-segment experiment motion rejected: stale/missing telemetry: servo 8 blocked motion: Present Position is unavailable..",
+  "last_commanded_goal_ticks": {
+    "5": 1750,
+    "6": 2619,
+    "7": 2930,
+    "8": 1679
+  },
+  "last_resolved_cable_command_cm": [
+    -0.588134765625,
+    0.3254458161865572,
+    0.588134765625,
+    -0.3254458161865572
+  ],
+  "last_valid_telemetry_by_servo": {
+    "5": {
+      "bus_owner": "collect_pose_command_dataset",
+      "current_ma": 0,
+      "current_raw_unit": 0,
+      "freshness_decision_source": "experiment_owned_read_batch_completed",
+      "hardware_error": null,
+      "hardware_error_code": 0,
+      "last_read_attempt_monotonic_s": 74061.982881585,
+      "last_valid_packet_monotonic_s": 74062.051372529,
+      "last_valid_packet_wall_time": "2026-05-14T19:05:26.293415+00:00",
+      "operating_mode": 3,
+      "packet_age_s": 0.23014970200893003,
+      "per_servo_packet_age_s": 0.22939492500154302,
+      "position_tick": 2544,
+      "read_batch_completed_monotonic_s": 74062.280767454,
+      "read_batch_duration_ms": 297.8983319917461,
+      "read_batch_started_monotonic_s": 74061.982869122,
+      "read_duration_ms": 68.49094398785383,
+      "read_sequence_index": 7461,
+      "read_source": "experiment_owned",
+      "snapshot_age_s": 0.00020620301074814051,
+      "telemetry_error": null,
+      "telemetry_error_code": null,
+      "telemetry_error_detail": null,
+      "temperature_c": null,
+      "torque_enabled": true,
+      "voltage_mv": null,
+      "voltage_raw_unit": null
+    },
+    "6": {
+      "bus_owner": "collect_pose_command_dataset",
+      "current_ma": -7,
+      "current_raw_unit": -7,
+      "freshness_decision_source": "experiment_owned_read_batch_completed",
+      "hardware_error": null,
+      "hardware_error_code": 0,
+      "last_read_attempt_monotonic_s": 74062.051413936,
+      "last_valid_packet_monotonic_s": 74062.096720807,
+      "last_valid_packet_wall_time": "2026-05-14T19:05:26.338761+00:00",
+      "operating_mode": 3,
+      "packet_age_s": 0.18480764598643873,
+      "per_servo_packet_age_s": 0.18404664698755369,
+      "position_tick": 2296,
+      "read_batch_completed_monotonic_s": 74062.280767454,
+      "read_batch_duration_ms": 297.8983319917461,
+      "read_batch_started_monotonic_s": 74061.982869122,
+      "read_duration_ms": 45.3068710048683,
+      "read_sequence_index": 7461,
+      "read_source": "experiment_owned",
+      "snapshot_age_s": 0.00023273999977391213,
+      "telemetry_error": null,
+      "telemetry_error_code": null,
+      "telemetry_error_detail": null,
+      "temperature_c": null,
+      "torque_enabled": true,
+      "voltage_mv": null,
+      "voltage_raw_unit": null
+    },
+    "7": {
+      "bus_owner": "collect_pose_command_dataset",
+      "current_ma": -183,
+      "current_raw_unit": -183,
+      "freshness_decision_source": "experiment_owned_read_batch_completed",
+      "hardware_error": null,
+      "hardware_error_code": 0,
+      "last_read_attempt_monotonic_s": 74062.096753492,
+      "last_valid_packet_monotonic_s": 74062.190604619,
+      "last_valid_packet_wall_time": "2026-05-14T19:05:26.432649+00:00",
+      "operating_mode": 3,
+      "packet_age_s": 0.09092705600778572,
+      "per_servo_packet_age_s": 0.09016283499659039,
+      "position_tick": 2180,
+      "read_batch_completed_monotonic_s": 74062.280767454,
+      "read_batch_duration_ms": 297.8983319917461,
+      "read_batch_started_monotonic_s": 74061.982869122,
+      "read_duration_ms": 93.85112699237652,
+      "read_sequence_index": 7461,
+      "read_source": "experiment_owned",
+      "snapshot_age_s": 0.00024112900428008288,
+      "telemetry_error": null,
+      "telemetry_error_code": null,
+      "telemetry_error_detail": null,
+      "temperature_c": null,
+      "torque_enabled": true,
+      "voltage_mv": null,
+      "voltage_raw_unit": null
+    },
+    "8": {
+      "bus_owner": "collect_pose_command_dataset",
+      "current_ma": null,
+      "current_raw_unit": null,
+      "freshness_decision_source": "per_servo_last_valid_packet",
+      "hardware_error": "read 0x84 failed: list index out of range | [TxRxResult] Incorrect status packet! | [TxRxResult] There is no status packet!",
+      "hardware_error_code": 0,
+      "last_read_attempt_monotonic_s": 74062.190650694,
+      "last_valid_packet_monotonic_s": null,
+      "last_valid_packet_wall_time": null,
+      "operating_mode": 3,
+      "packet_age_s": null,
+      "per_servo_packet_age_s": null,
+      "position_tick": null,
+      "read_batch_completed_monotonic_s": 74062.280767454,
+      "read_batch_duration_ms": 297.8983319917461,
+      "read_batch_started_monotonic_s": 74061.982869122,
+      "read_duration_ms": 90.09029700246174,
+      "read_sequence_index": 7461,
+      "read_source": "experiment_owned",
+      "snapshot_age_s": 0.0,
+      "telemetry_error": "read 0x84 failed: list index out of range | [TxRxResult] Incorrect status packet! | [TxRxResult] There is no status packet!",
+      "telemetry_error_code": "packet_or_status_error",
+      "telemetry_error_detail": "read 0x84 failed: list index out of range | [TxRxResult] Incorrect status packet! | [TxRxResult] There is no status packet!",
+      "temperature_c": null,
+      "torque_enabled": null,
+      "voltage_mv": null,
+      "voltage_raw_unit": null
+    }
+  },
+  "missing_fields": {
+    "8": [
+      "present_position"
+    ]
+  },
+  "progress_fraction_at_failure": 0.29928028788484606,
+  "recovered_packet_error_count": 0,
+  "retry_count": 0,
+  "sample_index_at_failure": 1497,
+  "servo_telemetry_retry_count": 0,
+  "telemetry_error_code": "packet_or_status_error",
+  "telemetry_snapshot_fields": {
+    "freshness_decision_source": true,
+    "per_servo_packet_age_s": true,
+    "read_batch_completed_monotonic_s": true,
+    "read_batch_duration_ms": true,
+    "read_batch_started_monotonic_s": true,
+    "snapshot_age_s": true
+  },
+  "tracker_age_s": 0.0,
+  "unrecovered_packet_error_count": 3
+}
