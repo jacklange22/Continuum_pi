@@ -1,0 +1,65 @@
+{
+  "accepted_sample_count": 21,
+  "command_range_per_tendon_cm": {
+    "tendon_1": {
+      "max": 0.65625,
+      "min": -0.703125,
+      "span": 1.359375
+    },
+    "tendon_2": {
+      "max": 0.6388888888888888,
+      "min": -0.6944444444444444,
+      "span": 1.3333333333333333
+    },
+    "tendon_3": {
+      "max": 0.703125,
+      "min": -0.65625,
+      "span": 1.359375
+    },
+    "tendon_4": {
+      "max": 0.6944444444444444,
+      "min": -0.6388888888888888,
+      "span": 1.3333333333333333
+    }
+  },
+  "failure_count": 1,
+  "high_current_warning": false,
+  "max_abs_current_ma": 362,
+  "max_current_warning_ma": null,
+  "measured_xyz_range_mm": {
+    "x": {
+      "max": 33.5846073906595,
+      "min": -26.711242671887447,
+      "span": 60.29585006254695
+    },
+    "y": {
+      "max": 33.79583642560755,
+      "min": -32.29850490354375,
+      "span": 66.09434132915129
+    },
+    "z": {
+      "max": 69.1321927908036,
+      "min": 47.54846455475142,
+      "span": 21.58372823605218
+    }
+  },
+  "recommendation": "needs_more_coverage",
+  "recovered_packet_error_count": 0,
+  "rejected_sample_count": 0,
+  "sample_rate_stats": {
+    "max_dt_s": 1.2903997559999993,
+    "mean_dt_s": 1.2451186175000004,
+    "mean_hz": 0.8031363325109061,
+    "min_dt_s": 1.2134305530000233,
+    "sample_count": 21
+  },
+  "schema_version": "collect_pose_dataset_quality_v1",
+  "servo_telemetry_retry_count": 0,
+  "tracker_stale_count": 0,
+  "trainability_status": {
+    "not_model_training_ready": false,
+    "run_trust_mode": "thesis_trusted",
+    "valid_for_model_training": true
+  },
+  "unrecovered_packet_error_count": 0
+}

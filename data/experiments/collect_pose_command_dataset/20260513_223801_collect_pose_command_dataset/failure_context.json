@@ -1,0 +1,186 @@
+{
+  "bus_owner": {
+    "active": true,
+    "held_by_current_thread": true,
+    "owner": "collect_pose_command_dataset",
+    "reason": "collect-pose dataset experiment motion",
+    "servo_id": null
+  },
+  "command_metadata": {
+    "pre_motion_bus_owners": [
+      "collect_pose_command_dataset"
+    ],
+    "pre_motion_freshness_decision_sources": [
+      "experiment_owned_read_batch_completed",
+      "per_servo_last_valid_packet"
+    ],
+    "pre_motion_packet_ok_servo_ids": [
+      6,
+      7,
+      8
+    ],
+    "pre_motion_read_batch_completed_monotonic_s": 469.811880698,
+    "pre_motion_read_batch_duration_ms": 258.8497869999742,
+    "pre_motion_read_batch_started_monotonic_s": 469.553030911,
+    "pre_motion_read_sequence_indexes": [
+      766
+    ],
+    "pre_motion_read_source": "experiment_owned_minimal_read_after_configuration",
+    "pre_motion_read_sources": [
+      "experiment_owned"
+    ],
+    "pre_motion_telemetry_profile": "minimal"
+  },
+  "failed_servo_id": 5,
+  "failure_category": "simple_experiment_motion_rejected",
+  "failure_reason": "Simple single-segment experiment motion rejected: wrong operating mode: servo 5 is not in Position Control Mode: Operating Mode is unavailable..",
+  "last_commanded_goal_ticks": {
+    "5": 1795,
+    "6": 2659,
+    "7": 2968,
+    "8": 1627
+  },
+  "last_resolved_cable_command_cm": [
+    -0.515625,
+    0.36111111111111116,
+    0.515625,
+    -0.36111111111111116
+  ],
+  "last_valid_telemetry_by_servo": {
+    "5": {
+      "bus_owner": "collect_pose_command_dataset",
+      "current_ma": 13,
+      "current_raw_unit": 13,
+      "freshness_decision_source": "per_servo_last_valid_packet",
+      "hardware_error": "[TxRxResult] Incorrect status packet!",
+      "hardware_error_code": 0,
+      "last_read_attempt_monotonic_s": 469.553044078,
+      "last_valid_packet_monotonic_s": null,
+      "last_valid_packet_wall_time": null,
+      "operating_mode": null,
+      "packet_age_s": null,
+      "per_servo_packet_age_s": null,
+      "position_tick": 2406,
+      "read_batch_completed_monotonic_s": 469.811880698,
+      "read_batch_duration_ms": 258.8497869999742,
+      "read_batch_started_monotonic_s": 469.553030911,
+      "read_duration_ms": 91.03471499997795,
+      "read_sequence_index": 766,
+      "read_source": "experiment_owned",
+      "snapshot_age_s": 0.0,
+      "telemetry_error": "[TxRxResult] Incorrect status packet!",
+      "telemetry_error_code": "packet_or_status_error",
+      "telemetry_error_detail": "[TxRxResult] Incorrect status packet!",
+      "temperature_c": null,
+      "torque_enabled": true,
+      "voltage_mv": null,
+      "voltage_raw_unit": null
+    },
+    "6": {
+      "bus_owner": "collect_pose_command_dataset",
+      "current_ma": -17,
+      "current_raw_unit": -17,
+      "freshness_decision_source": "experiment_owned_read_batch_completed",
+      "hardware_error": null,
+      "hardware_error_code": 0,
+      "last_read_attempt_monotonic_s": 469.644114517,
+      "last_valid_packet_monotonic_s": 469.692455506,
+      "last_valid_packet_wall_time": "2026-05-13T22:38:53.934500+00:00",
+      "operating_mode": 3,
+      "packet_age_s": 0.1201044990000355,
+      "per_servo_packet_age_s": 0.11942519199999424,
+      "position_tick": 2336,
+      "read_batch_completed_monotonic_s": 469.811880698,
+      "read_batch_duration_ms": 258.8497869999742,
+      "read_batch_started_monotonic_s": 469.553030911,
+      "read_duration_ms": 48.34098899999617,
+      "read_sequence_index": 766,
+      "read_source": "experiment_owned",
+      "snapshot_age_s": 0.00022955299999694034,
+      "telemetry_error": null,
+      "telemetry_error_code": null,
+      "telemetry_error_detail": null,
+      "temperature_c": null,
+      "torque_enabled": true,
+      "voltage_mv": null,
+      "voltage_raw_unit": null
+    },
+    "7": {
+      "bus_owner": "collect_pose_command_dataset",
+      "current_ma": -105,
+      "current_raw_unit": -105,
+      "freshness_decision_source": "experiment_owned_read_batch_completed",
+      "hardware_error": null,
+      "hardware_error_code": 0,
+      "last_read_attempt_monotonic_s": 469.692504546,
+      "last_valid_packet_monotonic_s": 469.76010541,
+      "last_valid_packet_wall_time": "2026-05-13T22:38:54.002148+00:00",
+      "operating_mode": 3,
+      "packet_age_s": 0.052458299000022635,
+      "per_servo_packet_age_s": 0.05177528799998754,
+      "position_tick": 2386,
+      "read_batch_completed_monotonic_s": 469.811880698,
+      "read_batch_duration_ms": 258.8497869999742,
+      "read_batch_started_monotonic_s": 469.553030911,
+      "read_duration_ms": 67.600863999985,
+      "read_sequence_index": 766,
+      "read_source": "experiment_owned",
+      "snapshot_age_s": 0.0002393130000086785,
+      "telemetry_error": null,
+      "telemetry_error_code": null,
+      "telemetry_error_detail": null,
+      "temperature_c": null,
+      "torque_enabled": true,
+      "voltage_mv": null,
+      "voltage_raw_unit": null
+    },
+    "8": {
+      "bus_owner": "collect_pose_command_dataset",
+      "current_ma": 0,
+      "current_raw_unit": 0,
+      "freshness_decision_source": "experiment_owned_read_batch_completed",
+      "hardware_error": null,
+      "hardware_error_code": 0,
+      "last_read_attempt_monotonic_s": 469.760142376,
+      "last_valid_packet_monotonic_s": 469.811837529,
+      "last_valid_packet_wall_time": "2026-05-13T22:38:54.053879+00:00",
+      "operating_mode": 3,
+      "packet_age_s": 0.0007292729999903713,
+      "per_servo_packet_age_s": 4.3168999980025546e-05,
+      "position_tick": 1954,
+      "read_batch_completed_monotonic_s": 469.811880698,
+      "read_batch_duration_ms": 258.8497869999742,
+      "read_batch_started_monotonic_s": 469.553030911,
+      "read_duration_ms": 51.695153000025584,
+      "read_sequence_index": 766,
+      "read_source": "experiment_owned",
+      "snapshot_age_s": 0.00024675800000295567,
+      "telemetry_error": null,
+      "telemetry_error_code": null,
+      "telemetry_error_detail": null,
+      "temperature_c": null,
+      "torque_enabled": true,
+      "voltage_mv": null,
+      "voltage_raw_unit": null
+    }
+  },
+  "missing_fields": {
+    "5": [
+      "operating_mode"
+    ]
+  },
+  "progress_fraction_at_failure": 0.11538461538461539,
+  "recovered_packet_error_count": 0,
+  "retry_count": 0,
+  "sample_index_at_failure": 21,
+  "telemetry_error_code": "packet_or_status_error",
+  "telemetry_snapshot_fields": {
+    "freshness_decision_source": true,
+    "per_servo_packet_age_s": true,
+    "read_batch_completed_monotonic_s": true,
+    "read_batch_duration_ms": true,
+    "read_batch_started_monotonic_s": true,
+    "snapshot_age_s": true
+  },
+  "tracker_age_s": 0.0
+}

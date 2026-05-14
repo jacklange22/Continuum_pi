@@ -1,0 +1,10 @@
+Collect-Pose Dataset Quality Summary
+Accepted samples: 38
+Rejected samples: 0
+Failures: 0
+Recovered packet errors: 0
+Unrecovered packet errors: 0
+Telemetry retries: 0
+Tracker stale count: 0
+Max abs current (mA): 351
+Recommendation: needs_more_coverage

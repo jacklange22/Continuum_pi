@@ -19,7 +19,6 @@
       8
     ],
     "automatic_two_segment_pretension_validated": false,
-    "calibration_trust": "hardware",
     "commanded_servo_ids": [
       5,
       6,
@@ -40,7 +39,6 @@
       "3": 7,
       "4": 8
     },
-    "mock_mode": false,
     "mode_capabilities": {
       "automatic_single_segment_pretension": true,
       "manual_jog": true,
@@ -139,8 +137,7 @@
       "7": "cw",
       "8": "cw"
     },
-    "two_segment_kinematics_control_validated": false,
-    "valid_for_hardware_startup": true
+    "two_segment_kinematics_control_validated": false
   },
   "schema_version": 2,
   "servos": {
@@ -294,10 +291,10 @@
       "hardware_current_limit_ma": null,
       "hardware_max_tick": null,
       "hardware_min_tick": null,
-      "last_measured_current_ma": -18,
+      "last_measured_current_ma": -15,
       "latest_pretension_run": {
         "accepted": true,
-        "accepted_at_utc": "2026-05-13T16:06:17Z",
+        "accepted_at_utc": "2026-05-13T17:12:42Z",
         "active_segment_key": "segment_b",
         "active_segment_label": "Spine 2",
         "active_segment_pairs": {
@@ -316,8 +313,8 @@
           7,
           8
         ],
-        "captured_at_utc": "2026-05-13T16:06:17Z",
-        "commanded_position_tick": 2133,
+        "captured_at_utc": "2026-05-13T17:12:41Z",
+        "commanded_position_tick": 2128,
         "commanded_servo_ids": [
           5,
           6,
@@ -330,8 +327,8 @@
           7,
           8
         ],
-        "measured_current_ma": -18,
-        "measured_position_tick": 2136,
+        "measured_current_ma": -15,
+        "measured_position_tick": 2131,
         "mirror_pairs": {
           "1": 5,
           "2": 6,
@@ -405,20 +402,20 @@
         "source": "manual",
         "startup_artifact_scope": "single_segment_manual_startup",
         "status": "manual_captured",
-        "telemetry_age_s": 7.90921039879322e-05,
+        "telemetry_age_s": 0.20950435707345605,
         "torque_enabled": true
       },
       "neutral_setpoint": 2244,
-      "pretension_completed_at_utc": "2026-05-13T16:06:17Z",
+      "pretension_completed_at_utc": "2026-05-13T17:12:42Z",
       "pretension_current_threshold_ma": 220,
-      "pretension_final_position_tick": 2136,
+      "pretension_final_position_tick": 2131,
       "pretension_note": null,
       "pretension_result_status": "accepted",
       "pretension_source": "manual",
       "safe_max_tick": 2844,
       "safe_min_tick": 1644,
       "servo_id": 5,
-      "status": "neutral_captured",
+      "status": "pretension_accepted",
       "tendon_index": 4,
       "tightening_rotation": "cw",
       "valid": true
@@ -429,10 +426,10 @@
       "hardware_current_limit_ma": null,
       "hardware_max_tick": null,
       "hardware_min_tick": null,
-      "last_measured_current_ma": -16,
+      "last_measured_current_ma": -18,
       "latest_pretension_run": {
         "accepted": true,
-        "accepted_at_utc": "2026-05-13T16:06:17Z",
+        "accepted_at_utc": "2026-05-13T17:12:42Z",
         "active_segment_key": "segment_b",
         "active_segment_label": "Spine 2",
         "active_segment_pairs": {
@@ -451,8 +448,8 @@
           7,
           8
         ],
-        "captured_at_utc": "2026-05-13T16:06:17Z",
-        "commanded_position_tick": 2426,
+        "captured_at_utc": "2026-05-13T17:12:41Z",
+        "commanded_position_tick": 2419,
         "commanded_servo_ids": [
           5,
           6,
@@ -465,8 +462,8 @@
           7,
           8
         ],
-        "measured_current_ma": -16,
-        "measured_position_tick": 2430,
+        "measured_current_ma": -18,
+        "measured_position_tick": 2424,
         "mirror_pairs": {
           "1": 5,
           "2": 6,
@@ -540,20 +537,20 @@
         "source": "manual",
         "startup_artifact_scope": "single_segment_manual_startup",
         "status": "manual_captured",
-        "telemetry_age_s": 8.559203706681728e-05,
+        "telemetry_age_s": 0.15026908088475466,
         "torque_enabled": true
       },
       "neutral_setpoint": 2600,
-      "pretension_completed_at_utc": "2026-05-13T16:06:17Z",
+      "pretension_completed_at_utc": "2026-05-13T17:12:42Z",
       "pretension_current_threshold_ma": 220,
-      "pretension_final_position_tick": 2430,
+      "pretension_final_position_tick": 2424,
       "pretension_note": null,
       "pretension_result_status": "accepted",
       "pretension_source": "manual",
       "safe_max_tick": 3200,
       "safe_min_tick": 2000,
       "servo_id": 6,
-      "status": "neutral_captured",
+      "status": "pretension_accepted",
       "tendon_index": 5,
       "tightening_rotation": "cw",
       "valid": true
@@ -564,10 +561,10 @@
       "hardware_current_limit_ma": null,
       "hardware_max_tick": null,
       "hardware_min_tick": null,
-      "last_measured_current_ma": -16,
+      "last_measured_current_ma": 0,
       "latest_pretension_run": {
         "accepted": true,
-        "accepted_at_utc": "2026-05-13T16:06:17Z",
+        "accepted_at_utc": "2026-05-13T17:12:42Z",
         "active_segment_key": "segment_b",
         "active_segment_label": "Spine 2",
         "active_segment_pairs": {
@@ -586,8 +583,8 @@
           7,
           8
         ],
-        "captured_at_utc": "2026-05-13T16:06:17Z",
-        "commanded_position_tick": 2605,
+        "captured_at_utc": "2026-05-13T17:12:41Z",
+        "commanded_position_tick": 2632,
         "commanded_servo_ids": [
           5,
           6,
@@ -600,8 +597,8 @@
           7,
           8
         ],
-        "measured_current_ma": -16,
-        "measured_position_tick": 2607,
+        "measured_current_ma": 0,
+        "measured_position_tick": 2632,
         "mirror_pairs": {
           "1": 5,
           "2": 6,
@@ -675,20 +672,20 @@
         "source": "manual",
         "startup_artifact_scope": "single_segment_manual_startup",
         "status": "manual_captured",
-        "telemetry_age_s": 8.794409222900867e-05,
+        "telemetry_age_s": 0.07226726389490068,
         "torque_enabled": true
       },
       "neutral_setpoint": 2608,
-      "pretension_completed_at_utc": "2026-05-13T16:06:17Z",
+      "pretension_completed_at_utc": "2026-05-13T17:12:42Z",
       "pretension_current_threshold_ma": 220,
-      "pretension_final_position_tick": 2607,
+      "pretension_final_position_tick": 2632,
       "pretension_note": null,
       "pretension_result_status": "accepted",
       "pretension_source": "manual",
       "safe_max_tick": 3208,
       "safe_min_tick": 2008,
       "servo_id": 7,
-      "status": "neutral_captured",
+      "status": "pretension_accepted",
       "tendon_index": 6,
       "tightening_rotation": "cw",
       "valid": true
@@ -699,10 +696,10 @@
       "hardware_current_limit_ma": null,
       "hardware_max_tick": null,
       "hardware_min_tick": null,
-      "last_measured_current_ma": -17,
+      "last_measured_current_ma": -24,
       "latest_pretension_run": {
         "accepted": true,
-        "accepted_at_utc": "2026-05-13T16:06:17Z",
+        "accepted_at_utc": "2026-05-13T17:12:42Z",
         "active_segment_key": "segment_b",
         "active_segment_label": "Spine 2",
         "active_segment_pairs": {
@@ -721,8 +718,8 @@
           7,
           8
         ],
-        "captured_at_utc": "2026-05-13T16:06:17Z",
-        "commanded_position_tick": 1850,
+        "captured_at_utc": "2026-05-13T17:12:41Z",
+        "commanded_position_tick": 1857,
         "commanded_servo_ids": [
           5,
           6,
@@ -735,8 +732,8 @@
           7,
           8
         ],
-        "measured_current_ma": -17,
-        "measured_position_tick": 1855,
+        "measured_current_ma": -24,
+        "measured_position_tick": 1862,
         "mirror_pairs": {
           "1": 5,
           "2": 6,
@@ -810,25 +807,25 @@
         "source": "manual",
         "startup_artifact_scope": "single_segment_manual_startup",
         "status": "manual_captured",
-        "telemetry_age_s": 8.98139551281929e-05,
+        "telemetry_age_s": 0.00015733297914266586,
         "torque_enabled": true
       },
       "neutral_setpoint": 2071,
-      "pretension_completed_at_utc": "2026-05-13T16:06:17Z",
+      "pretension_completed_at_utc": "2026-05-13T17:12:42Z",
       "pretension_current_threshold_ma": 220,
-      "pretension_final_position_tick": 1855,
+      "pretension_final_position_tick": 1862,
       "pretension_note": null,
       "pretension_result_status": "accepted",
       "pretension_source": "manual",
       "safe_max_tick": 2671,
       "safe_min_tick": 1471,
       "servo_id": 8,
-      "status": "neutral_captured",
+      "status": "pretension_accepted",
       "tendon_index": 7,
       "tightening_rotation": "cw",
       "valid": true
     }
   },
   "source_format": "servo_calibration_v2",
-  "updated_at_utc": "2026-05-13T16:30:49Z"
+  "updated_at_utc": "2026-05-13T17:12:42Z"
 }

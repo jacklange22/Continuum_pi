@@ -1,0 +1,1099 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "penprobe_chasing_demo",
+  "run_id": "aa501105dee1",
+  "timestamp_utc": "2026-05-13T22:36:41.836916+00:00",
+  "git_commit": "036fabd62e10c809404c8299570e7a5fcee8132b",
+  "backend_info": {
+    "mock_mode": false,
+    "hardware_profile": "robot_8servo.yaml",
+    "tracking_backend_configured": "ndi",
+    "tracking_backend_selected": "ndi",
+    "tracking_backend_identity": "ndi_tracker_python",
+    "tracking_state": "streaming_healthy",
+    "servo_connected": true,
+    "pretension_source": {
+      "source_type": "manual",
+      "accepted": true,
+      "usable": true,
+      "message": "Accepted manual pretension/startup state is recorded for servo(s): 5, 6, 7, 8",
+      "updated_at_utc": "2026-05-13T17:12:42Z",
+      "note": null
+    },
+    "selected_segment_readiness": {
+      "operating_mode": "single_segment",
+      "active_segment_key": "segment_b",
+      "active_segment_label": "Spine 2",
+      "expected_servo_ids": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "transport": {
+        "status": "PASS",
+        "expected_servo_ids": [
+          5,
+          6,
+          7,
+          8
+        ],
+        "responding_servo_ids": [
+          5,
+          6,
+          7,
+          8
+        ],
+        "missing_servo_ids": [],
+        "stale_servo_ids": [],
+        "hardware_error_servo_ids": [],
+        "telemetry_by_servo": {
+          "5": {
+            "position": 2115,
+            "current_ma": -15,
+            "voltage_mv": null,
+            "temperature_c": null,
+            "hardware_error": 0,
+            "error": null
+          },
+          "6": {
+            "position": 2414,
+            "current_ma": -21,
+            "voltage_mv": null,
+            "temperature_c": null,
+            "hardware_error": 0,
+            "error": null
+          },
+          "7": {
+            "position": 2650,
+            "current_ma": 0,
+            "voltage_mv": null,
+            "temperature_c": null,
+            "hardware_error": 0,
+            "error": null
+          },
+          "8": {
+            "position": 1881,
+            "current_ma": -13,
+            "voltage_mv": null,
+            "temperature_c": null,
+            "hardware_error": 0,
+            "error": null
+          }
+        },
+        "message": "Readable packet telemetry is available for expected servo IDs."
+      },
+      "neutral_safe_calibration": {
+        "status": "PASS",
+        "ready": true,
+        "hardware_valid": true,
+        "artifact_path": "/home/continuum-pi/Continuum_pi/config/neutral_setpoints.json",
+        "updated_at_utc": "2026-05-13T17:12:42Z",
+        "source": "unknown",
+        "is_mock": false,
+        "missing_neutral_servo_ids": [],
+        "missing_bounds_servo_ids": [],
+        "invalid_bounds_servo_ids": [],
+        "mismatch_reasons": [],
+        "message": "Spine 2 has neutral ticks and calibrated safe bounds for servo IDs 5, 6, 7, 8."
+      },
+      "startup_pretension": {
+        "status": "PASS",
+        "ready": true,
+        "accepted": true,
+        "usable": true,
+        "artifact_path": "/home/continuum-pi/Continuum_pi/config/neutral_setpoints.json",
+        "updated_at_utc": "2026-05-13T17:12:42Z",
+        "source_type": "manual_startup",
+        "raw_source_type": "manual",
+        "is_mock": false,
+        "mismatch_reasons": [],
+        "positions_by_servo": {
+          "5": 2131,
+          "6": 2424,
+          "7": 2632,
+          "8": 1862
+        },
+        "message": "Accepted manual pretension/startup state is recorded for servo(s): 5, 6, 7, 8"
+      },
+      "experiment": {
+        "ready_for_manual_jog": true,
+        "ready_for_raw_tiny_jog": true,
+        "ready_for_calibrated_motion": true,
+        "ready_for_pretension_validation": true,
+        "ready_for_repeatability": true,
+        "ready_for_collect_pose": true,
+        "ready_for_penprobe_chasing": true,
+        "raw_tiny_jog_label": "Allowed; calibration is available, but tiny jog remains a raw hardware-bound action.",
+        "message": "Trusted single-segment experiment preflight may proceed after tracker/registration checks."
+      },
+      "sign_mapping": {
+        "exists": true,
+        "compatible": true,
+        "confirmed": true,
+        "path": "/home/continuum-pi/Continuum_pi/data/calibration/servo_mapping_checks/20260513_171245_segment_b_servo_mapping_check.json",
+        "timestamp_utc": "2026-05-13T17:12:45Z",
+        "message": "Servo sign/mapping checklist is confirmed for active segment Spine 2: [5, 6, 7, 8].",
+        "missing_servo_ids": [],
+        "unconfirmed_servo_ids": [],
+        "record": {
+          "schema_version": 1,
+          "timestamp_utc": "2026-05-13T17:12:45Z",
+          "operator": "",
+          "operating_mode": "single_segment",
+          "active_segment_key": "segment_b",
+          "active_segment_label": "Spine 2",
+          "expected_servo_ids": [
+            5,
+            6,
+            7,
+            8
+          ],
+          "source": "configured_mapping_confirmation",
+          "artifact_path": "/home/continuum-pi/Continuum_pi/data/calibration/servo_mapping_checks/20260513_171245_segment_b_servo_mapping_check.json",
+          "mock_mode": false,
+          "lower_tick_means_tension": true,
+          "confirmed_by_operator": true,
+          "entries": [
+            {
+              "servo_id": 5,
+              "expected_tendon_position": "+X",
+              "axis_label": "X",
+              "positive_tendon_direction": "+X",
+              "tiny_jog_direction": "configured_lower_tick_tensions",
+              "observed_tendon_behavior": "configured_mapping_confirmed_by_operator",
+              "expected_sign_confirmed": true,
+              "notes": ""
+            },
+            {
+              "servo_id": 6,
+              "expected_tendon_position": "+Y",
+              "axis_label": "Y",
+              "positive_tendon_direction": "+Y",
+              "tiny_jog_direction": "configured_lower_tick_tensions",
+              "observed_tendon_behavior": "configured_mapping_confirmed_by_operator",
+              "expected_sign_confirmed": true,
+              "notes": ""
+            },
+            {
+              "servo_id": 7,
+              "expected_tendon_position": "-X",
+              "axis_label": "X",
+              "positive_tendon_direction": "-X",
+              "tiny_jog_direction": "configured_lower_tick_tensions",
+              "observed_tendon_behavior": "configured_mapping_confirmed_by_operator",
+              "expected_sign_confirmed": true,
+              "notes": ""
+            },
+            {
+              "servo_id": 8,
+              "expected_tendon_position": "-Y",
+              "axis_label": "Y",
+              "positive_tendon_direction": "-Y",
+              "tiny_jog_direction": "configured_lower_tick_tensions",
+              "observed_tendon_behavior": "configured_mapping_confirmed_by_operator",
+              "expected_sign_confirmed": true,
+              "notes": ""
+            }
+          ],
+          "notes": ""
+        }
+      },
+      "next_action": "Spine 2 has fresh telemetry, valid neutral/safe calibration, and accepted startup reference. Pretension/repeatability preflight may proceed.",
+      "metadata_readiness_source": "cached_telemetry_used",
+      "cached_telemetry_used": true,
+      "live_scan_unavailable_due_to_experiment_ownership": false
+    },
+    "servo_sign_mapping_check": {
+      "exists": true,
+      "compatible": true,
+      "confirmed": true,
+      "path": "/home/continuum-pi/Continuum_pi/data/calibration/servo_mapping_checks/20260513_171245_segment_b_servo_mapping_check.json",
+      "timestamp_utc": "2026-05-13T17:12:45Z",
+      "message": "Servo sign/mapping checklist is confirmed for active segment Spine 2: [5, 6, 7, 8]."
+    },
+    "robot_mode": "single_segment",
+    "operating_context": {
+      "operating_mode": "single_segment",
+      "expected_servo_ids": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "commanded_servo_ids": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "selected_servo_id": null,
+      "segment_order": [
+        "segment_a",
+        "segment_b"
+      ],
+      "active_segment": {
+        "key": "segment_b",
+        "label": "Spine 2",
+        "servo_ids": [
+          5,
+          6,
+          7,
+          8
+        ],
+        "pairs": {
+          "axis_a": [
+            5,
+            7
+          ],
+          "axis_b": [
+            6,
+            8
+          ]
+        },
+        "segment_role": "distal",
+        "segment_order_index": 1
+      },
+      "segments": {
+        "segment_a": {
+          "key": "segment_a",
+          "label": "Spine 1",
+          "segment_label": "Segment A",
+          "servo_ids": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "segment_role": "proximal",
+          "segment_order_index": 0,
+          "pairs": {
+            "axis_a": [
+              1,
+              3
+            ],
+            "axis_b": [
+              2,
+              4
+            ]
+          }
+        },
+        "segment_b": {
+          "key": "segment_b",
+          "label": "Spine 2",
+          "segment_label": "Segment B",
+          "servo_ids": [
+            5,
+            6,
+            7,
+            8
+          ],
+          "segment_role": "distal",
+          "segment_order_index": 1,
+          "pairs": {
+            "axis_a": [
+              5,
+              7
+            ],
+            "axis_b": [
+              6,
+              8
+            ]
+          }
+        }
+      },
+      "mirror_pairs": {},
+      "readiness_scope": "active_segment",
+      "output_mode_family": "single_segment",
+      "mode_profile": "single_segment",
+      "mode_capabilities": {
+        "manual_jog": true,
+        "manual_startup_capture": true,
+        "automatic_single_segment_pretension": true,
+        "two_segment_kinematics_control": false
+      },
+      "mode_notes": []
+    },
+    "two_segment_foundation": {
+      "schema_version": "two_segment_foundation_v1",
+      "available": true,
+      "operating_mode": "single_segment",
+      "semantic_scope": "data_structures_and_metadata_only",
+      "segment_order": [
+        "segment_a",
+        "segment_b"
+      ],
+      "segments": {
+        "segment_a": {
+          "key": "segment_a",
+          "label": "Spine 1",
+          "segment_label": "Segment A",
+          "segment_role": "proximal",
+          "segment_order_index": 0,
+          "servo_ids": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "pairs": {
+            "axis_a": [
+              1,
+              3
+            ],
+            "axis_b": [
+              2,
+              4
+            ]
+          }
+        },
+        "segment_b": {
+          "key": "segment_b",
+          "label": "Spine 2",
+          "segment_label": "Segment B",
+          "segment_role": "distal",
+          "segment_order_index": 1,
+          "servo_ids": [
+            5,
+            6,
+            7,
+            8
+          ],
+          "pairs": {
+            "axis_a": [
+              5,
+              7
+            ],
+            "axis_b": [
+              6,
+              8
+            ]
+          }
+        }
+      },
+      "expected_servo_ids": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "commanded_servo_ids": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "command_schema": {
+        "schema_version": "two_segment_command_v1",
+        "command_type": "tendon_displacement",
+        "units": "cm",
+        "canonical_representation": {
+          "segment_a": [
+            "a1",
+            "a2",
+            "a3",
+            "a4"
+          ],
+          "segment_b": [
+            "b1",
+            "b2",
+            "b3",
+            "b4"
+          ]
+        },
+        "flat_vector_rule": "Flatten only through the operating context commanded_servo_ids order.",
+        "control_enabled": false,
+        "segment_order": [
+          "segment_a",
+          "segment_b"
+        ],
+        "commanded_servo_ids": [
+          5,
+          6,
+          7,
+          8
+        ],
+        "segments": {
+          "segment_a": {
+            "key": "segment_a",
+            "label": "Spine 1",
+            "segment_label": "Segment A",
+            "segment_role": "proximal",
+            "segment_order_index": 0,
+            "servo_ids": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "pairs": {
+              "axis_a": [
+                1,
+                3
+              ],
+              "axis_b": [
+                2,
+                4
+              ]
+            }
+          },
+          "segment_b": {
+            "key": "segment_b",
+            "label": "Spine 2",
+            "segment_label": "Segment B",
+            "segment_role": "distal",
+            "segment_order_index": 1,
+            "servo_ids": [
+              5,
+              6,
+              7,
+              8
+            ],
+            "pairs": {
+              "axis_a": [
+                5,
+                7
+              ],
+              "axis_b": [
+                6,
+                8
+              ]
+            }
+          }
+        }
+      },
+      "pose_schema": {
+        "schema_version": "two_segment_pose_observation_v1",
+        "frame": "robot",
+        "fields": {
+          "intermediate_pose": "optional pose for the Segment A distal end / Segment B base region",
+          "distal_tip_pose": "optional pose for the distal tip after Segment B",
+          "segment_poses": "optional segment-indexed pose map",
+          "tool_poses": "optional raw or registered tracker-tool pose map"
+        },
+        "tool_roles": {},
+        "tracking_enabled": false,
+        "multi_coil_tracking_required": "future_validation"
+      },
+      "enabled_capabilities": {
+        "all_8_readiness": false,
+        "manual_startup_capture": true
+      },
+      "blocked_capabilities": {
+        "two_segment_kinematics_control": true,
+        "two_segment_modeling": true,
+        "two_segment_penprobe_chasing": true,
+        "automatic_two_segment_pretension": true
+      },
+      "parallel_single_semantics": "mirrored single-segment testing only; not true two-segment control"
+    },
+    "active_segment": {
+      "key": "segment_b",
+      "label": "Spine 2",
+      "servo_ids": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "pairs": {
+        "axis_a": [
+          5,
+          7
+        ],
+        "axis_b": [
+          6,
+          8
+        ]
+      }
+    },
+    "configured_servo_ids": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ]
+  },
+  "registration_info": {
+    "path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+    "exists": true,
+    "tracking_registration_state": "loaded",
+    "tip_pose_status": "coil_as_tip",
+    "runtime_tip_mode": "coil_as_tip",
+    "runtime_tip_trust_level": "thesis_trusted",
+    "runtime_tip_mode_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.",
+    "runtime_tip_calibration_state": "coil_as_tip",
+    "runtime_tip_selected_artifact_kind": "coil_as_tip",
+    "runtime_tip_selected_artifact_path": null,
+    "runtime_tip_policy": {
+      "mode": "coil_as_tip",
+      "calibration_state": "coil_as_tip",
+      "tip_pose_status": "coil_as_tip",
+      "trust_label": "thesis_trusted",
+      "trust_level": "thesis_trusted",
+      "thesis_trusted": true,
+      "requested_workflow": "penprobe_chasing_demo",
+      "workflow": "penprobe_chasing",
+      "canonical_workflow": "penprobe_chasing",
+      "allowed_for_workflow": true,
+      "requires_lower_trust_override": false,
+      "uses_coil_as_tip": true,
+      "uses_calibrated_tip_transform": false,
+      "uses_identity_transform": true,
+      "intended_use": "Current trusted runtime position path for robot-frame tip repeatability, pretension centering, modeling datasets, and demos when coil-origin-as-tip is the declared measurement.",
+      "status_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.",
+      "reasons": [],
+      "warnings": [
+        "Coil-as-tip uses identity T_coil_tip and reports the 0A coil origin as the tip; do not interpret it as a validated calibrated tip transform or true tip orientation."
+      ],
+      "allowed_workflows": {
+        "repeatability": true,
+        "pretension_validation": true,
+        "penprobe_chasing": true,
+        "modeling_dataset": true,
+        "transform_chain_validation": true
+      }
+    },
+    "thesis_trusted_runtime_tip": true
+  },
+  "config_used": {
+    "loop_period_s": 0.02,
+    "max_duration_s": 30.0,
+    "max_iterations": 734,
+    "max_tick_delta_from_startup": 500,
+    "hard_max_tick_delta_from_startup": 500,
+    "max_step_ticks": 25,
+    "max_tick_step_per_cycle": 100,
+    "max_target_radius_mm": 90.0,
+    "target_deadband_mm": 1.0,
+    "xy_deadband_mm": 1.0,
+    "proportional_gain_ticks_per_mm": 31.0,
+    "displacement_gain_cm_per_mm": 0.002,
+    "stale_tracker_timeout_s": 0.2,
+    "stale_tracker_persist_cycles_before_stop": 12,
+    "gui_status_nominal_hz": 8.0,
+    "max_servo_write_hz": 25.0,
+    "telemetry_health_hz": 3.0,
+    "max_consecutive_telemetry_health_failures": 2,
+    "saturation_stop_cycles": 40,
+    "x_axis_sign": 1,
+    "y_axis_sign": 1,
+    "flip_x": false,
+    "flip_y": false,
+    "mapping_mode": "paired_xy_proportional",
+    "legacy_polynomial_workspace": {}
+  },
+  "operator_notes": "",
+  "provenance_info": {
+    "hardware_profile": "robot_8servo.yaml",
+    "operating_mode": "single_segment",
+    "expected_servo_ids": [
+      5,
+      6,
+      7,
+      8
+    ],
+    "commanded_servo_ids": [
+      5,
+      6,
+      7,
+      8
+    ],
+    "active_segment": {
+      "key": "segment_b",
+      "label": "Spine 2",
+      "servo_ids": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "pairs": {
+        "axis_a": [
+          5,
+          7
+        ],
+        "axis_b": [
+          6,
+          8
+        ]
+      },
+      "segment_role": "distal",
+      "segment_order_index": 1
+    },
+    "segments": {
+      "segment_a": {
+        "key": "segment_a",
+        "label": "Spine 1",
+        "segment_label": "Segment A",
+        "servo_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "segment_role": "proximal",
+        "segment_order_index": 0,
+        "pairs": {
+          "axis_a": [
+            1,
+            3
+          ],
+          "axis_b": [
+            2,
+            4
+          ]
+        }
+      },
+      "segment_b": {
+        "key": "segment_b",
+        "label": "Spine 2",
+        "segment_label": "Segment B",
+        "servo_ids": [
+          5,
+          6,
+          7,
+          8
+        ],
+        "segment_role": "distal",
+        "segment_order_index": 1,
+        "pairs": {
+          "axis_a": [
+            5,
+            7
+          ],
+          "axis_b": [
+            6,
+            8
+          ]
+        }
+      }
+    },
+    "segment_order": [
+      "segment_a",
+      "segment_b"
+    ],
+    "two_segment_foundation": {
+      "schema_version": "two_segment_foundation_v1",
+      "available": true,
+      "operating_mode": "single_segment",
+      "semantic_scope": "data_structures_and_metadata_only",
+      "segment_order": [
+        "segment_a",
+        "segment_b"
+      ],
+      "segments": {
+        "segment_a": {
+          "key": "segment_a",
+          "label": "Spine 1",
+          "segment_label": "Segment A",
+          "segment_role": "proximal",
+          "segment_order_index": 0,
+          "servo_ids": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "pairs": {
+            "axis_a": [
+              1,
+              3
+            ],
+            "axis_b": [
+              2,
+              4
+            ]
+          }
+        },
+        "segment_b": {
+          "key": "segment_b",
+          "label": "Spine 2",
+          "segment_label": "Segment B",
+          "segment_role": "distal",
+          "segment_order_index": 1,
+          "servo_ids": [
+            5,
+            6,
+            7,
+            8
+          ],
+          "pairs": {
+            "axis_a": [
+              5,
+              7
+            ],
+            "axis_b": [
+              6,
+              8
+            ]
+          }
+        }
+      },
+      "expected_servo_ids": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "commanded_servo_ids": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "command_schema": {
+        "schema_version": "two_segment_command_v1",
+        "command_type": "tendon_displacement",
+        "units": "cm",
+        "canonical_representation": {
+          "segment_a": [
+            "a1",
+            "a2",
+            "a3",
+            "a4"
+          ],
+          "segment_b": [
+            "b1",
+            "b2",
+            "b3",
+            "b4"
+          ]
+        },
+        "flat_vector_rule": "Flatten only through the operating context commanded_servo_ids order.",
+        "control_enabled": false,
+        "segment_order": [
+          "segment_a",
+          "segment_b"
+        ],
+        "commanded_servo_ids": [
+          5,
+          6,
+          7,
+          8
+        ],
+        "segments": {
+          "segment_a": {
+            "key": "segment_a",
+            "label": "Spine 1",
+            "segment_label": "Segment A",
+            "segment_role": "proximal",
+            "segment_order_index": 0,
+            "servo_ids": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "pairs": {
+              "axis_a": [
+                1,
+                3
+              ],
+              "axis_b": [
+                2,
+                4
+              ]
+            }
+          },
+          "segment_b": {
+            "key": "segment_b",
+            "label": "Spine 2",
+            "segment_label": "Segment B",
+            "segment_role": "distal",
+            "segment_order_index": 1,
+            "servo_ids": [
+              5,
+              6,
+              7,
+              8
+            ],
+            "pairs": {
+              "axis_a": [
+                5,
+                7
+              ],
+              "axis_b": [
+                6,
+                8
+              ]
+            }
+          }
+        }
+      },
+      "pose_schema": {
+        "schema_version": "two_segment_pose_observation_v1",
+        "frame": "robot",
+        "fields": {
+          "intermediate_pose": "optional pose for the Segment A distal end / Segment B base region",
+          "distal_tip_pose": "optional pose for the distal tip after Segment B",
+          "segment_poses": "optional segment-indexed pose map",
+          "tool_poses": "optional raw or registered tracker-tool pose map"
+        },
+        "tool_roles": {},
+        "tracking_enabled": false,
+        "multi_coil_tracking_required": "future_validation"
+      },
+      "enabled_capabilities": {
+        "all_8_readiness": false,
+        "manual_startup_capture": true
+      },
+      "blocked_capabilities": {
+        "two_segment_kinematics_control": true,
+        "two_segment_modeling": true,
+        "two_segment_penprobe_chasing": true,
+        "automatic_two_segment_pretension": true
+      },
+      "parallel_single_semantics": "mirrored single-segment testing only; not true two-segment control"
+    },
+    "mirror_mapping": {},
+    "tracker_backend": "ndi",
+    "registration_artifact": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+    "registration_status": "loaded",
+    "runtime_tip_mode": "coil_as_tip",
+    "runtime_tip_trust_status": "thesis_trusted",
+    "startup_pretension_artifact": {
+      "source_type": "manual",
+      "accepted": true,
+      "usable": true,
+      "message": "Accepted manual pretension/startup state is recorded for servo(s): 5, 6, 7, 8",
+      "updated_at_utc": "2026-05-13T17:12:42Z",
+      "note": null
+    },
+    "selected_segment_readiness": {
+      "operating_mode": "single_segment",
+      "active_segment_key": "segment_b",
+      "active_segment_label": "Spine 2",
+      "expected_servo_ids": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "transport": {
+        "status": "PASS",
+        "expected_servo_ids": [
+          5,
+          6,
+          7,
+          8
+        ],
+        "responding_servo_ids": [
+          5,
+          6,
+          7,
+          8
+        ],
+        "missing_servo_ids": [],
+        "stale_servo_ids": [],
+        "hardware_error_servo_ids": [],
+        "telemetry_by_servo": {
+          "5": {
+            "position": 2115,
+            "current_ma": -15,
+            "voltage_mv": null,
+            "temperature_c": null,
+            "hardware_error": 0,
+            "error": null
+          },
+          "6": {
+            "position": 2414,
+            "current_ma": -21,
+            "voltage_mv": null,
+            "temperature_c": null,
+            "hardware_error": 0,
+            "error": null
+          },
+          "7": {
+            "position": 2650,
+            "current_ma": 0,
+            "voltage_mv": null,
+            "temperature_c": null,
+            "hardware_error": 0,
+            "error": null
+          },
+          "8": {
+            "position": 1881,
+            "current_ma": -13,
+            "voltage_mv": null,
+            "temperature_c": null,
+            "hardware_error": 0,
+            "error": null
+          }
+        },
+        "message": "Readable packet telemetry is available for expected servo IDs."
+      },
+      "neutral_safe_calibration": {
+        "status": "PASS",
+        "ready": true,
+        "hardware_valid": true,
+        "artifact_path": "/home/continuum-pi/Continuum_pi/config/neutral_setpoints.json",
+        "updated_at_utc": "2026-05-13T17:12:42Z",
+        "source": "unknown",
+        "is_mock": false,
+        "missing_neutral_servo_ids": [],
+        "missing_bounds_servo_ids": [],
+        "invalid_bounds_servo_ids": [],
+        "mismatch_reasons": [],
+        "message": "Spine 2 has neutral ticks and calibrated safe bounds for servo IDs 5, 6, 7, 8."
+      },
+      "startup_pretension": {
+        "status": "PASS",
+        "ready": true,
+        "accepted": true,
+        "usable": true,
+        "artifact_path": "/home/continuum-pi/Continuum_pi/config/neutral_setpoints.json",
+        "updated_at_utc": "2026-05-13T17:12:42Z",
+        "source_type": "manual_startup",
+        "raw_source_type": "manual",
+        "is_mock": false,
+        "mismatch_reasons": [],
+        "positions_by_servo": {
+          "5": 2131,
+          "6": 2424,
+          "7": 2632,
+          "8": 1862
+        },
+        "message": "Accepted manual pretension/startup state is recorded for servo(s): 5, 6, 7, 8"
+      },
+      "experiment": {
+        "ready_for_manual_jog": true,
+        "ready_for_raw_tiny_jog": true,
+        "ready_for_calibrated_motion": true,
+        "ready_for_pretension_validation": true,
+        "ready_for_repeatability": true,
+        "ready_for_collect_pose": true,
+        "ready_for_penprobe_chasing": true,
+        "raw_tiny_jog_label": "Allowed; calibration is available, but tiny jog remains a raw hardware-bound action.",
+        "message": "Trusted single-segment experiment preflight may proceed after tracker/registration checks."
+      },
+      "sign_mapping": {
+        "exists": true,
+        "compatible": true,
+        "confirmed": true,
+        "path": "/home/continuum-pi/Continuum_pi/data/calibration/servo_mapping_checks/20260513_171245_segment_b_servo_mapping_check.json",
+        "timestamp_utc": "2026-05-13T17:12:45Z",
+        "message": "Servo sign/mapping checklist is confirmed for active segment Spine 2: [5, 6, 7, 8].",
+        "missing_servo_ids": [],
+        "unconfirmed_servo_ids": [],
+        "record": {
+          "schema_version": 1,
+          "timestamp_utc": "2026-05-13T17:12:45Z",
+          "operator": "",
+          "operating_mode": "single_segment",
+          "active_segment_key": "segment_b",
+          "active_segment_label": "Spine 2",
+          "expected_servo_ids": [
+            5,
+            6,
+            7,
+            8
+          ],
+          "source": "configured_mapping_confirmation",
+          "artifact_path": "/home/continuum-pi/Continuum_pi/data/calibration/servo_mapping_checks/20260513_171245_segment_b_servo_mapping_check.json",
+          "mock_mode": false,
+          "lower_tick_means_tension": true,
+          "confirmed_by_operator": true,
+          "entries": [
+            {
+              "servo_id": 5,
+              "expected_tendon_position": "+X",
+              "axis_label": "X",
+              "positive_tendon_direction": "+X",
+              "tiny_jog_direction": "configured_lower_tick_tensions",
+              "observed_tendon_behavior": "configured_mapping_confirmed_by_operator",
+              "expected_sign_confirmed": true,
+              "notes": ""
+            },
+            {
+              "servo_id": 6,
+              "expected_tendon_position": "+Y",
+              "axis_label": "Y",
+              "positive_tendon_direction": "+Y",
+              "tiny_jog_direction": "configured_lower_tick_tensions",
+              "observed_tendon_behavior": "configured_mapping_confirmed_by_operator",
+              "expected_sign_confirmed": true,
+              "notes": ""
+            },
+            {
+              "servo_id": 7,
+              "expected_tendon_position": "-X",
+              "axis_label": "X",
+              "positive_tendon_direction": "-X",
+              "tiny_jog_direction": "configured_lower_tick_tensions",
+              "observed_tendon_behavior": "configured_mapping_confirmed_by_operator",
+              "expected_sign_confirmed": true,
+              "notes": ""
+            },
+            {
+              "servo_id": 8,
+              "expected_tendon_position": "-Y",
+              "axis_label": "Y",
+              "positive_tendon_direction": "-Y",
+              "tiny_jog_direction": "configured_lower_tick_tensions",
+              "observed_tendon_behavior": "configured_mapping_confirmed_by_operator",
+              "expected_sign_confirmed": true,
+              "notes": ""
+            }
+          ],
+          "notes": ""
+        }
+      },
+      "next_action": "Spine 2 has fresh telemetry, valid neutral/safe calibration, and accepted startup reference. Pretension/repeatability preflight may proceed.",
+      "metadata_readiness_source": "cached_telemetry_used",
+      "cached_telemetry_used": true,
+      "live_scan_unavailable_due_to_experiment_ownership": false
+    },
+    "servo_sign_mapping_check": {
+      "exists": true,
+      "compatible": true,
+      "confirmed": true,
+      "path": "/home/continuum-pi/Continuum_pi/data/calibration/servo_mapping_checks/20260513_171245_segment_b_servo_mapping_check.json",
+      "timestamp_utc": "2026-05-13T17:12:45Z",
+      "message": "Servo sign/mapping checklist is confirmed for active segment Spine 2: [5, 6, 7, 8]."
+    },
+    "mock_mode": false
+  },
+  "trust_info": {
+    "run_trust_mode": "thesis_trusted",
+    "valid_for_model_training": false,
+    "valid_for_thesis_repeatability": true,
+    "valid_for_two_segment_model_training": false,
+    "include_in_evidence_index": false,
+    "data_quality_warnings": [],
+    "runtime_tip_policy": {
+      "mode": "coil_as_tip",
+      "calibration_state": "coil_as_tip",
+      "tip_pose_status": "coil_as_tip",
+      "trust_label": "thesis_trusted",
+      "trust_level": "thesis_trusted",
+      "thesis_trusted": true,
+      "requested_workflow": "penprobe_chasing_demo",
+      "workflow": "penprobe_chasing",
+      "canonical_workflow": "penprobe_chasing",
+      "allowed_for_workflow": true,
+      "requires_lower_trust_override": false,
+      "uses_coil_as_tip": true,
+      "uses_calibrated_tip_transform": false,
+      "uses_identity_transform": true,
+      "intended_use": "Current trusted runtime position path for robot-frame tip repeatability, pretension centering, modeling datasets, and demos when coil-origin-as-tip is the declared measurement.",
+      "status_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.",
+      "reasons": [],
+      "warnings": [
+        "Coil-as-tip uses identity T_coil_tip and reports the 0A coil origin as the tip; do not interpret it as a validated calibrated tip transform or true tip orientation."
+      ],
+      "allowed_workflows": {
+        "repeatability": true,
+        "pretension_validation": true,
+        "penprobe_chasing": true,
+        "modeling_dataset": true,
+        "transform_chain_validation": true
+      }
+    },
+    "success_does_not_imply_thesis_validity": true
+  }
+}

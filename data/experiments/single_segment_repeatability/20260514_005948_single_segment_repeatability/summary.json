@@ -1,0 +1,5378 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "single_segment_repeatability",
+  "run_id": "10abdb0c0ffc",
+  "success": true,
+  "sample_counts": {
+    "total": 544,
+    "phase::approach": 272,
+    "phase::repeat": 272
+  },
+  "dropped_frames": 0,
+  "invalid_transforms": 0,
+  "stage_pass_fail": {
+    "setup": "passed",
+    "precheck": "passed",
+    "execute": "passed",
+    "finalize": "passed"
+  },
+  "status": "success",
+  "experiment_metrics": {
+    "target_catalog": [
+      {
+        "target_index": 0,
+        "label": "T00",
+        "ring": "center",
+        "ring_radius_mm": 0.0,
+        "angle_rad": 0.0,
+        "angle_deg": 0.0,
+        "cable_deltas_mm": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "cable_deltas_cm": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "group_tags": [
+          "center"
+        ]
+      },
+      {
+        "target_index": 1,
+        "label": "T01",
+        "ring": "inner",
+        "ring_radius_mm": 4.0,
+        "angle_rad": 0.0,
+        "angle_deg": 0.0,
+        "cable_deltas_mm": [
+          -4.0,
+          0.0,
+          4.0,
+          0.0
+        ],
+        "cable_deltas_cm": [
+          -0.4,
+          0.0,
+          0.4,
+          0.0
+        ],
+        "group_tags": [
+          "inner",
+          "on_axis"
+        ]
+      },
+      {
+        "target_index": 2,
+        "label": "T02",
+        "ring": "inner",
+        "ring_radius_mm": 4.0,
+        "angle_rad": 0.7853981633974483,
+        "angle_deg": 45.0,
+        "cable_deltas_mm": [
+          -2.8284271247461903,
+          -2.82842712474619,
+          2.8284271247461903,
+          2.82842712474619
+        ],
+        "cable_deltas_cm": [
+          -0.282842712474619,
+          -0.282842712474619,
+          0.282842712474619,
+          0.282842712474619
+        ],
+        "group_tags": [
+          "inner",
+          "off_axis"
+        ]
+      },
+      {
+        "target_index": 3,
+        "label": "T03",
+        "ring": "inner",
+        "ring_radius_mm": 4.0,
+        "angle_rad": 1.5707963267948966,
+        "angle_deg": 90.0,
+        "cable_deltas_mm": [
+          0.0,
+          -4.0,
+          0.0,
+          4.0
+        ],
+        "cable_deltas_cm": [
+          0.0,
+          -0.4,
+          0.0,
+          0.4
+        ],
+        "group_tags": [
+          "inner",
+          "on_axis"
+        ]
+      },
+      {
+        "target_index": 4,
+        "label": "T04",
+        "ring": "inner",
+        "ring_radius_mm": 4.0,
+        "angle_rad": 2.356194490192345,
+        "angle_deg": 135.0,
+        "cable_deltas_mm": [
+          2.82842712474619,
+          -2.8284271247461903,
+          -2.82842712474619,
+          2.8284271247461903
+        ],
+        "cable_deltas_cm": [
+          0.282842712474619,
+          -0.282842712474619,
+          -0.282842712474619,
+          0.282842712474619
+        ],
+        "group_tags": [
+          "inner",
+          "off_axis"
+        ]
+      },
+      {
+        "target_index": 5,
+        "label": "T05",
+        "ring": "inner",
+        "ring_radius_mm": 4.0,
+        "angle_rad": 3.141592653589793,
+        "angle_deg": 180.0,
+        "cable_deltas_mm": [
+          4.0,
+          0.0,
+          -4.0,
+          0.0
+        ],
+        "cable_deltas_cm": [
+          0.4,
+          0.0,
+          -0.4,
+          0.0
+        ],
+        "group_tags": [
+          "inner",
+          "on_axis"
+        ]
+      },
+      {
+        "target_index": 6,
+        "label": "T06",
+        "ring": "inner",
+        "ring_radius_mm": 4.0,
+        "angle_rad": 3.9269908169872414,
+        "angle_deg": 225.0,
+        "cable_deltas_mm": [
+          2.8284271247461907,
+          2.82842712474619,
+          -2.8284271247461907,
+          -2.82842712474619
+        ],
+        "cable_deltas_cm": [
+          0.28284271247461906,
+          0.282842712474619,
+          -0.28284271247461906,
+          -0.282842712474619
+        ],
+        "group_tags": [
+          "inner",
+          "off_axis"
+        ]
+      },
+      {
+        "target_index": 7,
+        "label": "T07",
+        "ring": "inner",
+        "ring_radius_mm": 4.0,
+        "angle_rad": 4.71238898038469,
+        "angle_deg": 270.0,
+        "cable_deltas_mm": [
+          0.0,
+          4.0,
+          0.0,
+          -4.0
+        ],
+        "cable_deltas_cm": [
+          0.0,
+          0.4,
+          0.0,
+          -0.4
+        ],
+        "group_tags": [
+          "inner",
+          "on_axis"
+        ]
+      },
+      {
+        "target_index": 8,
+        "label": "T08",
+        "ring": "inner",
+        "ring_radius_mm": 4.0,
+        "angle_rad": 5.497787143782138,
+        "angle_deg": 315.0,
+        "cable_deltas_mm": [
+          -2.8284271247461894,
+          2.8284271247461907,
+          2.8284271247461894,
+          -2.8284271247461907
+        ],
+        "cable_deltas_cm": [
+          -0.28284271247461895,
+          0.28284271247461906,
+          0.28284271247461895,
+          -0.28284271247461906
+        ],
+        "group_tags": [
+          "inner",
+          "off_axis"
+        ]
+      },
+      {
+        "target_index": 9,
+        "label": "T09",
+        "ring": "outer",
+        "ring_radius_mm": 8.0,
+        "angle_rad": 6.283185307179586,
+        "angle_deg": 0.0,
+        "cable_deltas_mm": [
+          -8.0,
+          0.0,
+          8.0,
+          0.0
+        ],
+        "cable_deltas_cm": [
+          -0.8,
+          0.0,
+          0.8,
+          0.0
+        ],
+        "group_tags": [
+          "outer",
+          "on_axis"
+        ]
+      },
+      {
+        "target_index": 10,
+        "label": "T10",
+        "ring": "outer",
+        "ring_radius_mm": 8.0,
+        "angle_rad": 7.0685834705770345,
+        "angle_deg": 45.0,
+        "cable_deltas_mm": [
+          -5.6568542494923815,
+          -5.656854249492379,
+          5.6568542494923815,
+          5.656854249492379
+        ],
+        "cable_deltas_cm": [
+          -0.5656854249492381,
+          -0.5656854249492379,
+          0.5656854249492381,
+          0.5656854249492379
+        ],
+        "group_tags": [
+          "outer",
+          "off_axis"
+        ]
+      },
+      {
+        "target_index": 11,
+        "label": "T11",
+        "ring": "outer",
+        "ring_radius_mm": 8.0,
+        "angle_rad": 7.853981633974483,
+        "angle_deg": 90.0,
+        "cable_deltas_mm": [
+          0.0,
+          -8.0,
+          0.0,
+          8.0
+        ],
+        "cable_deltas_cm": [
+          0.0,
+          -0.8,
+          0.0,
+          0.8
+        ],
+        "group_tags": [
+          "outer",
+          "on_axis"
+        ]
+      },
+      {
+        "target_index": 12,
+        "label": "T12",
+        "ring": "outer",
+        "ring_radius_mm": 8.0,
+        "angle_rad": 8.63937979737193,
+        "angle_deg": 135.0,
+        "cable_deltas_mm": [
+          5.6568542494923735,
+          -5.656854249492387,
+          -5.6568542494923735,
+          5.656854249492387
+        ],
+        "cable_deltas_cm": [
+          0.5656854249492373,
+          -0.5656854249492387,
+          -0.5656854249492373,
+          0.5656854249492387
+        ],
+        "group_tags": [
+          "outer",
+          "off_axis"
+        ]
+      },
+      {
+        "target_index": 13,
+        "label": "T13",
+        "ring": "outer",
+        "ring_radius_mm": 8.0,
+        "angle_rad": 9.42477796076938,
+        "angle_deg": 180.0,
+        "cable_deltas_mm": [
+          8.0,
+          0.0,
+          -8.0,
+          0.0
+        ],
+        "cable_deltas_cm": [
+          0.8,
+          0.0,
+          -0.8,
+          0.0
+        ],
+        "group_tags": [
+          "outer",
+          "on_axis"
+        ]
+      },
+      {
+        "target_index": 14,
+        "label": "T14",
+        "ring": "outer",
+        "ring_radius_mm": 8.0,
+        "angle_rad": 10.210176124166829,
+        "angle_deg": 225.0,
+        "cable_deltas_mm": [
+          5.656854249492377,
+          5.656854249492383,
+          -5.656854249492377,
+          -5.656854249492383
+        ],
+        "cable_deltas_cm": [
+          0.5656854249492377,
+          0.5656854249492383,
+          -0.5656854249492377,
+          -0.5656854249492383
+        ],
+        "group_tags": [
+          "outer",
+          "off_axis"
+        ]
+      },
+      {
+        "target_index": 15,
+        "label": "T15",
+        "ring": "outer",
+        "ring_radius_mm": 8.0,
+        "angle_rad": 10.995574287564276,
+        "angle_deg": 270.0,
+        "cable_deltas_mm": [
+          0.0,
+          8.0,
+          0.0,
+          -8.0
+        ],
+        "cable_deltas_cm": [
+          0.0,
+          0.8,
+          0.0,
+          -0.8
+        ],
+        "group_tags": [
+          "outer",
+          "on_axis"
+        ]
+      },
+      {
+        "target_index": 16,
+        "label": "T16",
+        "ring": "outer",
+        "ring_radius_mm": 8.0,
+        "angle_rad": 11.780972450961723,
+        "angle_deg": 315.0,
+        "cable_deltas_mm": [
+          -5.656854249492373,
+          5.656854249492388,
+          5.656854249492373,
+          -5.656854249492388
+        ],
+        "cable_deltas_cm": [
+          -0.5656854249492372,
+          0.5656854249492388,
+          0.5656854249492372,
+          -0.5656854249492388
+        ],
+        "group_tags": [
+          "outer",
+          "off_axis"
+        ]
+      }
+    ],
+    "target_geometry": {
+      "inner_ring_radius_mm": 4.0,
+      "outer_ring_radius_mm": 8.0,
+      "inner_ring_radius_ticks": 261,
+      "outer_ring_radius_ticks": 522,
+      "max_target_abs_tick_delta_from_startup": 522,
+      "max_target_tick_delta_from_startup_cap": 650,
+      "spool_diameter_mm": 20.0
+    },
+    "planned_visit_count": 272,
+    "planned_capture_count": 544,
+    "protocol": "legacy_17_target_single_segment_all_other_approaches",
+    "run_label": "",
+    "active_segment": {
+      "key": "segment_b",
+      "label": "Spine 2",
+      "servo_ids": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "pairs": {
+        "axis_a": [
+          5,
+          7
+        ],
+        "axis_b": [
+          6,
+          8
+        ]
+      },
+      "robot_mode": "single_segment"
+    },
+    "operating_context": {
+      "operating_mode": "single_segment",
+      "expected_servo_ids": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "commanded_servo_ids": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "selected_servo_id": null,
+      "segment_order": [
+        "segment_a",
+        "segment_b"
+      ],
+      "active_segment": {
+        "key": "segment_b",
+        "label": "Spine 2",
+        "servo_ids": [
+          5,
+          6,
+          7,
+          8
+        ],
+        "pairs": {
+          "axis_a": [
+            5,
+            7
+          ],
+          "axis_b": [
+            6,
+            8
+          ]
+        },
+        "segment_role": "distal",
+        "segment_order_index": 1
+      },
+      "segments": {
+        "segment_a": {
+          "key": "segment_a",
+          "label": "Spine 1",
+          "segment_label": "Segment A",
+          "servo_ids": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "segment_role": "proximal",
+          "segment_order_index": 0,
+          "pairs": {
+            "axis_a": [
+              1,
+              3
+            ],
+            "axis_b": [
+              2,
+              4
+            ]
+          }
+        },
+        "segment_b": {
+          "key": "segment_b",
+          "label": "Spine 2",
+          "segment_label": "Segment B",
+          "servo_ids": [
+            5,
+            6,
+            7,
+            8
+          ],
+          "segment_role": "distal",
+          "segment_order_index": 1,
+          "pairs": {
+            "axis_a": [
+              5,
+              7
+            ],
+            "axis_b": [
+              6,
+              8
+            ]
+          }
+        }
+      },
+      "mirror_pairs": {},
+      "readiness_scope": "active_segment",
+      "output_mode_family": "single_segment",
+      "mode_profile": "single_segment",
+      "mode_capabilities": {
+        "manual_jog": true,
+        "manual_startup_capture": true,
+        "automatic_single_segment_pretension": true,
+        "two_segment_kinematics_control": false
+      },
+      "mode_notes": []
+    },
+    "preflight_servo_telemetry": {
+      "ok": true,
+      "failure_code": null,
+      "failure_stage": "preflight",
+      "message": "Servo telemetry is valid.",
+      "issues": [],
+      "servo_ids": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "by_servo": {
+        "5": {
+          "present_position_ticks": 2132,
+          "present_current_ma": 0,
+          "torque_enabled": true,
+          "operating_mode": 3,
+          "hardware_error": null,
+          "present_voltage_mv": 5000,
+          "present_temperature_c": 22,
+          "telemetry_error": null,
+          "telemetry_age_s": 0.21525534899956256,
+          "telemetry_fresh": true,
+          "last_valid_packet_monotonic_s": 8926.003393712,
+          "last_valid_packet_wall_time": "2026-05-14T00:59:50.245442+00:00",
+          "last_read_attempt_monotonic_s": 8925.927218064,
+          "read_duration_ms": 76.17564800057153,
+          "packet_age_s": 0.21513438599868095,
+          "read_batch_started_monotonic_s": 8925.927208898,
+          "read_batch_completed_monotonic_s": 8926.218528098,
+          "read_batch_duration_ms": 291.3191999996343,
+          "snapshot_age_s": 0.0,
+          "per_servo_packet_age_s": 0.21513438599868095,
+          "freshness_decision_source": "experiment_owned_current_batch_packet_ok",
+          "read_source": "experiment_owned",
+          "telemetry_error_code": null,
+          "telemetry_error_detail": null,
+          "bus_owner": "single_segment_repeatability_precheck",
+          "read_sequence_index": 7749
+        },
+        "6": {
+          "present_position_ticks": 2428,
+          "present_current_ma": -17,
+          "torque_enabled": true,
+          "operating_mode": 3,
+          "hardware_error": null,
+          "present_voltage_mv": 5000,
+          "present_temperature_c": 22,
+          "telemetry_error": null,
+          "telemetry_age_s": 0.15714855900114344,
+          "telemetry_fresh": true,
+          "last_valid_packet_monotonic_s": 8926.061511057,
+          "last_valid_packet_wall_time": "2026-05-14T00:59:50.303562+00:00",
+          "last_read_attempt_monotonic_s": 8926.003447341,
+          "read_duration_ms": 58.06371600010607,
+          "packet_age_s": 0.1570170409995626,
+          "read_batch_started_monotonic_s": 8925.927208898,
+          "read_batch_completed_monotonic_s": 8926.218528098,
+          "read_batch_duration_ms": 291.3191999996343,
+          "snapshot_age_s": 0.0,
+          "per_servo_packet_age_s": 0.1570170409995626,
+          "freshness_decision_source": "experiment_owned_current_batch_packet_ok",
+          "read_source": "experiment_owned",
+          "telemetry_error_code": null,
+          "telemetry_error_detail": null,
+          "bus_owner": "single_segment_repeatability_precheck",
+          "read_sequence_index": 7749
+        },
+        "7": {
+          "present_position_ticks": 2632,
+          "present_current_ma": 0,
+          "torque_enabled": true,
+          "operating_mode": 3,
+          "hardware_error": null,
+          "present_voltage_mv": 5000,
+          "present_temperature_c": 22,
+          "telemetry_error": null,
+          "telemetry_age_s": 0.07320887199966819,
+          "telemetry_fresh": true,
+          "last_valid_packet_monotonic_s": 8926.145455985,
+          "last_valid_packet_wall_time": "2026-05-14T00:59:50.387501+00:00",
+          "last_read_attempt_monotonic_s": 8926.06157426,
+          "read_duration_ms": 83.8817250005377,
+          "packet_age_s": 0.07307211299848859,
+          "read_batch_started_monotonic_s": 8925.927208898,
+          "read_batch_completed_monotonic_s": 8926.218528098,
+          "read_batch_duration_ms": 291.3191999996343,
+          "snapshot_age_s": 0.0,
+          "per_servo_packet_age_s": 0.07307211299848859,
+          "freshness_decision_source": "experiment_owned_current_batch_packet_ok",
+          "read_source": "experiment_owned",
+          "telemetry_error_code": null,
+          "telemetry_error_detail": null,
+          "bus_owner": "single_segment_repeatability_precheck",
+          "read_sequence_index": 7749
+        },
+        "8": {
+          "present_position_ticks": 1863,
+          "present_current_ma": -12,
+          "torque_enabled": true,
+          "operating_mode": 3,
+          "hardware_error": null,
+          "present_voltage_mv": 5000,
+          "present_temperature_c": 25,
+          "telemetry_error": null,
+          "telemetry_age_s": 0.00019097999938821886,
+          "telemetry_fresh": true,
+          "last_valid_packet_monotonic_s": 8926.218478858,
+          "last_valid_packet_wall_time": "2026-05-14T00:59:50.460525+00:00",
+          "last_read_attempt_monotonic_s": 8926.145497003,
+          "read_duration_ms": 72.98185499894316,
+          "packet_age_s": 4.923999949824065e-05,
+          "read_batch_started_monotonic_s": 8925.927208898,
+          "read_batch_completed_monotonic_s": 8926.218528098,
+          "read_batch_duration_ms": 291.3191999996343,
+          "snapshot_age_s": 0.0,
+          "per_servo_packet_age_s": 4.923999949824065e-05,
+          "freshness_decision_source": "experiment_owned_current_batch_packet_ok",
+          "read_source": "experiment_owned",
+          "telemetry_error_code": null,
+          "telemetry_error_detail": null,
+          "bus_owner": "single_segment_repeatability_precheck",
+          "read_sequence_index": 7749
+        }
+      },
+      "timestamp_utc": "2026-05-14T00:59:50.460706+00:00",
+      "freshness_threshold_s": 0.25
+    },
+    "run_provenance": {
+      "backend_identity": "ndi_tracker_python",
+      "selected_backend_name": "ndi",
+      "configured_backend_name": "ndi",
+      "tracking_state": "streaming_healthy",
+      "tool_id": "0A",
+      "require_robot_frame_tip": true,
+      "allow_debug_coil_as_tip": false,
+      "runtime_tip_mode": "coil_as_tip",
+      "runtime_tip_trust_level": "thesis_trusted",
+      "runtime_tip_policy": {
+        "mode": "coil_as_tip",
+        "calibration_state": "coil_as_tip",
+        "tip_pose_status": "coil_as_tip",
+        "trust_label": "thesis_trusted",
+        "trust_level": "thesis_trusted",
+        "thesis_trusted": true,
+        "requested_workflow": "single_segment_repeatability",
+        "workflow": "repeatability",
+        "canonical_workflow": "repeatability",
+        "allowed_for_workflow": true,
+        "requires_lower_trust_override": false,
+        "uses_coil_as_tip": true,
+        "uses_calibrated_tip_transform": false,
+        "uses_identity_transform": true,
+        "intended_use": "Current trusted runtime position path for robot-frame tip repeatability, pretension centering, modeling datasets, and demos when coil-origin-as-tip is the declared measurement.",
+        "status_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.",
+        "reasons": [],
+        "warnings": [
+          "Coil-as-tip uses identity T_coil_tip and reports the 0A coil origin as the tip; do not interpret it as a validated calibrated tip transform or true tip orientation."
+        ],
+        "allowed_workflows": {
+          "repeatability": true,
+          "pretension_validation": true,
+          "penprobe_chasing": true,
+          "modeling_dataset": true,
+          "transform_chain_validation": true
+        }
+      },
+      "thesis_trusted_runtime_tip": true,
+      "thesis_trusted_run": true,
+      "startup_reference_source": "manual",
+      "startup_reference_ticks_by_servo": {
+        "5": 2131,
+        "6": 2424,
+        "7": 2632,
+        "8": 1862
+      },
+      "neutral_ticks_by_servo": {
+        "5": 2131,
+        "6": 2424,
+        "7": 2632,
+        "8": 1862
+      },
+      "pivot_tip": {
+        "path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/generated_penprobe_tip.csv",
+        "exists": true,
+        "size_bytes": 24,
+        "modified_at_utc": "2026-05-13T13:42:10.067465+00:00",
+        "sha256": "e2a38c5b4a565d364397a024817ad8303228d6f26446931bedf9da7d2ea29d3d"
+      },
+      "base_registration": {
+        "path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+        "exists": true,
+        "size_bytes": 30364,
+        "modified_at_utc": "2026-05-13T13:43:00.003330+00:00",
+        "sha256": "7658b9d06f561d20cf86080c70460a8dd892a6289830ea410b6a381a8d19d6f0",
+        "state": "loaded",
+        "tracking_path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+        "stored_timestamp_utc": "2026-05-13T13:42:53.573Z",
+        "stored_fre_mm": 0.6346530796834196
+      },
+      "runtime_tip_calibration": {
+        "path": null,
+        "exists": false,
+        "state": "coil_as_tip",
+        "mode": "coil_as_tip",
+        "trust_level": "thesis_trusted",
+        "policy": {
+          "mode": "coil_as_tip",
+          "calibration_state": "coil_as_tip",
+          "tip_pose_status": "coil_as_tip",
+          "trust_label": "thesis_trusted",
+          "trust_level": "thesis_trusted",
+          "thesis_trusted": true,
+          "requested_workflow": "single_segment_repeatability",
+          "workflow": "repeatability",
+          "canonical_workflow": "repeatability",
+          "allowed_for_workflow": true,
+          "requires_lower_trust_override": false,
+          "uses_coil_as_tip": true,
+          "uses_calibrated_tip_transform": false,
+          "uses_identity_transform": true,
+          "intended_use": "Current trusted runtime position path for robot-frame tip repeatability, pretension centering, modeling datasets, and demos when coil-origin-as-tip is the declared measurement.",
+          "status_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.",
+          "reasons": [],
+          "warnings": [
+            "Coil-as-tip uses identity T_coil_tip and reports the 0A coil origin as the tip; do not interpret it as a validated calibrated tip transform or true tip orientation."
+          ],
+          "allowed_workflows": {
+            "repeatability": true,
+            "pretension_validation": true,
+            "penprobe_chasing": true,
+            "modeling_dataset": true,
+            "transform_chain_validation": true
+          }
+        },
+        "artifact_used": false,
+        "identity_marker": "T_coil_tip_identity__coil_pose_used_as_tip",
+        "thesis_trusted": true,
+        "mode_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.",
+        "artifact_kind": "coil_as_tip",
+        "selected_artifact_path": null,
+        "stored_timestamp_utc": null,
+        "measurement_tool_id": "0B",
+        "coil_tool_id": "0A",
+        "identity_fallback": true,
+        "tip_pose_status": "coil_as_tip"
+      },
+      "pretension_artifact": {
+        "path": "/home/continuum-pi/Continuum_pi/config/neutral_setpoints.json",
+        "exists": true,
+        "size_bytes": 21755,
+        "modified_at_utc": "2026-05-13T17:12:42.275559+00:00",
+        "sha256": "4e67c3aa9b6f6488bc220daf70e0f22b49af2c1271eceb9a2c2b757a9fefccd8",
+        "status": "ready",
+        "message": "Calibration file contains 8 servo entries.",
+        "compatible": true,
+        "updated_at_utc": "2026-05-13T17:12:42Z",
+        "schema_version": 2,
+        "active_source_type": "manual",
+        "accepted": true,
+        "usable": true,
+        "active_source_message": "Accepted manual pretension/startup state is recorded for servo(s): 5, 6, 7, 8",
+        "active_source_updated_at_utc": "2026-05-13T17:12:42Z",
+        "active_source_note": null,
+        "active_source_by_servo": {
+          "5": "manual",
+          "6": "manual",
+          "7": "manual",
+          "8": "manual"
+        },
+        "servos": {
+          "5": {
+            "exists": true,
+            "neutral_setpoint": 2244,
+            "safe_min_tick": 1644,
+            "safe_max_tick": 2844,
+            "pretension_current_threshold_ma": 220,
+            "pretension_final_position_tick": 2131,
+            "pretension_result_status": "accepted",
+            "pretension_source": "manual",
+            "pretension_note": null,
+            "pretension_completed_at_utc": "2026-05-13T17:12:42Z",
+            "latest_pretension_run": {
+              "accepted": true,
+              "accepted_at_utc": "2026-05-13T17:12:42Z",
+              "active_segment_key": "segment_b",
+              "active_segment_label": "Spine 2",
+              "active_segment_pairs": {
+                "axis_a": [
+                  5,
+                  7
+                ],
+                "axis_b": [
+                  6,
+                  8
+                ]
+              },
+              "active_segment_servo_ids": [
+                5,
+                6,
+                7,
+                8
+              ],
+              "captured_at_utc": "2026-05-13T17:12:41Z",
+              "commanded_position_tick": 2128,
+              "commanded_servo_ids": [
+                5,
+                6,
+                7,
+                8
+              ],
+              "expected_servo_ids": [
+                5,
+                6,
+                7,
+                8
+              ],
+              "measured_current_ma": -15,
+              "measured_position_tick": 2131,
+              "mirror_pairs": {
+                "1": 5,
+                "2": 6,
+                "3": 7,
+                "4": 8
+              },
+              "mode_capabilities": {
+                "automatic_single_segment_pretension": true,
+                "manual_jog": true,
+                "manual_startup_capture": true,
+                "two_segment_kinematics_control": false
+              },
+              "mode_notes": [],
+              "mode_profile": "single_segment",
+              "operating_mode": "single_segment",
+              "operator_note": null,
+              "segment_order": [
+                "segment_a",
+                "segment_b"
+              ],
+              "segments": {
+                "segment_a": {
+                  "key": "segment_a",
+                  "label": "Spine 1",
+                  "pairs": {
+                    "axis_a": [
+                      1,
+                      3
+                    ],
+                    "axis_b": [
+                      2,
+                      4
+                    ]
+                  },
+                  "segment_label": "Segment A",
+                  "segment_order_index": 0,
+                  "segment_role": "proximal",
+                  "servo_ids": [
+                    1,
+                    2,
+                    3,
+                    4
+                  ]
+                },
+                "segment_b": {
+                  "key": "segment_b",
+                  "label": "Spine 2",
+                  "pairs": {
+                    "axis_a": [
+                      5,
+                      7
+                    ],
+                    "axis_b": [
+                      6,
+                      8
+                    ]
+                  },
+                  "segment_label": "Segment B",
+                  "segment_order_index": 1,
+                  "segment_role": "distal",
+                  "servo_ids": [
+                    5,
+                    6,
+                    7,
+                    8
+                  ]
+                }
+              },
+              "selected_servo_id": 1,
+              "servo_id": 5,
+              "source": "manual",
+              "startup_artifact_scope": "single_segment_manual_startup",
+              "status": "manual_captured",
+              "telemetry_age_s": 0.20950435707345605,
+              "torque_enabled": true
+            },
+            "capture_source": "live_present_position",
+            "calibrated_at_utc": "2026-05-13T16:30:49Z",
+            "status": "pretension_accepted",
+            "valid": true
+          },
+          "6": {
+            "exists": true,
+            "neutral_setpoint": 2600,
+            "safe_min_tick": 2000,
+            "safe_max_tick": 3200,
+            "pretension_current_threshold_ma": 220,
+            "pretension_final_position_tick": 2424,
+            "pretension_result_status": "accepted",
+            "pretension_source": "manual",
+            "pretension_note": null,
+            "pretension_completed_at_utc": "2026-05-13T17:12:42Z",
+            "latest_pretension_run": {
+              "accepted": true,
+              "accepted_at_utc": "2026-05-13T17:12:42Z",
+              "active_segment_key": "segment_b",
+              "active_segment_label": "Spine 2",
+              "active_segment_pairs": {
+                "axis_a": [
+                  5,
+                  7
+                ],
+                "axis_b": [
+                  6,
+                  8
+                ]
+              },
+              "active_segment_servo_ids": [
+                5,
+                6,
+                7,
+                8
+              ],
+              "captured_at_utc": "2026-05-13T17:12:41Z",
+              "commanded_position_tick": 2419,
+              "commanded_servo_ids": [
+                5,
+                6,
+                7,
+                8
+              ],
+              "expected_servo_ids": [
+                5,
+                6,
+                7,
+                8
+              ],
+              "measured_current_ma": -18,
+              "measured_position_tick": 2424,
+              "mirror_pairs": {
+                "1": 5,
+                "2": 6,
+                "3": 7,
+                "4": 8
+              },
+              "mode_capabilities": {
+                "automatic_single_segment_pretension": true,
+                "manual_jog": true,
+                "manual_startup_capture": true,
+                "two_segment_kinematics_control": false
+              },
+              "mode_notes": [],
+              "mode_profile": "single_segment",
+              "operating_mode": "single_segment",
+              "operator_note": null,
+              "segment_order": [
+                "segment_a",
+                "segment_b"
+              ],
+              "segments": {
+                "segment_a": {
+                  "key": "segment_a",
+                  "label": "Spine 1",
+                  "pairs": {
+                    "axis_a": [
+                      1,
+                      3
+                    ],
+                    "axis_b": [
+                      2,
+                      4
+                    ]
+                  },
+                  "segment_label": "Segment A",
+                  "segment_order_index": 0,
+                  "segment_role": "proximal",
+                  "servo_ids": [
+                    1,
+                    2,
+                    3,
+                    4
+                  ]
+                },
+                "segment_b": {
+                  "key": "segment_b",
+                  "label": "Spine 2",
+                  "pairs": {
+                    "axis_a": [
+                      5,
+                      7
+                    ],
+                    "axis_b": [
+                      6,
+                      8
+                    ]
+                  },
+                  "segment_label": "Segment B",
+                  "segment_order_index": 1,
+                  "segment_role": "distal",
+                  "servo_ids": [
+                    5,
+                    6,
+                    7,
+                    8
+                  ]
+                }
+              },
+              "selected_servo_id": 1,
+              "servo_id": 6,
+              "source": "manual",
+              "startup_artifact_scope": "single_segment_manual_startup",
+              "status": "manual_captured",
+              "telemetry_age_s": 0.15026908088475466,
+              "torque_enabled": true
+            },
+            "capture_source": "live_present_position",
+            "calibrated_at_utc": "2026-05-13T16:30:49Z",
+            "status": "pretension_accepted",
+            "valid": true
+          },
+          "7": {
+            "exists": true,
+            "neutral_setpoint": 2608,
+            "safe_min_tick": 2008,
+            "safe_max_tick": 3208,
+            "pretension_current_threshold_ma": 220,
+            "pretension_final_position_tick": 2632,
+            "pretension_result_status": "accepted",
+            "pretension_source": "manual",
+            "pretension_note": null,
+            "pretension_completed_at_utc": "2026-05-13T17:12:42Z",
+            "latest_pretension_run": {
+              "accepted": true,
+              "accepted_at_utc": "2026-05-13T17:12:42Z",
+              "active_segment_key": "segment_b",
+              "active_segment_label": "Spine 2",
+              "active_segment_pairs": {
+                "axis_a": [
+                  5,
+                  7
+                ],
+                "axis_b": [
+                  6,
+                  8
+                ]
+              },
+              "active_segment_servo_ids": [
+                5,
+                6,
+                7,
+                8
+              ],
+              "captured_at_utc": "2026-05-13T17:12:41Z",
+              "commanded_position_tick": 2632,
+              "commanded_servo_ids": [
+                5,
+                6,
+                7,
+                8
+              ],
+              "expected_servo_ids": [
+                5,
+                6,
+                7,
+                8
+              ],
+              "measured_current_ma": 0,
+              "measured_position_tick": 2632,
+              "mirror_pairs": {
+                "1": 5,
+                "2": 6,
+                "3": 7,
+                "4": 8
+              },
+              "mode_capabilities": {
+                "automatic_single_segment_pretension": true,
+                "manual_jog": true,
+                "manual_startup_capture": true,
+                "two_segment_kinematics_control": false
+              },
+              "mode_notes": [],
+              "mode_profile": "single_segment",
+              "operating_mode": "single_segment",
+              "operator_note": null,
+              "segment_order": [
+                "segment_a",
+                "segment_b"
+              ],
+              "segments": {
+                "segment_a": {
+                  "key": "segment_a",
+                  "label": "Spine 1",
+                  "pairs": {
+                    "axis_a": [
+                      1,
+                      3
+                    ],
+                    "axis_b": [
+                      2,
+                      4
+                    ]
+                  },
+                  "segment_label": "Segment A",
+                  "segment_order_index": 0,
+                  "segment_role": "proximal",
+                  "servo_ids": [
+                    1,
+                    2,
+                    3,
+                    4
+                  ]
+                },
+                "segment_b": {
+                  "key": "segment_b",
+                  "label": "Spine 2",
+                  "pairs": {
+                    "axis_a": [
+                      5,
+                      7
+                    ],
+                    "axis_b": [
+                      6,
+                      8
+                    ]
+                  },
+                  "segment_label": "Segment B",
+                  "segment_order_index": 1,
+                  "segment_role": "distal",
+                  "servo_ids": [
+                    5,
+                    6,
+                    7,
+                    8
+                  ]
+                }
+              },
+              "selected_servo_id": 1,
+              "servo_id": 7,
+              "source": "manual",
+              "startup_artifact_scope": "single_segment_manual_startup",
+              "status": "manual_captured",
+              "telemetry_age_s": 0.07226726389490068,
+              "torque_enabled": true
+            },
+            "capture_source": "live_present_position",
+            "calibrated_at_utc": "2026-05-13T16:30:49Z",
+            "status": "pretension_accepted",
+            "valid": true
+          },
+          "8": {
+            "exists": true,
+            "neutral_setpoint": 2071,
+            "safe_min_tick": 1471,
+            "safe_max_tick": 2671,
+            "pretension_current_threshold_ma": 220,
+            "pretension_final_position_tick": 1862,
+            "pretension_result_status": "accepted",
+            "pretension_source": "manual",
+            "pretension_note": null,
+            "pretension_completed_at_utc": "2026-05-13T17:12:42Z",
+            "latest_pretension_run": {
+              "accepted": true,
+              "accepted_at_utc": "2026-05-13T17:12:42Z",
+              "active_segment_key": "segment_b",
+              "active_segment_label": "Spine 2",
+              "active_segment_pairs": {
+                "axis_a": [
+                  5,
+                  7
+                ],
+                "axis_b": [
+                  6,
+                  8
+                ]
+              },
+              "active_segment_servo_ids": [
+                5,
+                6,
+                7,
+                8
+              ],
+              "captured_at_utc": "2026-05-13T17:12:41Z",
+              "commanded_position_tick": 1857,
+              "commanded_servo_ids": [
+                5,
+                6,
+                7,
+                8
+              ],
+              "expected_servo_ids": [
+                5,
+                6,
+                7,
+                8
+              ],
+              "measured_current_ma": -24,
+              "measured_position_tick": 1862,
+              "mirror_pairs": {
+                "1": 5,
+                "2": 6,
+                "3": 7,
+                "4": 8
+              },
+              "mode_capabilities": {
+                "automatic_single_segment_pretension": true,
+                "manual_jog": true,
+                "manual_startup_capture": true,
+                "two_segment_kinematics_control": false
+              },
+              "mode_notes": [],
+              "mode_profile": "single_segment",
+              "operating_mode": "single_segment",
+              "operator_note": null,
+              "segment_order": [
+                "segment_a",
+                "segment_b"
+              ],
+              "segments": {
+                "segment_a": {
+                  "key": "segment_a",
+                  "label": "Spine 1",
+                  "pairs": {
+                    "axis_a": [
+                      1,
+                      3
+                    ],
+                    "axis_b": [
+                      2,
+                      4
+                    ]
+                  },
+                  "segment_label": "Segment A",
+                  "segment_order_index": 0,
+                  "segment_role": "proximal",
+                  "servo_ids": [
+                    1,
+                    2,
+                    3,
+                    4
+                  ]
+                },
+                "segment_b": {
+                  "key": "segment_b",
+                  "label": "Spine 2",
+                  "pairs": {
+                    "axis_a": [
+                      5,
+                      7
+                    ],
+                    "axis_b": [
+                      6,
+                      8
+                    ]
+                  },
+                  "segment_label": "Segment B",
+                  "segment_order_index": 1,
+                  "segment_role": "distal",
+                  "servo_ids": [
+                    5,
+                    6,
+                    7,
+                    8
+                  ]
+                }
+              },
+              "selected_servo_id": 1,
+              "servo_id": 8,
+              "source": "manual",
+              "startup_artifact_scope": "single_segment_manual_startup",
+              "status": "manual_captured",
+              "telemetry_age_s": 0.00015733297914266586,
+              "torque_enabled": true
+            },
+            "capture_source": "live_present_position",
+            "calibrated_at_utc": "2026-05-13T16:30:49Z",
+            "status": "pretension_accepted",
+            "valid": true
+          }
+        }
+      },
+      "precheck_trust_summary": {
+        "overall_status": "ready",
+        "checks": [
+          {
+            "key": "tracker_backend",
+            "status": "ok",
+            "message": "Backend ndi_tracker_python selected=ndi."
+          },
+          {
+            "key": "tracking_state",
+            "status": "ok",
+            "message": "Tracker state streaming_healthy; frame age 0.0."
+          },
+          {
+            "key": "tracker_gate",
+            "status": "ok",
+            "message": "ok"
+          },
+          {
+            "key": "registration",
+            "status": "ok",
+            "message": "Base registration state=loaded."
+          },
+          {
+            "key": "runtime_tip",
+            "status": "ok",
+            "message": "Runtime tip mode=coil_as_tip; trust=thesis_trusted; Runtime tip state=coil_as_tip; tip pose=coil_as_tip; fallback=True."
+          },
+          {
+            "key": "servos",
+            "status": "ok",
+            "message": "Active segment Spine 2 (segment_b) servo IDs=[5, 6, 7, 8]; connected=True."
+          },
+          {
+            "key": "pretension",
+            "status": "ok",
+            "message": "Accepted manual pretension/startup state is recorded for servo(s): 5, 6, 7, 8"
+          }
+        ]
+      },
+      "repeatability_target_geometry": {
+        "inner_ring_radius_mm": 4.0,
+        "outer_ring_radius_mm": 8.0,
+        "inner_ring_radius_ticks": 261,
+        "outer_ring_radius_ticks": 522,
+        "max_target_abs_tick_delta_from_startup": 522,
+        "max_target_tick_delta_from_startup_cap": 650,
+        "spool_diameter_mm": 20.0,
+        "ticks_per_revolution": 4096
+      },
+      "transform_chain_summary": {
+        "expression": "T_robot_tip = T_robot_aurora @ T_aurora_coil_0A @ T_coil_tip",
+        "runtime_tip_mode": "coil_as_tip",
+        "runtime_tip_trust_level": "thesis_trusted",
+        "runtime_tip_policy": {
+          "mode": "coil_as_tip",
+          "calibration_state": "coil_as_tip",
+          "tip_pose_status": "coil_as_tip",
+          "trust_label": "thesis_trusted",
+          "trust_level": "thesis_trusted",
+          "thesis_trusted": true,
+          "requested_workflow": "single_segment_repeatability",
+          "workflow": "repeatability",
+          "canonical_workflow": "repeatability",
+          "allowed_for_workflow": true,
+          "requires_lower_trust_override": false,
+          "uses_coil_as_tip": true,
+          "uses_calibrated_tip_transform": false,
+          "uses_identity_transform": true,
+          "intended_use": "Current trusted runtime position path for robot-frame tip repeatability, pretension centering, modeling datasets, and demos when coil-origin-as-tip is the declared measurement.",
+          "status_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.",
+          "reasons": [],
+          "warnings": [
+            "Coil-as-tip uses identity T_coil_tip and reports the 0A coil origin as the tip; do not interpret it as a validated calibrated tip transform or true tip orientation."
+          ],
+          "allowed_workflows": {
+            "repeatability": true,
+            "pretension_validation": true,
+            "penprobe_chasing": true,
+            "modeling_dataset": true,
+            "transform_chain_validation": true
+          }
+        },
+        "registration_state": "loaded",
+        "runtime_tip_state": "coil_as_tip",
+        "tip_pose_status": "coil_as_tip",
+        "registration_path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+        "runtime_tip_artifact_path": "",
+        "identity_fallback": true,
+        "coil_as_tip_identity_marker": "T_coil_tip_identity__coil_pose_used_as_tip",
+        "stored_registration_fre_mm": 0.6346530796834196,
+        "stored_registration_timestamp_utc": "2026-05-13T13:42:53.573Z",
+        "stored_runtime_tip_timestamp_utc": null,
+        "runtime_coil_tool_id": "0A"
+      }
+    },
+    "metric_definitions": {
+      "thesis_strict": "Accepted repeat captures only; position selected by require_robot_frame_tip; per-target centroid is mean XYZ; RMSE/max are 3D Euclidean distances to centroid.",
+      "legacy_style": "Legacy comparison of desired-target/repeat captures only. The original script used T_tip_2_model XYZ positions, filtered abs(x)<100 mm, used mean XYZ centroids, computed 3D Euclidean RMSE/max, and plotted XY clusters."
+    },
+    "target_count": 17,
+    "valid_repeat_sample_count": 272,
+    "valid_approach_sample_count": 272,
+    "invalid_sample_count": 0,
+    "rejected_capture_count": 0,
+    "per_target_metrics": {
+      "0": {
+        "target_index": 0,
+        "label": "T00",
+        "ring": "center",
+        "ring_radius_mm": 0.0,
+        "angle_deg": 0.0,
+        "group_tags": [
+          "center"
+        ],
+        "repeat_sample_count": 16,
+        "centroid_mm": [
+          2.897632415416121,
+          -0.4763265780727064,
+          69.29058402058129
+        ],
+        "XY_RMSE_mm": 1.4895361723544815,
+        "XYZ_RMSE_mm": 1.492155529762226,
+        "spread_rms_mm": 1.492155529762226,
+        "rmse_mm": 1.492155529762226,
+        "max_deviation_mm": 2.7860562404588927,
+        "mean_deviation_mm": 1.3228469279143082
+      },
+      "1": {
+        "target_index": 1,
+        "label": "T01",
+        "ring": "inner",
+        "ring_radius_mm": 4.0,
+        "angle_deg": 0.0,
+        "group_tags": [
+          "inner",
+          "on_axis"
+        ],
+        "repeat_sample_count": 16,
+        "centroid_mm": [
+          20.91974841452374,
+          -1.5769501981393406,
+          64.62385034630111
+        ],
+        "XY_RMSE_mm": 2.0963752049138438,
+        "XYZ_RMSE_mm": 2.121027905285547,
+        "spread_rms_mm": 2.121027905285547,
+        "rmse_mm": 2.121027905285547,
+        "max_deviation_mm": 3.380765908045089,
+        "mean_deviation_mm": 1.9547633776713447
+      },
+      "2": {
+        "target_index": 2,
+        "label": "T02",
+        "ring": "inner",
+        "ring_radius_mm": 4.0,
+        "angle_deg": 45.0,
+        "group_tags": [
+          "inner",
+          "off_axis"
+        ],
+        "repeat_sample_count": 16,
+        "centroid_mm": [
+          14.352404257787606,
+          13.034295235402793,
+          65.01609343295527
+        ],
+        "XY_RMSE_mm": 1.181476746901131,
+        "XYZ_RMSE_mm": 1.2197095581530872,
+        "spread_rms_mm": 1.2197095581530872,
+        "rmse_mm": 1.2197095581530872,
+        "max_deviation_mm": 2.0033119062567324,
+        "mean_deviation_mm": 1.1319179513367752
+      },
+      "3": {
+        "target_index": 3,
+        "label": "T03",
+        "ring": "inner",
+        "ring_radius_mm": 4.0,
+        "angle_deg": 90.0,
+        "group_tags": [
+          "inner",
+          "on_axis"
+        ],
+        "repeat_sample_count": 16,
+        "centroid_mm": [
+          2.654670221012857,
+          20.994301433222645,
+          64.38548592483235
+        ],
+        "XY_RMSE_mm": 2.442257593698075,
+        "XYZ_RMSE_mm": 2.466117742272255,
+        "spread_rms_mm": 2.466117742272255,
+        "rmse_mm": 2.466117742272255,
+        "max_deviation_mm": 3.8521553423051467,
+        "mean_deviation_mm": 2.1827524985511424
+      },
+      "4": {
+        "target_index": 4,
+        "label": "T04",
+        "ring": "inner",
+        "ring_radius_mm": 4.0,
+        "angle_deg": 135.0,
+        "group_tags": [
+          "inner",
+          "off_axis"
+        ],
+        "repeat_sample_count": 16,
+        "centroid_mm": [
+          -3.661217698034328,
+          14.765490919076258,
+          66.69577508714906
+        ],
+        "XY_RMSE_mm": 1.3164963468158783,
+        "XYZ_RMSE_mm": 1.332924269932472,
+        "spread_rms_mm": 1.332924269932472,
+        "rmse_mm": 1.332924269932472,
+        "max_deviation_mm": 1.9874214803672035,
+        "mean_deviation_mm": 1.263840983625194
+      },
+      "5": {
+        "target_index": 5,
+        "label": "T05",
+        "ring": "inner",
+        "ring_radius_mm": 4.0,
+        "angle_deg": 180.0,
+        "group_tags": [
+          "inner",
+          "on_axis"
+        ],
+        "repeat_sample_count": 16,
+        "centroid_mm": [
+          -12.147557614205937,
+          -0.17113700963666734,
+          67.89143001730685
+        ],
+        "XY_RMSE_mm": 1.6671745818666397,
+        "XYZ_RMSE_mm": 1.6755698657471756,
+        "spread_rms_mm": 1.6755698657471756,
+        "rmse_mm": 1.6755698657471756,
+        "max_deviation_mm": 2.782605007003337,
+        "mean_deviation_mm": 1.5367760087850268
+      },
+      "6": {
+        "target_index": 6,
+        "label": "T06",
+        "ring": "inner",
+        "ring_radius_mm": 4.0,
+        "angle_deg": 225.0,
+        "group_tags": [
+          "inner",
+          "off_axis"
+        ],
+        "repeat_sample_count": 16,
+        "centroid_mm": [
+          -4.11878812536151,
+          -15.36109264767926,
+          66.90846733684846
+        ],
+        "XY_RMSE_mm": 1.2091988725346836,
+        "XYZ_RMSE_mm": 1.2259149962884865,
+        "spread_rms_mm": 1.2259149962884865,
+        "rmse_mm": 1.2259149962884865,
+        "max_deviation_mm": 1.9629349637405193,
+        "mean_deviation_mm": 1.1433010887413677
+      },
+      "7": {
+        "target_index": 7,
+        "label": "T07",
+        "ring": "inner",
+        "ring_radius_mm": 4.0,
+        "angle_deg": 270.0,
+        "group_tags": [
+          "inner",
+          "on_axis"
+        ],
+        "repeat_sample_count": 16,
+        "centroid_mm": [
+          1.760070534334421,
+          -21.892951964212706,
+          64.8040090944596
+        ],
+        "XY_RMSE_mm": 2.0217070774524113,
+        "XYZ_RMSE_mm": 2.0463116591198944,
+        "spread_rms_mm": 2.0463116591198944,
+        "rmse_mm": 2.0463116591198944,
+        "max_deviation_mm": 4.347460016348638,
+        "mean_deviation_mm": 1.6660251630538399
+      },
+      "8": {
+        "target_index": 8,
+        "label": "T08",
+        "ring": "inner",
+        "ring_radius_mm": 4.0,
+        "angle_deg": 315.0,
+        "group_tags": [
+          "inner",
+          "off_axis"
+        ],
+        "repeat_sample_count": 16,
+        "centroid_mm": [
+          13.459033059206442,
+          -14.739400354273016,
+          65.32968668036119
+        ],
+        "XY_RMSE_mm": 1.1190121429875761,
+        "XYZ_RMSE_mm": 1.1490468196509667,
+        "spread_rms_mm": 1.1490468196509667,
+        "rmse_mm": 1.1490468196509667,
+        "max_deviation_mm": 1.6380602572097251,
+        "mean_deviation_mm": 1.1036669587869756
+      },
+      "9": {
+        "target_index": 9,
+        "label": "T09",
+        "ring": "outer",
+        "ring_radius_mm": 8.0,
+        "angle_deg": 0.0,
+        "group_tags": [
+          "outer",
+          "on_axis"
+        ],
+        "repeat_sample_count": 16,
+        "centroid_mm": [
+          36.19735267718673,
+          -3.268872195222349,
+          52.15985492840347
+        ],
+        "XY_RMSE_mm": 3.041883259265558,
+        "XYZ_RMSE_mm": 3.08521999570128,
+        "spread_rms_mm": 3.08521999570128,
+        "rmse_mm": 3.08521999570128,
+        "max_deviation_mm": 6.1169762814747894,
+        "mean_deviation_mm": 2.742131863582886
+      },
+      "10": {
+        "target_index": 10,
+        "label": "T10",
+        "ring": "outer",
+        "ring_radius_mm": 8.0,
+        "angle_deg": 45.0,
+        "group_tags": [
+          "outer",
+          "off_axis"
+        ],
+        "repeat_sample_count": 16,
+        "centroid_mm": [
+          24.600491001516787,
+          23.91556162323769,
+          54.57841988802192
+        ],
+        "XY_RMSE_mm": 0.8999127345763821,
+        "XYZ_RMSE_mm": 0.9770677193137641,
+        "spread_rms_mm": 0.9770677193137641,
+        "rmse_mm": 0.9770677193137641,
+        "max_deviation_mm": 1.9039714866234239,
+        "mean_deviation_mm": 0.8693936653616122
+      },
+      "11": {
+        "target_index": 11,
+        "label": "T11",
+        "ring": "outer",
+        "ring_radius_mm": 8.0,
+        "angle_deg": 90.0,
+        "group_tags": [
+          "outer",
+          "on_axis"
+        ],
+        "repeat_sample_count": 16,
+        "centroid_mm": [
+          3.3493783750023525,
+          37.63726894898641,
+          51.744627492252974
+        ],
+        "XY_RMSE_mm": 1.8871356085845359,
+        "XYZ_RMSE_mm": 1.897454503736518,
+        "spread_rms_mm": 1.897454503736518,
+        "rmse_mm": 1.897454503736518,
+        "max_deviation_mm": 4.061819654569861,
+        "mean_deviation_mm": 1.538545326999094
+      },
+      "12": {
+        "target_index": 12,
+        "label": "T12",
+        "ring": "outer",
+        "ring_radius_mm": 8.0,
+        "angle_deg": 135.0,
+        "group_tags": [
+          "outer",
+          "off_axis"
+        ],
+        "repeat_sample_count": 16,
+        "centroid_mm": [
+          -15.433010742809355,
+          26.33979391712617,
+          58.32794703701745
+        ],
+        "XY_RMSE_mm": 0.9705185927869794,
+        "XYZ_RMSE_mm": 1.0511390770849454,
+        "spread_rms_mm": 1.0511390770849454,
+        "rmse_mm": 1.0511390770849454,
+        "max_deviation_mm": 2.3655470594822123,
+        "mean_deviation_mm": 0.8273239206899722
+      },
+      "13": {
+        "target_index": 13,
+        "label": "T13",
+        "ring": "outer",
+        "ring_radius_mm": 8.0,
+        "angle_deg": 180.0,
+        "group_tags": [
+          "outer",
+          "on_axis"
+        ],
+        "repeat_sample_count": 16,
+        "centroid_mm": [
+          -31.56549566858679,
+          -0.12301654365915482,
+          58.770803597305196
+        ],
+        "XY_RMSE_mm": 2.254426874164897,
+        "XYZ_RMSE_mm": 2.261000366264899,
+        "spread_rms_mm": 2.261000366264899,
+        "rmse_mm": 2.261000366264899,
+        "max_deviation_mm": 3.661449828107717,
+        "mean_deviation_mm": 2.0317370063868694
+      },
+      "14": {
+        "target_index": 14,
+        "label": "T14",
+        "ring": "outer",
+        "ring_radius_mm": 8.0,
+        "angle_deg": 225.0,
+        "group_tags": [
+          "outer",
+          "off_axis"
+        ],
+        "repeat_sample_count": 16,
+        "centroid_mm": [
+          -16.72856934431351,
+          -26.94712685382325,
+          58.84704511722884
+        ],
+        "XY_RMSE_mm": 1.209360053023805,
+        "XYZ_RMSE_mm": 1.2801121471867227,
+        "spread_rms_mm": 1.2801121471867227,
+        "rmse_mm": 1.2801121471867227,
+        "max_deviation_mm": 2.778768907380572,
+        "mean_deviation_mm": 1.1026000961781486
+      },
+      "15": {
+        "target_index": 15,
+        "label": "T15",
+        "ring": "outer",
+        "ring_radius_mm": 8.0,
+        "angle_deg": 270.0,
+        "group_tags": [
+          "outer",
+          "on_axis"
+        ],
+        "repeat_sample_count": 16,
+        "centroid_mm": [
+          0.8242333758942113,
+          -39.14462042115211,
+          52.89851226267641
+        ],
+        "XY_RMSE_mm": 3.5760300044744944,
+        "XYZ_RMSE_mm": 3.6371580058302406,
+        "spread_rms_mm": 3.6371580058302406,
+        "rmse_mm": 3.6371580058302406,
+        "max_deviation_mm": 6.843439405052497,
+        "mean_deviation_mm": 3.2571267714784344
+      },
+      "16": {
+        "target_index": 16,
+        "label": "T16",
+        "ring": "outer",
+        "ring_radius_mm": 8.0,
+        "angle_deg": 315.0,
+        "group_tags": [
+          "outer",
+          "off_axis"
+        ],
+        "repeat_sample_count": 16,
+        "centroid_mm": [
+          23.622470519337483,
+          -26.70224051163562,
+          55.20175185164869
+        ],
+        "XY_RMSE_mm": 1.4813701611229548,
+        "XYZ_RMSE_mm": 1.587210849651053,
+        "spread_rms_mm": 1.587210849651053,
+        "rmse_mm": 1.587210849651053,
+        "max_deviation_mm": 2.5741914689374017,
+        "mean_deviation_mm": 1.4436093213128074
+      }
+    },
+    "overall_repeatability_rms_mm": 1.9337093552042446,
+    "overall_max_deviation_mm": 6.843439405052497,
+    "path_dependence_rms_mm": 1.9337093552042446,
+    "path_dependence_by_approach": [
+      {
+        "target_index": 0,
+        "approach_index": 11,
+        "revisit_index": 0,
+        "deviation_mm": 0.9642143822822763
+      },
+      {
+        "target_index": 0,
+        "approach_index": 15,
+        "revisit_index": 1,
+        "deviation_mm": 0.6292728939021616
+      },
+      {
+        "target_index": 0,
+        "approach_index": 6,
+        "revisit_index": 2,
+        "deviation_mm": 0.9701336892408107
+      },
+      {
+        "target_index": 0,
+        "approach_index": 2,
+        "revisit_index": 3,
+        "deviation_mm": 0.5635906093965525
+      },
+      {
+        "target_index": 0,
+        "approach_index": 10,
+        "revisit_index": 4,
+        "deviation_mm": 1.4069859185507154
+      },
+      {
+        "target_index": 0,
+        "approach_index": 3,
+        "revisit_index": 5,
+        "deviation_mm": 0.8554877994454344
+      },
+      {
+        "target_index": 0,
+        "approach_index": 4,
+        "revisit_index": 6,
+        "deviation_mm": 0.805564631174929
+      },
+      {
+        "target_index": 0,
+        "approach_index": 12,
+        "revisit_index": 7,
+        "deviation_mm": 1.6851882313261166
+      },
+      {
+        "target_index": 0,
+        "approach_index": 14,
+        "revisit_index": 8,
+        "deviation_mm": 2.0429168791215933
+      },
+      {
+        "target_index": 0,
+        "approach_index": 8,
+        "revisit_index": 9,
+        "deviation_mm": 0.6635204405291459
+      },
+      {
+        "target_index": 0,
+        "approach_index": 9,
+        "revisit_index": 10,
+        "deviation_mm": 2.7860562404588927
+      },
+      {
+        "target_index": 0,
+        "approach_index": 5,
+        "revisit_index": 11,
+        "deviation_mm": 1.3085523967346513
+      },
+      {
+        "target_index": 0,
+        "approach_index": 1,
+        "revisit_index": 12,
+        "deviation_mm": 1.856060175479245
+      },
+      {
+        "target_index": 0,
+        "approach_index": 7,
+        "revisit_index": 13,
+        "deviation_mm": 0.5511890555880059
+      },
+      {
+        "target_index": 0,
+        "approach_index": 16,
+        "revisit_index": 14,
+        "deviation_mm": 1.4499687496632376
+      },
+      {
+        "target_index": 0,
+        "approach_index": 13,
+        "revisit_index": 15,
+        "deviation_mm": 2.626848753735164
+      },
+      {
+        "target_index": 1,
+        "approach_index": 4,
+        "revisit_index": 0,
+        "deviation_mm": 1.5322216305091099
+      },
+      {
+        "target_index": 1,
+        "approach_index": 8,
+        "revisit_index": 1,
+        "deviation_mm": 1.4194376087028255
+      },
+      {
+        "target_index": 1,
+        "approach_index": 14,
+        "revisit_index": 2,
+        "deviation_mm": 2.290644696368252
+      },
+      {
+        "target_index": 1,
+        "approach_index": 12,
+        "revisit_index": 3,
+        "deviation_mm": 2.605873773804097
+      },
+      {
+        "target_index": 1,
+        "approach_index": 7,
+        "revisit_index": 4,
+        "deviation_mm": 1.652340196509185
+      },
+      {
+        "target_index": 1,
+        "approach_index": 6,
+        "revisit_index": 5,
+        "deviation_mm": 1.687632402213222
+      },
+      {
+        "target_index": 1,
+        "approach_index": 0,
+        "revisit_index": 6,
+        "deviation_mm": 0.7854795509750659
+      },
+      {
+        "target_index": 1,
+        "approach_index": 11,
+        "revisit_index": 7,
+        "deviation_mm": 3.2735039521894618
+      },
+      {
+        "target_index": 1,
+        "approach_index": 15,
+        "revisit_index": 8,
+        "deviation_mm": 2.5988464989298614
+      },
+      {
+        "target_index": 1,
+        "approach_index": 9,
+        "revisit_index": 9,
+        "deviation_mm": 1.9261433292982202
+      },
+      {
+        "target_index": 1,
+        "approach_index": 5,
+        "revisit_index": 10,
+        "deviation_mm": 0.8632949235342265
+      },
+      {
+        "target_index": 1,
+        "approach_index": 16,
+        "revisit_index": 11,
+        "deviation_mm": 2.9833250116271235
+      },
+      {
+        "target_index": 1,
+        "approach_index": 2,
+        "revisit_index": 12,
+        "deviation_mm": 1.5891752971274098
+      },
+      {
+        "target_index": 1,
+        "approach_index": 13,
+        "revisit_index": 13,
+        "deviation_mm": 0.6391816056489767
+      },
+      {
+        "target_index": 1,
+        "approach_index": 3,
+        "revisit_index": 14,
+        "deviation_mm": 2.0483476572593844
+      },
+      {
+        "target_index": 1,
+        "approach_index": 10,
+        "revisit_index": 15,
+        "deviation_mm": 3.380765908045089
+      },
+      {
+        "target_index": 2,
+        "approach_index": 1,
+        "revisit_index": 0,
+        "deviation_mm": 1.0959224852835021
+      },
+      {
+        "target_index": 2,
+        "approach_index": 16,
+        "revisit_index": 1,
+        "deviation_mm": 1.3277174374655207
+      },
+      {
+        "target_index": 2,
+        "approach_index": 14,
+        "revisit_index": 2,
+        "deviation_mm": 1.0874378574199077
+      },
+      {
+        "target_index": 2,
+        "approach_index": 0,
+        "revisit_index": 3,
+        "deviation_mm": 0.7054935107780991
+      },
+      {
+        "target_index": 2,
+        "approach_index": 3,
+        "revisit_index": 4,
+        "deviation_mm": 1.1382974539855446
+      },
+      {
+        "target_index": 2,
+        "approach_index": 5,
+        "revisit_index": 5,
+        "deviation_mm": 0.6889093508945812
+      },
+      {
+        "target_index": 2,
+        "approach_index": 15,
+        "revisit_index": 6,
+        "deviation_mm": 1.1077154841158432
+      },
+      {
+        "target_index": 2,
+        "approach_index": 13,
+        "revisit_index": 7,
+        "deviation_mm": 1.3247626556293122
+      },
+      {
+        "target_index": 2,
+        "approach_index": 8,
+        "revisit_index": 8,
+        "deviation_mm": 1.0939017751836795
+      },
+      {
+        "target_index": 2,
+        "approach_index": 9,
+        "revisit_index": 9,
+        "deviation_mm": 1.186342528003617
+      },
+      {
+        "target_index": 2,
+        "approach_index": 4,
+        "revisit_index": 10,
+        "deviation_mm": 0.39513743653317723
+      },
+      {
+        "target_index": 2,
+        "approach_index": 11,
+        "revisit_index": 11,
+        "deviation_mm": 1.978439054848542
+      },
+      {
+        "target_index": 2,
+        "approach_index": 10,
+        "revisit_index": 12,
+        "deviation_mm": 2.0033119062567324
+      },
+      {
+        "target_index": 2,
+        "approach_index": 6,
+        "revisit_index": 13,
+        "deviation_mm": 0.47599484634815026
+      },
+      {
+        "target_index": 2,
+        "approach_index": 7,
+        "revisit_index": 14,
+        "deviation_mm": 0.8239666824271511
+      },
+      {
+        "target_index": 2,
+        "approach_index": 12,
+        "revisit_index": 15,
+        "deviation_mm": 1.6773367562150434
+      },
+      {
+        "target_index": 3,
+        "approach_index": 13,
+        "revisit_index": 0,
+        "deviation_mm": 3.8521553423051467
+      },
+      {
+        "target_index": 3,
+        "approach_index": 5,
+        "revisit_index": 1,
+        "deviation_mm": 3.5561918931984033
+      },
+      {
+        "target_index": 3,
+        "approach_index": 4,
+        "revisit_index": 2,
+        "deviation_mm": 3.3131670318971014
+      },
+      {
+        "target_index": 3,
+        "approach_index": 10,
+        "revisit_index": 3,
+        "deviation_mm": 2.4744925300453042
+      },
+      {
+        "target_index": 3,
+        "approach_index": 16,
+        "revisit_index": 4,
+        "deviation_mm": 1.812626073201545
+      },
+      {
+        "target_index": 3,
+        "approach_index": 9,
+        "revisit_index": 5,
+        "deviation_mm": 3.6304649538660905
+      },
+      {
+        "target_index": 3,
+        "approach_index": 1,
+        "revisit_index": 6,
+        "deviation_mm": 3.0882095591539884
+      },
+      {
+        "target_index": 3,
+        "approach_index": 6,
+        "revisit_index": 7,
+        "deviation_mm": 1.031085971803508
+      },
+      {
+        "target_index": 3,
+        "approach_index": 8,
+        "revisit_index": 8,
+        "deviation_mm": 1.525627176360596
+      },
+      {
+        "target_index": 3,
+        "approach_index": 0,
+        "revisit_index": 9,
+        "deviation_mm": 1.131315951116205
+      },
+      {
+        "target_index": 3,
+        "approach_index": 11,
+        "revisit_index": 10,
+        "deviation_mm": 1.8463682680467817
+      },
+      {
+        "target_index": 3,
+        "approach_index": 15,
+        "revisit_index": 11,
+        "deviation_mm": 0.7762978044861321
+      },
+      {
+        "target_index": 3,
+        "approach_index": 7,
+        "revisit_index": 12,
+        "deviation_mm": 0.8530904297024868
+      },
+      {
+        "target_index": 3,
+        "approach_index": 14,
+        "revisit_index": 13,
+        "deviation_mm": 1.8251919847648814
+      },
+      {
+        "target_index": 3,
+        "approach_index": 12,
+        "revisit_index": 14,
+        "deviation_mm": 3.704676204643274
+      },
+      {
+        "target_index": 3,
+        "approach_index": 2,
+        "revisit_index": 15,
+        "deviation_mm": 0.5030788022268371
+      },
+      {
+        "target_index": 4,
+        "approach_index": 7,
+        "revisit_index": 0,
+        "deviation_mm": 0.6823537503560809
+      },
+      {
+        "target_index": 4,
+        "approach_index": 12,
+        "revisit_index": 1,
+        "deviation_mm": 1.4191834414990268
+      },
+      {
+        "target_index": 4,
+        "approach_index": 11,
+        "revisit_index": 2,
+        "deviation_mm": 1.9874214803672035
+      },
+      {
+        "target_index": 4,
+        "approach_index": 14,
+        "revisit_index": 3,
+        "deviation_mm": 1.3115712487795164
+      },
+      {
+        "target_index": 4,
+        "approach_index": 0,
+        "revisit_index": 4,
+        "deviation_mm": 0.47609782673837214
+      },
+      {
+        "target_index": 4,
+        "approach_index": 3,
+        "revisit_index": 5,
+        "deviation_mm": 1.0628471859232609
+      },
+      {
+        "target_index": 4,
+        "approach_index": 5,
+        "revisit_index": 6,
+        "deviation_mm": 1.171353550651991
+      },
+      {
+        "target_index": 4,
+        "approach_index": 6,
+        "revisit_index": 7,
+        "deviation_mm": 1.146459393360712
+      },
+      {
+        "target_index": 4,
+        "approach_index": 10,
+        "revisit_index": 8,
+        "deviation_mm": 1.7001159197610618
+      },
+      {
+        "target_index": 4,
+        "approach_index": 1,
+        "revisit_index": 9,
+        "deviation_mm": 1.2726180262062088
+      },
+      {
+        "target_index": 4,
+        "approach_index": 16,
+        "revisit_index": 10,
+        "deviation_mm": 1.4533991676841767
+      },
+      {
+        "target_index": 4,
+        "approach_index": 9,
+        "revisit_index": 11,
+        "deviation_mm": 1.780472308300528
+      },
+      {
+        "target_index": 4,
+        "approach_index": 15,
+        "revisit_index": 12,
+        "deviation_mm": 0.9658320975330088
+      },
+      {
+        "target_index": 4,
+        "approach_index": 2,
+        "revisit_index": 13,
+        "deviation_mm": 1.3329784846819732
+      },
+      {
+        "target_index": 4,
+        "approach_index": 13,
+        "revisit_index": 14,
+        "deviation_mm": 1.8250668866167679
+      },
+      {
+        "target_index": 4,
+        "approach_index": 8,
+        "revisit_index": 15,
+        "deviation_mm": 0.6336849695432153
+      },
+      {
+        "target_index": 5,
+        "approach_index": 1,
+        "revisit_index": 0,
+        "deviation_mm": 0.8020851731580669
+      },
+      {
+        "target_index": 5,
+        "approach_index": 7,
+        "revisit_index": 1,
+        "deviation_mm": 1.3945216473759041
+      },
+      {
+        "target_index": 5,
+        "approach_index": 14,
+        "revisit_index": 2,
+        "deviation_mm": 2.782605007003337
+      },
+      {
+        "target_index": 5,
+        "approach_index": 2,
+        "revisit_index": 3,
+        "deviation_mm": 0.6439259468293048
+      },
+      {
+        "target_index": 5,
+        "approach_index": 12,
+        "revisit_index": 4,
+        "deviation_mm": 2.1435695988234236
+      },
+      {
+        "target_index": 5,
+        "approach_index": 11,
+        "revisit_index": 5,
+        "deviation_mm": 1.8732099788865149
+      },
+      {
+        "target_index": 5,
+        "approach_index": 0,
+        "revisit_index": 6,
+        "deviation_mm": 1.456748305301916
+      },
+      {
+        "target_index": 5,
+        "approach_index": 8,
+        "revisit_index": 7,
+        "deviation_mm": 0.25790623296073684
+      },
+      {
+        "target_index": 5,
+        "approach_index": 4,
+        "revisit_index": 8,
+        "deviation_mm": 1.6321123199706582
+      },
+      {
+        "target_index": 5,
+        "approach_index": 13,
+        "revisit_index": 9,
+        "deviation_mm": 1.5258163798439215
+      },
+      {
+        "target_index": 5,
+        "approach_index": 10,
+        "revisit_index": 10,
+        "deviation_mm": 1.828685491001669
+      },
+      {
+        "target_index": 5,
+        "approach_index": 16,
+        "revisit_index": 11,
+        "deviation_mm": 1.2755942242735323
+      },
+      {
+        "target_index": 5,
+        "approach_index": 15,
+        "revisit_index": 12,
+        "deviation_mm": 2.417326131286391
+      },
+      {
+        "target_index": 5,
+        "approach_index": 6,
+        "revisit_index": 13,
+        "deviation_mm": 2.387868427070468
+      },
+      {
+        "target_index": 5,
+        "approach_index": 9,
+        "revisit_index": 14,
+        "deviation_mm": 1.2000481761162691
+      },
+      {
+        "target_index": 5,
+        "approach_index": 3,
+        "revisit_index": 15,
+        "deviation_mm": 0.966393100658318
+      },
+      {
+        "target_index": 6,
+        "approach_index": 14,
+        "revisit_index": 0,
+        "deviation_mm": 1.6798180472524495
+      },
+      {
+        "target_index": 6,
+        "approach_index": 13,
+        "revisit_index": 1,
+        "deviation_mm": 1.9113120289149377
+      },
+      {
+        "target_index": 6,
+        "approach_index": 7,
+        "revisit_index": 2,
+        "deviation_mm": 1.9629349637405193
+      },
+      {
+        "target_index": 6,
+        "approach_index": 11,
+        "revisit_index": 3,
+        "deviation_mm": 1.003612809740405
+      },
+      {
+        "target_index": 6,
+        "approach_index": 9,
+        "revisit_index": 4,
+        "deviation_mm": 1.2354002071697305
+      },
+      {
+        "target_index": 6,
+        "approach_index": 5,
+        "revisit_index": 5,
+        "deviation_mm": 0.6042773964620723
+      },
+      {
+        "target_index": 6,
+        "approach_index": 12,
+        "revisit_index": 6,
+        "deviation_mm": 1.054923538402204
+      },
+      {
+        "target_index": 6,
+        "approach_index": 1,
+        "revisit_index": 7,
+        "deviation_mm": 0.8500301005699755
+      },
+      {
+        "target_index": 6,
+        "approach_index": 8,
+        "revisit_index": 8,
+        "deviation_mm": 0.9955280869342706
+      },
+      {
+        "target_index": 6,
+        "approach_index": 4,
+        "revisit_index": 9,
+        "deviation_mm": 0.8928192268735018
+      },
+      {
+        "target_index": 6,
+        "approach_index": 16,
+        "revisit_index": 10,
+        "deviation_mm": 1.408004322392153
+      },
+      {
+        "target_index": 6,
+        "approach_index": 0,
+        "revisit_index": 11,
+        "deviation_mm": 0.6888313813082105
+      },
+      {
+        "target_index": 6,
+        "approach_index": 15,
+        "revisit_index": 12,
+        "deviation_mm": 1.517139964497337
+      },
+      {
+        "target_index": 6,
+        "approach_index": 3,
+        "revisit_index": 13,
+        "deviation_mm": 0.3693083696249054
+      },
+      {
+        "target_index": 6,
+        "approach_index": 2,
+        "revisit_index": 14,
+        "deviation_mm": 0.8924691433741628
+      },
+      {
+        "target_index": 6,
+        "approach_index": 10,
+        "revisit_index": 15,
+        "deviation_mm": 1.2264078326050503
+      },
+      {
+        "target_index": 7,
+        "approach_index": 0,
+        "revisit_index": 0,
+        "deviation_mm": 0.5323848173548998
+      },
+      {
+        "target_index": 7,
+        "approach_index": 1,
+        "revisit_index": 1,
+        "deviation_mm": 0.956279819796491
+      },
+      {
+        "target_index": 7,
+        "approach_index": 5,
+        "revisit_index": 2,
+        "deviation_mm": 1.0452193998151729
+      },
+      {
+        "target_index": 7,
+        "approach_index": 8,
+        "revisit_index": 3,
+        "deviation_mm": 1.2994551141728627
+      },
+      {
+        "target_index": 7,
+        "approach_index": 11,
+        "revisit_index": 4,
+        "deviation_mm": 0.862399903612004
+      },
+      {
+        "target_index": 7,
+        "approach_index": 2,
+        "revisit_index": 5,
+        "deviation_mm": 1.040502808141329
+      },
+      {
+        "target_index": 7,
+        "approach_index": 15,
+        "revisit_index": 6,
+        "deviation_mm": 1.4875217960587919
+      },
+      {
+        "target_index": 7,
+        "approach_index": 6,
+        "revisit_index": 7,
+        "deviation_mm": 0.929123831224889
+      },
+      {
+        "target_index": 7,
+        "approach_index": 10,
+        "revisit_index": 8,
+        "deviation_mm": 1.3262715007682477
+      },
+      {
+        "target_index": 7,
+        "approach_index": 3,
+        "revisit_index": 9,
+        "deviation_mm": 0.5877147213997633
+      },
+      {
+        "target_index": 7,
+        "approach_index": 16,
+        "revisit_index": 10,
+        "deviation_mm": 3.2306785036196386
+      },
+      {
+        "target_index": 7,
+        "approach_index": 4,
+        "revisit_index": 11,
+        "deviation_mm": 0.7099444300436473
+      },
+      {
+        "target_index": 7,
+        "approach_index": 9,
+        "revisit_index": 12,
+        "deviation_mm": 3.1790322574252023
+      },
+      {
+        "target_index": 7,
+        "approach_index": 12,
+        "revisit_index": 13,
+        "deviation_mm": 1.3477420353131213
+      },
+      {
+        "target_index": 7,
+        "approach_index": 14,
+        "revisit_index": 14,
+        "deviation_mm": 3.774671653766738
+      },
+      {
+        "target_index": 7,
+        "approach_index": 13,
+        "revisit_index": 15,
+        "deviation_mm": 4.347460016348638
+      },
+      {
+        "target_index": 8,
+        "approach_index": 13,
+        "revisit_index": 0,
+        "deviation_mm": 1.6018400064457088
+      },
+      {
+        "target_index": 8,
+        "approach_index": 12,
+        "revisit_index": 1,
+        "deviation_mm": 1.0531993668104702
+      },
+      {
+        "target_index": 8,
+        "approach_index": 4,
+        "revisit_index": 2,
+        "deviation_mm": 1.125823656817546
+      },
+      {
+        "target_index": 8,
+        "approach_index": 6,
+        "revisit_index": 3,
+        "deviation_mm": 0.8653995645076413
+      },
+      {
+        "target_index": 8,
+        "approach_index": 16,
+        "revisit_index": 4,
+        "deviation_mm": 1.2084200040755841
+      },
+      {
+        "target_index": 8,
+        "approach_index": 11,
+        "revisit_index": 5,
+        "deviation_mm": 1.1126899416504212
+      },
+      {
+        "target_index": 8,
+        "approach_index": 0,
+        "revisit_index": 6,
+        "deviation_mm": 0.6993507033313154
+      },
+      {
+        "target_index": 8,
+        "approach_index": 9,
+        "revisit_index": 7,
+        "deviation_mm": 1.2895023870664084
+      },
+      {
+        "target_index": 8,
+        "approach_index": 3,
+        "revisit_index": 8,
+        "deviation_mm": 1.0603909214294518
+      },
+      {
+        "target_index": 8,
+        "approach_index": 15,
+        "revisit_index": 9,
+        "deviation_mm": 1.6380602572097251
+      },
+      {
+        "target_index": 8,
+        "approach_index": 14,
+        "revisit_index": 10,
+        "deviation_mm": 1.3725583434776065
+      },
+      {
+        "target_index": 8,
+        "approach_index": 7,
+        "revisit_index": 11,
+        "deviation_mm": 1.5061096926353053
+      },
+      {
+        "target_index": 8,
+        "approach_index": 1,
+        "revisit_index": 12,
+        "deviation_mm": 0.9019653021319584
+      },
+      {
+        "target_index": 8,
+        "approach_index": 10,
+        "revisit_index": 13,
+        "deviation_mm": 0.9652804806117218
+      },
+      {
+        "target_index": 8,
+        "approach_index": 5,
+        "revisit_index": 14,
+        "deviation_mm": 0.42105986064927764
+      },
+      {
+        "target_index": 8,
+        "approach_index": 2,
+        "revisit_index": 15,
+        "deviation_mm": 0.8370208517414651
+      },
+      {
+        "target_index": 9,
+        "approach_index": 10,
+        "revisit_index": 0,
+        "deviation_mm": 3.3000698974605074
+      },
+      {
+        "target_index": 9,
+        "approach_index": 8,
+        "revisit_index": 1,
+        "deviation_mm": 1.7325736140565549
+      },
+      {
+        "target_index": 9,
+        "approach_index": 7,
+        "revisit_index": 2,
+        "deviation_mm": 3.306593613996892
+      },
+      {
+        "target_index": 9,
+        "approach_index": 16,
+        "revisit_index": 3,
+        "deviation_mm": 4.003151736834987
+      },
+      {
+        "target_index": 9,
+        "approach_index": 15,
+        "revisit_index": 4,
+        "deviation_mm": 4.496277496788322
+      },
+      {
+        "target_index": 9,
+        "approach_index": 4,
+        "revisit_index": 5,
+        "deviation_mm": 1.7921213207049003
+      },
+      {
+        "target_index": 9,
+        "approach_index": 11,
+        "revisit_index": 6,
+        "deviation_mm": 6.1169762814747894
+      },
+      {
+        "target_index": 9,
+        "approach_index": 3,
+        "revisit_index": 7,
+        "deviation_mm": 3.5121537307078445
+      },
+      {
+        "target_index": 9,
+        "approach_index": 14,
+        "revisit_index": 8,
+        "deviation_mm": 2.062998140601437
+      },
+      {
+        "target_index": 9,
+        "approach_index": 1,
+        "revisit_index": 9,
+        "deviation_mm": 1.459027528227279
+      },
+      {
+        "target_index": 9,
+        "approach_index": 0,
+        "revisit_index": 10,
+        "deviation_mm": 3.483338747254549
+      },
+      {
+        "target_index": 9,
+        "approach_index": 6,
+        "revisit_index": 11,
+        "deviation_mm": 2.2890060786561888
+      },
+      {
+        "target_index": 9,
+        "approach_index": 5,
+        "revisit_index": 12,
+        "deviation_mm": 0.8643632501009105
+      },
+      {
+        "target_index": 9,
+        "approach_index": 2,
+        "revisit_index": 13,
+        "deviation_mm": 1.672598675153431
+      },
+      {
+        "target_index": 9,
+        "approach_index": 13,
+        "revisit_index": 14,
+        "deviation_mm": 0.5116139444200054
+      },
+      {
+        "target_index": 9,
+        "approach_index": 12,
+        "revisit_index": 15,
+        "deviation_mm": 3.2712457608875782
+      },
+      {
+        "target_index": 10,
+        "approach_index": 3,
+        "revisit_index": 0,
+        "deviation_mm": 0.40245486936425634
+      },
+      {
+        "target_index": 10,
+        "approach_index": 2,
+        "revisit_index": 1,
+        "deviation_mm": 0.3489912919758826
+      },
+      {
+        "target_index": 10,
+        "approach_index": 8,
+        "revisit_index": 2,
+        "deviation_mm": 0.504375774472753
+      },
+      {
+        "target_index": 10,
+        "approach_index": 7,
+        "revisit_index": 3,
+        "deviation_mm": 0.8874865756026956
+      },
+      {
+        "target_index": 10,
+        "approach_index": 11,
+        "revisit_index": 4,
+        "deviation_mm": 1.9039714866234239
+      },
+      {
+        "target_index": 10,
+        "approach_index": 4,
+        "revisit_index": 5,
+        "deviation_mm": 0.5940075099483257
+      },
+      {
+        "target_index": 10,
+        "approach_index": 0,
+        "revisit_index": 6,
+        "deviation_mm": 0.5410013141157753
+      },
+      {
+        "target_index": 10,
+        "approach_index": 13,
+        "revisit_index": 7,
+        "deviation_mm": 1.0969935833335522
+      },
+      {
+        "target_index": 10,
+        "approach_index": 5,
+        "revisit_index": 8,
+        "deviation_mm": 1.0256131931069354
+      },
+      {
+        "target_index": 10,
+        "approach_index": 12,
+        "revisit_index": 9,
+        "deviation_mm": 1.287087767743536
+      },
+      {
+        "target_index": 10,
+        "approach_index": 16,
+        "revisit_index": 10,
+        "deviation_mm": 0.6635472265596443
+      },
+      {
+        "target_index": 10,
+        "approach_index": 1,
+        "revisit_index": 11,
+        "deviation_mm": 0.354640553060418
+      },
+      {
+        "target_index": 10,
+        "approach_index": 15,
+        "revisit_index": 12,
+        "deviation_mm": 1.1077318817633541
+      },
+      {
+        "target_index": 10,
+        "approach_index": 14,
+        "revisit_index": 13,
+        "deviation_mm": 0.6718872091913882
+      },
+      {
+        "target_index": 10,
+        "approach_index": 9,
+        "revisit_index": 14,
+        "deviation_mm": 1.6757259387725056
+      },
+      {
+        "target_index": 10,
+        "approach_index": 6,
+        "revisit_index": 15,
+        "deviation_mm": 0.8447824701513486
+      },
+      {
+        "target_index": 11,
+        "approach_index": 1,
+        "revisit_index": 0,
+        "deviation_mm": 2.49725177069712
+      },
+      {
+        "target_index": 11,
+        "approach_index": 7,
+        "revisit_index": 1,
+        "deviation_mm": 1.273274874585208
+      },
+      {
+        "target_index": 11,
+        "approach_index": 15,
+        "revisit_index": 2,
+        "deviation_mm": 0.7774743765874305
+      },
+      {
+        "target_index": 11,
+        "approach_index": 5,
+        "revisit_index": 3,
+        "deviation_mm": 1.0390880166039704
+      },
+      {
+        "target_index": 11,
+        "approach_index": 2,
+        "revisit_index": 4,
+        "deviation_mm": 0.7631457306766475
+      },
+      {
+        "target_index": 11,
+        "approach_index": 9,
+        "revisit_index": 5,
+        "deviation_mm": 2.5494198175761436
+      },
+      {
+        "target_index": 11,
+        "approach_index": 4,
+        "revisit_index": 6,
+        "deviation_mm": 0.3999892576682355
+      },
+      {
+        "target_index": 11,
+        "approach_index": 6,
+        "revisit_index": 7,
+        "deviation_mm": 0.28751766250093314
+      },
+      {
+        "target_index": 11,
+        "approach_index": 8,
+        "revisit_index": 8,
+        "deviation_mm": 0.7020177392701558
+      },
+      {
+        "target_index": 11,
+        "approach_index": 14,
+        "revisit_index": 9,
+        "deviation_mm": 1.1525206749772463
+      },
+      {
+        "target_index": 11,
+        "approach_index": 10,
+        "revisit_index": 10,
+        "deviation_mm": 2.0599250972426337
+      },
+      {
+        "target_index": 11,
+        "approach_index": 0,
+        "revisit_index": 11,
+        "deviation_mm": 0.4921421606101346
+      },
+      {
+        "target_index": 11,
+        "approach_index": 13,
+        "revisit_index": 12,
+        "deviation_mm": 3.3212729346215943
+      },
+      {
+        "target_index": 11,
+        "approach_index": 12,
+        "revisit_index": 13,
+        "deviation_mm": 4.061819654569861
+      },
+      {
+        "target_index": 11,
+        "approach_index": 3,
+        "revisit_index": 14,
+        "deviation_mm": 2.5295634813639345
+      },
+      {
+        "target_index": 11,
+        "approach_index": 16,
+        "revisit_index": 15,
+        "deviation_mm": 0.7103019824342569
+      },
+      {
+        "target_index": 12,
+        "approach_index": 10,
+        "revisit_index": 0,
+        "deviation_mm": 2.3655470594822123
+      },
+      {
+        "target_index": 12,
+        "approach_index": 14,
+        "revisit_index": 1,
+        "deviation_mm": 0.8671507312024773
+      },
+      {
+        "target_index": 12,
+        "approach_index": 4,
+        "revisit_index": 2,
+        "deviation_mm": 0.2881195769554716
+      },
+      {
+        "target_index": 12,
+        "approach_index": 13,
+        "revisit_index": 3,
+        "deviation_mm": 1.8700268422204438
+      },
+      {
+        "target_index": 12,
+        "approach_index": 16,
+        "revisit_index": 4,
+        "deviation_mm": 0.5076543022815743
+      },
+      {
+        "target_index": 12,
+        "approach_index": 3,
+        "revisit_index": 5,
+        "deviation_mm": 0.20615622868347794
+      },
+      {
+        "target_index": 12,
+        "approach_index": 15,
+        "revisit_index": 6,
+        "deviation_mm": 0.8587202050871855
+      },
+      {
+        "target_index": 12,
+        "approach_index": 1,
+        "revisit_index": 7,
+        "deviation_mm": 0.6291167543667908
+      },
+      {
+        "target_index": 12,
+        "approach_index": 11,
+        "revisit_index": 8,
+        "deviation_mm": 2.0576443790473093
+      },
+      {
+        "target_index": 12,
+        "approach_index": 7,
+        "revisit_index": 9,
+        "deviation_mm": 0.6136268333645395
+      },
+      {
+        "target_index": 12,
+        "approach_index": 8,
+        "revisit_index": 10,
+        "deviation_mm": 0.3695272528853632
+      },
+      {
+        "target_index": 12,
+        "approach_index": 0,
+        "revisit_index": 11,
+        "deviation_mm": 0.18725087616617742
+      },
+      {
+        "target_index": 12,
+        "approach_index": 2,
+        "revisit_index": 12,
+        "deviation_mm": 0.4094207989648421
+      },
+      {
+        "target_index": 12,
+        "approach_index": 6,
+        "revisit_index": 13,
+        "deviation_mm": 0.5888551524993346
+      },
+      {
+        "target_index": 12,
+        "approach_index": 5,
+        "revisit_index": 14,
+        "deviation_mm": 0.6231375374867021
+      },
+      {
+        "target_index": 12,
+        "approach_index": 9,
+        "revisit_index": 15,
+        "deviation_mm": 0.7952282003456528
+      },
+      {
+        "target_index": 13,
+        "approach_index": 1,
+        "revisit_index": 0,
+        "deviation_mm": 2.4267447009831895
+      },
+      {
+        "target_index": 13,
+        "approach_index": 6,
+        "revisit_index": 1,
+        "deviation_mm": 0.7367087916877378
+      },
+      {
+        "target_index": 13,
+        "approach_index": 7,
+        "revisit_index": 2,
+        "deviation_mm": 1.9003525577508027
+      },
+      {
+        "target_index": 13,
+        "approach_index": 12,
+        "revisit_index": 3,
+        "deviation_mm": 3.4351277041399757
+      },
+      {
+        "target_index": 13,
+        "approach_index": 15,
+        "revisit_index": 4,
+        "deviation_mm": 3.493231289758813
+      },
+      {
+        "target_index": 13,
+        "approach_index": 8,
+        "revisit_index": 5,
+        "deviation_mm": 2.5455455886214287
+      },
+      {
+        "target_index": 13,
+        "approach_index": 4,
+        "revisit_index": 6,
+        "deviation_mm": 1.1667486206334292
+      },
+      {
+        "target_index": 13,
+        "approach_index": 16,
+        "revisit_index": 7,
+        "deviation_mm": 1.9305672336777107
+      },
+      {
+        "target_index": 13,
+        "approach_index": 9,
+        "revisit_index": 8,
+        "deviation_mm": 0.8408268809630212
+      },
+      {
+        "target_index": 13,
+        "approach_index": 2,
+        "revisit_index": 9,
+        "deviation_mm": 0.6436146702414418
+      },
+      {
+        "target_index": 13,
+        "approach_index": 14,
+        "revisit_index": 10,
+        "deviation_mm": 3.661449828107717
+      },
+      {
+        "target_index": 13,
+        "approach_index": 0,
+        "revisit_index": 11,
+        "deviation_mm": 1.1583781091465764
+      },
+      {
+        "target_index": 13,
+        "approach_index": 3,
+        "revisit_index": 12,
+        "deviation_mm": 1.3155948630752548
+      },
+      {
+        "target_index": 13,
+        "approach_index": 10,
+        "revisit_index": 13,
+        "deviation_mm": 1.991479310399684
+      },
+      {
+        "target_index": 13,
+        "approach_index": 11,
+        "revisit_index": 14,
+        "deviation_mm": 3.252195772666524
+      },
+      {
+        "target_index": 13,
+        "approach_index": 5,
+        "revisit_index": 15,
+        "deviation_mm": 2.0092261803366025
+      },
+      {
+        "target_index": 14,
+        "approach_index": 3,
+        "revisit_index": 0,
+        "deviation_mm": 0.9761693708701428
+      },
+      {
+        "target_index": 14,
+        "approach_index": 16,
+        "revisit_index": 1,
+        "deviation_mm": 1.2588761418920424
+      },
+      {
+        "target_index": 14,
+        "approach_index": 11,
+        "revisit_index": 2,
+        "deviation_mm": 1.126685022810286
+      },
+      {
+        "target_index": 14,
+        "approach_index": 1,
+        "revisit_index": 3,
+        "deviation_mm": 0.3788227034180833
+      },
+      {
+        "target_index": 14,
+        "approach_index": 2,
+        "revisit_index": 4,
+        "deviation_mm": 0.33701875411467164
+      },
+      {
+        "target_index": 14,
+        "approach_index": 13,
+        "revisit_index": 5,
+        "deviation_mm": 2.1840945814284116
+      },
+      {
+        "target_index": 14,
+        "approach_index": 15,
+        "revisit_index": 6,
+        "deviation_mm": 1.788936594914705
+      },
+      {
+        "target_index": 14,
+        "approach_index": 12,
+        "revisit_index": 7,
+        "deviation_mm": 0.632628754187643
+      },
+      {
+        "target_index": 14,
+        "approach_index": 5,
+        "revisit_index": 8,
+        "deviation_mm": 0.3899283788402793
+      },
+      {
+        "target_index": 14,
+        "approach_index": 4,
+        "revisit_index": 9,
+        "deviation_mm": 0.9991091735265857
+      },
+      {
+        "target_index": 14,
+        "approach_index": 8,
+        "revisit_index": 10,
+        "deviation_mm": 0.9542112662429616
+      },
+      {
+        "target_index": 14,
+        "approach_index": 9,
+        "revisit_index": 11,
+        "deviation_mm": 2.778768907380572
+      },
+      {
+        "target_index": 14,
+        "approach_index": 6,
+        "revisit_index": 12,
+        "deviation_mm": 1.4167944948456817
+      },
+      {
+        "target_index": 14,
+        "approach_index": 10,
+        "revisit_index": 13,
+        "deviation_mm": 0.8968732578380505
+      },
+      {
+        "target_index": 14,
+        "approach_index": 7,
+        "revisit_index": 14,
+        "deviation_mm": 0.6374120650136654
+      },
+      {
+        "target_index": 14,
+        "approach_index": 0,
+        "revisit_index": 15,
+        "deviation_mm": 0.8852720715265952
+      },
+      {
+        "target_index": 15,
+        "approach_index": 10,
+        "revisit_index": 0,
+        "deviation_mm": 1.4887999834178574
+      },
+      {
+        "target_index": 15,
+        "approach_index": 6,
+        "revisit_index": 1,
+        "deviation_mm": 2.855919359965379
+      },
+      {
+        "target_index": 15,
+        "approach_index": 12,
+        "revisit_index": 2,
+        "deviation_mm": 4.814226354319564
+      },
+      {
+        "target_index": 15,
+        "approach_index": 9,
+        "revisit_index": 3,
+        "deviation_mm": 5.471739932656226
+      },
+      {
+        "target_index": 15,
+        "approach_index": 7,
+        "revisit_index": 4,
+        "deviation_mm": 3.63712632316021
+      },
+      {
+        "target_index": 15,
+        "approach_index": 3,
+        "revisit_index": 5,
+        "deviation_mm": 2.6714416315212453
+      },
+      {
+        "target_index": 15,
+        "approach_index": 13,
+        "revisit_index": 6,
+        "deviation_mm": 6.843439405052497
+      },
+      {
+        "target_index": 15,
+        "approach_index": 2,
+        "revisit_index": 7,
+        "deviation_mm": 1.8672038963715174
+      },
+      {
+        "target_index": 15,
+        "approach_index": 4,
+        "revisit_index": 8,
+        "deviation_mm": 4.12272214569755
+      },
+      {
+        "target_index": 15,
+        "approach_index": 8,
+        "revisit_index": 9,
+        "deviation_mm": 1.294024880218692
+      },
+      {
+        "target_index": 15,
+        "approach_index": 0,
+        "revisit_index": 10,
+        "deviation_mm": 1.4673105978711658
+      },
+      {
+        "target_index": 15,
+        "approach_index": 16,
+        "revisit_index": 11,
+        "deviation_mm": 1.4603725177587372
+      },
+      {
+        "target_index": 15,
+        "approach_index": 5,
+        "revisit_index": 12,
+        "deviation_mm": 2.719483018999217
+      },
+      {
+        "target_index": 15,
+        "approach_index": 1,
+        "revisit_index": 13,
+        "deviation_mm": 2.555491712102594
+      },
+      {
+        "target_index": 15,
+        "approach_index": 11,
+        "revisit_index": 14,
+        "deviation_mm": 3.5589307229313967
+      },
+      {
+        "target_index": 15,
+        "approach_index": 14,
+        "revisit_index": 15,
+        "deviation_mm": 5.285795861611103
+      },
+      {
+        "target_index": 16,
+        "approach_index": 10,
+        "revisit_index": 0,
+        "deviation_mm": 1.6249766825250282
+      },
+      {
+        "target_index": 16,
+        "approach_index": 7,
+        "revisit_index": 1,
+        "deviation_mm": 1.541646593337794
+      },
+      {
+        "target_index": 16,
+        "approach_index": 8,
+        "revisit_index": 2,
+        "deviation_mm": 0.33357790506866214
+      },
+      {
+        "target_index": 16,
+        "approach_index": 13,
+        "revisit_index": 3,
+        "deviation_mm": 2.5741914689374017
+      },
+      {
+        "target_index": 16,
+        "approach_index": 9,
+        "revisit_index": 4,
+        "deviation_mm": 1.6876719819769377
+      },
+      {
+        "target_index": 16,
+        "approach_index": 2,
+        "revisit_index": 5,
+        "deviation_mm": 1.834315054386792
+      },
+      {
+        "target_index": 16,
+        "approach_index": 5,
+        "revisit_index": 6,
+        "deviation_mm": 1.6547051757790618
+      },
+      {
+        "target_index": 16,
+        "approach_index": 3,
+        "revisit_index": 7,
+        "deviation_mm": 1.6810597011260493
+      },
+      {
+        "target_index": 16,
+        "approach_index": 0,
+        "revisit_index": 8,
+        "deviation_mm": 0.7591272744079306
+      },
+      {
+        "target_index": 16,
+        "approach_index": 1,
+        "revisit_index": 9,
+        "deviation_mm": 1.8942938575495525
+      },
+      {
+        "target_index": 16,
+        "approach_index": 12,
+        "revisit_index": 10,
+        "deviation_mm": 0.5775913077167919
+      },
+      {
+        "target_index": 16,
+        "approach_index": 14,
+        "revisit_index": 11,
+        "deviation_mm": 2.1572781968837673
+      },
+      {
+        "target_index": 16,
+        "approach_index": 6,
+        "revisit_index": 12,
+        "deviation_mm": 0.8438004614539961
+      },
+      {
+        "target_index": 16,
+        "approach_index": 15,
+        "revisit_index": 13,
+        "deviation_mm": 2.3889797443155687
+      },
+      {
+        "target_index": 16,
+        "approach_index": 11,
+        "revisit_index": 14,
+        "deviation_mm": 0.695475893723146
+      },
+      {
+        "target_index": 16,
+        "approach_index": 4,
+        "revisit_index": 15,
+        "deviation_mm": 0.8490578418164403
+      }
+    ],
+    "group_metrics": {
+      "ring": {
+        "center": {
+          "target_count": 1,
+          "mean_target_rms_mm": 1.492155529762226,
+          "max_target_rms_mm": 1.492155529762226
+        },
+        "inner": {
+          "target_count": 8,
+          "mean_target_rms_mm": 1.6545778520562355,
+          "max_target_rms_mm": 2.466117742272255
+        },
+        "outer": {
+          "target_count": 8,
+          "mean_target_rms_mm": 1.9720453330961778,
+          "max_target_rms_mm": 3.6371580058302406
+        }
+      },
+      "axis_class": {
+        "off_axis": {
+          "target_count": 8,
+          "mean_target_rms_mm": 1.2278906796576874,
+          "max_target_rms_mm": 1.587210849651053
+        },
+        "on_axis": {
+          "target_count": 8,
+          "mean_target_rms_mm": 2.3987325054947264,
+          "max_target_rms_mm": 3.6371580058302406
+        }
+      },
+      "magnitude_class": {
+        "high": {
+          "target_count": 8,
+          "mean_target_rms_mm": 1.9720453330961778,
+          "max_target_rms_mm": 3.6371580058302406
+        },
+        "low": {
+          "target_count": 8,
+          "mean_target_rms_mm": 1.6545778520562355,
+          "max_target_rms_mm": 2.466117742272255
+        }
+      }
+    },
+    "run_validity": {
+      "thesis_valid_run": true,
+      "criteria": {
+        "planned_repeat_capture_count": 272,
+        "planned_total_capture_count": 544,
+        "min_repeat_capture_fraction": 0.85,
+        "min_required_repeat_capture_count": 232,
+        "min_repeat_captures_per_target": 12,
+        "max_rejected_capture_fraction": 0.1,
+        "require_all_target_groups": true
+      },
+      "observed": {
+        "valid_repeat_sample_count": 272,
+        "accepted_repeat_fraction": 1.0,
+        "rejected_capture_count": 0,
+        "rejected_capture_fraction": 0.0,
+        "targets_below_min_count": 0,
+        "targets_missing_repeat_coverage_count": 0,
+        "critical_missing_target_groups": [],
+        "ring_coverage": {
+          "center": {
+            "expected_target_count": 1,
+            "targets_with_any_repeat": 1,
+            "targets_meeting_min_repeat_count": 1,
+            "accepted_repeat_capture_count": 16
+          },
+          "inner": {
+            "expected_target_count": 8,
+            "targets_with_any_repeat": 8,
+            "targets_meeting_min_repeat_count": 8,
+            "accepted_repeat_capture_count": 128
+          },
+          "outer": {
+            "expected_target_count": 8,
+            "targets_with_any_repeat": 8,
+            "targets_meeting_min_repeat_count": 8,
+            "accepted_repeat_capture_count": 128
+          }
+        }
+      },
+      "targets_below_min_repeat_count": [],
+      "targets_missing_repeat_coverage": [],
+      "critical_missing_target_groups": [],
+      "failure_reasons": [],
+      "warning_reasons": []
+    },
+    "legacy_style_comparison": {
+      "analysis_mode": "legacy_style",
+      "definition": "Desired-target/repeat captures only; mean XYZ centroid per target; XY_RMSE is XY-plane distance to centroid; XYZ_RMSE and max_deviation are 3D Euclidean distances to centroid. Legacy figure labels used XYZ_RMSE while plotting XY.",
+      "sample_selection": {
+        "phase": "repeat",
+        "require_capture_accepted": true,
+        "require_robot_frame_tip": true,
+        "outlier_filter": "abs(x_mm) < 100.000",
+        "selected_repeat_sample_count": 272,
+        "rejected_repeat_sample_count": 0,
+        "frame_counts": {
+          "robot": 272
+        }
+      },
+      "pose_frame_used": "robot",
+      "overall_XY_RMSE_mm": 1.900183025751953,
+      "overall_XYZ_RMSE_mm": 1.9337093552042446,
+      "overall_max_deviation_mm": 6.843439405052497,
+      "per_target": {
+        "0": {
+          "target_id": 0,
+          "target_index": 0,
+          "label": "T00",
+          "n_samples": 16,
+          "XY_RMSE_mm": 1.4895361723544815,
+          "XYZ_RMSE_mm": 1.492155529762226,
+          "max_deviation_mm": 2.7860562404588927,
+          "centroid_x_mm": 2.897632415416121,
+          "centroid_y_mm": -0.4763265780727064,
+          "centroid_z_mm": 69.29058402058129,
+          "centroid_mm": [
+            2.897632415416121,
+            -0.4763265780727064,
+            69.29058402058129
+          ],
+          "sample_positions_mm": [
+            [
+              2.9214352886994277,
+              0.4822199209885838,
+              69.39222755141722
+            ],
+            [
+              2.677541196547196,
+              -1.0641773327704342,
+              69.3350330990656
+            ],
+            [
+              2.3130251452879804,
+              -1.2478974120801283,
+              69.35439752089589
+            ],
+            [
+              3.435235575337515,
+              -0.30783380982634156,
+              69.27550408387101
+            ],
+            [
+              4.194862438851288,
+              0.06742463938002885,
+              69.25684598837633
+            ],
+            [
+              3.364965271351508,
+              0.23891406665843817,
+              69.33406041518622
+            ],
+            [
+              2.7181278132263174,
+              0.30657557416829917,
+              69.35203882355943
+            ],
+            [
+              1.6179895138456288,
+              0.6181174209507958,
+              69.3581543725246
+            ],
+            [
+              0.942961922696611,
+              -1.0671783369361876,
+              69.23002959101986
+            ],
+            [
+              2.4827990897641996,
+              -0.9899210636827291,
+              69.22430135859842
+            ],
+            [
+              5.660789559100635,
+              -0.7326893832930494,
+              69.04289452462974
+            ],
+            [
+              1.5934232537967148,
+              -0.5331376907752983,
+              69.38069692321737
+            ],
+            [
+              4.742751446861291,
+              -0.6648093747103303,
+              69.2200902607827
+            ],
+            [
+              3.1459795674714144,
+              -0.9683769489967418,
+              69.28616819228505
+            ],
+            [
+              4.259055049245603,
+              -0.9701572084487751,
+              69.21938643916772
+            ],
+            [
+              0.2911765145746017,
+              -0.7882983097894325,
+              69.38751518470345
+            ]
+          ],
+          "analysis_mode": "legacy_style"
+        },
+        "1": {
+          "target_id": 1,
+          "target_index": 1,
+          "label": "T01",
+          "n_samples": 16,
+          "XY_RMSE_mm": 2.0963752049138438,
+          "XYZ_RMSE_mm": 2.121027905285547,
+          "max_deviation_mm": 3.380765908045089,
+          "centroid_x_mm": 20.91974841452374,
+          "centroid_y_mm": -1.5769501981393406,
+          "centroid_z_mm": 64.62385034630111,
+          "centroid_mm": [
+            20.91974841452374,
+            -1.5769501981393406,
+            64.62385034630111
+          ],
+          "sample_positions_mm": [
+            [
+              20.478013495720916,
+              -0.12643902879271707,
+              64.84428340668669
+            ],
+            [
+              20.899267803554466,
+              -2.9954226784513978,
+              64.67201145272197
+            ],
+            [
+              20.556599924589676,
+              -3.8322973925079182,
+              64.79292231947348
+            ],
+            [
+              20.40742846371171,
+              0.9618095300791509,
+              64.91160968216346
+            ],
+            [
+              20.613600333534606,
+              -3.19482398208617,
+              64.76163966636712
+            ],
+            [
+              20.780034669138587,
+              -3.247047506017225,
+              64.8222392990416
+            ],
+            [
+              20.534831838128184,
+              -2.21618812087614,
+              64.86919139943136
+            ],
+            [
+              20.802975449965572,
+              1.6942583826035076,
+              64.66108770687731
+            ],
+            [
+              20.7134526589561,
+              -4.165271367683438,
+              64.51412929305857
+            ],
+            [
+              22.51540419281426,
+              -2.4538867178736368,
+              63.995445140590334
+            ],
+            [
+              20.29870185418457,
+              -2.158921702764097,
+              64.76837876113935
+            ],
+            [
+              22.20847177519505,
+              -4.176154561530012,
+              63.928467788286525
+            ],
+            [
+              20.819378346008705,
+              0.008519394227356258,
+              64.66496173191214
+            ],
+            [
+              20.440280487149323,
+              -1.3166486366788632,
+              64.9568769649377
+            ],
+            [
+              20.57986040707442,
+              0.4374653406071616,
+              64.77329700785225
+            ],
+            [
+              22.067672932653693,
+              1.54984587751499,
+              64.0450639202779
+            ]
+          ],
+          "analysis_mode": "legacy_style"
+        },
+        "2": {
+          "target_id": 2,
+          "target_index": 2,
+          "label": "T02",
+          "n_samples": 16,
+          "XY_RMSE_mm": 1.181476746901131,
+          "XYZ_RMSE_mm": 1.2197095581530872,
+          "max_deviation_mm": 2.0033119062567324,
+          "centroid_x_mm": 14.352404257787606,
+          "centroid_y_mm": 13.034295235402793,
+          "centroid_z_mm": 65.01609343295527,
+          "centroid_mm": [
+            14.352404257787606,
+            13.034295235402793,
+            65.01609343295527
+          ],
+          "sample_positions_mm": [
+            [
+              15.397077569427069,
+              13.131661569063539,
+              64.6995123805095
+            ],
+            [
+              15.345359201347037,
+              12.163218010995386,
+              64.88156260775307
+            ],
+            [
+              14.159612914723056,
+              12.010692455544117,
+              65.32848732030737
+            ],
+            [
+              14.179740183798884,
+              12.420297995214511,
+              65.31761557201773
+            ],
+            [
+              13.849518930088124,
+              14.048034153279339,
+              64.89296404037557
+            ],
+            [
+              13.745332240858914,
+              13.324281674998765,
+              65.16430788860173
+            ],
+            [
+              14.127019972381675,
+              11.972796129306047,
+              65.23847860646705
+            ],
+            [
+              13.117213447013683,
+              12.8396382848684,
+              65.45359592019202
+            ],
+            [
+              14.217452880572182,
+              11.97621411062677,
+              65.25873216220181
+            ],
+            [
+              15.474075866543103,
+              12.68512084477063,
+              64.85074942553884
+            ],
+            [
+              13.977141718511518,
+              13.066525867356894,
+              65.13556228550652
+            ],
+            [
+              14.497996039785278,
+              14.942101483154126,
+              64.5128048002546
+            ],
+            [
+              15.174243714910858,
+              14.721502157720685,
+              64.3152572882339
+            ],
+            [
+              14.422194880394102,
+              12.572495212278056,
+              65.10796889969254
+            ],
+            [
+              14.528200543299278,
+              12.243959961176465,
+              65.16902123966125
+            ],
+            [
+              13.426288020946942,
+              14.43018385609097,
+              64.93087448997106
+            ]
+          ],
+          "analysis_mode": "legacy_style"
+        },
+        "3": {
+          "target_id": 3,
+          "target_index": 3,
+          "label": "T03",
+          "n_samples": 16,
+          "XY_RMSE_mm": 2.442257593698075,
+          "XYZ_RMSE_mm": 2.466117742272255,
+          "max_deviation_mm": 3.8521553423051467,
+          "centroid_x_mm": 2.654670221012857,
+          "centroid_y_mm": 20.994301433222645,
+          "centroid_z_mm": 64.38548592483235,
+          "centroid_mm": [
+            2.654670221012857,
+            20.994301433222645,
+            64.38548592483235
+          ],
+          "sample_positions_mm": [
+            [
+              -1.1931953128833754,
+              20.959294392018016,
+              64.56382863247592
+            ],
+            [
+              -0.8901013110379097,
+              20.85693399883528,
+              64.63493683138981
+            ],
+            [
+              -0.6511002660559484,
+              20.96964763477778,
+              64.60537102732218
+            ],
+            [
+              4.605455927789507,
+              22.325795780052545,
+              63.64746748885263
+            ],
+            [
+              4.4272714978211525,
+              20.61580142270438,
+              64.4008396457275
+            ],
+            [
+              6.265323477080557,
+              20.65072515930663,
+              64.22606763949588
+            ],
+            [
+              5.729569544455671,
+              20.73033362361116,
+              64.27433995131145
+            ],
+            [
+              3.6047362214387704,
+              20.61637311113381,
+              64.51846359005404
+            ],
+            [
+              4.124915918702044,
+              20.598092388007167,
+              64.48000715083943
+            ],
+            [
+              3.7431291677685294,
+              20.72656105056852,
+              64.53861329003439
+            ],
+            [
+              3.074924032785418,
+              22.648995186071552,
+              63.682313755855574
+            ],
+            [
+              3.162318631877298,
+              20.468688946459864,
+              64.64752196425411
+            ],
+            [
+              3.144866712192254,
+              20.369805378905106,
+              64.69769636576476
+            ],
+            [
+              1.0233426365535934,
+              20.295441947502532,
+              64.81173879890042
+            ],
+            [
+              -0.8203633536016923,
+              22.18389207088041,
+              63.902121102623795
+            ],
+            [
+              3.1236300113198467,
+              20.892440840727673,
+              64.5364475624155
+            ]
+          ],
+          "analysis_mode": "legacy_style"
+        },
+        "4": {
+          "target_id": 4,
+          "target_index": 4,
+          "label": "T04",
+          "n_samples": 16,
+          "XY_RMSE_mm": 1.3164963468158783,
+          "XYZ_RMSE_mm": 1.332924269932472,
+          "max_deviation_mm": 1.9874214803672035,
+          "centroid_x_mm": -3.661217698034328,
+          "centroid_y_mm": 14.765490919076258,
+          "centroid_z_mm": 66.69577508714906,
+          "centroid_mm": [
+            -3.661217698034328,
+            14.765490919076258,
+            66.69577508714906
+          ],
+          "sample_positions_mm": [
+            [
+              -3.405617122691268,
+              14.147860533057624,
+              66.83291622895479
+            ],
+            [
+              -4.419172042738126,
+              15.885720719245697,
+              66.26604023077597
+            ],
+            [
+              -4.69101654210894,
+              16.417149057596568,
+              66.29404896797433
+            ],
+            [
+              -4.801200204976851,
+              14.11999254302198,
+              66.75894842805634
+            ],
+            [
+              -4.050281633741264,
+              14.516089367518525,
+              66.81021835098676
+            ],
+            [
+              -4.019010236394848,
+              15.746470541421942,
+              66.49751359148979
+            ],
+            [
+              -4.810229679559853,
+              14.541748582573376,
+              66.73796482277329
+            ],
+            [
+              -4.67275140233258,
+              14.230891167343657,
+              66.76906772757843
+            ],
+            [
+              -2.4423641454337996,
+              15.91105806728239,
+              66.39169275144219
+            ],
+            [
+              -2.3914134981869495,
+              14.845130368273047,
+              66.72426179995658
+            ],
+            [
+              -2.3519640283377328,
+              14.16070332800868,
+              66.87593040542119
+            ],
+            [
+              -1.9210376689046882,
+              14.429803205190446,
+              66.86656403758056
+            ],
+            [
+              -3.406525337512136,
+              13.867398196519048,
+              66.94355100164928
+            ],
+            [
+              -2.355276768703561,
+              14.521774211296915,
+              66.80510072948854
+            ],
+            [
+              -5.483059038200764,
+              14.661271170992748,
+              66.66574983119686
+            ],
+            [
+              -3.3585638187258837,
+              14.244793645877472,
+              66.89283248905998
+            ]
+          ],
+          "analysis_mode": "legacy_style"
+        },
+        "5": {
+          "target_id": 5,
+          "target_index": 5,
+          "label": "T05",
+          "n_samples": 16,
+          "XY_RMSE_mm": 1.6671745818666397,
+          "XYZ_RMSE_mm": 1.6755698657471756,
+          "max_deviation_mm": 2.782605007003337,
+          "centroid_x_mm": -12.147557614205937,
+          "centroid_y_mm": -0.17113700963666734,
+          "centroid_z_mm": 67.89143001730685,
+          "centroid_mm": [
+            -12.147557614205937,
+            -0.17113700963666734,
+            67.89143001730685
+          ],
+          "sample_positions_mm": [
+            [
+              -11.741421631895378,
+              0.5148553935290394,
+              67.9797963665105
+            ],
+            [
+              -12.024101883368758,
+              -1.5601813578490962,
+              67.89368971254565
+            ],
+            [
+              -13.376241043027107,
+              -2.6446326162225446,
+              67.55224401974702
+            ],
+            [
+              -11.651377083279385,
+              0.23740243847775133,
+              67.93068590939744
+            ],
+            [
+              -13.167800692151957,
+              1.6918724509379501,
+              67.60300249311278
+            ],
+            [
+              -12.125980424456458,
+              1.6963608851672092,
+              68.0360040910048
+            ],
+            [
+              -12.125815074302977,
+              1.2850161758524337,
+              67.92693758478923
+            ],
+            [
+              -11.920980824185278,
+              -0.2943379974220264,
+              67.89111405426439
+            ],
+            [
+              -11.863905303042003,
+              1.436132523003252,
+              67.8873507013325
+            ],
+            [
+              -13.610652872639264,
+              0.17029753989771024,
+              67.62517762176047
+            ],
+            [
+              -11.633110148022666,
+              1.5798391794005227,
+              68.00769185525218
+            ],
+            [
+              -11.595375871210933,
+              -1.3210006163831878,
+              67.88438490674149
+            ],
+            [
+              -12.259862338889178,
+              -2.585712004594498,
+              67.86533657870164
+            ],
+            [
+              -12.08744488716323,
+              -2.5582419665795797,
+              67.88577231582512
+            ],
+            [
+              -11.376747633717741,
+              -1.0658966926982174,
+              68.1044387226392
+            ],
+            [
+              -11.800104115942673,
+              0.6800345112966042,
+              68.18925334328512
+            ]
+          ],
+          "analysis_mode": "legacy_style"
+        },
+        "6": {
+          "target_id": 6,
+          "target_index": 6,
+          "label": "T06",
+          "n_samples": 16,
+          "XY_RMSE_mm": 1.2091988725346836,
+          "XYZ_RMSE_mm": 1.2259149962884865,
+          "max_deviation_mm": 1.9629349637405193,
+          "centroid_x_mm": -4.11878812536151,
+          "centroid_y_mm": -15.36109264767926,
+          "centroid_z_mm": 66.90846733684846,
+          "centroid_mm": [
+            -4.11878812536151,
+            -15.36109264767926,
+            66.90846733684846
+          ],
+          "sample_positions_mm": [
+            [
+              -5.184895437195934,
+              -16.60513847568982,
+              66.53758480916923
+            ],
+            [
+              -5.96197929645578,
+              -15.845632264349327,
+              66.76361797180914
+            ],
+            [
+              -5.5683288256766446,
+              -16.637062721787082,
+              66.55655001703288
+            ],
+            [
+              -4.759931452819444,
+              -14.619751859848968,
+              67.12430927399312
+            ],
+            [
+              -2.977111267287995,
+              -14.92141640684698,
+              67.08014268994842
+            ],
+            [
+              -4.6193236675776745,
+              -15.031459012185302,
+              66.98564900050238
+            ],
+            [
+              -4.7968319928885705,
+              -14.57697153936514,
+              67.10410545450503
+            ],
+            [
+              -3.3895281143454383,
+              -14.941326353007732,
+              67.0289964456379
+            ],
+            [
+              -3.144667411558231,
+              -15.160036864526553,
+              66.95019956510494
+            ],
+            [
+              -4.088423107479883,
+              -14.488708547454884,
+              67.09595098744165
+            ],
+            [
+              -3.000257392198364,
+              -16.203826291238236,
+              66.76298477136959
+            ],
+            [
+              -3.4299594305668393,
+              -15.359733268041019,
+              66.90982865585845
+            ],
+            [
+              -4.496347438958253,
+              -16.78610230524081,
+              66.5499842654941
+            ],
+            [
+              -4.007388568175543,
+              -15.02626216356024,
+              67.01740473831553
+            ],
+            [
+              -3.3835449982234422,
+              -14.861632791061744,
+              66.98883255008688
+            ],
+            [
+              -3.0920916043761224,
+              -14.712421498664348,
+              67.07933619330625
+            ]
+          ],
+          "analysis_mode": "legacy_style"
+        },
+        "7": {
+          "target_id": 7,
+          "target_index": 7,
+          "label": "T07",
+          "n_samples": 16,
+          "XY_RMSE_mm": 2.0217070774524113,
+          "XYZ_RMSE_mm": 2.0463116591198944,
+          "max_deviation_mm": 4.347460016348638,
+          "centroid_x_mm": 1.760070534334421,
+          "centroid_y_mm": -21.892951964212706,
+          "centroid_z_mm": 64.8040090944596,
+          "centroid_mm": [
+            1.760070534334421,
+            -21.892951964212706,
+            64.8040090944596
+          ],
+          "sample_positions_mm": [
+            [
+              1.4029775894355225,
+              -21.574798516190093,
+              65.0378821496942
+            ],
+            [
+              2.6973745268614095,
+              -21.710689030978465,
+              64.7519270196946
+            ],
+            [
+              0.766695746417895,
+              -21.638366866491445,
+              65.00618860009764
+            ],
+            [
+              3.0007124840462893,
+              -21.53206498783546,
+              64.94239889410694
+            ],
+            [
+              2.1123061175813405,
+              -21.195532642733973,
+              65.16907070251068
+            ],
+            [
+              2.6108642473852797,
+              -21.37271680477307,
+              65.10091232863859
+            ],
+            [
+              1.650163783314639,
+              -23.289058201307405,
+              64.30248245052577
+            ],
+            [
+              0.8622195281932648,
+              -22.11690639600578,
+              64.88754996470627
+            ],
+            [
+              3.021276458815038,
+              -21.523467912389272,
+              64.98243903940492
+            ],
+            [
+              2.066886542599889,
+              -21.41323888314691,
+              64.94943223799737
+            ],
+            [
+              4.636991268138729,
+              -23.178262416909142,
+              64.09085572712114
+            ],
+            [
+              2.2176888811481774,
+              -21.404089265918593,
+              65.03984760833306
+            ],
+            [
+              4.933907820435223,
+              -21.845343207749274,
+              64.62869115067096
+            ],
+            [
+              0.5592618932278128,
+              -21.32226225716402,
+              65.02487208244614
+            ],
+            [
+              -1.7996826133089314,
+              -23.025402088353495,
+              64.26192022911843
+            ],
+            [
+              -2.578515724940843,
+              -22.145031949456914,
+              64.68767532628695
+            ]
+          ],
+          "analysis_mode": "legacy_style"
+        },
+        "8": {
+          "target_id": 8,
+          "target_index": 8,
+          "label": "T08",
+          "n_samples": 16,
+          "XY_RMSE_mm": 1.1190121429875761,
+          "XYZ_RMSE_mm": 1.1490468196509667,
+          "max_deviation_mm": 1.6380602572097251,
+          "centroid_x_mm": 13.459033059206442,
+          "centroid_y_mm": -14.739400354273016,
+          "centroid_z_mm": 65.32968668036119,
+          "centroid_mm": [
+            13.459033059206442,
+            -14.739400354273016,
+            65.32968668036119
+          ],
+          "sample_positions_mm": [
+            [
+              11.995590889806039,
+              -15.36399389666186,
+              65.51437920830097
+            ],
+            [
+              12.755355600846798,
+              -14.025826210552033,
+              65.65353677262512
+            ],
+            [
+              12.64494776274418,
+              -14.027754722126595,
+              65.64322221356421
+            ],
+            [
+              12.717598153369181,
+              -14.404136644714136,
+              65.62428629290154
+            ],
+            [
+              14.143515742186224,
+              -15.633538627289006,
+              64.8911902588492
+            ],
+            [
+              13.364942455750992,
+              -13.649767033326093,
+              65.5344428535858
+            ],
+            [
+              13.472882084026537,
+              -14.088761866920969,
+              65.58575145641947
+            ],
+            [
+              14.686303826915577,
+              -14.520124429324106,
+              65.00023116331162
+            ],
+            [
+              14.022393290677769,
+              -13.84870379862867,
+              65.44679262218257
+            ],
+            [
+              14.092411806822184,
+              -16.191250375792542,
+              64.91230881399493
+            ],
+            [
+              13.18781179864493,
+              -16.074079625959193,
+              65.15943194239284
+            ],
+            [
+              13.188394389219951,
+              -16.20457609889271,
+              65.10972951649494
+            ],
+            [
+              14.183744892478444,
+              -15.214972812320475,
+              65.08035757633957
+            ],
+            [
+              14.137951244706272,
+              -14.058152706626224,
+              65.2476004682222
+            ],
+            [
+              13.085328874536941,
+              -14.591959893727712,
+              65.4557735520199
+            ],
+            [
+              13.665356134571056,
+              -13.932806925505894,
+              65.41595217457407
+            ]
+          ],
+          "analysis_mode": "legacy_style"
+        },
+        "9": {
+          "target_id": 9,
+          "target_index": 9,
+          "label": "T09",
+          "n_samples": 16,
+          "XY_RMSE_mm": 3.041883259265558,
+          "XYZ_RMSE_mm": 3.08521999570128,
+          "max_deviation_mm": 6.1169762814747894,
+          "centroid_x_mm": 36.19735267718673,
+          "centroid_y_mm": -3.268872195222349,
+          "centroid_z_mm": 52.15985492840347,
+          "centroid_mm": [
+            36.19735267718673,
+            -3.268872195222349,
+            52.15985492840347
+          ],
+          "sample_positions_mm": [
+            [
+              34.72098447864013,
+              -0.3175797926343975,
+              52.18576679579898
+            ],
+            [
+              34.919423979969,
+              -4.433042939189612,
+              52.2756826100823
+            ],
+            [
+              34.714948035211194,
+              -6.154237885745978,
+              51.518994071802354
+            ],
+            [
+              34.95657069257112,
+              -7.0733437889212425,
+              52.05178186276487
+            ],
+            [
+              39.11130049892637,
+              -6.5746740554863905,
+              53.052655847409866
+            ],
+            [
+              34.43088965041636,
+              -3.455301633283682,
+              51.922049823743194
+            ],
+            [
+              39.31799635420384,
+              1.9526405528947492,
+              52.80389412788506
+            ],
+            [
+              35.05903013428042,
+              0.037866495548044554,
+              51.83593387722209
+            ],
+            [
+              36.27132235043484,
+              -5.295536644619133,
+              51.78154153303426
+            ],
+            [
+              35.94615410315342,
+              -4.669882489882184,
+              51.8391825741448
+            ],
+            [
+              39.200815886700724,
+              -2.06827176142162,
+              53.452687545403165
+            ],
+            [
+              34.60513559382042,
+              -4.901891079019272,
+              51.9658371129222
+            ],
+            [
+              36.06225921020183,
+              -4.046782433965319,
+              51.808103249286134
+            ],
+            [
+              35.45037626473902,
+              -1.8764575076183476,
+              51.61140811683792
+            ],
+            [
+              36.637905138530385,
+              -3.0257186827976383,
+              52.06744969952237
+            ],
+            [
+              37.75253046318855,
+              -0.3997414774155601,
+              52.38471000659591
+            ]
+          ],
+          "analysis_mode": "legacy_style"
+        },
+        "10": {
+          "target_id": 10,
+          "target_index": 10,
+          "label": "T10",
+          "n_samples": 16,
+          "XY_RMSE_mm": 0.8999127345763821,
+          "XYZ_RMSE_mm": 0.9770677193137641,
+          "max_deviation_mm": 1.9039714866234239,
+          "centroid_x_mm": 24.600491001516787,
+          "centroid_y_mm": 23.91556162323769,
+          "centroid_z_mm": 54.57841988802192,
+          "centroid_mm": [
+            24.600491001516787,
+            23.91556162323769,
+            54.57841988802192
+          ],
+          "sample_positions_mm": [
+            [
+              24.847144132015643,
+              23.967629998201552,
+              54.892141164665276
+            ],
+            [
+              24.57412608729902,
+              24.18715596491797,
+              54.36085075707605
+            ],
+            [
+              24.84550203883589,
+              23.515507808293187,
+              54.39315937248999
+            ],
+            [
+              24.718194939396398,
+              23.175283273107837,
+              55.05356846395544
+            ],
+            [
+              24.272072744899646,
+              25.501243596530156,
+              53.576990135033284
+            ],
+            [
+              24.274612688371178,
+              24.339449684266057,
+              54.31963975235847
+            ],
+            [
+              24.988829924172734,
+              24.236916946822333,
+              54.381935641759725
+            ],
+            [
+              23.70435470386701,
+              24.51270249484036,
+              54.78760267261745
+            ],
+            [
+              23.874855643153325,
+              24.640068870350518,
+              54.557804421771436
+            ],
+            [
+              23.58816739621855,
+              24.701547012629035,
+              54.69683782456177
+            ],
+            [
+              25.00945864661074,
+              23.44413269356101,
+              54.80379768507656
+            ],
+            [
+              24.529010241691623,
+              23.579095305241843,
+              54.49210164137537
+            ],
+            [
+              25.08445876238065,
+              22.967513933617013,
+              54.88509676443144
+            ],
+            [
+              24.36051891166764,
+              23.492347510390047,
+              55.041815650470184
+            ],
+            [
+              26.014146468926697,
+              23.16820943193772,
+              54.077320752624345
+            ],
+            [
+              24.922402694761757,
+              23.220181447096408,
+              54.93405550808393
+            ]
+          ],
+          "analysis_mode": "legacy_style"
+        },
+        "11": {
+          "target_id": 11,
+          "target_index": 11,
+          "label": "T11",
+          "n_samples": 16,
+          "XY_RMSE_mm": 1.8871356085845359,
+          "XYZ_RMSE_mm": 1.897454503736518,
+          "max_deviation_mm": 4.061819654569861,
+          "centroid_x_mm": 3.3493783750023525,
+          "centroid_y_mm": 37.63726894898641,
+          "centroid_z_mm": 51.744627492252974,
+          "centroid_mm": [
+            3.3493783750023525,
+            37.63726894898641,
+            51.744627492252974
+          ],
+          "sample_positions_mm": [
+            [
+              5.831009779130255,
+              37.53194012174495,
+              51.48640700807712
+            ],
+            [
+              4.600723251498692,
+              37.442193362410066,
+              51.613058415953745
+            ],
+            [
+              4.074069463714125,
+              37.38116642343343,
+              51.861677603731536
+            ],
+            [
+              2.3167338027482174,
+              37.75085771747591,
+              51.765762423459066
+            ],
+            [
+              4.087475193941572,
+              37.8311478290378,
+              51.74069404696708
+            ],
+            [
+              5.871190685730596,
+              37.52877958232665,
+              51.38652955448843
+            ],
+            [
+              3.6582771409621557,
+              37.85241523366099,
+              51.609405323844015
+            ],
+            [
+              3.5026797232744116,
+              37.52366019863425,
+              51.95970458241227
+            ],
+            [
+              4.033583347092701,
+              37.50405589087049,
+              51.661280365342506
+            ],
+            [
+              2.2773540542029025,
+              37.50386095591419,
+              52.14621194071796
+            ],
+            [
+              5.399709449332988,
+              37.53376083568732,
+              51.57515784197447
+            ],
+            [
+              3.8205821375551636,
+              37.75068968338877,
+              51.83010648039459
+            ],
+            [
+              0.02968212567941464,
+              37.73855465529855,
+              51.75918510806068
+            ],
+            [
+              -0.7104065136151689,
+              37.762815200570216,
+              51.7169923132939
+            ],
+            [
+              0.8338602288498862,
+              37.89988804526466,
+              51.70114102426945
+            ],
+            [
+              3.963530129939727,
+              37.66051744806431,
+              52.10072584306073
+            ]
+          ],
+          "analysis_mode": "legacy_style"
+        },
+        "12": {
+          "target_id": 12,
+          "target_index": 12,
+          "label": "T12",
+          "n_samples": 16,
+          "XY_RMSE_mm": 0.9705185927869794,
+          "XYZ_RMSE_mm": 1.0511390770849454,
+          "max_deviation_mm": 2.3655470594822123,
+          "centroid_x_mm": -15.433010742809355,
+          "centroid_y_mm": 26.33979391712617,
+          "centroid_z_mm": 58.32794703701745,
+          "centroid_mm": [
+            -15.433010742809355,
+            26.33979391712617,
+            58.32794703701745
+          ],
+          "sample_positions_mm": [
+            [
+              -14.296723550839118,
+              28.185105821432654,
+              57.37953347542414
+            ],
+            [
+              -15.927850521498328,
+              25.690563235395505,
+              58.620493624677565
+            ],
+            [
+              -15.668993562980006,
+              26.20254616591784,
+              58.42007767251707
+            ],
+            [
+              -17.209819562395012,
+              25.823790866092732,
+              58.05648495754451
+            ],
+            [
+              -14.985306872198095,
+              26.232732756031506,
+              58.541984516561925
+            ],
+            [
+              -15.364899730138006,
+              26.250537536182865,
+              58.500847525850716
+            ],
+            [
+              -15.91784861611876,
+              25.68980715052705,
+              58.610524160075585
+            ],
+            [
+              -14.910183298111434,
+              26.16723170549482,
+              58.63235077683112
+            ],
+            [
+              -14.890243715335316,
+              28.017958494430577,
+              57.268198012015446
+            ],
+            [
+              -15.907440898233943,
+              25.959358757032582,
+              58.40994098321691
+            ],
+            [
+              -15.079585284564018,
+              26.309628221580734,
+              58.43153693469738
+            ],
+            [
+              -15.26224066208033,
+              26.413138341478827,
+              58.35077389771227
+            ],
+            [
+              -15.061279418764542,
+              26.288351561292547,
+              58.49163850709206
+            ],
+            [
+              -15.820086190645526,
+              25.922998057352554,
+              58.480276284317554
+            ],
+            [
+              -15.926682379054284,
+              25.970821272017364,
+              58.419859459211935
+            ],
+            [
+              -14.698987621992956,
+              26.312132731758556,
+              58.63263180453299
+            ]
+          ],
+          "analysis_mode": "legacy_style"
+        },
+        "13": {
+          "target_id": 13,
+          "target_index": 13,
+          "label": "T13",
+          "n_samples": 16,
+          "XY_RMSE_mm": 2.254426874164897,
+          "XYZ_RMSE_mm": 2.261000366264899,
+          "max_deviation_mm": 3.661449828107717,
+          "centroid_x_mm": -31.56549566858679,
+          "centroid_y_mm": -0.12301654365915482,
+          "centroid_z_mm": 58.770803597305196,
+          "centroid_mm": [
+            -31.56549566858679,
+            -0.12301654365915482,
+            58.770803597305196
+          ],
+          "sample_positions_mm": [
+            [
+              -31.21784692024022,
+              2.269612730470314,
+              58.97950277818941
+            ],
+            [
+              -31.72398127910742,
+              -0.812422961776079,
+              58.56503444104726
+            ],
+            [
+              -31.510373040088837,
+              -2.0014524009519192,
+              58.48834993807188
+            ],
+            [
+              -31.45133244798066,
+              3.308917276296185,
+              58.67646718727404
+            ],
+            [
+              -31.818996948386058,
+              -3.60290171703371,
+              58.60109465523644
+            ],
+            [
+              -31.669563969257496,
+              -2.6613067983957137,
+              58.60938886670435
+            ],
+            [
+              -31.66874165287723,
+              1.0389795861775255,
+              58.79099282023439
+            ],
+            [
+              -31.515137757734266,
+              -2.0504550274966533,
+              58.86844997761078
+            ],
+            [
+              -31.239634581953453,
+              -0.8977019471897876,
+              58.79662842111337
+            ],
+            [
+              -31.379584664421856,
+              0.476505842216568,
+              58.91310556888067
+            ],
+            [
+              -31.731966384396458,
+              -3.779595734941381,
+              58.68174764629873
+            ],
+            [
+              -31.587895736818695,
+              -1.262773795575832,
+              58.97645253942878
+            ],
+            [
+              -31.697990012711756,
+              1.1812406591493385,
+              58.66058453612675
+            ],
+            [
+              -31.380876899302677,
+              1.83065479802233,
+              59.11002924856183
+            ],
+            [
+              -31.685407969531184,
+              3.1255908388333964,
+              58.67620730643115
+            ],
+            [
+              -31.76860043258037,
+              1.8688439536489412,
+              58.9388216256732
+            ]
+          ],
+          "analysis_mode": "legacy_style"
+        },
+        "14": {
+          "target_id": 14,
+          "target_index": 14,
+          "label": "T14",
+          "n_samples": 16,
+          "XY_RMSE_mm": 1.209360053023805,
+          "XYZ_RMSE_mm": 1.2801121471867227,
+          "max_deviation_mm": 2.778768907380572,
+          "centroid_x_mm": -16.72856934431351,
+          "centroid_y_mm": -26.94712685382325,
+          "centroid_z_mm": 58.84704511722884,
+          "centroid_mm": [
+            -16.72856934431351,
+            -26.94712685382325,
+            58.84704511722884
+          ],
+          "sample_positions_mm": [
+            [
+              -17.16961041391596,
+              -26.087178812912292,
+              58.984445199042284
+            ],
+            [
+              -15.564477761365538,
+              -27.016721652123415,
+              59.32119329152063
+            ],
+            [
+              -16.495976935925995,
+              -25.91560771982281,
+              59.2360029406191
+            ],
+            [
+              -17.10246009994225,
+              -26.954848706658787,
+              58.78660740988366
+            ],
+            [
+              -16.969483651443255,
+              -26.773662065861096,
+              59.00658164778672
+            ],
+            [
+              -18.8443578924265,
+              -27.33876889945322,
+              58.47244604035646
+            ],
+            [
+              -16.343286138819337,
+              -28.266291375083007,
+              57.7017696228439
+            ],
+            [
+              -17.22784963556225,
+              -27.286030896226116,
+              59.03699874693508
+            ],
+            [
+              -16.471053953590626,
+              -27.231921464188936,
+              58.77905986829566
+            ],
+            [
+              -15.803296534956843,
+              -26.609424295526843,
+              58.67957466905884
+            ],
+            [
+              -17.203711614583966,
+              -26.264477757757398,
+              59.31475140889884
+            ],
+            [
+              -14.524404316441661,
+              -25.408199360997322,
+              59.55054731506209
+            ],
+            [
+              -17.148832640448887,
+              -28.27541160236016,
+              58.589469828525324
+            ],
+            [
+              -17.59105314014235,
+              -27.189606438867692,
+              58.80572934064908
+            ],
+            [
+              -17.24983914837128,
+              -27.195117534019737,
+              58.576725760655464
+            ],
+            [
+              -15.947415631079451,
+              -27.34076107931312,
+              58.71081878552816
+            ]
+          ],
+          "analysis_mode": "legacy_style"
+        },
+        "15": {
+          "target_id": 15,
+          "target_index": 15,
+          "label": "T15",
+          "n_samples": 16,
+          "XY_RMSE_mm": 3.5760300044744944,
+          "XYZ_RMSE_mm": 3.6371580058302406,
+          "max_deviation_mm": 6.843439405052497,
+          "centroid_x_mm": 0.8242333758942113,
+          "centroid_y_mm": -39.14462042115211,
+          "centroid_z_mm": 52.89851226267641,
+          "centroid_mm": [
+            0.8242333758942113,
+            -39.14462042115211,
+            52.89851226267641
+          ],
+          "sample_positions_mm": [
+            [
+              1.2760741563325837,
+              -37.87564131425973,
+              52.26443235759467
+            ],
+            [
+              3.620591309199966,
+              -38.67775363584072,
+              53.24303091853707
+            ],
+            [
+              -3.7720542759143143,
+              -40.48004427039189,
+              53.41577269547513
+            ],
+            [
+              6.243625193207407,
+              -38.58955862238964,
+              53.410407389258125
+            ],
+            [
+              4.450279856488947,
+              -38.98966718130976,
+              53.13613445156835
+            ],
+            [
+              -1.6511640078438745,
+              -39.24538512611449,
+              51.89908509802589
+            ],
+            [
+              -5.74743854509245,
+              -41.03720435545677,
+              53.15133058707687
+            ],
+            [
+              2.35999629701638,
+              -39.15510986002777,
+              53.960478652164966
+            ],
+            [
+              4.751969593053133,
+              -38.13845578308676,
+              53.645076941823476
+            ],
+            [
+              0.4530973030491623,
+              -38.447624443470566,
+              51.8733512932897
+            ],
+            [
+              -0.1944318027501879,
+              -40.101569221755405,
+              53.3452455583533
+            ],
+            [
+              0.10498710912710862,
+              -39.77583252866754,
+              51.79536042648499
+            ],
+            [
+              2.9206153358488507,
+              -37.45460433691684,
+              52.518227890623194
+            ],
+            [
+              -1.4949969985635505,
+              -40.21746342210697,
+              52.87174930096174
+            ],
+            [
+              4.28287150701496,
+              -38.52546334832302,
+              53.464599435953005
+            ],
+            [
+              -4.416288015866741,
+              -39.602549288315906,
+              52.38191320563217
+            ]
+          ],
+          "analysis_mode": "legacy_style"
+        },
+        "16": {
+          "target_id": 16,
+          "target_index": 16,
+          "label": "T16",
+          "n_samples": 16,
+          "XY_RMSE_mm": 1.4813701611229548,
+          "XYZ_RMSE_mm": 1.587210849651053,
+          "max_deviation_mm": 2.5741914689374017,
+          "centroid_x_mm": 23.622470519337483,
+          "centroid_y_mm": -26.70224051163562,
+          "centroid_z_mm": 55.20175185164869,
+          "centroid_mm": [
+            23.622470519337483,
+            -26.70224051163562,
+            55.20175185164869
+          ],
+          "sample_positions_mm": [
+            [
+              24.78408210689497,
+              -25.929896611340247,
+              56.035234087859365
+            ],
+            [
+              22.197770177399207,
+              -27.195985835326333,
+              54.880630831214745
+            ],
+            [
+              23.73286304104616,
+              -26.637043451126765,
+              54.893795599557905
+            ],
+            [
+              21.334491920492752,
+              -27.63467515203731,
+              54.479130725914345
+            ],
+            [
+              25.20865855866262,
+              -26.485340566855406,
+              54.66771193122496
+            ],
+            [
+              25.28031293811935,
+              -26.147449654139514,
+              55.757159213569864
+            ],
+            [
+              25.175678115280988,
+              -26.480734213203156,
+              55.72761337563401
+            ],
+            [
+              22.07922817097122,
+              -26.77686200706264,
+              54.53933475843685
+            ],
+            [
+              24.303906640588764,
+              -26.617578018307462,
+              55.52540489678728
+            ],
+            [
+              25.379895817915553,
+              -26.695920985451743,
+              55.90869286917176
+            ],
+            [
+              23.53652148902796,
+              -26.41039241942412,
+              55.692719441221925
+            ],
+            [
+              21.498111373678995,
+              -27.023943866265803,
+              55.008220483062345
+            ],
+            [
+              24.45970971719325,
+              -26.68964984757897,
+              55.30601699204769
+            ],
+            [
+              22.288295855571732,
+              -28.317345498966212,
+              54.05343218134104
+            ],
+            [
+              23.386487934700057,
+              -26.269008673278698,
+              55.69196518554703
+            ],
+            [
+              23.313514451856122,
+              -25.92402138580554,
+              55.06096705378788
+            ]
+          ],
+          "analysis_mode": "legacy_style"
+        }
+      }
+    },
+    "position_frame": "robot",
+    "registration_available": true,
+    "tip_calibration_available": true,
+    "thesis_goal_rms_mm": 1.0,
+    "thesis_goal_pass": false,
+    "runtime_tip_mode_used": "coil_as_tip",
+    "runtime_tip_trust_level": "thesis_trusted",
+    "thesis_trusted_runtime_tip": true,
+    "thesis_trusted_run": true,
+    "transform_chain_audit": {
+      "registration_artifact_path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+      "registration_artifact_sha256": "7658b9d06f561d20cf86080c70460a8dd892a6289830ea410b6a381a8d19d6f0",
+      "registration_fre_mm": 0.6346530796834196,
+      "runtime_tip_artifact_path": null,
+      "runtime_tip_artifact_sha256": null,
+      "runtime_tip_mode": "coil_as_tip",
+      "runtime_tip_trust_level": "thesis_trusted",
+      "pose_frame_used_for_analysis": "robot",
+      "identity_or_fallback": true,
+      "transform_expression": "T_robot_tip = T_robot_aurora @ T_aurora_coil_0A @ T_coil_tip"
+    },
+    "status": "success",
+    "summary_requirements": {
+      "force_status": "success",
+      "min_sample_count": 1,
+      "require_registration": true,
+      "registration_available": true,
+      "require_tip_calibration": true,
+      "tip_calibration_available": true,
+      "invalid_transforms_are_fatal": false
+    },
+    "run_trust": {
+      "run_trust_mode": "thesis_trusted",
+      "valid_for_model_training": false,
+      "valid_for_thesis_repeatability": true,
+      "valid_for_two_segment_model_training": false,
+      "include_in_evidence_index": false,
+      "data_quality_warnings": [],
+      "runtime_tip_policy": {
+        "mode": "coil_as_tip",
+        "calibration_state": "coil_as_tip",
+        "tip_pose_status": "coil_as_tip",
+        "trust_label": "thesis_trusted",
+        "trust_level": "thesis_trusted",
+        "thesis_trusted": true,
+        "requested_workflow": "single_segment_repeatability",
+        "workflow": "repeatability",
+        "canonical_workflow": "repeatability",
+        "allowed_for_workflow": true,
+        "requires_lower_trust_override": false,
+        "uses_coil_as_tip": true,
+        "uses_calibrated_tip_transform": false,
+        "uses_identity_transform": true,
+        "intended_use": "Current trusted runtime position path for robot-frame tip repeatability, pretension centering, modeling datasets, and demos when coil-origin-as-tip is the declared measurement.",
+        "status_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.",
+        "reasons": [],
+        "warnings": [
+          "Coil-as-tip uses identity T_coil_tip and reports the 0A coil origin as the tip; do not interpret it as a validated calibrated tip transform or true tip orientation."
+        ],
+        "allowed_workflows": {
+          "repeatability": true,
+          "pretension_validation": true,
+          "penprobe_chasing": true,
+          "modeling_dataset": true,
+          "transform_chain_validation": true
+        }
+      },
+      "success_does_not_imply_thesis_validity": true
+    },
+    "run_trust_mode": "thesis_trusted",
+    "valid_for_model_training": false,
+    "valid_for_thesis_repeatability": true,
+    "valid_for_two_segment_model_training": false,
+    "mock_mode": false,
+    "include_in_evidence_index": false,
+    "data_quality_warnings": []
+  },
+  "warning_messages": [],
+  "error_messages": []
+}
