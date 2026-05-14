@@ -1,0 +1,28 @@
+Transform Chain Summary
+Generated UTC: 2026-05-14T02:49:24.550Z
+Expression: T_robot_tip = T_robot_aurora @ T_aurora_coil_0A @ T_coil_tip
+
+Tracker
+- backend: ndi
+- state: streaming_healthy
+- runtime coil tool: 0A
+- registration tool: 0B
+
+Registration
+- state: loaded
+- artifact: /home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json
+- FRE mm: 0.635
+- timestamp UTC: 2026-05-13T13:42:53.573Z
+
+Runtime Tip Policy
+- mode: latest_accepted
+- trust: lower_trust
+- thesis trusted: no
+- workflow allowed: no
+- coil-as-tip: no
+- calibrated T_coil_tip: yes
+- artifact: /home/continuum-pi/Continuum_pi/data/runtime_tip_calibration/latest_runtime_tip_calibration.json
+- message: Latest accepted runtime tip artifact is active but marked lower_trust by policy. (2026-04-17T22:55:56.544Z) Source=runtime_tip_calibration_hat.
+
+Warnings
+- Latest accepted runtime tip calibration is loaded but currently lower-trust than coil-as-tip; runs must record this explicitly.

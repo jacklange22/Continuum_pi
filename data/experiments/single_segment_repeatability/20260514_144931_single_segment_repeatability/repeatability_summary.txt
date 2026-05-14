@@ -1,0 +1,83 @@
+Single-Segment Repeatability Summary
+This run recreates the legacy 17-point single-segment protocol using the current tracker, servo, registration, and runtime-tip chain. Repeatability metrics are computed from repeat captures after returning to the desired target from every other target.
+
+Run ID: 3297a8921934
+Timestamp: 2026-05-14T14:49:37.797079+00:00
+Status: success
+Protocol: Legacy 17 target / all-other approaches
+Runtime Tip Mode: coil_as_tip
+Runtime Tip Trust: thesis_trusted
+Thesis Trusted: yes
+Targets: 17
+Ring Radii: inner 4.000 mm (261.000 ticks), outer 8.000 mm (522.000 ticks)
+Amplitude Cap: 650.000 ticks (max target 522.000 ticks)
+Spool Diameter: 20.000 mm
+Planned Captures: 544
+Run Validity: PASS
+Repeat Coverage: 272/272
+Per-Target Minimum: >= 12 repeats
+Valid Repeat Captures: 272
+Valid Approach Captures: 272
+Rejected Captures: 0 (0.0%)
+Pose Frame: robot
+Overall RMS: 1.614 mm
+Overall Max: 4.691 mm
+Path Dependence RMS: 1.614 mm
+Thesis Goal: <= 1.000 mm
+Goal Result: not met
+
+Run validity:
+- Accepted repeat coverage: 272 / 272 (100.000 %)
+- Per-target minimum: 12 repeats for all 17 targets
+- Rejected capture rate: 0.000 %
+
+Legacy-style comparison:
+- Definition: desired-target repeat captures only; mean XYZ centroid; XY_RMSE uses XY-plane distances; XYZ_RMSE/max use 3D Euclidean distances. The legacy plot labels used XYZ_RMSE while displaying XY scatter.
+- Pose frame used: robot
+- Selected repeat samples: 272 (rejected/excluded 0; filter abs(x_mm) < 100.000)
+- Overall legacy-style XY RMSE: 1.586 mm
+- Overall legacy-style XYZ RMSE: 1.614 mm
+- Overall legacy-style max deviation: 4.691 mm
+
+Transform-chain audit:
+- Registration artifact: /home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json
+- Runtime tip artifact: None
+- Runtime tip mode/trust: coil_as_tip / thesis_trusted
+- Pose frame used for analysis: robot
+- Identity/fallback behavior: yes
+
+Per-target repeat captures:
+- T00 (center): n=16, RMSE=1.024 mm, max=1.428 mm
+- T01 (inner): n=16, RMSE=1.834 mm, max=3.098 mm
+- T02 (inner): n=16, RMSE=1.329 mm, max=2.050 mm
+- T03 (inner): n=16, RMSE=2.134 mm, max=3.168 mm
+- T04 (inner): n=16, RMSE=1.453 mm, max=2.184 mm
+- T05 (inner): n=16, RMSE=2.012 mm, max=3.527 mm
+- T06 (inner): n=16, RMSE=1.179 mm, max=1.820 mm
+- T07 (inner): n=16, RMSE=1.951 mm, max=3.533 mm
+- T08 (inner): n=16, RMSE=1.234 mm, max=1.790 mm
+- T09 (outer): n=16, RMSE=2.264 mm, max=3.957 mm
+- T10 (outer): n=16, RMSE=0.926 mm, max=1.817 mm
+- T11 (outer): n=16, RMSE=2.228 mm, max=4.691 mm
+- T12 (outer): n=16, RMSE=1.079 mm, max=2.274 mm
+- T13 (outer): n=16, RMSE=2.081 mm, max=3.611 mm
+- T14 (outer): n=16, RMSE=0.777 mm, max=1.868 mm
+- T15 (outer): n=16, RMSE=1.779 mm, max=2.982 mm
+- T16 (outer): n=16, RMSE=0.671 mm, max=1.603 mm
+
+Run provenance:
+- Tracker backend: ndi_tracker_python (ndi)
+- 0B pivot tip: /home/continuum-pi/Continuum_pi/data/pivot_calibration/generated_penprobe_tip.csv @ 2026-05-14T02:52:54.950734+00:00
+- Base registration: /home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json (state=loaded, timestamp=2026-05-14T02:53:35.354Z, FRE=0.523 mm, sha256=6da7ff45ca49)
+- Runtime tip calibration: None (mode=coil_as_tip, trust=thesis_trusted, state=coil_as_tip, artifact_used=False, timestamp=None, sha256=n/a)
+- Pretension artifact: /home/continuum-pi/Continuum_pi/config/neutral_setpoints.json (status=ready, source=manual, updated=2026-05-14T02:54:47Z, sha256=4e8dcd01e501)
+- Transform chain: T_robot_tip = T_robot_aurora @ T_aurora_coil_0A @ T_coil_tip
+- Thesis trust: thesis_trusted runtime tip policy (coil_as_tip)
+- Runtime tip identity marker: T_coil_tip_identity__coil_pose_used_as_tip
+- Runtime tip detail: Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.
+- Pretension detail: Accepted manual pretension/startup state is recorded for servo(s): 5, 6, 7, 8
+
+Interpretation:
+- This validates repeatability after startup calibration and pretension, not spatial accuracy by itself.
+- Use robot-frame metrics only when registration and 0A runtime tip calibration are accepted and active.
+- Path-dependence values summarize approach-conditioned deviations from each target centroid.
