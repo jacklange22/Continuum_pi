@@ -1,0 +1,155 @@
+{
+  "accepted_sample_count": 1759,
+  "command_range_per_tendon_cm": {
+    "tendon_1": {
+      "max": 0.74853515625,
+      "min": -0.749267578125,
+      "span": 1.497802734375
+    },
+    "tendon_2": {
+      "max": 0.7486282578875172,
+      "min": -0.7493141289437586,
+      "span": 1.4979423868312758
+    },
+    "tendon_3": {
+      "max": 0.749267578125,
+      "min": -0.74853515625,
+      "span": 1.497802734375
+    },
+    "tendon_4": {
+      "max": 0.7493141289437586,
+      "min": -0.7486282578875172,
+      "span": 1.4979423868312758
+    }
+  },
+  "dropped_post_motion_telemetry_samples": 21,
+  "dropped_pre_motion_telemetry_samples": 0,
+  "failure_count": 1,
+  "high_current_warning": false,
+  "max_abs_current_ma": 354,
+  "max_abs_current_ma_by_servo": {
+    "5": 337,
+    "6": 354,
+    "7": 309,
+    "8": 271
+  },
+  "max_current_warning_ma": 800,
+  "mean_abs_current_ma_by_servo": {
+    "5": 56.347105115233276,
+    "6": 54.92242833052276,
+    "7": 54.37587854933933,
+    "8": 50.928611579539066
+  },
+  "measured_xyz_range_mm": {
+    "x": {
+      "max": 33.179815718978915,
+      "min": -32.314810584996536,
+      "span": 65.49462630397545
+    },
+    "y": {
+      "max": 33.58652974660784,
+      "min": -34.12486715190448,
+      "span": 67.71139689851232
+    },
+    "z": {
+      "max": 65.81916410557221,
+      "min": 44.42188255539054,
+      "span": 21.397281550181674
+    }
+  },
+  "next_command_index_to_resume": 1778,
+  "peak_current_sample_by_servo": {
+    "5": {
+      "abs_current_ma": 337,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        -0.62841796875,
+        0.23216735253772303,
+        0.62841796875,
+        -0.23216735253772303
+      ],
+      "resolved_pair_command_cm": [
+        -0.62841796875,
+        0.23216735253772303
+      ],
+      "sample_index": 0,
+      "sequence_index": 809,
+      "source": "servo_feedback_at_command",
+      "step_index": 808
+    },
+    "6": {
+      "abs_current_ma": 354,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.09375,
+        -0.6944444444444444,
+        -0.09375,
+        0.6944444444444444
+      ],
+      "resolved_pair_command_cm": [
+        0.09375,
+        -0.6944444444444444
+      ],
+      "sample_index": 0,
+      "sequence_index": 10,
+      "source": "servo_feedback_at_command",
+      "step_index": 9
+    },
+    "7": {
+      "abs_current_ma": 309,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.744873046875,
+        -0.15260631001371738,
+        -0.744873046875,
+        0.15260631001371738
+      ],
+      "resolved_pair_command_cm": [
+        0.744873046875,
+        -0.15260631001371738
+      ],
+      "sample_index": 0,
+      "sequence_index": 1280,
+      "source": "servo_feedback_at_command",
+      "step_index": 1279
+    },
+    "8": {
+      "abs_current_ma": 271,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        -0.016845703125,
+        0.7465706447187928,
+        0.016845703125,
+        -0.7465706447187928
+      ],
+      "resolved_pair_command_cm": [
+        -0.016845703125,
+        0.7465706447187928
+      ],
+      "sample_index": 0,
+      "sequence_index": 1215,
+      "source": "servo_feedback_at_command",
+      "step_index": 1214
+    }
+  },
+  "recommendation": "failed_due_to_telemetry",
+  "recovered_packet_error_count": 0,
+  "rejected_sample_count": 20,
+  "sample_rate_stats": {
+    "max_dt_s": 5.066052077003405,
+    "mean_dt_s": 4.165523290553997,
+    "mean_hz": 0.24006587654128905,
+    "min_dt_s": 4.044233433989575,
+    "sample_count": 1779
+  },
+  "schema_version": "collect_pose_dataset_quality_v1",
+  "servo_telemetry_retry_count": 2,
+  "tracker_stale_count": 0,
+  "trainability_status": {
+    "not_model_training_ready": false,
+    "run_trust_mode": "thesis_trusted",
+    "valid_for_model_training": false
+  },
+  "unrecovered_packet_error_count": 21,
+  "write_goal_packet_error_count": 0
+}

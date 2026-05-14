@@ -1,0 +1,35 @@
+Motor Babble Modeling Dataset Summary
+This run collected ordered single-segment command/pose samples for offline forward-model training and later state-aware model comparison.
+
+Run ID: c2d0f52fc7ac
+Timestamp: 2026-05-14T20:23:50.176409+00:00
+Status: failed
+Dataset Mode: workspace coverage
+Run Label: upgraded_robot_modeling
+Dataset Tag: baseline_v1
+Accepted Samples: 1759
+Rejected Samples: 20
+Acceptance Rate: 98.9%
+Command Steps: 4092
+Samples / Command: 1
+Runtime Tip: coil_as_tip (thesis_trusted)
+Pretension: manual (ready)
+Pair 1/3 Range: -0.749 .. 0.749 cm
+Pair 2/4 Range: -0.749 .. 0.749 cm
+Workspace Span: x=65.495 mm, y=67.711 mm, z=21.397 mm
+Lower-Trust Override: no
+
+Provenance:
+- Registration: /home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json @ 2026-05-14T02:53:35.354Z
+- Runtime tip: None (mode=coil_as_tip, trust=thesis_trusted, timestamp=None)
+- Pretension: /home/continuum-pi/Continuum_pi/config/neutral_setpoints.json (source=manual, updated=2026-05-14T20:22:32Z)
+- Runtime tip detail: Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.
+- Pretension detail: Accepted manual pretension/startup state is recorded for servo(s): 5, 6, 7, 8
+
+Rejected captures:
+- post_motion_telemetry_packet_error: 20
+
+Offline handoff:
+- `samples.jsonl` preserves canonical full-fidelity ordered samples.
+- `modeling_dataset_export.jsonl` preserves ordered export rows with an explicit accepted flag for offline filtering or sequential multi-input modeling.
+- `modeling_dataset_legacy_compat.dat` contains accepted rows only for quick legacy ANN/comparison-stack conversion.
