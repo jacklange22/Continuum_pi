@@ -293,6 +293,25 @@ def _model_io_dims(output_target: str) -> tuple[int, int]:
     return 3, LEGACY_FULL_POSE_INPUT_DIM
 
 
+def _legacy_ann_artifact_kind(output_target: str) -> str:
+    """Stable ``artifact_kind`` token recorded in metadata so downstream tools can dispatch."""
+    token = _resolve_output_target(output_target)
+    if token == OUTPUT_TARGET_FULL_POSE:
+        return "legacy_ann_full_pose_v1"
+    if token == OUTPUT_TARGET_XYZ:
+        return "legacy_ann_xyz_v1"
+    return "legacy_ann_inverse_xyz_to_cable_v1"
+
+
+def _linear_ridge_artifact_kind(output_target: str) -> str:
+    token = _resolve_output_target(output_target)
+    if token == OUTPUT_TARGET_FULL_POSE:
+        return "linear_ridge_full_pose_v1"
+    if token == OUTPUT_TARGET_XYZ:
+        return "linear_ridge_xyz_v1"
+    return "linear_ridge_inverse_xyz_to_cable_v1"
+
+
 @dataclass
 class AnnTrainingConfig:
     """V1 training parameters for the legacy full-pose ANN.
@@ -1775,9 +1794,10 @@ def train_legacy_ann(
     }
     split_manifest_path.write_text(json.dumps(split_manifest, indent=2), encoding="utf-8")
     dataset_metadata = _dataset_metadata_for_artifact(prepared=prepared)
+    artifact_kind = _legacy_ann_artifact_kind(output_target)
     metadata_payload = {
         "schema_version": TRAINING_SCHEMA_VERSION,
-        "artifact_kind": "legacy_ann_full_pose_v1",
+        "artifact_kind": artifact_kind,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "status": status,
         "legacy_references": [
@@ -2207,7 +2227,7 @@ def train_linear_ridge_full_pose(
     config_dump["linear_ridge_baseline"] = True
     metadata_payload = {
         "schema_version": TRAINING_SCHEMA_VERSION,
-        "artifact_kind": "linear_ridge_full_pose_v1",
+        "artifact_kind": _linear_ridge_artifact_kind(output_target),
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "status": "completed",
         "dataset": dataset_metadata,
@@ -3123,11 +3143,29 @@ def _render_summary_text(metadata_payload: dict[str, Any]) -> str:
     estimate = dict(metadata_payload.get("estimate", {}) or {})
     model = dict(metadata_payload.get("model", {}) or {})
     artifact_kind = str(metadata_payload.get("artifact_kind", "") or "")
-    title = (
-        "Linear ridge full-pose baseline summary"
-        if "linear_ridge" in artifact_kind
-        else "Legacy ANN full-pose training summary"
+    output_target = str(model.get("output_target") or "").strip().lower()
+    # Backfill from the legacy "variant" or "full_pose_v1" artifact_kind for old artifacts.
+    if not output_target:
+        if "full_pose" in artifact_kind:
+            output_target = OUTPUT_TARGET_FULL_POSE
+        elif "xyz_to_cable" in artifact_kind or "cable_from_xyz" in artifact_kind:
+            output_target = OUTPUT_TARGET_CABLE_FROM_XYZ
+        elif "xyz" in artifact_kind:
+            output_target = OUTPUT_TARGET_XYZ
+        else:
+            output_target = OUTPUT_TARGET_FULL_POSE
+    is_inverse = output_target == OUTPUT_TARGET_CABLE_FROM_XYZ
+    is_xyz_only = output_target == OUTPUT_TARGET_XYZ
+    is_linear = "linear_ridge" in artifact_kind
+    family_label = (
+        "Linear ridge"
+        if is_linear
+        else "Legacy ANN"
     )
+    target_label = (
+        "inverse (xyz → cable)" if is_inverse else "XYZ" if is_xyz_only else "full-pose"
+    )
+    title = f"{family_label} {target_label} training summary"
     hl = model.get("hidden_layers")
     model_line = (
         f"Model: {model.get('family', 'n/a')} | ridge_alpha={model.get('ridge_alpha', 'n/a')}"
@@ -3144,37 +3182,56 @@ def _render_summary_text(metadata_payload: dict[str, Any]) -> str:
         f"Prepared samples: {dataset.get('prepared_sample_count', 'n/a')}",
         f"Backend: {backend.get('selected_backend', 'n/a')} ({backend.get('platform_summary', 'n/a')})",
         model_line,
+        f"Output target: {output_target}",
+        f"Standardized I/O: {'yes' if model.get('standardize_io') else 'no'}",
         f"Epochs completed: {training.get('epochs_completed', 'n/a')}",
         f"Best epoch: {training.get('best_epoch', 'n/a')}",
         f"Best validation loss: {_fmt_number(training.get('best_validation_loss'))}",
         f"Test loss: {_fmt_number(training.get('test_loss'))}",
         f"Training wall time (s): {_fmt_number(training.get('training_wall_time_s'))}",
     ]
+    if training.get("early_stopped"):
+        lines.append(
+            f"Early stopped: yes (patience={training.get('early_stopping_patience', 'n/a')})"
+        )
     if estimate:
         lines.append(f"Warmup estimate: {_fmt_seconds(estimate.get('estimated_total_s'))}")
     evaluation = dict(metadata_payload.get("evaluation", {}) or {})
     test_block = dict(evaluation.get("test") or {}) if evaluation.get("test") else {}
     if test_block:
-        pe = dict(test_block.get("position_error_l2_mm") or {})
-        lines.extend(
-            [
-                "",
-                "Held-out test metrics (same split as training):",
-                f"  Loss (batch mean): {_fmt_number(test_block.get('loss_mean'))}",
-                f"  Position RMSE XYZ (mm): {_fmt_number(test_block.get('position_rmse_xyz_mm'))}",
-                f"  Position RMSE XY (mm): {_fmt_number(test_block.get('position_rmse_xy_mm'))}",
-                f"  Position RMSE Z (mm): {_fmt_number(test_block.get('position_rmse_z_mm'))}",
-                f"  Position error L2 mean / median / p95 / max (mm): "
-                f"{_fmt_number(pe.get('mean'))} / {_fmt_number(pe.get('median'))} / "
-                f"{_fmt_number(pe.get('p95'))} / {_fmt_number(pe.get('max'))}",
-            ]
-        )
-        ang = test_block.get("tangent_angular_error_rad")
-        if isinstance(ang, dict) and ang:
-            lines.append(
-                "  Tangent angular error mean / median (rad): "
-                f"{_fmt_number(ang.get('mean'))} / {_fmt_number(ang.get('median'))}"
+        lines.extend(["", "Held-out test metrics (same split as training):"])
+        lines.append(f"  Loss (batch mean): {_fmt_number(test_block.get('loss_mean'))}")
+        if is_inverse:
+            cable_l2 = dict(test_block.get("cable_error_l2_cm") or {})
+            per_dim = test_block.get("cable_per_dim_rmse_cm") or []
+            lines.extend(
+                [
+                    f"  Cable RMSE (cm): {_fmt_number(test_block.get('cable_rmse_cm'))}",
+                    f"  Per-cable RMSE (cm): "
+                    + ", ".join(_fmt_number(v) for v in per_dim) if per_dim else "  Per-cable RMSE (cm): n/a",
+                    f"  Cable error L2 mean / median / p95 / max (cm): "
+                    f"{_fmt_number(cable_l2.get('mean'))} / {_fmt_number(cable_l2.get('median'))} / "
+                    f"{_fmt_number(cable_l2.get('p95'))} / {_fmt_number(cable_l2.get('max'))}",
+                ]
             )
+        else:
+            pe = dict(test_block.get("position_error_l2_mm") or {})
+            lines.extend(
+                [
+                    f"  Position RMSE XYZ (mm): {_fmt_number(test_block.get('position_rmse_xyz_mm'))}",
+                    f"  Position RMSE XY (mm): {_fmt_number(test_block.get('position_rmse_xy_mm'))}",
+                    f"  Position RMSE Z (mm): {_fmt_number(test_block.get('position_rmse_z_mm'))}",
+                    f"  Position error L2 mean / median / p95 / max (mm): "
+                    f"{_fmt_number(pe.get('mean'))} / {_fmt_number(pe.get('median'))} / "
+                    f"{_fmt_number(pe.get('p95'))} / {_fmt_number(pe.get('max'))}",
+                ]
+            )
+            ang = test_block.get("tangent_angular_error_rad")
+            if isinstance(ang, dict) and ang:
+                lines.append(
+                    "  Tangent angular error mean / median (rad): "
+                    f"{_fmt_number(ang.get('mean'))} / {_fmt_number(ang.get('median'))}"
+                )
     note = evaluation.get("single_dataset_split_note")
     if note:
         lines.extend(["", f"Note: {note}"])

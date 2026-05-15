@@ -1125,3 +1125,211 @@ def test_train_inverse_xyz_to_cable_produces_4d_output(tmp_path: Path) -> None:
     # Inverse runs should report cable-space metrics (compute_cable_evaluation_metrics).
     test_block = meta["evaluation"].get("test") or {}
     assert "cable_rmse_cm" in test_block
+
+
+# ---------------------------------------------------------------------------
+# Artifact-kind dispatch (bug-fix regressions).
+# ---------------------------------------------------------------------------
+
+
+def test_train_legacy_ann_artifact_kind_reflects_output_target_xyz(tmp_path: Path) -> None:
+    """XYZ-target ANN artifacts must NOT be tagged as full_pose."""
+    pytest.importorskip("torch")
+    run_dir = _write_run_with_export_rows(tmp_path, complete_rows=20, incomplete_rows=0, target=20)
+    config = AnnTrainingConfig(
+        artifact_root=str(tmp_path / "data" / "models" / "ann"),
+        artifact_name="xyz_artifact_kind",
+        epochs=1,
+        batch_size=4,
+        train_ratio=0.7,
+        validation_ratio=0.2,
+        test_ratio=0.1,
+        output_target=OUTPUT_TARGET_XYZ,
+    )
+    result = training_module.train_legacy_ann(
+        project_root=tmp_path,
+        dataset_path=run_dir,
+        config=config,
+        backend_name="cpu",
+    )
+    meta = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+    assert meta["artifact_kind"] == "legacy_ann_xyz_v1"
+
+
+def test_train_inverse_xyz_to_cable_artifact_kind_is_inverse(tmp_path: Path) -> None:
+    pytest.importorskip("torch")
+    run_dir = _write_run_with_export_rows(tmp_path, complete_rows=20, incomplete_rows=0, target=20)
+    config = AnnTrainingConfig(
+        artifact_root=str(tmp_path / "data" / "models" / "ann"),
+        artifact_name="inv_artifact_kind",
+        epochs=1,
+        batch_size=4,
+        train_ratio=0.7,
+        validation_ratio=0.2,
+        test_ratio=0.1,
+    )
+    result = train_inverse_xyz_to_cable(
+        project_root=tmp_path,
+        dataset_path=run_dir,
+        config=config,
+        backend_name="cpu",
+    )
+    meta = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+    assert meta["artifact_kind"] == "legacy_ann_inverse_xyz_to_cable_v1"
+
+
+def test_render_summary_text_dispatches_on_output_target_for_inverse(tmp_path: Path) -> None:
+    """The summary text must call inverse models 'inverse', not 'full-pose'."""
+    text = training_module._render_summary_text(
+        {
+            "status": "completed",
+            "created_at_utc": "2026-05-15T00:00:00Z",
+            "artifact_kind": "legacy_ann_inverse_xyz_to_cable_v1",
+            "dataset": {"run_name": "r", "dataset_mode": "m", "prepared_sample_count": 1},
+            "backend": {"selected_backend": "cpu", "platform_summary": "test"},
+            "model": {
+                "output_target": OUTPUT_TARGET_CABLE_FROM_XYZ,
+                "hidden_layers": [32, 32],
+                "family": "legacy_ann",
+            },
+            "training": {"epochs_completed": 1, "best_epoch": 1, "best_validation_loss": 0.1, "test_loss": 0.2},
+            "evaluation": {"test": {"loss_mean": 0.1, "cable_rmse_cm": 0.05, "cable_per_dim_rmse_cm": [0.04, 0.05, 0.06, 0.07]}},
+        }
+    )
+    assert "inverse" in text.lower()
+    assert "cable rmse" in text.lower()
+    assert "position rmse" not in text.lower()
+
+
+def test_render_summary_text_for_xyz_only_says_xyz(tmp_path: Path) -> None:
+    text = training_module._render_summary_text(
+        {
+            "status": "completed",
+            "created_at_utc": "2026-05-15T00:00:00Z",
+            "artifact_kind": "legacy_ann_xyz_v1",
+            "dataset": {"run_name": "r", "dataset_mode": "m", "prepared_sample_count": 1},
+            "backend": {"selected_backend": "cpu", "platform_summary": "test"},
+            "model": {
+                "output_target": OUTPUT_TARGET_XYZ,
+                "hidden_layers": [128, 128],
+                "family": "legacy_ann",
+            },
+            "training": {"epochs_completed": 1, "best_epoch": 1, "best_validation_loss": 0.1, "test_loss": 0.2},
+            "evaluation": {
+                "test": {
+                    "loss_mean": 0.1,
+                    "position_rmse_xyz_mm": 1.5,
+                    "position_rmse_xy_mm": 1.2,
+                    "position_rmse_z_mm": 0.9,
+                    "position_error_l2_mm": {"mean": 1.4, "median": 1.3, "p95": 2.5, "max": 3.0},
+                }
+            },
+        }
+    )
+    assert "XYZ" in text
+    # XYZ-only summary should NOT advertise tangent angular error.
+    assert "tangent" not in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Evaluation path: scaler is applied + 3D predictions handled (analysis.py fixes).
+# ---------------------------------------------------------------------------
+
+
+def test_evaluate_models_applies_scaler_and_handles_xyz_only_artifact(tmp_path: Path) -> None:
+    """A new XYZ-standardized ANN artifact must evaluate cleanly in the Modeling tab path.
+
+    Without the analysis.py fix, raw cable cm would feed into a model trained on Z-scored
+    cable, predictions would come back in normalized space, and the comparison would
+    report nonsense mm metrics (often >100mm RMSE on its own training data).
+    """
+    pytest.importorskip("torch")
+    from continuum_robot.modeling.analysis import evaluate_models, ModelingEvaluationConfig
+
+    run_dir = _write_run_with_export_rows(tmp_path, complete_rows=80, incomplete_rows=0, target=80)
+    # Force a small-but-trainable run that records the scaler.
+    config = AnnTrainingConfig(
+        artifact_root=str(tmp_path / "data" / "models" / "ann"),
+        artifact_name="xyz_eval_smoke",
+        epochs=20,
+        batch_size=8,
+        train_ratio=0.7,
+        validation_ratio=0.2,
+        test_ratio=0.1,
+        output_target=OUTPUT_TARGET_XYZ,
+        standardize_io=True,
+        early_stopping_patience=10,
+        learning_rate=5e-3,
+        random_seed=0,
+    )
+    train_result = training_module.train_legacy_ann(
+        project_root=tmp_path,
+        dataset_path=run_dir,
+        config=config,
+        backend_name="cpu",
+    )
+    eval_config = ModelingEvaluationConfig(
+        include_mike=False,
+        include_camarillo=False,
+        include_ann=True,
+        evaluation_scope="full_dataset",
+        results_root=str(tmp_path / "data" / "modeling_results"),
+    )
+    eval_result = evaluate_models(
+        project_root=tmp_path,
+        dataset_path=run_dir,
+        artifact_path=train_result.artifact_dir,
+        config=eval_config,
+    )
+    ann_eval = eval_result.model_evaluations.get("ann")
+    assert ann_eval is not None
+    assert ann_eval.metrics.status == "completed"
+    # Sanity: predictions should be in roughly the right mm scale (truths span ~1..2mm in
+    # our fixture). If the scaler weren't applied, predictions would be Z-scored numbers
+    # ~|O(1)| compared to truths in mm, and position_rmse_mm would be wildly different
+    # from the loss_mean. With the scaler applied, position_rmse_mm should be finite and
+    # small (the network trained on this data).
+    assert ann_eval.metrics.position_rmse_mm is not None
+    assert ann_eval.metrics.position_rmse_mm < 10.0  # generous upper bound for a 20-epoch fit
+    # XYZ-only artifacts: tangent metrics should be elided rather than reported as zero.
+    assert ann_eval.metrics.tangent_rmse_deg is None
+
+
+def test_evaluate_models_rejects_inverse_artifact_cleanly(tmp_path: Path) -> None:
+    """Inverse artifacts can't fit the forward comparison; surface 'unavailable' explicitly."""
+    pytest.importorskip("torch")
+    from continuum_robot.modeling.analysis import evaluate_models, ModelingEvaluationConfig
+
+    run_dir = _write_run_with_export_rows(tmp_path, complete_rows=40, incomplete_rows=0, target=40)
+    config = AnnTrainingConfig(
+        artifact_root=str(tmp_path / "data" / "models" / "ann"),
+        artifact_name="inverse_eval_smoke",
+        epochs=2,
+        batch_size=8,
+        train_ratio=0.7,
+        validation_ratio=0.2,
+        test_ratio=0.1,
+    )
+    train_result = train_inverse_xyz_to_cable(
+        project_root=tmp_path,
+        dataset_path=run_dir,
+        config=config,
+        backend_name="cpu",
+    )
+    eval_config = ModelingEvaluationConfig(
+        include_mike=False,
+        include_camarillo=False,
+        include_ann=True,
+        evaluation_scope="full_dataset",
+        results_root=str(tmp_path / "data" / "modeling_results"),
+    )
+    eval_result = evaluate_models(
+        project_root=tmp_path,
+        dataset_path=run_dir,
+        artifact_path=train_result.artifact_dir,
+        config=eval_config,
+    )
+    ann_eval = eval_result.model_evaluations.get("ann")
+    assert ann_eval is not None
+    assert ann_eval.metrics.status == "unavailable"
+    assert "inverse" in (ann_eval.metrics.reason or "").lower()

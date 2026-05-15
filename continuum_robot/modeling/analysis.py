@@ -18,6 +18,10 @@ from continuum_robot.experiments.plotting import add_metric_box, color, create_f
 from continuum_robot.modeling.ann_training import (
     LEGACY_FULL_POSE_INPUT_DIM,
     LEGACY_FULL_POSE_OUTPUT_DIM,
+    OUTPUT_TARGET_CABLE_FROM_XYZ,
+    OUTPUT_TARGET_FULL_POSE,
+    OUTPUT_TARGET_XYZ,
+    IoScalers,
     ModelingDatasetSummary,
     TorchUnavailableError,
     TrainedArtifactSummary,
@@ -800,12 +804,41 @@ def _evaluate_ann(
         )
     metadata = dict(artifact_details.metadata or {})
     model_payload = dict(metadata.get("model", {}) or {})
+    output_target = str(model_payload.get("output_target") or "").strip().lower()
+    artifact_kind = str(metadata.get("artifact_kind", "") or "")
+    # Back-compat: old artifacts only carry artifact_kind; infer output_target from it.
+    if not output_target:
+        if "xyz_to_cable" in artifact_kind or "cable_from_xyz" in artifact_kind:
+            output_target = OUTPUT_TARGET_CABLE_FROM_XYZ
+        elif "xyz" in artifact_kind and "full_pose" not in artifact_kind:
+            output_target = OUTPUT_TARGET_XYZ
+        else:
+            output_target = OUTPUT_TARGET_FULL_POSE
+    if output_target == OUTPUT_TARGET_CABLE_FROM_XYZ:
+        # Inverse models can't be compared against Mike/Camarillo on the same
+        # cable→tip-pose workflow. Surface this clearly instead of crashing on dim
+        # mismatches.
+        return ModelEvaluation(
+            metrics=ModelMetrics(
+                model_key="ann",
+                label="ANN",
+                status="unavailable",
+                reason=(
+                    "Selected ANN artifact is an inverse model (xyz → cable); the "
+                    "Modeling tab comparison runs forward cable → tip-pose only. Train a "
+                    "forward XYZ or full-pose ANN to compare against Mike / Camarillo."
+                ),
+            ),
+            predictions=None,
+        )
     hidden_layers = [int(value) for value in model_payload.get("hidden_layers", [32, 32]) or [32, 32]]
     dtype = _torch_dtype(torch, str(model_payload.get("dtype", "float64") or "float64"))
+    model_input_dim = int(model_payload.get("input_dim", LEGACY_FULL_POSE_INPUT_DIM) or LEGACY_FULL_POSE_INPUT_DIM)
+    model_output_dim = int(model_payload.get("output_dim", LEGACY_FULL_POSE_OUTPUT_DIM) or LEGACY_FULL_POSE_OUTPUT_DIM)
     model = _build_legacy_ann_model(
         torch=torch,
-        input_dim=int(model_payload.get("input_dim", LEGACY_FULL_POSE_INPUT_DIM) or LEGACY_FULL_POSE_INPUT_DIM),
-        output_dim=int(model_payload.get("output_dim", LEGACY_FULL_POSE_OUTPUT_DIM) or LEGACY_FULL_POSE_OUTPUT_DIM),
+        input_dim=model_input_dim,
+        output_dim=model_output_dim,
         hidden_layers=hidden_layers,
         device=torch.device("cpu"),
         dtype=dtype,
@@ -813,15 +846,41 @@ def _evaluate_ann(
     state_dict = torch.load(Path(model_path), map_location="cpu")
     model.load_state_dict(state_dict)
     model.eval()
+    # Apply the saved I/O scaler if this artifact was trained with standardize_io=True.
+    # Without this the model receives raw cable cm but was trained on Z-scored cable, so
+    # predictions come out in normalized space and would give nonsense mm metrics.
+    scalers: IoScalers | None = None
+    scaler_payload = metadata.get("io_scaler")
+    if isinstance(scaler_payload, dict):
+        try:
+            scalers = IoScalers.from_dict(scaler_payload)
+        except Exception:
+            scalers = None
+    inputs_arr = np.asarray(inputs, dtype=float)
+    if scalers is not None:
+        inputs_arr = scalers.input_scaler.transform(inputs_arr)
     with torch.inference_mode():
-        tensor_inputs = torch.tensor(inputs, dtype=dtype, device=torch.device("cpu"))
+        tensor_inputs = torch.tensor(inputs_arr, dtype=dtype, device=torch.device("cpu"))
         predictions = model(tensor_inputs).detach().cpu().numpy()
+    predictions = np.asarray(predictions, dtype=float)
+    if scalers is not None:
+        predictions = scalers.output_scaler.inverse_transform(predictions)
+    # The comparison workflow (Mike / Camarillo / ANN) expects 6-dim pose predictions
+    # (xyz + tangent). For XYZ-only ANN artifacts, zero-pad the tangent so the downstream
+    # position metrics work; the tangent metrics will read all-zeros and the caller can
+    # ignore them via output_target=='xyz'.
+    if predictions.shape[1] == 3:
+        predictions = np.concatenate(
+            [predictions, np.zeros((predictions.shape[0], 3), dtype=float)],
+            axis=1,
+        )
     return _complete_model_evaluation(
         model_key="ann",
         label="ANN",
-        predictions=np.asarray(predictions, dtype=float),
+        predictions=predictions,
         truths=truths,
         phases=phases,
+        predicted_pose_dim=int(model_output_dim),
     )
 
 
@@ -832,14 +891,28 @@ def _complete_model_evaluation(
     predictions: np.ndarray,
     truths: np.ndarray,
     phases: list[str],
+    predicted_pose_dim: int = 6,
 ) -> ModelEvaluation:
+    """Geometric metrics for one model evaluation.
+
+    ``predicted_pose_dim`` lets XYZ-only ANN artifacts skip tangent metrics rather than
+    reporting fictitious zeros. Predictions are still expected to be 6-D (the caller
+    zero-pads if needed); we just elide the tangent block from the reported metrics when
+    the underlying model only predicted XYZ.
+    """
     predictions = np.asarray(predictions, dtype=float)
     truths = np.asarray(truths, dtype=float)
     position_error_vectors = predictions[:, :3] - truths[:, :3]
     position_errors = np.linalg.norm(position_error_vectors, axis=1)
-    tangent_errors = _tangent_errors_deg(predictions[:, 3:], truths[:, 3:])
+    skip_tangent = int(predicted_pose_dim) < 6 or predictions.shape[1] < 6 or truths.shape[1] < 6
+    if skip_tangent:
+        tangent_errors = np.zeros(0, dtype=float)
+        axis_tangent_rmse: list[float] = []
+    else:
+        tangent_errors = _tangent_errors_deg(predictions[:, 3:], truths[:, 3:])
+        axis_tangent_rmse_arr = np.sqrt(np.mean(np.square(predictions[:, 3:] - truths[:, 3:]), axis=0))
+        axis_tangent_rmse = [float(value) for value in axis_tangent_rmse_arr]
     axis_position_rmse = np.sqrt(np.mean(np.square(position_error_vectors), axis=0))
-    axis_tangent_rmse = np.sqrt(np.mean(np.square(predictions[:, 3:] - truths[:, 3:]), axis=0))
     phase_metrics = _phase_metrics(
         phases=phases,
         position_errors=position_errors,
@@ -853,11 +926,11 @@ def _complete_model_evaluation(
         position_rmse_mm=float(np.sqrt(np.mean(np.square(position_errors)))) if position_errors.size else None,
         mean_position_error_mm=float(np.mean(position_errors)) if position_errors.size else None,
         max_position_error_mm=float(np.max(position_errors)) if position_errors.size else None,
-        tangent_mean_error_deg=float(np.mean(tangent_errors)) if tangent_errors.size else None,
-        tangent_rmse_deg=float(np.sqrt(np.mean(np.square(tangent_errors)))) if tangent_errors.size else None,
-        tangent_max_error_deg=float(np.max(tangent_errors)) if tangent_errors.size else None,
+        tangent_mean_error_deg=(None if skip_tangent else float(np.mean(tangent_errors)) if tangent_errors.size else None),
+        tangent_rmse_deg=(None if skip_tangent else float(np.sqrt(np.mean(np.square(tangent_errors)))) if tangent_errors.size else None),
+        tangent_max_error_deg=(None if skip_tangent else float(np.max(tangent_errors)) if tangent_errors.size else None),
         axis_position_rmse_mm=[float(value) for value in axis_position_rmse],
-        axis_tangent_rmse=[float(value) for value in axis_tangent_rmse],
+        axis_tangent_rmse=axis_tangent_rmse,
         phase_metrics=phase_metrics,
     )
     return ModelEvaluation(
@@ -877,14 +950,19 @@ def _phase_metrics(
     grouped: dict[str, list[int]] = {}
     for index, phase in enumerate(phases):
         grouped.setdefault(str(phase or "unknown"), []).append(index)
+    has_tangent = tangent_errors.size > 0
     payload: dict[str, dict[str, float]] = {}
     for phase, indices in grouped.items():
-        payload[phase] = {
+        entry: dict[str, float] = {
             "sample_count": float(len(indices)),
             "position_rmse_mm": float(np.sqrt(np.mean(np.square(position_errors[indices])))),
             "mean_position_error_mm": float(np.mean(position_errors[indices])),
-            "tangent_mean_error_deg": float(np.mean(tangent_errors[indices])),
         }
+        # XYZ-only ANN artifacts have no tangent prediction; skip the phase tangent metric
+        # rather than indexing into an empty array.
+        if has_tangent:
+            entry["tangent_mean_error_deg"] = float(np.mean(tangent_errors[indices]))
+        payload[phase] = entry
     return payload
 
 
