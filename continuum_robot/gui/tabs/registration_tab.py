@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -55,13 +57,13 @@ class RegistrationTab(QWidget):
             )
         )
 
-        self.title_label = QLabel("Registration Workspace")
+        self.title_label = QLabel("Registration")
         self.title_label.setProperty("role", "title")
-        self.workflow_hint = QLabel(
-            "Choose four model points, capture one or more pen-probe samples for each, solve, review FRE, then save the accepted registration."
-        )
-        self.workflow_hint.setWordWrap(True)
-        self.workflow_hint.setProperty("role", "hint")
+        self.status_chip = QLabel("Idle")
+        self.status_chip.setAlignment(Qt.AlignCenter)
+        self.status_chip.setMinimumWidth(100)
+        self.workflow_hint = QLabel("")
+        self.workflow_hint.setVisible(False)
 
         self.dependency_status_label = QLabel("Waiting for tracker and accepted tip file.")
         self.dependency_status_label.setProperty("role", "status")
@@ -87,19 +89,28 @@ class RegistrationTab(QWidget):
         self.dependency_text.setMinimumHeight(90)
         self.dependency_text.setMaximumHeight(150)
 
-        dependency_box = QGroupBox("Dependencies & Pose")
+        dependency_box = QGroupBox("Tip & Registration Source")
         dependency_layout = QVBoxLayout(dependency_box)
+        status_row = QHBoxLayout()
+        status_row.setContentsMargins(0, 0, 0, 0)
+        status_row.setSpacing(10)
+        status_row.addWidget(self.status_chip, 0)
+        status_row.addWidget(self.dependency_status_label, 1)
+        dependency_layout.addLayout(status_row)
         dependency_form = QFormLayout()
-        dependency_form.addRow("Workflow gate", self.dependency_status_label)
-        dependency_form.addRow("Runtime tip mode", self.runtime_tip_mode_combo)
-        dependency_form.addRow("Runtime tip trust", self.runtime_tip_trust_label)
-        dependency_form.addRow("Runtime tip source", self.runtime_tip_mode_message_label)
+        runtime_tip_row = QHBoxLayout()
+        runtime_tip_row.setContentsMargins(0, 0, 0, 0)
+        runtime_tip_row.setSpacing(8)
+        runtime_tip_row.addWidget(self.runtime_tip_mode_combo, 1)
+        runtime_tip_row.addWidget(self.runtime_tip_trust_label, 0)
+        runtime_tip_widget = QWidget()
+        runtime_tip_widget.setLayout(runtime_tip_row)
+        dependency_form.addRow("Runtime tip mode", runtime_tip_widget)
+        dependency_form.addRow("Tip source", self.runtime_tip_mode_message_label)
         dependency_form.addRow("Accepted tip file", self.tip_file_label)
-        dependency_form.addRow("Tip geometry", self.tip_geometry_label)
-        dependency_form.addRow("Accepted registration", self.accepted_registration_label)
+        dependency_form.addRow("Saved registration", self.accepted_registration_label)
         dependency_form.addRow("Live robot-frame pose", self.live_pose_label)
         dependency_layout.addLayout(dependency_form)
-        dependency_layout.addWidget(self.dependency_text)
 
         self.begin_button = QPushButton("Begin Session")
         self.begin_button.setProperty("role", "primary")
@@ -206,23 +217,15 @@ class RegistrationTab(QWidget):
         for label in (self.trust_label, self.live_chain_label, self.comparison_label):
             label.setWordWrap(True)
 
-        summary_box = QGroupBox("Registration Summary")
+        summary_box = QGroupBox("Session")
         summary_layout = QFormLayout(summary_box)
-        summary_layout.addRow("Session", self.session_status_label)
+        summary_layout.addRow("Status", self.session_status_label)
         summary_layout.addRow("Selected points", self.selected_points_label)
-        summary_layout.addRow("Capture tool", self.tool_label)
-        summary_layout.addRow("Runtime coil", self.coil_tool_label)
-        summary_layout.addRow("Capture geometry", self.geometry_label)
         summary_layout.addRow("Active point", self.current_label)
         summary_layout.addRow("Live tracked point", self.live_point_label)
         summary_layout.addRow("Samples captured", self.samples_used_label)
         summary_layout.addRow("RMSE / FRE", self.fre_label)
         summary_layout.addRow("Max residual", self.max_residual_label)
-        summary_layout.addRow("Trust", self.trust_label)
-        summary_layout.addRow("Live chain", self.live_chain_label)
-        summary_layout.addRow("Repeated runs", self.comparison_label)
-        summary_layout.addRow("Result status", self.result_status_label)
-        summary_layout.addRow("Saved file", self.result_path_label)
 
         button_row_primary = QHBoxLayout()
         button_row_primary.setSpacing(10)
@@ -285,17 +288,55 @@ class RegistrationTab(QWidget):
         self.status_text.setReadOnly(True)
         self.status_text.setMinimumHeight(72)
         self.status_text.setMaximumHeight(110)
-        status_box = QGroupBox("Operator Status")
-        status_layout = QVBoxLayout(status_box)
-        status_layout.addWidget(self.status_text)
-
         self.validation_text = QTextEdit()
         self.validation_text.setReadOnly(True)
         self.validation_text.setMinimumHeight(96)
         self.validation_text.setMaximumHeight(150)
-        validation_box = QGroupBox("Validation & Trust")
-        validation_layout = QVBoxLayout(validation_box)
-        validation_layout.addWidget(self.validation_text)
+
+        details_box = QFrame()
+        details_box.setProperty("role", "card")
+        details_box_layout = QVBoxLayout(details_box)
+        details_box_layout.setContentsMargins(16, 12, 16, 12)
+        details_box_layout.setSpacing(8)
+        details_header = QHBoxLayout()
+        details_header.setContentsMargins(0, 0, 0, 0)
+        details_header.setSpacing(8)
+        self._details_toggle = QToolButton()
+        self._details_toggle.setCheckable(True)
+        self._details_toggle.setChecked(False)
+        self._details_toggle.setArrowType(Qt.RightArrow)
+        self._details_toggle.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self._details_toggle.setAutoRaise(True)
+        details_title = QLabel("Transforms, validation & operator log")
+        details_title.setProperty("role", "section-title")
+        details_title.setCursor(Qt.PointingHandCursor)
+        details_title.mousePressEvent = lambda _e: self._details_toggle.setChecked(not self._details_toggle.isChecked())
+        details_header.addWidget(self._details_toggle)
+        details_header.addWidget(details_title, 1)
+        details_box_layout.addLayout(details_header)
+        self._details_body = QWidget()
+        self._details_body.setVisible(False)
+        details_body_layout = QVBoxLayout(self._details_body)
+        details_body_layout.setContentsMargins(0, 0, 0, 0)
+        details_body_layout.setSpacing(10)
+
+        transforms_label = QLabel("Transforms & dependencies")
+        transforms_label.setStyleSheet(f"color: {COLORS.text_secondary}; font-weight: 600;")
+        details_body_layout.addWidget(transforms_label)
+        details_body_layout.addWidget(self.dependency_text)
+
+        status_label = QLabel("Operator status")
+        status_label.setStyleSheet(f"color: {COLORS.text_secondary}; font-weight: 600;")
+        details_body_layout.addWidget(status_label)
+        details_body_layout.addWidget(self.status_text)
+
+        validation_label = QLabel("Validation & trust")
+        validation_label.setStyleSheet(f"color: {COLORS.text_secondary}; font-weight: 600;")
+        details_body_layout.addWidget(validation_label)
+        details_body_layout.addWidget(self.validation_text)
+
+        details_box_layout.addWidget(self._details_body)
+        self._details_toggle.toggled.connect(self._on_details_toggled)
 
         self.top_splitter = QSplitter(Qt.Horizontal)
         self.top_splitter.setChildrenCollapsible(False)
@@ -338,8 +379,7 @@ class RegistrationTab(QWidget):
         content_layout.addLayout(button_row_secondary)
         content_layout.addWidget(self.top_splitter, 3)
         content_layout.addWidget(self.lower_splitter, 2)
-        content_layout.addWidget(status_box)
-        content_layout.addWidget(validation_box)
+        content_layout.addWidget(details_box)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -363,6 +403,7 @@ class RegistrationTab(QWidget):
         session_status = "Solved - ready to save" if state.pending_accept else ("Capturing" if state.active else "Idle")
         self.session_status_label.setText(session_status)
         self._update_dependencies(state, workflow_state)
+        self._update_status_chip(state, workflow_state)
         if state.selected_model_labels:
             self.selection_summary_label.setText(
                 f"{len(state.selected_model_labels)} / 4 selected: {', '.join(state.selected_model_labels)}"
@@ -636,6 +677,27 @@ class RegistrationTab(QWidget):
     def _open_runtime_tip_calibration(self) -> None:
         if callable(self.open_runtime_tip_calibration):
             self.open_runtime_tip_calibration()
+
+    def _on_details_toggled(self, checked: bool) -> None:
+        self._details_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+        self._details_body.setVisible(bool(checked))
+
+    def _update_status_chip(self, state: RegistrationViewState, workflow_state) -> None:
+        if workflow_state is not None and getattr(workflow_state, "registration_blockers", None):
+            kind, text = "blocked", "Blocked"
+        elif state.pending_accept:
+            kind, text = "warning", "Solved · Save"
+        elif state.active:
+            kind, text = "accent", "Capturing"
+        elif state.last_result_path:
+            kind, text = "ready", "Loaded"
+        elif self.controller.can_begin_session() or (workflow_state is not None and getattr(workflow_state, "registration_ready", False)):
+            kind, text = "ready", "Ready"
+        else:
+            kind, text = "neutral", "Idle"
+        bg, fg = semantic_chip_colors(kind)
+        self.status_chip.setText(text)
+        self.status_chip.setStyleSheet(chip_stylesheet(background=bg, foreground=fg))
 
     def _open_registration_trial(self) -> None:
         if callable(self.open_registration_trial):
