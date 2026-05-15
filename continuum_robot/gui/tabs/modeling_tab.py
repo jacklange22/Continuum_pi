@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QDoubleSpinBox,
@@ -182,10 +183,21 @@ class ModelingTab(QWidget):
         controls_card.body_layout.addLayout(action_row)
         left.addWidget(controls_card)
 
+        # Two-segment modeling is a separate workflow. Hide it behind a toggle so the
+        # default Modeling tab focuses on the single-segment comparison view; operators
+        # who need two-segment can pop it open with one click.
+        self.two_segment_toggle_button = QPushButton("▶ Two-Segment Modeling (offline, click to expand)")
+        self.two_segment_toggle_button.setProperty("variant", "ghost")
+        self.two_segment_toggle_button.setCheckable(True)
+        self.two_segment_toggle_button.toggled.connect(self._on_two_segment_toggle)
+        left.addWidget(self.two_segment_toggle_button)
+
         two_segment_card = _Card(
             "Two-Segment Modeling",
             "Offline analysis for `two_segment_collect_pose_command_dataset` runs. This does not enable live control.",
         )
+        two_segment_card.setVisible(False)
+        self._two_segment_card = two_segment_card
         two_segment_buttons = QHBoxLayout()
         two_segment_buttons.setContentsMargins(0, 0, 0, 0)
         self.two_segment_refresh_button = QPushButton("Refresh Runs")
@@ -290,11 +302,31 @@ class ModelingTab(QWidget):
         two_segment_card.body_layout.addWidget(self.two_segment_pairs)
         left.addWidget(two_segment_card)
 
-        results_card = _Card("Comparison Summary", "Compact saved-output summary and side-by-side error views for the selected models.")
+        results_card = _Card(
+            "Comparison Summary",
+            "Per-model position RMSE up top, side-by-side error views in the tabs below.",
+        )
         self.status_label = QLabel("Select a dataset, choose models, then run a comparison.")
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(f"color: {COLORS.text_primary};")
         results_card.body_layout.addWidget(self.status_label)
+        # Same-session caveat chip. Visible when the test split is drawn from the
+        # training run (default behavior). Tells the operator at a glance that the
+        # numbers aren't from a separate test-mesh acquisition.
+        self.same_session_chip = QLabel(
+            "Same-session evaluation — test samples come from the training dataset. "
+            "Run a separate test acquisition for thesis-grade numbers."
+        )
+        self.same_session_chip.setWordWrap(True)
+        self.same_session_chip.setStyleSheet(
+            f"color: {COLORS.warning_fg}; background: {COLORS.warning_bg}; "
+            f"border: 1px solid {COLORS.warning_fg}; border-radius: 6px; padding: 6px 10px;"
+        )
+        self.same_session_chip.setVisible(False)
+        results_card.body_layout.addWidget(self.same_session_chip)
+        # Headline RMSE row — per-model big number, the answer to "how well is each model running."
+        self.headline_pairs = _PairsWidget()
+        results_card.body_layout.addWidget(self.headline_pairs)
         self.evaluation_pairs = _PairsWidget()
         results_card.body_layout.addWidget(self.evaluation_pairs)
         self.results_widget = ExperimentResultsWidget()
@@ -307,6 +339,11 @@ class ModelingTab(QWidget):
         self.dataset_pairs.set_pairs(state.dataset_summary_pairs)
         self.artifact_pairs.set_pairs(state.artifact_summary_pairs)
         self.evaluation_pairs.set_pairs(state.evaluation_summary_pairs)
+        self.headline_pairs.set_pairs(state.headline_rmse_pairs)
+        # Show the chip only after an evaluation has actually run on a same-session split.
+        self.same_session_chip.setVisible(
+            bool(state.last_eval_same_session and state.headline_rmse_pairs)
+        )
         self.results_widget.set_model(state.visualization_model)
         self.status_label.setText(state.status_message)
         self.evaluate_button.setEnabled(state.can_evaluate)
@@ -402,6 +439,15 @@ class ModelingTab(QWidget):
     def _on_artifact_selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if current is not None:
             self.controller.select_artifact(str(current.data(Qt.UserRole)))
+
+    def _on_two_segment_toggle(self, checked: bool) -> None:
+        """Show or hide the two-segment workflow card."""
+        self._two_segment_card.setVisible(bool(checked))
+        self.two_segment_toggle_button.setText(
+            "▼ Two-Segment Modeling (offline, click to collapse)"
+            if checked
+            else "▶ Two-Segment Modeling (offline, click to expand)"
+        )
 
     def _on_two_segment_selection_changed(self) -> None:
         paths = [

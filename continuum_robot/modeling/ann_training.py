@@ -428,6 +428,8 @@ class TrainedArtifactSummary:
     best_validation_loss: float | None
     metadata_path: Path
     model_path: Path | None
+    artifact_kind: str = ""
+    output_target: str = ""
 
 
 def default_artifact_root(project_root: Path) -> Path:
@@ -2469,8 +2471,17 @@ def run_model_sweep(
     )
 
 
-def discover_trained_artifacts(*, artifact_root: Path) -> list[TrainedArtifactSummary]:
-    """List saved ANN training artifact bundles."""
+def discover_trained_artifacts(
+    *,
+    artifact_root: Path,
+    include_inverse: bool = True,
+) -> list[TrainedArtifactSummary]:
+    """List saved ANN training artifact bundles.
+
+    ``include_inverse``: when False, hides ``cable_from_xyz`` artifacts from the result.
+    The Modeling-tab comparison workflow operates on forward cable→pose models only,
+    so it asks for include_inverse=False to keep its artifact picker clean.
+    """
     root = Path(artifact_root)
     if not root.exists():
         return []
@@ -2486,6 +2497,19 @@ def discover_trained_artifacts(*, artifact_root: Path) -> list[TrainedArtifactSu
         training = dict(payload.get("training", {}) or {})
         dataset = dict(payload.get("dataset", {}) or {})
         backend = dict(payload.get("backend", {}) or {})
+        model_payload = dict(payload.get("model", {}) or {})
+        artifact_kind = str(payload.get("artifact_kind", "") or "")
+        output_target = str(model_payload.get("output_target") or "").strip().lower()
+        # Back-compat: old artifacts only carry artifact_kind. Infer the target.
+        if not output_target:
+            if "xyz_to_cable" in artifact_kind or "cable_from_xyz" in artifact_kind:
+                output_target = OUTPUT_TARGET_CABLE_FROM_XYZ
+            elif "xyz" in artifact_kind and "full_pose" not in artifact_kind:
+                output_target = OUTPUT_TARGET_XYZ
+            else:
+                output_target = OUTPUT_TARGET_FULL_POSE
+        if not include_inverse and output_target == OUTPUT_TARGET_CABLE_FROM_XYZ:
+            continue
         model_path_raw = dict(payload.get("files", {}) or {}).get("model_path")
         model_path = Path(model_path_raw) if model_path_raw else None
         artifacts.append(
@@ -2504,6 +2528,8 @@ def discover_trained_artifacts(*, artifact_root: Path) -> list[TrainedArtifactSu
                 ),
                 metadata_path=metadata_path,
                 model_path=model_path,
+                artifact_kind=artifact_kind,
+                output_target=output_target,
             )
         )
     artifacts.sort(key=lambda entry: (entry.created_at_utc, entry.artifact_name), reverse=True)

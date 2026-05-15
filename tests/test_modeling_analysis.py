@@ -174,8 +174,10 @@ def test_evaluate_models_writes_outputs_and_comparison_summary(tmp_path: Path, m
     assert result.comparison_csv_path.exists()
     assert result.plot_paths["workspace_xy"].exists()
     assert result.plot_paths["comparison_summary"].exists()
-    assert result.plot_paths["model_workspace_prediction_report"].exists()
-    assert result.plot_paths["model_comparison_summary_report"].exists()
+    # Duplicate report PNGs were removed; the canonical workspace_xy / comparison_summary
+    # cover both viewer and report use cases now.
+    assert "model_workspace_prediction_report" not in result.plot_paths
+    assert "model_comparison_summary_report" not in result.plot_paths
 
 
 def test_evaluate_models_handles_missing_camarillo_reference_inputs_cleanly(tmp_path: Path) -> None:

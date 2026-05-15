@@ -349,3 +349,124 @@ def test_ann_training_window_uses_main_scroll_area(tmp_path: Path) -> None:
     finally:
         window.close()
         controller.shutdown()
+
+
+def test_modeling_tab_two_segment_card_collapsed_by_default(tmp_path: Path) -> None:
+    """Two-segment workflow is hidden behind a toggle to keep the single-segment view clean."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    artifact_dir = _write_artifact(tmp_path, run_dir)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    controller.select_artifact(str(artifact_dir))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()  # isVisible() only reflects shown state
+        tab.update(controller.refresh())
+        # Collapsed: card hidden, toggle present.
+        assert tab._two_segment_card.isVisible() is False
+        assert tab.two_segment_toggle_button.isChecked() is False
+        # Expand and verify the card becomes visible.
+        tab.two_segment_toggle_button.setChecked(True)
+        assert tab._two_segment_card.isVisible() is True
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_modeling_tab_same_session_chip_visible_after_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When an evaluation reuses the training run for its test split, the caveat chip lights up."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    artifact_dir = _write_artifact(tmp_path, run_dir)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    controller.select_artifact(str(artifact_dir))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()  # isVisible() only reflects shown state
+        tab.update(controller.refresh())
+        # Before any evaluation: chip hidden.
+        assert tab.same_session_chip.isVisible() is False
+        # Inject a fake evaluation result so we don't have to run torch.
+        fake_metrics = ModelMetrics(
+            model_key="ann",
+            label="ANN",
+            status="completed",
+            sample_count=2,
+            position_rmse_mm=1.23,
+            mean_position_error_mm=1.1,
+            max_position_error_mm=2.0,
+            axis_position_rmse_mm=[0.5, 0.7, 0.9],
+        )
+        fake_result = ModelingEvaluationResult(
+            dataset_summary=controller._selected_dataset_summary,
+            artifact_details=controller._selected_artifact_details,
+            evaluation_scope_requested="artifact_test_split",
+            evaluation_scope_used="artifact_test_split",
+            evaluation_scope_note="",
+            selected_sample_count=2,
+            output_dir=tmp_path / "data" / "modeling_results" / "fake",
+            summary_path=tmp_path / "summary.json",
+            metadata_path=tmp_path / "metadata.json",
+            comparison_csv_path=tmp_path / "comp.csv",
+            phase_csv_path=None,
+            plot_paths={},
+            model_evaluations={"ann": ModelEvaluation(metrics=fake_metrics, predictions=None)},
+            visualization_model=VisualizationModel(summary_lines=["ok"]),
+        )
+        controller._last_result = fake_result  # type: ignore[attr-defined]
+        tab.update(controller.refresh())
+        assert tab.same_session_chip.isVisible() is True
+        # Headline pairs include the per-model RMSE row.
+        labels = [pair[0] for pair in controller.refresh().headline_rmse_pairs]
+        assert "ANN" in labels
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_modeling_controller_filters_inverse_artifacts(tmp_path: Path) -> None:
+    """Inverse-model artifacts must not appear in the Modeling-tab artifact list."""
+    _app()
+    forward_dir = _write_artifact(tmp_path, _write_modeling_run(tmp_path))
+    # Stamp a second artifact as inverse via its metadata.
+    inverse_dir = tmp_path / "data" / "models" / "ann" / "20260515_999999_inverse"
+    inverse_dir.mkdir(parents=True, exist_ok=True)
+    (inverse_dir / "training_metadata.json").write_text(
+        json.dumps(
+            {
+                "artifact_kind": "legacy_ann_inverse_xyz_to_cable_v1",
+                "created_at_utc": "2026-05-15T12:00:00+00:00",
+                "status": "completed",
+                "model": {"output_target": "cable_from_xyz", "hidden_layers": [32, 32]},
+                "training": {"epochs_completed": 1, "best_validation_loss": 0.5},
+                "dataset": {"run_name": "inverse_src"},
+                "backend": {"selected_backend": "cpu"},
+                "files": {"model_path": str(inverse_dir / "model.pt")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (inverse_dir / "model.pt").write_bytes(b"x")
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    state = controller.refresh()
+    artifact_names = [a.artifact_name for a in state.artifacts]
+    assert forward_dir.name in artifact_names
+    assert inverse_dir.name not in artifact_names  # inverse hidden from the comparison list
+    controller.shutdown()

@@ -45,6 +45,7 @@ class ModelingViewState:
     selected_artifact_path: str = ""
     artifact_summary_pairs: list[tuple[str, str]] = field(default_factory=list)
     evaluation_summary_pairs: list[tuple[str, str]] = field(default_factory=list)
+    headline_rmse_pairs: list[tuple[str, str]] = field(default_factory=list)
     include_mike: bool = True
     include_camarillo: bool = True
     include_ann: bool = True
@@ -53,6 +54,10 @@ class ModelingViewState:
     status_message: str = "Select a dataset, choose models, then run a comparison."
     last_output_path: str | None = None
     can_evaluate: bool = False
+    # True when the last evaluation reused training samples as its test split (any scope
+    # other than a separately collected test dataset). UI surfaces this as a chip so the
+    # operator never silently cites same-session numbers as thesis-grade.
+    last_eval_same_session: bool = True
     artifact_details: ArtifactDetails | None = None
     visualization_model: VisualizationModel = field(
         default_factory=lambda: VisualizationModel(summary_lines=["No modeling results loaded."])
@@ -126,7 +131,13 @@ class ModelingController:
                 include_mock_experiments=False,
                 include_archived_experiments=False,
             )
-            artifacts = discover_trained_artifacts(artifact_root=self.artifact_root)
+            # The Modeling tab compares forward models (cable → pose) against Mike/Camarillo.
+            # Inverse (xyz → cable) artifacts can't fit that workflow; hide them from the
+            # picker rather than letting the operator hit an "unavailable" later.
+            artifacts = discover_trained_artifacts(
+                artifact_root=self.artifact_root,
+                include_inverse=False,
+            )
             two_segment_runs = [str(path) for path in self.discover_two_segment_dataset_runs()]
             if not selected_dataset_path and datasets:
                 selected_dataset_path = str(datasets[0].path)
@@ -164,6 +175,8 @@ class ModelingController:
             self.state.artifact_details = selected_artifact_details
             self.state.artifact_summary_pairs = build_artifact_summary_pairs(selected_artifact_details)
             self.state.evaluation_summary_pairs = build_evaluation_summary_pairs(self._last_result)
+            self.state.headline_rmse_pairs = self._build_headline_rmse_pairs(self._last_result)
+            self.state.last_eval_same_session = self._eval_used_same_session(self._last_result)
             self.state.include_mike = bool(self.config.include_mike)
             self.state.include_camarillo = bool(self.config.include_camarillo)
             self.state.include_ann = bool(self.config.include_ann)
@@ -417,6 +430,41 @@ class ModelingController:
                 f"Modeling comparison saved to {result.output_dir.name} "
                 f"using {result.selected_sample_count} samples."
             )
+
+    @staticmethod
+    def _build_headline_rmse_pairs(
+        result: ModelingEvaluationResult | None,
+    ) -> list[tuple[str, str]]:
+        """Compact per-model RMSE row for the top of the Comparison panel.
+
+        Renders as ``[("Mike", "9.42 mm"), ("Camarillo", "9.18 mm"), ("ANN", "1.87 mm")]``
+        so the operator sees the headline number for every model side-by-side without
+        having to scroll the full evaluation pairs block.
+        """
+        if result is None:
+            return []
+        pairs: list[tuple[str, str]] = []
+        for evaluation in result.model_evaluations.values():
+            metrics = evaluation.metrics
+            if metrics.status == "completed" and metrics.position_rmse_mm is not None:
+                pairs.append((metrics.label, f"{float(metrics.position_rmse_mm):.2f} mm"))
+            elif metrics.status != "completed":
+                pairs.append((metrics.label, f"unavailable ({metrics.reason or ''})"))
+        return pairs
+
+    @staticmethod
+    def _eval_used_same_session(result: ModelingEvaluationResult | None) -> bool:
+        """True when the last evaluation pulled its test samples from the training run.
+
+        Both ``artifact_test_split`` and ``full_dataset`` scopes share the training data
+        with the evaluated model, so they're "same-session" by Wolfe's standard (thesis
+        p85: he re-collects on a separate test mesh). Only an explicit separate dataset
+        designation would clear this flag — not implemented in this pass.
+        """
+        if result is None:
+            return False
+        scope = str(result.evaluation_scope_used or "").strip().lower()
+        return scope != "separate_test_dataset"
 
     def _two_segment_modeling_worker(
         self,

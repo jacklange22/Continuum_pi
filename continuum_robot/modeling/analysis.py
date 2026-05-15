@@ -538,7 +538,139 @@ def build_modeling_visualization(
                 ),
             )
         )
+    # Per-axis RMSE bar chart — operator sees if Z drift is the bottleneck.
+    if available:
+        axis_charts = _build_per_axis_rmse_chart(available)
+        if axis_charts is not None:
+            charts.append(axis_charts)
+    # Per-model spatial error heatmap (Wolfe-style "where does the model fail").
+    for evaluation in available:
+        heatmap = _build_spatial_error_heatmap(evaluation, truths=truths)
+        if heatmap is not None:
+            charts.append(heatmap)
+    # ANN training loss curve — embed inline when the selected artifact has one.
+    if artifact_details is not None:
+        loss_chart = _build_loss_history_chart(artifact_details)
+        if loss_chart is not None:
+            charts.append(loss_chart)
     return VisualizationModel(charts=charts, summary_lines=summary_lines)
+
+
+def _build_per_axis_rmse_chart(
+    evaluations: list[ModelEvaluation],
+) -> ChartModel | None:
+    """Grouped bar chart of per-axis (X/Y/Z) RMSE per model.
+
+    Emitted as a multi-series line chart over indexed axis positions for compatibility
+    with the existing QtCharts renderer (which doesn't support grouped bars cleanly).
+    Categories on the x-axis are 'X' / 'Y' / 'Z'; one series per model.
+    """
+    palette = ["#2563eb", "#dc2626", "#a16207", "#0f766e"]
+    series: list[ChartSeriesModel] = []
+    for evaluation, hex_color in zip(evaluations, palette):
+        axis_rmse = list(evaluation.metrics.axis_position_rmse_mm or [])
+        if len(axis_rmse) < 3:
+            continue
+        series.append(
+            ChartSeriesModel(
+                name=evaluation.metrics.label,
+                points_xy=[
+                    (0.0, float(axis_rmse[0])),
+                    (1.0, float(axis_rmse[1])),
+                    (2.0, float(axis_rmse[2])),
+                ],
+                color_hex=hex_color,
+            )
+        )
+    if not series:
+        return None
+    return ChartModel(
+        kind="line",
+        title="Per-Axis Position RMSE",
+        x_title="Axis (0=X, 1=Y, 2=Z)",
+        y_title="RMSE (mm)",
+        series_xy=series,
+        caption="Per-axis tip-position RMSE for each evaluated model. Spots Z-drift bias.",
+    )
+
+
+def _build_spatial_error_heatmap(
+    evaluation: ModelEvaluation,
+    *,
+    truths: np.ndarray,
+) -> ChartModel | None:
+    """Color-binned XY scatter showing where in the workspace this model fails.
+
+    QtCharts doesn't support per-point colors directly, so we bin errors into quintiles
+    and emit one scatter series per quintile. The legend tells the operator what each
+    color band represents in mm. Reveals whether errors cluster in one workspace region
+    (Wolfe's slack/hysteresis diagnostic in spatial form).
+    """
+    if evaluation.predictions is None or not evaluation.position_errors_mm:
+        return None
+    errors = np.asarray(evaluation.position_errors_mm, dtype=float)
+    xy = np.asarray(truths[:, :2] if truths.size else np.zeros((0, 2)), dtype=float)
+    if errors.size == 0 or xy.shape[0] != errors.size:
+        return None
+    # Quintile bin edges so the legend reads naturally regardless of error distribution.
+    quintiles = np.quantile(errors, [0.2, 0.4, 0.6, 0.8])
+    bins = np.digitize(errors, quintiles)
+    palette = ["#0f766e", "#2563eb", "#a16207", "#dc2626", "#7f1d1d"]
+    series: list[ChartSeriesModel] = []
+    for bin_index in range(5):
+        mask = bins == bin_index
+        if not mask.any():
+            continue
+        bucket_errs = errors[mask]
+        low = float(bucket_errs.min())
+        high = float(bucket_errs.max())
+        series.append(
+            ChartSeriesModel(
+                name=f"{low:.2f}–{high:.2f} mm",
+                points_xy=[(float(row[0]), float(row[1])) for row in xy[mask]],
+                color_hex=palette[bin_index],
+            )
+        )
+    if not series:
+        return None
+    return ChartModel(
+        kind="scatter",
+        title=f"{evaluation.metrics.label} — Error Heatmap (XY)",
+        x_title="X (mm)",
+        y_title="Y (mm)",
+        series_xy=series,
+        caption=(
+            "Workspace XY positions, colored by position-error magnitude (5 quintile bands). "
+            "Clusters of warm colors reveal regions where the model is worst."
+        ),
+    )
+
+
+def _build_loss_history_chart(artifact_details: "ArtifactDetails") -> ChartModel | None:
+    """Inline training/validation loss curves for the selected ANN artifact."""
+    train_losses = list(artifact_details.train_losses or [])
+    validation_losses = list(artifact_details.validation_losses or [])
+    if not train_losses and not validation_losses:
+        return None
+    train_points = [(float(i + 1), float(v)) for i, v in enumerate(train_losses) if not math.isnan(float(v))]
+    val_points = [(float(i + 1), float(v)) for i, v in enumerate(validation_losses) if not math.isnan(float(v))]
+    series: list[ChartSeriesModel] = []
+    if train_points:
+        series.append(ChartSeriesModel(name="Train", points_xy=train_points, color_hex="#0f766e"))
+    if val_points:
+        series.append(ChartSeriesModel(name="Validation", points_xy=val_points, color_hex="#2563eb"))
+    if not series:
+        return None
+    return ChartModel(
+        kind="line",
+        title="ANN Training Loss",
+        x_title="Epoch",
+        y_title="Loss (normalized space)",
+        series_xy=series,
+        caption=(
+            "Loss history for the selected ANN artifact. Tight gap = healthy fit; growing gap = overfitting."
+        ),
+    )
 
 
 def build_dataset_summary_pairs(summary: ModelingDatasetSummary) -> list[tuple[str, str]]:
@@ -607,24 +739,61 @@ def build_artifact_summary_pairs(details: ArtifactDetails | None) -> list[tuple[
 
 
 def build_evaluation_summary_pairs(result: ModelingEvaluationResult | None) -> list[tuple[str, str]]:
-    """Format last evaluation status for the modeling tab."""
+    """Format last evaluation status for the modeling tab.
+
+    Now surfaces per-model headline RMSE side-by-side (Wolfe Fig 3.16 readout) and the
+    per-axis (X/Y/Z) breakdown so an operator can spot a Z-drift bias at a glance,
+    rather than only seeing the "best" model's headline number.
+    """
     if result is None:
         return [("Evaluation", "No results yet.")]
+    completed_evals = [
+        evaluation
+        for evaluation in result.model_evaluations.values()
+        if evaluation.metrics.status == "completed" and evaluation.metrics.position_rmse_mm is not None
+    ]
     best = sorted(
-        (
-            evaluation.metrics
-            for evaluation in result.model_evaluations.values()
-            if evaluation.metrics.status == "completed" and evaluation.metrics.position_rmse_mm is not None
-        ),
+        (evaluation.metrics for evaluation in completed_evals),
         key=lambda metrics: float(metrics.position_rmse_mm),
     )
     best_label = best[0].label if best else "n/a"
     best_rmse = _fmt(best[0].position_rmse_mm) if best else "n/a"
-    return [
+    pairs: list[tuple[str, str]] = [
         ("Scope Used", f"{result.evaluation_scope_used} ({result.selected_sample_count} samples)"),
-        ("Best Position RMSE", f"{best_label} | {best_rmse} mm"),
-        ("Output Folder", str(result.output_dir)),
     ]
+    if str(result.evaluation_scope_used).strip().lower() != "separate_test_dataset":
+        pairs.append(
+            (
+                "Eval caveat",
+                "same-session evaluation — the test split comes from the training dataset; not thesis-grade by itself.",
+            )
+        )
+    pairs.append(("Best Position RMSE", f"{best_label} | {best_rmse} mm"))
+    # Per-model RMSE side-by-side. The headline number the operator most cares about.
+    for evaluation in completed_evals:
+        metrics = evaluation.metrics
+        pairs.append(
+            (
+                f"{metrics.label} RMSE (mm)",
+                (
+                    f"{_fmt(metrics.position_rmse_mm)}  "
+                    f"(mean {_fmt(metrics.mean_position_error_mm)}, "
+                    f"max {_fmt(metrics.max_position_error_mm)})"
+                ),
+            )
+        )
+    # Per-axis RMSE breakdown. Spots whether one axis is the bottleneck.
+    for evaluation in completed_evals:
+        axis_rmse = list(evaluation.metrics.axis_position_rmse_mm or [])
+        if len(axis_rmse) >= 3:
+            pairs.append(
+                (
+                    f"{evaluation.metrics.label} per-axis RMSE (mm)",
+                    f"X {_fmt(axis_rmse[0])} | Y {_fmt(axis_rmse[1])} | Z {_fmt(axis_rmse[2])}",
+                )
+            )
+    pairs.append(("Output Folder", str(result.output_dir)))
+    return pairs
 
 
 def _resolve_evaluation_indices(
@@ -1230,19 +1399,22 @@ def _write_plots(
     evaluations: dict[str, ModelEvaluation],
     phases: list[str],
 ) -> dict[str, Path]:
+    """Write the canonical evaluation PNGs.
+
+    The earlier schema also wrote ``model_workspace_prediction_report.png`` and
+    ``model_comparison_summary_report.png`` as exact duplicates of ``workspace_xy.png``
+    and ``comparison_summary.png``. Those have been removed to avoid 2x disk usage
+    per evaluation; no external tooling depends on them.
+    """
     plot_paths = {
         "workspace_xy": output_dir / "workspace_xy.png",
         "position_histograms": output_dir / "position_histograms.png",
         "comparison_summary": output_dir / "comparison_summary.png",
-        "model_workspace_prediction_report": output_dir / "model_workspace_prediction_report.png",
-        "model_comparison_summary_report": output_dir / "model_comparison_summary_report.png",
     }
     try:
         _write_workspace_plot(plot_paths["workspace_xy"], truths, evaluations)
         _write_histogram_plot(plot_paths["position_histograms"], evaluations)
         _write_comparison_plot(plot_paths["comparison_summary"], evaluations, phases)
-        _write_workspace_plot(plot_paths["model_workspace_prediction_report"], truths, evaluations)
-        _write_comparison_plot(plot_paths["model_comparison_summary_report"], evaluations, phases)
     except Exception:
         for path in plot_paths.values():
             _write_plot_placeholder(path)
