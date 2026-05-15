@@ -14,8 +14,8 @@ servo_model: XC330-M288-T
 servo_reported_current_hard_limit_ma: 850
 servo_reported_current_warning_ma: 650
 current_safety_basis: "XC330-M288-T servo-reported input-current estimate; absolute magnitude limit below approximate 5 V stall current; Current Limit(38) should also be respected where configured/read."
-default_pretension_current_threshold_ma: 220
-pretension_current_balance_tolerance_ma: 120
+default_pretension_current_threshold_ma: 30
+pretension_current_balance_tolerance_ma: 15
 fine_jog_step_ticks: 5
 coarse_jog_step_ticks: 25
 software_position_margin_ticks: 64
@@ -29,16 +29,22 @@ torque_off_on_disconnect: false
 # boundary are blocked until a safe neutral/startup state is recaptured.
 wrap_risk_margin_ticks: 128
 max_raw_jump_without_wrap_risk_ticks: 900
-pretension_untensioned_reference_tick: 4095
-pretension_start_mode: current_position  # current_position | manual_startup_artifact | release_200_from_current | full_release_4095
-pretension_step_ticks: 2
-pretension_timeout_s: 10.0
-pretension_settle_time_s: 0.05
-pretension_baseline_sample_count: 5
-pretension_current_filter_window: 3
-pretension_current_delta_threshold_ma: 60
-pretension_absolute_trigger_current_ma: 220
+pretension_untensioned_reference_tick: 3500
+pretension_start_mode: full_release_4095  # current_position | manual_startup_artifact | release_200_from_current | full_release_4095
+pretension_step_ticks: 4
+pretension_timeout_s: 30.0
+pretension_settle_time_s: 0.08
+pretension_baseline_sample_count: 8
+pretension_current_filter_window: 5
+# Trigger thresholds are scaled to the XC330-M288-T tendon-tension scale observed
+# on the live rig: ~15 mA = light, ~30 mA = tight, ~50 mA = a lot. These are not
+# tendon force, only servo-reported input current (a load proxy).
+pretension_current_delta_threshold_ma: 20
+pretension_absolute_trigger_current_ma: 30
 pretension_hard_current_stop_ma: 850
-pretension_max_travel_ticks: 320
+# Tensioned position is around tick 2500 with the release reference at 3500
+# (or 4095 in full-release mode). Travel budget must cover the full release-to-
+# tensioned range plus headroom for one servo binding early.
+pretension_max_travel_ticks: 1600
 max_temperature_c: 70
 min_input_voltage_mv: 4000

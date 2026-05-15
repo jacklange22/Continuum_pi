@@ -3,47 +3,59 @@ staged_strategy: conservative_startup  # conservative_startup | characterization
 allow_legacy_staged_strategy: false
 servo_id: 1
 servo_ids: []  # empty uses the active segment from the robot config
-repeat_runs: 3
+repeat_runs: 5  # 5 runs gives a usable repeatability std without taking forever
 allow_current_only_when_tracker_missing: false
 allow_no_tracker_test_run: false
 run_trust_mode: thesis_trusted  # thesis_trusted | current_only
 enable_tip_centering: true
 tip_center_tolerance_mm: 1.0
 tip_center_max_iterations: 16
-tip_center_step_ticks: 10
+tip_center_step_ticks: 8
 tip_center_x_sign: 1
 tip_center_y_sign: 1
 tip_target_xy_mm: [0.0, 0.0]
 max_tip_displacement_mm: 50.0
 tip_divergence_stop_mm: 2.0
-equalization_step_ticks: 2
+equalization_step_ticks: 4
 equalization_max_iterations: 24
-conservative_step_ticks: 10
+conservative_step_ticks: 8
 conservative_max_iterations: 24
-conservative_max_cumulative_travel_ticks: 80
+# Cumulative travel during the conservative tip-centering trim phase. This is on
+# top of the take-up phase travel and limits how far the algorithm can chase tip
+# centering before bailing out.
+conservative_max_cumulative_travel_ticks: 400
 # Pretension workflow thresholds use servo-reported current estimates only as a
 # load proxy. They are not calibrated tendon force and are separate from hard
 # current safety limits in config/safety.yaml.
 coarse_slack_step_ticks: 50
+# Soft release runs OUTWARD (toward higher tick / slack). step * iterations sets
+# the total travel; iterations = ceil(max_travel / step). Old defaults had
+# step=50 max_travel=40 which yielded a single 50-tick release — far too short
+# to reach genuine slack from a tensioned position. The new pair gives ~1500
+# ticks of release travel which is enough to fully unload from any state.
 soft_release_step_ticks: 50
-soft_release_max_travel_ticks: 40
-soft_release_current_target_ma: 10.0
-takeup_target_load_proxy_ma: 25.0
+soft_release_max_travel_ticks: 1500
+soft_release_current_target_ma: 8.0
+# Operator's tendon-tension scale (from the live rig): 15 mA = light, 30 mA =
+# tight, 50 mA = a lot. The take-up loop keeps stepping inward until every
+# servo's current passes through the LOWER band edge (light), then transitions
+# to the trim phase if any servo overshoots into the UPPER band edge.
+takeup_target_load_proxy_ma: 20.0
 high_load_proxy_ma: 40.0
-takeup_max_iterations: 16
+takeup_max_iterations: 64
 staged_packet_retry_budget: 3
-characterization_step_ticks: 1
+characterization_step_ticks: 2
 characterization_pair_cycles: 1
-current_characterization_sample_count: 20
+current_characterization_sample_count: 30  # more samples = tighter noise floor
 current_noise_multiplier: 3.0
 min_meaningful_current_delta_ma: 2.0
-load_balance_tolerance_ma: 10.0
-pair_balance_tolerance_ma: 10.0
-settle_verify_time_s: 0.2
-accept_max_load_balance_error_ma: 30.0
-accept_max_pair_balance_error_ma: 30.0
-accept_max_final_tip_xy_offset_mm: 3.0
-max_runtime_s: 60.0
+load_balance_tolerance_ma: 8.0
+pair_balance_tolerance_ma: 8.0
+settle_verify_time_s: 0.4
+accept_max_load_balance_error_ma: 15.0
+accept_max_pair_balance_error_ma: 15.0
+accept_max_final_tip_xy_offset_mm: 2.0
+max_runtime_s: 120.0
 
 # Leave individual fields unset to use the current live pretension defaults
 # from the active servo safety/runtime configuration.

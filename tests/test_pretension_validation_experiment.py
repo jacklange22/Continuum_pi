@@ -575,13 +575,17 @@ def test_partial_pair_failure_stops_and_logs(tmp_path: Path) -> None:
         PretensionValidationExperimentConfig.from_dict({"mode": "single_segment_staged", "servo_ids": [1, 2, 3, 4]})
     )
 
+    # Use a delta larger than the position-reached tolerance so the "missed"
+    # servo is unambiguously outside the window. With strict equality this would
+    # work at any delta; with the post-bug-fix tolerance window the test must
+    # use a delta > POSITION_REACHED_TOLERANCE_TICKS.
     move = experiment._apply_pair_command(
         servo_service=service,
         telemetry=telemetry,
         sid_a=1,
-        delta_a=-1,
+        delta_a=-25,
         sid_b=3,
-        delta_b=1,
+        delta_b=25,
         reason="test_partial_pair_failure",
     )
 

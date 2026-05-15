@@ -3872,6 +3872,15 @@ class PretensionValidationExperiment(BaseExperiment):
                 return False, {"stop_reason": "safety_limit_rejected", "details": details}
         return True, {"stop_reason": "", "details": details}
 
+    # Tolerance for "did the servo reach the commanded tick?" after a group write.
+    # DYNAMIXEL position-mode writes accept a goal and start moving; the present
+    # position will not be exactly equal to the goal immediately afterward. A small
+    # tolerance lets us declare success once the servo is within a few ticks of the
+    # goal (the goal is being tracked, just not arrived-at-exactly). Without this
+    # tolerance the entire paired pretension algorithm fails on every step with
+    # `partial_pair_failure`, which was the historical operational blocker.
+    POSITION_REACHED_TOLERANCE_TICKS = 8
+
     def _apply_group_command(
         self,
         *,
@@ -3914,6 +3923,17 @@ class PretensionValidationExperiment(BaseExperiment):
                 "commanded_positions_ticks": targets,
             }
         start_positions = {int(servo_id): int(telemetry[int(servo_id)].present_position) for servo_id in targets}
+        tolerance = int(self.POSITION_REACHED_TOLERANCE_TICKS)
+
+        def _reached(present: int | None, goal: int) -> bool:
+            """A servo is considered to have reached its goal once it is within
+            ``POSITION_REACHED_TOLERANCE_TICKS`` of the commanded position. The
+            servo will continue to track the goal; we only need to know that the
+            write was accepted and motion is underway."""
+            if present is None:
+                return False
+            return abs(int(present) - int(goal)) <= tolerance
+
         try:
             if hasattr(servo_service, "_write_goal_positions"):
                 servo_service._write_goal_positions(targets)
@@ -3927,9 +3947,11 @@ class PretensionValidationExperiment(BaseExperiment):
         except Exception as exc:
             after_failure = servo_service.read_live_telemetry(list(targets))
             reached = {
-                int(servo_id): (
-                    after_failure.get(int(servo_id)) is not None
-                    and after_failure[int(servo_id)].present_position == int(target_tick)
+                int(servo_id): _reached(
+                    after_failure.get(int(servo_id)).present_position
+                    if after_failure.get(int(servo_id)) is not None
+                    else None,
+                    int(target_tick),
                 )
                 for servo_id, target_tick in targets.items()
             }
@@ -3945,9 +3967,11 @@ class PretensionValidationExperiment(BaseExperiment):
             }
         after = servo_service.read_live_telemetry(list(targets))
         reached = {
-            int(servo_id): (
-                after.get(int(servo_id)) is not None
-                and after[int(servo_id)].present_position == int(target_tick)
+            int(servo_id): _reached(
+                after.get(int(servo_id)).present_position
+                if after.get(int(servo_id)) is not None
+                else None,
+                int(target_tick),
             )
             for servo_id, target_tick in targets.items()
         }
@@ -3958,6 +3982,7 @@ class PretensionValidationExperiment(BaseExperiment):
             "stop_reason": "" if success else "partial_pair_failure",
             "preflight": preflight,
             "reached_targets": reached,
+            "position_tolerance_ticks": tolerance,
             "move_count": int(move_count),
             "travel_ticks": sum(abs(int(targets[sid]) - int(start_positions[sid])) for sid, did_reach in reached.items() if did_reach),
             "commanded_positions_ticks": targets,
