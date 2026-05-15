@@ -7,6 +7,9 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+
+pytestmark = [pytest.mark.gui]
+
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QImage, QWheelEvent
 from PySide6.QtWidgets import QApplication

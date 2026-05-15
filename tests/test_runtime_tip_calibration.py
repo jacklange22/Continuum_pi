@@ -269,7 +269,7 @@ def test_tracking_service_supports_explicit_coil_as_tip_mode(tmp_path: Path) -> 
     assert snapshot.runtime_tip_mode == "coil_as_tip"
     assert snapshot.runtime_tip_calibration_state == "coil_as_tip"
     assert snapshot.runtime_tip_trust_level == "thesis_trusted"
-    assert "0A coil pose is shown directly as the tip" in snapshot.runtime_tip_mode_message
+    assert "0A coil origin/position path is shown directly" in snapshot.runtime_tip_mode_message
     assert snapshot.tip_pose_status == "coil_as_tip"
     assert snapshot.T_robot_tip is not None
     assert np.allclose([row[3] for row in snapshot.T_robot_tip[:3]], [1.0, 2.0, 3.0])
@@ -373,7 +373,7 @@ def test_tracking_service_runtime_tip_messages_make_direct_0a_and_quick_override
         source="test",
     )
     coil_snapshot = service.get_snapshot()
-    assert "0A coil pose is shown directly as the tip" in coil_snapshot.runtime_tip_mode_message
+    assert "0A coil origin/position path is shown directly" in coil_snapshot.runtime_tip_mode_message
 
     service.set_runtime_tip_mode("quick_4_point")
     service.ingest_frame(

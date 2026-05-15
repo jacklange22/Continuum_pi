@@ -12,6 +12,8 @@ import time
 import numpy as np
 import pytest
 
+pytestmark = [pytest.mark.gui]
+
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt

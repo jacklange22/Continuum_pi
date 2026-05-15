@@ -145,7 +145,10 @@ def test_repeatability_report_figures_use_thesis_labels_and_units(tmp_path: Path
 
     def _capture_save(fig, path: Path, *, quality: str | None = None) -> Path:
         _ = quality
-        captured[Path(path).name] = [(ax.get_title(), ax.get_xlabel(), ax.get_ylabel()) for ax in fig.axes]
+        captured[Path(path).name] = [
+            (ax.get_title(loc="left") or ax.get_title(), ax.get_xlabel(), ax.get_ylabel())
+            for ax in fig.axes
+        ]
         Path(path).write_bytes(b"png")
         import_matplotlib().close(fig)
         return Path(path)
