@@ -137,7 +137,7 @@ def test_modeling_tab_launches_and_evaluates_async(tmp_path: Path, monkeypatch: 
     run_dir = _write_modeling_run(tmp_path)
     artifact_dir = _write_artifact(tmp_path, run_dir)
 
-    def _fake_evaluate_models(*, project_root, dataset_path, artifact_path, config):
+    def _fake_evaluate_models(*, project_root, dataset_path, artifact_path, config, test_dataset_path=None):
         output_dir = Path(project_root) / "data" / "modeling_results" / "20260419_130000_eval"
         output_dir.mkdir(parents=True, exist_ok=True)
         summary_path = output_dir / "summary.json"
@@ -518,6 +518,68 @@ def test_modeling_tab_history_list_double_click_opens_folder(tmp_path: Path, mon
     finally:
         tab.close()
         controller.shutdown()
+
+
+def test_modeling_controller_test_dataset_path_threads_through_evaluate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A test-dataset override on the controller must reach evaluate_models()."""
+    _app()
+    train_run = _write_modeling_run(tmp_path)
+    test_run = _write_modeling_run(tmp_path)
+    artifact_dir = _write_artifact(tmp_path, train_run)
+    captured: dict = {}
+
+    def _fake_evaluate(*, project_root, dataset_path, artifact_path, config, test_dataset_path=None):
+        captured["dataset_path"] = dataset_path
+        captured["test_dataset_path"] = test_dataset_path
+        # Minimal result so the worker can finish cleanly.
+        out_dir = tmp_path / "data" / "modeling_results" / "fake_test_dataset_eval"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "summary.json").write_text(
+            json.dumps({"dataset_run_name": train_run.name, "selected_sample_count": 1, "models": {}}),
+            encoding="utf-8",
+        )
+        return ModelingEvaluationResult(
+            dataset_summary=__import__(
+                "continuum_robot.modeling.ann_training", fromlist=["load_modeling_dataset_summary"]
+            ).load_modeling_dataset_summary(dataset_path),
+            artifact_details=None,
+            evaluation_scope_requested="full_dataset",
+            evaluation_scope_used="separate_test_dataset" if test_dataset_path else "full_dataset",
+            evaluation_scope_note="fake",
+            selected_sample_count=1,
+            output_dir=out_dir,
+            summary_path=out_dir / "summary.json",
+            metadata_path=out_dir / "metadata.json",
+            comparison_csv_path=out_dir / "comp.csv",
+            phase_csv_path=None,
+            plot_paths={},
+            model_evaluations={},
+            visualization_model=VisualizationModel(summary_lines=["ok"]),
+        )
+
+    monkeypatch.setattr(controller_module, "evaluate_models", _fake_evaluate)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(train_run))
+    controller.select_artifact(str(artifact_dir))
+    controller.set_test_dataset_path(str(test_run))
+    state = controller.refresh()
+    assert state.selected_test_dataset_path == str(test_run)
+    controller.evaluate()
+    QApplication.processEvents()
+    time.sleep(0.12)
+    state = controller.refresh()
+    assert captured.get("test_dataset_path") is not None
+    assert str(captured["test_dataset_path"]) == str(test_run)
+    assert state.last_eval_same_session is False, (
+        "scope_used == 'separate_test_dataset' must clear the same-session flag"
+    )
 
 
 def test_modeling_tab_no_longer_has_two_segment_widgets(tmp_path: Path) -> None:

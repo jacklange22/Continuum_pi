@@ -173,9 +173,26 @@ class ModelingTab(QWidget):
         self.scope_combo.addItem("Artifact Held-Out Split", "artifact_test_split")
         self.scope_combo.addItem("Full Accepted Dataset", "full_dataset")
         self.scope_combo.currentIndexChanged.connect(self._on_scope_changed)
+        # Optional separate test-dataset selector (Wolfe §3.2.3 cross-acquisition eval).
+        # "(same as training)" = use the artifact's training dataset (current behavior).
+        # Any other entry evaluates the ANN against that dataset's samples instead.
+        self.test_dataset_combo = QComboBox()
+        self.test_dataset_combo.setToolTip(
+            "Optional separate test dataset (Wolfe MS thesis §3.2.3). "
+            "Defaults to evaluating on the training dataset's held-out split; "
+            "pick a different run (e.g. angular_test_mesh) for thesis-grade numbers."
+        )
+        self.test_dataset_combo.currentIndexChanged.connect(self._on_test_dataset_changed)
         scope_row.addWidget(scope_label)
         scope_row.addWidget(self.scope_combo, 1)
         controls_card.body_layout.addLayout(scope_row)
+
+        test_dataset_row = QHBoxLayout()
+        test_dataset_row.setContentsMargins(0, 0, 0, 0)
+        test_dataset_label = QLabel("Test Dataset")
+        test_dataset_row.addWidget(test_dataset_label)
+        test_dataset_row.addWidget(self.test_dataset_combo, 1)
+        controls_card.body_layout.addLayout(test_dataset_row)
 
         action_row = QHBoxLayout()
         action_row.setContentsMargins(0, 0, 0, 0)
@@ -253,6 +270,7 @@ class ModelingTab(QWidget):
         self._sync_dataset_list(state)
         self._sync_artifact_list(state)
         self._sync_history_list(state)
+        self._sync_test_dataset_combo(state)
         self.dataset_pairs.set_pairs(state.dataset_summary_pairs)
         self.artifact_pairs.set_pairs(state.artifact_summary_pairs)
         self.evaluation_pairs.set_pairs(state.evaluation_summary_pairs)
@@ -351,6 +369,30 @@ class ModelingTab(QWidget):
         path_str = str(item.data(Qt.UserRole) or "")
         if path_str:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path_str))
+
+    def _sync_test_dataset_combo(self, state: ModelingViewState) -> None:
+        """Mirror the available datasets into the test-dataset picker."""
+        target_paths = ["(same as training)"] + [str(d.path) for d in state.datasets]
+        current_paths = [self.test_dataset_combo.itemData(i) for i in range(self.test_dataset_combo.count())]
+        target_data = [""] + [str(d.path) for d in state.datasets]
+        if current_paths != target_data:
+            with QSignalBlocker(self.test_dataset_combo):
+                self.test_dataset_combo.clear()
+                self.test_dataset_combo.addItem("(same as training)", "")
+                for dataset in state.datasets:
+                    label = f"{dataset.run_name} [{dataset.dataset_mode}]"
+                    self.test_dataset_combo.addItem(label, str(dataset.path))
+        # Select the controller's current choice.
+        with QSignalBlocker(self.test_dataset_combo):
+            target = state.selected_test_dataset_path or ""
+            for index in range(self.test_dataset_combo.count()):
+                if self.test_dataset_combo.itemData(index) == target:
+                    self.test_dataset_combo.setCurrentIndex(index)
+                    break
+
+    def _on_test_dataset_changed(self, _index: int) -> None:
+        data = self.test_dataset_combo.currentData()
+        self.controller.set_test_dataset_path(str(data or ""))
 
     def _on_dataset_selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if current is not None:

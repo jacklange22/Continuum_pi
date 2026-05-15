@@ -232,25 +232,49 @@ def evaluate_models(
     dataset_path: Path,
     artifact_path: Path | None,
     config: ModelingEvaluationConfig,
+    test_dataset_path: Path | None = None,
 ) -> ModelingEvaluationResult:
-    """Evaluate Mike, Camarillo, and ANN models on one canonical dataset."""
+    """Evaluate Mike, Camarillo, and ANN models on one canonical dataset.
+
+    ``test_dataset_path`` enables Wolfe-grade cross-acquisition evaluation
+    (Thayer MS thesis §3.2.3 p85): the ANN artifact is trained on
+    ``dataset_path`` but evaluated against a SEPARATE acquisition (e.g. an
+    angular_test_mesh run). When supplied, all metrics come from the test
+    dataset; the training dataset summary is still used for provenance.
+    """
     dataset_summary = load_modeling_dataset_summary(dataset_path)
-    prepared = prepare_legacy_ann_dataset(dataset_path)
-    if prepared.inputs.shape[0] == 0:
-        raise ValueError("Selected dataset has no accepted full-pose samples after legacy filtering.")
     artifact_details = load_trained_artifact_details(artifact_path) if artifact_path is not None else None
-    selected_indices, scope_used, scope_note = _resolve_evaluation_indices(
-        dataset_path=dataset_path,
-        prepared_sample_count=int(prepared.inputs.shape[0]),
-        artifact_details=artifact_details,
-        requested_scope=config.evaluation_scope,
-    )
+    eval_dataset_path = Path(test_dataset_path) if test_dataset_path is not None else Path(dataset_path)
+    prepared = prepare_legacy_ann_dataset(eval_dataset_path)
+    if prepared.inputs.shape[0] == 0:
+        raise ValueError(
+            "Selected evaluation dataset has no accepted full-pose samples after legacy filtering."
+        )
+    if test_dataset_path is not None:
+        # Test-dataset path overrides scope: every accepted row is used.
+        selected_indices = list(range(int(prepared.inputs.shape[0])))
+        scope_used = "separate_test_dataset"
+        scope_note = (
+            f"Evaluated on a separate test dataset ({eval_dataset_path.name}), "
+            "not the artifact's training split — Wolfe §3.2.3 cross-acquisition methodology."
+        )
+    else:
+        selected_indices, scope_used, scope_note = _resolve_evaluation_indices(
+            dataset_path=eval_dataset_path,
+            prepared_sample_count=int(prepared.inputs.shape[0]),
+            artifact_details=artifact_details,
+            requested_scope=config.evaluation_scope,
+        )
     if not selected_indices:
         raise ValueError("No samples were available for the requested evaluation scope.")
 
     inputs = prepared.inputs[selected_indices, :]
     truths = prepared.outputs[selected_indices, :]
-    phases = _selected_phases(dataset_path=dataset_path, prepared=prepared, selected_indices=selected_indices)
+    phases = _selected_phases(
+        dataset_path=eval_dataset_path,
+        prepared=prepared,
+        selected_indices=selected_indices,
+    )
     evaluations: dict[str, ModelEvaluation] = {}
 
     if bool(config.include_mike):

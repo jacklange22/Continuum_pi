@@ -65,6 +65,10 @@ class ModelingViewState:
     headline_rmse_pairs: list[tuple[str, str]] = field(default_factory=list)
     headline_metrics: list[HeadlineMetric] = field(default_factory=list)
     past_evaluations: list[PastEvaluation] = field(default_factory=list)
+    # Optional separate test dataset (Wolfe MS thesis §3.2.3 cross-acquisition eval).
+    # When set, the ANN artifact is trained on selected_dataset_path but evaluated
+    # against this dataset instead. Empty string = no override (default behavior).
+    selected_test_dataset_path: str = ""
     include_mike: bool = True
     include_camarillo: bool = True
     include_ann: bool = True
@@ -233,6 +237,15 @@ class ModelingController:
         with self._lock:
             self.config.include_ann = bool(value)
 
+    def set_test_dataset_path(self, value: str) -> None:
+        """Optional override dataset to evaluate against (Wolfe §3.2.3).
+
+        Empty string clears the override, falling back to the artifact's split or
+        the full selected dataset (per the evaluation_scope combo).
+        """
+        with self._lock:
+            self.state.selected_test_dataset_path = str(value or "").strip()
+
     def set_evaluation_scope(self, value: str) -> None:
         with self._lock:
             self.config.evaluation_scope = str(value)
@@ -398,6 +411,7 @@ class ModelingController:
                 return
             dataset_summary = self._selected_dataset_summary
             artifact_details = self._selected_artifact_details
+            test_dataset_path = self.state.selected_test_dataset_path
             config = ModelingEvaluationConfig(
                 include_mike=bool(self.config.include_mike),
                 include_camarillo=bool(self.config.include_camarillo),
@@ -419,6 +433,7 @@ class ModelingController:
                 "dataset_path": dataset_summary.path,
                 "artifact_path": (artifact_details.summary.path if artifact_details is not None else None),
                 "config": config,
+                "test_dataset_path": Path(test_dataset_path) if test_dataset_path else None,
             },
             daemon=True,
         )
@@ -429,13 +444,21 @@ class ModelingController:
         if thread is not None and thread.is_alive():
             thread.join(timeout=1.0)
 
-    def _evaluate_worker(self, *, dataset_path: Path, artifact_path: Path | None, config: ModelingEvaluationConfig) -> None:
+    def _evaluate_worker(
+        self,
+        *,
+        dataset_path: Path,
+        artifact_path: Path | None,
+        config: ModelingEvaluationConfig,
+        test_dataset_path: Path | None = None,
+    ) -> None:
         try:
             result = evaluate_models(
                 project_root=self.project_root,
                 dataset_path=dataset_path,
                 artifact_path=artifact_path,
                 config=config,
+                test_dataset_path=test_dataset_path,
             )
         except (RuntimeError, ValueError, TorchUnavailableError) as exc:
             with self._lock:
