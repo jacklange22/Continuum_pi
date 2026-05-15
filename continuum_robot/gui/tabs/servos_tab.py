@@ -36,12 +36,14 @@ class ServosTab(QWidget):
         parent=None,
         *,
         apply_runtime_parameters: Callable[..., None] | None = None,
+        pretension_trial_controller=None,
     ) -> None:
         super().__init__(parent)
         self.controller = controller
         # apply_runtime_parameters retained for API compatibility; jog-tick settings
         # now live on the System tab, so this callback is unused here.
         self._apply_runtime_parameters = apply_runtime_parameters
+        self.pretension_trial_controller = pretension_trial_controller
 
         self.setObjectName("servoWorkspace")
         self.setStyleSheet(
@@ -176,7 +178,7 @@ class ServosTab(QWidget):
         self.pretension_hint.setProperty("role", "hint")
         self.pretension_hint.setWordWrap(True)
 
-        self.pretension_box = QGroupBox("Algorithmic Pretension")
+        self.pretension_box = QGroupBox("Algorithmic Pretension (single servo)")
         pretension_layout = QFormLayout(self.pretension_box)
         pretension_layout.addRow("Servo", self.pretension_servo_spin)
         pretension_layout.addRow("Threshold (mA)", self.pretension_threshold_spin)
@@ -192,6 +194,51 @@ class ServosTab(QWidget):
         pretension_layout.addRow(pretension_buttons_widget)
         pretension_layout.addRow(self.pretension_hint)
 
+        # --- Segment Pretension Trial (4-servo, one-click) ---------------
+        # Drives the pretension_validation experiment with the saved config so
+        # the operator can pretension the whole active segment from one place.
+        # Tuning still lives on the Experiments tab pretension page.
+        self.segment_pretension_status_label = QLabel(
+            "Pretension trial idle. Tune knobs on the Experiments tab pretension page."
+        )
+        self.segment_pretension_status_label.setProperty("role", "status")
+        self.segment_pretension_status_label.setWordWrap(True)
+        self.segment_pretension_manual_count_label = QLabel("Manual baselines recorded: 0")
+        self.segment_pretension_manual_count_label.setProperty("role", "hint")
+        self.record_manual_baseline_button = QPushButton("Record Manual Baseline")
+        self.record_manual_baseline_button.setToolTip(
+            "Hand-tension the spine first, then click this to snapshot the current state. "
+            "Repeat 5 times to build a manual repeatability baseline that the trial compares against."
+        )
+        self.clear_manual_baselines_button = QPushButton("Clear Baselines")
+        self.clear_manual_baselines_button.setProperty("variant", "ghost")
+        self.run_segment_pretension_button = QPushButton("Run Pretension Trial")
+        self.run_segment_pretension_button.setProperty("role", "primary")
+        self.run_segment_pretension_button.setToolTip(
+            "Runs the saved pretension_validation experiment on the active segment. "
+            "Uses recorded manual baselines (if any) for the algorithm-vs-manual comparison report."
+        )
+        self.record_manual_baseline_button.clicked.connect(self._record_manual_baseline)
+        self.clear_manual_baselines_button.clicked.connect(self._clear_manual_baselines)
+        self.run_segment_pretension_button.clicked.connect(self._run_segment_pretension)
+
+        self.segment_pretension_box = QGroupBox("Segment Pretension Trial (4-servo)")
+        segment_pretension_layout = QVBoxLayout(self.segment_pretension_box)
+        segment_pretension_layout.addWidget(self.segment_pretension_status_label)
+        segment_pretension_layout.addWidget(self.segment_pretension_manual_count_label)
+        segment_pretension_button_row = QHBoxLayout()
+        segment_pretension_button_row.setSpacing(10)
+        segment_pretension_button_row.addWidget(self.record_manual_baseline_button)
+        segment_pretension_button_row.addWidget(self.clear_manual_baselines_button)
+        segment_pretension_button_row.addWidget(self.run_segment_pretension_button)
+        segment_pretension_button_row.addStretch(1)
+        segment_pretension_button_widget = QWidget()
+        segment_pretension_button_widget.setLayout(segment_pretension_button_row)
+        segment_pretension_layout.addWidget(segment_pretension_button_widget)
+        # The whole section is hidden unless an experiment runner was wired in.
+        self.segment_pretension_box.setVisible(self.pretension_trial_controller is not None)
+        self._refresh_segment_pretension_state()
+
         content_widget = QWidget()
         content_layout = QVBoxLayout(content_widget)
         content_layout.setContentsMargins(0, 0, 0, 0)
@@ -201,6 +248,7 @@ class ServosTab(QWidget):
         content_layout.addWidget(jog_box)
         content_layout.addWidget(self.manual_pretension_box)
         content_layout.addWidget(self.pretension_box)
+        content_layout.addWidget(self.segment_pretension_box)
         content_layout.addStretch(1)
 
         self.scroll_area = QScrollArea()
@@ -393,6 +441,59 @@ class ServosTab(QWidget):
             if not getattr(self.controller.state, "status_message", ""):
                 self.controller.state.status_message = str(exc)
         self.update(self.controller.state)
+
+    # --- Segment pretension trial handlers -------------------------------
+
+    def _record_manual_baseline(self) -> None:
+        if self.pretension_trial_controller is None:
+            return
+        try:
+            self.pretension_trial_controller.record_manual_baseline()
+        except Exception as exc:
+            self.controller.state.last_error = str(exc)
+            self.controller.state.status_message = f"Manual baseline capture failed: {exc}"
+        self._refresh_segment_pretension_state()
+        self.update(self.controller.state)
+
+    def _clear_manual_baselines(self) -> None:
+        if self.pretension_trial_controller is None:
+            return
+        try:
+            self.pretension_trial_controller.clear_manual_baselines()
+        except Exception as exc:
+            self.controller.state.last_error = str(exc)
+            self.controller.state.status_message = f"Clearing baselines failed: {exc}"
+        self._refresh_segment_pretension_state()
+        self.update(self.controller.state)
+
+    def _run_segment_pretension(self) -> None:
+        if self.pretension_trial_controller is None:
+            return
+        # Disable buttons during the run; matplotlib output writing is
+        # synchronous and the experiment itself blocks on the worker.
+        self.run_segment_pretension_button.setEnabled(False)
+        self.record_manual_baseline_button.setEnabled(False)
+        self.segment_pretension_status_label.setText("Pretension trial running…")
+        try:
+            self.pretension_trial_controller.run_pretension_trial()
+        except Exception as exc:
+            self.controller.state.last_error = str(exc)
+            self.controller.state.status_message = f"Pretension trial failed: {exc}"
+        finally:
+            self.run_segment_pretension_button.setEnabled(True)
+            self.record_manual_baseline_button.setEnabled(True)
+            self._refresh_segment_pretension_state()
+            self.update(self.controller.state)
+
+    def _refresh_segment_pretension_state(self) -> None:
+        if self.pretension_trial_controller is None:
+            return
+        state = self.pretension_trial_controller.state
+        self.segment_pretension_status_label.setText(state.last_status)
+        self.segment_pretension_manual_count_label.setText(
+            f"Manual baselines recorded: {int(state.manual_baseline_count)}"
+            + (f" (file: {state.manual_baseline_path})" if state.manual_baseline_path else "")
+        )
 
     @staticmethod
     def _display_value(value) -> str:

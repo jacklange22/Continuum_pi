@@ -12,7 +12,7 @@ from continuum_robot.gui.controllers.data_management_controller import DataManag
 from continuum_robot.gui.controllers.experiment_controller import ExperimentController
 from continuum_robot.gui.controllers.modeling_controller import ModelingController
 from continuum_robot.gui.controllers.two_segment_modeling_controller import TwoSegmentModelingController
-from continuum_robot.gui.controllers.pretension_controller import PretensionController
+from continuum_robot.gui.controllers.pretension_trial_controller import PretensionTrialController
 from continuum_robot.gui.controllers.registration_controller import RegistrationController
 from continuum_robot.gui.controllers.runtime_tip_calibration_controller import RuntimeTipCalibrationController
 from continuum_robot.gui.controllers.servos_controller import ServosController
@@ -23,7 +23,6 @@ from continuum_robot.gui.tabs.data_management_tab import DataManagementTab
 from continuum_robot.gui.tabs.experiment_tab import ExperimentTab
 from continuum_robot.gui.tabs.modeling_tab import ModelingTab
 from continuum_robot.gui.tabs.two_segment_modeling_tab import TwoSegmentModelingTab
-from continuum_robot.gui.tabs.pretension_tab import PretensionTab
 from continuum_robot.gui.tabs.registration_tab import RegistrationTab
 from continuum_robot.gui.tabs.servos_tab import ServosTab
 from continuum_robot.gui.tabs.system_tab import SystemTab
@@ -101,13 +100,6 @@ class AppWindow(QMainWindow):
             self.servos_tab.update(servo_state)
             self.statusBar().showMessage(servo_state.status_message)
             return
-        elif current_widget is self.pretension_tab:
-            pretension_state = self.pretension_controller.refresh()
-            if getattr(self.pretension_controller, "latest_runtime_snapshot", None) is not None:
-                self.system_controller.sync_servo_runtime_snapshot(self.pretension_controller.latest_runtime_snapshot)
-            self.pretension_tab.update(pretension_state)
-            self.statusBar().showMessage(pretension_state.status_message)
-            return
         elif current_widget is self.experiment_tab:
             if self.experiment_controller.should_periodically_refresh_selected_experiment():
                 experiment_state = self.experiment_controller.refresh_prerequisites()
@@ -148,7 +140,7 @@ class AppWindow(QMainWindow):
         return self.servos_controller.refresh_selected_servo()
 
     def _handle_tab_changed(self, _index: int) -> None:
-        if self.tab_widget.currentWidget() in {self.system_tab, self.servos_tab, self.pretension_tab}:
+        if self.tab_widget.currentWidget() in {self.system_tab, self.servos_tab}:
             self._servo_full_refresh_due = True
         if self.tab_widget.currentWidget() is self.system_tab:
             self._system_summary_refresh_due = True
@@ -182,10 +174,12 @@ class AppWindow(QMainWindow):
             session_log_path=(str(context.session_log_path) if context.session_log_path is not None else None),
         )
         self.servos_controller = ServosController(servo_service=servo_service, settings=settings)
-        self.pretension_controller = PretensionController(
+        self.pretension_trial_controller = PretensionTrialController(
             servo_service=servo_service,
+            tracking_service=tracking_service,
+            experiment_runner=experiment_runner,
             settings=settings,
-            config_loader=context.config_loader,
+            project_root=context.project_root,
         )
         self.tracking_controller = TrackingController(
             tracking_service=tracking_service,
@@ -253,8 +247,10 @@ class AppWindow(QMainWindow):
             open_runtime_tip_calibration=self._open_runtime_tip_calibration,
             open_registration_trial=self._open_registration_trial,
         )
-        self.servos_tab = ServosTab(self.servos_controller)
-        self.pretension_tab = PretensionTab(self.pretension_controller)
+        self.servos_tab = ServosTab(
+            self.servos_controller,
+            pretension_trial_controller=self.pretension_trial_controller,
+        )
         self.experiment_tab = ExperimentTab(self.experiment_controller)
         self.modeling_tab = ModelingTab(
             self.modeling_controller,
@@ -272,7 +268,6 @@ class AppWindow(QMainWindow):
             (self.tracking_tab, "Tracking"),
             (self.registration_tab, "Registration"),
             (self.servos_tab, "Servos"),
-            (self.pretension_tab, "Pretension"),
             (self.experiment_tab, "Experiment"),
             (self.modeling_tab, "Modeling"),
             (self.two_segment_modeling_tab, "2-Segment Modeling"),
@@ -340,7 +335,7 @@ class AppWindow(QMainWindow):
                 experiment_tab.shutdown()
             except Exception:
                 pass
-        for attribute in ("servos_controller", "pretension_controller", "experiment_controller", "modeling_controller", "tracking_controller"):
+        for attribute in ("servos_controller", "experiment_controller", "modeling_controller", "tracking_controller"):
             controller = getattr(self, attribute, None)
             if controller is None:
                 continue

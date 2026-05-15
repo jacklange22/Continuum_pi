@@ -28,15 +28,20 @@ def test_app_window_bootstraps_with_real_tabs() -> None:
     window = AppWindow(context)
     try:
         assert window.windowTitle() == "Continuum Robot Operator Console"
-        assert window.tab_widget.count() == 8
+        # The standalone Pretension tab was removed. Pretension is now a
+        # one-click section on the Servos tab (driven by the
+        # PretensionTrialController) and the underlying experiment is tuned
+        # on the Experiments tab pretension_validation page.
+        assert window.tab_widget.count() == 7
         assert window.tab_widget.tabText(0) == "System"
         assert window.tab_widget.tabText(1) == "Tracking"
         assert window.tab_widget.tabText(2) == "Registration"
         assert window.tab_widget.tabText(3) == "Servos"
-        assert window.tab_widget.tabText(4) == "Pretension"
-        assert window.tab_widget.tabText(5) == "Experiment"
-        assert window.tab_widget.tabText(6) == "Modeling"
-        assert window.tab_widget.tabText(7) == "Data"
+        assert window.tab_widget.tabText(4) == "Experiment"
+        assert window.tab_widget.tabText(5) == "Modeling"
+        assert window.tab_widget.tabText(6) == "Data"
+        # The new pretension controller is attached to the Servos tab.
+        assert window.servos_tab.pretension_trial_controller is window.pretension_trial_controller
     finally:
         window.shutdown()
 
