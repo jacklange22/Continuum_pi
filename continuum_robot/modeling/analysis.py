@@ -285,6 +285,8 @@ def evaluate_models(
         truths=truths,
         evaluations=evaluations,
         phases=phases,
+        inputs=inputs,
+        sample_indices=selected_indices,
     )
     output_dir = _allocate_results_dir(
         project_root=Path(project_root),
@@ -403,6 +405,8 @@ def build_modeling_visualization(
     truths: np.ndarray,
     evaluations: dict[str, ModelEvaluation],
     phases: list[str],
+    inputs: np.ndarray | None = None,
+    sample_indices: list[int] | None = None,
 ) -> VisualizationModel:
     """Build GUI-facing plots and summary text for modeling comparison."""
     available = [evaluation for evaluation in evaluations.values() if evaluation.metrics.status == "completed"]
@@ -548,12 +552,96 @@ def build_modeling_visualization(
         heatmap = _build_spatial_error_heatmap(evaluation, truths=truths)
         if heatmap is not None:
             charts.append(heatmap)
+    # Top-K worst-prediction tables per model. Reveals which workspace points each
+    # model handles worst, with the cable command that produced the failure. Direct
+    # debug aid for "where is the model breaking?"
+    for evaluation in available:
+        worst_table = _build_worst_predictions_table(
+            evaluation,
+            truths=truths,
+            inputs=inputs,
+            sample_indices=sample_indices,
+        )
+        if worst_table is not None:
+            charts.append(worst_table)
     # ANN training loss curve — embed inline when the selected artifact has one.
     if artifact_details is not None:
         loss_chart = _build_loss_history_chart(artifact_details)
         if loss_chart is not None:
             charts.append(loss_chart)
     return VisualizationModel(charts=charts, summary_lines=summary_lines)
+
+
+def _build_worst_predictions_table(
+    evaluation: ModelEvaluation,
+    *,
+    truths: np.ndarray,
+    inputs: np.ndarray | None,
+    sample_indices: list[int] | None,
+    top_k: int = 10,
+) -> ChartModel | None:
+    """Top-K worst predictions for one model.
+
+    Sample row: rank | sample_idx | cable command (cm) | measured (mm) | predicted (mm) | err (mm)
+    Helps diagnose whether a model fails on a specific cable/workspace combo.
+    """
+    if evaluation.predictions is None or not evaluation.position_errors_mm:
+        return None
+    errors = np.asarray(evaluation.position_errors_mm, dtype=float)
+    preds = np.asarray(evaluation.predictions, dtype=float)
+    if errors.size == 0 or preds.shape[0] != errors.size:
+        return None
+    # Argsort descending by error magnitude.
+    order = np.argsort(-errors)
+    top_k = min(int(top_k), int(errors.size))
+    rows: list[list[str]] = []
+    for rank, idx in enumerate(order[:top_k], start=1):
+        sample_idx = (
+            sample_indices[int(idx)]
+            if sample_indices is not None and int(idx) < len(sample_indices)
+            else int(idx)
+        )
+        cable_str = "n/a"
+        if inputs is not None and int(idx) < inputs.shape[0]:
+            cable = inputs[int(idx)]
+            cable_str = "[" + ", ".join(f"{float(v):+.3f}" for v in cable) + "]"
+        measured = truths[int(idx), :3] if truths.size and int(idx) < truths.shape[0] else None
+        predicted = preds[int(idx), :3]
+        measured_str = (
+            "[" + ", ".join(f"{float(v):+.2f}" for v in measured) + "]"
+            if measured is not None
+            else "n/a"
+        )
+        predicted_str = "[" + ", ".join(f"{float(v):+.2f}" for v in predicted) + "]"
+        rows.append(
+            [
+                str(rank),
+                str(sample_idx),
+                cable_str,
+                measured_str,
+                predicted_str,
+                f"{float(errors[int(idx)]):.3f}",
+            ]
+        )
+    return ChartModel(
+        kind="table",
+        title=f"{evaluation.metrics.label} — Top {top_k} worst predictions",
+        x_title="",
+        y_title="",
+        table_headers=[
+            "Rank",
+            "Sample",
+            "Cable (cm)",
+            "Measured (mm)",
+            "Predicted (mm)",
+            "Error (mm)",
+        ],
+        table_rows=rows,
+        caption=(
+            "Highest-error samples for this model. Clusters in cable or workspace "
+            "regions indicate where the model is breaking — slack/hysteresis diagnostic."
+        ),
+    )
 
 
 def _build_per_axis_rmse_chart(
@@ -1193,6 +1281,89 @@ def _write_phase_csv(path: Path, evaluations: dict[str, ModelEvaluation]) -> Non
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
+
+
+@dataclass(frozen=True)
+class PastEvaluation:
+    """One previous Modeling-tab evaluation written to disk under results_root.
+
+    Loaded by ``discover_past_evaluations`` so the Modeling tab can show a small
+    history list of past runs on the selected dataset — operator can compare today's
+    numbers to yesterday's without leaving the app.
+    """
+
+    output_dir: Path
+    timestamp_utc: str
+    dataset_run_name: str
+    selected_sample_count: int
+    models_summary: list[tuple[str, float | None]]  # [(label, position_rmse_mm), ...]
+    best_label: str
+    best_rmse_mm: float | None
+
+
+def discover_past_evaluations(
+    *,
+    project_root: Path,
+    results_root: Path,
+    dataset_run_name: str,
+    limit: int = 10,
+) -> list[PastEvaluation]:
+    """Return up to ``limit`` past evaluations for ``dataset_run_name``, newest first."""
+    root = Path(results_root)
+    if not root.is_absolute():
+        root = Path(project_root) / root
+    if not root.exists() or not root.is_dir():
+        return []
+    target_slug = _slugify(dataset_run_name)
+    out: list[PastEvaluation] = []
+    for child in sorted(root.iterdir(), reverse=True):
+        if not child.is_dir():
+            continue
+        summary_path = child / "summary.json"
+        if not summary_path.is_file():
+            continue
+        try:
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        run_name = str(payload.get("dataset_run_name", "") or "")
+        # Match by run_name or by directory-name slug.
+        if run_name != dataset_run_name and target_slug and target_slug not in child.name:
+            continue
+        models_payload = dict(payload.get("models", {}) or {})
+        models_summary: list[tuple[str, float | None]] = []
+        for key, model_payload in models_payload.items():
+            if not isinstance(model_payload, dict):
+                continue
+            label = str(model_payload.get("label", key) or key)
+            rmse_raw = model_payload.get("position_rmse_mm")
+            try:
+                rmse_value = float(rmse_raw) if rmse_raw not in (None, "") else None
+            except Exception:
+                rmse_value = None
+            models_summary.append((label, rmse_value))
+        valid = [
+            (label, rmse) for label, rmse in models_summary if rmse is not None and not math.isnan(rmse)
+        ]
+        best_label, best_rmse = ("n/a", None)
+        if valid:
+            best_label, best_rmse = min(valid, key=lambda pair: float(pair[1]))
+        # Timestamp pulled from directory name (canonical_timestamped_path puts it first).
+        timestamp_utc = child.name.split("_")[0] if "_" in child.name else child.name
+        out.append(
+            PastEvaluation(
+                output_dir=child,
+                timestamp_utc=timestamp_utc,
+                dataset_run_name=run_name,
+                selected_sample_count=int(payload.get("selected_sample_count", 0) or 0),
+                models_summary=models_summary,
+                best_label=best_label,
+                best_rmse_mm=best_rmse,
+            )
+        )
+        if len(out) >= int(limit):
+            break
+    return out
 
 
 def _allocate_results_dir(*, project_root: Path, results_root_raw: str, dataset_name: str) -> Path:

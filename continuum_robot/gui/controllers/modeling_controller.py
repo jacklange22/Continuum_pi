@@ -26,6 +26,7 @@ from continuum_robot.modeling import (
     evaluate_models,
     load_trained_artifact_details,
 )
+from continuum_robot.modeling.analysis import PastEvaluation, discover_past_evaluations
 from continuum_robot.modeling.two_segment import (
     TwoSegmentModelingConfig,
     TwoSegmentModelingResult,
@@ -63,6 +64,7 @@ class ModelingViewState:
     evaluation_summary_pairs: list[tuple[str, str]] = field(default_factory=list)
     headline_rmse_pairs: list[tuple[str, str]] = field(default_factory=list)
     headline_metrics: list[HeadlineMetric] = field(default_factory=list)
+    past_evaluations: list[PastEvaluation] = field(default_factory=list)
     include_mike: bool = True
     include_camarillo: bool = True
     include_ann: bool = True
@@ -194,6 +196,7 @@ class ModelingController:
             self.state.evaluation_summary_pairs = build_evaluation_summary_pairs(self._last_result)
             self.state.headline_rmse_pairs = self._build_headline_rmse_pairs(self._last_result)
             self.state.headline_metrics = self._build_headline_metrics(self._last_result)
+            self.state.past_evaluations = self._discover_past_evaluations(selected_dataset_summary)
             self.state.last_eval_same_session = self._eval_used_same_session(self._last_result)
             self.state.include_mike = bool(self.config.include_mike)
             self.state.include_camarillo = bool(self.config.include_camarillo)
@@ -499,6 +502,26 @@ class ModelingController:
             elif metrics.status != "completed":
                 pairs.append((metrics.label, f"unavailable ({metrics.reason or ''})"))
         return pairs
+
+    def _discover_past_evaluations(
+        self, dataset_summary: ModelingDatasetSummary | None
+    ) -> list[PastEvaluation]:
+        """List the most recent saved Modeling evaluations for the selected dataset.
+
+        Lets the operator compare today's run to yesterday's without leaving the tab.
+        Cheap — only reads each evaluation's ``summary.json``.
+        """
+        if dataset_summary is None:
+            return []
+        try:
+            return discover_past_evaluations(
+                project_root=self.project_root,
+                results_root=self.results_root,
+                dataset_run_name=dataset_summary.run_name,
+                limit=10,
+            )
+        except Exception:
+            return []
 
     @staticmethod
     def _eval_used_same_session(result: ModelingEvaluationResult | None) -> bool:

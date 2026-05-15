@@ -43,7 +43,13 @@ class ChartSeriesModel:
 
 @dataclass
 class ChartModel:
-    """Simple chart payload for QtCharts rendering."""
+    """Simple chart payload for QtCharts (and table) rendering.
+
+    Supported ``kind`` values:
+      - ``"bar"``, ``"line"``, ``"scatter"`` — QtCharts series via the standard fields.
+      - ``"table"`` — tabular data rendered into a QTableWidget. Uses
+        ``table_headers`` and ``table_rows`` instead of QtCharts series fields.
+    """
 
     kind: str
     title: str
@@ -55,6 +61,8 @@ class ChartModel:
     points_xy: list[tuple[float, float]] = field(default_factory=list)
     series_xy: list[ChartSeriesModel] = field(default_factory=list)
     color_hex: str = COLORS.selection_bg
+    table_headers: list[str] = field(default_factory=list)
+    table_rows: list[list[str]] = field(default_factory=list)
 
 
 @dataclass

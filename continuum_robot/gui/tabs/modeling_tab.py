@@ -132,6 +132,21 @@ class ModelingTab(QWidget):
         artifact_card.body_layout.addWidget(self.artifact_pairs)
         left.addWidget(artifact_card, 1)
 
+        # Past evaluations on the selected dataset — lets you compare today's
+        # numbers to yesterday's without leaving the tab.
+        history_card = _Card(
+            "Evaluation History",
+            "Recent comparison runs on the selected dataset. Click a row to open the folder.",
+        )
+        self.history_list = QListWidget()
+        self.history_list.setMinimumHeight(120)
+        self.history_list.itemDoubleClicked.connect(self._on_history_item_double_clicked)
+        history_card.body_layout.addWidget(self.history_list)
+        self.history_hint = QLabel("No prior evaluations yet for this dataset.")
+        self.history_hint.setStyleSheet(f"color: {COLORS.text_muted}; font-style: italic;")
+        history_card.body_layout.addWidget(self.history_hint)
+        left.addWidget(history_card)
+
         controls_card = _Card("Evaluation Controls", "Choose which models to compare and which dataset slice to use.")
         controls_row = QHBoxLayout()
         controls_row.setContentsMargins(0, 0, 0, 0)
@@ -237,6 +252,7 @@ class ModelingTab(QWidget):
     def update(self, state: ModelingViewState) -> None:
         self._sync_dataset_list(state)
         self._sync_artifact_list(state)
+        self._sync_history_list(state)
         self.dataset_pairs.set_pairs(state.dataset_summary_pairs)
         self.artifact_pairs.set_pairs(state.artifact_summary_pairs)
         self.evaluation_pairs.set_pairs(state.evaluation_summary_pairs)
@@ -296,6 +312,45 @@ class ModelingTab(QWidget):
                 if self.artifact_list.item(index).data(Qt.UserRole) == state.selected_artifact_path:
                     self.artifact_list.setCurrentRow(index)
                     break
+
+    def _sync_history_list(self, state: ModelingViewState) -> None:
+        """Render the past-evaluations list (newest first) for the selected dataset."""
+        target_signature = tuple(
+            (str(e.output_dir), e.timestamp_utc, e.best_label, e.best_rmse_mm)
+            for e in state.past_evaluations
+        )
+        current_signature = tuple(
+            (
+                self.history_list.item(i).data(Qt.UserRole),
+                self.history_list.item(i).data(Qt.UserRole + 1) or "",
+                self.history_list.item(i).data(Qt.UserRole + 2) or "",
+                self.history_list.item(i).data(Qt.UserRole + 3),
+            )
+            for i in range(self.history_list.count())
+        )
+        if current_signature != target_signature:
+            with QSignalBlocker(self.history_list):
+                self.history_list.clear()
+                for past in state.past_evaluations:
+                    rmse_text = (
+                        f"{float(past.best_rmse_mm):.2f} mm" if past.best_rmse_mm is not None else "n/a"
+                    )
+                    label = (
+                        f"{past.timestamp_utc}  •  best: {past.best_label} {rmse_text}"
+                        f"  •  {past.selected_sample_count} samples"
+                    )
+                    item = QListWidgetItem(label)
+                    item.setData(Qt.UserRole, str(past.output_dir))
+                    item.setData(Qt.UserRole + 1, past.timestamp_utc)
+                    item.setData(Qt.UserRole + 2, past.best_label)
+                    item.setData(Qt.UserRole + 3, past.best_rmse_mm)
+                    self.history_list.addItem(item)
+        self.history_hint.setVisible(self.history_list.count() == 0)
+
+    def _on_history_item_double_clicked(self, item: QListWidgetItem) -> None:
+        path_str = str(item.data(Qt.UserRole) or "")
+        if path_str:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path_str))
 
     def _on_dataset_selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if current is not None:

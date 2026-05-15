@@ -16,7 +16,17 @@ from PySide6.QtCharts import (
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import QLabel, QTabWidget, QTextEdit, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QHeaderView,
+    QLabel,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from continuum_robot.gui.theme import COLORS, qcolor
 from continuum_robot.gui.experiment_visualization import ChartModel, VisualizationModel
@@ -163,10 +173,58 @@ class ExperimentResultsWidget(QWidget):
             _style_chart(chart, model.title)
             chart.legend().setVisible(bool(series_models))
             return _chart_panel(chart, model.caption)
+        if model.kind == "table":
+            return _build_table_widget(model)
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.addWidget(QLabel(f"Unsupported chart type: {model.kind}"))
         return widget
+
+
+def _build_table_widget(model: ChartModel) -> QWidget:
+    """Render a ChartModel(kind='table') into a styled, scrollable table panel."""
+    container = QWidget()
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+    title = QLabel(model.title)
+    title.setStyleSheet(f"color: {COLORS.text_primary}; font-weight: 600; font-size: 13px;")
+    layout.addWidget(title)
+    table = QTableWidget()
+    table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+    table.setSelectionBehavior(QAbstractItemView.SelectRows)
+    table.setAlternatingRowColors(True)
+    table.setShowGrid(False)
+    table.setStyleSheet(
+        f"QTableWidget {{ background: {COLORS.surface_alt_bg}; color: {COLORS.text_primary}; "
+        f"alternate-background-color: {COLORS.surface_bg}; border: 1px solid {COLORS.surface_border}; "
+        f"border-radius: 8px; gridline-color: {COLORS.surface_border}; }}"
+        f"QHeaderView::section {{ background: {COLORS.surface_bg}; color: {COLORS.text_muted}; "
+        f"padding: 6px 8px; border: none; font-weight: 700; }}"
+    )
+    headers = list(model.table_headers or [])
+    rows = list(model.table_rows or [])
+    table.setColumnCount(len(headers))
+    table.setHorizontalHeaderLabels(headers)
+    table.setRowCount(len(rows))
+    for row_index, row in enumerate(rows):
+        for col_index in range(len(headers)):
+            value = row[col_index] if col_index < len(row) else ""
+            item = QTableWidgetItem(str(value))
+            table.setItem(row_index, col_index, item)
+    table.verticalHeader().setVisible(False)
+    horizontal = table.horizontalHeader()
+    if horizontal is not None:
+        horizontal.setStretchLastSection(True)
+        horizontal.setSectionResizeMode(QHeaderView.ResizeToContents)
+    table.setMinimumHeight(180)
+    layout.addWidget(table)
+    if model.caption:
+        caption_label = QLabel(model.caption)
+        caption_label.setWordWrap(True)
+        caption_label.setStyleSheet(f"color: {COLORS.text_muted};")
+        layout.addWidget(caption_label)
+    return container
 
 
 def _chart_view(chart: QChart) -> QChartView:

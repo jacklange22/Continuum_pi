@@ -393,6 +393,133 @@ def test_modeling_tab_headline_widget_renders_tiles(tmp_path: Path) -> None:
     widget.close()
 
 
+def test_build_worst_predictions_table_returns_top_k_rows(tmp_path: Path) -> None:
+    """Top-K worst-predictions table emits one row per worst sample with cable + xyz + err."""
+    import numpy as np
+    from continuum_robot.modeling.analysis import _build_worst_predictions_table
+
+    truths = np.array([[i, 0, 0, 0, 0, 0] for i in range(5)], dtype=float)
+    predictions = truths.copy()
+    # Inflate errors on samples 1 and 3 so they should be at the top.
+    predictions[1, 0] = 10.0
+    predictions[3, 0] = 5.0
+    fake_eval = ModelEvaluation(
+        metrics=ModelMetrics(
+            model_key="ann",
+            label="ANN",
+            status="completed",
+            sample_count=5,
+            position_rmse_mm=4.0,
+        ),
+        predictions=predictions,
+        position_errors_mm=[
+            float(np.linalg.norm(predictions[i, :3] - truths[i, :3])) for i in range(5)
+        ],
+    )
+    inputs = np.arange(5 * 4, dtype=float).reshape(5, 4) / 10.0
+    chart = _build_worst_predictions_table(
+        fake_eval,
+        truths=truths,
+        inputs=inputs,
+        sample_indices=[100, 101, 102, 103, 104],
+        top_k=3,
+    )
+    assert chart is not None
+    assert chart.kind == "table"
+    assert "ANN" in chart.title
+    # Rank 1 is sample with the biggest error — sample 1, mapped to original index 101.
+    first_row = chart.table_rows[0]
+    assert first_row[0] == "1"
+    assert first_row[1] == "101"
+    assert "[" in first_row[2]  # cable command formatted as list
+    # Top-K limited correctly.
+    assert len(chart.table_rows) == 3
+
+
+def test_modeling_controller_exposes_past_evaluations(tmp_path: Path) -> None:
+    """Past evaluation history is discovered from results_root and surfaced on state."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    results_root = tmp_path / "data" / "modeling_results"
+    # Hand-craft a past evaluation folder matching the dataset.
+    past_dir = results_root / "20260419_120100_collect_pose_command_dataset"
+    past_dir.mkdir(parents=True)
+    (past_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "dataset_run_name": run_dir.name,
+                "dataset_mode": "workspace_coverage",
+                "selected_sample_count": 42,
+                "evaluation_scope_used": "artifact_test_split",
+                "models": {
+                    "mike": {"label": "Mike", "position_rmse_mm": 9.5},
+                    "ann": {"label": "ANN", "position_rmse_mm": 1.87},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=results_root,
+    )
+    controller.select_dataset(str(run_dir))
+    state = controller.refresh()
+    assert len(state.past_evaluations) == 1
+    past = state.past_evaluations[0]
+    assert past.best_label == "ANN"
+    assert past.best_rmse_mm == pytest.approx(1.87)
+    assert past.selected_sample_count == 42
+
+
+def test_modeling_tab_history_list_double_click_opens_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Double-clicking a history row triggers a folder open via QDesktopServices."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    results_root = tmp_path / "data" / "modeling_results"
+    past_dir = results_root / "20260419_120100_collect_pose_command_dataset"
+    past_dir.mkdir(parents=True)
+    (past_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "dataset_run_name": run_dir.name,
+                "selected_sample_count": 5,
+                "models": {"ann": {"label": "ANN", "position_rmse_mm": 1.2}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=results_root,
+    )
+    controller.select_dataset(str(run_dir))
+    captured: dict[str, str] = {}
+
+    from PySide6.QtCore import QUrl
+    from PySide6.QtGui import QDesktopServices
+
+    def _fake_open(url: QUrl) -> bool:
+        captured["url"] = url.toLocalFile()
+        return True
+
+    monkeypatch.setattr(QDesktopServices, "openUrl", _fake_open)
+    tab = ModelingTab(controller)
+    try:
+        tab.update(controller.refresh())
+        assert tab.history_list.count() == 1
+        # Simulate double-click on the first row.
+        tab._on_history_item_double_clicked(tab.history_list.item(0))
+        assert captured.get("url") == str(past_dir)
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
 def test_modeling_tab_no_longer_has_two_segment_widgets(tmp_path: Path) -> None:
     """Sanity check: ModelingTab is single-segment only after the split."""
     _app()
