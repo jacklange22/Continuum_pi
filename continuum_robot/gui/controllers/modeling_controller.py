@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from pathlib import Path
 import threading
 
@@ -27,6 +28,11 @@ from continuum_robot.modeling import (
     load_trained_artifact_details,
 )
 from continuum_robot.modeling.analysis import PastEvaluation, discover_past_evaluations
+
+
+# Operator-visible threshold for "eval is too small to trust". RMSE on <100 samples is
+# noisy enough that the headline number can swing by tens of percent across re-runs.
+MIN_EVAL_SAMPLES_WARN_THRESHOLD = 100
 from continuum_robot.modeling.two_segment import (
     TwoSegmentModelingConfig,
     TwoSegmentModelingResult,
@@ -69,6 +75,10 @@ class ModelingViewState:
     # When set, the ANN artifact is trained on selected_dataset_path but evaluated
     # against this dataset instead. Empty string = no override (default behavior).
     selected_test_dataset_path: str = ""
+    # Eval-dataset sample-count warning. The UI shows a chip with this text whenever the
+    # *effective* evaluation dataset has fewer than ``MIN_EVAL_SAMPLES_WARN_THRESHOLD``
+    # complete rows — small evals produce noisy RMSE numbers that won't reproduce.
+    eval_sample_count_warning: str = ""
     include_mike: bool = True
     include_camarillo: bool = True
     include_ann: bool = True
@@ -206,6 +216,9 @@ class ModelingController:
             self.state.past_evaluations = self._discover_past_evaluations(selected_dataset_summary)
             self.state.last_eval_same_session = self._eval_used_same_session(self._last_result)
             self.state.last_eval_thesis_grade = self._eval_is_thesis_grade(self._last_result)
+            self.state.eval_sample_count_warning = self._eval_sample_count_warning(
+                selected_dataset_summary, selected_test_dataset_path=self.state.selected_test_dataset_path
+            )
             self.state.include_mike = bool(self.config.include_mike)
             self.state.include_camarillo = bool(self.config.include_camarillo)
             self.state.include_ann = bool(self.config.include_ann)
@@ -549,6 +562,42 @@ class ModelingController:
             )
         except Exception:
             return []
+
+    def _eval_sample_count_warning(
+        self,
+        dataset_summary: ModelingDatasetSummary | None,
+        *,
+        selected_test_dataset_path: str,
+    ) -> str:
+        """Return a warning string when the effective evaluation dataset is too small.
+
+        Empty string when the dataset is healthy. Looks at the test dataset path first
+        (Wolfe-style override), then falls back to the selected training dataset.
+        """
+        effective_path: Path | None = None
+        if selected_test_dataset_path:
+            try:
+                effective_path = Path(selected_test_dataset_path)
+            except Exception:
+                effective_path = None
+        elif dataset_summary is not None:
+            effective_path = Path(dataset_summary.path)
+        if effective_path is None:
+            return ""
+        # Count rows cheaply from summary.json metrics (no jsonl parse needed).
+        try:
+            payload = json.loads((effective_path / "summary.json").read_text(encoding="utf-8"))
+            metrics = payload.get("experiment_metrics", {}) if isinstance(payload, dict) else {}
+            accepted = int(metrics.get("accepted_sample_count", 0) or 0)
+        except Exception:
+            return ""
+        if accepted < MIN_EVAL_SAMPLES_WARN_THRESHOLD and accepted > 0:
+            return (
+                f"⚠ Evaluation dataset has only {accepted} accepted samples "
+                f"(< {MIN_EVAL_SAMPLES_WARN_THRESHOLD}). RMSE on this few rows is noisy; "
+                "collect more before citing the number."
+            )
+        return ""
 
     @staticmethod
     def _eval_is_thesis_grade(result: ModelingEvaluationResult | None) -> bool:

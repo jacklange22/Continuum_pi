@@ -271,6 +271,17 @@ class ModelingTab(QWidget):
         )
         self.thesis_grade_chip.setVisible(False)
         headline_card.body_layout.addWidget(self.thesis_grade_chip)
+        # Sample-count warning — fires whenever the effective evaluation dataset has fewer
+        # than 100 accepted rows. RMSE on small evals is too noisy to cite.
+        self.eval_sample_count_chip = QLabel("")
+        self.eval_sample_count_chip.setWordWrap(True)
+        self.eval_sample_count_chip.setStyleSheet(
+            f"color: {COLORS.warning_fg}; background: {COLORS.warning_bg}; "
+            f"border: 1px solid {COLORS.warning_fg}; border-radius: 8px; "
+            f"padding: 8px 12px; font-weight: 500;"
+        )
+        self.eval_sample_count_chip.setVisible(False)
+        headline_card.body_layout.addWidget(self.eval_sample_count_chip)
         right.addWidget(headline_card)
 
         details_card = _Card(
@@ -306,6 +317,11 @@ class ModelingTab(QWidget):
         self.same_session_chip.setVisible(
             bool(ran_an_eval and state.last_eval_same_session and not state.last_eval_thesis_grade)
         )
+        # Always show the sample-count warning when the selected eval dataset is small,
+        # regardless of whether we've run anything yet (it's a property of the dataset,
+        # not the eval result). Lets operators avoid clicking Run on a too-small dataset.
+        self.eval_sample_count_chip.setText(state.eval_sample_count_warning)
+        self.eval_sample_count_chip.setVisible(bool(state.eval_sample_count_warning))
         self.results_widget.set_model(state.visualization_model)
         self.status_label.setText(state.status_message)
         self.evaluate_button.setEnabled(state.can_evaluate)

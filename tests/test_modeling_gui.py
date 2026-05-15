@@ -520,6 +520,31 @@ def test_modeling_tab_history_list_double_click_opens_folder(tmp_path: Path, mon
         controller.shutdown()
 
 
+def test_modeling_tab_small_eval_dataset_warning_chip(tmp_path: Path) -> None:
+    """When the selected dataset has fewer than 100 accepted samples, the warning chip fires."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)  # _write_modeling_run fixture has 3 accepted samples
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        # 3 accepted samples is well under the 100-row threshold.
+        assert tab.eval_sample_count_chip.isVisible() is True
+        text = tab.eval_sample_count_chip.text().lower()
+        assert "noisy" in text
+        assert "100" in text
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
 def test_modeling_tab_thesis_grade_chip_replaces_caveat_when_separate_test_used(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
