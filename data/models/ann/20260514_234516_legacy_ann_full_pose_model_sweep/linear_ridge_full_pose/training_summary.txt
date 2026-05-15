@@ -1,0 +1,30 @@
+Linear ridge full-pose baseline summary
+
+Status: completed
+Created: 2026-05-14T23:45:17.650168+00:00
+Dataset: 20260513_232744_collect_pose_command_dataset
+Dataset mode: workspace_coverage
+Prepared samples: 1385
+Backend: mps (Darwin 24.5.0 | arm64)
+Model: linear_ridge_full_pose | ridge_alpha=1e-06
+Epochs completed: 1
+Best epoch: 1
+Best validation loss: 6.252733
+Test loss: 6.631205
+Training wall time (s): 0.453773
+
+Held-out test metrics (same split as training):
+  Loss (batch mean): 6.631205
+  Position RMSE XYZ (mm): 5.929206
+  Position RMSE XY (mm): 3.505723
+  Position RMSE Z (mm): 4.781776
+  Position error L2 mean / median / p95 / max (mm): 5.504611 / 5.125962 / 9.453424 / 13.979542
+  Tangent angular error mean / median (rad): 0.111818 / 0.112396
+
+Note: All models were trained and compared on one grouped train/validation/test split from this dataset only. Metrics do not assess cross-session or cross-run generalization.
+
+Legacy references:
+- @references/ANN.py
+- @references/real_model_learning.py
+- @references/utils_data.py
+- @references/multi_input.py

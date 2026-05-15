@@ -1,0 +1,31 @@
+Legacy ANN full-pose training summary
+
+Status: completed
+Created: 2026-05-14T23:46:44.811642+00:00
+Dataset: 20260513_232744_collect_pose_command_dataset
+Dataset mode: workspace_coverage
+Prepared samples: 1385
+Backend: mps (Darwin 24.5.0 | arm64)
+Hidden layers: [128, 128]
+Epochs completed: 256
+Best epoch: 250
+Best validation loss: 0.242597
+Test loss: 0.290550
+Training wall time (s): 10.603643
+Warmup estimate: 10.7 s
+
+Held-out test metrics (same split as training):
+  Loss (batch mean): 0.290550
+  Position RMSE XYZ (mm): 1.314538
+  Position RMSE XY (mm): 1.258058
+  Position RMSE Z (mm): 0.381183
+  Position error L2 mean / median / p95 / max (mm): 0.995046 / 0.754415 / 2.292230 / 7.782967
+  Tangent angular error mean / median (rad): 0.022755 / 0.019323
+
+Note: All models were trained and compared on one grouped train/validation/test split from this dataset only. Metrics do not assess cross-session or cross-run generalization.
+
+Legacy references:
+- @references/ANN.py
+- @references/real_model_learning.py
+- @references/utils_data.py
+- @references/multi_input.py

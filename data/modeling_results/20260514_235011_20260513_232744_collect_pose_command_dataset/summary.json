@@ -1,0 +1,53 @@
+{
+  "dataset_run_name": "20260513_232744_collect_pose_command_dataset",
+  "dataset_mode": "workspace_coverage",
+  "selected_sample_count": 208,
+  "evaluation_scope_used": "artifact_test_split",
+  "models": {
+    "mike": {
+      "model_key": "mike",
+      "label": "Mike",
+      "status": "completed",
+      "reason": "",
+      "sample_count": 208,
+      "position_rmse_mm": 22.330701633711413,
+      "mean_position_error_mm": 21.086797290098104,
+      "max_position_error_mm": 37.42700198254414,
+      "tangent_mean_error_deg": 34.38384782999631,
+      "tangent_rmse_deg": 36.8534281235345,
+      "tangent_max_error_deg": 63.42456089003892,
+      "axis_position_rmse_mm": "[13.27078835574225, 17.120224483783783, 5.426262571585319]",
+      "axis_tangent_rmse": "[0.34376596228875456, 0.4105765084226326, 0.32716253646588833]"
+    },
+    "camarillo": {
+      "model_key": "camarillo",
+      "label": "Camarillo",
+      "status": "completed",
+      "reason": "",
+      "sample_count": 208,
+      "position_rmse_mm": 22.37084264476709,
+      "mean_position_error_mm": 21.124173347166504,
+      "max_position_error_mm": 37.49505959071501,
+      "tangent_mean_error_deg": 34.45109719392232,
+      "tangent_rmse_deg": 36.92546699398412,
+      "tangent_max_error_deg": 63.55209461544834,
+      "axis_position_rmse_mm": "[13.298239934348144, 17.149981765767453, 5.430427305404436]",
+      "axis_tangent_rmse": "[0.3445780928117083, 0.4114945343835904, 0.3273943849924955]"
+    },
+    "ann": {
+      "model_key": "ann",
+      "label": "ANN",
+      "status": "completed",
+      "reason": "",
+      "sample_count": 208,
+      "position_rmse_mm": 1.3145381682040609,
+      "mean_position_error_mm": 0.9950455770387574,
+      "max_position_error_mm": 7.782966054825984,
+      "tangent_mean_error_deg": 1.3037489298595786,
+      "tangent_rmse_deg": 1.5391277187290537,
+      "tangent_max_error_deg": 4.316564514328367,
+      "axis_position_rmse_mm": "[1.112167240388018, 0.5880426152678219, 0.38118303700711686]",
+      "axis_tangent_rmse": "[0.018851212986330825, 0.017899735212609548, 0.013619404930953921]"
+    }
+  }
+}

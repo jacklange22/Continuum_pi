@@ -1,0 +1,134 @@
+{
+  "schema_version": "1.0",
+  "artifact_kind": "legacy_ann_full_pose_v1",
+  "created_at_utc": "2026-05-14T23:45:40.844197+00:00",
+  "status": "completed",
+  "legacy_references": [
+    "@references/ANN.py",
+    "@references/real_model_learning.py",
+    "@references/utils_data.py",
+    "@references/multi_input.py",
+    "@references/hysteresis_model_learning.py"
+  ],
+  "dataset": {
+    "path": "/Users/jacklange/Continuum/pi_code/data/experiments/collect_pose_command_dataset/20260513_232744_collect_pose_command_dataset",
+    "run_id": "62277f7a8ebc",
+    "run_name": "20260513_232744_collect_pose_command_dataset",
+    "timestamp_utc": "2026-05-13T23:28:12.809825+00:00",
+    "dataset_mode": "workspace_coverage",
+    "dataset_mode_summary": "Bounded workspace-coverage collection for first-pass forward-model training.",
+    "sample_count": 1385,
+    "accepted_count": 1385,
+    "rejected_count": 0,
+    "full_pose_available": true,
+    "sequential_context_available": true,
+    "run_label": "upgraded_robot_modeling",
+    "dataset_tag": "baseline_v1",
+    "trust_summary": "runtime tip thesis_trusted, pretension ready",
+    "runtime_tip_summary": "coil_as_tip (thesis_trusted)",
+    "pretension_summary": "manual (ready)",
+    "filtered_reason_counts": {},
+    "prepared_sample_count": 1385
+  },
+  "model": {
+    "family": "legacy_ann",
+    "variant": "full_pose",
+    "input_dim": 4,
+    "output_dim": 6,
+    "hidden_layers": [
+      64,
+      64
+    ],
+    "activation": "relu",
+    "dtype": "float32"
+  },
+  "loss": {
+    "kind": "pose",
+    "pose_orientation_scale": 10.0
+  },
+  "backend": {
+    "selected_backend": "mps",
+    "recommended_backend": "mps",
+    "torch_version": "2.11.0",
+    "python_version": "3.13.5",
+    "platform_summary": "Darwin 24.5.0 | arm64"
+  },
+  "training": {
+    "epochs_requested": 256,
+    "epochs_completed": 256,
+    "best_epoch": 254,
+    "best_validation_loss": 0.5927845314145088,
+    "test_loss": 0.6437034159898758,
+    "training_wall_time_s": 10.689457833068445,
+    "checkpointing": false,
+    "learning_rate": 0.001,
+    "batch_size": 64,
+    "random_seed": 0
+  },
+  "split": {
+    "strategy": "ordered_step_group",
+    "train_ratio": 0.7,
+    "validation_ratio": 0.15,
+    "test_ratio": 0.15,
+    "train_count": 969,
+    "validation_count": 208,
+    "test_count": 208
+  },
+  "estimate": {
+    "estimated_total_s": 10.024569670359293,
+    "estimated_epoch_s": 0.03915847527484099,
+    "train_batch_time_s": 0.002099951651568214,
+    "validation_batch_time_s": 0.0013898122124373913,
+    "benchmark_train_batches": 6,
+    "benchmark_validation_batches": 4,
+    "train_batch_count": 16,
+    "validation_batch_count": 4
+  },
+  "evaluation": {
+    "single_dataset_split_note": "All models were trained and compared on one grouped train/validation/test split from this dataset only. Metrics do not assess cross-session or cross-run generalization.",
+    "validation": {
+      "loss_mean": 0.5927845314145088,
+      "position_rmse_xyz_mm": 1.8529889422272128,
+      "position_rmse_xy_mm": 1.6325741394593456,
+      "position_rmse_z_mm": 0.8765099538424546,
+      "position_error_l2_mm": {
+        "mean": 1.6213972258931422,
+        "median": 1.3784290856884134,
+        "p95": 3.251986753658147,
+        "max": 5.55292036486941
+      },
+      "tangent_angular_error_rad": {
+        "mean": 0.035082775906457,
+        "median": 0.03100608854881022,
+        "p95": 0.07757216031413966,
+        "max": 0.1006439241097431
+      }
+    },
+    "test": {
+      "loss_mean": 0.6437034159898758,
+      "position_rmse_xyz_mm": 1.9292311852833257,
+      "position_rmse_xy_mm": 1.7332723165620876,
+      "position_rmse_z_mm": 0.8471717906712902,
+      "position_error_l2_mm": {
+        "mean": 1.6362515152242767,
+        "median": 1.3799035269341506,
+        "p95": 3.195550461492272,
+        "max": 8.359194070130096
+      },
+      "tangent_angular_error_rad": {
+        "mean": 0.034144870611254444,
+        "median": 0.028652050250411613,
+        "p95": 0.07683884987781772,
+        "max": 0.12031997099121813
+      }
+    }
+  },
+  "files": {
+    "model_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260514_234516_legacy_ann_full_pose_model_sweep/ann_64_64/model.pt",
+    "loss_history_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260514_234516_legacy_ann_full_pose_model_sweep/ann_64_64/loss_history.csv",
+    "loss_plot_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260514_234516_legacy_ann_full_pose_model_sweep/ann_64_64/loss_curve.png",
+    "loss_report_plot_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260514_234516_legacy_ann_full_pose_model_sweep/ann_64_64/ann_loss_curve_report.png",
+    "split_manifest_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260514_234516_legacy_ann_full_pose_model_sweep/ann_64_64/split_manifest.json",
+    "summary_text_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260514_234516_legacy_ann_full_pose_model_sweep/ann_64_64/training_summary.txt"
+  }
+}
