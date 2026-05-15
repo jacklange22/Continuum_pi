@@ -111,6 +111,15 @@ class ModelingTab(QWidget):
         self.dataset_list.setMinimumHeight(220)
         self.dataset_list.currentItemChanged.connect(self._on_dataset_selected)
         dataset_card.body_layout.addWidget(self.dataset_list)
+        # Positive identifier chip — surfaces dataset_mode at a glance. Especially useful
+        # for spotting the new angular_test_mesh acquisitions intended as eval targets.
+        self.dataset_mode_chip = QLabel("")
+        self.dataset_mode_chip.setWordWrap(True)
+        self.dataset_mode_chip.setStyleSheet(
+            f"color: {COLORS.text_secondary}; padding: 4px 8px; border-radius: 6px;"
+        )
+        self.dataset_mode_chip.setVisible(False)
+        dataset_card.body_layout.addWidget(self.dataset_mode_chip)
         self.dataset_pairs = _PairsWidget()
         dataset_card.body_layout.addWidget(self.dataset_pairs)
         left.addWidget(dataset_card)
@@ -248,6 +257,20 @@ class ModelingTab(QWidget):
         )
         self.same_session_chip.setVisible(False)
         headline_card.body_layout.addWidget(self.same_session_chip)
+        # Positive chip — replaces the caveat when the operator does the right thing.
+        # Wolfe §3.2.3 calls this out: a thesis-grade comparison evaluates on a
+        # separately-collected test acquisition, not the artifact's training split.
+        self.thesis_grade_chip = QLabel(
+            "✓ Thesis-grade evaluation — ANN was trained on the dataset above and tested "
+            "against a SEPARATE acquisition, matching Wolfe §3.2.3 p85 methodology."
+        )
+        self.thesis_grade_chip.setWordWrap(True)
+        self.thesis_grade_chip.setStyleSheet(
+            f"color: #86efac; background: #064e3b; border: 1px solid #16a34a; "
+            f"border-radius: 8px; padding: 8px 12px; font-weight: 500;"
+        )
+        self.thesis_grade_chip.setVisible(False)
+        headline_card.body_layout.addWidget(self.thesis_grade_chip)
         right.addWidget(headline_card)
 
         details_card = _Card(
@@ -272,12 +295,16 @@ class ModelingTab(QWidget):
         self._sync_history_list(state)
         self._sync_test_dataset_combo(state)
         self.dataset_pairs.set_pairs(state.dataset_summary_pairs)
+        self._sync_dataset_mode_chip(state)
         self.artifact_pairs.set_pairs(state.artifact_summary_pairs)
         self.evaluation_pairs.set_pairs(state.evaluation_summary_pairs)
         self.headline_metrics_widget.set_metrics(state.headline_metrics)
-        # Show the chip only after an evaluation has actually run on a same-session split.
+        # Show exactly one of the chips: positive when thesis-grade, caveat when not,
+        # nothing before any evaluation has run.
+        ran_an_eval = bool(state.headline_metrics)
+        self.thesis_grade_chip.setVisible(bool(ran_an_eval and state.last_eval_thesis_grade))
         self.same_session_chip.setVisible(
-            bool(state.last_eval_same_session and state.headline_metrics)
+            bool(ran_an_eval and state.last_eval_same_session and not state.last_eval_thesis_grade)
         )
         self.results_widget.set_model(state.visualization_model)
         self.status_label.setText(state.status_message)
@@ -369,6 +396,39 @@ class ModelingTab(QWidget):
         path_str = str(item.data(Qt.UserRole) or "")
         if path_str:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path_str))
+
+    def _sync_dataset_mode_chip(self, state: ModelingViewState) -> None:
+        """Show the selected dataset's mode as a colored chip on the dataset card."""
+        selected = next(
+            (d for d in state.datasets if str(d.path) == state.selected_dataset_path),
+            None,
+        )
+        if selected is None:
+            self.dataset_mode_chip.setVisible(False)
+            return
+        mode = str(selected.dataset_mode or "").strip().lower()
+        # angular_test_mesh = ideal eval target → green; everything else neutral.
+        if mode == "angular_test_mesh":
+            text = "Wolfe angular test mesh — recommended Test Dataset for thesis-grade eval"
+            bg, fg, border = "#064e3b", "#86efac", "#16a34a"
+        elif mode == "workspace_coverage":
+            text = "Workspace coverage — training/eval dataset"
+            bg, fg, border = "#1e293b", "#cbd5e1", "#475569"
+        elif mode == "hysteresis_path_dependence":
+            text = "Hysteresis / path dependence — diagnostic dataset"
+            bg, fg, border = "#3b1d0c", "#fdba74", "#c2410c"
+        elif mode == "repeatability_linked":
+            text = "Repeatability linked — startup-block dataset"
+            bg, fg, border = "#172554", "#bfdbfe", "#1d4ed8"
+        else:
+            text = f"Dataset mode: {mode or 'unknown'}"
+            bg, fg, border = "#1e293b", "#cbd5e1", "#475569"
+        self.dataset_mode_chip.setText(text)
+        self.dataset_mode_chip.setStyleSheet(
+            f"color: {fg}; background: {bg}; border: 1px solid {border}; "
+            f"border-radius: 6px; padding: 6px 10px; font-weight: 500;"
+        )
+        self.dataset_mode_chip.setVisible(True)
 
     def _sync_test_dataset_combo(self, state: ModelingViewState) -> None:
         """Mirror the available datasets into the test-dataset picker."""

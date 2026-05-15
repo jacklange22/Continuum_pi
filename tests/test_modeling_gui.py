@@ -520,6 +520,121 @@ def test_modeling_tab_history_list_double_click_opens_folder(tmp_path: Path, mon
         controller.shutdown()
 
 
+def test_modeling_tab_thesis_grade_chip_replaces_caveat_when_separate_test_used(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When evaluation_scope_used == 'separate_test_dataset', show the green
+    thesis-grade chip and hide the amber same-session caveat."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    artifact_dir = _write_artifact(tmp_path, run_dir)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    controller.select_artifact(str(artifact_dir))
+    tab = ModelingTab(controller)
+    fake_metrics = ModelMetrics(
+        model_key="ann",
+        label="ANN",
+        status="completed",
+        sample_count=10,
+        position_rmse_mm=1.2,
+        axis_position_rmse_mm=[0.5, 0.5, 0.5],
+    )
+    fake_result = ModelingEvaluationResult(
+        dataset_summary=controller._selected_dataset_summary,
+        artifact_details=controller._selected_artifact_details,
+        evaluation_scope_requested="full_dataset",
+        evaluation_scope_used="separate_test_dataset",  # ← thesis-grade trigger
+        evaluation_scope_note="",
+        selected_sample_count=10,
+        output_dir=tmp_path / "data" / "modeling_results" / "thesis_fake",
+        summary_path=tmp_path / "summary.json",
+        metadata_path=tmp_path / "metadata.json",
+        comparison_csv_path=tmp_path / "comp.csv",
+        phase_csv_path=None,
+        plot_paths={},
+        model_evaluations={"ann": ModelEvaluation(metrics=fake_metrics, predictions=None)},
+        visualization_model=VisualizationModel(summary_lines=["ok"]),
+    )
+    controller._last_result = fake_result  # type: ignore[attr-defined]
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        # Thesis-grade chip visible, same-session caveat hidden.
+        assert tab.thesis_grade_chip.isVisible() is True
+        assert tab.same_session_chip.isVisible() is False
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_modeling_tab_dataset_mode_chip_highlights_angular_test_mesh(tmp_path: Path) -> None:
+    """When the selected dataset is an angular_test_mesh run, the chip is green."""
+    _app()
+    run_dir = tmp_path / "data" / "experiments" / "collect_pose_command_dataset" / "20260515_999999_mesh"
+    run_dir.mkdir(parents=True)
+    metadata = {
+        "schema_version": "1.0",
+        "experiment_name": "collect_pose_command_dataset",
+        "run_id": "mesh",
+        "timestamp_utc": "2026-05-15T12:00:00+00:00",
+    }
+    summary = {
+        "schema_version": "1.0",
+        "experiment_name": "collect_pose_command_dataset",
+        "run_id": "mesh",
+        "success": True,
+        "sample_counts": {"total": 4},
+        "status": "success",
+        "experiment_metrics": {
+            "dataset_mode": "angular_test_mesh",
+            "accepted_sample_count": 4,
+            "rejected_sample_count": 0,
+            "run_trust_mode": "thesis_trusted",
+            "valid_for_model_training": True,
+        },
+    }
+    (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    with (run_dir / "modeling_dataset_export.jsonl").open("w", encoding="utf-8") as handle:
+        for i in range(4):
+            handle.write(
+                json.dumps(
+                    {
+                        "sequence_index": i,
+                        "accepted": True,
+                        "resolved_cable_command_cm": [0.1, 0.2, 0.3, 0.4],
+                        "tip_position_xyz_mm": [1.0, 2.0, 3.0],
+                        "tip_tangent_xyz": [0.0, 0.0, 1.0],
+                    }
+                )
+                + "\n"
+            )
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        assert tab.dataset_mode_chip.isVisible()
+        text = tab.dataset_mode_chip.text().lower()
+        assert "angular test mesh" in text
+        assert "wolfe" in text
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
 def test_modeling_controller_test_dataset_path_threads_through_evaluate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

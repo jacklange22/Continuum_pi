@@ -81,6 +81,9 @@ class ModelingViewState:
     # other than a separately collected test dataset). UI surfaces this as a chip so the
     # operator never silently cites same-session numbers as thesis-grade.
     last_eval_same_session: bool = True
+    # True when the last evaluation used a separate test acquisition AND that acquisition
+    # is an angular_test_mesh — Wolfe §3.2.3 cross-acquisition methodology achieved.
+    last_eval_thesis_grade: bool = False
     artifact_details: ArtifactDetails | None = None
     visualization_model: VisualizationModel = field(
         default_factory=lambda: VisualizationModel(summary_lines=["No modeling results loaded."])
@@ -202,6 +205,7 @@ class ModelingController:
             self.state.headline_metrics = self._build_headline_metrics(self._last_result)
             self.state.past_evaluations = self._discover_past_evaluations(selected_dataset_summary)
             self.state.last_eval_same_session = self._eval_used_same_session(self._last_result)
+            self.state.last_eval_thesis_grade = self._eval_is_thesis_grade(self._last_result)
             self.state.include_mike = bool(self.config.include_mike)
             self.state.include_camarillo = bool(self.config.include_camarillo)
             self.state.include_ann = bool(self.config.include_ann)
@@ -545,6 +549,18 @@ class ModelingController:
             )
         except Exception:
             return []
+
+    @staticmethod
+    def _eval_is_thesis_grade(result: ModelingEvaluationResult | None) -> bool:
+        """True when the last evaluation matches Wolfe's §3.2.3 cross-acquisition setup.
+
+        Requires: ``evaluation_scope_used == "separate_test_dataset"`` (artifact and test
+        come from different runs). Stronger than ``not same_session`` because a non-mesh
+        test dataset is still legitimate cross-acquisition data.
+        """
+        if result is None:
+            return False
+        return str(result.evaluation_scope_used or "").strip().lower() == "separate_test_dataset"
 
     @staticmethod
     def _eval_used_same_session(result: ModelingEvaluationResult | None) -> bool:
