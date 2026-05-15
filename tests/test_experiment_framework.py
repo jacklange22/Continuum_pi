@@ -2049,6 +2049,68 @@ def test_collect_pose_pre_motion_packet_error_retries_and_continues(tmp_path: Pa
     assert retries == int(health.get("servo_telemetry_retry_count", 0) or 0)
 
 
+def test_collect_pose_workspace_boundary_rejection_skips_command_and_continues(tmp_path: Path) -> None:
+    """A hard-bound rejection from the safety layer should skip the command, not abort the run.
+
+    Reproduces the failure mode seen in run 20260515_010617 where one command produced a
+    servo-1 target of 4142 (raw hardware range is [0, 4095]). The safety layer correctly
+    rejected the motion, but the experiment treated it as fatal. With the workspace-boundary
+    skip path in place, the run should continue.
+    """
+
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    registration_path = tmp_path / "latest_registration.json"
+    registration_path.write_text(json.dumps({"T_robot_aurora": np.eye(4).tolist()}), encoding="utf-8")
+    servo_service = _ready_modeling_servo_service(tmp_path)
+    original_command_displacement = servo_service.command_displacement
+    injected = {"done": False}
+
+    def _bound_rejecting_command_displacement(*args, **kwargs):
+        if not injected["done"]:
+            injected["done"] = True
+            raise ServoTelemetryRetryError(
+                "Simple single-segment experiment motion rejected after antagonistic-pair projection "
+                "(parallel_single mirrored source servos 1->5, 2->6, 3->7, 4->8): "
+                "hard bound rejection: servo 1 target 4142 exceeds the raw hardware range [0, 4095].",
+                context={
+                    "failure_category": "simple_experiment_motion_rejected",
+                    "failure_reason": "hard bound rejection: servo 1 target 4142 exceeds the raw hardware range [0, 4095].",
+                    "failed_servo_id": 1,
+                },
+            )
+        return original_command_displacement(*args, **kwargs)
+
+    servo_service.command_displacement = _bound_rejecting_command_displacement
+    snap = _trusted_modeling_snapshot(translation_mm=[0.0, 0.0, 0.0], registration_path=registration_path, frame_number=1)
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_SequencedTrackingService([snap]),
+        registration_path=registration_path,
+        servo_service=servo_service,
+    )
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dry_run": False,
+            "sample_count_target": 2,
+            "samples_per_command": 1,
+            "continue_until_valid_samples": True,
+            "target_valid_sample_count": 2,
+            "telemetry_retry_count": 1,
+            "telemetry_retry_delay_s": 0.0,
+        },
+    )
+    assert result.success is True, result.message
+    metrics = result.summary.experiment_metrics
+    assert int(metrics.get("workspace_boundary_skip_count", 0) or 0) >= 1
+    events_path = result.paths.output_dir / "sample_failure_events.jsonl"
+    assert events_path.exists()
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert any(event.get("event") == "command_skipped_workspace_boundary" for event in events)
+
+
 def test_collect_pose_pre_motion_packet_error_stops_after_failure_budget(tmp_path: Path) -> None:
     settings = _settings()
     settings.runtime.mock_mode = False

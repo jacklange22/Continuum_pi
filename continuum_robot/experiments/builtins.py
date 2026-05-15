@@ -6662,6 +6662,32 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                             },
                             "servo_feedback": last_safe,
                         }
+                if _is_workspace_boundary_rejection(exc):
+                    self._append_collect_pose_failure_event(
+                        session,
+                        event="command_skipped_workspace_boundary",
+                        payload={
+                            "step_index": int(step_index_for_event),
+                            "requested_cable_command_cm": list(requested),
+                            "error": str(exc),
+                        },
+                    )
+                    session.set_metric(
+                        "workspace_boundary_skip_count",
+                        int(session.metrics.get("workspace_boundary_skip_count", 0) or 0) + 1,
+                    )
+                    return {
+                        "command_deferred_or_dropped": True,
+                        "deferred_reason": "workspace_boundary",
+                        "requested_cable_command_cm": list(requested),
+                        "resolved_cable_command_cm": list(requested),
+                        "requested_pair_command_cm": _pair_command_from_cable_deltas(list(requested)),
+                        "resolved_pair_command_cm": _pair_command_from_cable_deltas(list(requested)),
+                        "command_metadata": {
+                            **dict(parallel_command_metadata),
+                            "workspace_boundary_rejection": True,
+                        },
+                    }
                 self._record_failure_context(
                     session=session,
                     exc=exc,
@@ -7932,6 +7958,24 @@ def _find_servo_telemetry_retry_error(exc: BaseException | None) -> ServoTelemet
         current = current.__cause__ or current.__context__
         seen += 1
     return None
+
+
+def _is_workspace_boundary_rejection(exc: BaseException) -> bool:
+    """True iff exc is a single-segment motion rejection caused purely by hardware/safe range bounds.
+
+    The schedule generator may propose tendon commands at the edge of the workspace; the
+    servo safety layer correctly rejects ones that would drive a servo past the raw [0, 4095]
+    range or past the configured single-segment envelope. Treat these as deferrable rather
+    than as run-terminating telemetry/hardware faults.
+    """
+    retry_error = _find_servo_telemetry_retry_error(exc)
+    if retry_error is None:
+        return False
+    context = getattr(retry_error, "context", None) or {}
+    if context.get("failure_category") != "simple_experiment_motion_rejected":
+        return False
+    text = (str(retry_error) + " " + str(exc)).lower()
+    return "hard bound rejection" in text or "hardware-limit rejection" in text
 
 
 def _collect_pose_dataset_quality_summary(
