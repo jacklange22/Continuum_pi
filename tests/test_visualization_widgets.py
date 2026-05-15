@@ -222,7 +222,8 @@ def test_tracking_scene_only_shows_tip_and_robot_frame_when_registration_chain_i
     assert any(point.key == "tip" for point in robot_scene.points)
     assert any("Runtime tip mode: latest accepted | trusted" == line for line in robot_scene.overlay_lines)
     assert any("Runtime tip source: Latest accepted runtime tip artifact is active." == line for line in robot_scene.overlay_lines)
-    assert any("Tip glyph: shown" == line for line in robot_scene.overlay_lines)
+    assert not any(line.startswith("Tip glyph") for line in robot_scene.overlay_lines)
+    assert not any(line.startswith("Tip pose") for line in robot_scene.overlay_lines)
     assert any(axis.label == "Robot" for axis in robot_scene.axes)
 
 
@@ -250,8 +251,8 @@ def test_tracking_scene_reports_identity_fallback_without_tip_overlay() -> None:
     assert frame == "robot"
     assert not any(point.key == "tip" for point in scene.points)
     assert any("Runtime tip source: Tracking is using the identity runtime tip fallback." == line for line in scene.overlay_lines)
-    assert any("Tip pose: identity tip fallback" == line for line in scene.overlay_lines)
-    assert any("Tip glyph: hidden" == line for line in scene.overlay_lines)
+    assert not any(line.startswith("Tip pose") for line in scene.overlay_lines)
+    assert not any(line.startswith("Tip glyph") for line in scene.overlay_lines)
 
 
 def test_tracking_scene_reports_explicit_coil_as_tip_mode_with_visible_tip_glyph() -> None:
@@ -287,8 +288,8 @@ def test_tracking_scene_reports_explicit_coil_as_tip_mode_with_visible_tip_glyph
     assert frame == "robot"
     assert any(point.key == "tip" for point in scene.points)
     assert any("Runtime tip mode: coil as tip | thesis trusted" == line for line in scene.overlay_lines)
-    assert any("Tip pose: coil as tip" == line for line in scene.overlay_lines)
-    assert any("Tip glyph: shown" == line for line in scene.overlay_lines)
+    assert not any(line.startswith("Tip pose") for line in scene.overlay_lines)
+    assert not any(line.startswith("Tip glyph") for line in scene.overlay_lines)
 
 
 def test_tool_plot_widget_preserves_camera_state_across_benign_refresh() -> None:
@@ -455,7 +456,7 @@ def test_tool_plot_widget_ignores_wheel_zoom_without_control_modifier() -> None:
     widget.wheelEvent(event)
 
     assert widget.view_state() == view
-    assert event.isAccepted() is True
+    assert event.isAccepted() is False
 
 
 def test_tool_plot_widget_allows_control_wheel_zoom() -> None:

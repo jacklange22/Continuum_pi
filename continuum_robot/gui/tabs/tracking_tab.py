@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -94,30 +97,6 @@ class TrackingTab(QWidget):
         readiness_buttons.addStretch(1)
         readiness_layout.addLayout(readiness_buttons)
 
-        self.backend_label = QLabel("unknown")
-        self.frame_label = QLabel("none")
-        self.fps_label = QLabel("unknown")
-        self.freshness_label = QLabel("unknown")
-        self.ids_label = QLabel("none")
-        self.runtime_tip_mode_label = QLabel("unknown")
-        self.runtime_tip_mode_label.setWordWrap(True)
-        self.runtime_tip_source_label = QLabel("unknown")
-        self.runtime_tip_source_label.setWordWrap(True)
-        self.tip_glyph_label = QLabel("hidden")
-
-        health_box = QGroupBox("Operational Summary")
-        health_layout = QVBoxLayout(health_box)
-        health_form = QFormLayout()
-        health_form.addRow("Backend", self.backend_label)
-        health_form.addRow("Latest frames", self.frame_label)
-        health_form.addRow("Effective FPS", self.fps_label)
-        health_form.addRow("Freshness", self.freshness_label)
-        health_form.addRow("Tool IDs", self.ids_label)
-        health_form.addRow("Runtime tip mode", self.runtime_tip_mode_label)
-        health_form.addRow("Runtime tip source", self.runtime_tip_source_label)
-        health_form.addRow("Tip glyph", self.tip_glyph_label)
-        health_layout.addLayout(health_form)
-
         self.tools_table = QTableWidget(0, 5)
         self.tools_table.setHorizontalHeaderLabels(["Tool", "Valid", "Status", "Translation mm", "Quality"])
         self.tools_table.verticalHeader().setVisible(False)
@@ -132,24 +111,12 @@ class TrackingTab(QWidget):
         live_layout.addWidget(self.plot_widget, 5)
         live_layout.addWidget(self.tools_table, 2)
 
-        self.tip_file_label = QLabel("none")
-        self.tip_file_label.setWordWrap(True)
-        self.pending_tip_file_label = QLabel("none")
-        self.pending_tip_file_label.setWordWrap(True)
-        self.pivot_collection_label = QLabel("not collecting")
-        self.pivot_motion_label = QLabel("not measured")
-        self.tip_geometry_label = QLabel("not ready")
-        self.pivot_metrics_label = QLabel("No pivot run yet.")
-        self.pivot_metrics_label.setWordWrap(True)
-        self.pivot_parse_label = QLabel("format not detected")
-        self.pivot_parse_label.setWordWrap(True)
-        self.pivot_capture_dataset_label = QLabel("none")
-        self.pivot_capture_dataset_label.setWordWrap(True)
-        self.pivot_run_path_label = QLabel("none")
-        self.pivot_run_path_label.setWordWrap(True)
-        self.tip_preview_text = QTextEdit()
-        self.tip_preview_text.setReadOnly(True)
-        self.tip_preview_text.setMinimumHeight(72)
+        self.pivot_status_label = QLabel("idle")
+        self.pivot_motion_label = QLabel("—")
+        self.pivot_last_run_label = QLabel("No pivot run recorded yet.")
+        self.pivot_last_run_label.setWordWrap(True)
+        self.pivot_tip_path_label = QLabel("none")
+        self.pivot_tip_path_label.setWordWrap(True)
 
         self._pivot_start_button = QPushButton("Start 0B Collection")
         self._pivot_start_button.setProperty("role", "primary")
@@ -166,15 +133,10 @@ class TrackingTab(QWidget):
         pivot_box = QGroupBox("0B Pivot Calibration")
         pivot_layout = QVBoxLayout(pivot_box)
         pivot_form = QFormLayout()
-        pivot_form.addRow("Accepted tip file", self.tip_file_label)
-        pivot_form.addRow("Pending tip file", self.pending_tip_file_label)
-        pivot_form.addRow("Collection", self.pivot_collection_label)
-        pivot_form.addRow("Motion diversity", self.pivot_motion_label)
-        pivot_form.addRow("Tip geometry", self.tip_geometry_label)
-        pivot_form.addRow("Review metrics", self.pivot_metrics_label)
-        pivot_form.addRow("Input parse", self.pivot_parse_label)
-        pivot_form.addRow("Raw capture dataset", self.pivot_capture_dataset_label)
-        pivot_form.addRow("Pivot review run", self.pivot_run_path_label)
+        pivot_form.addRow("Status", self.pivot_status_label)
+        pivot_form.addRow("Motion range", self.pivot_motion_label)
+        pivot_form.addRow("Last run", self.pivot_last_run_label)
+        pivot_form.addRow("Current tip transform", self.pivot_tip_path_label)
         pivot_layout.addLayout(pivot_form)
         pivot_buttons = QHBoxLayout()
         pivot_buttons.addWidget(self._pivot_start_button)
@@ -183,7 +145,6 @@ class TrackingTab(QWidget):
         pivot_buttons.addWidget(self._pivot_accept_button)
         pivot_buttons.addWidget(self._pivot_reset_button)
         pivot_layout.addLayout(pivot_buttons)
-        pivot_layout.addWidget(self.tip_preview_text)
 
         self.details_text = QTextEdit()
         self.details_text.setReadOnly(True)
@@ -199,7 +160,6 @@ class TrackingTab(QWidget):
         content_layout.setSpacing(14)
         content_layout.addWidget(readiness_box)
         content_layout.addWidget(live_box)
-        content_layout.addWidget(health_box)
         content_layout.addWidget(pivot_box)
         content_layout.addWidget(details_box)
 
@@ -221,15 +181,7 @@ class TrackingTab(QWidget):
             f"{workflow_state.canonical_state} ({workflow_state.connection_state}) | "
             f"backend={workflow_state.backend_name or workflow_state.backend_identity}"
         )
-        self.verdict_label.setText(
-            "ready"
-            if workflow_state.validation_passed
-            else (
-                "warning"
-                if workflow_state.tracker_operational
-                else ("connected" if workflow_state.tracker_connected else "blocked")
-            )
-        )
+        self.verdict_label.setText(self._format_verdict(workflow_state))
         self.tools_label.setText(
             f"0A={'tracked' if workflow_state.tool_0a_visible else workflow_state.tool_0a_status}, "
             f"0B={'tracked' if workflow_state.tool_0b_visible else workflow_state.tool_0b_status}"
@@ -241,36 +193,6 @@ class TrackingTab(QWidget):
             self.handoff_label.setText(
                 "Registration is ready. Move to the Registration tab to capture points, solve, review, and save."
             )
-
-        self.backend_label.setText(
-            f"{workflow_state.backend_name or workflow_state.backend_identity} | port={workflow_state.tracker_port or 'unset'}"
-        )
-        frame_text = str(live_state.latest_frame_number) if live_state.latest_frame_number is not None else "none"
-        if workflow_state.unique_frames_observed:
-            frame_text += f" | unique={workflow_state.unique_frames_observed}"
-        self.frame_label.setText(frame_text)
-        self.fps_label.setText(
-            f"{workflow_state.effective_frame_rate_hz:.2f} Hz"
-            if workflow_state.effective_frame_rate_hz is not None
-            else "unknown"
-        )
-        self.freshness_label.setText(
-            f"{workflow_state.tracker_data_age_s:.3f} s"
-            if workflow_state.tracker_data_age_s is not None
-            else "unknown"
-        )
-        self.ids_label.setText(
-            f"raw={workflow_state.raw_live_tool_ids} | normalized={workflow_state.normalized_live_tool_ids}"
-        )
-        self.runtime_tip_mode_label.setText(
-            f"{str(live_state.runtime_tip_mode).replace('_', ' ')} | {str(live_state.runtime_tip_trust_level).replace('_', ' ')}"
-        )
-        self.runtime_tip_source_label.setText(live_state.runtime_tip_mode_message or "none")
-        self.tip_glyph_label.setText(
-            "shown"
-            if live_state.registration_state == "loaded" and live_state.T_robot_tip_matrix is not None
-            else "hidden"
-        )
 
         self.tools_table.setRowCount(len(live_state.tools))
         for row, tool_id in enumerate(sorted(live_state.tools)):
@@ -289,37 +211,10 @@ class TrackingTab(QWidget):
             self.tools_table.setItem(row, 4, QTableWidgetItem(str(tool["quality"])))
         self.plot_widget.set_tracking_state(live_state)
 
-        self.tip_file_label.setText(workflow_state.pivot_tip_path or "none")
-        self.pending_tip_file_label.setText(workflow_state.pivot_pending_tip_path or "none")
-        self.pivot_collection_label.setText(
-            f"{workflow_state.pivot_status} | samples={workflow_state.pivot_live_sample_count} | "
-            f"0B={workflow_state.pivot_live_tool_status}"
-        )
-        if workflow_state.pivot_motion_span_deg is not None:
-            motion_text = f"{workflow_state.pivot_motion_span_deg:.1f} deg"
-            motion_text += " | wide enough" if workflow_state.pivot_motion_ready else " | collect wider motion"
-        else:
-            motion_text = "Collect more poses to estimate motion span."
-        self.pivot_motion_label.setText(motion_text)
-        self.tip_geometry_label.setText(workflow_state.measurement_point_message)
-        if workflow_state.pivot_rmse_mm is not None:
-            self.pivot_metrics_label.setText(
-                f"RMSE={workflow_state.pivot_rmse_mm:.3f} mm | total={workflow_state.pivot_sample_count_total} "
-                f"| used={workflow_state.pivot_sample_count_used} | rejected={workflow_state.pivot_sample_count_rejected}"
-            )
-        else:
-            self.pivot_metrics_label.setText(workflow_state.pivot_summary)
-        rejected_preview = "; ".join(workflow_state.pivot_input_rejected_rows[:3])
-        parse_text = (
-            f"{workflow_state.pivot_input_format or 'not_detected'} | usable_0B_rows={workflow_state.pivot_input_usable_rows} "
-            f"| rejected_rows={workflow_state.pivot_input_rejected_row_count}"
-        )
-        if rejected_preview:
-            parse_text += f" | {rejected_preview}"
-        self.pivot_parse_label.setText(parse_text)
-        self.pivot_capture_dataset_label.setText(workflow_state.pivot_capture_dataset_path or "none")
-        self.pivot_run_path_label.setText(workflow_state.pivot_run_path or "none")
-        set_text_document(self.tip_preview_text, workflow_state.pivot_tip_preview)
+        self.pivot_status_label.setText(self._format_pivot_status(workflow_state))
+        self.pivot_motion_label.setText(self._format_pivot_motion(workflow_state))
+        self.pivot_last_run_label.setText(self._format_pivot_last_run(workflow_state))
+        self.pivot_tip_path_label.setText(self._format_tip_in_use(workflow_state))
 
         details_lines = [
             workflow_state.validation_summary,
@@ -359,6 +254,67 @@ class TrackingTab(QWidget):
     def _set_text_preserving_view(widget: QTextEdit, text: str) -> None:
         set_text_document(widget, text, stick_to_bottom_if_at_bottom=True)
 
+    @staticmethod
+    def _format_verdict(ws: TrackerMvpViewState) -> str:
+        verdict = ws.tracker_verdict or ""
+        if verdict == "passed":
+            return "ready"
+        if verdict == "operational_with_warning":
+            return "warning"
+        if verdict in {"failed"} and ws.tracker_connected:
+            return "validation failed"
+        if not ws.tracker_connected:
+            return "blocked"
+        return "connected (not validated)"
+
+    @staticmethod
+    def _format_pivot_status(ws: TrackerMvpViewState) -> str:
+        if ws.pivot_collection_active:
+            return f"Collecting · {ws.pivot_live_sample_count} samples"
+        if ws.pivot_pending_accept:
+            return "Review ready · Accept Tip File to save"
+        if ws.pivot_status == "solve_failed":
+            return "Solve failed"
+        if ws.pivot_status == "accepted":
+            return "Accepted"
+        if ws.pivot_live_sample_count > 0:
+            return f"Collection stopped · {ws.pivot_live_sample_count} samples"
+        return "Idle"
+
+    @staticmethod
+    def _format_pivot_motion(ws: TrackerMvpViewState) -> str:
+        if ws.pivot_motion_span_deg is None:
+            if ws.pivot_collection_active:
+                return "move 0B through varied orientations"
+            return "—"
+        deg = f"{ws.pivot_motion_span_deg:.1f}°"
+        return f"{deg} · wide enough" if ws.pivot_motion_ready else f"{deg} · collect wider motion"
+
+    def _format_pivot_last_run(self, ws: TrackerMvpViewState) -> str:
+        iso = ws.pivot_last_run_at_iso
+        rmse = ws.pivot_rmse_mm
+        if iso:
+            timestamp = self._format_iso_local(iso)
+            if rmse is not None:
+                return f"{timestamp}  ·  RMSE = {rmse:.3f} mm"
+            return timestamp
+        if rmse is not None:
+            return f"RMSE = {rmse:.3f} mm"
+        return "No pivot run recorded yet."
+
+    def _format_tip_in_use(self, ws: TrackerMvpViewState) -> str:
+        path = ws.pivot_tip_path or "none"
+        if ws.measurement_point_file_mtime_iso:
+            return f"{path}  ·  from {self._format_iso_local(ws.measurement_point_file_mtime_iso)}"
+        return path
+
+    @staticmethod
+    def _format_iso_local(iso_str: str) -> str:
+        try:
+            return datetime.fromisoformat(iso_str).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            return iso_str
+
     def _set_combo_items(self, combo: QComboBox, ports, selected: str) -> None:
         if combo.hasFocus():
             return
@@ -385,8 +341,32 @@ class TrackingTab(QWidget):
     def _rescan_ports(self) -> None:
         self.workflow_controller.rescan_ports()
 
+    AUTO_VALIDATE_INITIAL_DELAY_MS = 1200
+    AUTO_VALIDATE_RETRY_DELAY_MS = 2500
+    AUTO_VALIDATE_MAX_ATTEMPTS = 3
+
     def _connect_tracker(self) -> None:
         self._safe_call(self.workflow_controller.connect_tracker)
+        self._auto_validate_attempts = 0
+        QTimer.singleShot(self.AUTO_VALIDATE_INITIAL_DELAY_MS, self._run_auto_validate)
+
+    def _run_auto_validate(self) -> None:
+        state = self.workflow_controller.state
+        if not state.tracker_connected:
+            return
+        if self.workflow_controller._validation_operational:
+            return
+        self._auto_validate_attempts += 1
+        try:
+            self.workflow_controller.validate_tracker()
+        except Exception:
+            pass
+        self.update(self.workflow_controller.refresh(), self.live_controller.refresh())
+        if (
+            not self.workflow_controller._validation_operational
+            and self._auto_validate_attempts < self.AUTO_VALIDATE_MAX_ATTEMPTS
+        ):
+            QTimer.singleShot(self.AUTO_VALIDATE_RETRY_DELAY_MS, self._run_auto_validate)
 
     def _disconnect_tracker(self) -> None:
         self._safe_call(self.workflow_controller.disconnect_tracker)

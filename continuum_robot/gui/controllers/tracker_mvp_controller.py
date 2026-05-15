@@ -83,6 +83,7 @@ class TrackerMvpViewState:
     pivot_can_accept: bool = False
     pivot_pending_accept: bool = False
     pivot_run_path: str = ""
+    pivot_last_run_at_iso: str = ""
     pivot_capture_dataset_path: str = ""
     pivot_tip_path: str = ""
     pivot_tip_exists: bool = False
@@ -99,6 +100,7 @@ class TrackerMvpViewState:
     measurement_point_ready: bool = False
     measurement_point_source: str = ""
     measurement_point_message: str = ""
+    measurement_point_file_mtime_iso: str = ""
     selected_landmarks: list[str] = field(default_factory=list)
     registration_selection_ready: bool = False
     registration_capture_complete: bool = False
@@ -155,6 +157,7 @@ class TrackerMvpController:
         self._last_validation_report = None
         self._last_pivot_run_path: Path | None = None
         self._last_pivot_metrics: dict[str, object] = {}
+        self._last_pivot_completed_at_iso: str = ""
         self._pivot_collection_active = False
         self._pivot_collection_status = "not_run"
         self._pivot_live_tool_status = "not_collecting"
@@ -169,6 +172,7 @@ class TrackerMvpController:
         self._pivot_stop_event = threading.Event()
         self._pivot_lock = threading.Lock()
         self.state = TrackerMvpViewState(tracker_port=str(settings.serial.aurora_port))
+        self._load_persisted_pivot_summary()
         self.rescan_ports()
         self.refresh()
 
@@ -568,6 +572,7 @@ class TrackerMvpController:
         self.state.pivot_motion_ready = pivot_motion_ready
         self.state.pivot_pending_accept = pivot_pending_accept
         self.state.pivot_run_path = str(self._last_pivot_run_path or "")
+        self.state.pivot_last_run_at_iso = self._last_pivot_completed_at_iso or ""
         self.state.pivot_capture_dataset_path = pivot_capture_dataset_path
         self.state.pivot_tip_path = str(accepted_tip_path)
         self.state.pivot_tip_exists = accepted_tip_exists
@@ -605,6 +610,13 @@ class TrackerMvpController:
         self.state.measurement_point_ready = bool(measurement_status["ready"])
         self.state.measurement_point_source = str(measurement_status["source"])
         self.state.measurement_point_message = str(measurement_status["message"])
+        mtime_ns = measurement_status.get("file_mtime_ns")
+        if isinstance(mtime_ns, int):
+            self.state.measurement_point_file_mtime_iso = (
+                datetime.fromtimestamp(mtime_ns / 1e9, tz=timezone.utc).isoformat()
+            )
+        else:
+            self.state.measurement_point_file_mtime_iso = ""
         self.state.selected_landmarks = list(self.registration_controller.state.selected_model_labels)
         self.state.registration_selection_ready = self.registration_controller.selection_is_ready()
         self.state.registration_capture_complete = bool(
@@ -757,6 +769,39 @@ class TrackerMvpController:
 
     def _pivot_capture_output_root(self) -> Path:
         return self._pivot_calibration_root() / "captures"
+
+    def _pivot_summary_sidecar_path(self) -> Path:
+        return self._pivot_calibration_root() / "last_pivot_run.json"
+
+    def _load_persisted_pivot_summary(self) -> None:
+        path = self._pivot_summary_sidecar_path()
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        completed_at = data.get("completed_at_utc")
+        if isinstance(completed_at, str) and completed_at:
+            self._last_pivot_completed_at_iso = completed_at
+        rmse = data.get("rmse_mm")
+        if rmse is not None:
+            try:
+                self._last_pivot_metrics["rmse_mm"] = float(rmse)
+            except (TypeError, ValueError):
+                pass
+
+    def _write_persisted_pivot_summary(self) -> None:
+        path = self._pivot_summary_sidecar_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "completed_at_utc": self._last_pivot_completed_at_iso or "",
+                "rmse_mm": self._last_pivot_metrics.get("rmse_mm"),
+            }
+            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
     def _tool_is_visible(self, tool_id: str) -> bool:
         snapshot = self.tracking_service.get_snapshot()
@@ -986,7 +1031,8 @@ class TrackerMvpController:
 
     def _pivot_start_blockers(self, snapshot) -> list[str]:
         blockers: list[str] = []
-        if not self._validation_operational:
+        is_mock = bool(self.settings.runtime.mock_mode) and snapshot.canonical_state == "mock"
+        if not self._validation_operational and not is_mock:
             blockers.append("Run tracker validation until it is at least operational before pivot calibration.")
         if snapshot.connection_state in {"disconnected", "stopped", "error"} and snapshot.canonical_state not in {"mock"}:
             blockers.append("Tracker is not connected.")
@@ -1117,6 +1163,11 @@ class TrackerMvpController:
                 else ("review_ready" if pending_accept else "accepted")
             )
             self._last_pivot_metrics["accepted_tip_file"] = str(accepted_tip_path)
+            persist_summary = self._pivot_collection_status in {"review_ready", "accepted"}
+            if persist_summary:
+                self._last_pivot_completed_at_iso = datetime.now(timezone.utc).isoformat()
+        if persist_summary:
+            self._write_persisted_pivot_summary()
 
     @staticmethod
     def _compute_motion_span_deg(samples: list[PivotCollectionSample]) -> float | None:
