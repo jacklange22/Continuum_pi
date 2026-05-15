@@ -1,0 +1,1002 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "pivot_validation",
+  "run_id": "e5eb2f943e68",
+  "success": true,
+  "sample_counts": {
+    "total": 0
+  },
+  "dropped_frames": 0,
+  "invalid_transforms": 0,
+  "stage_pass_fail": {
+    "setup": "passed",
+    "precheck": "passed",
+    "execute": "passed",
+    "finalize": "passed"
+  },
+  "status": "success",
+  "experiment_metrics": {
+    "experiment_name": "pivot_validation",
+    "selected_run_count": 15,
+    "valid_run_count": 15,
+    "invalid_run_count": 0,
+    "selected_run_paths": [
+      "data/pivot_calibration/20260515_015744_pivot_calibration_review",
+      "data/pivot_calibration/20260515_015724_pivot_calibration_review",
+      "data/pivot_calibration/20260514_025251_pivot_calibration_review",
+      "data/pivot_calibration/20260513_134207_pivot_calibration_review",
+      "data/pivot_calibration/20260513_131723_pivot_calibration_review",
+      "data/pivot_calibration/20260513_000255_pivot_calibration_review",
+      "data/pivot_calibration/20260512_232645_pivot_calibration_review",
+      "data/pivot_calibration/20260424_230515_pivot_calibration_review",
+      "data/pivot_calibration/20260423_211344_pivot_calibration_review",
+      "data/pivot_calibration/20260423_203116_pivot_calibration_review",
+      "data/pivot_calibration/20260420_150845_pivot_calibration_review",
+      "data/pivot_calibration/20260419_225103_pivot_calibration_review",
+      "data/pivot_calibration/20260419_225008_pivot_calibration_review",
+      "data/pivot_calibration/20260412_214329_pivot_calibration_review",
+      "data/pivot_calibration/20260403_161031_pivot_calibration_review"
+    ],
+    "valid_run_paths": [
+      "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260515_015744_pivot_calibration_review",
+      "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260515_015724_pivot_calibration_review",
+      "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260514_025251_pivot_calibration_review",
+      "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260513_134207_pivot_calibration_review",
+      "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260513_131723_pivot_calibration_review",
+      "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260513_000255_pivot_calibration_review",
+      "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260512_232645_pivot_calibration_review",
+      "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260424_230515_pivot_calibration_review",
+      "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260423_211344_pivot_calibration_review",
+      "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260423_203116_pivot_calibration_review",
+      "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260420_150845_pivot_calibration_review",
+      "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260419_225103_pivot_calibration_review",
+      "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260419_225008_pivot_calibration_review",
+      "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260412_214329_pivot_calibration_review",
+      "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260403_161031_pivot_calibration_review"
+    ],
+    "invalid_runs": [],
+    "units": {
+      "consensus_tip_vector_local_mm": "mm",
+      "tip_norm_summary_mm": "mm",
+      "rmse_summary_mm": "mm",
+      "distance_to_consensus_summary_mm": "mm",
+      "tip_offset_deviation_to_consensus_summary_mm": "mm",
+      "per_axis_summary_mm": {
+        "x": "mm",
+        "y": "mm",
+        "z": "mm"
+      },
+      "sample_count_used_summary": "count",
+      "sample_count_rejected_summary": "count",
+      "per_run_rows": {
+        "tip_vector_local_mm": "mm",
+        "tip_norm_mm": "mm",
+        "distance_to_consensus_mm": "mm",
+        "rmse_mm": "mm",
+        "sample_count_total": "count",
+        "sample_count_used": "count",
+        "sample_count_rejected": "count",
+        "run_index": "index"
+      }
+    },
+    "definitions": {
+      "tip_vector_local_mm": "Per-run solved tip-offset vector in tool-local coordinates from standard pivot calibration.",
+      "distance_to_consensus_mm": "Euclidean norm deviation from each run tip vector to the consensus tip vector.",
+      "rmse_mm": "Pivot solve residual RMSE reported by each pivot-calibration run."
+    },
+    "interpretation_limits": {
+      "tip_offset_only": true,
+      "orientation_estimated": false,
+      "note": "Standard pivot calibration outputs a tip offset vector, not a full arbitrary orientation estimate."
+    },
+    "consensus_tip_vector_local_mm": [
+      -0.9462836261469986,
+      -4.6512285083252465,
+      17.014065778061543
+    ],
+    "per_run_rows": [
+      {
+        "path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260515_015744_pivot_calibration_review",
+        "label": "20260515_015744_pivot_calibration_review",
+        "timestamp_utc": "2026-05-15T01:57:44.931190+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -1.5732187502547663,
+          -4.253641735139297,
+          18.915017687075085
+        ],
+        "rmse_mm": 0.7272142684129526,
+        "sample_count_total": 72,
+        "sample_count_used": 71,
+        "sample_count_rejected": 1,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 19.4511279711341,
+        "distance_to_consensus_mm": 2.040769720579632,
+        "run_index": 0
+      },
+      {
+        "path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260515_015724_pivot_calibration_review",
+        "label": "20260515_015724_pivot_calibration_review",
+        "timestamp_utc": "2026-05-15T01:57:24.484015+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          0.18621343287976502,
+          -4.50797641543727,
+          17.771571379624856
+        ],
+        "rmse_mm": 0.6211625837227875,
+        "sample_count_total": 180,
+        "sample_count_used": 172,
+        "sample_count_rejected": 8,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 18.335355903440348,
+        "distance_to_consensus_mm": 1.3699947033550353,
+        "run_index": 1
+      },
+      {
+        "path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260514_025251_pivot_calibration_review",
+        "label": "20260514_025251_pivot_calibration_review",
+        "timestamp_utc": "2026-05-14T02:52:51.172076+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -1.1447622344584312,
+          -4.712837080201382,
+          17.02979595059918
+        ],
+        "rmse_mm": 0.31782130009256837,
+        "sample_count_total": 128,
+        "sample_count_used": 128,
+        "sample_count_rejected": 0,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 17.70692700716326,
+        "distance_to_consensus_mm": 0.2084150004532396,
+        "run_index": 2
+      },
+      {
+        "path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260513_134207_pivot_calibration_review",
+        "label": "20260513_134207_pivot_calibration_review",
+        "timestamp_utc": "2026-05-13T13:42:07.917478+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -0.6601658521645204,
+          -4.896967291557274,
+          16.35120597717813
+        ],
+        "rmse_mm": 0.3036001757327045,
+        "sample_count_total": 99,
+        "sample_count_used": 98,
+        "sample_count_rejected": 1,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 17.081511774870854,
+        "distance_to_consensus_mm": 0.7626493596668428,
+        "run_index": 3
+      },
+      {
+        "path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260513_131723_pivot_calibration_review",
+        "label": "20260513_131723_pivot_calibration_review",
+        "timestamp_utc": "2026-05-13T13:17:23.523176+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -0.5663066614304554,
+          -4.7307244472387495,
+          16.403095114637836
+        ],
+        "rmse_mm": 0.2873023069518037,
+        "sample_count_total": 160,
+        "sample_count_used": 160,
+        "sample_count_rejected": 0,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 17.08104172380416,
+        "distance_to_consensus_mm": 0.723869635765544,
+        "run_index": 4
+      },
+      {
+        "path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260513_000255_pivot_calibration_review",
+        "label": "20260513_000255_pivot_calibration_review",
+        "timestamp_utc": "2026-05-13T00:02:55.779895+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -1.4747597100826175,
+          -4.725711189206265,
+          16.647071716150762
+        ],
+        "rmse_mm": 0.5711747765680095,
+        "sample_count_total": 135,
+        "sample_count_used": 129,
+        "sample_count_rejected": 6,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 17.367563420610818,
+        "distance_to_consensus_mm": 0.6477030820684158,
+        "run_index": 5
+      },
+      {
+        "path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260512_232645_pivot_calibration_review",
+        "label": "20260512_232645_pivot_calibration_review",
+        "timestamp_utc": "2026-05-12T23:26:45.279468+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -0.33719281143704416,
+          -4.3977485574826005,
+          16.698915892521047
+        ],
+        "rmse_mm": 0.47673642467733346,
+        "sample_count_total": 141,
+        "sample_count_used": 140,
+        "sample_count_rejected": 1,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 17.271586011493476,
+        "distance_to_consensus_mm": 0.7311382607957362,
+        "run_index": 6
+      },
+      {
+        "path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260424_230515_pivot_calibration_review",
+        "label": "20260424_230515_pivot_calibration_review",
+        "timestamp_utc": "2026-04-24T23:05:15.967849+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -1.0580617466834525,
+          -4.405848770246678,
+          17.57468978062723
+        ],
+        "rmse_mm": 0.6160741275602151,
+        "sample_count_total": 159,
+        "sample_count_used": 159,
+        "sample_count_rejected": 0,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 18.149399960642288,
+        "distance_to_consensus_mm": 0.6220971277404699,
+        "run_index": 7
+      },
+      {
+        "path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260423_211344_pivot_calibration_review",
+        "label": "20260423_211344_pivot_calibration_review",
+        "timestamp_utc": "2026-04-23T21:13:44.427749+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -0.7701546943374797,
+          -5.004344271807355,
+          17.65134916422092
+        ],
+        "rmse_mm": 0.47027151360791736,
+        "sample_count_total": 225,
+        "sample_count_used": 225,
+        "sample_count_rejected": 0,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 18.36318946047292,
+        "distance_to_consensus_mm": 0.7495613766161365,
+        "run_index": 8
+      },
+      {
+        "path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260423_203116_pivot_calibration_review",
+        "label": "20260423_203116_pivot_calibration_review",
+        "timestamp_utc": "2026-04-23T20:31:16.874317+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -0.5328271611421097,
+          -4.970918088512416,
+          17.406379082833606
+        ],
+        "rmse_mm": 0.3581703825041032,
+        "sample_count_total": 152,
+        "sample_count_used": 151,
+        "sample_count_rejected": 1,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 18.110106686644837,
+        "distance_to_consensus_mm": 0.6534962932073644,
+        "run_index": 9
+      },
+      {
+        "path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260420_150845_pivot_calibration_review",
+        "label": "20260420_150845_pivot_calibration_review",
+        "timestamp_utc": "2026-04-20T15:08:45.056313+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -1.088994164493532,
+          -4.761664485945715,
+          16.845895663035442
+        ],
+        "rmse_mm": 0.3287166148769343,
+        "sample_count_total": 110,
+        "sample_count_used": 106,
+        "sample_count_rejected": 4,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 17.539770741286613,
+        "distance_to_consensus_mm": 0.24666493568409345,
+        "run_index": 10
+      },
+      {
+        "path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260419_225103_pivot_calibration_review",
+        "label": "20260419_225103_pivot_calibration_review",
+        "timestamp_utc": "2026-04-19T22:51:03.981329+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -1.7546567518016551,
+          -3.3724125459572463,
+          16.696994630976242
+        ],
+        "rmse_mm": 1.08230298837079,
+        "sample_count_total": 227,
+        "sample_count_used": 225,
+        "sample_count_rejected": 2,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 17.124299004736585,
+        "distance_to_consensus_mm": 1.5457591947654272,
+        "run_index": 11
+      },
+      {
+        "path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260419_225008_pivot_calibration_review",
+        "label": "20260419_225008_pivot_calibration_review",
+        "timestamp_utc": "2026-04-19T22:50:08.777647+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -2.395984134881423,
+          -5.1969592111159955,
+          15.081726097417354
+        ],
+        "rmse_mm": 1.045427946934847,
+        "sample_count_total": 204,
+        "sample_count_used": 202,
+        "sample_count_rejected": 2,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 16.13095121479594,
+        "distance_to_consensus_mm": 2.4765682317241775,
+        "run_index": 12
+      },
+      {
+        "path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260412_214329_pivot_calibration_review",
+        "label": "20260412_214329_pivot_calibration_review",
+        "timestamp_utc": "2026-04-12T21:43:29.779039+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -0.38167713484225996,
+          -4.61165353485589,
+          17.54452186018712
+        ],
+        "rmse_mm": 0.5633266712600637,
+        "sample_count_total": 231,
+        "sample_count_used": 230,
+        "sample_count_rejected": 1,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 18.144510824582568,
+        "distance_to_consensus_mm": 0.775712784226589,
+        "run_index": 13
+      },
+      {
+        "path": "/home/continuum-pi/Continuum_pi/data/pivot_calibration/20260403_161031_pivot_calibration_review",
+        "label": "20260403_161031_pivot_calibration_review",
+        "timestamp_utc": "2026-04-03T16:10:31.069921+00:00",
+        "status": "success",
+        "tool_id": "0B",
+        "tip_vector_local_mm": [
+          -0.641706017074999,
+          -5.219020000174567,
+          16.592756673838366
+        ],
+        "rmse_mm": 0.433105243825143,
+        "sample_count_total": 200,
+        "sample_count_used": 200,
+        "sample_count_rejected": 0,
+        "input_format": "canonical_headered_csv",
+        "tip_norm_mm": 17.406019947471624,
+        "distance_to_consensus_mm": 0.7698415807592026,
+        "run_index": 14
+      }
+    ],
+    "tip_norm_summary_mm": {
+      "count": 15,
+      "mean": 17.684224110210025,
+      "median": 17.539770741286613,
+      "std": 0.7500725352067115,
+      "min": 16.13095121479594,
+      "max": 19.4511279711341,
+      "range": 3.32017675633816
+    },
+    "rmse_summary_mm": {
+      "count": 15,
+      "mean": 0.5468271550065449,
+      "median": 0.47673642467733346,
+      "std": 0.24012337044405424,
+      "min": 0.2873023069518037,
+      "max": 1.08230298837079,
+      "range": 0.7950006814189863
+    },
+    "distance_to_consensus_summary_mm": {
+      "count": 15,
+      "mean": 0.954949419160527,
+      "median": 0.7495613766161365,
+      "std": 0.6120859066124106,
+      "min": 0.2084150004532396,
+      "max": 2.4765682317241775,
+      "range": 2.268153231270938
+    },
+    "tip_offset_deviation_to_consensus_summary_mm": {
+      "count": 15,
+      "mean": 0.954949419160527,
+      "median": 0.7495613766161365,
+      "std": 0.6120859066124106,
+      "min": 0.2084150004532396,
+      "max": 2.4765682317241775,
+      "range": 2.268153231270938
+    },
+    "sample_count_used_summary": {
+      "count": 15,
+      "mean": 159.73333333333332,
+      "median": 159.0,
+      "std": 47.61297675587566,
+      "min": 71.0,
+      "max": 230.0,
+      "range": 159.0
+    },
+    "sample_count_rejected_summary": {
+      "count": 15,
+      "mean": 1.8,
+      "median": 1.0,
+      "std": 2.3151673805580453,
+      "min": 0.0,
+      "max": 8.0,
+      "range": 8.0
+    },
+    "per_axis_summary_mm": {
+      "x": {
+        "count": 15,
+        "mean": -0.9462836261469986,
+        "median": -0.7701546943374797,
+        "std": 0.6320859879794254,
+        "min": -2.395984134881423,
+        "max": 0.18621343287976502,
+        "range": 2.5821975677611877
+      },
+      "y": {
+        "count": 15,
+        "mean": -4.6512285083252465,
+        "median": -4.725711189206265,
+        "std": 0.43782371208862003,
+        "min": -5.219020000174567,
+        "max": -3.3724125459572463,
+        "range": 1.8466074542173203
+      },
+      "z": {
+        "count": 15,
+        "mean": 17.014065778061546,
+        "median": 16.845895663035442,
+        "std": 0.8338796382941482,
+        "min": 15.081726097417354,
+        "max": 18.915017687075085,
+        "range": 3.8332915896577315
+      }
+    },
+    "summary_requirements": {
+      "force_status": "success"
+    },
+    "run_provenance": {
+      "hardware_profile": "robot_8servo.yaml",
+      "operating_mode": "single_segment",
+      "expected_servo_ids": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "commanded_servo_ids": [
+        5,
+        6,
+        7,
+        8
+      ],
+      "active_segment": {
+        "key": "segment_b",
+        "label": "Spine 2",
+        "servo_ids": [
+          5,
+          6,
+          7,
+          8
+        ],
+        "pairs": {
+          "axis_a": [
+            5,
+            7
+          ],
+          "axis_b": [
+            6,
+            8
+          ]
+        },
+        "segment_role": "distal",
+        "segment_order_index": 1
+      },
+      "segments": {
+        "segment_a": {
+          "key": "segment_a",
+          "label": "Spine 1",
+          "segment_label": "Segment A",
+          "servo_ids": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "segment_role": "proximal",
+          "segment_order_index": 0,
+          "pairs": {
+            "axis_a": [
+              1,
+              3
+            ],
+            "axis_b": [
+              2,
+              4
+            ]
+          }
+        },
+        "segment_b": {
+          "key": "segment_b",
+          "label": "Spine 2",
+          "segment_label": "Segment B",
+          "servo_ids": [
+            5,
+            6,
+            7,
+            8
+          ],
+          "segment_role": "distal",
+          "segment_order_index": 1,
+          "pairs": {
+            "axis_a": [
+              5,
+              7
+            ],
+            "axis_b": [
+              6,
+              8
+            ]
+          }
+        }
+      },
+      "segment_order": [
+        "segment_a",
+        "segment_b"
+      ],
+      "two_segment_foundation": {
+        "schema_version": "two_segment_foundation_v1",
+        "available": true,
+        "operating_mode": "single_segment",
+        "semantic_scope": "data_structures_and_metadata_only",
+        "segment_order": [
+          "segment_a",
+          "segment_b"
+        ],
+        "segments": {
+          "segment_a": {
+            "key": "segment_a",
+            "label": "Spine 1",
+            "segment_label": "Segment A",
+            "segment_role": "proximal",
+            "segment_order_index": 0,
+            "servo_ids": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "pairs": {
+              "axis_a": [
+                1,
+                3
+              ],
+              "axis_b": [
+                2,
+                4
+              ]
+            }
+          },
+          "segment_b": {
+            "key": "segment_b",
+            "label": "Spine 2",
+            "segment_label": "Segment B",
+            "segment_role": "distal",
+            "segment_order_index": 1,
+            "servo_ids": [
+              5,
+              6,
+              7,
+              8
+            ],
+            "pairs": {
+              "axis_a": [
+                5,
+                7
+              ],
+              "axis_b": [
+                6,
+                8
+              ]
+            }
+          }
+        },
+        "expected_servo_ids": [
+          5,
+          6,
+          7,
+          8
+        ],
+        "commanded_servo_ids": [
+          5,
+          6,
+          7,
+          8
+        ],
+        "command_schema": {
+          "schema_version": "two_segment_command_v1",
+          "command_type": "tendon_displacement",
+          "units": "cm",
+          "canonical_representation": {
+            "segment_a": [
+              "a1",
+              "a2",
+              "a3",
+              "a4"
+            ],
+            "segment_b": [
+              "b1",
+              "b2",
+              "b3",
+              "b4"
+            ]
+          },
+          "flat_vector_rule": "Flatten only through the operating context commanded_servo_ids order.",
+          "control_enabled": false,
+          "segment_order": [
+            "segment_a",
+            "segment_b"
+          ],
+          "commanded_servo_ids": [
+            5,
+            6,
+            7,
+            8
+          ],
+          "segments": {
+            "segment_a": {
+              "key": "segment_a",
+              "label": "Spine 1",
+              "segment_label": "Segment A",
+              "segment_role": "proximal",
+              "segment_order_index": 0,
+              "servo_ids": [
+                1,
+                2,
+                3,
+                4
+              ],
+              "pairs": {
+                "axis_a": [
+                  1,
+                  3
+                ],
+                "axis_b": [
+                  2,
+                  4
+                ]
+              }
+            },
+            "segment_b": {
+              "key": "segment_b",
+              "label": "Spine 2",
+              "segment_label": "Segment B",
+              "segment_role": "distal",
+              "segment_order_index": 1,
+              "servo_ids": [
+                5,
+                6,
+                7,
+                8
+              ],
+              "pairs": {
+                "axis_a": [
+                  5,
+                  7
+                ],
+                "axis_b": [
+                  6,
+                  8
+                ]
+              }
+            }
+          }
+        },
+        "pose_schema": {
+          "schema_version": "two_segment_pose_observation_v1",
+          "frame": "robot",
+          "fields": {
+            "intermediate_pose": "optional pose for the Segment A distal end / Segment B base region",
+            "distal_tip_pose": "optional pose for the distal tip after Segment B",
+            "segment_poses": "optional segment-indexed pose map",
+            "tool_poses": "optional raw or registered tracker-tool pose map"
+          },
+          "tool_roles": {},
+          "tracking_enabled": false,
+          "multi_coil_tracking_required": "future_validation"
+        },
+        "enabled_capabilities": {
+          "all_8_readiness": false,
+          "manual_startup_capture": true
+        },
+        "blocked_capabilities": {
+          "two_segment_kinematics_control": true,
+          "two_segment_modeling": true,
+          "two_segment_penprobe_chasing": true,
+          "automatic_two_segment_pretension": true
+        },
+        "parallel_single_semantics": "mirrored single-segment testing only; not true two-segment control"
+      },
+      "mirror_mapping": {},
+      "tracker_backend": "ndi",
+      "registration_artifact": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+      "registration_status": "loaded",
+      "runtime_tip_mode": "coil_as_tip",
+      "runtime_tip_trust_status": "thesis_trusted",
+      "startup_pretension_artifact": {
+        "source_type": "none",
+        "accepted": false,
+        "usable": false,
+        "message": "Servo calibration artifact is not ready: Calibration robot mode parallel_single does not match current mode single_segment.",
+        "updated_at_utc": "2026-05-15T01:08:52Z",
+        "note": null
+      },
+      "selected_segment_readiness": {
+        "operating_mode": "single_segment",
+        "active_segment_key": "segment_b",
+        "active_segment_label": "Spine 2",
+        "expected_servo_ids": [
+          5,
+          6,
+          7,
+          8
+        ],
+        "transport": {
+          "status": "PASS",
+          "expected_servo_ids": [
+            5,
+            6,
+            7,
+            8
+          ],
+          "responding_servo_ids": [
+            5,
+            6,
+            7,
+            8
+          ],
+          "missing_servo_ids": [],
+          "stale_servo_ids": [],
+          "hardware_error_servo_ids": [],
+          "telemetry_by_servo": {
+            "5": {
+              "position": 2244,
+              "current_ma": 0,
+              "voltage_mv": null,
+              "temperature_c": null,
+              "hardware_error": 0,
+              "error": null
+            },
+            "6": {
+              "position": 2601,
+              "current_ma": 0,
+              "voltage_mv": null,
+              "temperature_c": null,
+              "hardware_error": 0,
+              "error": null
+            },
+            "7": {
+              "position": 2607,
+              "current_ma": 21,
+              "voltage_mv": null,
+              "temperature_c": null,
+              "hardware_error": 0,
+              "error": null
+            },
+            "8": {
+              "position": 2071,
+              "current_ma": 0,
+              "voltage_mv": null,
+              "temperature_c": null,
+              "hardware_error": 0,
+              "error": null
+            }
+          },
+          "message": "Readable packet telemetry is available for expected servo IDs."
+        },
+        "neutral_safe_calibration": {
+          "status": "FAIL",
+          "ready": false,
+          "hardware_valid": false,
+          "artifact_path": "/home/continuum-pi/Continuum_pi/config/neutral_setpoints.json",
+          "updated_at_utc": "2026-05-15T01:08:52Z",
+          "source": "unknown",
+          "is_mock": false,
+          "missing_neutral_servo_ids": [],
+          "missing_bounds_servo_ids": [],
+          "invalid_bounds_servo_ids": [],
+          "mismatch_reasons": [
+            "Calibration robot mode parallel_single does not match current mode single_segment."
+          ],
+          "message": "Calibration artifact is incompatible: Calibration robot mode parallel_single does not match current mode single_segment."
+        },
+        "startup_pretension": {
+          "status": "FAIL",
+          "ready": false,
+          "accepted": false,
+          "usable": false,
+          "artifact_path": "/home/continuum-pi/Continuum_pi/config/neutral_setpoints.json",
+          "updated_at_utc": "2026-05-15T01:08:52Z",
+          "source_type": "unknown",
+          "raw_source_type": "none",
+          "is_mock": false,
+          "mismatch_reasons": [
+            "Calibration robot mode parallel_single does not match current mode single_segment."
+          ],
+          "positions_by_servo": {},
+          "message": "Servo calibration artifact is not ready: Calibration robot mode parallel_single does not match current mode single_segment."
+        },
+        "experiment": {
+          "ready_for_manual_jog": true,
+          "ready_for_raw_tiny_jog": true,
+          "ready_for_calibrated_motion": false,
+          "ready_for_pretension_validation": true,
+          "ready_for_repeatability": false,
+          "ready_for_collect_pose": false,
+          "ready_for_penprobe_chasing": false,
+          "raw_tiny_jog_label": "Allowed as raw/hardware-bound bring-up only; calibrated motion remains blocked.",
+          "message": "Raw tiny jog is available for bring-up; capture valid neutral/safe bounds before calibrated experiments."
+        },
+        "sign_mapping": {
+          "exists": true,
+          "compatible": true,
+          "confirmed": true,
+          "path": "/home/continuum-pi/Continuum_pi/data/calibration/servo_mapping_checks/20260515_005548_segment_b_servo_mapping_check.json",
+          "timestamp_utc": "2026-05-15T00:55:48Z",
+          "message": "Servo sign/mapping checklist is confirmed for active segment Spine 2: [5, 6, 7, 8].",
+          "missing_servo_ids": [],
+          "unconfirmed_servo_ids": [],
+          "record": {
+            "schema_version": 1,
+            "timestamp_utc": "2026-05-15T00:55:48Z",
+            "operator": "",
+            "operating_mode": "single_segment",
+            "active_segment_key": "segment_b",
+            "active_segment_label": "Spine 2",
+            "expected_servo_ids": [
+              5,
+              6,
+              7,
+              8
+            ],
+            "source": "configured_mapping_confirmation",
+            "artifact_path": "/home/continuum-pi/Continuum_pi/data/calibration/servo_mapping_checks/20260515_005548_segment_b_servo_mapping_check.json",
+            "mock_mode": false,
+            "lower_tick_means_tension": true,
+            "confirmed_by_operator": true,
+            "entries": [
+              {
+                "servo_id": 5,
+                "expected_tendon_position": "+X",
+                "axis_label": "X",
+                "positive_tendon_direction": "+X",
+                "tiny_jog_direction": "configured_lower_tick_tensions",
+                "observed_tendon_behavior": "configured_mapping_confirmed_by_operator",
+                "expected_sign_confirmed": true,
+                "notes": ""
+              },
+              {
+                "servo_id": 6,
+                "expected_tendon_position": "+Y",
+                "axis_label": "Y",
+                "positive_tendon_direction": "+Y",
+                "tiny_jog_direction": "configured_lower_tick_tensions",
+                "observed_tendon_behavior": "configured_mapping_confirmed_by_operator",
+                "expected_sign_confirmed": true,
+                "notes": ""
+              },
+              {
+                "servo_id": 7,
+                "expected_tendon_position": "-X",
+                "axis_label": "X",
+                "positive_tendon_direction": "-X",
+                "tiny_jog_direction": "configured_lower_tick_tensions",
+                "observed_tendon_behavior": "configured_mapping_confirmed_by_operator",
+                "expected_sign_confirmed": true,
+                "notes": ""
+              },
+              {
+                "servo_id": 8,
+                "expected_tendon_position": "-Y",
+                "axis_label": "Y",
+                "positive_tendon_direction": "-Y",
+                "tiny_jog_direction": "configured_lower_tick_tensions",
+                "observed_tendon_behavior": "configured_mapping_confirmed_by_operator",
+                "expected_sign_confirmed": true,
+                "notes": ""
+              }
+            ],
+            "notes": ""
+          }
+        },
+        "next_action": "Capture valid neutral/safe calibration before repeatability.",
+        "metadata_readiness_source": "cached_telemetry_used",
+        "cached_telemetry_used": true,
+        "live_scan_unavailable_due_to_experiment_ownership": false
+      },
+      "servo_sign_mapping_check": {
+        "exists": true,
+        "compatible": true,
+        "confirmed": true,
+        "path": "/home/continuum-pi/Continuum_pi/data/calibration/servo_mapping_checks/20260515_005548_segment_b_servo_mapping_check.json",
+        "timestamp_utc": "2026-05-15T00:55:48Z",
+        "message": "Servo sign/mapping checklist is confirmed for active segment Spine 2: [5, 6, 7, 8]."
+      },
+      "mock_mode": false
+    },
+    "run_trust": {
+      "run_trust_mode": "thesis_trusted",
+      "valid_for_model_training": false,
+      "valid_for_thesis_repeatability": true,
+      "valid_for_two_segment_model_training": false,
+      "include_in_evidence_index": false,
+      "data_quality_warnings": [],
+      "runtime_tip_policy": {
+        "mode": "coil_as_tip",
+        "calibration_state": "coil_as_tip",
+        "tip_pose_status": "coil_as_tip",
+        "trust_label": "thesis_trusted",
+        "trust_level": "thesis_trusted",
+        "thesis_trusted": true,
+        "requested_workflow": "pivot_validation",
+        "workflow": "generic",
+        "canonical_workflow": "generic",
+        "allowed_for_workflow": true,
+        "requires_lower_trust_override": false,
+        "uses_coil_as_tip": true,
+        "uses_calibrated_tip_transform": false,
+        "uses_identity_transform": true,
+        "intended_use": "Current trusted runtime position path for robot-frame tip repeatability, pretension centering, modeling datasets, and demos when coil-origin-as-tip is the declared measurement.",
+        "status_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.",
+        "reasons": [],
+        "warnings": [
+          "Coil-as-tip uses identity T_coil_tip and reports the 0A coil origin as the tip; do not interpret it as a validated calibrated tip transform or true tip orientation."
+        ],
+        "allowed_workflows": {
+          "repeatability": true,
+          "pretension_validation": true,
+          "penprobe_chasing": true,
+          "modeling_dataset": true,
+          "transform_chain_validation": true
+        }
+      },
+      "success_does_not_imply_thesis_validity": true
+    },
+    "run_trust_mode": "thesis_trusted",
+    "valid_for_model_training": false,
+    "valid_for_thesis_repeatability": true,
+    "valid_for_two_segment_model_training": false,
+    "mock_mode": false,
+    "include_in_evidence_index": false,
+    "data_quality_warnings": []
+  },
+  "warning_messages": [],
+  "error_messages": []
+}

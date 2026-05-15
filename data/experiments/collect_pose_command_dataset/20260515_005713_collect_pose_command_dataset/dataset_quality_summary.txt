@@ -1,0 +1,15 @@
+Collect-Pose Dataset Quality Summary
+Accepted samples: 45
+Rejected samples: 0
+Failures: 0
+Dropped post-motion samples: 0
+Dropped pre-motion samples: 0
+Next command index to resume: 45
+Recovered packet errors: 0
+Unrecovered packet errors: 0
+Telemetry retries: 0
+Write-goal packet errors: 0
+Tracker stale count: 0
+Max abs current (mA): 597
+Max abs current by servo (mA): 5:544, 6:597, 7:163, 8:157
+Recommendation: needs_more_coverage

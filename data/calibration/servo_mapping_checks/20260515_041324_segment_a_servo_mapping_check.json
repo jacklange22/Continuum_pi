@@ -1,0 +1,62 @@
+{
+  "active_segment_key": "segment_a",
+  "active_segment_label": "Spine 1",
+  "artifact_path": "/home/continuum-pi/Continuum_pi/data/calibration/servo_mapping_checks/20260515_041324_segment_a_servo_mapping_check.json",
+  "confirmed_by_operator": true,
+  "entries": [
+    {
+      "axis_label": "X",
+      "expected_sign_confirmed": true,
+      "expected_tendon_position": "+X",
+      "notes": "",
+      "observed_tendon_behavior": "configured_mapping_confirmed_by_operator",
+      "positive_tendon_direction": "+X",
+      "servo_id": 1,
+      "tiny_jog_direction": "configured_lower_tick_tensions"
+    },
+    {
+      "axis_label": "Y",
+      "expected_sign_confirmed": true,
+      "expected_tendon_position": "+Y",
+      "notes": "",
+      "observed_tendon_behavior": "configured_mapping_confirmed_by_operator",
+      "positive_tendon_direction": "+Y",
+      "servo_id": 2,
+      "tiny_jog_direction": "configured_lower_tick_tensions"
+    },
+    {
+      "axis_label": "X",
+      "expected_sign_confirmed": true,
+      "expected_tendon_position": "-X",
+      "notes": "",
+      "observed_tendon_behavior": "configured_mapping_confirmed_by_operator",
+      "positive_tendon_direction": "-X",
+      "servo_id": 3,
+      "tiny_jog_direction": "configured_lower_tick_tensions"
+    },
+    {
+      "axis_label": "Y",
+      "expected_sign_confirmed": true,
+      "expected_tendon_position": "-Y",
+      "notes": "",
+      "observed_tendon_behavior": "configured_mapping_confirmed_by_operator",
+      "positive_tendon_direction": "-Y",
+      "servo_id": 4,
+      "tiny_jog_direction": "configured_lower_tick_tensions"
+    }
+  ],
+  "expected_servo_ids": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "lower_tick_means_tension": true,
+  "mock_mode": false,
+  "notes": "",
+  "operating_mode": "single_segment",
+  "operator": "",
+  "schema_version": 1,
+  "source": "configured_mapping_confirmation",
+  "timestamp_utc": "2026-05-15T04:13:24Z"
+}

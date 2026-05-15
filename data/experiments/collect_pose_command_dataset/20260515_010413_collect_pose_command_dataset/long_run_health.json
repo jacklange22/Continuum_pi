@@ -1,0 +1,23 @@
+{
+  "accepted_sample_count": 3,
+  "dropped_post_motion_telemetry_samples": 0,
+  "dropped_pre_motion_telemetry_samples": 0,
+  "elapsed_session_s": 4.724450944995624,
+  "estimated_commands_remaining": 4090,
+  "last_command_step_index": 1,
+  "max_abs_current_ma": 98,
+  "mean_sample_hz_estimate": 1.3359083858110774,
+  "next_command_index_to_resume": 2,
+  "recommendation": "investigate_failure_before_resume",
+  "recovered_packet_error_count": 0,
+  "rejected_sample_count": 0,
+  "run_status": "failed",
+  "run_success": false,
+  "samples_in_session": 3,
+  "schema_version": "collect_pose_long_run_health_v1",
+  "servo_telemetry_retry_count": 0,
+  "tracker_stale_count": 0,
+  "unrecovered_packet_error_count": 0,
+  "wall_time_utc": "2026-05-15T01:04:29.828467+00:00",
+  "write_goal_packet_error_count": 0
+}

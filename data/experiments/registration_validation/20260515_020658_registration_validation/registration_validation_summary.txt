@@ -1,0 +1,27 @@
+Registration Validation Summary
+Offline analysis of repeated saved registration solves. Metrics quantify FRE spread, transform spread, and where the downstream robot/model frame origin lands in Aurora space (all distances in mm, rotation in degrees).
+
+Run ID: 6f50b1fa7d7d
+Timestamp: 2026-05-15T02:07:08.714867+00:00
+Status: success
+Selected runs: 3
+Valid runs: 3
+Skipped runs: 0
+
+Definitions:
+- FRE is residual error on the fiducials used by each registration solve (not an external ground-truth held-out error).
+- Translation/rotation spread values are transform deltas relative to a consensus transform across selected runs.
+
+FRE mean / std / max (mm): 0.661 / 0.025 / 0.685
+Translation spread mean / std / max (mm): 0.171 / 0.105 / 0.251
+Rotation spread mean / std / max (deg): 0.144 / 0.043 / 0.203
+Robot-origin RMS / max distance to consensus (mm): 0.212 / 0.249
+Robot-origin XYZ span (mm): x=0.210, y=0.248, z=0.378
+
+Saved plots:
+- registration_frame_origins_report.png
+- registration_fre_report.png
+- registration_transform_spread_report.png
+- registration_fre_histogram.png
+- registration_frame_origins.png
+- registration_transform_spread.png
