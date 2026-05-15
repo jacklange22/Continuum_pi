@@ -288,19 +288,29 @@ def build_app_context(*, session_log_path: Path | None = None) -> AppContext:
     services.register("experiment_dataset_writer", experiment_dataset_writer)
     services.register("experiment_dataset_loader", experiment_dataset_loader)
 
+    _operating_context_for_log = settings.robot.operating_context()
+    _assembly_for_log = settings.robot.physical_assembly()
     LOG.info(
-        "App context ready | mock_mode=%s | robot_mode=%s | active_segment=%s | expected_servo_ids=%s | commanded_servo_ids=%s | profile_servo_ids=%s | tracker_backend=%s | openrb_port=%s | baud=%s | session_log=%s",
+        "App context ready | mock_mode=%s | robot_mode=%s | active_segment=%s | expected_servo_ids=%s | commanded_servo_ids=%s | profile_servo_ids=%s | bottom=%s%s | top=%s%s | assembly_issues=%s | tracker_backend=%s | openrb_port=%s | baud=%s | session_log=%s",
         settings.runtime.mock_mode,
-        settings.robot.operating_context().operating_mode,
+        _operating_context_for_log.operating_mode,
         settings.robot.active_segment_key(),
-        settings.robot.operating_context().expected_servo_ids,
-        settings.robot.operating_context().commanded_servo_ids,
+        _operating_context_for_log.expected_servo_ids,
+        _operating_context_for_log.commanded_servo_ids,
         settings.robot.servo_ids,
+        _assembly_for_log.get("bottom_segment_key") or "?",
+        list(_assembly_for_log.get("bottom_servo_ids") or []),
+        _assembly_for_log.get("top_segment_key") or "?",
+        list(_assembly_for_log.get("top_servo_ids") or []),
+        list(_assembly_for_log.get("issues") or []),
         settings.serial.tracker_backend,
         settings.serial.openrb_port,
         settings.serial.baudrate,
         str(resolved_session_log_path) if resolved_session_log_path is not None else "unset",
     )
+    _operator_notes_for_log = str(_assembly_for_log.get("notes") or "").strip()
+    if _operator_notes_for_log:
+        LOG.info("Physical assembly operator notes: %s", _operator_notes_for_log)
 
     return AppContext(
         project_root=project_root,

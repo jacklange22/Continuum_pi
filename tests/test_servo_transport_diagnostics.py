@@ -189,6 +189,35 @@ def test_servo_transport_diagnostic_reports_minimal_schema(tmp_path: Path) -> No
     assert "ready for parallel_single" in result.recommended_next_action.lower()
 
 
+def test_servo_transport_diagnostic_handles_all_8_servos_at_higher_read_rate(tmp_path: Path) -> None:
+    """The 8-servo two-segment use case must work without dropped packets on the mock bus.
+
+    This is a software-only pin — real-hardware throughput depends on the
+    DYNAMIXEL bus baud and OpenRB firmware. The mock confirms there's nothing
+    in the SOFTWARE path that breaks with all 8 servos at a non-trivial
+    read rate.
+    """
+    service = _service(tmp_path, servo_ids=[1, 2, 3, 4, 5, 6, 7, 8])
+
+    result = run_diagnostic(
+        service,
+        servo_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+        duration_s=0.5,
+        read_rate_hz=20.0,
+        fields="minimal",
+    )
+
+    assert result.fields == "minimal"
+    assert result.sample_count >= 5  # at 20 Hz for 0.5s we should get many reads
+    # Every servo must succeed on every sample.
+    assert all(value == result.sample_count for value in result.success_count_by_servo.values())
+    # No failures of any type.
+    assert result.failure_count_by_type == {}
+    # Achieved rate should be reasonably close to requested (within 10x slack).
+    assert result.achieved_read_rate_hz is not None
+    assert result.achieved_read_rate_hz > 1.0
+
+
 def test_one_servo_motion_soak_summary_generation(tmp_path: Path) -> None:
     service = _service(tmp_path)
     result = run_servo_transport_soak(

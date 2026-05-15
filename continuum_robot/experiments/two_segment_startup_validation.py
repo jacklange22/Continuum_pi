@@ -20,22 +20,40 @@ from continuum_robot.experiments.schemas import ExperimentTimeseriesSample
 from continuum_robot.two_segment import TwoSegmentPoseObservation, build_two_segment_foundation_metadata
 
 
-STARTUP_SCHEMA_VERSION = "manual_two_segment_startup_v1"
+STARTUP_SCHEMA_VERSION = "manual_two_segment_startup_v2"
 EXPERIMENT_NAME = "two_segment_startup_validation"
+# Stage order is structured by physical role: bottom (proximal) is pretensioned
+# first, then top (distal), then the bottom is rechecked because top tendons pass
+# through the bottom segment and can disturb its tension.
 STAGE_ORDER = [
     "baseline",
-    "segment_a_pretensioned",
-    "segment_b_pretensioned",
-    "segment_a_recheck",
+    "bottom_pretensioned",
+    "top_pretensioned",
+    "bottom_recheck",
     "final_accept",
 ]
+# Backwards-compat alias map: older configs/workflow files used segment_a/b
+# stage names. Either form is accepted on input; outputs use bottom/top.
+STAGE_ALIASES = {
+    "segment_a_pretensioned": "bottom_pretensioned",
+    "segment_b_pretensioned": "top_pretensioned",
+    "segment_a_recheck": "bottom_recheck",
+}
 STAGE_LABELS = {
     "baseline": "Baseline",
-    "segment_a_pretensioned": "Segment A Pretensioned",
-    "segment_b_pretensioned": "Segment B Pretensioned",
-    "segment_a_recheck": "Segment A Recheck",
+    "bottom_pretensioned": "Bottom (Proximal) Pretensioned",
+    "top_pretensioned": "Top (Distal) Pretensioned",
+    "bottom_recheck": "Bottom Recheck",
     "final_accept": "Final Accept",
 }
+
+
+def normalize_stage_name(stage: str) -> str:
+    """Resolve legacy A/B stage names to the canonical bottom/top names."""
+    raw = str(stage or "").strip()
+    if raw in STAGE_ALIASES:
+        return STAGE_ALIASES[raw]
+    return raw
 DUAL_SEGMENT_BLOCK_MESSAGE = (
     "Two-segment startup validation requires operating_mode=dual_segment. "
     "This workflow records manual all-8 startup stages; it does not run automatic two-segment pretension."
@@ -114,7 +132,44 @@ class TwoSegmentStartupValidationExperiment(BaseExperiment):
             data = dict(segments.get(key, {}) or {})
             if [int(value) for value in data.get("servo_ids", [])] != expected:
                 raise RuntimeError(f"{key} servo IDs must be {expected}; resolved {data.get('servo_ids')}.")
+        assembly_issues = list(getattr(context, "physical_assembly_issues", []) or [])
+        if assembly_issues:
+            raise RuntimeError(
+                "Two-segment startup validation requires a valid bottom/top physical assembly. "
+                f"Issues: {'; '.join(assembly_issues)}"
+            )
         session.set_stage("precheck", "passed", "dual_segment all-8 manual startup validation is ready.")
+
+    def _role_for_stage(self, stage: str, *, context) -> dict[str, Any]:
+        assembly = dict(context.metadata().get("physical_assembly") or {})
+        bottom_key = str(assembly.get("bottom_segment_key") or "")
+        top_key = str(assembly.get("top_segment_key") or "")
+        bottom_ids = [int(value) for value in list(assembly.get("bottom_servo_ids") or [])]
+        top_ids = [int(value) for value in list(assembly.get("top_servo_ids") or [])]
+        role: str | None
+        targeted_ids: list[int]
+        if stage == "bottom_pretensioned" or stage == "bottom_recheck":
+            role = "proximal"
+            targeted_segment_key = bottom_key
+            targeted_ids = list(bottom_ids)
+        elif stage == "top_pretensioned":
+            role = "distal"
+            targeted_segment_key = top_key
+            targeted_ids = list(top_ids)
+        else:
+            role = None
+            targeted_segment_key = ""
+            targeted_ids = []
+        return {
+            "stage_role": role or "",
+            "targeted_segment_key": targeted_segment_key,
+            "targeted_servo_ids": targeted_ids,
+            "bottom_segment_key": bottom_key,
+            "top_segment_key": top_key,
+            "bottom_servo_ids": list(bottom_ids),
+            "top_servo_ids": list(top_ids),
+            "physical_assembly": dict(assembly),
+        }
 
     def execute(self, session: ExperimentSession) -> None:
         context = session.context.settings.robot.operating_context()
@@ -168,6 +223,11 @@ class TwoSegmentStartupValidationExperiment(BaseExperiment):
         session.set_metric("startup_type", "manual_two_segment_startup")
         session.set_metric("operating_mode", context.operating_mode)
         session.set_metric("stage_order", list(STAGE_ORDER))
+        session.set_metric("physical_assembly", self._physical_assembly_metadata(context=context))
+        session.set_metric("bottom_segment_key", context.bottom_segment_key)
+        session.set_metric("top_segment_key", context.top_segment_key)
+        session.set_metric("bottom_servo_ids", list(context.bottom_servo_ids or []))
+        session.set_metric("top_servo_ids", list(context.top_servo_ids or []))
         captured_stage_names = {str(stage.get("stage")) for stage in stage_snapshots}
         session.set_metric("stage_completion", {stage: stage in captured_stage_names for stage in STAGE_ORDER})
         session.set_metric("stage_snapshots", stage_snapshots)
@@ -253,6 +313,7 @@ class TwoSegmentStartupValidationExperiment(BaseExperiment):
             session.add_warning(
                 f"Stage {stage} captured without current estimates for servo IDs {missing_currents}."
             )
+        role_info = self._role_for_stage(stage, context=context)
         return {
             "startup_schema_version": STARTUP_SCHEMA_VERSION,
             "stage": stage,
@@ -265,6 +326,14 @@ class TwoSegmentStartupValidationExperiment(BaseExperiment):
             "commanded_servo_ids": [int(value) for value in context.commanded_servo_ids],
             "segment_order": list(context.segment_order),
             "segments": dict(context.metadata().get("segments", {}) or {}),
+            "physical_assembly": dict(role_info.get("physical_assembly") or {}),
+            "stage_role": role_info.get("stage_role"),
+            "targeted_segment_key": role_info.get("targeted_segment_key"),
+            "targeted_servo_ids": list(role_info.get("targeted_servo_ids") or []),
+            "bottom_segment_key": role_info.get("bottom_segment_key"),
+            "top_segment_key": role_info.get("top_segment_key"),
+            "bottom_servo_ids": list(role_info.get("bottom_servo_ids") or []),
+            "top_servo_ids": list(role_info.get("top_servo_ids") or []),
             "servos": servos,
             "current_label": "servo-reported current estimate; not tendon force",
             "load_proxy_label": "baseline-subtracted absolute servo-reported current estimate",
@@ -336,6 +405,11 @@ class TwoSegmentStartupValidationExperiment(BaseExperiment):
                 "stage_snapshots": stage_snapshots,
                 "segment_order": list(context.segment_order),
                 "segments": dict(context.metadata().get("segments", {}) or {}),
+                "physical_assembly": self._physical_assembly_metadata(context=context),
+                "bottom_segment_key": context.bottom_segment_key,
+                "top_segment_key": context.top_segment_key,
+                "bottom_servo_ids": list(context.bottom_servo_ids or []),
+                "top_servo_ids": list(context.top_servo_ids or []),
                 "final_positions_by_servo": {
                     str(servo_id): states_by_servo[int(servo_id)]["measured_position_tick"]
                     for servo_id in sorted(states_by_servo)
@@ -348,6 +422,9 @@ class TwoSegmentStartupValidationExperiment(BaseExperiment):
         )
         neutral_calibration.save_calibration_artifact(artifact)
         return Path(neutral_calibration.path)
+
+    def _physical_assembly_metadata(self, *, context) -> dict[str, Any]:
+        return dict(context.metadata().get("physical_assembly") or {})
 
     def _sync_calibration_context(self, session: ExperimentSession) -> None:
         neutral_calibration = getattr(session.context.servo_service, "neutral_calibration", None)
@@ -369,11 +446,14 @@ class TwoSegmentStartupValidationExperiment(BaseExperiment):
         context.mode_notes = list(resolved.mode_notes)
 
     def _stages_to_capture(self) -> list[str]:
-        stage = str(self.config.capture_stage or "").strip()
+        stage = normalize_stage_name(self.config.capture_stage)
         if not stage:
             return list(STAGE_ORDER)
         if stage not in STAGE_ORDER:
-            raise RuntimeError(f"Unknown two-segment startup stage '{stage}'. Expected one of {STAGE_ORDER}.")
+            raise RuntimeError(
+                f"Unknown two-segment startup stage '{self.config.capture_stage}'. "
+                f"Expected one of {STAGE_ORDER} or legacy aliases {sorted(STAGE_ALIASES)}."
+            )
         return [stage]
 
     def _workflow_state_path(self, session: ExperimentSession) -> Path:

@@ -31,6 +31,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--by-run-split", action="store_true", help="Force a by-run split when multiple runs are supplied.")
     parser.add_argument("--random-split", action="store_true", help="Force a random sample split.")
     parser.add_argument("--figure-quality", default="production", choices=["low", "medium", "production"], help="Report PNG quality.")
+    parser.add_argument(
+        "--minimum-accepted-samples",
+        type=int,
+        default=None,
+        help="If set, returns exit code 2 when fewer than this many samples were accepted into modeling.",
+    )
+    parser.add_argument(
+        "--maximum-best-rmse-mm",
+        type=float,
+        default=None,
+        help="If set, returns exit code 3 when the best completed model's xyz_rmse_mm is above this threshold.",
+    )
     args = parser.parse_args(argv)
     project_root = Path(args.project_root).resolve()
     try:
@@ -51,10 +63,34 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Two-segment modeling output: {result.output_dir}")
     print(f"Accepted samples: {result.dataset.accepted_count}")
     print(f"Rejected samples: {result.dataset.rejected_count}")
+    completed_rmse: list[tuple[str, float]] = []
     for model_result in result.model_results:
         rmse = model_result.metrics.get("xyz_rmse_mm") if model_result.metrics else None
         suffix = f", xyz_rmse_mm={rmse:.4g}" if isinstance(rmse, float) else f", reason={model_result.reason}" if model_result.reason else ""
         print(f"- {model_result.model_key}: {model_result.status}{suffix}")
+        if isinstance(rmse, float) and model_result.status == "completed":
+            completed_rmse.append((model_result.model_key, float(rmse)))
+    # Operator/CI gating flags. These are CHEAP and surface real bench-day decisions.
+    if args.minimum_accepted_samples is not None and result.dataset.accepted_count < int(args.minimum_accepted_samples):
+        print(
+            f"GATE FAIL: accepted samples {result.dataset.accepted_count} < minimum {int(args.minimum_accepted_samples)}.",
+            file=sys.stderr,
+        )
+        return 2
+    if args.maximum_best_rmse_mm is not None:
+        if not completed_rmse:
+            print(
+                "GATE FAIL: no models completed with xyz_rmse_mm; cannot evaluate maximum-best-rmse-mm.",
+                file=sys.stderr,
+            )
+            return 3
+        best_key, best_rmse = min(completed_rmse, key=lambda item: item[1])
+        if best_rmse > float(args.maximum_best_rmse_mm):
+            print(
+                f"GATE FAIL: best model {best_key} xyz_rmse_mm={best_rmse:.4g} > maximum {float(args.maximum_best_rmse_mm):.4g}.",
+                file=sys.stderr,
+            )
+            return 3
     return 0
 
 

@@ -3,7 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from continuum_robot.data.validate_run_bundle import render_validation_report, validate_run_folder
+from continuum_robot.data.validate_run_bundle import (
+    main as validate_main,
+    render_validation_report,
+    validate_run_folder,
+    validation_report_to_dict,
+)
 
 
 def _write_valid_collect_pose_run(root: Path) -> Path:
@@ -76,3 +81,48 @@ def test_validate_run_folder_fails_without_summary(tmp_path: Path) -> None:
     report = validate_run_folder(run_dir)
 
     assert report.status == "FAIL"
+
+
+def test_validation_report_to_dict_emits_machine_readable_view(tmp_path: Path) -> None:
+    """The JSON view exposes status, issue counts, and per-issue details."""
+    run_dir = _write_valid_collect_pose_run(tmp_path)
+
+    report = validate_run_folder(run_dir)
+    payload = validation_report_to_dict(report)
+
+    assert payload["schema_version"] == "run_validation_report_v1"
+    assert payload["status"] == report.status
+    assert payload["experiment_name"] == "collect_pose_command_dataset"
+    assert isinstance(payload["issues"], list)
+    assert (
+        payload["fail_count"]
+        + payload["warn_count"]
+        + payload["info_count"]
+    ) == len(report.issues) - sum(
+        1 for issue in report.issues if issue.level not in {"FAIL", "WARN", "INFO"}
+    )
+
+
+def test_validate_main_emits_json_when_flag_set(tmp_path: Path, capsys) -> None:
+    """CLI --json prints a parseable JSON document and returns the same exit code as the text path."""
+    run_dir = _write_valid_collect_pose_run(tmp_path)
+
+    rc = validate_main([str(run_dir), "--json"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    payload = json.loads(captured.out)
+    assert payload["schema_version"] == "run_validation_report_v1"
+    assert payload["status"] == "PASS"
+
+
+def test_validate_main_returns_nonzero_on_failure_even_in_json_mode(tmp_path: Path, capsys) -> None:
+    run_dir = tmp_path / "data" / "experiments" / "registration_validation" / "20260102_000000_registration_validation"
+    run_dir.mkdir(parents=True)
+
+    rc = validate_main([str(run_dir), "--json"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 1
+    assert payload["status"] == "FAIL"

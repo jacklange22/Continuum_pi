@@ -8,10 +8,15 @@ tracker_backend: "ndi"
 tracker_fallback_backend:
 tracker_fallback_enabled: false
 tracker_type: "aurora"
-# The current OpenRB / XC330 bring-up path has been confirmed at 57600.
-# OpenRB-150 and XC330 also support 1 Mbps, but only raise this after the
-# whole servo chain is configured for that baud and you have remeasured the
-# live telemetry path on the actual rig.
+# DYNAMIXEL bus baud.
+# - 57600: legacy bring-up. Acceptable for single-segment work; the GUI
+#   preflight will WARN when running 8-servo experiments at this baud.
+# - 1000000: recommended for current eight-servo (dual_segment / parallel_single)
+#   work. Reflash every servo with DYNAMIXEL Wizard to 1 000 000 baud BEFORE
+#   raising this value here — the OpenRB will only see servos at their currently
+#   flashed baud. Confirm with:
+#     .venv/bin/python -m continuum_robot.diagnostics.servo_transport_diagnostic \
+#         --servo-ids 1,2,3,4,5,6,7,8 --baud 1000000 --duration 10 --fields minimal
 baudrate: 57600
 mock_mode: true
 visualization_mode: "auto"

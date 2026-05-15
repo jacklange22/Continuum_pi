@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
@@ -50,6 +51,14 @@ class RobotOperatingContext:
     mode_profile: str = ""
     mode_capabilities: dict[str, bool] = field(default_factory=dict)
     mode_notes: list[str] = field(default_factory=list)
+    bottom_segment_key: str | None = None
+    top_segment_key: str | None = None
+    bottom_segment_label: str | None = None
+    top_segment_label: str | None = None
+    bottom_servo_ids: list[int] = field(default_factory=list)
+    top_servo_ids: list[int] = field(default_factory=list)
+    physical_assembly: dict[str, Any] = field(default_factory=dict)
+    physical_assembly_issues: list[str] = field(default_factory=list)
 
     def metadata(self) -> dict:
         return {
@@ -106,6 +115,8 @@ class RobotOperatingContext:
             "mode_profile": self.mode_profile or self.operating_mode,
             "mode_capabilities": dict(self.mode_capabilities),
             "mode_notes": list(self.mode_notes),
+            "physical_assembly": dict(self.physical_assembly or {}),
+            "physical_assembly_issues": list(self.physical_assembly_issues or []),
         }
 
 
@@ -122,6 +133,10 @@ class RobotConfig:
     active_segment: str = "segment_a"
     selected_servo_id: int = 1
     segments: dict[str, RobotSegmentConfig] = field(default_factory=dict)
+    bottom_segment_key: str = "segment_a"
+    top_segment_key: str = "segment_b"
+    physical_assembly_notes: str = ""
+    lower_tick_means_tension: bool = True
 
     @staticmethod
     def default_segment_role(key: str) -> str:
@@ -276,6 +291,52 @@ class RobotConfig:
         ids_b = [int(value) for value in segment_b.servo_ids]
         return {int(a): int(b) for a, b in zip(ids_a, ids_b)}
 
+    def physical_assembly(self) -> dict[str, Any]:
+        """Return the resolved bottom/top physical-role assignment for the stacked rig."""
+        segments = self.segment_map()
+        bottom_key = str(self.bottom_segment_key or "segment_a")
+        top_key = str(self.top_segment_key or "segment_b")
+        issues: list[str] = []
+        if bottom_key not in segments:
+            issues.append(f"bottom_segment '{bottom_key}' is not defined in segments")
+        if top_key not in segments:
+            issues.append(f"top_segment '{top_key}' is not defined in segments")
+        if bottom_key == top_key:
+            issues.append(f"bottom_segment and top_segment must differ; both are '{bottom_key}'")
+        bottom_ids: list[int] = []
+        top_ids: list[int] = []
+        if bottom_key in segments:
+            bottom_ids = [int(value) for value in segments[bottom_key].servo_ids]
+        if top_key in segments:
+            top_ids = [int(value) for value in segments[top_key].servo_ids]
+        overlap = sorted(set(bottom_ids) & set(top_ids))
+        if overlap:
+            issues.append(f"bottom and top segments share servo IDs {overlap}")
+        bottom_seg = segments.get(bottom_key)
+        top_seg = segments.get(top_key)
+        return {
+            "schema_version": "physical_assembly_v1",
+            "bottom_segment_key": bottom_key,
+            "top_segment_key": top_key,
+            "bottom_segment_label": str(bottom_seg.segment_label or bottom_seg.label) if bottom_seg else "",
+            "top_segment_label": str(top_seg.segment_label or top_seg.label) if top_seg else "",
+            "bottom_servo_ids": list(bottom_ids),
+            "top_servo_ids": list(top_ids),
+            "bottom_pairs": {str(k): list(v) for k, v in dict(bottom_seg.pairs or {}).items()} if bottom_seg else {},
+            "top_pairs": {str(k): list(v) for k, v in dict(top_seg.pairs or {}).items()} if top_seg else {},
+            "segment_order_bottom_first": [bottom_key, top_key],
+            "segment_role_assignment": {
+                bottom_key: "proximal",
+                top_key: "distal",
+            },
+            "tendon_axis_convention_per_segment": "[+X, +Y, -X, -Y]",
+            "lower_tick_means_tension": bool(self.lower_tick_means_tension),
+            "composed_frame_note": "Top segment rides on bottom; T_distal = T_bottom * T_top. Composed frame is metadata; no two-segment control is implemented.",
+            "notes": str(self.physical_assembly_notes or ""),
+            "issues": list(issues),
+            "is_valid": not bool(issues),
+        }
+
     def operating_context(self) -> RobotOperatingContext:
         mode = self.operating_mode()
         segments = self.segment_map()
@@ -284,13 +345,25 @@ class RobotConfig:
         active = self.active_segment_config()
         active_ids = [int(value) for value in active.servo_ids]
         active_pairs = self.active_segment_pairs()
+        assembly = self.physical_assembly()
         dual_segment_note = (
             "dual_segment currently supports all-8 readiness and manual startup capture; "
             "full two-segment kinematics/control and automatic two-segment pretension are not implemented."
         )
+        def _apply_assembly(context: RobotOperatingContext) -> RobotOperatingContext:
+            context.bottom_segment_key = str(assembly.get("bottom_segment_key") or "") or None
+            context.top_segment_key = str(assembly.get("top_segment_key") or "") or None
+            context.bottom_segment_label = str(assembly.get("bottom_segment_label") or "") or None
+            context.top_segment_label = str(assembly.get("top_segment_label") or "") or None
+            context.bottom_servo_ids = [int(value) for value in list(assembly.get("bottom_servo_ids") or [])]
+            context.top_servo_ids = [int(value) for value in list(assembly.get("top_servo_ids") or [])]
+            context.physical_assembly = dict(assembly)
+            context.physical_assembly_issues = [str(item) for item in list(assembly.get("issues") or [])]
+            return context
+
         if mode == "one_servo":
             selected = int(self.selected_servo_id or (all_ids[0] if all_ids else 1))
-            return RobotOperatingContext(
+            return _apply_assembly(RobotOperatingContext(
                 operating_mode=mode,
                 expected_servo_ids=[selected],
                 commanded_servo_ids=[selected],
@@ -306,9 +379,9 @@ class RobotConfig:
                     "automatic_single_segment_pretension": False,
                     "two_segment_kinematics_control": False,
                 },
-            )
+            ))
         if mode == "dual_segment":
-            return RobotOperatingContext(
+            return _apply_assembly(RobotOperatingContext(
                 operating_mode=mode,
                 expected_servo_ids=list(all_ids),
                 commanded_servo_ids=list(all_ids),
@@ -327,11 +400,12 @@ class RobotConfig:
                     "two_segment_kinematics_control": False,
                     "two_segment_modeling": False,
                     "penprobe_chasing": False,
+                    "bottom_top_role_selection": True,
                 },
                 mode_notes=[dual_segment_note],
-            )
+            ))
         if mode == "parallel_single":
-            return RobotOperatingContext(
+            return _apply_assembly(RobotOperatingContext(
                 operating_mode=mode,
                 expected_servo_ids=list(all_ids),
                 commanded_servo_ids=list(all_ids),
@@ -353,8 +427,8 @@ class RobotConfig:
                     "two_segment_kinematics_control": False,
                 },
                 mode_notes=["parallel_single is mirrored single-segment command testing, not two-segment control."],
-            )
-        return RobotOperatingContext(
+            ))
+        return _apply_assembly(RobotOperatingContext(
             operating_mode="single_segment",
             expected_servo_ids=list(active_ids),
             commanded_servo_ids=list(active_ids),
@@ -373,7 +447,7 @@ class RobotConfig:
                 "automatic_single_segment_pretension": True,
                 "two_segment_kinematics_control": False,
             },
-        )
+        ))
 
     def expected_servo_ids(self) -> list[int]:
         return self.operating_context().expected_servo_ids

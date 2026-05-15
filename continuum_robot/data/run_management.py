@@ -378,6 +378,70 @@ def detail_pairs_for_run(summary: ManagedRunSummary, *, project_root: Path | Non
     if quality:
         pairs.append(("Dataset Quality", str(quality.get("recommendation") or "present")))
         pairs.append(("Recovered Packet Errors", str(quality.get("recovered_packet_error_count", 0))))
+    long_run = _read_json(path / "long_run_health.json")
+    if long_run:
+        long_run_pieces = [
+            f"stop={long_run.get('stop_reason') or 'n/a'}",
+            f"cycles={long_run.get('cycles_completed', 0)}",
+            f"accepted={long_run.get('accepted_samples', 0)}",
+            f"rejected={long_run.get('rejected_samples', 0)}",
+            f"cmd_fail={long_run.get('command_failures', 0)}",
+            f"transport_fail={long_run.get('transport_failures', 0)}",
+        ]
+        if long_run.get("continue_until_valid_samples"):
+            long_run_pieces.append(f"target={long_run.get('target_valid_sample_count')}")
+        pairs.append(("Long-Run Health", "; ".join(long_run_pieces)))
+    summary_payload = _read_json(path / "summary.json")
+    metrics_payload = summary_payload.get("experiment_metrics") if isinstance(summary_payload, dict) else {}
+    current_load = (metrics_payload or {}).get("current_load_summary") if isinstance(metrics_payload, dict) else None
+    if isinstance(current_load, dict) and current_load:
+        pieces = []
+        sustained = list(current_load.get("sustained_jam_servo_ids") or [])
+        if sustained:
+            pieces.append(f"sustained_servos={sustained}")
+        if current_load.get("any_hard_observed"):
+            pieces.append("hard_threshold_observed")
+        elif current_load.get("any_warning_observed"):
+            pieces.append("warning_threshold_observed")
+        per_servo = current_load.get("per_servo") or {}
+        peak_servo = None
+        peak_value = -1.0
+        for servo_id, data in dict(per_servo).items():
+            try:
+                value = float(dict(data.get("load_proxy") or {}).get("max_ma") or 0.0)
+            except (TypeError, ValueError):
+                value = 0.0
+            if value > peak_value:
+                peak_value = value
+                peak_servo = servo_id
+        if peak_servo is not None and peak_value > 0.0:
+            pieces.append(f"peak_load_proxy_ma={peak_value:.0f}@servo{peak_servo}")
+        if pieces:
+            pairs.append(("Current/Load Summary", "; ".join(pieces)))
+    tracker_freshness = (metrics_payload or {}).get("tracker_freshness_summary") if isinstance(metrics_payload, dict) else None
+    if isinstance(tracker_freshness, dict) and tracker_freshness:
+        pieces = []
+        if tracker_freshness.get("any_stale_observed"):
+            pieces.append(f"stale_samples={tracker_freshness.get('samples_stale', 0)}")
+        max_age = tracker_freshness.get("max_freshness_s")
+        if isinstance(max_age, (int, float)):
+            pieces.append(f"max_age_s={float(max_age):.3f}")
+        p95_age = tracker_freshness.get("p95_freshness_s")
+        if isinstance(p95_age, (int, float)):
+            pieces.append(f"p95_age_s={float(p95_age):.3f}")
+        if pieces:
+            pairs.append(("Tracker Freshness", "; ".join(pieces)))
+    scatter = _read_json(path / "two_segment_repeatability_scatter_metrics.json")
+    if scatter:
+        scatter_pieces = []
+        distal = scatter.get("aggregate_distal_rms_mm")
+        intermediate = scatter.get("aggregate_intermediate_rms_mm")
+        if distal is not None:
+            scatter_pieces.append(f"distal_rms_mm={distal:.3f}")
+        if intermediate is not None:
+            scatter_pieces.append(f"intermediate_rms_mm={intermediate:.3f}")
+        if scatter_pieces:
+            pairs.append(("Two-Segment Repeatability Scatter", "; ".join(scatter_pieces)))
     return pairs
 
 
@@ -537,6 +601,25 @@ def _format_two_segment_foundation(value: dict[str, Any]) -> str:
         ordered_segments.append(" ".join(str(part) for part in (label, role, ids) if part))
     if ordered_segments:
         pieces.append("; ".join(ordered_segments))
+    bottom_top = _as_dict(value.get("bottom_top"))
+    if bottom_top:
+        bottom_label = bottom_top.get("bottom_segment_label") or bottom_top.get("bottom_segment_key") or ""
+        top_label = bottom_top.get("top_segment_label") or bottom_top.get("top_segment_key") or ""
+        bottom_ids = bottom_top.get("bottom_servo_ids") or []
+        top_ids = bottom_top.get("top_servo_ids") or []
+        if bottom_label or top_label:
+            pieces.append(f"Bottom={bottom_label}{bottom_ids}, Top={top_label}{top_ids}")
+    raw_operator_notes = str(_as_dict(value.get("physical_assembly")).get("notes") or "").strip()
+    if raw_operator_notes:
+        # Display in a single line; newlines / tabs would break the Data-tab row.
+        # The full raw text remains available in the underlying JSON.
+        flattened = " ".join(raw_operator_notes.split())
+        if len(flattened) > 200:
+            flattened = flattened[:197] + "..."
+        pieces.append(f"operator_notes={flattened}")
+    assembly_issues = list(value.get("physical_assembly_issues") or [])
+    if assembly_issues:
+        pieces.append("assembly_issues=[" + "; ".join(str(item) for item in assembly_issues) + "]")
     return _join_nonempty(pieces)
 
 

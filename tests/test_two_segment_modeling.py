@@ -161,10 +161,40 @@ def _write_two_segment_dataset_run(
                         "segment_a": {"label": "Segment A", "role": "proximal", "servo_ids": [1, 2, 3, 4], "pair_mapping": [[1, 3], [2, 4]], "segment_order_index": 0},
                         "segment_b": {"label": "Segment B", "role": "distal", "servo_ids": [5, 6, 7, 8], "pair_mapping": [[5, 7], [6, 8]], "segment_order_index": 1},
                     },
+                    "measured_servo_feedback": {
+                        str(servo_id): {
+                            "servo_id": int(servo_id),
+                            "position_tick": 2048 + index + int(servo_id),
+                            "signed_raw_current_ma": 50 + int(servo_id),
+                            "load_proxy_ma": 50 + int(servo_id),
+                        }
+                        for servo_id in range(1, 9)
+                    },
                 },
             }
             handle.write(json.dumps(sample) + "\n")
     return run_dir
+
+
+def test_two_segment_modeling_rejects_samples_missing_measured_servo_positions(tmp_path: Path) -> None:
+    run_dir = _write_two_segment_dataset_run(tmp_path)
+    # Corrupt one sample's measured feedback to drop servo 5's position.
+    samples_path = run_dir / "samples.jsonl"
+    lines = samples_path.read_text(encoding="utf-8").strip().split("\n")
+    corrupt = json.loads(lines[0])
+    corrupt["extra"]["measured_servo_feedback"]["5"]["position_tick"] = None
+    lines[0] = json.dumps(corrupt)
+    samples_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    dataset = load_two_segment_modeling_dataset([run_dir])
+
+    assert dataset.accepted_count == 7
+    assert dataset.rejected_count == 1
+    reasons = dataset.rejection_counts()
+    assert any("measured_servo_position_missing" in reason for reason in reasons)
+    # And the same dataset loaded with allow_lower_trust accepts all 8 again.
+    relaxed = load_two_segment_modeling_dataset([run_dir], allow_lower_trust=True)
+    assert relaxed.accepted_count == 8
 
 
 def test_two_segment_modeling_loader_is_strict_and_builds_mm_features(tmp_path: Path) -> None:
@@ -251,6 +281,14 @@ def test_two_segment_modeling_writes_outputs_validator_export_and_data_summary(t
     assert summary["experiment_metrics"]["models"]["mike_constant_curvature"]["artifact_paths"]
     assert summary["experiment_metrics"]["physics_model_status"]["camarillo"]["predictions_generated"] is False
     assert "single_run_random_split_can_overestimate_generalization" in summary["experiment_metrics"]["data_quality_warnings"]
+    # Completed/unavailable bookkeeping is surfaced at the summary level.
+    assert summary["experiment_metrics"]["completed_model_keys"] == ["linear_baseline"]
+    assert sorted(summary["experiment_metrics"]["unavailable_model_keys"]) == ["camarillo", "mike_constant_curvature"]
+    assert summary["experiment_metrics"]["completed_model_count"] == 1
+    summary_text = (result.output_dir / "two_segment_modeling_summary.txt").read_text(encoding="utf-8")
+    assert "models_completed: ['linear_baseline']" in summary_text
+    assert "models_unavailable" in summary_text
+    assert "best_model: linear_baseline" in summary_text
 
     validation = validate_run_folder(result.output_dir)
     assert validation.status == "PASS"
@@ -334,6 +372,58 @@ def test_two_segment_modeling_two_coil_label_mode_and_segment_metadata(tmp_path:
     assert "intermediate_xyz_rmse_mm" in linear
     assert "two_coil_combined_xyz_rmse_mm" in linear
     assert (result.output_dir / "two_segment_intermediate_measured_vs_predicted_xy_report.png").exists()
+
+
+def test_two_segment_modeling_auto_label_mode_degrades_to_distal_xyz_on_mixed_intermediate_dataset(tmp_path: Path) -> None:
+    """A dataset with SOME samples missing intermediate poses auto-resolves to distal_xyz.
+
+    The auto resolver uses an all-or-nothing rule (every sample must have
+    intermediate). Mixed datasets gracefully degrade rather than failing,
+    so the operator doesn't lose the run because one sample dropped the
+    intermediate label.
+    """
+    # Build a dataset where the *fixture* has all intermediates, then corrupt
+    # one sample's intermediate role observation so it's effectively missing.
+    run_dir = _write_two_segment_dataset_run(tmp_path, include_intermediate=True)
+    samples_path = run_dir / "samples.jsonl"
+    lines = samples_path.read_text(encoding="utf-8").strip().split("\n")
+    corrupt = json.loads(lines[0])
+    # Strip the intermediate role from this sample's robot-frame pose.
+    pose_roles = (corrupt.get("pose_in_robot_frame") or {}).get("roles") or {}
+    pose_roles.pop("intermediate_segment", None)
+    corrupt.setdefault("pose_in_robot_frame", {})["roles"] = pose_roles
+    lines[0] = json.dumps(corrupt)
+    samples_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    dataset = load_two_segment_modeling_dataset([run_dir])
+    bundle = build_feature_label_bundle(dataset)  # auto mode
+
+    # Mixed → auto picks distal_xyz, not two_coil_xyz.
+    assert bundle.label_metadata["label_mode"] == "distal_xyz"
+    assert "intermediate_segment" not in bundle.label_metadata["label_slices"]
+
+
+def test_two_segment_modeling_strict_two_coil_mode_raises_clearly_on_mixed_dataset(tmp_path: Path) -> None:
+    """Operator explicitly requesting two_coil_xyz on a mixed dataset gets a clear error, not silent degradation."""
+    from continuum_robot.modeling.two_segment.features import LabelBuildError
+
+    run_dir = _write_two_segment_dataset_run(tmp_path, include_intermediate=True)
+    samples_path = run_dir / "samples.jsonl"
+    lines = samples_path.read_text(encoding="utf-8").strip().split("\n")
+    corrupt = json.loads(lines[0])
+    pose_roles = (corrupt.get("pose_in_robot_frame") or {}).get("roles") or {}
+    pose_roles.pop("intermediate_segment", None)
+    corrupt.setdefault("pose_in_robot_frame", {})["roles"] = pose_roles
+    lines[0] = json.dumps(corrupt)
+    samples_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    dataset = load_two_segment_modeling_dataset([run_dir])
+    try:
+        build_feature_label_bundle(dataset, label_mode="two_coil_xyz")
+    except LabelBuildError as exc:
+        assert "intermediate_segment" in str(exc)
+    else:
+        raise AssertionError("Expected LabelBuildError when explicit two_coil_xyz is requested on a mixed dataset.")
 
 
 def test_two_segment_modeling_distal_xyz_fallback_does_not_fabricate_intermediate(tmp_path: Path) -> None:
@@ -583,6 +673,44 @@ def test_segment_order_and_roles_are_configurable_in_feature_metadata(tmp_path: 
     assert bundle.feature_metadata["segment_grouping"]["upper_segment"]["segment"] == "segment_a"
 
 
+def test_two_segment_modeling_predictions_csv_includes_bottom_top_and_command_pattern(tmp_path: Path) -> None:
+    """predictions.csv must carry bottom/top metadata + command pattern per row."""
+    import csv
+
+    run_dir = _write_two_segment_dataset_run(tmp_path)
+
+    status = modeling_cli_main(
+        [
+            "--runs",
+            str(run_dir),
+            "--project-root",
+            str(tmp_path),
+            "--output-root",
+            str(tmp_path / "data" / "experiments"),
+            "--models",
+            "linear_baseline",
+            "--seed",
+            "11",
+        ]
+    )
+
+    assert status == 0
+    output_root = tmp_path / "data" / "experiments" / "two_segment_modeling"
+    run_dir_modeling = next(path for path in output_root.iterdir() if path.is_dir())
+    predictions_path = run_dir_modeling / "predictions.csv"
+    rows = list(csv.DictReader(predictions_path.open(encoding="utf-8")))
+    assert rows, "predictions.csv must not be empty"
+    # All rows must carry the bottom/top + command pattern columns.
+    for row in rows:
+        assert row["bottom_segment_key"] in {"segment_a", "segment_b"}
+        assert row["top_segment_key"] in {"segment_a", "segment_b"}
+        assert row["bottom_segment_key"] != row["top_segment_key"]
+        assert row["command_pattern"] in {"both", "bottom_only", "top_only", "zero"}
+        # Magnitudes should be parseable floats.
+        float(row["bottom_command_magnitude_mm"])
+        float(row["top_command_magnitude_mm"])
+
+
 def test_two_segment_modeling_cli_runs_linear_only(tmp_path: Path) -> None:
     run_dir = _write_two_segment_dataset_run(tmp_path)
 
@@ -604,3 +732,81 @@ def test_two_segment_modeling_cli_runs_linear_only(tmp_path: Path) -> None:
     assert status == 0
     output_root = tmp_path / "data" / "experiments" / "two_segment_modeling"
     assert any(path.joinpath("summary.json").exists() for path in output_root.iterdir())
+
+
+def test_two_segment_modeling_cli_minimum_accepted_samples_gate(tmp_path: Path, capsys) -> None:
+    """Returns exit 2 when accepted samples are below the configured minimum."""
+    run_dir = _write_two_segment_dataset_run(tmp_path)
+
+    status = modeling_cli_main(
+        [
+            "--runs",
+            str(run_dir),
+            "--project-root",
+            str(tmp_path),
+            "--output-root",
+            str(tmp_path / "data" / "experiments"),
+            "--models",
+            "linear_baseline",
+            "--seed",
+            "3",
+            "--minimum-accepted-samples",
+            "999",  # we only ever produce 8 fixture samples
+        ]
+    )
+
+    assert status == 2
+    captured = capsys.readouterr()
+    assert "GATE FAIL: accepted samples" in captured.err
+
+
+def test_two_segment_modeling_cli_maximum_best_rmse_gate(tmp_path: Path, capsys) -> None:
+    """Returns exit 3 when the best completed model's RMSE exceeds the configured cap."""
+    run_dir = _write_two_segment_dataset_run(tmp_path)
+
+    status = modeling_cli_main(
+        [
+            "--runs",
+            str(run_dir),
+            "--project-root",
+            str(tmp_path),
+            "--output-root",
+            str(tmp_path / "data" / "experiments"),
+            "--models",
+            "linear_baseline",
+            "--seed",
+            "5",
+            "--maximum-best-rmse-mm",
+            "0.0",  # nothing real is exactly zero RMSE
+        ]
+    )
+
+    assert status == 3
+    captured = capsys.readouterr()
+    assert "GATE FAIL: best model" in captured.err
+
+
+def test_two_segment_modeling_cli_gates_succeed_with_realistic_thresholds(tmp_path: Path) -> None:
+    """Both gates pass when their thresholds are loose enough for the fixture."""
+    run_dir = _write_two_segment_dataset_run(tmp_path)
+
+    status = modeling_cli_main(
+        [
+            "--runs",
+            str(run_dir),
+            "--project-root",
+            str(tmp_path),
+            "--output-root",
+            str(tmp_path / "data" / "experiments"),
+            "--models",
+            "linear_baseline",
+            "--seed",
+            "7",
+            "--minimum-accepted-samples",
+            "1",
+            "--maximum-best-rmse-mm",
+            "1000000.0",
+        ]
+    )
+
+    assert status == 0

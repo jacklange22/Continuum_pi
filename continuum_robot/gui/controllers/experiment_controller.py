@@ -79,6 +79,7 @@ MODE_EXPERIMENT_VISIBILITY: dict[str, set[str]] = {
     "dual_segment": {
         "two_segment_startup_validation",
         "two_segment_collect_pose_command_dataset",
+        "two_segment_repeatability",
         "registration_validation",
         "pivot_validation",
         "aurora_grid_accuracy",
@@ -763,9 +764,19 @@ class ExperimentController:
                 "collect-pose, penprobe chasing, and calibration/tracker validation."
             )
         if mode == "dual_segment":
+            assembly = self.settings.robot.physical_assembly()
+            issues = list(assembly.get("issues") or [])
+            bottom_label = assembly.get("bottom_segment_label") or assembly.get("bottom_segment_key") or "?"
+            top_label = assembly.get("top_segment_label") or assembly.get("top_segment_key") or "?"
+            bottom_ids = assembly.get("bottom_servo_ids") or []
+            top_ids = assembly.get("top_servo_ids") or []
+            assembly_text = f"Bottom: {bottom_label} {bottom_ids}, Top: {top_label} {top_ids}."
+            if issues:
+                assembly_text = "Bottom/top physical_assembly is INVALID — " + "; ".join(issues)
             return (
-                "Showing dual_segment foundation workflows only: all-8 startup validation, "
-                "two-segment collect-pose dataset, and supporting validation/diagnostics."
+                "Showing dual_segment foundation workflows: all-8 startup validation, "
+                "two-segment collect-pose dataset, two-segment repeatability, and supporting diagnostics. "
+                + assembly_text
             )
         if mode == "parallel_single":
             return (

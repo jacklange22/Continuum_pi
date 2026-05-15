@@ -246,33 +246,108 @@ Target acceptance:
 
 Applies in `dual_segment` mode only. This is pre-control foundation work.
 
+For a condensed bench-day cheat sheet that covers all six stages
+(startup → babble → Mike probe → repeatability → modeling → handoff), see
+[`docs/two_segment_bench_day_quickref.md`](two_segment_bench_day_quickref.md).
+
+### Step 0: Confirm physical bottom/top assignment
+
+The two fixed servo groups are hardware-identified by their servo IDs:
+
+- Segment A: servos `[1, 2, 3, 4]`
+- Segment B: servos `[5, 6, 7, 8]`
+
+Their *physical role* (which one sits at the bottom/proximal and which at the
+top/distal of the stacked rig) is selectable in `config/robot_8servo.yaml` under
+the `physical_assembly` block:
+
+```yaml
+physical_assembly:
+  bottom_segment: "segment_a"   # or "segment_b" if you stacked it the other way
+  top_segment: "segment_b"
+  lower_tick_means_tension: true
+  notes: ""
+```
+
+The GUI mode summary chip displays the resolved bottom/top assignment. If the
+assignment is invalid (same segment selected twice, or unknown key) the GUI
+preflight will block two-segment experiments with a clear error.
+
+The kinematic convention is `T_distal = T_bottom(q_bottom) * T_top(q_top)` —
+top tendons physically pass through the bottom segment, so bottom motion moves
+the top base. This is metadata-only; no two-segment control is implemented.
+
+### Step 1: Run the validation experiment
+
 1. Select `dual_segment` in System.
-2. Use Servos to confirm all 8 servos are visible:
-   - Segment A / proximal: `[1, 2, 3, 4]`
-   - Segment B / distal: `[5, 6, 7, 8]`
-3. Run `two_segment_startup_validation`.
-4. Capture the staged manual workflow:
-   - baseline
-   - Segment A pretensioned
-   - Segment B pretensioned
-   - Segment A recheck
-   - final accept
-5. Save the all-8 manual startup artifact.
-6. Run `two_segment_collect_pose_command_dataset` only after the all-8 startup artifact exists.
+2. Use Servos to confirm all 8 servos are visible (`[1..8]`).
+3. Confirm the bottom/top assignment shown in the experiment tab summary.
+4. Run `two_segment_startup_validation`.
+5. Capture the staged manual workflow (stage names use bottom/top, not A/B):
+   - `baseline`
+   - `bottom_pretensioned` (proximal)
+   - `top_pretensioned` (distal)
+   - `bottom_recheck` (because top tendons pass through bottom)
+   - `final_accept`
+6. Save the all-8 manual startup artifact.
+7. Run `two_segment_collect_pose_command_dataset` only after the all-8 startup
+   artifact exists.
 
-Trust rules:
+Legacy stage names `segment_a_pretensioned` / `segment_b_pretensioned` /
+`segment_a_recheck` are still accepted on input for backwards compatibility and
+are normalized to `bottom_*` / `top_*` in outputs.
 
-- Servo-only/dry-run two-segment datasets are useful for software rehearsal, but are not model-training valid.
-- Trusted two-segment modeling data needs an accepted all-8 startup artifact and a robot-frame `distal_tip` pose label.
+### Step 2: Pick a collection schedule
+
+Available `schedule_type` values for the collect-pose dataset:
+
+- `zero`: no motion (capture only)
+- `single_axis_micro`: small single-axis sweeps on bottom and top
+- `segment_isolation`: a minimal subset that isolates each segment
+- `small_combined`: small simultaneous bottom+top commands
+- `bottom_only_sweep`: cardinal directions on the bottom segment only
+- `top_only_sweep`: cardinal directions on the top segment only
+- `workspace_coverage`: cardinals + diagonals across both segments
+- `random_babble`: reproducible random sampling (seed-controlled)
+- `structured_grid`: grid sweep along each tendon axis
+- `mixed_training`: combination of structured + random for training data
+
+The command amplitude is set by `max_segment_displacement_cm` (no silent cap).
+Start at `0.25 cm`, ramp up after hardware safety is confirmed:
+
+- `0.25 cm` (conservative bring-up)
+- `0.50 cm` (early data)
+- `0.75 cm`
+- `1.00 cm` (target range for thesis-quality coverage)
+
+If reliability is poor at higher amplitudes, slow/ramp the motion rather than
+shrinking the final range. Long-run features:
+
+- `continue_until_valid_samples: true` + `target_valid_sample_count: 1000` runs
+  the schedule in cycles until enough accepted samples are collected.
+- `long_run_recovery_enabled: true` together with `drop_sample_on_transport_error`
+  drops individual bad samples and continues rather than aborting.
+- The run writes `long_run_health.json`, `transport_recovery_report.json`, and
+  `sample_failure_events.jsonl` to the run directory for analysis.
+
+### Trust rules
+
+- Servo-only/dry-run two-segment datasets are useful for software rehearsal, but
+  are not model-training valid.
+- Trusted two-segment modeling data needs an accepted all-8 startup artifact
+  and a robot-frame `distal_tip` pose label.
 - Missing orientation/tangent labels do not block XYZ position modeling.
 - Missing `distal_tip` labels block trusted model-training use.
+- Distal-only runs are allowed for lower-completeness models and are clearly
+  marked as such.
 
-Current limitations:
+### Current limitations
 
 - No automatic two-segment pretension.
 - No live two-segment control.
 - No two-segment penprobe chasing.
-- Mike/Camarillo comparison models remain scaffolded until active two-segment physics adapters are validated.
+- Mike/Camarillo comparison models remain scaffolded until active two-segment
+  physics adapters are validated against hardware.
 
 ## Workflow 9: Two-Segment Modeling Analysis
 
@@ -386,6 +461,121 @@ Hard failure:
 
 - tracker is not connected, no frames arrive, required tools are missing, transforms are invalid, or data is stale
 - do not proceed until the tracker returns to an operational state
+
+## Workflow 10: Two-Segment Repeatability (Bonus / Scaffold)
+
+Applies in `dual_segment` mode after the all-8 startup artifact exists. The
+experiment is `two_segment_repeatability`. It is **open-loop** and provides a
+structured target set: center, inner/outer rings on bottom alone, inner/outer
+rings on top alone, and a few combined targets. Each target is revisited
+multiple times. Per-target scatter and per-run aggregate RMS are reported for
+both distal and intermediate poses (when intermediate role is available).
+
+Honest interpretation:
+
+- This is **not** validated closed-loop control accuracy. The result is the
+  repeatability of open-loop tendon commands plus the tracking pipeline.
+- No <1 mm thesis target is hardcoded. Configure
+  `target_distal_rms_mm` / `target_intermediate_rms_mm` to record an operator
+  acceptance criterion; the run reports whether measurements meet it but does
+  not auto-fail.
+- Lower-trust runs are allowed via `allow_servo_only_test_run=true`.
+
+Outputs:
+
+- `two_segment_repeatability_summary.txt`
+- `two_segment_repeatability_scatter_metrics.json`
+- `two_segment_repeatability_per_target.csv`
+- `two_segment_repeatability_distal_scatter.png`
+- `two_segment_repeatability_per_target_rms.png`
+
+## Workflow 10b: Mike Constant-Curvature Convention Probe (Evidence Before Flipping the Flag)
+
+The Mike CC physics adapter stays `unavailable_unvalidated_convention` until
+`physics_models.mike_constant_curvature.required_conventions_confirmed: true`
+is set in the modeling config. Before flipping that flag, run the probe to
+check that the predicted distal XYZ direction and magnitude agree with the
+bench:
+
+```bash
+.venv/bin/python -m continuum_robot.modeling.two_segment.validate_mike_cc \
+    --runs data/experiments/two_segment_collect_pose_command_dataset/<run> \
+    --config config/modeling_two_segment.example.yaml \
+    --output-dir data/experiments/two_segment_mike_convention_probe/<probe>
+```
+
+Inputs:
+- A small `two_segment_collect_pose_command_dataset` run. `bottom_only_sweep`
+  or `workspace_coverage` with conservative amplitude is ideal — it gives
+  per-axis sign signal.
+- The same modeling config you intend to use for ANN/Mike comparison.
+
+What the probe checks:
+- Sign of predicted vs measured distal X/Y/Z over all samples. A flipped sign
+  in any axis is a strong "your conventions are off" signal.
+- Magnitude of the predicted-vs-measured distal residual (mean, p95, max).
+- Per-sample residuals so you can spot one bad capture vs systematic bias.
+
+Outputs:
+- `mike_cc_convention_report.json` — full numeric report.
+- `mike_cc_convention_report.txt` — human-readable summary.
+
+The probe never edits the config. After reading the report, the operator
+decides whether to set `required_conventions_confirmed: true`. Treat the
+"safe_to_confirm" recommendation as a sufficient — not exhaustive — check;
+ANN training/comparison still surfaces measured-vs-predicted residuals.
+
+Exit code is 0 when `recommendation` is `conventions_consistent_with_evidence_safe_to_confirm`
+and 2 otherwise — useful when wiring into CI/smoke gates later.
+
+## Workflow 11: 1 Mbps Servo Bus Migration (Optional / Two-Segment Throughput)
+
+Two-segment work uses 8 servos; the default 57 600 baud is enough for slow
+sweeps but limits the maximum sample rate. The repository supports raising the
+DYNAMIXEL bus to 1 Mbps once every servo is reflashed at that baud. Do not flip
+the configured baud without reflashing — the OpenRB will only see servos at
+their currently-flashed baud and will report "no servos responded".
+
+Migration checklist:
+
+1. Power-down the rig.
+2. With DYNAMIXEL Wizard or a known-good tool, set each of the 8 servos to
+   1 000 000 baud, one at a time. Confirm each servo's baud setting is saved
+   to EEPROM and survives a reboot.
+3. Update the project config to match. Either edit `config/system.yaml`:
+
+   ```yaml
+   baudrate: 1000000
+   ```
+
+   …or place a local override in `config/system.local.yaml`:
+
+   ```yaml
+   baudrate: 1000000
+   ```
+
+4. Run the transport diagnostic on the full bus to confirm latency:
+
+   ```bash
+   .venv/bin/python -m continuum_robot.diagnostics.servo_transport_diagnostic \
+     --servo-ids 1,2,3,4,5,6,7,8 \
+     --baud 1000000 \
+     --duration 10 \
+     --read-rate-hz 20 \
+     --fields minimal
+   ```
+
+   Watch:
+   - `success_count_by_servo`: should equal the achieved sample count for every servo
+   - `mean_read_duration_ms_by_servo`: should drop versus 57 600 baseline
+   - `failure_count_by_type`: should remain zero or very small
+5. Re-run `two_segment_startup_validation` to record an all-8 manual startup at
+   the new baud.
+6. Run a tiny `two_segment_collect_pose_command_dataset` with
+   `schedule_type=zero` and `dry_run=false` to confirm read/write at the new
+   baud before doing any motion.
+
+Roll back to 57 600 the same way (DYNAMIXEL Wizard first, then config).
 
 ## Legacy Surface
 

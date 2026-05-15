@@ -57,15 +57,26 @@ EXPECTED_REPORT_FIGURES = {
         "two_segment_axis_error_report.png",
         "two_segment_two_coil_error_report.png",
     ],
+    "two_segment_repeatability": [
+        "two_segment_repeatability_distal_scatter.png",
+        "two_segment_repeatability_per_target_rms.png",
+    ],
 }
 
 TWO_SEGMENT_STARTUP_REQUIRED_STAGES = [
     "baseline",
-    "segment_a_pretensioned",
-    "segment_b_pretensioned",
-    "segment_a_recheck",
+    "bottom_pretensioned",
+    "top_pretensioned",
+    "bottom_recheck",
     "final_accept",
 ]
+# Legacy stage names (pre-bottom/top abstraction) accepted as equivalent during
+# validation so older runs continue to pass.
+TWO_SEGMENT_STARTUP_STAGE_ALIASES = {
+    "segment_a_pretensioned": "bottom_pretensioned",
+    "segment_b_pretensioned": "top_pretensioned",
+    "segment_a_recheck": "bottom_recheck",
+}
 
 
 @dataclass(frozen=True)
@@ -134,10 +145,14 @@ def validate_run_folder(run_dir: Path) -> RunValidationReport:
         _check_any_field(issues, "two_segment pose schema", _nested(two_segment_foundation, "pose_schema", "schema_version"))
     if experiment_name == "two_segment_startup_validation":
         _check_two_segment_startup_validation(issues, run_dir=run_dir, metrics=metrics)
+        _check_physical_assembly_metadata(issues, metrics)
     if experiment_name == "two_segment_collect_pose_command_dataset":
         _check_two_segment_collect_pose_dataset(issues, run_dir=run_dir, metrics=metrics)
+        _check_physical_assembly_metadata(issues, metrics)
     if experiment_name == "two_segment_modeling":
         _check_two_segment_modeling(issues, run_dir=run_dir, metrics=metrics)
+    if experiment_name == "two_segment_repeatability":
+        _check_physical_assembly_metadata(issues, metrics)
     _check_any_field(
         issues,
         "valid_for_model_training",
@@ -226,12 +241,35 @@ def render_validation_report(report: RunValidationReport) -> str:
     return "\n".join(lines)
 
 
+def validation_report_to_dict(report: RunValidationReport) -> dict[str, Any]:
+    """Machine-readable view of a validation report (for CI gating / scripted handoff)."""
+    return {
+        "schema_version": "run_validation_report_v1",
+        "run_dir": str(report.run_dir),
+        "experiment_name": str(report.experiment_name),
+        "status": str(report.status),
+        "trust_interpretation": str(report.trust_interpretation),
+        "issues": [{"level": str(issue.level), "message": str(issue.message)} for issue in report.issues],
+        "fail_count": int(sum(1 for issue in report.issues if issue.level == "FAIL")),
+        "warn_count": int(sum(1 for issue in report.issues if issue.level == "WARN")),
+        "info_count": int(sum(1 for issue in report.issues if issue.level == "INFO")),
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate one run folder for trust/provenance completeness.")
     parser.add_argument("run_dir", help="Experiment run directory to validate.")
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit a machine-readable JSON report to stdout instead of the human-readable text.",
+    )
     args = parser.parse_args(argv)
     report = validate_run_folder(Path(args.run_dir))
-    print(render_validation_report(report))
+    if args.json:
+        print(json.dumps(validation_report_to_dict(report), indent=2))
+    else:
+        print(render_validation_report(report))
     return 1 if report.status == "FAIL" else 0
 
 
@@ -265,6 +303,18 @@ def _nested(payload: dict[str, Any], *keys: str) -> Any:
     return current
 
 
+def _check_physical_assembly_metadata(issues: list[RunValidationIssue], metrics: dict[str, Any]) -> None:
+    """Two-segment runs must record the bottom/top physical-role assignment."""
+    assembly = metrics.get("physical_assembly") if isinstance(metrics.get("physical_assembly"), dict) else {}
+    bottom_key = str(metrics.get("bottom_segment_key") or assembly.get("bottom_segment_key") or "")
+    top_key = str(metrics.get("top_segment_key") or assembly.get("top_segment_key") or "")
+    if not bottom_key or not top_key:
+        issues.append(RunValidationIssue("WARN", "Two-segment run is missing bottom/top physical assembly metadata."))
+        return
+    if bottom_key == top_key:
+        issues.append(RunValidationIssue("WARN", f"Two-segment bottom/top assembly is invalid: bottom={bottom_key} top={top_key}."))
+
+
 def _check_two_segment_startup_validation(
     issues: list[RunValidationIssue],
     *,
@@ -272,13 +322,18 @@ def _check_two_segment_startup_validation(
     metrics: dict[str, Any],
 ) -> None:
     snapshots = metrics.get("stage_snapshots") if isinstance(metrics.get("stage_snapshots"), list) else []
-    captured = {str(dict(stage or {}).get("stage")) for stage in snapshots if isinstance(stage, dict)}
+    captured = {
+        TWO_SEGMENT_STARTUP_STAGE_ALIASES.get(str(dict(stage or {}).get("stage")), str(dict(stage or {}).get("stage")))
+        for stage in snapshots
+        if isinstance(stage, dict)
+    }
     missing_stages = [stage for stage in TWO_SEGMENT_STARTUP_REQUIRED_STAGES if stage not in captured]
     if missing_stages:
         issues.append(RunValidationIssue("WARN", f"Missing two-segment startup stage snapshot(s): {missing_stages}"))
-    stage_order = [str(value) for value in metrics.get("stage_order", [])] if isinstance(metrics.get("stage_order"), list) else []
-    if stage_order != TWO_SEGMENT_STARTUP_REQUIRED_STAGES:
-        issues.append(RunValidationIssue("WARN", f"Unexpected two-segment startup stage order: {stage_order}"))
+    raw_order = [str(value) for value in metrics.get("stage_order", [])] if isinstance(metrics.get("stage_order"), list) else []
+    normalized_order = [TWO_SEGMENT_STARTUP_STAGE_ALIASES.get(stage, stage) for stage in raw_order]
+    if normalized_order != TWO_SEGMENT_STARTUP_REQUIRED_STAGES:
+        issues.append(RunValidationIssue("WARN", f"Unexpected two-segment startup stage order: {raw_order}"))
     if metrics.get("final_accepted") is True:
         artifact_path = str(metrics.get("final_startup_artifact_path") or "")
         if not artifact_path:
@@ -318,6 +373,19 @@ def _check_two_segment_collect_pose_dataset(
         issues.append(RunValidationIssue("WARN", "two_segment_dataset_summary.txt is missing."))
     if not (run_dir / "two_segment_tracking_role_provenance.json").exists():
         issues.append(RunValidationIssue("WARN", "two_segment_tracking_role_provenance.json is missing."))
+    # The long-run observability artifacts are emitted by every run since the
+    # cycle-10/11/23 improvements. Older runs lack them; warn rather than fail.
+    for filename, label in [
+        ("long_run_health.json", "long-run health"),
+        ("transport_recovery_report.json", "transport recovery report"),
+        ("sample_failure_events.jsonl", "sample failure events log"),
+    ]:
+        if not (run_dir / filename).exists():
+            issues.append(RunValidationIssue("WARN", f"{filename} is missing ({label})."))
+    if not isinstance(metrics.get("current_load_summary"), dict):
+        issues.append(RunValidationIssue("WARN", "Missing expected field: current_load_summary"))
+    if not isinstance(metrics.get("tracker_freshness_summary"), dict):
+        issues.append(RunValidationIssue("WARN", "Missing expected field: tracker_freshness_summary"))
     samples_path = run_dir / "samples.jsonl"
     if not samples_path.exists():
         issues.append(RunValidationIssue("FAIL", "samples.jsonl is missing."))

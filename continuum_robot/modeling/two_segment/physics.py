@@ -205,6 +205,307 @@ def two_segment_constant_curvature_prediction(command_mm: np.ndarray, config: di
     }
 
 
+@dataclass(frozen=True)
+class MikeCCConventionReport:
+    """Evidence-based check of Mike constant-curvature sign/frame conventions.
+
+    The operator collects a small dataset of single-axis sweeps and runs this
+    probe to compare predicted vs measured distal/intermediate XYZ. The report
+    surfaces residual statistics + a recommendation. It never auto-flips the
+    convention flag in config — that decision stays with the operator after
+    looking at the numbers.
+    """
+
+    sample_count: int
+    distal_residual_norm_mean_mm: float
+    distal_residual_norm_median_mm: float
+    distal_residual_norm_max_mm: float
+    distal_residual_norm_p95_mm: float
+    intermediate_residual_norm_mean_mm: float | None
+    intermediate_residual_norm_max_mm: float | None
+    per_axis_distal_signs_match: dict[str, bool]
+    largest_distal_sign_disagreement_axis: str | None
+    per_axis_intermediate_signs_match: dict[str, bool]
+    largest_intermediate_sign_disagreement_axis: str | None
+    intermediate_sample_count: int
+    recommendation: str
+    notes: list[str]
+    residuals_by_sample: list[dict[str, Any]]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": "mike_cc_convention_report_v1",
+            "sample_count": int(self.sample_count),
+            "distal_residual_norm_mean_mm": float(self.distal_residual_norm_mean_mm),
+            "distal_residual_norm_median_mm": float(self.distal_residual_norm_median_mm),
+            "distal_residual_norm_max_mm": float(self.distal_residual_norm_max_mm),
+            "distal_residual_norm_p95_mm": float(self.distal_residual_norm_p95_mm),
+            "intermediate_residual_norm_mean_mm": (
+                float(self.intermediate_residual_norm_mean_mm)
+                if self.intermediate_residual_norm_mean_mm is not None
+                else None
+            ),
+            "intermediate_residual_norm_max_mm": (
+                float(self.intermediate_residual_norm_max_mm)
+                if self.intermediate_residual_norm_max_mm is not None
+                else None
+            ),
+            "per_axis_distal_signs_match": {str(key): bool(value) for key, value in self.per_axis_distal_signs_match.items()},
+            "largest_distal_sign_disagreement_axis": self.largest_distal_sign_disagreement_axis,
+            "per_axis_intermediate_signs_match": {str(key): bool(value) for key, value in self.per_axis_intermediate_signs_match.items()},
+            "largest_intermediate_sign_disagreement_axis": self.largest_intermediate_sign_disagreement_axis,
+            "intermediate_sample_count": int(self.intermediate_sample_count),
+            "recommendation": str(self.recommendation),
+            "notes": [str(item) for item in self.notes],
+            "residuals_by_sample": [dict(row) for row in self.residuals_by_sample],
+        }
+
+
+def validate_mike_cc_conventions(
+    *,
+    samples: list[Any],
+    config: dict[str, Any],
+    distal_mean_threshold_mm: float = 5.0,
+    distal_max_threshold_mm: float = 15.0,
+) -> MikeCCConventionReport:
+    """Run a non-destructive convention probe against measured samples.
+
+    For each sample with an 8-tendon command and a measured distal_position_mm,
+    predict the distal XYZ using the configured Mike CC math and compute the
+    residual against the measurement. Sign-match per axis tells the operator
+    whether the predicted motion direction agrees with the measured direction
+    — a cheap way to catch a flipped tendon-displacement sign convention.
+
+    Thresholds are conservative defaults; the operator can override them via
+    the CLI. ``samples`` items are expected to expose ``feature_mm`` (8-vector
+    in mm) and ``distal_position_mm`` (3-vector in mm in robot frame); see
+    ``TwoSegmentModelingSample``.
+    """
+
+    if not samples:
+        return MikeCCConventionReport(
+            sample_count=0,
+            distal_residual_norm_mean_mm=float("nan"),
+            distal_residual_norm_median_mm=float("nan"),
+            distal_residual_norm_max_mm=float("nan"),
+            distal_residual_norm_p95_mm=float("nan"),
+            intermediate_residual_norm_mean_mm=None,
+            intermediate_residual_norm_max_mm=None,
+            per_axis_distal_signs_match={},
+            largest_distal_sign_disagreement_axis=None,
+            per_axis_intermediate_signs_match={},
+            largest_intermediate_sign_disagreement_axis=None,
+            intermediate_sample_count=0,
+            recommendation="no_samples_provided",
+            notes=["Need at least one accepted sample with measured distal_position_mm and 8-tendon feature_mm."],
+            residuals_by_sample=[],
+        )
+
+    residuals: list[np.ndarray] = []
+    intermediate_residuals: list[float] = []
+    rows: list[dict[str, Any]] = []
+    distal_predicted_signs: list[np.ndarray] = []
+    distal_measured_signs: list[np.ndarray] = []
+    intermediate_predicted_signs: list[np.ndarray] = []
+    intermediate_measured_signs: list[np.ndarray] = []
+
+    for sample in samples:
+        feature_mm = np.asarray(getattr(sample, "feature_mm", np.zeros(8)), dtype=float).reshape((8,))
+        measured_distal = getattr(sample, "distal_position_mm", None)
+        if measured_distal is None:
+            continue
+        measured_distal_arr = np.asarray(measured_distal, dtype=float).reshape((3,))
+        try:
+            prediction = two_segment_constant_curvature_prediction(feature_mm, config)
+        except Exception as exc:
+            rows.append(
+                {
+                    "sample_index": int(getattr(sample, "sample_index", -1)),
+                    "feature_mm": feature_mm.tolist(),
+                    "prediction_error": str(exc),
+                }
+            )
+            continue
+        predicted_distal = np.asarray(prediction["distal_xyz"], dtype=float).reshape((3,))
+        residual = predicted_distal - measured_distal_arr
+        residuals.append(residual)
+        rows.append(
+            {
+                "sample_index": int(getattr(sample, "sample_index", -1)),
+                "feature_mm": feature_mm.tolist(),
+                "measured_distal_mm": measured_distal_arr.tolist(),
+                "predicted_distal_mm": predicted_distal.tolist(),
+                "residual_mm": residual.tolist(),
+                "residual_norm_mm": float(np.linalg.norm(residual)),
+            }
+        )
+        distal_predicted_signs.append(np.sign(predicted_distal))
+        distal_measured_signs.append(np.sign(measured_distal_arr))
+        measured_intermediate = getattr(sample, "intermediate_position_mm", None)
+        if measured_intermediate is not None:
+            predicted_intermediate = np.asarray(prediction["intermediate_xyz"], dtype=float).reshape((3,))
+            measured_intermediate_arr = np.asarray(measured_intermediate, dtype=float).reshape((3,))
+            intermediate_residuals.append(float(np.linalg.norm(predicted_intermediate - measured_intermediate_arr)))
+            intermediate_predicted_signs.append(np.sign(predicted_intermediate))
+            intermediate_measured_signs.append(np.sign(measured_intermediate_arr))
+
+    if not residuals:
+        prediction_errors = [row for row in rows if "prediction_error" in row]
+        if prediction_errors:
+            distinct_errors = sorted({str(row.get("prediction_error") or "") for row in prediction_errors})
+            recommendation = "config_incomplete_prediction_failed"
+            notes = [
+                "Mike CC prediction raised exceptions on every sample — most likely the modeling config is missing required fields.",
+                f"Distinct errors: {distinct_errors}",
+                "Check `physics_models.segments.segment_a.segment_length_mm`, `.tendon_positions_mm`, and the same for segment_b.",
+                "See config/modeling_two_segment.example.yaml for a complete reference.",
+            ]
+        else:
+            recommendation = "no_predictions_generated"
+            notes = [
+                "No samples had a measured distal_position_mm in robot frame.",
+                "Confirm the dataset includes distal_tip pose labels (run with a connected tracker).",
+            ]
+        return MikeCCConventionReport(
+            sample_count=int(len(samples)),
+            distal_residual_norm_mean_mm=float("nan"),
+            distal_residual_norm_median_mm=float("nan"),
+            distal_residual_norm_max_mm=float("nan"),
+            distal_residual_norm_p95_mm=float("nan"),
+            intermediate_residual_norm_mean_mm=None,
+            intermediate_residual_norm_max_mm=None,
+            per_axis_distal_signs_match={},
+            largest_distal_sign_disagreement_axis=None,
+            per_axis_intermediate_signs_match={},
+            largest_intermediate_sign_disagreement_axis=None,
+            intermediate_sample_count=0,
+            recommendation=recommendation,
+            notes=notes,
+            residuals_by_sample=rows,
+        )
+
+    residual_array = np.stack(residuals, axis=0)
+    norms = np.linalg.norm(residual_array, axis=1)
+    intermediate_mean = float(np.mean(intermediate_residuals)) if intermediate_residuals else None
+    intermediate_max = float(np.max(intermediate_residuals)) if intermediate_residuals else None
+    axis_labels = ("x", "y", "z")
+
+    def _per_axis_match_and_largest_disagreement(
+        predicted_signs: list[np.ndarray], measured_signs: list[np.ndarray]
+    ) -> tuple[dict[str, bool], str | None, dict[str, int], int]:
+        if not predicted_signs:
+            return {}, None, {}, 0
+        predicted_array = np.stack(predicted_signs, axis=0)
+        measured_array = np.stack(measured_signs, axis=0)
+        per_axis_match: dict[str, bool] = {}
+        disagreement_counts: dict[str, int] = {}
+        for axis_index, axis_label in enumerate(axis_labels):
+            mask = (predicted_array[:, axis_index] != 0) & (measured_array[:, axis_index] != 0)
+            disagree = int(
+                np.sum((predicted_array[mask, axis_index] != measured_array[mask, axis_index]).astype(int))
+            )
+            total = int(np.sum(mask.astype(int)))
+            match_fraction = 1.0 - (float(disagree) / float(total)) if total > 0 else 1.0
+            per_axis_match[axis_label] = bool(match_fraction >= 0.70)
+            disagreement_counts[axis_label] = disagree
+        largest = max(disagreement_counts, key=lambda key: disagreement_counts[key]) if disagreement_counts else None
+        if largest is not None and disagreement_counts[largest] == 0:
+            largest = None
+        return per_axis_match, largest, disagreement_counts, int(predicted_array.shape[0])
+
+    (
+        per_axis_signs_match,
+        largest_disagreement_axis,
+        sign_disagreement_counts,
+        distal_sign_sample_count,
+    ) = _per_axis_match_and_largest_disagreement(distal_predicted_signs, distal_measured_signs)
+    (
+        per_axis_intermediate_signs_match,
+        largest_intermediate_disagreement_axis,
+        intermediate_disagreement_counts,
+        intermediate_sample_count,
+    ) = _per_axis_match_and_largest_disagreement(intermediate_predicted_signs, intermediate_measured_signs)
+
+    mean_norm = float(np.mean(norms))
+    median_norm = float(np.median(norms))
+    max_norm = float(np.max(norms))
+    p95_norm = float(np.percentile(norms, 95))
+
+    notes: list[str] = []
+    all_distal_signs_ok = all(per_axis_signs_match.values()) if per_axis_signs_match else False
+    all_intermediate_signs_ok = (
+        all(per_axis_intermediate_signs_match.values()) if per_axis_intermediate_signs_match else True
+    )
+    if not all_distal_signs_ok and largest_disagreement_axis is not None:
+        notes.append(
+            f"Distal predicted sign disagrees with measured sign on axis {largest_disagreement_axis} "
+            f"({sign_disagreement_counts[largest_disagreement_axis]}/{distal_sign_sample_count} samples). "
+            "Re-check `tendon_displacement_sign_convention` and `model_frame_convention`."
+        )
+    if (
+        per_axis_intermediate_signs_match
+        and not all_intermediate_signs_ok
+        and largest_intermediate_disagreement_axis is not None
+    ):
+        notes.append(
+            f"Intermediate predicted sign disagrees with measured sign on axis {largest_intermediate_disagreement_axis} "
+            f"({intermediate_disagreement_counts[largest_intermediate_disagreement_axis]}/{intermediate_sample_count} samples). "
+            "If only intermediate signs are off (distal OK), the bottom-segment frame may be flipped relative to top."
+        )
+    if mean_norm > distal_mean_threshold_mm:
+        notes.append(
+            f"Distal residual mean {mean_norm:.2f} mm > {distal_mean_threshold_mm:.1f} mm threshold. "
+            "Check segment lengths, tendon positions, and frame conventions."
+        )
+    if max_norm > distal_max_threshold_mm:
+        notes.append(
+            f"Distal residual max {max_norm:.2f} mm > {distal_max_threshold_mm:.1f} mm threshold. "
+            "Inspect outlier samples in residuals_by_sample."
+        )
+
+    all_signs_ok = all_distal_signs_ok and all_intermediate_signs_ok
+    if all_signs_ok and mean_norm <= distal_mean_threshold_mm and max_norm <= distal_max_threshold_mm:
+        recommendation = "conventions_consistent_with_evidence_safe_to_confirm"
+        notes.append(
+            "Sign-match per axis is OK and residuals are below thresholds. You may set "
+            "`physics_models.mike_constant_curvature.required_conventions_confirmed: true` in the modeling config. "
+            "Treat the model as 'available' but still report measured-vs-predicted errors in the run summary."
+        )
+    elif all_signs_ok:
+        recommendation = "magnitude_off_but_signs_ok_inspect_geometry"
+    elif (
+        per_axis_intermediate_signs_match
+        and all_distal_signs_ok
+        and not all_intermediate_signs_ok
+        and largest_intermediate_disagreement_axis is not None
+    ):
+        recommendation = (
+            f"intermediate_sign_convention_likely_flipped_axis_{largest_intermediate_disagreement_axis}"
+        )
+    elif largest_disagreement_axis is not None:
+        recommendation = f"sign_convention_likely_flipped_axis_{largest_disagreement_axis}"
+    else:
+        recommendation = "ambiguous_collect_more_samples"
+
+    return MikeCCConventionReport(
+        sample_count=int(len(residuals)),
+        distal_residual_norm_mean_mm=mean_norm,
+        distal_residual_norm_median_mm=median_norm,
+        distal_residual_norm_max_mm=max_norm,
+        distal_residual_norm_p95_mm=p95_norm,
+        intermediate_residual_norm_mean_mm=intermediate_mean,
+        intermediate_residual_norm_max_mm=intermediate_max,
+        per_axis_distal_signs_match=per_axis_signs_match,
+        largest_distal_sign_disagreement_axis=largest_disagreement_axis,
+        per_axis_intermediate_signs_match=per_axis_intermediate_signs_match,
+        largest_intermediate_sign_disagreement_axis=largest_intermediate_disagreement_axis,
+        intermediate_sample_count=intermediate_sample_count,
+        recommendation=recommendation,
+        notes=notes,
+        residuals_by_sample=rows,
+    )
+
+
 def fill_prediction_from_role_poses(
     *,
     label_metadata: dict[str, Any],

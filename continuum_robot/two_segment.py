@@ -103,7 +103,43 @@ class TwoSegmentCommand:
             record["commanded_servo_ids"] = [int(value) for value in getattr(context, "commanded_servo_ids", [])]
             record["servo_command_cm"] = {str(key): value for key, value in self.to_servo_mapping(context=context).items()}
             record["flat_command_cm"] = self.to_flat(context=context)
+            bottom_top = self.to_bottom_top_mapping(context=context)
+            if bottom_top:
+                record["bottom_top_command"] = bottom_top
+                metadata = _context_metadata(context)
+                assembly = dict(metadata.get("physical_assembly") or {})
+                record["physical_assembly"] = {
+                    "bottom_segment_key": str(assembly.get("bottom_segment_key") or ""),
+                    "top_segment_key": str(assembly.get("top_segment_key") or ""),
+                    "bottom_segment_label": str(assembly.get("bottom_segment_label") or ""),
+                    "top_segment_label": str(assembly.get("top_segment_label") or ""),
+                    "bottom_servo_ids": [int(value) for value in list(assembly.get("bottom_servo_ids") or [])],
+                    "top_servo_ids": [int(value) for value in list(assembly.get("top_servo_ids") or [])],
+                    "lower_tick_means_tension": bool(assembly.get("lower_tick_means_tension", True)),
+                }
+                record["composed_frame_note"] = str(assembly.get("composed_frame_note") or "")
         return record
+
+    def to_bottom_top_mapping(self, *, context) -> dict[str, list[float]]:
+        """Return the command grouped by physical role (bottom/top).
+
+        Each value is a 4-vector in tendon order ``[+X, +Y, -X, -Y]`` for that
+        physical segment. Returns an empty dict when no physical assembly is
+        defined (e.g. single-segment context).
+        """
+        metadata = _context_metadata(context)
+        assembly = dict(metadata.get("physical_assembly") or {})
+        bottom_key = str(assembly.get("bottom_segment_key") or "")
+        top_key = str(assembly.get("top_segment_key") or "")
+        if bottom_key not in TWO_SEGMENT_KEYS or top_key not in TWO_SEGMENT_KEYS:
+            return {}
+        mapping = self.to_segment_mapping()
+        return {
+            "bottom": [float(value) for value in list(mapping.get(bottom_key) or [])],
+            "top": [float(value) for value in list(mapping.get(top_key) or [])],
+            "bottom_segment_key": bottom_key,
+            "top_segment_key": top_key,
+        }
 
 
 @dataclass(frozen=True)
@@ -174,9 +210,12 @@ def build_two_segment_foundation_metadata(context, *, tool_roles: dict[str, str]
     metadata = _context_metadata(context)
     segments = _segment_metadata(context)
     has_two_segments = all(key in segments and len(segments[key].get("servo_ids", [])) == 4 for key in TWO_SEGMENT_KEYS)
+    assembly = dict(metadata.get("physical_assembly") or {})
+    assembly_issues = list(metadata.get("physical_assembly_issues") or [])
+    bottom_top_block = _bottom_top_block(assembly=assembly, segments=segments) if assembly else {}
     return {
         "schema_version": TWO_SEGMENT_FOUNDATION_SCHEMA_VERSION,
-        "available": bool(has_two_segments),
+        "available": bool(has_two_segments and (not assembly or not assembly_issues)),
         "operating_mode": str(getattr(context, "operating_mode", "")),
         "semantic_scope": "data_structures_and_metadata_only",
         "segment_order": [str(value) for value in metadata.get("segment_order", [])],
@@ -185,9 +224,14 @@ def build_two_segment_foundation_metadata(context, *, tool_roles: dict[str, str]
         "commanded_servo_ids": [int(value) for value in getattr(context, "commanded_servo_ids", [])],
         "command_schema": two_segment_command_schema(context),
         "pose_schema": two_segment_pose_schema(tool_roles=tool_roles),
+        "physical_assembly": dict(assembly),
+        "physical_assembly_issues": list(assembly_issues),
+        "physical_assembly_valid": not bool(assembly_issues),
+        "bottom_top": bottom_top_block,
         "enabled_capabilities": {
             "all_8_readiness": bool(metadata.get("mode_capabilities", {}).get("all_8_readiness", False)),
             "manual_startup_capture": bool(metadata.get("mode_capabilities", {}).get("manual_startup_capture", False)),
+            "bottom_top_role_selection": bool(metadata.get("mode_capabilities", {}).get("bottom_top_role_selection", False)),
         },
         "blocked_capabilities": {
             "two_segment_kinematics_control": True,
@@ -196,6 +240,28 @@ def build_two_segment_foundation_metadata(context, *, tool_roles: dict[str, str]
             "automatic_two_segment_pretension": True,
         },
         "parallel_single_semantics": "mirrored single-segment testing only; not true two-segment control",
+    }
+
+
+def _bottom_top_block(*, assembly: dict[str, Any], segments: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    bottom_key = str(assembly.get("bottom_segment_key") or "")
+    top_key = str(assembly.get("top_segment_key") or "")
+    bottom = dict(segments.get(bottom_key) or {})
+    top = dict(segments.get(top_key) or {})
+    return {
+        "bottom_segment_key": bottom_key,
+        "top_segment_key": top_key,
+        "bottom_segment_label": str(bottom.get("segment_label") or bottom.get("label") or ""),
+        "top_segment_label": str(top.get("segment_label") or top.get("label") or ""),
+        "bottom_servo_ids": [int(value) for value in list(bottom.get("servo_ids") or [])],
+        "top_servo_ids": [int(value) for value in list(top.get("servo_ids") or [])],
+        "bottom_pairs": {str(k): list(v) for k, v in dict(bottom.get("pairs") or {}).items()},
+        "top_pairs": {str(k): list(v) for k, v in dict(top.get("pairs") or {}).items()},
+        "segment_order_bottom_first": [bottom_key, top_key] if bottom_key and top_key else [],
+        "segment_role_assignment": {bottom_key: "proximal", top_key: "distal"} if bottom_key and top_key else {},
+        "tendon_axis_convention_per_segment": str(assembly.get("tendon_axis_convention_per_segment") or "[+X, +Y, -X, -Y]"),
+        "lower_tick_means_tension": bool(assembly.get("lower_tick_means_tension", True)),
+        "composed_frame_note": str(assembly.get("composed_frame_note") or ""),
     }
 
 

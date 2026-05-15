@@ -227,8 +227,21 @@ def _parse_servo_ids(raw: str) -> list[int]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a focused DYNAMIXEL servo transport timing diagnostic.")
     parser.add_argument("--port", default=None, help="OpenRB/DYNAMIXEL serial port. Defaults to config/system*.yaml.")
-    parser.add_argument("--baud", type=int, default=None, help="DYNAMIXEL baudrate. Defaults to config/system*.yaml.")
-    parser.add_argument("--servo-ids", default="1,2,3,4,5,6,7,8", help="Comma-separated servo IDs, e.g. 1,2,3,4,5,6,7,8.")
+    parser.add_argument(
+        "--baud",
+        type=int,
+        default=None,
+        help=(
+            "DYNAMIXEL baudrate. Defaults to config/system*.yaml. Supported values include 57600 and 1000000 "
+            "(1 Mbps). Always reflash every servo with DYNAMIXEL Wizard before bumping baud; the OpenRB will "
+            "only see servos at their currently-flashed baud."
+        ),
+    )
+    parser.add_argument(
+        "--servo-ids",
+        default="1,2,3,4,5,6,7,8",
+        help="Comma-separated servo IDs. Use 1,2,3,4,5,6,7,8 for full two-segment readiness checks.",
+    )
     parser.add_argument("--duration", type=float, default=10.0, help="Diagnostic duration in seconds.")
     parser.add_argument("--read-rate-hz", type=float, default=5.0, help="Requested live read rate.")
     parser.add_argument("--fields", choices=("minimal", "full"), default="minimal", help="Telemetry field profile.")

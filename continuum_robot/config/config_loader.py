@@ -341,6 +341,17 @@ class ConfigLoader:
                     else RobotConfig.default_segment_order_index(str(key))
                 ),
             )
+        assembly_payload = dict(robot_data.get("physical_assembly", {}) or {})
+        bottom_key = str(
+            assembly_payload.get("bottom_segment")
+            or assembly_payload.get("bottom_segment_key")
+            or "segment_a"
+        )
+        top_key = str(
+            assembly_payload.get("top_segment")
+            or assembly_payload.get("top_segment_key")
+            or "segment_b"
+        )
         return RobotConfig(
             mode=str(robot_data.get("operating_mode", robot_data.get("mode", "single_segment"))),
             spool_diameter_cm=float(robot_data.get("spool_diameter_cm", 2.0)),
@@ -355,6 +366,14 @@ class ConfigLoader:
             active_segment=str(robot_data.get("active_segment", "segment_a") or "segment_a"),
             selected_servo_id=int(robot_data.get("selected_servo_id", 1) or 1),
             segments=segments,
+            bottom_segment_key=bottom_key,
+            top_segment_key=top_key,
+            physical_assembly_notes=str(assembly_payload.get("notes", "") or ""),
+            lower_tick_means_tension=bool(
+                assembly_payload.get("lower_tick_means_tension", True)
+                if "lower_tick_means_tension" in assembly_payload
+                else True
+            ),
         )
 
     def list_robot_configs(self) -> list[str]:

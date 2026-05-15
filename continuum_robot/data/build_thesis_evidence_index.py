@@ -158,7 +158,8 @@ def _extract_key_metrics(run_dir: Path) -> dict[str, Any]:
         "physics_model_status",
     ]
     extracted = {key: metrics[key] for key in useful_keys if key in metrics}
-    if str(metrics.get("dataset_type") or "") == "two_segment_modeling":
+    dataset_type = str(metrics.get("dataset_type") or "")
+    if dataset_type == "two_segment_modeling":
         best = metrics.get("best_model_by_xyz_rmse") if isinstance(metrics.get("best_model_by_xyz_rmse"), dict) else {}
         extracted["two_segment_modeling"] = {
             "input_dataset_run_ids": metrics.get("source_dataset_run_ids", []),
@@ -172,6 +173,57 @@ def _extract_key_metrics(run_dir: Path) -> dict[str, Any]:
             "physics_model_status": metrics.get("physics_model_status", {}),
             "lower_trust_warning": "allow_lower_trust_used_outputs_not_thesis_trusted"
             in list(metrics.get("data_quality_warnings", []) or []),
+        }
+    elif dataset_type == "two_segment_collect_pose_command_dataset":
+        long_run = dict(metrics.get("long_run_health") or {})
+        current_load = dict(metrics.get("current_load_summary") or {})
+        extracted["two_segment_collect_pose"] = {
+            "schedule_type": metrics.get("schedule_type"),
+            "bottom_segment_key": metrics.get("bottom_segment_key"),
+            "top_segment_key": metrics.get("top_segment_key"),
+            "accepted_sample_count": metrics.get("accepted_sample_count"),
+            "rejected_sample_count": metrics.get("rejected_sample_count"),
+            "command_failure_count": metrics.get("command_failure_count"),
+            "stop_reason": long_run.get("stop_reason"),
+            "transport_failures": long_run.get("transport_failures"),
+            "continue_until_valid_samples": long_run.get("continue_until_valid_samples"),
+            "target_valid_sample_count": long_run.get("target_valid_sample_count"),
+            "valid_for_two_segment_model_training": metrics.get("valid_for_two_segment_model_training"),
+            "run_trust_mode": metrics.get("run_trust_mode"),
+            "current_load_any_warning_observed": current_load.get("any_warning_observed"),
+            "current_load_any_hard_observed": current_load.get("any_hard_observed"),
+            "current_load_sustained_jam_servo_ids": current_load.get("sustained_jam_servo_ids"),
+            "tracker_any_stale_observed": (
+                bool(dict(metrics.get("tracker_freshness_summary") or {}).get("any_stale_observed"))
+                if isinstance(metrics.get("tracker_freshness_summary"), dict)
+                else None
+            ),
+            "tracker_max_freshness_s": (
+                dict(metrics.get("tracker_freshness_summary") or {}).get("max_freshness_s")
+                if isinstance(metrics.get("tracker_freshness_summary"), dict)
+                else None
+            ),
+        }
+    elif dataset_type == "two_segment_repeatability":
+        scatter = dict(metrics.get("scatter_metrics") or {})
+        extracted["two_segment_repeatability"] = {
+            "bottom_segment_key": metrics.get("bottom_segment_key"),
+            "top_segment_key": metrics.get("top_segment_key"),
+            "target_count": metrics.get("target_count"),
+            "repeat_visits": metrics.get("repeat_visits"),
+            "aggregate_distal_rms_mm": scatter.get("aggregate_distal_rms_mm"),
+            "aggregate_intermediate_rms_mm": scatter.get("aggregate_intermediate_rms_mm"),
+            "target_distal_rms_mm": metrics.get("target_distal_rms_mm"),
+            "target_intermediate_rms_mm": metrics.get("target_intermediate_rms_mm"),
+            "run_trust_mode": metrics.get("run_trust_mode"),
+        }
+    elif str(metrics.get("startup_type") or "") == "manual_two_segment_startup":
+        extracted["two_segment_startup"] = {
+            "bottom_segment_key": metrics.get("bottom_segment_key"),
+            "top_segment_key": metrics.get("top_segment_key"),
+            "final_accepted": metrics.get("final_accepted"),
+            "tracker_available": metrics.get("tracker_available"),
+            "stage_order": metrics.get("stage_order"),
         }
     return extracted
 

@@ -191,6 +191,51 @@ def test_two_segment_startup_validation_preflight_allows_missing_tracker_but_blo
     assert any("requires operating_mode=dual_segment" in message for message in single_report.blocking_messages)
 
 
+def test_two_segment_startup_validation_preflight_warns_when_8servo_baud_below_1mbps(tmp_path: Path) -> None:
+    snapshot = SimpleNamespace(
+        selected_backend_name="mock",
+        backend_identity="mock",
+        canonical_state="disconnected",
+    )
+    slow = _settings()
+    slow.serial.baudrate = 57600
+    fast = _settings()
+    fast.serial.baudrate = 1_000_000
+
+    slow_report = evaluate_preflight(
+        experiment_name=EXPERIMENT_NAME,
+        config_payload={},
+        config_error=None,
+        settings=slow,
+        tracking_snapshot=snapshot,
+        servo_connected=True,
+        neutral_setpoints={},
+        registration_path=tmp_path / "registration.json",
+        output_root=tmp_path / "data" / "experiments",
+        planned_output_dir=tmp_path / "data" / "experiments" / EXPERIMENT_NAME / "slow",
+        project_root=tmp_path,
+    )
+    fast_report = evaluate_preflight(
+        experiment_name=EXPERIMENT_NAME,
+        config_payload={},
+        config_error=None,
+        settings=fast,
+        tracking_snapshot=snapshot,
+        servo_connected=True,
+        neutral_setpoints={},
+        registration_path=tmp_path / "registration.json",
+        output_root=tmp_path / "data" / "experiments",
+        planned_output_dir=tmp_path / "data" / "experiments" / EXPERIMENT_NAME / "fast",
+        project_root=tmp_path,
+    )
+
+    # Warning at 57600 for 8-servo work; never blocks.
+    assert slow_report.overall_status != RUN_BLOCKED
+    assert any("Eight-servo work is recommended at 1 000 000" in msg for msg in slow_report.warning_messages)
+    # No baud warning at 1 Mbps.
+    assert not any("Eight-servo work is recommended" in msg for msg in fast_report.warning_messages)
+
+
 def test_two_segment_startup_validation_writes_stages_artifact_reports_and_validates(tmp_path: Path) -> None:
     runner = _runner(tmp_path)
 
@@ -262,6 +307,81 @@ def test_two_segment_startup_validation_supports_one_stage_manual_checkpoint_seq
     assert all(result.success for result in [baseline, segment_a, segment_b, recheck, final])
     assert final.summary.experiment_metrics["stage_completion"] == {stage: True for stage in STAGE_ORDER}
     assert final.summary.experiment_metrics["final_accepted"] is True
+
+
+def test_two_segment_startup_validation_records_bottom_top_role_metadata(tmp_path: Path) -> None:
+    runner = _runner(tmp_path)
+
+    result = runner.run_experiment(EXPERIMENT_NAME, config={})
+
+    assert result.success is True
+    metrics = result.summary.experiment_metrics
+    assert metrics["bottom_segment_key"] == "segment_a"
+    assert metrics["top_segment_key"] == "segment_b"
+    assert metrics["bottom_servo_ids"] == [1, 2, 3, 4]
+    assert metrics["top_servo_ids"] == [5, 6, 7, 8]
+    snapshots = {str(stage["stage"]): stage for stage in metrics["stage_snapshots"]}
+    # Bottom and top stage names are canonical.
+    assert set(snapshots).issuperset({"bottom_pretensioned", "top_pretensioned", "bottom_recheck"})
+    assert snapshots["bottom_pretensioned"]["stage_role"] == "proximal"
+    assert snapshots["bottom_pretensioned"]["targeted_segment_key"] == "segment_a"
+    assert snapshots["bottom_pretensioned"]["targeted_servo_ids"] == [1, 2, 3, 4]
+    assert snapshots["top_pretensioned"]["stage_role"] == "distal"
+    assert snapshots["top_pretensioned"]["targeted_servo_ids"] == [5, 6, 7, 8]
+    assert snapshots["bottom_recheck"]["stage_role"] == "proximal"
+    assert snapshots["bottom_recheck"]["targeted_servo_ids"] == [1, 2, 3, 4]
+    artifact = json.loads(Path(metrics["final_startup_artifact_path"]).read_text(encoding="utf-8"))
+    assert artifact["robot"]["bottom_segment_key"] == "segment_a"
+    assert artifact["robot"]["top_segment_key"] == "segment_b"
+
+
+def test_two_segment_startup_validation_honors_swapped_bottom_top_assignment(tmp_path: Path) -> None:
+    swapped_settings = _settings()
+    swapped_settings.robot.bottom_segment_key = "segment_b"
+    swapped_settings.robot.top_segment_key = "segment_a"
+    runner = _runner(tmp_path, settings=swapped_settings)
+
+    result = runner.run_experiment(EXPERIMENT_NAME, config={})
+
+    assert result.success is True
+    metrics = result.summary.experiment_metrics
+    assert metrics["bottom_segment_key"] == "segment_b"
+    assert metrics["top_segment_key"] == "segment_a"
+    snapshots = {str(stage["stage"]): stage for stage in metrics["stage_snapshots"]}
+    assert snapshots["bottom_pretensioned"]["targeted_segment_key"] == "segment_b"
+    assert snapshots["bottom_pretensioned"]["targeted_servo_ids"] == [5, 6, 7, 8]
+    assert snapshots["top_pretensioned"]["targeted_servo_ids"] == [1, 2, 3, 4]
+    assert snapshots["bottom_recheck"]["targeted_servo_ids"] == [5, 6, 7, 8]
+
+
+def test_two_segment_startup_validation_blocks_invalid_physical_assembly(tmp_path: Path) -> None:
+    bad = _settings()
+    bad.robot.bottom_segment_key = "segment_a"
+    bad.robot.top_segment_key = "segment_a"
+    runner = _runner(tmp_path, settings=bad)
+
+    result = runner.run_experiment(EXPERIMENT_NAME, config={})
+
+    assert result.success is False
+    assert "valid bottom/top physical assembly" in result.message
+
+
+def test_two_segment_startup_validation_accepts_legacy_stage_aliases(tmp_path: Path) -> None:
+    runner = _runner(tmp_path)
+    config = {"workflow_state_path": "data/startup_alias.json"}
+
+    baseline = runner.run_experiment(EXPERIMENT_NAME, config={**config, "capture_stage": "baseline", "final_accept": False})
+    legacy_a = runner.run_experiment(EXPERIMENT_NAME, config={**config, "capture_stage": "segment_a_pretensioned", "final_accept": False})
+    legacy_b = runner.run_experiment(EXPERIMENT_NAME, config={**config, "capture_stage": "segment_b_pretensioned", "final_accept": False})
+    legacy_recheck = runner.run_experiment(EXPERIMENT_NAME, config={**config, "capture_stage": "segment_a_recheck", "final_accept": False})
+    final = runner.run_experiment(EXPERIMENT_NAME, config={**config, "capture_stage": "final_accept", "final_accept": True})
+
+    assert all(r.success for r in [baseline, legacy_a, legacy_b, legacy_recheck, final])
+    snapshots = {str(stage["stage"]): stage for stage in final.summary.experiment_metrics["stage_snapshots"]}
+    # Legacy aliases are normalized into canonical bottom/top names on capture.
+    assert "bottom_pretensioned" in snapshots
+    assert "top_pretensioned" in snapshots
+    assert "bottom_recheck" in snapshots
 
 
 def test_two_segment_startup_validation_blocks_missing_positions(tmp_path: Path) -> None:

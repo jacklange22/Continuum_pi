@@ -20,6 +20,137 @@ SUPPORTED_TWO_SEGMENT_TRACKING_ROLES = (
     "debug_tool",
 )
 
+# Canonical label-mode strings used for dataset collection, modeling, and GUI
+# preflight. ``auto`` picks the highest-completeness mode available from current
+# role configs/snapshots; the others force a specific output target.
+LABEL_MODE_AUTO = "auto"
+LABEL_MODE_DISTAL_XYZ = "distal_xyz"
+LABEL_MODE_DISTAL_POSE6 = "distal_pose6"
+LABEL_MODE_TWO_COIL_XYZ = "two_coil_xyz"
+LABEL_MODE_TWO_COIL_POSE12 = "two_coil_pose12"
+SUPPORTED_TWO_SEGMENT_LABEL_MODES = (
+    LABEL_MODE_AUTO,
+    LABEL_MODE_DISTAL_XYZ,
+    LABEL_MODE_DISTAL_POSE6,
+    LABEL_MODE_TWO_COIL_XYZ,
+    LABEL_MODE_TWO_COIL_POSE12,
+)
+
+
+def resolve_two_segment_label_mode(
+    *,
+    requested_mode: str,
+    distal_available: bool,
+    intermediate_available: bool,
+    orientation_available: bool,
+    intermediate_orientation_available: bool,
+) -> dict[str, Any]:
+    """Resolve which label mode is actually usable given role availability.
+
+    Returns ``{"mode": <resolved>, "requested": <input>, "downgraded": bool,
+    "available": bool, "reasons": [...]}``. The resolver never fabricates
+    labels: if the requested mode requires roles that are missing, it
+    downgrades transparently and reports the reasons.
+    """
+
+    requested = str(requested_mode or LABEL_MODE_AUTO).strip().lower() or LABEL_MODE_AUTO
+    if requested not in SUPPORTED_TWO_SEGMENT_LABEL_MODES:
+        return {
+            "mode": LABEL_MODE_AUTO,
+            "requested": requested,
+            "downgraded": True,
+            "available": False,
+            "reasons": [f"unknown_label_mode:{requested}"],
+        }
+    reasons: list[str] = []
+    bools = {
+        LABEL_MODE_DISTAL_XYZ: bool(distal_available),
+        LABEL_MODE_DISTAL_POSE6: bool(distal_available and orientation_available),
+        LABEL_MODE_TWO_COIL_XYZ: bool(distal_available and intermediate_available),
+        LABEL_MODE_TWO_COIL_POSE12: bool(
+            distal_available
+            and intermediate_available
+            and orientation_available
+            and intermediate_orientation_available
+        ),
+    }
+    if requested == LABEL_MODE_AUTO:
+        # Pick the highest-completeness mode that is available.
+        for mode in (
+            LABEL_MODE_TWO_COIL_POSE12,
+            LABEL_MODE_TWO_COIL_XYZ,
+            LABEL_MODE_DISTAL_POSE6,
+            LABEL_MODE_DISTAL_XYZ,
+        ):
+            if bools[mode]:
+                return {
+                    "mode": mode,
+                    "requested": requested,
+                    "downgraded": False,
+                    "available": True,
+                    "reasons": [],
+                }
+        return {
+            "mode": LABEL_MODE_DISTAL_XYZ,
+            "requested": requested,
+            "downgraded": False,
+            "available": False,
+            "reasons": ["distal_tip_unavailable"],
+        }
+    if bools[requested]:
+        return {
+            "mode": requested,
+            "requested": requested,
+            "downgraded": False,
+            "available": True,
+            "reasons": [],
+        }
+    if requested == LABEL_MODE_TWO_COIL_POSE12:
+        if bools[LABEL_MODE_TWO_COIL_XYZ]:
+            reasons.append("orientation_unavailable_for_two_coil_pose12")
+            return {
+                "mode": LABEL_MODE_TWO_COIL_XYZ,
+                "requested": requested,
+                "downgraded": True,
+                "available": True,
+                "reasons": reasons,
+            }
+    if requested in (LABEL_MODE_TWO_COIL_POSE12, LABEL_MODE_TWO_COIL_XYZ):
+        if bools[LABEL_MODE_DISTAL_POSE6]:
+            reasons.append("intermediate_unavailable_downgrading_to_distal_pose6")
+            return {
+                "mode": LABEL_MODE_DISTAL_POSE6,
+                "requested": requested,
+                "downgraded": True,
+                "available": True,
+                "reasons": reasons,
+            }
+        if bools[LABEL_MODE_DISTAL_XYZ]:
+            reasons.append("intermediate_unavailable_downgrading_to_distal_xyz")
+            return {
+                "mode": LABEL_MODE_DISTAL_XYZ,
+                "requested": requested,
+                "downgraded": True,
+                "available": True,
+                "reasons": reasons,
+            }
+    if requested == LABEL_MODE_DISTAL_POSE6 and bools[LABEL_MODE_DISTAL_XYZ]:
+        reasons.append("orientation_unavailable_downgrading_to_distal_xyz")
+        return {
+            "mode": LABEL_MODE_DISTAL_XYZ,
+            "requested": requested,
+            "downgraded": True,
+            "available": True,
+            "reasons": reasons,
+        }
+    return {
+        "mode": requested,
+        "requested": requested,
+        "downgraded": False,
+        "available": False,
+        "reasons": ["distal_tip_unavailable"] if not bool(distal_available) else ["roles_unavailable_for_mode"],
+    }
+
 
 def role_config_records(role_configs: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
     """Return enabled role config records keyed by role name."""
@@ -182,6 +313,40 @@ def resolve_two_segment_tracking_roles(
         },
         "dataset_validity": dataset_validity,
     }
+
+
+def resolve_two_segment_label_mode_from_snapshot(
+    *,
+    snapshot,
+    role_configs: dict[str, Any] | None,
+    requested_mode: str = LABEL_MODE_AUTO,
+) -> dict[str, Any]:
+    """Resolve the dataset/training label mode against the current snapshot."""
+
+    resolved = resolve_two_segment_tracking_roles(
+        snapshot=snapshot,
+        role_configs=role_configs,
+        require_model_training_roles=False,
+    )
+    available = set(resolved.get("available_roles") or [])
+    observations = dict(resolved.get("role_observations") or {})
+    distal_available = "distal_tip" in available
+    intermediate_available = "intermediate_segment" in available
+    distal_pose = dict(observations.get("distal_tip", {}).get("pose") or {})
+    intermediate_pose = dict(observations.get("intermediate_segment", {}).get("pose") or {})
+    orientation_available = bool(
+        distal_pose.get("quaternion_wxyz") and len(list(distal_pose.get("quaternion_wxyz") or [])) == 4
+    )
+    intermediate_orientation_available = bool(
+        intermediate_pose.get("quaternion_wxyz") and len(list(intermediate_pose.get("quaternion_wxyz") or [])) == 4
+    )
+    return resolve_two_segment_label_mode(
+        requested_mode=requested_mode,
+        distal_available=distal_available,
+        intermediate_available=intermediate_available,
+        orientation_available=orientation_available,
+        intermediate_orientation_available=intermediate_orientation_available,
+    )
 
 
 def two_segment_role_readiness_rows(*, snapshot, role_configs: dict[str, Any] | None) -> list[dict[str, Any]]:
