@@ -2861,6 +2861,7 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
             ("Workspace Coverage", "workspace_coverage"),
             ("Hysteresis / Path Dependence", "hysteresis_path_dependence"),
             ("Repeatability Linked", "repeatability_linked"),
+            ("Angular Test Mesh (Wolfe §3.2.3)", "angular_test_mesh"),
         ):
             self.dataset_mode_combo.addItem(label, value)
         self.dataset_mode_combo.currentIndexChanged.connect(
