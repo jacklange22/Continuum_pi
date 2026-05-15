@@ -520,6 +520,35 @@ def test_modeling_tab_history_list_double_click_opens_folder(tmp_path: Path, mon
         controller.shutdown()
 
 
+def test_modeling_tab_workflow_header_renders_4_steps(tmp_path: Path) -> None:
+    """Quick-start workflow header surfaces the 4-step journey without scrolling."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        # Walk the tab's children for labels matching the workflow step texts.
+        from PySide6.QtWidgets import QLabel as _QLabel
+
+        labels = [w.text() for w in tab.findChildren(_QLabel)]
+        # The 4 numbered steps each have a unique text fragment.
+        assert any("training dataset" in t.lower() for t in labels)
+        assert any("train ann" in t.lower() for t in labels)
+        assert any("separate test dataset" in t.lower() for t in labels)
+        assert any("rmse per model" in t.lower() for t in labels)
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
 def test_modeling_tab_small_eval_dataset_warning_chip(tmp_path: Path) -> None:
     """When the selected dataset has fewer than 100 accepted samples, the warning chip fires."""
     _app()

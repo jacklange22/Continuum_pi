@@ -79,6 +79,41 @@ class ModelingTab(QWidget):
         root.addWidget(title)
         root.addWidget(hint)
 
+        # Workflow header — explicit 4-step guide so the operator's eye lands on the
+        # ordered sequence of actions, not on whichever card happens to be biggest.
+        workflow_frame = QFrame()
+        workflow_frame.setStyleSheet(
+            f"background: {COLORS.surface_alt_bg}; border: 1px solid {COLORS.surface_border}; "
+            f"border-radius: 10px; padding: 8px 12px;"
+        )
+        workflow_layout = QHBoxLayout(workflow_frame)
+        workflow_layout.setContentsMargins(12, 10, 12, 10)
+        workflow_layout.setSpacing(12)
+        for step_number, step_text in (
+            ("1", "Pick a training dataset"),
+            ("2", "Train ANN  →  popout"),
+            ("3", "(Optional) Pick a separate test dataset"),
+            ("4", "Run Comparison  →  read RMSE per model"),
+        ):
+            step_widget = QWidget()
+            step_layout = QHBoxLayout(step_widget)
+            step_layout.setContentsMargins(0, 0, 0, 0)
+            step_layout.setSpacing(8)
+            number_label = QLabel(step_number)
+            number_label.setStyleSheet(
+                f"color: white; background: {COLORS.selection_bg}; border-radius: 11px; "
+                f"min-width: 22px; max-width: 22px; min-height: 22px; max-height: 22px; "
+                f"qproperty-alignment: AlignCenter; font-weight: 700;"
+            )
+            number_label.setAlignment(Qt.AlignCenter)
+            text_label = QLabel(step_text)
+            text_label.setStyleSheet(f"color: {COLORS.text_primary}; font-weight: 500;")
+            step_layout.addWidget(number_label)
+            step_layout.addWidget(text_label)
+            workflow_layout.addWidget(step_widget)
+        workflow_layout.addStretch(1)
+        root.addWidget(workflow_frame)
+
         columns = QHBoxLayout()
         columns.setContentsMargins(0, 0, 0, 0)
         columns.setSpacing(12)
