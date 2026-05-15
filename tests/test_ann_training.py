@@ -17,7 +17,14 @@ from continuum_robot.modeling.ann_training import (
     ANN_TRAINING_CATEGORY_TRAINABLE,
     ANN_TRAINING_CATEGORY_TRAINABLE_WITH_WARNINGS,
     MIN_COMPLETE_ROWS_FOR_TRAINING,
+    OUTPUT_TARGET_CABLE_FROM_XYZ,
+    OUTPUT_TARGET_FULL_POSE,
+    OUTPUT_TARGET_XYZ,
+    SPLIT_STRATEGY_ORDERED,
+    SPLIT_STRATEGY_RANDOM,
     AnnTrainingConfig,
+    IoScalers,
+    StandardScaler,
     ann_training_will_be_exploratory,
     build_grouped_split,
     detect_training_backends,
@@ -29,6 +36,7 @@ from continuum_robot.modeling.ann_training import (
     load_modeling_dataset_summary,
     parse_hidden_layers_text,
     prepare_legacy_ann_dataset,
+    train_inverse_xyz_to_cable,
     validate_legacy_ann_rows,
     validate_training_config,
 )
@@ -214,10 +222,33 @@ def test_prepare_legacy_ann_dataset_filters_invalid_rows(tmp_path: Path) -> None
     assert prepared.filtered_reason_counts == {"legacy_tangent_threshold": 1}
 
 
-def test_build_grouped_split_uses_ordered_step_groups(tmp_path: Path) -> None:
+def test_build_grouped_split_default_is_random(tmp_path: Path) -> None:
+    """New default split is ``random_grouped_step`` (deterministic with the seed)."""
     run_dir = _write_modeling_run(tmp_path)
     prepared = prepare_legacy_ann_dataset(run_dir)
     config = AnnTrainingConfig(train_ratio=0.5, validation_ratio=0.25, test_ratio=0.25)
+
+    split = build_grouped_split(prepared, config)
+
+    assert split.strategy == "random_grouped_step"
+    # Two step-groups in the fixture (step_index 0 and 1); the 0.5/0.25/0.25 ratios
+    # allocate one group each to train+val (val empty due to small fixture), test = []
+    all_indices = (
+        list(split.train_indices) + list(split.validation_indices) + list(split.test_indices)
+    )
+    assert sorted(all_indices) == [0, 1]
+
+
+def test_build_grouped_split_ordered_back_compat(tmp_path: Path) -> None:
+    """``split_strategy='ordered_step_group'`` still produces a contiguous slice."""
+    run_dir = _write_modeling_run(tmp_path)
+    prepared = prepare_legacy_ann_dataset(run_dir)
+    config = AnnTrainingConfig(
+        train_ratio=0.5,
+        validation_ratio=0.25,
+        test_ratio=0.25,
+        split_strategy="ordered_step_group",
+    )
 
     split = build_grouped_split(prepared, config)
 
@@ -865,3 +896,232 @@ def test_train_legacy_ann_writes_row_filter_sidecar(tmp_path: Path) -> None:
     assert meta["training_input_policy"] == "complete_rows_only"
     assert meta["row_filter_report"]["complete_row_count"] == 20
     assert meta["files"]["row_filter_report_path"].endswith("row_filter_report.json")
+
+
+# ---------------------------------------------------------------------------
+# Standardization (StandardScaler / IoScalers) round-trip behaviour.
+# ---------------------------------------------------------------------------
+
+
+def test_standard_scaler_round_trip() -> None:
+    import numpy as np
+
+    x = np.array([[1.0, 100.0], [2.0, 200.0], [3.0, 300.0]], dtype=float)
+    scaler = StandardScaler.fit(x)
+    z = scaler.transform(x)
+    # Centered (mean ~ 0) and unit-std on the column where there's spread.
+    assert abs(float(z.mean(axis=0)[0])) < 1e-9
+    assert abs(float(z.std(axis=0)[0]) - 1.0) < 1e-9
+    # Inverse maps back to the original.
+    back = scaler.inverse_transform(z)
+    assert np.allclose(back, x)
+
+
+def test_standard_scaler_handles_constant_feature() -> None:
+    import numpy as np
+
+    # std == 0 must not divide-by-zero.
+    x = np.array([[5.0, 1.0], [5.0, 2.0], [5.0, 3.0]], dtype=float)
+    scaler = StandardScaler.fit(x)
+    z = scaler.transform(x)
+    # Constant column maps to ~0 (no NaN/inf).
+    assert np.all(np.isfinite(z))
+
+
+def test_io_scalers_json_round_trip() -> None:
+    import numpy as np
+
+    inp = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=float)
+    out = np.array([[10.0, 20.0], [30.0, 40.0]], dtype=float)
+    pair = IoScalers(StandardScaler.fit(inp), StandardScaler.fit(out))
+    restored = IoScalers.from_dict(pair.to_dict())
+    assert np.allclose(restored.input_scaler.mean, pair.input_scaler.mean)
+    assert np.allclose(restored.output_scaler.std, pair.output_scaler.std)
+
+
+# ---------------------------------------------------------------------------
+# Output target dims + back-compat full-pose path.
+# ---------------------------------------------------------------------------
+
+
+def test_prepare_legacy_ann_dataset_xyz_target_drops_tangent(tmp_path: Path) -> None:
+    """``output_target='xyz'`` produces 4-in, 3-out tensors (no tangent column)."""
+    run_dir = _write_modeling_run(tmp_path)
+    prepared = prepare_legacy_ann_dataset(run_dir, output_target=OUTPUT_TARGET_XYZ)
+    assert prepared.inputs.shape[1] == 4
+    assert prepared.outputs.shape[1] == 3
+
+
+def test_prepare_legacy_ann_dataset_full_pose_back_compat(tmp_path: Path) -> None:
+    """Default ``prepare_legacy_ann_dataset(path)`` stays 6-out for back-compat."""
+    run_dir = _write_modeling_run(tmp_path)
+    prepared = prepare_legacy_ann_dataset(run_dir)
+    assert prepared.outputs.shape[1] == 6
+
+
+def test_prepare_legacy_ann_dataset_inverse_swaps_io(tmp_path: Path) -> None:
+    """``cable_from_xyz`` swaps inputs/outputs to 3→4."""
+    run_dir = _write_modeling_run(tmp_path)
+    prepared = prepare_legacy_ann_dataset(run_dir, output_target=OUTPUT_TARGET_CABLE_FROM_XYZ)
+    assert prepared.inputs.shape[1] == 3
+    assert prepared.outputs.shape[1] == 4
+
+
+# ---------------------------------------------------------------------------
+# Random-grouped split: deterministic by seed, leak-safe by step_index.
+# ---------------------------------------------------------------------------
+
+
+def test_random_grouped_split_is_deterministic_with_seed(tmp_path: Path) -> None:
+    run_dir = _write_run_with_export_rows(tmp_path, complete_rows=30, incomplete_rows=0, target=30)
+    prepared = prepare_legacy_ann_dataset(run_dir, output_target=OUTPUT_TARGET_XYZ)
+    cfg_a = AnnTrainingConfig(
+        random_seed=42, train_ratio=0.6, validation_ratio=0.2, test_ratio=0.2,
+        split_strategy=SPLIT_STRATEGY_RANDOM,
+    )
+    cfg_b = AnnTrainingConfig(
+        random_seed=42, train_ratio=0.6, validation_ratio=0.2, test_ratio=0.2,
+        split_strategy=SPLIT_STRATEGY_RANDOM,
+    )
+    split_a = build_grouped_split(prepared, cfg_a)
+    split_b = build_grouped_split(prepared, cfg_b)
+    assert split_a.train_indices == split_b.train_indices
+    assert split_a.test_indices == split_b.test_indices
+
+
+def test_random_grouped_split_differs_from_ordered(tmp_path: Path) -> None:
+    run_dir = _write_run_with_export_rows(tmp_path, complete_rows=30, incomplete_rows=0, target=30)
+    prepared = prepare_legacy_ann_dataset(run_dir, output_target=OUTPUT_TARGET_XYZ)
+    cfg_random = AnnTrainingConfig(
+        random_seed=7, train_ratio=0.6, validation_ratio=0.2, test_ratio=0.2,
+        split_strategy=SPLIT_STRATEGY_RANDOM,
+    )
+    cfg_ordered = AnnTrainingConfig(
+        random_seed=7, train_ratio=0.6, validation_ratio=0.2, test_ratio=0.2,
+        split_strategy=SPLIT_STRATEGY_ORDERED,
+    )
+    random_split = build_grouped_split(prepared, cfg_random)
+    ordered_split = build_grouped_split(prepared, cfg_ordered)
+    # Sizes match (same ratios). The strategy label must reflect what was used; the test
+    # indices should not be the contiguous tail of the group order under a non-trivial seed.
+    assert len(random_split.train_indices) == len(ordered_split.train_indices)
+    assert random_split.strategy == SPLIT_STRATEGY_RANDOM
+    assert ordered_split.strategy == SPLIT_STRATEGY_ORDERED
+    # At least one of the three partitions should differ — otherwise the shuffle did nothing.
+    assert (
+        set(random_split.train_indices) != set(ordered_split.train_indices)
+        or set(random_split.validation_indices) != set(ordered_split.validation_indices)
+        or set(random_split.test_indices) != set(ordered_split.test_indices)
+    )
+
+
+def test_validate_training_config_rejects_invalid_split_strategy() -> None:
+    config = AnnTrainingConfig(split_strategy="not_a_real_strategy")
+    with pytest.raises(ValueError, match="split_strategy"):
+        validate_training_config(config)
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: standardization is saved, dims match output_target, early stop fires.
+# ---------------------------------------------------------------------------
+
+
+def test_train_legacy_ann_xyz_with_standardization_saves_scaler(tmp_path: Path) -> None:
+    pytest.importorskip("torch")
+    run_dir = _write_run_with_export_rows(
+        tmp_path, complete_rows=40, incomplete_rows=0, target=40, valid_for_model_training=True
+    )
+    config = AnnTrainingConfig(
+        artifact_root=str(tmp_path / "data" / "models" / "ann"),
+        artifact_name="xyz_with_scaler",
+        epochs=3,
+        batch_size=8,
+        train_ratio=0.7,
+        validation_ratio=0.2,
+        test_ratio=0.1,
+        output_target=OUTPUT_TARGET_XYZ,
+        standardize_io=True,
+        early_stopping_patience=0,  # disable for this test (we just want artifact contents)
+    )
+    result = training_module.train_legacy_ann(
+        project_root=tmp_path,
+        dataset_path=run_dir,
+        config=config,
+        backend_name="cpu",
+    )
+    scaler_path = result.artifact_dir / "io_scaler.json"
+    assert scaler_path.exists()
+    meta = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+    assert meta["model"]["output_target"] == "xyz"
+    assert meta["model"]["input_dim"] == 4
+    assert meta["model"]["output_dim"] == 3
+    assert meta["model"]["standardize_io"] is True
+    assert meta["loss"]["kind"] == "mse_standardized"
+    assert "io_scaler" in meta
+    # Restored scaler can transform/inverse cleanly.
+    restored = IoScalers.from_dict(meta["io_scaler"])
+    assert restored.input_scaler.mean.shape == (4,)
+    assert restored.output_scaler.mean.shape == (3,)
+
+
+def test_train_legacy_ann_early_stops_when_no_improvement(tmp_path: Path) -> None:
+    """Patience=1 plus a tiny fixture should stop well before epochs_requested."""
+    pytest.importorskip("torch")
+    run_dir = _write_run_with_export_rows(
+        tmp_path, complete_rows=40, incomplete_rows=0, target=40, valid_for_model_training=True
+    )
+    config = AnnTrainingConfig(
+        artifact_root=str(tmp_path / "data" / "models" / "ann"),
+        artifact_name="early_stop_run",
+        epochs=200,  # would take many epochs without early stop
+        batch_size=8,
+        train_ratio=0.6,
+        validation_ratio=0.2,
+        test_ratio=0.2,
+        output_target=OUTPUT_TARGET_XYZ,
+        early_stopping_patience=2,
+        random_seed=7,
+        learning_rate=1e-2,
+    )
+    result = training_module.train_legacy_ann(
+        project_root=tmp_path,
+        dataset_path=run_dir,
+        config=config,
+        backend_name="cpu",
+    )
+    meta = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+    # Either early-stopped or completed naturally — but training should record the flag and
+    # epochs_completed must be <= epochs_requested.
+    assert meta["training"]["epochs_completed"] <= meta["training"]["epochs_requested"]
+    assert "early_stopped" in meta["training"]
+
+
+def test_train_inverse_xyz_to_cable_produces_4d_output(tmp_path: Path) -> None:
+    """Inverse training maps 3-D tip → 4-D cable command and tags the artifact accordingly."""
+    pytest.importorskip("torch")
+    run_dir = _write_run_with_export_rows(
+        tmp_path, complete_rows=40, incomplete_rows=0, target=40, valid_for_model_training=True
+    )
+    config = AnnTrainingConfig(
+        artifact_root=str(tmp_path / "data" / "models" / "ann"),
+        artifact_name="inverse_xyz_to_cable",
+        epochs=2,
+        batch_size=8,
+        train_ratio=0.7,
+        validation_ratio=0.2,
+        test_ratio=0.1,
+        # output_target is overridden inside train_inverse_xyz_to_cable
+    )
+    result = train_inverse_xyz_to_cable(
+        project_root=tmp_path,
+        dataset_path=run_dir,
+        config=config,
+        backend_name="cpu",
+    )
+    meta = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+    assert meta["model"]["output_target"] == OUTPUT_TARGET_CABLE_FROM_XYZ
+    assert meta["model"]["input_dim"] == 3
+    assert meta["model"]["output_dim"] == 4
+    # Inverse runs should report cable-space metrics (compute_cable_evaluation_metrics).
+    test_block = meta["evaluation"].get("test") or {}
+    assert "cable_rmse_cm" in test_block

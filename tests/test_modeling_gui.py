@@ -240,6 +240,59 @@ def test_modeling_tab_constructs_with_grouped_workspace_stylesheet_contract(tmp_
         controller.shutdown()
 
 
+def test_modeling_tab_train_ann_button_invokes_opener_callback(tmp_path: Path) -> None:
+    """The 'Train ANN' button hands the selected dataset path to the supplied opener."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    artifact_dir = _write_artifact(tmp_path, run_dir)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    controller.select_artifact(str(artifact_dir))
+    captured: dict[str, str] = {}
+
+    def _opener(path: str) -> None:
+        captured["path"] = str(path)
+
+    tab = ModelingTab(controller, open_in_ann_training=_opener)
+    try:
+        tab.update(controller.refresh())
+        assert tab.train_ann_button.isEnabled()
+        tab.train_ann_button.click()
+        assert captured.get("path") == str(run_dir)
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_modeling_tab_train_ann_button_without_opener_does_not_crash(tmp_path: Path) -> None:
+    """Without an opener callback, the click should be a no-op (status text only)."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    artifact_dir = _write_artifact(tmp_path, run_dir)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    controller.select_artifact(str(artifact_dir))
+    tab = ModelingTab(controller)  # no opener passed
+    try:
+        tab.update(controller.refresh())
+        tab.train_ann_button.click()
+        # Status label should reflect the missing opener; should not raise.
+        assert "not available" in tab.status_label.text().lower()
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
 def test_modeling_controller_and_tab_expose_two_segment_modeling_panel(tmp_path: Path) -> None:
     _app()
     run_dir = tmp_path / "data" / "experiments" / "two_segment_collect_pose_command_dataset" / "20260508_120000_two_segment_collect_pose_command_dataset"

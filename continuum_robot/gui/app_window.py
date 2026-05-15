@@ -244,7 +244,10 @@ class AppWindow(QMainWindow):
         self.servos_tab = ServosTab(self.servos_controller)
         self.pretension_tab = PretensionTab(self.pretension_controller)
         self.experiment_tab = ExperimentTab(self.experiment_controller)
-        self.modeling_tab = ModelingTab(self.modeling_controller)
+        self.modeling_tab = ModelingTab(
+            self.modeling_controller,
+            open_in_ann_training=self._open_collect_pose_ann_training,
+        )
         self.data_management_tab = DataManagementTab(
             self.data_management_controller,
             open_in_ann_training=self._open_collect_pose_ann_training,

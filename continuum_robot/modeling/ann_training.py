@@ -266,9 +266,46 @@ class DatasetSplit:
     group_ids: list[int]
 
 
+OUTPUT_TARGET_XYZ = "xyz"
+OUTPUT_TARGET_FULL_POSE = "full_pose"
+OUTPUT_TARGET_CABLE_FROM_XYZ = "cable_from_xyz"
+SPLIT_STRATEGY_ORDERED = "ordered_step_group"
+SPLIT_STRATEGY_RANDOM = "random_grouped_step"
+
+
+def _resolve_output_target(value: str | None) -> str:
+    token = str(value or OUTPUT_TARGET_XYZ).strip().lower()
+    if token in {OUTPUT_TARGET_XYZ, OUTPUT_TARGET_FULL_POSE, OUTPUT_TARGET_CABLE_FROM_XYZ}:
+        return token
+    raise ValueError(
+        f"output_target must be one of: xyz | full_pose | cable_from_xyz; got {value!r}."
+    )
+
+
+def _model_io_dims(output_target: str) -> tuple[int, int]:
+    """Return ``(input_dim, output_dim)`` for the requested target."""
+    token = _resolve_output_target(output_target)
+    if token == OUTPUT_TARGET_FULL_POSE:
+        return LEGACY_FULL_POSE_INPUT_DIM, LEGACY_FULL_POSE_OUTPUT_DIM
+    if token == OUTPUT_TARGET_XYZ:
+        return LEGACY_FULL_POSE_INPUT_DIM, 3
+    # cable_from_xyz: xyz (3D) → cable (4D)
+    return 3, LEGACY_FULL_POSE_INPUT_DIM
+
+
 @dataclass
 class AnnTrainingConfig:
-    """V1 training parameters for the legacy full-pose ANN."""
+    """V1 training parameters for the legacy full-pose ANN.
+
+    New defaults (back-compatible — old artifacts still load):
+      - ``output_target='xyz'`` — train cable→XYZ only (3-out). Full-pose 6-out is opt-in.
+      - ``split_strategy='random_grouped_step'`` — shuffle step-groups deterministically by
+        seed before partitioning, so test isn't a contiguous workspace region.
+      - ``standardize_io=True`` — Z-score-standardize inputs and outputs on the training
+        split; the scaler is saved into the artifact for inference.
+      - ``weight_decay=1e-4`` — light L2 to discourage overfitting at [128,128].
+      - ``early_stopping_patience=30`` — stop when validation loss stops improving.
+    """
 
     hidden_layers: list[int] = field(default_factory=lambda: list(DEFAULT_HIDDEN_LAYERS))
     learning_rate: float = 1e-3
@@ -286,6 +323,11 @@ class AnnTrainingConfig:
     model_sweep_include_linear_baseline: bool = True
     model_sweep_extra_hidden_layers_text: str = ""
     linear_ridge_alpha: float = 1e-6
+    output_target: str = OUTPUT_TARGET_XYZ
+    split_strategy: str = SPLIT_STRATEGY_RANDOM
+    standardize_io: bool = True
+    weight_decay: float = 1e-4
+    early_stopping_patience: int = 30
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -956,8 +998,23 @@ def load_modeling_dataset_summary(path: Path) -> ModelingDatasetSummary:
     return _compile_modeling_dataset_summary(Path(path), dataset_scan_root="experiments", strict=True)
 
 
-def prepare_legacy_ann_dataset(path: Path) -> PreparedLegacyAnnDataset:
-    """Adapt a canonical modeling dataset into the legacy ANN full-pose contract."""
+def prepare_legacy_ann_dataset(
+    path: Path,
+    *,
+    output_target: str = OUTPUT_TARGET_FULL_POSE,
+) -> PreparedLegacyAnnDataset:
+    """Adapt a canonical modeling dataset into a tensor pair for ANN training.
+
+    ``output_target`` selects what the network learns:
+
+      - ``full_pose`` (legacy default): cable (4) → xyz+tangent (6). Kept for back-compat.
+      - ``xyz``: cable (4) → xyz (3). Recommended for single-segment forward modeling.
+      - ``cable_from_xyz``: xyz (3) → cable (4). Inverse model for "given a target, what
+        cable command produces it." Note this mapping is underdetermined — see
+        :func:`train_inverse_xyz_to_cable` for caveats.
+    """
+    target = _resolve_output_target(output_target)
+    input_dim, output_dim = _model_io_dims(target)
     summary = load_modeling_dataset_summary(path)
     export_rows = _load_export_rows(path)
     filtered_counts: dict[str, int] = {}
@@ -974,18 +1031,23 @@ def prepare_legacy_ann_dataset(path: Path) -> PreparedLegacyAnnDataset:
         if reason is not None:
             filtered_counts[reason] = int(filtered_counts.get(reason, 0)) + 1
             continue
-        command = np.asarray(row.get("resolved_cable_command_cm", []) or [], dtype=float)
-        pose = np.asarray(
-            list(row.get("tip_position_xyz_mm", []) or []) + list(row.get("tip_tangent_xyz", []) or []),
-            dtype=float,
-        )
-        inputs.append(command)
-        outputs.append(pose)
+        cable = np.asarray(row.get("resolved_cable_command_cm", []) or [], dtype=float)
+        xyz = np.asarray(row.get("tip_position_xyz_mm", []) or [], dtype=float)
+        if target == OUTPUT_TARGET_FULL_POSE:
+            tangent = np.asarray(row.get("tip_tangent_xyz", []) or [], dtype=float)
+            inputs.append(cable)
+            outputs.append(np.concatenate([xyz, tangent]))
+        elif target == OUTPUT_TARGET_XYZ:
+            inputs.append(cable)
+            outputs.append(xyz)
+        else:  # cable_from_xyz
+            inputs.append(xyz)
+            outputs.append(cable)
         step_groups.append(int(row.get("step_index", row.get("sequence_index", len(inputs) - 1)) or 0))
         sequence_indices.append(int(row.get("sequence_index", len(inputs) - 1) or 0))
 
-    prepared_inputs = np.stack(inputs, axis=0) if inputs else np.zeros((0, LEGACY_FULL_POSE_INPUT_DIM), dtype=float)
-    prepared_outputs = np.stack(outputs, axis=0) if outputs else np.zeros((0, LEGACY_FULL_POSE_OUTPUT_DIM), dtype=float)
+    prepared_inputs = np.stack(inputs, axis=0) if inputs else np.zeros((0, input_dim), dtype=float)
+    prepared_outputs = np.stack(outputs, axis=0) if outputs else np.zeros((0, output_dim), dtype=float)
     return PreparedLegacyAnnDataset(
         summary=summary,
         inputs=prepared_inputs,
@@ -998,8 +1060,23 @@ def prepare_legacy_ann_dataset(path: Path) -> PreparedLegacyAnnDataset:
 
 
 def build_grouped_split(prepared: PreparedLegacyAnnDataset, config: AnnTrainingConfig) -> DatasetSplit:
-    """Build a leak-safer contiguous grouped split by command step."""
+    """Build a leak-safer grouped split by command step.
+
+    Strategy is chosen by ``config.split_strategy``:
+
+      - ``random_grouped_step`` (default): step-groups are shuffled deterministically by
+        ``config.random_seed`` before being partitioned into train/val/test. Avoids the
+        in-session pathology where a contiguous slice of the workspace ends up in the
+        test set just because of data-collection order.
+      - ``ordered_step_group``: legacy contiguous split, kept for reproducibility of
+        old artifacts that recorded ``strategy='ordered_step_group'`` in their manifest.
+    """
     validate_training_config(config)
+    strategy = str(getattr(config, "split_strategy", SPLIT_STRATEGY_RANDOM) or SPLIT_STRATEGY_RANDOM).strip().lower()
+    if strategy not in {SPLIT_STRATEGY_RANDOM, SPLIT_STRATEGY_ORDERED}:
+        raise ValueError(
+            f"split_strategy must be one of: {SPLIT_STRATEGY_RANDOM} | {SPLIT_STRATEGY_ORDERED}; got {strategy!r}."
+        )
     groups_in_order: list[int] = []
     group_to_indices: dict[int, list[int]] = {}
     for index, group_id in enumerate(prepared.step_groups):
@@ -1008,19 +1085,25 @@ def build_grouped_split(prepared: PreparedLegacyAnnDataset, config: AnnTrainingC
             groups_in_order.append(group_key)
             group_to_indices[group_key] = []
         group_to_indices[group_key].append(index)
+    partition_order = list(groups_in_order)
+    if strategy == SPLIT_STRATEGY_RANDOM:
+        rng = np.random.default_rng(int(config.random_seed))
+        rng.shuffle(partition_order)
     counts = _allocate_partition_counts(
-        total=len(groups_in_order),
+        total=len(partition_order),
         ratios=[config.train_ratio, config.validation_ratio, config.test_ratio],
     )
     train_group_count, validation_group_count, test_group_count = counts
-    train_groups = groups_in_order[:train_group_count]
-    validation_groups = groups_in_order[train_group_count : train_group_count + validation_group_count]
-    test_groups = groups_in_order[train_group_count + validation_group_count : train_group_count + validation_group_count + test_group_count]
+    train_groups = partition_order[:train_group_count]
+    validation_groups = partition_order[train_group_count : train_group_count + validation_group_count]
+    test_groups = partition_order[
+        train_group_count + validation_group_count : train_group_count + validation_group_count + test_group_count
+    ]
     train_indices = [index for group_id in train_groups for index in group_to_indices[group_id]]
     validation_indices = [index for group_id in validation_groups for index in group_to_indices[group_id]]
     test_indices = [index for group_id in test_groups for index in group_to_indices[group_id]]
     return DatasetSplit(
-        strategy="ordered_step_group",
+        strategy=strategy,
         train_indices=train_indices,
         validation_indices=validation_indices,
         test_indices=test_indices,
@@ -1162,6 +1245,16 @@ def validate_training_config(config: AnnTrainingConfig) -> None:
         raise ValueError("Train, validation, and test ratios must sum to 1.0.")
     if not str(config.artifact_name).strip():
         raise ValueError("Artifact name must not be empty.")
+    _resolve_output_target(getattr(config, "output_target", OUTPUT_TARGET_XYZ))
+    strategy = str(getattr(config, "split_strategy", SPLIT_STRATEGY_RANDOM) or SPLIT_STRATEGY_RANDOM).strip().lower()
+    if strategy not in {SPLIT_STRATEGY_RANDOM, SPLIT_STRATEGY_ORDERED}:
+        raise ValueError(
+            f"split_strategy must be one of: {SPLIT_STRATEGY_RANDOM} | {SPLIT_STRATEGY_ORDERED}; got {strategy!r}."
+        )
+    if float(getattr(config, "weight_decay", 0.0) or 0.0) < 0.0:
+        raise ValueError("weight_decay must be non-negative.")
+    if int(getattr(config, "early_stopping_patience", 0) or 0) < 0:
+        raise ValueError("early_stopping_patience must be non-negative (0 disables early stopping).")
 
 
 def _prepare_empty_artifact_directory(path: Path) -> None:
@@ -1200,9 +1293,7 @@ def compute_pose_evaluation_metrics(pred: np.ndarray, targ: np.ndarray) -> dict[
     rmse_xyz = float(np.sqrt(np.mean(np.sum(dpos**2, axis=1))))
     rmse_xy = float(np.sqrt(np.mean(np.sum(dpos[:, :2] ** 2, axis=1))))
     rmse_z = float(np.sqrt(np.mean(dpos[:, 2] ** 2)))
-    ang = _tangent_angle_errors_rad(pred[:, 3:6], targ[:, 3:6])
-    finite_ang = ang[np.isfinite(ang)]
-    return {
+    out = {
         "position_rmse_xyz_mm": rmse_xyz,
         "position_rmse_xy_mm": rmse_xy,
         "position_rmse_z_mm": rmse_z,
@@ -1212,7 +1303,11 @@ def compute_pose_evaluation_metrics(pred: np.ndarray, targ: np.ndarray) -> dict[
             "p95": float(np.percentile(pos_mags, 95)),
             "max": float(np.max(pos_mags)),
         },
-        "tangent_angular_error_rad": (
+    }
+    if pred.shape[1] >= 6 and targ.shape[1] >= 6:
+        ang = _tangent_angle_errors_rad(pred[:, 3:6], targ[:, 3:6])
+        finite_ang = ang[np.isfinite(ang)]
+        out["tangent_angular_error_rad"] = (
             {
                 "mean": float(np.mean(finite_ang)),
                 "median": float(np.median(finite_ang)),
@@ -1221,8 +1316,40 @@ def compute_pose_evaluation_metrics(pred: np.ndarray, targ: np.ndarray) -> dict[
             }
             if finite_ang.size
             else None
-        ),
+        )
+    return out
+
+
+def compute_cable_evaluation_metrics(pred: np.ndarray, targ: np.ndarray) -> dict[str, Any]:
+    """Error metrics for inverse predictions (cable command in cm).
+
+    Used by ``train_inverse_xyz_to_cable``. RMSE is in cm; per-dimension RMSE is also
+    reported so operators can see whether a particular cable channel is the bottleneck.
+    """
+    pred = np.asarray(pred, dtype=float)
+    targ = np.asarray(targ, dtype=float)
+    delta = pred - targ
+    per_cable_rmse = np.sqrt(np.mean(delta**2, axis=0)).tolist()
+    l2 = np.linalg.norm(delta, axis=1)
+    return {
+        "cable_rmse_cm": float(np.sqrt(np.mean(delta**2))),
+        "cable_per_dim_rmse_cm": [float(v) for v in per_cable_rmse],
+        "cable_error_l2_cm": {
+            "mean": float(np.mean(l2)),
+            "median": float(np.median(l2)),
+            "p95": float(np.percentile(l2, 95)),
+            "max": float(np.max(l2)),
+        },
     }
+
+
+def _compute_metrics_for_target(
+    pred: np.ndarray, targ: np.ndarray, *, output_target: str
+) -> dict[str, Any]:
+    target = _resolve_output_target(output_target)
+    if target == OUTPUT_TARGET_CABLE_FROM_XYZ:
+        return compute_cable_evaluation_metrics(pred, targ)
+    return compute_pose_evaluation_metrics(pred, targ)
 
 
 def _eval_torch_loader_metrics(
@@ -1232,8 +1359,16 @@ def _eval_torch_loader_metrics(
     loss_module: Any,
     dataloader: Any,
     device: Any,
+    output_scaler: StandardScaler | None = None,
+    output_target: str = OUTPUT_TARGET_FULL_POSE,
 ) -> dict[str, Any] | None:
-    """Mean per-batch scalar loss plus pose metrics for one split."""
+    """Mean per-batch scalar loss plus geometric metrics for one split.
+
+    When ``output_scaler`` is provided, predictions and targets are inverse-transformed
+    into physical units (mm or cm) before computing geometric metrics. The reported
+    ``loss_mean`` is still in the model's training space (normalized if the scaler was
+    used), so operators read RMSE/L2 as the user-facing number.
+    """
     if len(dataloader) == 0:
         return None
     preds: list[np.ndarray] = []
@@ -1251,7 +1386,10 @@ def _eval_torch_loader_metrics(
         targs.append(targets.detach().cpu().numpy())
     pred = np.concatenate(preds, axis=0)
     targ = np.concatenate(targs, axis=0)
-    metrics = compute_pose_evaluation_metrics(pred, targ)
+    if output_scaler is not None:
+        pred = output_scaler.inverse_transform(pred)
+        targ = output_scaler.inverse_transform(targ)
+    metrics = _compute_metrics_for_target(pred, targ, output_target=output_target)
     return {"loss_mean": float(np.mean(batch_losses)), **metrics}
 
 
@@ -1307,15 +1445,21 @@ def estimate_runtime(
     backend = detect_training_backends(preferred_backend=backend_name)
     device = _torch_device(torch, backend.selected_backend)
     dtype = _torch_dtype(torch, backend.selected_dtype)
+    output_target = _resolve_output_target(getattr(config, "output_target", OUTPUT_TARGET_XYZ))
+    input_dim, output_dim = _model_io_dims(output_target)
+    # ``prepared`` already reflects the right dimensions (caller used the same target).
+    if prepared.inputs.shape[1] != input_dim or prepared.outputs.shape[1] != output_dim:
+        input_dim = int(prepared.inputs.shape[1])
+        output_dim = int(prepared.outputs.shape[1])
     model = _build_legacy_ann_model(
         torch=torch,
-        input_dim=LEGACY_FULL_POSE_INPUT_DIM,
-        output_dim=LEGACY_FULL_POSE_OUTPUT_DIM,
+        input_dim=input_dim,
+        output_dim=output_dim,
         hidden_layers=config.hidden_layers,
         device=device,
         dtype=dtype,
     )
-    loss_module = _build_loss_module(torch=torch, config=config, device=device, dtype=dtype)
+    loss_module = _PlainMseLoss(torch=torch)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(config.learning_rate))
     train_loader, validation_loader, _test_loader = _build_dataloaders(
         torch=torch,
@@ -1400,7 +1544,9 @@ def train_legacy_ann(
     """
     validate_training_config(config)
     torch = _require_torch()
-    prepared = prepare_legacy_ann_dataset(dataset_path)
+    output_target = _resolve_output_target(getattr(config, "output_target", OUTPUT_TARGET_XYZ))
+    input_dim, output_dim = _model_io_dims(output_target)
+    prepared = prepare_legacy_ann_dataset(dataset_path, output_target=output_target)
     if prepared.inputs.shape[0] == 0:
         raise ValueError("Dataset has no accepted full-pose samples after filtering.")
     split_used = split if split is not None else build_grouped_split(prepared, config)
@@ -1430,6 +1576,17 @@ def train_legacy_ann(
     split_manifest_path = artifact_dir_path / "split_manifest.json"
     summary_text_path = artifact_dir_path / "training_summary.txt"
     model_path = artifact_dir_path / "model.pt"
+    scaler_path = artifact_dir_path / "io_scaler.json"
+
+    # Fit I/O scalers on the training split only (no leakage). Saved alongside the model so
+    # inference callers can transform/inverse-transform without the original dataset.
+    scalers: IoScalers | None = None
+    if bool(getattr(config, "standardize_io", True)):
+        if len(split_used.train_indices) > 0:
+            scalers = _fit_io_scalers(prepared=prepared, split=split_used)
+            scaler_path.write_text(json.dumps(scalers.to_dict(), indent=2), encoding="utf-8")
+        else:
+            scalers = None
 
     estimate = estimate_runtime(
         prepared=prepared,
@@ -1444,17 +1601,28 @@ def train_legacy_ann(
         split=split_used,
         config=config,
         dtype=dtype,
+        scalers=scalers,
     )
     model = _build_legacy_ann_model(
         torch=torch,
-        input_dim=LEGACY_FULL_POSE_INPUT_DIM,
-        output_dim=LEGACY_FULL_POSE_OUTPUT_DIM,
+        input_dim=input_dim,
+        output_dim=output_dim,
         hidden_layers=config.hidden_layers,
         device=device,
         dtype=dtype,
     )
-    loss_module = _build_loss_module(torch=torch, config=config, device=device, dtype=dtype)
-    optimizer = torch.optim.Adam(model.parameters(), lr=float(config.learning_rate))
+    # In normalized space (z-scored inputs/outputs) the natural loss is plain MSE on all
+    # output dims. For full-pose runs with standardization disabled we fall back to the
+    # legacy pose/position/orientation losses.
+    if scalers is not None or output_target != OUTPUT_TARGET_FULL_POSE:
+        loss_module = _PlainMseLoss(torch=torch)
+    else:
+        loss_module = _build_loss_module(torch=torch, config=config, device=device, dtype=dtype)
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=float(config.learning_rate),
+        weight_decay=float(getattr(config, "weight_decay", 0.0) or 0.0),
+    )
     train_losses: list[float] = []
     validation_losses: list[float] = []
     epoch_rows: list[dict[str, Any]] = []
@@ -1464,6 +1632,9 @@ def train_legacy_ann(
     status = "completed"
     started_at = time_fn()
     epochs_completed = 0
+    patience = int(getattr(config, "early_stopping_patience", 0) or 0)
+    epochs_since_improvement = 0
+    early_stopped = False
     for epoch in range(1, int(config.epochs) + 1):
         if stop_requested is not None and stop_requested():
             status = "cancelled"
@@ -1495,13 +1666,17 @@ def train_legacy_ann(
         validation_losses.append(float(validation_loss) if validation_loss is not None else float("nan"))
         epochs_completed = epoch
         current_objective = float(validation_loss) if validation_loss is not None else float(train_loss)
-        if best_validation_loss is None or current_objective < best_validation_loss:
+        improved = best_validation_loss is None or current_objective < best_validation_loss
+        if improved:
             best_validation_loss = current_objective
             best_epoch = epoch
             best_state_dict = {
                 key: value.detach().cpu().clone()
                 for key, value in model.state_dict().items()
             }
+            epochs_since_improvement = 0
+        else:
+            epochs_since_improvement += 1
         if bool(config.checkpointing):
             torch.save(
                 {
@@ -1536,11 +1711,16 @@ def train_legacy_ann(
                     status=status,
                 )
             )
+        if patience > 0 and epochs_since_improvement >= patience:
+            early_stopped = True
+            status = "completed_early_stop"
+            break
     if best_state_dict is not None:
         model.load_state_dict(best_state_dict)
         torch.save(best_state_dict, model_path)
     elif model_path.exists():
         model_path.unlink()
+    output_scaler_for_eval = scalers.output_scaler if scalers is not None else None
     test_loss = (
         _run_validation_epoch(
             torch=torch,
@@ -1563,6 +1743,8 @@ def train_legacy_ann(
             loss_module=loss_module,
             dataloader=validation_loader,
             device=device,
+            output_scaler=output_scaler_for_eval,
+            output_target=output_target,
         )
         test_metrics = (
             _eval_torch_loader_metrics(
@@ -1571,6 +1753,8 @@ def train_legacy_ann(
                 loss_module=loss_module,
                 dataloader=test_loader,
                 device=device,
+                output_scaler=output_scaler_for_eval,
+                output_target=output_target,
             )
             if len(test_loader) > 0
             else None
@@ -1606,16 +1790,19 @@ def train_legacy_ann(
         "dataset": dataset_metadata,
         "model": {
             "family": "legacy_ann",
-            "variant": "full_pose",
-            "input_dim": LEGACY_FULL_POSE_INPUT_DIM,
-            "output_dim": LEGACY_FULL_POSE_OUTPUT_DIM,
+            "variant": output_target,
+            "output_target": output_target,
+            "input_dim": int(input_dim),
+            "output_dim": int(output_dim),
             "hidden_layers": list(config.hidden_layers),
             "activation": "relu",
             "dtype": backend_report.selected_dtype,
+            "standardize_io": bool(scalers is not None),
         },
         "loss": {
-            "kind": str(config.loss_kind),
+            "kind": "mse_standardized" if scalers is not None else str(config.loss_kind),
             "pose_orientation_scale": float(config.pose_orientation_scale),
+            "weight_decay": float(getattr(config, "weight_decay", 0.0) or 0.0),
         },
         "backend": {
             "selected_backend": backend_report.selected_backend,
@@ -1635,6 +1822,9 @@ def train_legacy_ann(
             "learning_rate": float(config.learning_rate),
             "batch_size": int(config.batch_size),
             "random_seed": int(config.random_seed),
+            "weight_decay": float(getattr(config, "weight_decay", 0.0) or 0.0),
+            "early_stopping_patience": int(getattr(config, "early_stopping_patience", 0) or 0),
+            "early_stopped": bool(early_stopped),
         },
         "split": {
             "strategy": split_used.strategy,
@@ -1655,8 +1845,11 @@ def train_legacy_ann(
             "split_manifest_path": str(split_manifest_path),
             "summary_text_path": str(summary_text_path),
             "row_filter_report_path": str(artifact_dir_path / "row_filter_report.json"),
+            "scaler_path": (str(scaler_path) if scalers is not None else None),
         },
     }
+    if scalers is not None:
+        metadata_payload["io_scaler"] = scalers.to_dict()
     if training_provenance:
         metadata_payload["training_provenance"] = dict(training_provenance)
     row_filter_report = _emit_row_filter_report_for_artifact(
@@ -1689,6 +1882,48 @@ def train_legacy_ann(
         train_losses=train_losses,
         validation_losses=validation_losses,
         estimate=estimate,
+    )
+
+
+def train_inverse_xyz_to_cable(
+    *,
+    project_root: Path,
+    dataset_path: Path,
+    config: AnnTrainingConfig,
+    backend_name: str,
+    progress_callback: Callable[[TrainingProgress], None] | None = None,
+    stop_requested: Callable[[], bool] | None = None,
+    time_fn: Callable[[], float] = time.perf_counter,
+    split: DatasetSplit | None = None,
+    artifact_dir: Path | None = None,
+    training_provenance: dict[str, Any] | None = None,
+) -> TrainingResult:
+    """Train an inverse model: xyz (3D, mm) → cable command (4D, cm).
+
+    The forward map cable→xyz is well-posed; the inverse cable=g(xyz) is under-determined
+    (3 inputs → 4 outputs), so the network learns one branch of the solution manifold per
+    pose. For thesis-quality "give me cables for this target tip" this is usually fine;
+    for closed-loop control where the *minimum-change* cable command is required, feed
+    the previous cable command in as an extra input (not yet supported).
+
+    All standardization / split-strategy / early-stop / row-filter behaviors mirror
+    :func:`train_legacy_ann`. The artifact's ``model.output_target`` is recorded as
+    ``cable_from_xyz`` so downstream tools can dispatch correctly.
+    """
+    cfg = AnnTrainingConfig(**config.to_dict())
+    cfg.output_target = OUTPUT_TARGET_CABLE_FROM_XYZ
+    cfg.artifact_name = str(cfg.artifact_name or "legacy_ann_inverse_xyz_to_cable") or "legacy_ann_inverse_xyz_to_cable"
+    return train_legacy_ann(
+        project_root=project_root,
+        dataset_path=dataset_path,
+        config=cfg,
+        backend_name=backend_name,
+        progress_callback=progress_callback,
+        stop_requested=stop_requested,
+        time_fn=time_fn,
+        split=split,
+        artifact_dir=artifact_dir,
+        training_provenance=training_provenance,
     )
 
 
@@ -1829,11 +2064,18 @@ def train_linear_ridge_full_pose(
     time_fn: Callable[[], float] = time.perf_counter,
     training_provenance: dict[str, Any] | None = None,
 ) -> TrainingResult:
-    """Closed-form ridge linear map (4 cable cm -> 6 pose) for sweep baseline comparison."""
+    """Closed-form ridge linear baseline for the sweep, matching the ANN's output target.
+
+    Uses ``prepared.inputs`` / ``prepared.outputs`` directly so the same (input_dim,
+    output_dim) shape is used regardless of whether the sweep is in XYZ, full-pose, or
+    cable_from_xyz mode.
+    """
     if stop_requested is not None and stop_requested():
         raise RuntimeError("Cancelled before linear ridge baseline started.")
     torch = _require_torch()
     alpha = float(ridge_alpha if ridge_alpha is not None else config.linear_ridge_alpha)
+    output_target = _resolve_output_target(getattr(config, "output_target", OUTPUT_TARGET_XYZ))
+    input_dim, output_dim = _model_io_dims(output_target)
     backend_report = detect_training_backends(preferred_backend=backend_name)
     device = _torch_device(torch, backend_report.selected_backend)
     dtype = _torch_dtype(torch, backend_report.selected_dtype)
@@ -1856,7 +2098,7 @@ def train_linear_ridge_full_pose(
         coeffs = np.linalg.solve(ata, aty)
     except np.linalg.LinAlgError:
         coeffs = np.linalg.lstsq(ata, aty, rcond=None)[0]
-    lin = torch.nn.Linear(LEGACY_FULL_POSE_INPUT_DIM, LEGACY_FULL_POSE_OUTPUT_DIM).to(device=device, dtype=dtype)
+    lin = torch.nn.Linear(int(input_dim), int(output_dim)).to(device=device, dtype=dtype)
     with torch.no_grad():
         lin.weight.copy_(torch.tensor(coeffs[1:, :].T, dtype=dtype, device=device))
         lin.bias.copy_(torch.tensor(coeffs[0, :], dtype=dtype, device=device))
@@ -1867,7 +2109,7 @@ def train_linear_ridge_full_pose(
         config=config,
         dtype=dtype,
     )
-    loss_module = _build_loss_module(torch=torch, config=config, device=device, dtype=dtype)
+    loss_module = _PlainMseLoss(torch=torch)
     train_loss = (
         _run_validation_epoch(
             torch=torch,
@@ -1908,6 +2150,7 @@ def train_linear_ridge_full_pose(
         loss_module=loss_module,
         dataloader=validation_loader,
         device=device,
+        output_target=output_target,
     )
     test_metrics = (
         _eval_torch_loader_metrics(
@@ -1916,6 +2159,7 @@ def train_linear_ridge_full_pose(
             loss_module=loss_module,
             dataloader=test_loader,
             device=device,
+            output_target=output_target,
         )
         if len(test_loader) > 0
         else None
@@ -1969,9 +2213,10 @@ def train_linear_ridge_full_pose(
         "dataset": dataset_metadata,
         "model": {
             "family": "linear_ridge_full_pose",
-            "variant": "full_pose",
-            "input_dim": LEGACY_FULL_POSE_INPUT_DIM,
-            "output_dim": LEGACY_FULL_POSE_OUTPUT_DIM,
+            "variant": output_target,
+            "output_target": output_target,
+            "input_dim": int(input_dim),
+            "output_dim": int(output_dim),
             "hidden_layers": [],
             "ridge_alpha": alpha,
             "dtype": backend_report.selected_dtype,
@@ -2071,7 +2316,8 @@ def run_model_sweep(
 ) -> ModelSweepResult:
     """Train linear ridge (optional) and several ANNs sharing one split; write sweep summaries."""
     _require_torch()
-    prepared = prepare_legacy_ann_dataset(dataset_path)
+    output_target = _resolve_output_target(getattr(base_config, "output_target", OUTPUT_TARGET_XYZ))
+    prepared = prepare_legacy_ann_dataset(dataset_path, output_target=output_target)
     if prepared.inputs.shape[0] == 0:
         raise ValueError("Dataset has no accepted full-pose samples after filtering.")
     validate_training_config(base_config)
@@ -2553,6 +2799,86 @@ def _build_legacy_ann_model(*, torch, input_dim: int, output_dim: int, hidden_la
     return model.to(device=device, dtype=dtype)
 
 
+@dataclass(frozen=True)
+class StandardScaler:
+    """Per-feature Z-score scaler fit on the training split.
+
+    Saved into the artifact so inference can ``transform`` raw inputs and ``inverse_transform``
+    raw outputs without needing the original training data. ``std`` is clipped to ``eps``
+    to make division safe for near-constant features.
+    """
+
+    mean: np.ndarray
+    std: np.ndarray
+    eps: float = 1e-8
+
+    def transform(self, x: np.ndarray) -> np.ndarray:
+        return (np.asarray(x, dtype=float) - self.mean) / np.maximum(self.std, self.eps)
+
+    def inverse_transform(self, x_norm: np.ndarray) -> np.ndarray:
+        return np.asarray(x_norm, dtype=float) * np.maximum(self.std, self.eps) + self.mean
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mean": [float(v) for v in self.mean.tolist()],
+            "std": [float(v) for v in self.std.tolist()],
+            "eps": float(self.eps),
+        }
+
+    @classmethod
+    def fit(cls, x: np.ndarray, *, eps: float = 1e-8) -> "StandardScaler":
+        arr = np.asarray(x, dtype=float)
+        if arr.ndim != 2 or arr.shape[0] < 1:
+            raise ValueError("StandardScaler.fit requires a 2D array with at least 1 row.")
+        mean = arr.mean(axis=0)
+        std = arr.std(axis=0)
+        return cls(mean=mean, std=std, eps=float(eps))
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "StandardScaler":
+        return cls(
+            mean=np.asarray(payload["mean"], dtype=float),
+            std=np.asarray(payload["std"], dtype=float),
+            eps=float(payload.get("eps", 1e-8)),
+        )
+
+
+@dataclass(frozen=True)
+class IoScalers:
+    """Pair of scalers for the model's inputs and outputs."""
+
+    input_scaler: StandardScaler
+    output_scaler: StandardScaler
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "input": self.input_scaler.to_dict(),
+            "output": self.output_scaler.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "IoScalers":
+        return cls(
+            input_scaler=StandardScaler.from_dict(payload["input"]),
+            output_scaler=StandardScaler.from_dict(payload["output"]),
+        )
+
+
+def _fit_io_scalers(
+    *,
+    prepared: PreparedLegacyAnnDataset,
+    split: DatasetSplit,
+) -> IoScalers:
+    """Fit per-feature scalers on the training partition only (no leakage)."""
+    train_idx = np.asarray(split.train_indices, dtype=int)
+    if train_idx.size < 1:
+        raise ValueError("Cannot fit scalers: training split is empty.")
+    return IoScalers(
+        input_scaler=StandardScaler.fit(prepared.inputs[train_idx]),
+        output_scaler=StandardScaler.fit(prepared.outputs[train_idx]),
+    )
+
+
 def _build_loss_module(*, torch, config: AnnTrainingConfig, device, dtype):
     loss_kind = str(config.loss_kind).strip().lower()
     if loss_kind == "position":
@@ -2566,6 +2892,16 @@ def _build_loss_module(*, torch, config: AnnTrainingConfig, device, dtype):
         device=device,
         dtype=dtype,
     )
+
+
+class _PlainMseLoss:
+    """Element-wise MSE — the natural loss when inputs/outputs are Z-score-standardized."""
+
+    def __init__(self, *, torch) -> None:
+        self._torch = torch
+
+    def __call__(self, pred, target):
+        return self._torch.nn.functional.mse_loss(pred, target)
 
 
 class _PoseLoss:
@@ -2599,9 +2935,29 @@ class _OrientationLoss:
         return self._torch.sqrt(self._torch.nn.functional.mse_loss(pred[:, 3:], target[:, 3:]) * 3.0)
 
 
-def _build_dataloaders(*, torch, prepared: PreparedLegacyAnnDataset, split: DatasetSplit, config: AnnTrainingConfig, dtype):
-    tensor_inputs = torch.tensor(prepared.inputs, dtype=dtype)
-    tensor_outputs = torch.tensor(prepared.outputs, dtype=dtype)
+def _build_dataloaders(
+    *,
+    torch,
+    prepared: PreparedLegacyAnnDataset,
+    split: DatasetSplit,
+    config: AnnTrainingConfig,
+    dtype,
+    scalers: IoScalers | None = None,
+):
+    """Build train/val/test loaders.
+
+    When ``scalers`` is provided, both inputs and outputs are Z-score-standardized before
+    being wrapped in tensors. Training/validation/test all loop in normalized space; the
+    caller is responsible for inverse-transforming predictions before computing geometric
+    metrics or saving them.
+    """
+    inputs_np = np.asarray(prepared.inputs, dtype=float)
+    outputs_np = np.asarray(prepared.outputs, dtype=float)
+    if scalers is not None:
+        inputs_np = scalers.input_scaler.transform(inputs_np)
+        outputs_np = scalers.output_scaler.transform(outputs_np)
+    tensor_inputs = torch.tensor(inputs_np, dtype=dtype)
+    tensor_outputs = torch.tensor(outputs_np, dtype=dtype)
     dataset = torch.utils.data.TensorDataset(tensor_inputs, tensor_outputs)
     generator = torch.Generator()
     generator.manual_seed(int(config.random_seed))

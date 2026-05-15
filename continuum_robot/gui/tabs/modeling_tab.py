@@ -31,9 +31,19 @@ from continuum_robot.gui.widgets.experiment_results_widget import ExperimentResu
 class ModelingTab(QWidget):
     """Dataset/artifact browser plus evaluation workspace."""
 
-    def __init__(self, controller: ModelingController, parent=None) -> None:
+    def __init__(
+        self,
+        controller: ModelingController,
+        *,
+        open_in_ann_training=None,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.controller = controller
+        # Callback that opens the ANN training popout, pre-selecting the highlighted dataset.
+        # Provided by the AppWindow so the Modeling tab can launch training without owning the
+        # ANN controller/window itself.
+        self._ann_training_opener = open_in_ann_training
         self.setObjectName("modelingWorkspace")
         self.setStyleSheet(
             grouped_workspace_stylesheet(
@@ -156,10 +166,17 @@ class ModelingTab(QWidget):
         self.evaluate_button = QPushButton("Run Comparison")
         self.evaluate_button.setProperty("role", "primary")
         self.evaluate_button.clicked.connect(self.controller.evaluate)
+        self.train_ann_button = QPushButton("Train ANN")
+        self.train_ann_button.setProperty("role", "primary")
+        self.train_ann_button.setToolTip(
+            "Open the ANN training popout with the currently selected modeling dataset preloaded."
+        )
+        self.train_ann_button.clicked.connect(self._open_ann_training_from_modeling)
         self.open_results_button = QPushButton("Open Results Folder")
         self.open_results_button.setProperty("variant", "ghost")
         self.open_results_button.clicked.connect(self._open_results_folder)
         action_row.addWidget(self.evaluate_button)
+        action_row.addWidget(self.train_ann_button)
         action_row.addWidget(self.open_results_button)
         action_row.addStretch(1)
         controls_card.body_layout.addLayout(action_row)
@@ -423,6 +440,19 @@ class ModelingTab(QWidget):
         state = self.controller.refresh()
         if state.last_output_path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(state.last_output_path))))
+
+    def _open_ann_training_from_modeling(self) -> None:
+        """Hand the currently-selected dataset path off to the ANN training popout."""
+        if self._ann_training_opener is None:
+            self.status_label.setText(
+                "ANN training popout is not available in this context."
+            )
+            return
+        state = self.controller.refresh()
+        if not state.selected_dataset_path:
+            self.status_label.setText("Select a modeling dataset before opening ANN training.")
+            return
+        self._ann_training_opener(state.selected_dataset_path)
 
     def _open_two_segment_output(self) -> None:
         state = self.controller.refresh()
