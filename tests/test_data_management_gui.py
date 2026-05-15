@@ -23,6 +23,23 @@ def _app() -> QApplication:
     return app
 
 
+def _count_tree_leaves(tab: DataManagementTab) -> int:
+    count = 0
+    tree = tab.tree
+    role = tab.TREE_PATH_ROLE
+
+    def walk(node):
+        nonlocal count
+        if node.data(0, role):
+            count += 1
+        for index in range(node.childCount()):
+            walk(node.child(index))
+
+    for index in range(tree.topLevelItemCount()):
+        walk(tree.topLevelItem(index))
+    return count
+
+
 def test_data_management_tab_wraps_workspace_in_scroll_area(tmp_path) -> None:
     _app()
     controller = DataManagementController(project_root=tmp_path)
@@ -39,7 +56,7 @@ def test_data_management_tab_updates_from_controller_state(tmp_path) -> None:
 
     tab.update(controller.refresh())
 
-    assert tab.table.columnCount() == 8
+    assert tab.tree.columnCount() == 5
     assert tab.delete_button.text() == "Delete Selected File/Bundle"
     assert tab.trash_run_button.text() == "Move Selected Run to Trash"
     assert tab.delete_button.isEnabled() is False
@@ -91,7 +108,7 @@ def test_data_management_tab_preset_filters_segment_b(tmp_path) -> None:
     index = tab.preset_combo.findData("segment_b")
     tab.preset_combo.setCurrentIndex(index)
 
-    assert tab.table.rowCount() == 1
+    assert _count_tree_leaves(tab) == 1
     assert controller.state.operating_mode_filter == "single_segment"
     assert controller.state.segment_filter == "segment_b"
 
@@ -116,5 +133,5 @@ def test_data_management_table_refresh_does_not_read_samples_jsonl(tmp_path, mon
 
     tab.update(controller.refresh())
 
-    assert tab.table.rowCount() == 1
+    assert _count_tree_leaves(tab) == 1
     assert controller.state.performance_pairs

@@ -6,7 +6,9 @@ from pathlib import Path
 from time import perf_counter
 
 from PySide6.QtCore import QSignalBlocker, Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QColor, QDesktopServices
+
+from typing import Any
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -21,6 +23,9 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -46,7 +51,10 @@ class DataManagementTab(QWidget):
         ("Trash", "trash"),
     ]
 
-    COLUMN_LABELS = ["Timestamp", "Experiment", "Run", "Validation", "Trust", "Mode / Segment", "Flags", "Path"]
+    COLUMN_LABELS = ["Name", "Status", "Size", "When", "Path"]
+    TREE_PATH_ROLE = Qt.UserRole + 1
+    TREE_GROUP_PATHS_ROLE = Qt.UserRole + 2
+    TREE_DEBUG_PATHS_ROLE = Qt.UserRole + 3
 
     def __init__(
         self, controller: DataManagementController, *, open_in_ann_training=None, parent=None
@@ -54,6 +62,7 @@ class DataManagementTab(QWidget):
         super().__init__(parent)
         self.controller = controller
         self._ann_training_opener = open_in_ann_training
+        self._tree_fingerprint: tuple | None = None
         self.setObjectName("dataManagementWorkspace")
         self.setStyleSheet(
             grouped_workspace_stylesheet(
@@ -77,18 +86,17 @@ class DataManagementTab(QWidget):
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(12)
 
-        title = QLabel("Data Management")
+        title = QLabel("Data")
         title.setProperty("role", "title")
-        hint = QLabel(
-            "Browse canonical calibration, experiment, modeling, and diagnostic outputs in one place. "
-            "Use this tab for safe multi-select cleanup instead of deleting data from scattered workflow pages."
+        self.summary_stats_label = QLabel("Scanning…")
+        self.summary_stats_label.setStyleSheet(
+            f"color: {COLORS.text_primary}; font-weight: 600; padding: 4px 0;"
         )
-        hint.setProperty("role", "hint")
-        hint.setWordWrap(True)
+        self.summary_stats_label.setWordWrap(True)
         root.addWidget(title)
-        root.addWidget(hint)
+        root.addWidget(self.summary_stats_label)
 
-        filters_card = _Card("Browse", "Filter saved artifacts by category or search text, then act on the selected rows.")
+        filters_card = _Section()
         filter_row = QHBoxLayout()
         filter_row.setContentsMargins(0, 0, 0, 0)
         filter_row.setSpacing(10)
@@ -124,6 +132,8 @@ class DataManagementTab(QWidget):
         filter_row.addWidget(self.search_input, 1)
         filter_row.addWidget(self.refresh_button, 0)
         filters_card.body_layout.addLayout(filter_row)
+
+        more_filters_section = _CollapsibleSection("More filters", expanded=False)
 
         filter_row_2 = QHBoxLayout()
         filter_row_2.setContentsMargins(0, 0, 0, 0)
@@ -162,7 +172,7 @@ class DataManagementTab(QWidget):
         filter_row_2.addWidget(self.trust_filter_combo)
         filter_row_2.addWidget(QLabel("Sort"))
         filter_row_2.addWidget(self.sort_combo)
-        filters_card.body_layout.addLayout(filter_row_2)
+        more_filters_section.body_layout.addLayout(filter_row_2)
 
         filter_row_3 = QHBoxLayout()
         filter_row_3.setContentsMargins(0, 0, 0, 0)
@@ -198,35 +208,50 @@ class DataManagementTab(QWidget):
             filter_row_3.addWidget(QLabel(label))
             filter_row_3.addWidget(combo)
         filter_row_3.addStretch(1)
-        filters_card.body_layout.addLayout(filter_row_3)
+        more_filters_section.body_layout.addLayout(filter_row_3)
+        filters_card.body_layout.addWidget(more_filters_section)
 
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(len(self.COLUMN_LABELS))
+        self.tree.setHeaderLabels(self.COLUMN_LABELS)
+        self.tree.setSelectionMode(QTreeWidget.ExtendedSelection)
+        self.tree.setUniformRowHeights(True)
+        self.tree.setAllColumnsShowFocus(True)
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setRootIsDecorated(True)
+        self.tree.setExpandsOnDoubleClick(True)
+        self.tree.setMinimumHeight(360)
+        tree_header = self.tree.header()
+        tree_header.setSectionResizeMode(0, QHeaderView.Stretch)
+        tree_header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        tree_header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        tree_header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        tree_header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.tree.itemSelectionChanged.connect(self._sync_selection_from_tree)
+        # Hidden table retained for back-compat with existing helpers/tests that
+        # may still reference it. The tree above is the active operator surface.
         self.table = QTableWidget(0, len(self.COLUMN_LABELS))
-        self.table.setHorizontalHeaderLabels(self.COLUMN_LABELS)
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.table.setSelectionMode(QTableWidget.ExtendedSelection)
-        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.table.setAlternatingRowColors(True)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setMinimumHeight(360)
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(7, QHeaderView.Stretch)
-        self.table.itemSelectionChanged.connect(self._sync_selection_from_table)
-        filters_card.body_layout.addWidget(self.table)
+        self.table.setVisible(False)
+
+        # "Quick clean" call-to-action: surfaces only when there are debug-marked runs.
+        self.quick_clean_button = QPushButton("Trash debug-marked runs")
+        self.quick_clean_button.setProperty("role", "primary")
+        self.quick_clean_button.clicked.connect(self._quick_clean_debug)
+        self.quick_clean_button.setVisible(False)
+        self.quick_clean_label = QLabel("")
+        self.quick_clean_label.setStyleSheet(f"color: {COLORS.text_muted};")
+        self.quick_clean_label.setVisible(False)
+        quick_clean_row = QHBoxLayout()
+        quick_clean_row.setContentsMargins(0, 0, 0, 0)
+        quick_clean_row.setSpacing(8)
+        quick_clean_row.addWidget(self.quick_clean_button)
+        quick_clean_row.addWidget(self.quick_clean_label, 1)
+
         root.addWidget(filters_card)
+        root.addLayout(quick_clean_row)
+        root.addWidget(self.tree, 1)
 
-        lower = QHBoxLayout()
-        lower.setContentsMargins(0, 0, 0, 0)
-        lower.setSpacing(12)
-        root.addLayout(lower, 1)
-
-        actions_card = _Card("Actions", "Primary operator actions for the selected bundle(s).")
+        actions_card = _Section()
         action_row = QHBoxLayout()
         action_row.setContentsMargins(0, 0, 0, 0)
         action_row.setSpacing(10)
@@ -248,9 +273,10 @@ class DataManagementTab(QWidget):
         action_row.addWidget(self.reveal_button)
         action_row.addWidget(self.copy_path_button)
         action_row.addWidget(self.open_ann_training_button)
-        action_row.addWidget(self.delete_button)
-        action_row.addStretch(1)
-        actions_card.body_layout.addLayout(action_row)
+        action_row.addSpacing(16)
+
+        advanced_actions_section = _CollapsibleSection("Advanced actions", expanded=False)
+
         export_row = QHBoxLayout()
         export_row.setContentsMargins(0, 0, 0, 0)
         export_row.setSpacing(10)
@@ -276,7 +302,7 @@ class DataManagementTab(QWidget):
         export_row.addWidget(self.include_debug_checkbox)
         export_row.addWidget(self.zip_export_checkbox)
         export_row.addStretch(1)
-        actions_card.body_layout.addLayout(export_row)
+        advanced_actions_section.body_layout.addLayout(export_row)
         export_copy_row = QHBoxLayout()
         export_copy_row.setContentsMargins(0, 0, 0, 0)
         export_copy_row.setSpacing(10)
@@ -293,7 +319,7 @@ class DataManagementTab(QWidget):
         export_copy_row.addWidget(self.copy_transfer_command_button)
         export_copy_row.addWidget(self.open_exports_folder_button)
         export_copy_row.addStretch(1)
-        actions_card.body_layout.addLayout(export_copy_row)
+        advanced_actions_section.body_layout.addLayout(export_copy_row)
         validation_row = QHBoxLayout()
         validation_row.setContentsMargins(0, 0, 0, 0)
         validation_row.setSpacing(10)
@@ -309,23 +335,19 @@ class DataManagementTab(QWidget):
         validation_row.addWidget(self.validate_latest_button)
         validation_row.addWidget(self.validate_experiment_button)
         validation_row.addStretch(1)
-        actions_card.body_layout.addLayout(validation_row)
-        modeling_row = QHBoxLayout()
-        modeling_row.setContentsMargins(0, 0, 0, 0)
-        modeling_row.setSpacing(10)
+        advanced_actions_section.body_layout.addLayout(validation_row)
+        # Two-segment modeling lives on the Modeling tab; modeling-bundle export
+        # is covered by Export Human Packet on any run. Hidden no-op widgets
+        # kept for back-compat with controller state flags and tests.
         self.run_two_segment_modeling_button = QPushButton("Run Two-Segment Modeling")
         self.run_two_segment_modeling_button.clicked.connect(self._run_two_segment_modeling)
+        self.run_two_segment_modeling_button.setVisible(False)
         self.open_modeling_summary_button = QPushButton("Open Modeling Summary")
-        self.open_modeling_summary_button.setProperty("variant", "ghost")
         self.open_modeling_summary_button.clicked.connect(self._open_modeling_summary)
+        self.open_modeling_summary_button.setVisible(False)
         self.export_modeling_bundle_button = QPushButton("Export Modeling Bundle")
-        self.export_modeling_bundle_button.setProperty("variant", "ghost")
         self.export_modeling_bundle_button.clicked.connect(self._export_modeling_bundle)
-        modeling_row.addWidget(self.run_two_segment_modeling_button)
-        modeling_row.addWidget(self.open_modeling_summary_button)
-        modeling_row.addWidget(self.export_modeling_bundle_button)
-        modeling_row.addStretch(1)
-        actions_card.body_layout.addLayout(modeling_row)
+        self.export_modeling_bundle_button.setVisible(False)
         review_row = QHBoxLayout()
         review_row.setContentsMargins(0, 0, 0, 0)
         review_row.setSpacing(10)
@@ -353,63 +375,61 @@ class DataManagementTab(QWidget):
         review_row.addWidget(self.intended_use_combo)
         review_row.addWidget(self.include_evidence_checkbox)
         review_row.addWidget(self.save_review_button)
-        actions_card.body_layout.addLayout(review_row)
-        lifecycle_row = QHBoxLayout()
-        lifecycle_row.setContentsMargins(0, 0, 0, 0)
-        lifecycle_row.setSpacing(10)
+        advanced_actions_section.body_layout.addLayout(review_row)
         self.archive_run_button = QPushButton("Archive Selected Run")
         self.archive_run_button.setProperty("variant", "ghost")
         self.archive_run_button.clicked.connect(self._archive_selected_run)
         self.trash_run_button = QPushButton("Move Selected Run to Trash")
         self.trash_run_button.setProperty("variant", "danger")
         self.trash_run_button.clicked.connect(self._trash_selected_run)
+        # Evidence-index build is a one-off thesis-rollup operation; available
+        # via the CLI script when needed. Hidden no-op kept for compatibility.
         self.build_evidence_index_button = QPushButton("Build Evidence Index")
-        self.build_evidence_index_button.setProperty("variant", "ghost")
         self.build_evidence_index_button.clicked.connect(self._build_evidence_index)
+        self.build_evidence_index_button.setVisible(False)
         self.include_debug_evidence_checkbox = QCheckBox("Include debug")
+        self.include_debug_evidence_checkbox.setVisible(False)
         self.include_mock_evidence_checkbox = QCheckBox("Include mock")
-        lifecycle_row.addWidget(self.archive_run_button)
-        lifecycle_row.addWidget(self.trash_run_button)
-        lifecycle_row.addWidget(self.build_evidence_index_button)
-        lifecycle_row.addWidget(self.include_debug_evidence_checkbox)
-        lifecycle_row.addWidget(self.include_mock_evidence_checkbox)
-        lifecycle_row.addStretch(1)
-        actions_card.body_layout.addLayout(lifecycle_row)
+        self.include_mock_evidence_checkbox.setVisible(False)
+        action_row.addWidget(self.archive_run_button)
+        action_row.addWidget(self.trash_run_button)
+        action_row.addWidget(self.delete_button)
+        action_row.addStretch(1)
+        actions_card.body_layout.addLayout(action_row)
+        actions_card.body_layout.addWidget(advanced_actions_section)
         self.status_label = QLabel("Browse saved calibration, experiment, modeling, and diagnostic artifacts.")
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(f"color: {COLORS.text_primary};")
         actions_card.body_layout.addWidget(self.status_label)
-        lower.addWidget(actions_card, 3)
+        root.addWidget(actions_card)
 
-        details_card = _Card("Details", "Canonical roots, normalized selection details, and legacy migration status.")
+        # Migration buttons + diagnostic key/value widgets removed. The
+        # project has no legacy `runs/` directory; migration is a dead
+        # feature. selection_pairs / root_pairs / performance_pairs are kept
+        # only as hidden widgets so update() and tests that reference them
+        # don't break. The new tree already surfaces per-run status, size,
+        # and path on each row.
         self.selection_pairs = _PairsWidget()
+        self.selection_pairs.setVisible(False)
         self.root_pairs = _PairsWidget()
-        migration_row = QHBoxLayout()
-        migration_row.setContentsMargins(0, 0, 0, 0)
-        migration_row.setSpacing(10)
+        self.root_pairs.setVisible(False)
+        self.migration_pairs = _PairsWidget()
+        self.migration_pairs.setVisible(False)
+        self.performance_pairs = _PairsWidget()
+        self.performance_pairs.setVisible(False)
         self.preview_migration_button = QPushButton("Preview Legacy Migration")
         self.preview_migration_button.clicked.connect(self._preview_migration)
+        self.preview_migration_button.setVisible(False)
         self.apply_migration_button = QPushButton("Apply Previewed Migration")
-        self.apply_migration_button.setProperty("variant", "danger")
         self.apply_migration_button.clicked.connect(self._apply_migration)
+        self.apply_migration_button.setVisible(False)
         self.open_migration_report_button = QPushButton("Open Migration Ledger")
-        self.open_migration_report_button.setProperty("variant", "ghost")
         self.open_migration_report_button.clicked.connect(self._open_migration_report)
-        migration_row.addWidget(self.preview_migration_button)
-        migration_row.addWidget(self.apply_migration_button)
-        migration_row.addWidget(self.open_migration_report_button)
-        migration_row.addStretch(1)
-        details_card.body_layout.addLayout(migration_row)
-        self.migration_pairs = _PairsWidget()
-        self.performance_pairs = _PairsWidget()
-        details_card.body_layout.addWidget(self.selection_pairs)
-        details_card.body_layout.addWidget(self.migration_pairs)
-        details_card.body_layout.addWidget(self.performance_pairs)
-        details_card.body_layout.addWidget(self.root_pairs)
-        lower.addWidget(details_card, 2)
+        self.open_migration_report_button.setVisible(False)
 
     def update(self, state: DataManagementViewState) -> None:
         self._sync_filter_options(state)
+        self._update_summary_stats(state)
         self._set_combo(self.category_combo, state.category_filter)
         self._set_line_edit(self.search_input, state.search_text)
         self._set_combo(self.root_filter_combo, state.root_filter)
@@ -472,6 +492,38 @@ class DataManagementTab(QWidget):
         self.controller.invalidate_catalog()
         self.update(self.controller.refresh())
 
+    def _update_summary_stats(self, state: DataManagementViewState) -> None:
+        total_count = len(state.items)
+        shown_count = len(state.filtered_items)
+        total_bytes = 0
+        trash_count = 0
+        mock_count = 0
+        keep_count = 0
+        for summary in state.run_summaries_by_path.values():
+            try:
+                total_bytes += int(getattr(summary, "total_size_bytes", 0) or 0)
+            except (TypeError, ValueError):
+                pass
+            review = getattr(summary, "review", None)
+            review_status = str(getattr(review, "review_status", "") or "").lower()
+            if review_status in {"garbage", "debug"}:
+                trash_count += 1
+            elif review_status in {"keep", "thesis_candidate", "advisor_share", "archived"}:
+                keep_count += 1
+            if bool(getattr(summary, "mock_mode", False)):
+                mock_count += 1
+        parts = [
+            f"{shown_count} of {total_count} shown",
+            f"{_format_bytes(total_bytes)}",
+        ]
+        if mock_count:
+            parts.append(f"{mock_count} mock-mode")
+        if trash_count:
+            parts.append(f"{trash_count} marked trash")
+        if keep_count:
+            parts.append(f"{keep_count} kept")
+        self.summary_stats_label.setText("  ·  ".join(parts))
+
     def _on_category_changed(self, _index: int) -> None:
         self.controller.set_category_filter(str(self.category_combo.currentData() or "all"))
         self.update(self.controller.refresh())
@@ -489,43 +541,325 @@ class DataManagementTab(QWidget):
         self.update(self.controller.refresh())
 
     def _sync_table(self, state: DataManagementViewState) -> float:
+        return self._sync_tree(state)
+
+    def _sync_tree(self, state: DataManagementViewState) -> float:
         started = perf_counter()
-        current_paths = [
-            self.table.item(row, 0).data(Qt.UserRole)
-            for row in range(self.table.rowCount())
-            if self.table.item(row, 0) is not None
-        ]
-        target_paths = [str(item.path) for item in state.filtered_items]
-        if current_paths != target_paths:
-            with QSignalBlocker(self.table):
-                self.table.setRowCount(len(state.filtered_items))
-                for row, item in enumerate(state.filtered_items):
-                    run_dir = _run_dir_for_item(item)
-                    summary = state.run_summaries_by_path.get(str(run_dir)) if run_dir is not None else None
-                    values = _table_values(item, self.controller.project_root, summary=summary)
-                    for column, value in enumerate(values):
-                        cell = QTableWidgetItem(str(value))
-                        cell.setData(Qt.UserRole, str(item.path))
-                        if column == 7:
-                            cell.setToolTip(str(item.path))
-                        self.table.setItem(row, column, cell)
-        with QSignalBlocker(self.table):
-            self.table.clearSelection()
-            selected = set(state.selected_paths)
-            for row in range(self.table.rowCount()):
-                item = self.table.item(row, 0)
-                if item is not None and item.data(Qt.UserRole) in selected:
-                    self.table.selectRow(row)
+        project_root = self.controller.project_root
+        # Build hierarchical buckets: category_label -> experiment_name -> [items]
+        category_order: list[str] = []
+        category_buckets: dict[str, dict[str, list]] = {}
+        item_summary: dict[str, Any] = {}
+        for item in state.filtered_items:
+            run_dir = _run_dir_for_item(item)
+            summary = state.run_summaries_by_path.get(str(run_dir)) if run_dir is not None else None
+            item_summary[str(item.path)] = summary
+            cat = item.category_label or item.category_key or "Other"
+            if cat not in category_buckets:
+                category_buckets[cat] = {}
+                category_order.append(cat)
+            experiment_key = ""
+            if summary is not None:
+                experiment_key = str(getattr(summary, "experiment_name", "") or "")
+            elif item.category_key == "experiments":
+                experiment_key = item.readable_name
+            category_buckets[cat].setdefault(experiment_key, []).append(item)
+
+        selected_paths = set(state.selected_paths)
+
+        # Skip the rebuild when the underlying data hasn't changed. The
+        # AppWindow refresh timer fires this method ~10 Hz; rebuilding the
+        # tree every tick collapses expanded groups and disrupts selection.
+        fingerprint = self._compute_tree_fingerprint(state, item_summary)
+        if fingerprint == self._tree_fingerprint:
+            self._update_tree_selection(selected_paths)
+            self._update_quick_clean_button_from_state(state, item_summary)
+            return (perf_counter() - started) * 1000.0
+
+        expanded_keys = self._capture_expanded_keys()
+        scroll_value = self.tree.verticalScrollBar().value() if self.tree.verticalScrollBar() else 0
+        self._tree_fingerprint = fingerprint
+
+        debug_run_count = 0
+        debug_run_size = 0
+
+        with QSignalBlocker(self.tree):
+            self.tree.clear()
+            for cat in category_order:
+                experiments = category_buckets[cat]
+                cat_items = [it for items in experiments.values() for it in items]
+                cat_size = sum(self._size_for(it, item_summary) for it in cat_items)
+                cat_paths = [str(it.path) for it in cat_items]
+                cat_node = QTreeWidgetItem([
+                    f"{cat}  ({len(cat_items)})",
+                    "",
+                    _format_bytes(cat_size),
+                    "",
+                    "",
+                ])
+                cat_node.setData(0, self.TREE_GROUP_PATHS_ROLE, cat_paths)
+                cat_node.setData(0, self.TREE_DEBUG_PATHS_ROLE, [
+                    str(it.path) for it in cat_items
+                    if self._is_debug(item_summary.get(str(it.path)))
+                ])
+                cat_node.setFirstColumnSpanned(False)
+                self.tree.addTopLevelItem(cat_node)
+                # If only one experiment in this category, fold runs directly under category.
+                if len(experiments) == 1 and not next(iter(experiments)).strip():
+                    runs = next(iter(experiments.values()))
+                    for run_item in runs:
+                        run_node = self._build_run_node(run_item, item_summary.get(str(run_item.path)), project_root)
+                        cat_node.addChild(run_node)
+                        if str(run_item.path) in selected_paths:
+                            run_node.setSelected(True)
+                        if self._is_debug(item_summary.get(str(run_item.path))):
+                            debug_run_count += 1
+                            debug_run_size += self._size_for(run_item, item_summary)
+                else:
+                    for experiment_name, runs in sorted(experiments.items()):
+                        runs_sorted = sorted(runs, key=lambda it: it.timestamp_sort_key, reverse=True)
+                        exp_size = sum(self._size_for(it, item_summary) for it in runs_sorted)
+                        keep_count = sum(1 for it in runs_sorted if self._is_keeper(item_summary.get(str(it.path))))
+                        debug_count = sum(1 for it in runs_sorted if self._is_debug(item_summary.get(str(it.path))))
+                        title = experiment_name or "(other)"
+                        signals = []
+                        if keep_count:
+                            signals.append(f"★ {keep_count} keep")
+                        if debug_count:
+                            signals.append(f"🗑 {debug_count} debug")
+                        exp_node = QTreeWidgetItem([
+                            f"{title}  ({len(runs_sorted)})",
+                            "  ·  ".join(signals),
+                            _format_bytes(exp_size),
+                            "",
+                            "",
+                        ])
+                        exp_paths = [str(it.path) for it in runs_sorted]
+                        exp_debug_paths = [
+                            str(it.path) for it in runs_sorted
+                            if self._is_debug(item_summary.get(str(it.path)))
+                        ]
+                        exp_node.setData(0, self.TREE_GROUP_PATHS_ROLE, exp_paths)
+                        exp_node.setData(0, self.TREE_DEBUG_PATHS_ROLE, exp_debug_paths)
+                        cat_node.addChild(exp_node)
+                        for run_item in runs_sorted:
+                            run_node = self._build_run_node(run_item, item_summary.get(str(run_item.path)), project_root)
+                            exp_node.addChild(run_node)
+                            if str(run_item.path) in selected_paths:
+                                run_node.setSelected(True)
+                            if self._is_debug(item_summary.get(str(run_item.path))):
+                                debug_run_count += 1
+                                debug_run_size += self._size_for(run_item, item_summary)
+            self._restore_expanded_keys(expanded_keys)
+
+        if self.tree.verticalScrollBar() is not None:
+            self.tree.verticalScrollBar().setValue(scroll_value)
+        self._update_quick_clean_button(debug_run_count, debug_run_size)
         return (perf_counter() - started) * 1000.0
 
-    def _sync_selection_from_table(self) -> None:
-        paths = []
-        for index in self.table.selectionModel().selectedRows():
-            item = self.table.item(index.row(), 0)
-            if item is not None:
-                paths.append(str(item.data(Qt.UserRole)))
-        self.controller.set_selected_paths(paths)
+    def _compute_tree_fingerprint(self, state: DataManagementViewState, item_summary: dict) -> tuple:
+        parts: list[tuple] = []
+        for item in state.filtered_items:
+            path = str(item.path)
+            summary = item_summary.get(path)
+            if summary is not None:
+                review = getattr(getattr(summary, "review", None), "review_status", "")
+                parts.append((
+                    path,
+                    item.category_key,
+                    str(getattr(summary, "experiment_name", "") or ""),
+                    int(getattr(summary, "total_size_bytes", 0) or 0),
+                    str(review or ""),
+                    bool(getattr(summary, "mock_mode", False)),
+                    str(getattr(summary, "run_trust_mode", "") or ""),
+                    item.timestamp_label,
+                ))
+            else:
+                parts.append((
+                    path,
+                    item.category_key,
+                    "",
+                    0,
+                    str(getattr(item, "status", "") or ""),
+                    False,
+                    "",
+                    item.timestamp_label,
+                ))
+        return tuple(parts)
+
+    def _capture_expanded_keys(self) -> set[str]:
+        keys: set[str] = set()
+
+        def walk(node: QTreeWidgetItem, path: str) -> None:
+            child_key = f"{path}>{node.text(0)}"
+            if node.isExpanded():
+                keys.add(child_key)
+            for index in range(node.childCount()):
+                walk(node.child(index), child_key)
+
+        for index in range(self.tree.topLevelItemCount()):
+            walk(self.tree.topLevelItem(index), "")
+        return keys
+
+    def _restore_expanded_keys(self, expanded_keys: set[str]) -> None:
+        # If the user has never touched the tree, default to expanding the
+        # Experiments category so the most-interesting groups are visible.
+        default_to_experiments = not expanded_keys
+
+        def walk(node: QTreeWidgetItem, path: str) -> None:
+            child_key = f"{path}>{node.text(0)}"
+            if child_key in expanded_keys:
+                node.setExpanded(True)
+            elif default_to_experiments and not path and node.text(0).lower().startswith("experiments"):
+                node.setExpanded(True)
+            for index in range(node.childCount()):
+                walk(node.child(index), child_key)
+
+        for index in range(self.tree.topLevelItemCount()):
+            walk(self.tree.topLevelItem(index), "")
+
+    def _update_tree_selection(self, selected_paths: set[str]) -> None:
+        with QSignalBlocker(self.tree):
+            def walk(node: QTreeWidgetItem) -> None:
+                path = node.data(0, self.TREE_PATH_ROLE)
+                if path is not None:
+                    node.setSelected(str(path) in selected_paths)
+                for index in range(node.childCount()):
+                    walk(node.child(index))
+
+            for index in range(self.tree.topLevelItemCount()):
+                walk(self.tree.topLevelItem(index))
+
+    def _update_quick_clean_button_from_state(self, state: DataManagementViewState, item_summary: dict) -> None:
+        debug_count = 0
+        debug_size = 0
+        for item in state.filtered_items:
+            summary = item_summary.get(str(item.path))
+            if self._is_debug(summary):
+                debug_count += 1
+                debug_size += self._size_for(item, {str(item.path): summary})
+        self._update_quick_clean_button(debug_count, debug_size)
+
+    def _build_run_node(self, item, summary, project_root: Path) -> QTreeWidgetItem:
+        status = _row_status_label(item, summary) if summary is not None else (item.status or item.display_status or "—")
+        size_bytes = self._size_for(item, {str(item.path): summary})
+        timestamp = item.timestamp_label
+        if summary is not None:
+            ts = getattr(summary, "timestamp_label", None)
+            if ts:
+                timestamp = ts
+        node = QTreeWidgetItem([
+            f"  {item.readable_name}",
+            status,
+            _format_bytes(size_bytes),
+            timestamp,
+            _relative_path(item.path, project_root),
+        ])
+        node.setData(0, self.TREE_PATH_ROLE, str(item.path))
+        node.setToolTip(0, str(item.path))
+        node.setToolTip(4, str(item.path))
+        if self._is_keeper(summary):
+            node.setForeground(0, QColor(COLORS.success_fg))
+        elif self._is_debug(summary):
+            node.setForeground(0, QColor(COLORS.text_muted))
+        return node
+
+    @staticmethod
+    def _size_for(item, item_summary: dict) -> int:
+        summary = item_summary.get(str(item.path)) if isinstance(item_summary, dict) else None
+        if summary is not None:
+            try:
+                return int(getattr(summary, "total_size_bytes", 0) or 0)
+            except (TypeError, ValueError):
+                return 0
+        return _item_size_bytes_fallback(item.path)
+
+    @staticmethod
+    def _is_debug(summary) -> bool:
+        if summary is None:
+            return False
+        review = getattr(getattr(summary, "review", None), "review_status", "")
+        return str(review or "").lower() in {"debug", "garbage"}
+
+    @staticmethod
+    def _is_keeper(summary) -> bool:
+        if summary is None:
+            return False
+        review = getattr(getattr(summary, "review", None), "review_status", "")
+        return str(review or "").lower() in {"keep", "thesis_candidate", "advisor_share", "archived"}
+
+    def _update_quick_clean_button(self, debug_count: int, debug_size: int) -> None:
+        if debug_count > 0:
+            self.quick_clean_button.setText(
+                f"Trash {debug_count} debug-marked run{'s' if debug_count != 1 else ''} ({_format_bytes(debug_size)})"
+            )
+            self.quick_clean_button.setVisible(True)
+            self.quick_clean_label.setText("Removes runs marked debug or garbage. Asks for confirmation.")
+            self.quick_clean_label.setVisible(True)
+        else:
+            self.quick_clean_button.setVisible(False)
+            self.quick_clean_label.setVisible(False)
+
+    def _quick_clean_debug(self) -> None:
+        state = self.controller.refresh()
+        # Collect all debug-marked paths visible across the tree (top-level GROUP_PATHS_ROLE).
+        debug_paths: list[str] = []
+        for index in range(self.tree.topLevelItemCount()):
+            node = self.tree.topLevelItem(index)
+            paths = node.data(0, self.TREE_DEBUG_PATHS_ROLE) or []
+            debug_paths.extend(str(p) for p in paths)
+            # also descend one level for sub-experiment buckets
+            for child_index in range(node.childCount()):
+                child = node.child(child_index)
+                child_paths = child.data(0, self.TREE_DEBUG_PATHS_ROLE) or []
+                debug_paths.extend(str(p) for p in child_paths)
+        # dedupe
+        debug_paths = sorted(set(debug_paths))
+        if not debug_paths:
+            return
+        choice = QMessageBox.question(
+            self,
+            "Trash debug-marked runs",
+            f"Move {len(debug_paths)} debug-marked run(s) to data/trash?\n\n"
+            "They will not be permanently deleted. Empty Trash later from the Trash category.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if choice != QMessageBox.Yes:
+            return
+        self.controller.set_selected_paths(debug_paths)
         self.update(self.controller.refresh())
+        try:
+            self.controller.trash_selected_run()
+        except Exception as exc:
+            self.status_label.setText(f"Quick clean failed: {exc}")
+        else:
+            self.status_label.setText(f"Moved {len(debug_paths)} run(s) to trash.")
+        self.update(self.controller.refresh())
+
+    def _sync_selection_from_tree(self) -> None:
+        paths: list[str] = []
+        for node in self.tree.selectedItems():
+            path = node.data(0, self.TREE_PATH_ROLE)
+            if path:
+                paths.append(str(path))
+                continue
+            group_paths = node.data(0, self.TREE_GROUP_PATHS_ROLE) or []
+            for child_path in group_paths:
+                paths.append(str(child_path))
+        # dedupe while preserving order
+        seen = set()
+        unique = []
+        for p in paths:
+            if p not in seen:
+                seen.add(p)
+                unique.append(p)
+        self.controller.set_selected_paths(unique)
+        self.update(self.controller.refresh())
+
+    def _sync_selection_from_table(self) -> None:
+        # Back-compat shim; real selection now syncs from the tree.
+        self._sync_selection_from_tree()
 
     def _open_selected(self) -> None:
         selected = self.controller.selected_items()
@@ -852,6 +1186,54 @@ class DataManagementTab(QWidget):
                 widget.setText(value)
 
 
+def _format_bytes(value: int) -> str:
+    size = float(max(0, int(value or 0)))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024.0 or unit == "TB":
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{size:.1f} TB"
+
+
+class _CollapsibleSection(QWidget):
+    """Inline collapsible section with a chevron toggle. Hidden body by default."""
+
+    def __init__(self, title: str, *, expanded: bool = False, parent=None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(6)
+        self.toggle = QToolButton()
+        self.toggle.setCheckable(True)
+        self.toggle.setChecked(bool(expanded))
+        self.toggle.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.toggle.setAutoRaise(True)
+        title_label = QLabel(title)
+        title_label.setStyleSheet(f"color: {COLORS.text_secondary}; font-weight: 600;")
+        title_label.setCursor(Qt.PointingHandCursor)
+        title_label.mousePressEvent = lambda _e: self.toggle.setChecked(not self.toggle.isChecked())
+        header.addWidget(self.toggle)
+        header.addWidget(title_label, 1)
+        layout.addLayout(header)
+        self.body = QWidget()
+        self.body.setVisible(bool(expanded))
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(20, 0, 0, 0)
+        self.body_layout.setSpacing(8)
+        layout.addWidget(self.body)
+        self.toggle.toggled.connect(self._on_toggled)
+
+    def _on_toggled(self, checked: bool) -> None:
+        self.toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+        self.body.setVisible(bool(checked))
+
+
 class _Card(QFrame):
     def __init__(self, title: str, subtitle: str = "") -> None:
         super().__init__()
@@ -873,6 +1255,16 @@ class _Card(QFrame):
         self.body_layout.setContentsMargins(0, 0, 0, 0)
         self.body_layout.setSpacing(10)
         layout.addLayout(self.body_layout)
+
+
+class _Section(QWidget):
+    """Borderless container, used for thin un-titled sections in the data tab."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.body_layout = QVBoxLayout(self)
+        self.body_layout.setContentsMargins(0, 0, 0, 0)
+        self.body_layout.setSpacing(8)
 
 
 class _PairsWidget(QWidget):
@@ -929,34 +1321,50 @@ def _replace_combo_options(combo: QComboBox, options: list[tuple[str, str]]) -> 
             combo.setCurrentIndex(index)
 
 
+_STATUS_PRIORITY = {
+    "trash": 0,
+    "mock": 1,
+    "review": 2,
+    "thesis": 3,
+    "keep": 4,
+    "active": 5,
+    "archived": 6,
+}
+
+
+def _row_status_label(item, summary) -> str:
+    review = str(getattr(getattr(summary, "review", None), "review_status", "") or "").lower()
+    if review in {"garbage", "debug"}:
+        return "trash"
+    if review == "thesis_candidate":
+        return "thesis"
+    if review == "keep":
+        return "keep"
+    if review == "advisor_share":
+        return "advisor"
+    if review == "archived":
+        return "archived"
+    if bool(getattr(summary, "mock_mode", False)):
+        return "mock"
+    trust = str(getattr(summary, "run_trust_mode", "") or "").lower()
+    if trust:
+        return trust
+    return str(getattr(item, "status", "") or getattr(item, "display_status", "") or "").lower() or "—"
+
+
 def _table_values(item, project_root: Path, *, summary=None) -> list[str]:
     run_dir = _run_dir_for_item(item)
     if run_dir is not None:
         try:
             if summary is None:
                 summary = summarize_run(run_dir)
-            mode_segment = summary.operating_mode
-            if summary.active_segment:
-                mode_segment = f"{mode_segment} / {summary.active_segment}"
-            flags = " | ".join(
-                value
-                for value in [
-                    item.display_status,
-                    f"model={summary.valid_for_model_training}",
-                    f"thesis={summary.valid_for_thesis_repeatability}",
-                    summary.stop_or_failure_reason,
-                    f"review={summary.review.review_status}",
-                ]
-                if value
-            )
+            size_bytes = int(getattr(summary, "total_size_bytes", 0) or 0)
             return [
                 summary.timestamp_label,
                 summary.experiment_name,
                 summary.run_id,
-                summary.validation_status,
-                summary.run_trust_mode,
-                mode_segment,
-                flags,
+                _row_status_label(item, summary),
+                _format_bytes(size_bytes),
                 _relative_path(item.path, project_root),
             ]
         except Exception:
@@ -965,12 +1373,28 @@ def _table_values(item, project_root: Path, *, summary=None) -> list[str]:
         item.timestamp_label,
         item.category_label,
         item.readable_name,
-        item.item_type,
-        item.status or item.display_status,
-        "",
-        item.display_status,
+        item.status or item.display_status or "—",
+        _format_bytes(_item_size_bytes_fallback(item.path)),
         _relative_path(item.path, project_root),
     ]
+
+
+def _item_size_bytes_fallback(path: Path) -> int:
+    try:
+        if path.is_file():
+            return int(path.stat().st_size)
+        if path.is_dir():
+            total = 0
+            for entry in path.rglob("*"):
+                if entry.is_file():
+                    try:
+                        total += int(entry.stat().st_size)
+                    except OSError:
+                        continue
+            return total
+    except OSError:
+        pass
+    return 0
 
 
 def _run_dir_for_item(item) -> Path | None:
