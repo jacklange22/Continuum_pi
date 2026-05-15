@@ -52,6 +52,7 @@ class ExperimentOption:
     category: str
     badges: list[str]
     default_config_path: str | None = None
+    workspace_visible: bool = True
 
 
 MODE_EXPERIMENT_VISIBILITY: dict[str, set[str]] = {
@@ -239,7 +240,17 @@ class ExperimentController:
         with self._lock:
             self.state.experiment_options = list(visible_options.values())
             self.state.experiment_filter_summary = filter_summary
-            if self.state.selected_experiment and self.state.selected_experiment not in visible_options:
+            # Only reset when the selected experiment is genuinely unavailable
+            # for the current operating mode. Workspace-hidden experiments are
+            # still selectable programmatically (e.g. tests, CLI), so leave
+            # them in place if the operator/test reached them that way.
+            allowed = MODE_EXPERIMENT_VISIBILITY.get(self.settings.robot.operating_mode())
+            mode_blocks_selection = (
+                bool(allowed)
+                and self.state.selected_experiment
+                and self.state.selected_experiment not in allowed
+            )
+            if mode_blocks_selection and self.state.selected_experiment not in visible_options:
                 previous = self.state.selected_experiment
                 self.state.selected_experiment = ""
                 self.state.loaded_run_path = None
@@ -716,10 +727,13 @@ class ExperimentController:
             thread.join(timeout=timeout_s)
 
     def _build_workspace_options(self) -> dict[str, ExperimentOption]:
+        # Include every registered descriptor so programmatic lookups
+        # (select_experiment, default-config resolution) work for hidden
+        # experiments too. The dropdown filtering happens later in
+        # _mode_filtered_workspace_options(), which drops anything that
+        # isn't workspace_visible.
         options: dict[str, ExperimentOption] = {}
         for descriptor in self.experiment_runner.available_experiments():
-            if not bool(getattr(descriptor, "workspace_visible", True)):
-                continue
             badges = [str(descriptor.category).title(), *list(descriptor.tags)]
             options[descriptor.name] = ExperimentOption(
                 name=descriptor.name,
@@ -728,6 +742,7 @@ class ExperimentController:
                 category=descriptor.category,
                 badges=badges,
                 default_config_path=descriptor.default_config_path,
+                workspace_visible=bool(getattr(descriptor, "workspace_visible", True)),
             )
         preferred_order = [
             "single_segment_repeatability",
@@ -751,9 +766,16 @@ class ExperimentController:
     def _mode_filtered_workspace_options(self) -> dict[str, ExperimentOption]:
         mode = self.settings.robot.operating_mode()
         allowed = MODE_EXPERIMENT_VISIBILITY.get(mode)
+        # Drop dev/CI experiments from the dropdown surface; tests and
+        # programmatic callers can still reach them via _options_by_name.
+        visible = {
+            name: option
+            for name, option in self._options_by_name.items()
+            if getattr(option, "workspace_visible", True)
+        }
         if not allowed:
-            return dict(self._options_by_name)
-        return {name: option for name, option in self._options_by_name.items() if name in allowed}
+            return visible
+        return {name: option for name, option in visible.items() if name in allowed}
 
     def _mode_filter_summary(self, visible_options: dict[str, ExperimentOption]) -> str:
         mode = self.settings.robot.operating_mode()

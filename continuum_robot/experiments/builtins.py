@@ -9529,6 +9529,7 @@ def register_builtin_experiments(registry) -> None:
         category="validation",
         tags=["Commands", "Schedule"],
         default_config_path="config/experiment_command_schedule_validation.example.yaml",
+        workspace_visible=False,
         factory=CommandScheduleValidationExperiment.from_dict,
     )
     registry.register(
@@ -9547,6 +9548,7 @@ def register_builtin_experiments(registry) -> None:
         category="analysis",
         tags=["Replay", "Offline"],
         default_config_path="config/experiment_replay_runner.example.yaml",
+        workspace_visible=False,
         factory=ReplayRunnerExperiment.from_dict,
     )
     registry.register(

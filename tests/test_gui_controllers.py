@@ -2836,13 +2836,14 @@ def test_experiment_workspace_hides_operational_pivot_workflow_from_selector(tmp
 
     assert "pivot_calibration" not in option_names
     assert "repeatability_dataset" not in option_names
+    assert "command_schedule_validation" not in option_names
+    assert "replay_runner" not in option_names
     assert "single_segment_repeatability" in option_names
     assert "registration_validation" in option_names
     assert "pivot_validation" in option_names
     assert "tracker_timing_validation" in option_names
     assert "servo_tracker_sync_validation" in option_names
     assert "pretension_validation" in option_names
-    assert "command_schedule_validation" in option_names
     assert "collect_pose_command_dataset" in option_names
 
 
