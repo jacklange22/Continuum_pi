@@ -69,15 +69,7 @@ case "$MODE" in
     # Single-segment regression net: covers the canonical single-segment
     # workflows (repeatability, pretension, penprobe demo) plus the modeling
     # analysis path that operates on collected single-segment runs.
-    #
-    # Three tests are deselected as known pre-existing failures unrelated to
-    # the two-segment work landed in cycles 1-26 (figure-title formatting
-    # mismatches and runtime-tip-message wording). They fail on the unmodified
-    # baseline commit; track and fix in a dedicated single-segment cycle.
     exec "$PYTHON_BIN" -m pytest -q \
-      --deselect tests/test_single_segment_repeatability.py::test_repeatability_report_figures_use_thesis_labels_and_units \
-      --deselect tests/test_runtime_tip_calibration.py::test_tracking_service_supports_explicit_coil_as_tip_mode \
-      --deselect tests/test_runtime_tip_calibration.py::test_tracking_service_runtime_tip_messages_make_direct_0a_and_quick_override_explicit \
       tests/test_single_segment_repeatability.py \
       tests/test_pretension_validation_experiment.py \
       tests/test_penprobe_chasing_demo.py \
