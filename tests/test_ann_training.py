@@ -12,7 +12,12 @@ import pytest
 
 from continuum_robot.modeling import ann_training as training_module
 from continuum_robot.modeling.ann_training import (
+    ANN_TRAINING_CATEGORY_BLOCKED,
+    ANN_TRAINING_CATEGORY_EXPLORATORY_ONLY,
+    ANN_TRAINING_CATEGORY_TRAINABLE,
+    ANN_TRAINING_CATEGORY_TRAINABLE_WITH_WARNINGS,
     AnnTrainingConfig,
+    ann_training_will_be_exploratory,
     build_grouped_split,
     detect_training_backends,
     discover_modeling_datasets,
@@ -350,3 +355,321 @@ def test_build_legacy_ann_model_respects_128_hidden_layers() -> None:
     )
     assert model.input.in_features == 4
     assert model.input.out_features == 128
+
+
+# ---------- Tiered ANN trainability policy ----------
+
+
+def _write_tiered_modeling_run(
+    tmp_path: Path,
+    *,
+    folder_name: str = "20260512_120000_collect_pose_command_dataset",
+    valid_for_model_training: bool = True,
+    validity_status: str = "valid",
+    validity_reason: str = "all_required_checks_passed",
+    hard_invalidation_reasons: list[str] | None = None,
+    warnings: list[str] | None = None,
+    target_valid_sample_count: int = 4092,
+    complete_training_row_count: int = 4082,
+    modeling_export_row_count: int = 4082,
+    modeling_legacy_row_count: int = 4082,
+    incomplete_accepted_workspace_row_count: int = 9,
+    run_trust_mode: str = "thesis_trusted",
+    parallel_single_demo: bool = False,
+    mock_mode: bool = False,
+    include_export: bool = True,
+    export_rows_complete: bool = True,
+    root_kind: str = "experiments",
+) -> Path:
+    if root_kind == "experiments":
+        run_dir = tmp_path / "data" / "experiments" / "collect_pose_command_dataset" / folder_name
+    elif root_kind == "mock":
+        run_dir = tmp_path / "data" / "mock_experiments" / "collect_pose_command_dataset" / folder_name
+    else:
+        run_dir = tmp_path / "data" / root_kind / "collect_pose_command_dataset" / folder_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "schema_version": "1.0",
+        "experiment_name": "collect_pose_command_dataset",
+        "run_id": folder_name,
+        "timestamp_utc": "2026-05-12T12:00:00+00:00",
+    }
+    metrics = {
+        "dataset_mode": "workspace_coverage",
+        "accepted_sample_count": 4093,
+        "rejected_sample_count": 1,
+        "run_trust_mode": run_trust_mode,
+        "valid_for_model_training": valid_for_model_training,
+        "model_training_validity_status": validity_status,
+        "model_training_validity_reason": validity_reason,
+        "model_training_hard_invalidation_reasons": list(hard_invalidation_reasons or []),
+        "model_training_warnings": list(warnings or []),
+        "target_valid_sample_count": int(target_valid_sample_count),
+        "complete_training_row_count": int(complete_training_row_count),
+        "modeling_export_row_count": int(modeling_export_row_count),
+        "modeling_legacy_row_count": int(modeling_legacy_row_count),
+        "incomplete_accepted_workspace_row_count": int(incomplete_accepted_workspace_row_count),
+        "parallel_single_demo": bool(parallel_single_demo),
+        "mock_mode": bool(mock_mode),
+    }
+    summary = {
+        "schema_version": "1.0",
+        "experiment_name": "collect_pose_command_dataset",
+        "run_id": folder_name,
+        "success": True,
+        "sample_counts": {"total": int(modeling_export_row_count)},
+        "status": "success",
+        "experiment_metrics": metrics,
+    }
+    (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    if include_export:
+        rows: list[dict] = []
+        # Always emit at least two complete rows so the legacy ANN has data to consume.
+        for index in range(max(2, min(int(modeling_export_row_count), 4))):
+            rows.append(
+                {
+                    "sequence_index": index,
+                    "step_index": index,
+                    "sample_index": index,
+                    "accepted": True,
+                    "resolved_cable_command_cm": [0.1, 0.2, 0.3, 0.4],
+                    "tip_position_xyz_mm": [1.0, 2.0, 3.0],
+                    "tip_tangent_xyz": [0.0, 0.0, 1.0],
+                }
+            )
+        if not export_rows_complete:
+            rows.append(
+                {
+                    "sequence_index": len(rows),
+                    "step_index": len(rows),
+                    "sample_index": len(rows),
+                    "accepted": True,
+                    # Missing tip_position_xyz_mm makes full_pose_available False.
+                    "resolved_cable_command_cm": [0.1, 0.2, 0.3, 0.4],
+                    "tip_position_xyz_mm": [],
+                    "tip_tangent_xyz": [],
+                }
+            )
+        with (run_dir / "modeling_dataset_export.jsonl").open("w", encoding="utf-8") as handle:
+            for row in rows:
+                handle.write(json.dumps(row) + "\n")
+    return run_dir
+
+
+def test_ann_categorization_target_complete_run_is_trainable(tmp_path: Path) -> None:
+    run_dir = _write_tiered_modeling_run(
+        tmp_path,
+        valid_for_model_training=True,
+        validity_status="valid",
+        target_valid_sample_count=4,
+        complete_training_row_count=4,
+        modeling_export_row_count=4,
+        modeling_legacy_row_count=4,
+        incomplete_accepted_workspace_row_count=0,
+        warnings=[],
+    )
+    summary = load_modeling_dataset_summary(run_dir)
+    assert summary.ann_training_category == ANN_TRAINING_CATEGORY_TRAINABLE
+    assert summary.trainable_for_legacy_ann is True
+    assert summary.trainable_for_ann_exploratory is True
+    assert summary.ann_training_blocking_reasons == ()
+    assert effective_legacy_ann_training_allowed(summary)
+
+
+def test_ann_categorization_warning_valid_with_target_met(tmp_path: Path) -> None:
+    run_dir = _write_tiered_modeling_run(
+        tmp_path,
+        valid_for_model_training=True,
+        validity_status="warning_valid",
+        target_valid_sample_count=4,
+        complete_training_row_count=4,
+        modeling_export_row_count=4,
+        modeling_legacy_row_count=4,
+        incomplete_accepted_workspace_row_count=2,
+        warnings=["2 incomplete rows were excluded"],
+    )
+    summary = load_modeling_dataset_summary(run_dir)
+    assert summary.ann_training_category == ANN_TRAINING_CATEGORY_TRAINABLE_WITH_WARNINGS
+    assert effective_legacy_ann_training_allowed(summary)
+    assert any("incomplete" in w.lower() for w in summary.ann_training_warnings)
+
+
+def test_ann_categorization_exploratory_when_target_not_met(tmp_path: Path) -> None:
+    run_dir = _write_tiered_modeling_run(
+        tmp_path,
+        valid_for_model_training=False,
+        validity_status="invalid",
+        validity_reason="accepted_count_meets_target",
+        hard_invalidation_reasons=["accepted_count_meets_target"],
+        target_valid_sample_count=4092,
+        complete_training_row_count=4082,
+        modeling_export_row_count=4082,
+        modeling_legacy_row_count=4082,
+        incomplete_accepted_workspace_row_count=9,
+    )
+    summary = load_modeling_dataset_summary(run_dir)
+    assert summary.ann_training_category == ANN_TRAINING_CATEGORY_EXPLORATORY_ONLY
+    assert summary.trainable_for_ann_exploratory is True
+    assert summary.trainable_for_legacy_ann is False
+    assert any("target_valid_sample_count" in w for w in summary.ann_training_warnings)
+    # Default refusal: training is not allowed without the explicit override.
+    assert not effective_legacy_ann_training_allowed(summary)
+    # With the override, training is allowed.
+    assert effective_legacy_ann_training_allowed(
+        summary, allow_exploratory_incomplete_target=True
+    )
+    assert ann_training_will_be_exploratory(summary, allow_exploratory_incomplete_target=True)
+
+
+def test_ann_categorization_blocked_when_export_has_incomplete_rows(tmp_path: Path) -> None:
+    run_dir = _write_tiered_modeling_run(
+        tmp_path,
+        valid_for_model_training=False,
+        validity_status="invalid",
+        target_valid_sample_count=4,
+        complete_training_row_count=4,
+        modeling_export_row_count=5,
+        modeling_legacy_row_count=4,
+        incomplete_accepted_workspace_row_count=1,
+        export_rows_complete=False,
+    )
+    summary = load_modeling_dataset_summary(run_dir)
+    assert summary.ann_training_category == ANN_TRAINING_CATEGORY_BLOCKED
+    # Override does not release a hard data-completeness fail.
+    assert not effective_legacy_ann_training_allowed(
+        summary, allow_exploratory_incomplete_target=True
+    )
+    assert any("incomplete rows" in r for r in summary.ann_training_blocking_reasons)
+
+
+def test_ann_categorization_blocked_when_export_missing(tmp_path: Path) -> None:
+    run_dir = _write_tiered_modeling_run(
+        tmp_path,
+        valid_for_model_training=False,
+        include_export=False,
+    )
+    summary = load_modeling_dataset_summary(run_dir)
+    assert summary.ann_training_category == ANN_TRAINING_CATEGORY_BLOCKED
+    assert any("export" in r.lower() for r in summary.ann_training_blocking_reasons)
+    assert not effective_legacy_ann_training_allowed(
+        summary, allow_exploratory_incomplete_target=True
+    )
+
+
+def test_ann_categorization_servo_only_is_blocked(tmp_path: Path) -> None:
+    run_dir = _write_tiered_modeling_run(
+        tmp_path,
+        run_trust_mode="servo_only",
+        valid_for_model_training=False,
+    )
+    summary = load_modeling_dataset_summary(run_dir)
+    assert summary.ann_training_category == ANN_TRAINING_CATEGORY_BLOCKED
+    assert not effective_legacy_ann_training_allowed(
+        summary, allow_exploratory_incomplete_target=True, allow_lower_trust_training=True
+    )
+
+
+def test_ann_categorization_mock_dataset_needs_mock_override(tmp_path: Path) -> None:
+    run_dir = _write_tiered_modeling_run(
+        tmp_path,
+        root_kind="mock",
+        mock_mode=True,
+        valid_for_model_training=True,
+        validity_status="valid",
+        target_valid_sample_count=4,
+        complete_training_row_count=4,
+        modeling_export_row_count=4,
+        modeling_legacy_row_count=4,
+        incomplete_accepted_workspace_row_count=0,
+    )
+    catalog = discover_modeling_datasets(
+        project_root=tmp_path,
+        output_root=tmp_path / "data" / "experiments",
+        include_mock_experiments=True,
+    )
+    entry = next(e for e in catalog if e.path.resolve() == run_dir.resolve())
+    assert not effective_legacy_ann_training_allowed(entry)
+    assert not effective_legacy_ann_training_allowed(
+        entry, allow_exploratory_incomplete_target=True
+    )
+    assert effective_legacy_ann_training_allowed(entry, allow_mock_training=True)
+
+
+def test_ann_categorization_parallel_single_demo_needs_explicit_override(tmp_path: Path) -> None:
+    run_dir = _write_tiered_modeling_run(
+        tmp_path,
+        parallel_single_demo=True,
+        valid_for_model_training=False,
+        validity_status="invalid",
+        hard_invalidation_reasons=["not_parallel_demo"],
+        target_valid_sample_count=4,
+        complete_training_row_count=4,
+        modeling_export_row_count=4,
+        modeling_legacy_row_count=4,
+        incomplete_accepted_workspace_row_count=0,
+    )
+    summary = load_modeling_dataset_summary(run_dir)
+    assert summary.ann_training_category == ANN_TRAINING_CATEGORY_EXPLORATORY_ONLY
+    # Exploratory override alone is not enough — parallel_single also needs its own toggle.
+    assert not effective_legacy_ann_training_allowed(
+        summary, allow_exploratory_incomplete_target=True
+    )
+    assert effective_legacy_ann_training_allowed(
+        summary,
+        allow_exploratory_incomplete_target=True,
+        allow_parallel_single_demo_training=True,
+    )
+
+
+def test_ann_dataset_metadata_records_source_validity_provenance(tmp_path: Path) -> None:
+    run_dir = _write_tiered_modeling_run(
+        tmp_path,
+        valid_for_model_training=False,
+        validity_status="invalid",
+        validity_reason="accepted_count_meets_target",
+        hard_invalidation_reasons=["accepted_count_meets_target"],
+        warnings=["complete_training_row_count below target_valid_sample_count"],
+        target_valid_sample_count=4092,
+        complete_training_row_count=4082,
+        modeling_export_row_count=4082,
+        modeling_legacy_row_count=4082,
+        incomplete_accepted_workspace_row_count=9,
+    )
+    prepared = prepare_legacy_ann_dataset(run_dir)
+    payload = training_module._dataset_metadata_for_artifact(prepared=prepared)
+    assert payload["source_run_valid_for_model_training"] is False
+    assert payload["source_run_model_training_validity_status"] == "invalid"
+    assert payload["complete_training_row_count"] == 4082
+    assert payload["target_valid_sample_count"] == 4092
+    assert payload["incomplete_rows_excluded_from_training"] == 9
+    assert payload["ann_training_category"] == ANN_TRAINING_CATEGORY_EXPLORATORY_ONLY
+
+
+def test_ann_run_review_debug_does_not_block_exploratory_training(tmp_path: Path) -> None:
+    # A debug-reviewed run (e.g. operator marked the run for further review) is still
+    # discoverable in the ANN catalog and remains eligible for exploratory training
+    # as long as the export is clean and the exploratory override is enabled.
+    run_dir = _write_tiered_modeling_run(
+        tmp_path,
+        valid_for_model_training=False,
+        validity_status="invalid",
+        hard_invalidation_reasons=["accepted_count_meets_target"],
+        target_valid_sample_count=4092,
+        complete_training_row_count=4082,
+        modeling_export_row_count=4082,
+        modeling_legacy_row_count=4082,
+        incomplete_accepted_workspace_row_count=9,
+    )
+    # A debug-only review sidecar must not promote the dataset to thesis-valid, but it
+    # must not prevent the operator from training on it explicitly either.
+    (run_dir / "run_review.json").write_text(
+        json.dumps({"status": "debug", "intended_use": "debug", "include_in_evidence_index": False}),
+        encoding="utf-8",
+    )
+    summary = load_modeling_dataset_summary(run_dir)
+    assert summary.ann_training_category == ANN_TRAINING_CATEGORY_EXPLORATORY_ONLY
+    assert effective_legacy_ann_training_allowed(
+        summary, allow_exploratory_incomplete_target=True
+    )
+    assert summary.valid_for_model_training_flag is False

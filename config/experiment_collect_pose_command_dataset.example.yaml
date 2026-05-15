@@ -31,12 +31,36 @@ telemetry_retry_delay_s: 0.07
 allow_recovered_packet_errors: true
 max_recovered_packet_errors_per_run:
 max_current_warning_ma: 800
+current_warning_ma: 800
+transient_current_spike_ma: 850
+sustained_jam_current_ma: 850
+sustained_jam_cycles: 3
+transient_spike_policy: warn_drop_sample_continue
+sustained_jam_policy: stop_safely
+current_spike_resync_enabled: true
+current_spike_cooldown_s: 0.25
+current_spike_return_to_previous_safe_goal: false
+current_spike_max_events_per_servo: 6
+command_transition_ramp_enabled: false
+max_delta_cm_per_ramp_step:
+ramp_step_settle_s: 0.05
+ramp_include_telemetry_checks: true
+ramp_log_intermediate_telemetry: false
+profile_velocity_ticks_per_s:
+profile_acceleration:
 
 # Long unattended runs: recoverable post-motion packet errors (drop sample + resync), chunking, health.
 long_run_recovery_enabled: true
+transport_burst_recovery_enabled: true
 on_unrecovered_post_motion_telemetry: drop_sample_and_resync  # vs fail_run
 max_consecutive_packet_failures: 3
+max_consecutive_transport_bursts: 3
 max_total_packet_failures: 100
+max_total_dropped_samples_fraction: 0.05
+transport_burst_cooldown_s: 0.35
+transport_burst_resync_attempts: 5
+transport_burst_resync_delay_s: 0.1
+retry_same_command_after_resync: true
 resync_read_attempts: 3
 resync_delay_s: 0.05
 return_to_neutral_on_resync_failure: false

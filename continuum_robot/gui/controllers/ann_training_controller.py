@@ -10,6 +10,10 @@ from typing import Any
 
 from continuum_robot.gui.experiment_visualization import VisualizationModel
 from continuum_robot.modeling.ann_training import (
+    ANN_TRAINING_CATEGORY_BLOCKED,
+    ANN_TRAINING_CATEGORY_EXPLORATORY_ONLY,
+    ANN_TRAINING_CATEGORY_TRAINABLE,
+    ANN_TRAINING_CATEGORY_TRAINABLE_WITH_WARNINGS,
     AnnTrainingConfig,
     BackendReport,
     MODEL_SWEEP_SINGLE_SPLIT_WARNING,
@@ -18,6 +22,7 @@ from continuum_robot.modeling.ann_training import (
     TrainedArtifactSummary,
     TrainingEstimate,
     TrainingProgress,
+    ann_training_will_be_exploratory,
     build_grouped_split,
     build_training_visualization,
     default_artifact_root,
@@ -53,8 +58,15 @@ class AnnTrainingViewState:
     include_archived_datasets: bool = False
     allow_mock_training: bool = False
     allow_lower_trust_training: bool = False
+    allow_exploratory_incomplete_target: bool = False
+    allow_parallel_single_demo_training: bool = False
     selected_dataset_path: str = ""
     dataset_summary_pairs: list[tuple[str, str]] = field(default_factory=list)
+    ann_training_category: str = ANN_TRAINING_CATEGORY_BLOCKED
+    ann_training_blocking_reasons: list[str] = field(default_factory=list)
+    ann_training_warnings: list[str] = field(default_factory=list)
+    will_train_exploratory: bool = False
+    exploratory_training_warning: str = ""
     backend_report: BackendReport | None = None
     system_summary_pairs: list[tuple[str, str]] = field(default_factory=list)
     artifacts: list[TrainedArtifactSummary] = field(default_factory=list)
@@ -133,6 +145,8 @@ class AnnTrainingController:
             include_archived = self.state.include_archived_datasets
             allow_mock_training = self.state.allow_mock_training
             allow_lower_trust = self.state.allow_lower_trust_training
+            allow_exploratory = self.state.allow_exploratory_incomplete_target
+            allow_parallel_single_demo = self.state.allow_parallel_single_demo_training
 
         datasets = self.state.datasets
         artifacts = self.state.artifacts
@@ -148,7 +162,11 @@ class AnnTrainingController:
             visible = [
                 item
                 for item in catalog_all
-                if (item.trainable_for_legacy_ann or show_non_trainable)
+                if (
+                    item.trainable_for_legacy_ann
+                    or item.ann_training_category == ANN_TRAINING_CATEGORY_EXPLORATORY_ONLY
+                    or show_non_trainable
+                )
                 and (show_mock_roots or item.dataset_scan_root != "mock")
             ]
             datasets = visible
@@ -207,7 +225,16 @@ class AnnTrainingController:
             selected_dataset_summary,
             allow_mock_training=allow_mock_training,
             allow_lower_trust_training=allow_lower_trust,
+            allow_exploratory_incomplete_target=allow_exploratory,
+            allow_parallel_single_demo_training=allow_parallel_single_demo,
         )
+        will_train_exploratory = ann_training_will_be_exploratory(
+            selected_dataset_summary,
+            allow_exploratory_incomplete_target=allow_exploratory,
+        )
+        exploratory_warning_text = ""
+        if will_train_exploratory and selected_dataset_summary is not None:
+            exploratory_warning_text = self._build_exploratory_warning_text(selected_dataset_summary)
         can_benchmark = (
             training_allowed
             and config_error is None
@@ -239,6 +266,18 @@ class AnnTrainingController:
             self.state.can_train = can_train
             self.state.can_run_sweep = can_run_sweep
             self.state.visualization_model = visualization_model
+            self.state.will_train_exploratory = bool(will_train_exploratory)
+            self.state.exploratory_training_warning = exploratory_warning_text
+            if selected_dataset_summary is not None:
+                self.state.ann_training_category = selected_dataset_summary.ann_training_category
+                self.state.ann_training_blocking_reasons = list(
+                    selected_dataset_summary.ann_training_blocking_reasons
+                )
+                self.state.ann_training_warnings = list(selected_dataset_summary.ann_training_warnings)
+            else:
+                self.state.ann_training_category = ANN_TRAINING_CATEGORY_BLOCKED
+                self.state.ann_training_blocking_reasons = []
+                self.state.ann_training_warnings = []
             if catalog_dirty and not self.state.status_message:
                 self.state.status_message = "Select a modeling dataset to prepare ANN training."
             return self.state
@@ -270,6 +309,14 @@ class AnnTrainingController:
     def set_allow_lower_trust_training(self, value: bool) -> None:
         with self._lock:
             self.state.allow_lower_trust_training = bool(value)
+
+    def set_allow_exploratory_incomplete_target(self, value: bool) -> None:
+        with self._lock:
+            self.state.allow_exploratory_incomplete_target = bool(value)
+
+    def set_allow_parallel_single_demo_training(self, value: bool) -> None:
+        with self._lock:
+            self.state.allow_parallel_single_demo_training = bool(value)
 
     def invalidate_catalog(self) -> None:
         with self._lock:
@@ -389,6 +436,11 @@ class AnnTrainingController:
             dataset_path = self.state.selected_dataset_path
             config = AnnTrainingConfig(**self.config.to_dict())
             selected_backend = self._selected_backend_name_or_report()
+            selected_summary = self._selected_dataset_summary
+            training_provenance = self._build_training_provenance(
+                summary=selected_summary,
+                exploratory_override=bool(state.will_train_exploratory),
+            )
 
         def _worker() -> None:
             try:
@@ -406,6 +458,7 @@ class AnnTrainingController:
                     extra_hidden_layers_text=config.model_sweep_extra_hidden_layers_text,
                     status_callback=_on_status,
                     stop_requested=self._cancel_event.is_set,
+                    training_provenance=training_provenance,
                 )
                 best = result.best_model
                 best_text = ""
@@ -512,6 +565,10 @@ class AnnTrainingController:
             selected_backend = self._selected_backend_name_or_report()
             estimate_signature = self._estimate_signature
             selected_dataset_summary = self._selected_dataset_summary
+            training_provenance = self._build_training_provenance(
+                summary=selected_dataset_summary,
+                exploratory_override=bool(state.will_train_exploratory),
+            )
 
         def _worker() -> None:
             try:
@@ -541,6 +598,7 @@ class AnnTrainingController:
                     backend_name=selected_backend,
                     progress_callback=self._on_training_progress,
                     stop_requested=self._cancel_event.is_set,
+                    training_provenance=training_provenance,
                 )
                 metadata = load_training_metadata(result.metadata_path)
                 with self._lock:
@@ -594,6 +652,47 @@ class AnnTrainingController:
     def _job_active(self) -> bool:
         with self._lock:
             return bool(self.state.training_active or self.state.benchmark_active or self.state.sweep_active)
+
+    def _build_exploratory_warning_text(self, summary: ModelingDatasetSummary) -> str:
+        complete = int(summary.complete_training_row_count)
+        export_rows = int(summary.modeling_export_row_count)
+        target = int(summary.target_valid_sample_count)
+        usable = complete if complete > 0 else max(0, export_rows)
+        target_text = f"target_valid_sample_count={target}" if target > 0 else "target sample count"
+        return (
+            "This run is not target-complete for thesis model training. "
+            f"Training will use {usable} complete exported rows only ({target_text}). "
+            "Do not cite as final thesis-valid dataset."
+        )
+
+    def _build_training_provenance(
+        self,
+        *,
+        summary: ModelingDatasetSummary | None,
+        exploratory_override: bool,
+    ) -> dict[str, Any]:
+        if summary is None:
+            return {"exploratory_training_override": bool(exploratory_override)}
+        return {
+            "exploratory_training_override": bool(exploratory_override),
+            "source_run_valid_for_model_training": summary.valid_for_model_training_flag,
+            "source_run_model_training_validity_status": summary.model_training_validity_status,
+            "source_validity_reason": summary.model_training_validity_reason,
+            "source_validity_warnings": list(summary.model_training_warnings),
+            "source_validity_hard_invalidation_reasons": list(
+                summary.model_training_hard_invalidation_reasons
+            ),
+            "ann_training_category": summary.ann_training_category,
+            "complete_training_row_count": int(summary.complete_training_row_count),
+            "target_valid_sample_count": int(summary.target_valid_sample_count),
+            "modeling_export_row_count": int(summary.modeling_export_row_count),
+            "modeling_legacy_row_count": int(summary.modeling_legacy_row_count),
+            "excluded_incomplete_rows_count": int(summary.incomplete_rows_excluded_from_training),
+            "source_run_id": summary.run_id,
+            "source_run_path": str(summary.path),
+            "source_run_trust_mode": summary.run_trust_mode,
+            "source_run_mock_mode_flag": summary.mock_mode_flag,
+        }
 
     def _resolve_dataset_summary(self, selected_path: str, datasets: list[ModelingDatasetSummary]) -> ModelingDatasetSummary | None:
         for dataset in datasets:
@@ -649,6 +748,14 @@ class AnnTrainingController:
             export_files.append("export jsonl")
         if summary.legacy_dat_path is not None:
             export_files.append("legacy dat")
+        warnings_text = (
+            "; ".join(summary.ann_training_warnings) if summary.ann_training_warnings else "none"
+        )
+        blocking_text = (
+            "; ".join(summary.ann_training_blocking_reasons)
+            if summary.ann_training_blocking_reasons
+            else "none"
+        )
         return [
             ("Run", summary.run_name),
             ("Experiment", summary.catalog_experiment_name or "collect_pose_command_dataset"),
@@ -658,8 +765,17 @@ class AnnTrainingController:
             ("Mock", str(summary.mock_mode_flag)),
             ("Trust mode", summary.run_trust_mode),
             ("Valid for model training", str(summary.valid_for_model_training_flag)),
+            ("Model training validity", summary.model_training_validity_status or "unknown"),
+            ("ANN trainability", summary.ann_training_category),
             ("ANN trainable (catalog)", "yes" if summary.trainable_for_legacy_ann else "no"),
+            ("ANN blocking reasons", blocking_text),
+            ("ANN warnings", warnings_text),
             ("Legacy train rows", str(summary.accepted_legacy_trainable_count)),
+            ("Complete training rows", str(summary.complete_training_row_count)),
+            ("Target valid samples", str(summary.target_valid_sample_count)),
+            ("Export rows", str(summary.modeling_export_row_count)),
+            ("Legacy export rows", str(summary.modeling_legacy_row_count)),
+            ("Incomplete rows excluded", str(summary.incomplete_rows_excluded_from_training)),
             ("Rejection reasons", reason_text),
             ("Mode", summary.dataset_mode.replace("_", " ")),
             ("Accepted", str(summary.accepted_count)),

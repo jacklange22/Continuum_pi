@@ -19,7 +19,12 @@ from continuum_robot.experiments.critical_experiments import (
     build_grid_accuracy_preview,
 )
 from continuum_robot.experiments.builtins import ServoTrackerSyncValidationConfig
-from continuum_robot.experiments.dataset_io import canonical_experiment_output_root, canonical_timestamp_token, sanitize_output_name
+from continuum_robot.experiments.dataset_io import (
+    canonical_experiment_output_root,
+    canonical_timestamp_token,
+    canonical_timestamped_name,
+    sanitize_output_name,
+)
 from continuum_robot.experiments.single_segment_repeatability import SingleSegmentRepeatabilityConfig
 from continuum_robot.tracking.timing_benchmark import (
     compute_servo_tracker_sync_summary,
@@ -180,6 +185,7 @@ class ExperimentController:
         self._current_bundle = None
         self._live_samples = []
         self._planned_output_dir_name = ""
+        self._active_run_output_dir: Path | None = None
         self._selected_payload: dict[str, Any] = {}
         self._field_drafts: dict[str, str] = {}
         self._field_errors: dict[str, str] = {}
@@ -265,6 +271,7 @@ class ExperimentController:
             history_dirty = self._history_dirty
             visualization_dirty = self._visualization_dirty
             planned_output_dir = self._planned_output_dir(output_root, selected_experiment)
+            active_run_output_dir = self._active_run_output_dir
             cached_visualization_model = self.state.visualization_model
             cached_history = self._history_cache.get((str(output_root), selected_experiment), [])
             history_loading = self._history_loading_key == (str(output_root), selected_experiment)
@@ -315,6 +322,7 @@ class ExperimentController:
             servo_calibration_summary=servo_calibration_summary,
             output_root=output_root,
             planned_output_dir=planned_output_dir,
+            active_run_output_dir=active_run_output_dir,
         )
 
         preview = None
@@ -595,6 +603,8 @@ class ExperimentController:
             operator_notes = self.state.operator_notes
             output_root = self._resolve_repo_path(self.state.output_root)
             output_dir_name = self._planned_output_dir_name
+            self._active_run_output_dir = self._planned_output_dir(output_root, experiment_name)
+            self._invalidate_preflight_cache_locked()
             self._visualization_dirty = True
             self.state.penprobe_chase_live_summary = ""
             self._penprobe_gui_last_wall_s = 0.0
@@ -661,6 +671,8 @@ class ExperimentController:
                 with self._lock:
                     self.state.run_active = False
                     self.state.penprobe_chase_live_summary = ""
+                    self._active_run_output_dir = None
+                    self._invalidate_preflight_cache_locked()
 
         self._thread = threading.Thread(target=_worker, daemon=True)
         self._thread.start()
@@ -837,9 +849,17 @@ class ExperimentController:
         if not self.state.selected_experiment:
             self._planned_output_dir_name = ""
             return
-        timestamp = canonical_timestamp_token()
-        safe_name = sanitize_output_name(self.state.selected_experiment, default="experiment")
-        self._planned_output_dir_name = f"{timestamp}_{safe_name}"
+        experiment_name = self.state.selected_experiment
+        try:
+            output_root = self._resolve_repo_path(self.state.output_root)
+            experiment_root = canonical_experiment_output_root(output_root, experiment_name)
+            experiment_root.mkdir(parents=True, exist_ok=True)
+            # Collision-safe: appends _NN suffix if a folder with the same timestamp already exists.
+            self._planned_output_dir_name = canonical_timestamped_name(experiment_root, experiment_name)
+        except Exception:
+            timestamp = canonical_timestamp_token()
+            safe_name = sanitize_output_name(experiment_name, default="experiment")
+            self._planned_output_dir_name = f"{timestamp}_{safe_name}"
 
     def _planned_output_dir(self, output_root: Path, experiment_name: str) -> Path:
         experiment_root = canonical_experiment_output_root(output_root, experiment_name)
@@ -986,6 +1006,7 @@ class ExperimentController:
         servo_calibration_summary,
         output_root: Path,
         planned_output_dir: Path,
+        active_run_output_dir: Path | None,
     ) -> PreflightReport:
         key = self._build_preflight_cache_key(
             experiment_name=experiment_name,
@@ -996,6 +1017,7 @@ class ExperimentController:
             servo_calibration_summary=servo_calibration_summary,
             output_root=output_root,
             planned_output_dir=planned_output_dir,
+            active_run_output_dir=active_run_output_dir,
         )
         with self._lock:
             if key == self._preflight_cache_key and self._preflight_cache_report is not None:
@@ -1014,6 +1036,7 @@ class ExperimentController:
             planned_output_dir=planned_output_dir,
             project_root=self.project_root,
             servo_calibration_summary=servo_calibration_summary,
+            active_run_output_dir=active_run_output_dir,
         )
         duration_ms = (time.monotonic() - started) * 1000.0
         with self._lock:
@@ -1034,6 +1057,7 @@ class ExperimentController:
         servo_calibration_summary,
         output_root: Path,
         planned_output_dir: Path,
+        active_run_output_dir: Path | None = None,
     ) -> tuple[Any, ...]:
         tools_signature = tuple(
             (
@@ -1066,6 +1090,7 @@ class ExperimentController:
             str(config_error or ""),
             str(output_root),
             str(planned_output_dir),
+            str(active_run_output_dir) if active_run_output_dir is not None else "",
             bool(self.servo_service.is_connected),
             tuple(sorted((int(key), int(value)) for key, value in neutral_setpoints.items())),
             str(getattr(tracking_snapshot, "canonical_state", "")),

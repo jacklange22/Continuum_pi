@@ -11,11 +11,13 @@ import logging
 import math
 from pathlib import Path
 import random
+import re
 import shutil
 import threading
 import time
 from typing import Any
 
+from continuum_robot.data.model_training_validity import NON_TRAINING_PHASES, sample_has_complete_command_servo_tip
 from continuum_robot.experiments.dataset_io import ExperimentDatasetLoader, ExperimentDatasetWriter
 from continuum_robot.experiments.experiment_models import ExperimentPoint
 from continuum_robot.experiments.framework import BaseExperiment, ExperimentHardwareRequirements, ExperimentSession
@@ -170,15 +172,43 @@ class CollectPoseCommandDatasetConfig:
     allow_recovered_packet_errors: bool = True
     max_recovered_packet_errors_per_run: int | None = None
     max_current_warning_ma: int | None = 500
+    current_warning_ma: int | None = 500
+    transient_current_spike_ma: int | None = None
+    sustained_jam_current_ma: int | None = None
+    sustained_jam_cycles: int = 3
+    transient_spike_policy: str = "warn_drop_sample_continue"
+    sustained_jam_policy: str = "stop_safely"
+    current_spike_resync_enabled: bool = True
+    current_spike_cooldown_s: float = 0.25
+    current_spike_return_to_previous_safe_goal: bool = False
+    current_spike_max_events_per_servo: int = 6
     continue_until_valid_samples: bool = False
     target_valid_sample_count: int | None = None
+    max_total_attempts: int | None = None
+    max_dropped_fraction: float | None = None
+    max_consecutive_failures: int | None = None
     long_run_recovery_enabled: bool = False
+    transport_burst_recovery_enabled: bool = False
+    transport_burst_cooldown_s: float = 0.35
+    transport_burst_resync_attempts: int = 5
+    transport_burst_resync_delay_s: float = 0.1
+    retry_same_command_after_resync: bool = False
+    max_consecutive_transport_bursts: int = 3
+    max_total_dropped_samples_fraction: float | None = 0.05
     max_consecutive_packet_failures: int = 3
     max_total_packet_failures: int | None = None
     on_unrecovered_post_motion_telemetry: str = "fail_run"
     resync_read_attempts: int = 3
     resync_delay_s: float = 0.05
     return_to_neutral_on_resync_failure: bool = False
+    command_transition_ramp_enabled: bool = False
+    max_delta_cm_per_transition: float | None = None
+    max_delta_cm_per_ramp_step: float | None = None
+    ramp_step_settle_s: float = 0.0
+    ramp_include_telemetry_checks: bool = True
+    ramp_log_intermediate_telemetry: bool = False
+    profile_velocity_ticks_per_s: int | None = None
+    profile_acceleration: int | None = None
     chunk_flush_every_n_commands: int | None = None
     resume_from_command_index: int = 0
     long_run_health_write_interval_samples: int = 100
@@ -230,6 +260,31 @@ class CollectPoseCommandDatasetConfig:
                 else max(0, int(payload.get("max_recovered_packet_errors_per_run")))
             ),
             long_run_recovery_enabled=bool(payload.get("long_run_recovery_enabled", False)),
+            transport_burst_recovery_enabled=bool(
+                payload.get(
+                    "transport_burst_recovery_enabled",
+                    payload.get("long_run_recovery_enabled", False),
+                )
+            ),
+            transport_burst_cooldown_s=max(0.0, float(payload.get("transport_burst_cooldown_s", 0.35))),
+            transport_burst_resync_attempts=max(
+                1,
+                int(payload.get("transport_burst_resync_attempts", payload.get("resync_read_attempts", 5))),
+            ),
+            transport_burst_resync_delay_s=max(
+                0.0,
+                float(payload.get("transport_burst_resync_delay_s", payload.get("resync_delay_s", 0.1))),
+            ),
+            retry_same_command_after_resync=bool(payload.get("retry_same_command_after_resync", False)),
+            max_consecutive_transport_bursts=max(
+                1,
+                int(payload.get("max_consecutive_transport_bursts", payload.get("max_consecutive_packet_failures", 3))),
+            ),
+            max_total_dropped_samples_fraction=(
+                None
+                if payload.get("max_total_dropped_samples_fraction") in (None, "")
+                else max(0.0, float(payload.get("max_total_dropped_samples_fraction")))
+            ),
             max_consecutive_packet_failures=max(1, int(payload.get("max_consecutive_packet_failures", 3))),
             max_total_packet_failures=(
                 None
@@ -242,6 +297,52 @@ class CollectPoseCommandDatasetConfig:
             resync_read_attempts=max(1, int(payload.get("resync_read_attempts", 3))),
             resync_delay_s=max(0.0, float(payload.get("resync_delay_s", 0.05))),
             return_to_neutral_on_resync_failure=bool(payload.get("return_to_neutral_on_resync_failure", False)),
+            command_transition_ramp_enabled=bool(payload.get("command_transition_ramp_enabled", False)),
+            max_delta_cm_per_transition=(
+                None
+                if (
+                    payload.get("max_delta_cm_per_transition") in (None, "")
+                    and payload.get("max_delta_cm_per_ramp_step") in (None, "")
+                )
+                else max(
+                    0.0,
+                    float(
+                        payload.get(
+                            "max_delta_cm_per_ramp_step",
+                            payload.get("max_delta_cm_per_transition"),
+                        )
+                    ),
+                )
+            ),
+            max_delta_cm_per_ramp_step=(
+                None
+                if (
+                    payload.get("max_delta_cm_per_ramp_step") in (None, "")
+                    and payload.get("max_delta_cm_per_transition") in (None, "")
+                )
+                else max(
+                    0.0,
+                    float(
+                        payload.get(
+                            "max_delta_cm_per_ramp_step",
+                            payload.get("max_delta_cm_per_transition"),
+                        )
+                    ),
+                )
+            ),
+            ramp_step_settle_s=max(0.0, float(payload.get("ramp_step_settle_s", 0.0))),
+            ramp_include_telemetry_checks=bool(payload.get("ramp_include_telemetry_checks", True)),
+            ramp_log_intermediate_telemetry=bool(payload.get("ramp_log_intermediate_telemetry", False)),
+            profile_velocity_ticks_per_s=(
+                None
+                if payload.get("profile_velocity_ticks_per_s") in (None, "")
+                else max(0, int(payload.get("profile_velocity_ticks_per_s")))
+            ),
+            profile_acceleration=(
+                None
+                if payload.get("profile_acceleration") in (None, "")
+                else max(0, int(payload.get("profile_acceleration")))
+            ),
             chunk_flush_every_n_commands=(
                 None
                 if payload.get("chunk_flush_every_n_commands") in (None, "")
@@ -262,11 +363,54 @@ class CollectPoseCommandDatasetConfig:
                 if payload.get("max_current_warning_ma", 500) not in (None, "")
                 else None
             ),
+            current_warning_ma=(
+                max(0, int(payload.get("current_warning_ma", payload.get("max_current_warning_ma", 500))))
+                if payload.get("current_warning_ma", payload.get("max_current_warning_ma", 500)) not in (None, "")
+                else None
+            ),
+            transient_current_spike_ma=(
+                None
+                if payload.get("transient_current_spike_ma") in (None, "")
+                else int(payload.get("transient_current_spike_ma"))
+            ),
+            sustained_jam_current_ma=(
+                None
+                if payload.get("sustained_jam_current_ma") in (None, "")
+                else int(payload.get("sustained_jam_current_ma"))
+            ),
+            sustained_jam_cycles=max(1, int(payload.get("sustained_jam_cycles", 3))),
+            transient_spike_policy=str(
+                payload.get("transient_spike_policy", "warn_drop_sample_continue") or "warn_drop_sample_continue"
+            ).strip().lower(),
+            sustained_jam_policy=str(
+                payload.get("sustained_jam_policy", "stop_safely") or "stop_safely"
+            ).strip().lower(),
+            current_spike_resync_enabled=bool(payload.get("current_spike_resync_enabled", True)),
+            current_spike_cooldown_s=max(0.0, float(payload.get("current_spike_cooldown_s", 0.25))),
+            current_spike_return_to_previous_safe_goal=bool(
+                payload.get("current_spike_return_to_previous_safe_goal", False)
+            ),
+            current_spike_max_events_per_servo=max(1, int(payload.get("current_spike_max_events_per_servo", 6))),
             continue_until_valid_samples=bool(payload.get("continue_until_valid_samples", False)),
             target_valid_sample_count=(
                 None
                 if payload.get("target_valid_sample_count") in (None, "")
                 else max(1, int(payload.get("target_valid_sample_count")))
+            ),
+            max_total_attempts=(
+                None
+                if payload.get("max_total_attempts") in (None, "")
+                else max(1, int(payload.get("max_total_attempts")))
+            ),
+            max_dropped_fraction=(
+                None
+                if payload.get("max_dropped_fraction") in (None, "")
+                else max(0.0, float(payload.get("max_dropped_fraction")))
+            ),
+            max_consecutive_failures=(
+                None
+                if payload.get("max_consecutive_failures") in (None, "")
+                else max(1, int(payload.get("max_consecutive_failures")))
             ),
             legacy_schedule_override=bool(
                 ("command_schedule" in payload)
@@ -5302,6 +5446,9 @@ def _write_collect_pose_long_run_health(
     samples: list[ExperimentTimeseriesSample] | None = None,
 ) -> None:
     accepted = int(metrics.get("accepted_sample_count", 0) or 0)
+    complete_training = int(metrics.get("complete_training_row_count", 0) or 0)
+    target_complete_training = int(metrics.get("target_valid_sample_count", 0) or 0)
+    remaining_complete_training = max(0, target_complete_training - complete_training)
     dropped = int(metrics.get("dropped_post_motion_telemetry_samples", 0) or 0)
     dropped_pre_motion = int(metrics.get("dropped_pre_motion_telemetry_samples", 0) or 0)
     rate = metrics.get("mean_sample_hz_estimate")
@@ -5328,11 +5475,17 @@ def _write_collect_pose_long_run_health(
         "elapsed_session_s": float(session.elapsed_s()),
         "samples_in_session": int(len(session.samples)),
         "accepted_sample_count": accepted,
+        "complete_training_row_count": int(complete_training),
+        "target_valid_sample_count": int(target_complete_training),
+        "remaining_complete_training_rows": int(remaining_complete_training),
         "dropped_post_motion_telemetry_samples": dropped,
         "dropped_pre_motion_telemetry_samples": dropped_pre_motion,
         "unrecovered_packet_error_count": int(metrics.get("unrecovered_packet_error_count", 0) or 0),
         "recovered_packet_error_count": int(metrics.get("recovered_packet_error_count", 0) or 0),
         "servo_telemetry_retry_count": int(metrics.get("servo_telemetry_retry_count", 0) or 0),
+        "transport_burst_count": int(metrics.get("transport_burst_count", 0) or 0),
+        "consecutive_transport_burst_failures": int(metrics.get("consecutive_transport_burst_failures", 0) or 0),
+        "total_post_motion_packet_failure_events": int(metrics.get("total_post_motion_packet_failure_events", 0) or 0),
         "write_goal_packet_error_count": int(metrics.get("write_goal_packet_error_count", 0) or 0),
         "rejected_sample_count": int(metrics.get("rejected_sample_count", 0) or 0),
         "tracker_stale_count": int(tracker_stale),
@@ -5518,7 +5671,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         )
 
     def _should_recover_collect_pose_post_motion_packet_error(self, exc: BaseException) -> bool:
-        if not bool(self.config.long_run_recovery_enabled):
+        if not self._transport_burst_recovery_enabled():
             return False
         if str(self.config.on_unrecovered_post_motion_telemetry or "").strip().lower() != "drop_sample_and_resync":
             return False
@@ -5532,8 +5685,11 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         retry_error = _find_servo_telemetry_retry_error(exc)
         return retry_error, dict((retry_error.context or {}) if retry_error is not None else {})
 
+    def _transport_burst_recovery_enabled(self) -> bool:
+        return bool(self.config.transport_burst_recovery_enabled or self.config.long_run_recovery_enabled)
+
     def _should_recover_collect_pose_pre_motion_packet_error(self, exc: BaseException) -> bool:
-        if not bool(self.config.long_run_recovery_enabled):
+        if not self._transport_burst_recovery_enabled():
             return False
         if str(self.config.on_unrecovered_post_motion_telemetry or "").strip().lower() != "drop_sample_and_resync":
             return False
@@ -5572,6 +5728,199 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             if "packet" in tel_err or "status" in tel_err:
                 return True
         return False
+
+    @staticmethod
+    def _collect_pose_tracker_age_s(session: ExperimentSession) -> float | None:
+        if session.context.tracking_service is None:
+            return None
+        try:
+            reader = getattr(session.context.tracking_service, "peek_snapshot", None)
+            snapshot = reader() if callable(reader) else session.context.tracking_service.get_snapshot()
+            value = getattr(snapshot, "tracker_data_age_s", None)
+        except Exception:
+            value = None
+        return None if value is None else float(value)
+
+    def _append_collect_pose_failure_event(
+        self,
+        session: ExperimentSession,
+        *,
+        event: str,
+        payload: dict[str, Any],
+    ) -> None:
+        _append_collect_pose_jsonl_event(
+            _collect_pose_output_root(session),
+            "sample_failure_events.jsonl",
+            {"event": str(event), **dict(payload)},
+        )
+
+    def _write_collect_pose_transport_recovery_report(
+        self,
+        session: ExperimentSession,
+        *,
+        stop_reason: str,
+        step_index: int,
+        command_vector_cm: list[float],
+        failed_servo_ids: list[int],
+        cooldown_s: float,
+        resync_attempts: int,
+    ) -> None:
+        output_root = _collect_pose_output_root(session)
+        events_path = output_root / "sample_failure_events.jsonl"
+        lines: list[str] = []
+        try:
+            if events_path.exists():
+                lines = [line for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        except Exception:
+            lines = []
+        recent_events: list[dict[str, Any]] = []
+        for line in lines[-15:]:
+            try:
+                recent_events.append(json.loads(line))
+            except Exception:
+                continue
+        passive_diag: dict[str, Any] = {"attempted": False}
+        if not self.config.dry_run and session.context.servo_service.is_connected:
+            passive_diag["attempted"] = True
+            try:
+                read = session.context.servo_service.read_telemetry([int(value) for value in self._servo_ids])
+                passive_diag["success"] = True
+                passive_diag["servo_feedback"] = _servo_feedback_payload(read, servo_service=session.context.servo_service)
+            except Exception as exc:
+                passive_diag["success"] = False
+                passive_diag["error"] = str(exc)
+        payload = {
+            "schema_version": "collect_pose_transport_recovery_report_v1",
+            "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "stop_reason": str(stop_reason),
+            "step_index": int(step_index),
+            "command_vector_cm": [float(value) for value in command_vector_cm],
+            "failed_servo_ids": [int(value) for value in failed_servo_ids],
+            "cooldown_s": float(cooldown_s),
+            "resync_attempts_per_cycle": int(resync_attempts),
+            "consecutive_transport_burst_failures": int(
+                session.metrics.get("consecutive_transport_burst_failures", 0) or 0
+            ),
+            "transport_burst_count": int(session.metrics.get("transport_burst_count", 0) or 0),
+            "total_post_motion_packet_failure_events": int(
+                session.metrics.get("total_post_motion_packet_failure_events", 0) or 0
+            ),
+            "unrecovered_packet_error_count": int(session.metrics.get("unrecovered_packet_error_count", 0) or 0),
+            "tracker_age_s": self._collect_pose_tracker_age_s(session),
+            "recent_failure_events": recent_events,
+            "next_action": "run servo_transport_diagnostic and inspect hardware status/power before resume",
+            "passive_transport_diagnostic": passive_diag,
+        }
+        (output_root / "transport_recovery_report.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    def _stop_collect_pose_for_transport_budget(
+        self,
+        *,
+        session: ExperimentSession,
+        exc: Exception,
+        requested_cable_command_cm: list[float],
+        servo_ids: list[int],
+        step_index_for_event: int,
+        failed_servo_ids: list[int],
+        stop_reason: str,
+        cooldown_s: float,
+        resync_attempts: int,
+        skip_packet_error_metric_bump: bool = True,
+    ) -> None:
+        self._append_collect_pose_failure_event(
+            session,
+            event="run_stop_budget_exceeded",
+            payload={
+                "step_index": int(step_index_for_event),
+                "command_vector_cm": list(requested_cable_command_cm),
+                "failed_servo_ids": [int(value) for value in failed_servo_ids],
+                "stop_reason": str(stop_reason),
+                "consecutive_transport_burst_failures": int(
+                    session.metrics.get("consecutive_transport_burst_failures", 0) or 0
+                ),
+                "total_post_motion_packet_failure_events": int(
+                    session.metrics.get("total_post_motion_packet_failure_events", 0) or 0
+                ),
+                "dropped_post_motion_telemetry_samples": int(
+                    session.metrics.get("dropped_post_motion_telemetry_samples", 0) or 0
+                ),
+                "unrecovered_packet_error_count": int(session.metrics.get("unrecovered_packet_error_count", 0) or 0),
+                "tracker_age_s": self._collect_pose_tracker_age_s(session),
+            },
+        )
+        self._write_collect_pose_transport_recovery_report(
+            session,
+            stop_reason=str(stop_reason),
+            step_index=int(step_index_for_event),
+            command_vector_cm=list(requested_cable_command_cm),
+            failed_servo_ids=[int(value) for value in failed_servo_ids],
+            cooldown_s=float(cooldown_s),
+            resync_attempts=int(resync_attempts),
+        )
+        self._record_failure_context(
+            session=session,
+            exc=exc,
+            requested_cable_command_cm=list(requested_cable_command_cm),
+            servo_ids=list(servo_ids),
+            skip_packet_error_metric_bump=bool(skip_packet_error_metric_bump),
+        )
+        raise RuntimeError(str(stop_reason)) from exc
+
+    def _collect_pose_transition_waypoints(
+        self,
+        session: ExperimentSession,
+        *,
+        requested: list[float],
+    ) -> list[list[float]]:
+        target = [float(value) for value in requested]
+        if not bool(self.config.command_transition_ramp_enabled):
+            return [target]
+        max_delta = (
+            self.config.max_delta_cm_per_ramp_step
+            if self.config.max_delta_cm_per_ramp_step is not None
+            else self.config.max_delta_cm_per_transition
+        )
+        if max_delta is None or float(max_delta) <= 0.0:
+            return [target]
+        previous_raw = session.metrics.get("last_dispatched_cable_command_cm")
+        previous = [float(value) for value in previous_raw] if isinstance(previous_raw, list) else []
+        if len(previous) != len(target):
+            return [target]
+        max_component_delta = max(abs(float(a) - float(b)) for a, b in zip(target, previous))
+        steps = max(1, int(math.ceil(max_component_delta / float(max_delta))))
+        if steps <= 1:
+            return [target]
+        waypoints: list[list[float]] = []
+        for index in range(1, steps + 1):
+            alpha = float(index) / float(steps)
+            waypoints.append(
+                [float(start + (goal - start) * alpha) for start, goal in zip(previous, target)]
+            )
+        return waypoints
+
+    @staticmethod
+    def _metric_int_map(metrics: dict[str, Any], key: str) -> dict[str, int]:
+        raw = dict(metrics.get(key, {}) or {})
+        return {str(k): int(v) for k, v in raw.items()}
+
+    @staticmethod
+    def _set_metric_int_map(session: ExperimentSession, key: str, payload: dict[str, int]) -> None:
+        session.set_metric(key, {str(k): int(v) for k, v in sorted(payload.items())})
+
+    @staticmethod
+    def _parse_post_move_overcurrent(exc: BaseException) -> tuple[int | None, int | None, int | None]:
+        text = str(exc)
+        if "post-move overcurrent/jam protection:" not in text:
+            return None, None, None
+        sid_match = re.search(r"servo\s+(\d+)", text, flags=re.IGNORECASE)
+        abs_match = re.search(r"\|(-?\d+)\|=(\d+)\s*mA\s*>\s*(\d+)\s*mA", text)
+        servo_id = int(sid_match.group(1)) if sid_match else None
+        measured_abs = int(abs_match.group(2)) if abs_match else None
+        threshold = int(abs_match.group(3)) if abs_match else None
+        return servo_id, measured_abs, threshold
 
     def _collect_pose_bump_packet_failure_metrics(
         self,
@@ -5619,67 +5968,154 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             "servo_telemetry_retry_count",
             int(session.metrics.get("servo_telemetry_retry_count", 0) or 0) + retry_count,
         )
-        consecutive, total_ev = self._collect_pose_bump_packet_failure_metrics(
+        consecutive_packet_failures, total_ev = self._collect_pose_bump_packet_failure_metrics(
             session,
             dropped_count=max(1, int(self.config.samples_per_command)),
         )
-        if consecutive >= int(self.config.max_consecutive_packet_failures):
-            self._record_failure_context(
-                session=session,
-                exc=exc,
-                requested_cable_command_cm=list(ctx.get("last_resolved_cable_command_cm") or []),
-                servo_ids=list(servo_ids),
-                skip_packet_error_metric_bump=True,
-            )
-            raise RuntimeError(
-                "collect_pose_command_dataset: exceeded max_consecutive_packet_failures="
-                f"{int(self.config.max_consecutive_packet_failures)} during long-run recovery."
-            ) from exc
-        max_total = self.config.max_total_packet_failures
-        if max_total is not None and total_ev > int(max_total):
-            self._record_failure_context(
-                session=session,
-                exc=exc,
-                requested_cable_command_cm=list(ctx.get("last_resolved_cable_command_cm") or []),
-                servo_ids=list(servo_ids),
-                skip_packet_error_metric_bump=True,
-            )
-            raise RuntimeError(
-                f"collect_pose_command_dataset: exceeded max_total_packet_failures={int(max_total)}."
-            ) from exc
-        tracker_age_s = None
-        if session.context.tracking_service is not None:
-            try:
-                reader = getattr(session.context.tracking_service, "peek_snapshot", None)
-                snapshot = reader() if callable(reader) else session.context.tracking_service.get_snapshot()
-                tracker_age_s = getattr(snapshot, "tracker_data_age_s", None)
-            except Exception:
-                tracker_age_s = None
-        _append_collect_pose_jsonl_event(
-            _collect_pose_output_root(session),
-            "sample_failure_events.jsonl",
-            {
-                "event": "post_motion_telemetry_packet_error",
+        tracker_age_s = self._collect_pose_tracker_age_s(session)
+        command_vector_cm = list(ctx.get("last_resolved_cable_command_cm") or [])
+        failed_servo_ids_raw = ctx.get("failed_servo_ids")
+        if isinstance(failed_servo_ids_raw, list) and failed_servo_ids_raw:
+            failed_servo_ids = [int(value) for value in failed_servo_ids_raw]
+        else:
+            failed_servo = ctx.get("failed_servo_id")
+            failed_servo_ids = [int(failed_servo)] if failed_servo is not None else []
+        session.set_metric("transport_burst_count", int(session.metrics.get("transport_burst_count", 0) or 0) + 1)
+        transport_burst_count = int(session.metrics.get("transport_burst_count", 0) or 0)
+        self._append_collect_pose_failure_event(
+            session,
+            event="post_motion_telemetry_packet_error",
+            payload={
                 "step_index": int(step_index_for_event),
+                "command_vector_cm": list(command_vector_cm),
                 "failed_servo_id": ctx.get("failed_servo_id"),
+                "failed_servo_ids": [int(value) for value in failed_servo_ids],
                 "failure_reason": ctx.get("failure_reason"),
                 "failure_category": ctx.get("failure_category"),
                 "retry_count": retry_count,
+                "telemetry_retry_budget": int(self.config.telemetry_retry_count),
+                "telemetry_error_code": ctx.get("telemetry_error_code"),
+                "missing_fields": ctx.get("missing_fields"),
+                "last_valid_telemetry_by_servo": ctx.get("last_valid_telemetry_by_servo"),
                 "last_commanded_goal_ticks": ctx.get("last_commanded_goal_ticks"),
-                "last_resolved_cable_command_cm": ctx.get("last_resolved_cable_command_cm"),
+                "last_resolved_cable_command_cm": list(command_vector_cm),
                 "tracker_age_s": tracker_age_s,
-                "consecutive_post_motion_packet_failures": consecutive,
-                "total_post_motion_packet_failure_events": total_ev,
+                "consecutive_post_motion_packet_failures": int(consecutive_packet_failures),
+                "total_post_motion_packet_failure_events": int(total_ev),
+                "transport_burst_count": int(transport_burst_count),
             },
         )
-        try:
-            tel_map = _collect_pose_resync_telemetry(
-                session,
-                list(servo_ids),
-                attempts=int(self.config.resync_read_attempts),
-                delay_s=float(self.config.resync_delay_s),
+        self._append_collect_pose_failure_event(
+            session,
+            event="sample_quarantined",
+            payload={
+                "step_index": int(step_index_for_event),
+                "command_vector_cm": list(command_vector_cm),
+                "reason": "post_motion_telemetry_packet_error",
+                "dropped_post_motion_telemetry_samples": int(
+                    session.metrics.get("dropped_post_motion_telemetry_samples", 0) or 0
+                ),
+                "tracker_age_s": tracker_age_s,
+            },
+        )
+        self._append_collect_pose_failure_event(
+            session,
+            event="transport_burst_recovery_started",
+            payload={
+                "step_index": int(step_index_for_event),
+                "command_vector_cm": list(command_vector_cm),
+                "failed_servo_ids": [int(value) for value in failed_servo_ids],
+                "cooldown_s": float(self.config.transport_burst_cooldown_s),
+                "resync_attempts": int(self.config.transport_burst_resync_attempts),
+                "resync_delay_s": float(self.config.transport_burst_resync_delay_s),
+                "retry_same_command_after_resync": bool(self.config.retry_same_command_after_resync),
+                "consecutive_post_motion_packet_failures": int(consecutive_packet_failures),
+                "total_post_motion_packet_failure_events": int(total_ev),
+                "transport_burst_count": int(transport_burst_count),
+                "tracker_age_s": tracker_age_s,
+            },
+        )
+        immediate_stop_reasons: list[str] = []
+        max_total = self.config.max_total_packet_failures
+        if max_total is not None and int(total_ev) > int(max_total):
+            immediate_stop_reasons.append(
+                f"collect_pose_command_dataset: exceeded max_total_packet_failures={int(max_total)}."
             )
-        except Exception as resync_exc:
+        max_drop_fraction = self.config.max_total_dropped_samples_fraction
+        if max_drop_fraction is not None:
+            accepted = int(session.metrics.get("accepted_sample_count", 0) or 0)
+            rejected = int(session.metrics.get("rejected_sample_count", 0) or 0)
+            dropped = int(session.metrics.get("dropped_post_motion_telemetry_samples", 0) or 0) + int(
+                session.metrics.get("dropped_pre_motion_telemetry_samples", 0) or 0
+            )
+            denominator = max(1, accepted + rejected)
+            if float(dropped) / float(denominator) > float(max_drop_fraction):
+                immediate_stop_reasons.append(
+                    "collect_pose_command_dataset: exceeded max_total_dropped_samples_fraction="
+                    f"{float(max_drop_fraction):.4f}."
+                )
+        if immediate_stop_reasons:
+            self._stop_collect_pose_for_transport_budget(
+                session=session,
+                exc=exc,
+                requested_cable_command_cm=list(command_vector_cm),
+                servo_ids=list(servo_ids),
+                step_index_for_event=int(step_index_for_event),
+                failed_servo_ids=list(failed_servo_ids),
+                stop_reason=" ".join(immediate_stop_reasons),
+                cooldown_s=float(self.config.transport_burst_cooldown_s),
+                resync_attempts=int(self.config.transport_burst_resync_attempts),
+            )
+        cooldown_s = float(self.config.transport_burst_cooldown_s)
+        per_cycle_attempts = int(self.config.transport_burst_resync_attempts)
+        per_attempt_delay_s = float(self.config.transport_burst_resync_delay_s)
+        last_resync_exc: Exception | None = None
+        tel_map: dict[int, Any] | None = None
+        max_cycles = 2
+        for cycle_index in range(max_cycles):
+            if cooldown_s > 0.0:
+                session.context.sleep_fn(cooldown_s)
+            for attempt_index in range(per_cycle_attempts):
+                if attempt_index > 0 and per_attempt_delay_s > 0.0:
+                    session.context.sleep_fn(per_attempt_delay_s)
+                self._append_collect_pose_failure_event(
+                    session,
+                    event="transport_burst_resync_attempt",
+                    payload={
+                        "step_index": int(step_index_for_event),
+                        "command_vector_cm": list(command_vector_cm),
+                        "cycle_index": int(cycle_index + 1),
+                        "attempt_index": int(attempt_index + 1),
+                        "cooldown_s": cooldown_s,
+                        "resync_delay_s": per_attempt_delay_s,
+                        "failed_servo_ids": [int(value) for value in failed_servo_ids],
+                        "tracker_age_s": self._collect_pose_tracker_age_s(session),
+                    },
+                )
+                try:
+                    candidate_map = session.context.servo_service.read_live_telemetry([int(value) for value in servo_ids])
+                    bad_ids = [
+                        int(servo_id)
+                        for servo_id in [int(value) for value in servo_ids]
+                        if (
+                            int(servo_id) not in candidate_map
+                            or getattr(candidate_map[int(servo_id)], "present_position", None) is None
+                            or getattr(candidate_map[int(servo_id)], "telemetry_error", None) is not None
+                            or getattr(candidate_map[int(servo_id)], "hardware_error", None) is not None
+                        )
+                    ]
+                    if bad_ids:
+                        raise RuntimeError(
+                            "resync read returned packet/status error or missing present_position for servo(s): "
+                            + ", ".join(str(value) for value in bad_ids)
+                        )
+                    tel_map = dict(candidate_map)
+                    break
+                except Exception as resync_exc:  # noqa: PERF203
+                    last_resync_exc = resync_exc
+            if tel_map is not None:
+                break
+        if tel_map is None:
             if bool(self.config.return_to_neutral_on_resync_failure):
                 try:
                     self._issue_command(
@@ -5691,32 +6127,130 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                     )
                 except Exception:
                     pass
-            self._record_failure_context(
-                session=session,
-                exc=resync_exc,
-                requested_cable_command_cm=list(ctx.get("last_resolved_cable_command_cm") or []),
-                servo_ids=list(servo_ids),
+            session.set_metric(
+                "consecutive_transport_burst_failures",
+                int(session.metrics.get("consecutive_transport_burst_failures", 0) or 0) + 1,
             )
-            raise RuntimeError("collect-pose long-run resync telemetry failed after post-motion packet error.") from resync_exc
-        _append_collect_pose_jsonl_event(
-            _collect_pose_output_root(session),
-            "sample_failure_events.jsonl",
-            {
-                "event": "post_motion_telemetry_resync_success",
+            session.set_metric(
+                "consecutive_post_motion_packet_failures",
+                int(session.metrics.get("consecutive_transport_burst_failures", 0) or 0),
+            )
+            self._append_collect_pose_failure_event(
+                session,
+                event="transport_burst_resync_failed",
+                payload={
+                    "step_index": int(step_index_for_event),
+                    "command_vector_cm": list(command_vector_cm),
+                    "failed_servo_ids": [int(value) for value in failed_servo_ids],
+                    "cooldown_s": cooldown_s,
+                    "resync_attempts": int(per_cycle_attempts * max_cycles),
+                    "resync_delay_s": per_attempt_delay_s,
+                    "error": str(last_resync_exc) if last_resync_exc is not None else "unknown resync failure",
+                    "consecutive_transport_burst_failures": int(
+                        session.metrics.get("consecutive_transport_burst_failures", 0) or 0
+                    ),
+                    "total_post_motion_packet_failure_events": int(total_ev),
+                    "tracker_age_s": self._collect_pose_tracker_age_s(session),
+                },
+            )
+            stop_reasons: list[str] = []
+            if int(session.metrics.get("consecutive_transport_burst_failures", 0) or 0) >= int(
+                self.config.max_consecutive_transport_bursts
+            ):
+                stop_reasons.append(
+                    "collect_pose_command_dataset: exceeded max_consecutive_transport_bursts="
+                    f"{int(self.config.max_consecutive_transport_bursts)} during post-motion transport recovery."
+                )
+            max_total = self.config.max_total_packet_failures
+            if max_total is not None and int(total_ev) > int(max_total):
+                stop_reasons.append(f"collect_pose_command_dataset: exceeded max_total_packet_failures={int(max_total)}.")
+            max_drop_fraction = self.config.max_total_dropped_samples_fraction
+            if max_drop_fraction is not None:
+                accepted = int(session.metrics.get("accepted_sample_count", 0) or 0)
+                rejected = int(session.metrics.get("rejected_sample_count", 0) or 0)
+                dropped = int(session.metrics.get("dropped_post_motion_telemetry_samples", 0) or 0) + int(
+                    session.metrics.get("dropped_pre_motion_telemetry_samples", 0) or 0
+                )
+                denominator = max(1, accepted + rejected)
+                if float(dropped) / float(denominator) > float(max_drop_fraction):
+                    stop_reasons.append(
+                        "collect_pose_command_dataset: exceeded max_total_dropped_samples_fraction="
+                        f"{float(max_drop_fraction):.4f}."
+                    )
+            if stop_reasons:
+                self._stop_collect_pose_for_transport_budget(
+                    session=session,
+                    exc=exc,
+                    requested_cable_command_cm=list(command_vector_cm),
+                    servo_ids=list(servo_ids),
+                    step_index_for_event=int(step_index_for_event),
+                    failed_servo_ids=list(failed_servo_ids),
+                    stop_reason=" ".join(stop_reasons),
+                    cooldown_s=cooldown_s,
+                    resync_attempts=int(per_cycle_attempts * max_cycles),
+                )
+            return _synthetic_collect_pose_command_result(
+                exc=exc,
+                step=step,
+                parallel_command_metadata=parallel_command_metadata,
+                resync_feedback={},
+                fallback_cable_command_cm=list(zero_vector) if zero_vector is not None else None,
+            )
+        persistent_hardware_fault_servo_ids = [
+            int(servo_id)
+            for servo_id, telemetry in dict(tel_map).items()
+            if getattr(telemetry, "hardware_error_code", None) not in (None, 0)
+        ]
+        if persistent_hardware_fault_servo_ids:
+            self._stop_collect_pose_for_transport_budget(
+                session=session,
+                exc=exc,
+                requested_cable_command_cm=list(command_vector_cm),
+                servo_ids=list(servo_ids),
+                step_index_for_event=int(step_index_for_event),
+                failed_servo_ids=list(persistent_hardware_fault_servo_ids),
+                stop_reason=(
+                    "collect_pose_command_dataset: persistent hardware error bit after transport recovery on servo(s) "
+                    + ", ".join(str(value) for value in persistent_hardware_fault_servo_ids)
+                ),
+                cooldown_s=cooldown_s,
+                resync_attempts=int(per_cycle_attempts),
+            )
+        session.set_metric("consecutive_post_motion_packet_failures", 0)
+        session.set_metric("consecutive_transport_burst_failures", 0)
+        self._append_collect_pose_failure_event(
+            session,
+            event="transport_burst_resync_success",
+            payload={
                 "step_index": int(step_index_for_event),
-                "failed_servo_id": ctx.get("failed_servo_id"),
-                "retry_count": retry_count,
-                "resync_read_attempts": int(self.config.resync_read_attempts),
-                "resync_delay_s": float(self.config.resync_delay_s),
-                "consecutive_post_motion_packet_failures": consecutive,
-                "total_post_motion_packet_failure_events": total_ev,
+                "command_vector_cm": list(command_vector_cm),
+                "failed_servo_ids": [int(value) for value in failed_servo_ids],
+                "cooldown_s": cooldown_s,
+                "resync_attempts": int(per_cycle_attempts),
+                "resync_delay_s": per_attempt_delay_s,
+                "consecutive_transport_burst_failures": 0,
+                "consecutive_post_motion_packet_failures": 0,
+                "total_post_motion_packet_failure_events": int(total_ev),
+                "tracker_age_s": self._collect_pose_tracker_age_s(session),
             },
         )
+        command_metadata = dict(parallel_command_metadata)
+        if bool(self.config.retry_same_command_after_resync) and step is not None:
+            self._append_collect_pose_failure_event(
+                session,
+                event="command_retry_after_resync",
+                payload={
+                    "step_index": int(step_index_for_event),
+                    "command_vector_cm": list(command_vector_cm or step.cable_command_cm),
+                    "failed_servo_ids": [int(value) for value in failed_servo_ids],
+                },
+            )
+            command_metadata["post_resync_command_retry_requested"] = True
         resync_fb = _servo_feedback_payload(tel_map, servo_service=session.context.servo_service)
         return _synthetic_collect_pose_command_result(
             exc=exc,
             step=step,
-            parallel_command_metadata=parallel_command_metadata,
+            parallel_command_metadata=command_metadata,
             resync_feedback=resync_fb,
             fallback_cable_command_cm=list(zero_vector) if zero_vector is not None else None,
         )
@@ -5737,15 +6271,58 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         command_retries_attempted = 0
         initial_exception: Exception | None = None
         while True:
+            active_ramp_step_index = 1
+            active_ramp_step_count = 1
             try:
-                result = self._issue_command(
-                    session,
-                    tendon_displacement_cm=list(requested),
-                    servo_ids=list(servo_ids),
-                    neutral_ticks=list(neutral_ticks),
-                    record_failure_context_on_error=False,
-                )
+                result: dict[str, Any] | None = None
+                waypoints = self._collect_pose_transition_waypoints(session, requested=list(requested))
+                active_ramp_step_count = max(1, int(len(waypoints)))
+                for waypoint_index, waypoint in enumerate(waypoints, start=1):
+                    active_ramp_step_index = int(waypoint_index)
+                    is_intermediate = waypoint_index < active_ramp_step_count
+                    result = self._issue_command(
+                        session,
+                        tendon_displacement_cm=list(waypoint),
+                        servo_ids=list(servo_ids),
+                        neutral_ticks=list(neutral_ticks),
+                        record_failure_context_on_error=False,
+                        skip_post_command_telemetry=bool(
+                            is_intermediate and not bool(self.config.ramp_include_telemetry_checks)
+                        ),
+                        profile_velocity_override=self.config.profile_velocity_ticks_per_s,
+                        profile_acceleration_override=self.config.profile_acceleration,
+                    )
+                    if bool(self.config.ramp_log_intermediate_telemetry) and is_intermediate:
+                        self._append_collect_pose_failure_event(
+                            session,
+                            event="ramp_intermediate_step",
+                            payload={
+                                "step_index": int(step_index_for_event),
+                                "ramp_step_index": int(waypoint_index),
+                                "ramp_step_count": int(active_ramp_step_count),
+                                "requested_cable_command_cm": list(requested),
+                                "waypoint_cable_command_cm": list(waypoint),
+                                "servo_feedback": dict(result.get("servo_feedback", {}) or {}),
+                            },
+                        )
+                    if is_intermediate and float(self.config.ramp_step_settle_s) > 0.0:
+                        session.context.sleep_fn(float(self.config.ramp_step_settle_s))
+                    session.set_metric("last_dispatched_cable_command_cm", [float(value) for value in waypoint])
+                assert result is not None
+                result.setdefault("command_metadata", {})
+                result["command_metadata"]["ramp"] = {
+                    "enabled": bool(self.config.command_transition_ramp_enabled),
+                    "ramp_step_count": int(active_ramp_step_count),
+                    "max_delta_cm_per_ramp_step": (
+                        self.config.max_delta_cm_per_ramp_step
+                        if self.config.max_delta_cm_per_ramp_step is not None
+                        else self.config.max_delta_cm_per_transition
+                    ),
+                    "ramp_step_settle_s": float(self.config.ramp_step_settle_s),
+                    "ramp_include_telemetry_checks": bool(self.config.ramp_include_telemetry_checks),
+                }
                 session.set_metric("consecutive_post_motion_packet_failures", 0)
+                session.set_metric("consecutive_transport_burst_failures", 0)
                 return result
             except Exception as exc:
                 if initial_exception is None:
@@ -5754,7 +6331,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 if self._should_recover_collect_pose_post_motion_packet_error(exc):
                     retry_error = _find_servo_telemetry_retry_error(exc)
                     if retry_error is not None:
-                        return self._recover_collect_pose_post_motion_packet_error(
+                        recovered = self._recover_collect_pose_post_motion_packet_error(
                             session,
                             retry_error,
                             step=step,
@@ -5763,6 +6340,171 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                             zero_vector=zero_vector,
                             step_index_for_event=int(step_index_for_event),
                         )
+                        retry_requested = bool(
+                            recovered.get("command_metadata", {}).get("post_resync_command_retry_requested")
+                        )
+                        if retry_requested and bool(self.config.retry_same_command_after_resync):
+                            try:
+                                retried = self._issue_command(
+                                    session,
+                                    tendon_displacement_cm=list(requested),
+                                    servo_ids=list(servo_ids),
+                                    neutral_ticks=list(neutral_ticks),
+                                    record_failure_context_on_error=False,
+                                )
+                                self._append_collect_pose_failure_event(
+                                    session,
+                                    event="command_retry_after_resync_success",
+                                    payload={
+                                        "step_index": int(step_index_for_event),
+                                        "command_vector_cm": list(requested),
+                                    },
+                                )
+                                session.set_metric("consecutive_post_motion_packet_failures", 0)
+                                return retried
+                            except Exception as retry_exc:
+                                self._append_collect_pose_failure_event(
+                                    session,
+                                    event="command_retry_after_resync_failed",
+                                    payload={
+                                        "step_index": int(step_index_for_event),
+                                        "command_vector_cm": list(requested),
+                                        "error": str(retry_exc),
+                                    },
+                                )
+                        return recovered
+                overcurrent_servo_id, measured_abs_current_ma, threshold_ma = self._parse_post_move_overcurrent(exc)
+                if overcurrent_servo_id is not None:
+                    guard = session.context.servo_service.safety_guard
+                    transient_threshold_ma = int(
+                        self.config.transient_current_spike_ma
+                        if self.config.transient_current_spike_ma is not None
+                        else guard.transient_current_spike_ma
+                    )
+                    sustained_threshold_ma = int(
+                        self.config.sustained_jam_current_ma
+                        if self.config.sustained_jam_current_ma is not None
+                        else guard.sustained_jam_current_ma
+                    )
+                    sustained_cycles = max(1, int(self.config.sustained_jam_cycles))
+                    transient_policy = str(self.config.transient_spike_policy or "warn_drop_sample_continue").strip().lower()
+                    sustained_policy = str(self.config.sustained_jam_policy or "stop_safely").strip().lower()
+                    spike_budget = max(1, int(self.config.current_spike_max_events_per_servo))
+                    sid = str(int(overcurrent_servo_id))
+                    transient_counts = self._metric_int_map(session.metrics, "transient_current_spike_count_by_servo")
+                    transient_counts[sid] = int(transient_counts.get(sid, 0)) + 1
+                    self._set_metric_int_map(session, "transient_current_spike_count_by_servo", transient_counts)
+                    event_counts = self._metric_int_map(session.metrics, "current_spike_event_count_by_servo")
+                    event_counts[sid] = int(event_counts.get(sid, 0)) + 1
+                    self._set_metric_int_map(session, "current_spike_event_count_by_servo", event_counts)
+                    if int(event_counts[sid]) > int(spike_budget):
+                        raise RuntimeError(
+                            "collect_pose_command_dataset: repeated high-current spikes exceeded "
+                            f"current_spike_max_events_per_servo={int(spike_budget)} on servo {sid}. "
+                            "Likely mechanical/tendon issue."
+                        ) from exc
+                    if float(self.config.current_spike_cooldown_s) > 0.0:
+                        session.context.sleep_fn(float(self.config.current_spike_cooldown_s))
+                    resync_feedback: dict[int, Any] = {}
+                    resync_current_ma: int | None = None
+                    resync_error: str | None = None
+                    if bool(self.config.current_spike_resync_enabled):
+                        try:
+                            resync_feedback = _collect_pose_resync_telemetry(
+                                session,
+                                list(servo_ids),
+                                attempts=max(1, int(self.config.resync_read_attempts)),
+                                delay_s=max(0.0, float(self.config.resync_delay_s)),
+                            )
+                            feedback_row = dict(_servo_feedback_payload(resync_feedback, servo_service=session.context.servo_service).get(sid, {}) or {})
+                            if feedback_row.get("present_current_ma") is not None:
+                                resync_current_ma = int(feedback_row.get("present_current_ma"))
+                        except Exception as resync_exc:
+                            resync_error = str(resync_exc)
+                    consecutive = self._metric_int_map(session.metrics, "current_spike_consecutive_high_by_servo")
+                    sustained_now = (
+                        (measured_abs_current_ma is not None and int(measured_abs_current_ma) >= int(sustained_threshold_ma))
+                        or (resync_current_ma is not None and abs(int(resync_current_ma)) >= int(sustained_threshold_ma))
+                    )
+                    if sustained_now:
+                        consecutive[sid] = int(consecutive.get(sid, 0)) + 1
+                    else:
+                        consecutive[sid] = 0
+                    self._set_metric_int_map(session, "current_spike_consecutive_high_by_servo", consecutive)
+                    sustained_counts = self._metric_int_map(session.metrics, "sustained_current_exceedance_count_by_servo")
+                    if sustained_now:
+                        sustained_counts[sid] = int(sustained_counts.get(sid, 0)) + 1
+                    self._set_metric_int_map(session, "sustained_current_exceedance_count_by_servo", sustained_counts)
+                    self._append_collect_pose_failure_event(
+                        session,
+                        event="current_spike_detected",
+                        payload={
+                            "step_index": int(step_index_for_event),
+                            "ramp_step_index": int(active_ramp_step_index),
+                            "ramp_step_count": int(active_ramp_step_count),
+                            "servo_id": int(overcurrent_servo_id),
+                            "requested_cable_command_cm": list(requested),
+                            "measured_abs_current_ma": measured_abs_current_ma,
+                            "threshold_ma": threshold_ma,
+                            "transient_threshold_ma": int(transient_threshold_ma),
+                            "sustained_threshold_ma": int(sustained_threshold_ma),
+                            "resync_current_ma": resync_current_ma,
+                            "resync_error": resync_error,
+                            "transient_count_for_servo": int(transient_counts[sid]),
+                            "consecutive_high_for_servo": int(consecutive[sid]),
+                        },
+                    )
+                    if sustained_now and sustained_policy == "stop_safely" and int(consecutive[sid]) >= int(sustained_cycles):
+                        raise RuntimeError(
+                            "collect_pose_command_dataset: sustained overcurrent/jam detected on servo "
+                            f"{sid} ({int(consecutive[sid])} consecutive high-current cycle(s), "
+                            f"threshold={int(sustained_threshold_ma)} mA)."
+                        ) from exc
+                    if transient_policy != "warn_drop_sample_continue":
+                        raise
+                    if bool(self.config.current_spike_return_to_previous_safe_goal):
+                        previous_safe = session.metrics.get("last_dispatched_cable_command_cm")
+                        if isinstance(previous_safe, list) and len(previous_safe) == len(requested):
+                            try:
+                                self._issue_command(
+                                    session,
+                                    tendon_displacement_cm=[float(value) for value in previous_safe],
+                                    servo_ids=list(servo_ids),
+                                    neutral_ticks=list(neutral_ticks),
+                                    record_failure_context_on_error=False,
+                                    skip_post_command_telemetry=True,
+                                    profile_velocity_override=self.config.profile_velocity_ticks_per_s,
+                                    profile_acceleration_override=self.config.profile_acceleration,
+                                )
+                            except Exception:
+                                pass
+                    session.set_metric(
+                        "transient_current_spike_drop_count",
+                        int(session.metrics.get("transient_current_spike_drop_count", 0) or 0)
+                        + int(max(1, self.config.samples_per_command)),
+                    )
+                    return {
+                        "command_deferred_or_dropped": True,
+                        "deferred_reason": "transient_current_spike",
+                        "requested_cable_command_cm": list(requested),
+                        "resolved_cable_command_cm": list(requested),
+                        "requested_pair_command_cm": _pair_command_from_cable_deltas(list(requested)),
+                        "resolved_pair_command_cm": _pair_command_from_cable_deltas(list(requested)),
+                        "command_metadata": {
+                            **dict(parallel_command_metadata),
+                            "transient_current_spike": True,
+                            "spike_servo_id": int(overcurrent_servo_id),
+                            "spike_abs_current_ma": measured_abs_current_ma,
+                            "sustained_jam_current_ma": int(sustained_threshold_ma),
+                            "sustained_jam_cycles": int(sustained_cycles),
+                            "ramp_step_index": int(active_ramp_step_index),
+                            "ramp_step_count": int(active_ramp_step_count),
+                        },
+                        "servo_feedback": _servo_feedback_payload(
+                            resync_feedback or session.context.servo_service.last_known_telemetry([int(value) for value in servo_ids]),
+                            servo_service=session.context.servo_service,
+                        ),
+                    }
                 # Pre-motion packet/missing-position failures should not immediately kill long runs.
                 if self._should_recover_collect_pose_pre_motion_packet_error(exc):
                     retry_error, ctx = self._collect_pose_failure_ctx(exc)
@@ -5957,9 +6699,33 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         samples_per_command = max(1, int(self.config.samples_per_command))
         target_valid_samples = int(self.config.target_valid_sample_count or self.config.sample_count_target)
         continue_until_valid = bool(self.config.continue_until_valid_samples)
+        configured_max_total_attempts = (
+            int(self.config.max_total_attempts) if self.config.max_total_attempts is not None else None
+        )
+        max_total_attempts = configured_max_total_attempts
+        if continue_until_valid and max_total_attempts is None:
+            max_total_attempts = max(
+                int(target_valid_samples) * 3,
+                int(len(command_steps_all) * samples_per_command) + 2,
+            )
+        configured_max_dropped_fraction = (
+            float(self.config.max_dropped_fraction)
+            if self.config.max_dropped_fraction is not None
+            else self.config.max_total_dropped_samples_fraction
+        )
+        configured_max_consecutive_failures = (
+            int(self.config.max_consecutive_failures) if self.config.max_consecutive_failures is not None else None
+        )
         total = max(2 + (len(command_steps) * samples_per_command), 2 + int(target_valid_samples))
         accepted_count = 0
         rejected_count = 0
+        accepted_workspace_count = 0
+        complete_training_row_count = 0
+        incomplete_workspace_count = 0
+        non_training_accepted_count = 0
+        dropped_quarantined_count = 0
+        total_workspace_attempts = 0
+        consecutive_incomplete_or_dropped = 0
         progress = 0
         zero_vector = [0.0, 0.0, 0.0, 0.0]
         servo_only_mode = _collect_pose_servo_only_test_mode(config=self.config, tracking_service=session.context.tracking_service)
@@ -5996,6 +6762,37 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 "allow_recovered_packet_errors": bool(self.config.allow_recovered_packet_errors),
                 "max_recovered_packet_errors_per_run": self.config.max_recovered_packet_errors_per_run,
                 "max_current_warning_ma": self.config.max_current_warning_ma,
+                "current_warning_ma": self.config.current_warning_ma,
+                "transient_current_spike_ma": self.config.transient_current_spike_ma,
+                "sustained_jam_current_ma": self.config.sustained_jam_current_ma,
+                "sustained_jam_cycles": int(self.config.sustained_jam_cycles),
+                "transient_spike_policy": str(self.config.transient_spike_policy),
+                "sustained_jam_policy": str(self.config.sustained_jam_policy),
+                "current_spike_resync_enabled": bool(self.config.current_spike_resync_enabled),
+                "current_spike_cooldown_s": float(self.config.current_spike_cooldown_s),
+                "current_spike_return_to_previous_safe_goal": bool(self.config.current_spike_return_to_previous_safe_goal),
+                "current_spike_max_events_per_servo": int(self.config.current_spike_max_events_per_servo),
+                "command_transition_ramp_enabled": bool(self.config.command_transition_ramp_enabled),
+                "max_delta_cm_per_ramp_step": (
+                    self.config.max_delta_cm_per_ramp_step
+                    if self.config.max_delta_cm_per_ramp_step is not None
+                    else self.config.max_delta_cm_per_transition
+                ),
+                "ramp_step_settle_s": float(self.config.ramp_step_settle_s),
+                "ramp_include_telemetry_checks": bool(self.config.ramp_include_telemetry_checks),
+                "profile_velocity_ticks_per_s": self.config.profile_velocity_ticks_per_s,
+                "profile_acceleration": self.config.profile_acceleration,
+                "transport_burst_recovery_enabled": bool(self._transport_burst_recovery_enabled()),
+                "transport_burst_cooldown_s": float(self.config.transport_burst_cooldown_s),
+                "transport_burst_resync_attempts": int(self.config.transport_burst_resync_attempts),
+                "transport_burst_resync_delay_s": float(self.config.transport_burst_resync_delay_s),
+                "retry_same_command_after_resync": bool(self.config.retry_same_command_after_resync),
+                "max_consecutive_transport_bursts": int(self.config.max_consecutive_transport_bursts),
+                "max_total_packet_failures": self.config.max_total_packet_failures,
+                "max_total_dropped_samples_fraction": self.config.max_total_dropped_samples_fraction,
+                "max_total_attempts": max_total_attempts,
+                "max_dropped_fraction": configured_max_dropped_fraction,
+                "max_consecutive_failures": configured_max_consecutive_failures,
             },
         )
         session.set_metric("recovered_packet_error_count", 0)
@@ -6005,11 +6802,35 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         session.set_metric("dropped_pre_motion_telemetry_samples", 0)
         session.set_metric("consecutive_post_motion_packet_failures", 0)
         session.set_metric("total_post_motion_packet_failure_events", 0)
+        session.set_metric("transport_burst_count", 0)
+        session.set_metric("consecutive_transport_burst_failures", 0)
+        session.set_metric("max_consecutive_transport_bursts", int(self.config.max_consecutive_transport_bursts))
         session.set_metric("write_goal_packet_error_count", 0)
+        session.set_metric("transient_current_spike_count_by_servo", {})
+        session.set_metric("sustained_current_exceedance_count_by_servo", {})
+        session.set_metric("current_spike_event_count_by_servo", {})
+        session.set_metric("current_spike_consecutive_high_by_servo", {})
+        session.set_metric("transient_current_spike_drop_count", 0)
         session.set_metric("resume_from_command_index", int(resume_from))
         session.set_metric("next_command_index_to_resume", int(resume_from))
         session.set_metric("target_valid_sample_count", int(target_valid_samples))
         session.set_metric("continue_until_valid_samples", bool(continue_until_valid))
+        session.set_metric("max_total_attempts", max_total_attempts)
+        session.set_metric("max_dropped_fraction", configured_max_dropped_fraction)
+        session.set_metric("max_consecutive_failures", configured_max_consecutive_failures)
+        session.set_metric("accepted_sample_count", 0)
+        session.set_metric("rejected_sample_count", 0)
+        session.set_metric("accepted_workspace_sample_count", 0)
+        session.set_metric("complete_training_row_count", 0)
+        session.set_metric("accepted_training_row_count", 0)
+        session.set_metric("incomplete_accepted_workspace_row_count", 0)
+        session.set_metric("non_training_accepted_row_count", 0)
+        session.set_metric("dropped_quarantined_sample_count", 0)
+        session.set_metric("total_workspace_attempt_count", 0)
+        session.set_metric("consecutive_incomplete_or_dropped_count", 0)
+        session.set_metric("remaining_complete_training_rows", int(target_valid_samples))
+        session.set_metric("complete_training_target_reached", False)
+        session.set_metric("last_dispatched_cable_command_cm", list(zero_vector))
         session.set_metric(
             "active_segment",
             {
@@ -6049,6 +6870,99 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             pair_limits=pair_limits,
         )
 
+        def _remaining_complete_rows() -> int:
+            return max(0, int(target_valid_samples) - int(complete_training_row_count))
+
+        def _complete_target_reached() -> bool:
+            return bool(continue_until_valid) and int(complete_training_row_count) >= int(target_valid_samples)
+
+        def _apply_runtime_row_counters(sample: ExperimentTimeseriesSample, *, workspace_attempt: bool) -> None:
+            nonlocal accepted_workspace_count
+            nonlocal complete_training_row_count
+            nonlocal incomplete_workspace_count
+            nonlocal non_training_accepted_count
+            nonlocal dropped_quarantined_count
+            nonlocal total_workspace_attempts
+            nonlocal consecutive_incomplete_or_dropped
+            phase = str(sample.phase or "")
+            extra = dict(sample.extra or {})
+            accepted = bool(extra.get("capture_accepted"))
+            excluded = bool(extra.get("modeling_export_exclude"))
+            if excluded:
+                dropped_quarantined_count += 1
+            is_complete_training_row = False
+            if accepted:
+                if phase in NON_TRAINING_PHASES:
+                    non_training_accepted_count += 1
+                else:
+                    accepted_workspace_count += 1
+                    is_complete_training_row = bool((not excluded) and sample_has_complete_command_servo_tip(sample))
+                    if is_complete_training_row:
+                        complete_training_row_count += 1
+                    else:
+                        incomplete_workspace_count += 1
+            if workspace_attempt:
+                total_workspace_attempts += 1
+                if is_complete_training_row:
+                    consecutive_incomplete_or_dropped = 0
+                else:
+                    consecutive_incomplete_or_dropped += 1
+            session.set_metric("accepted_workspace_sample_count", int(accepted_workspace_count))
+            session.set_metric("complete_training_row_count", int(complete_training_row_count))
+            session.set_metric("accepted_training_row_count", int(complete_training_row_count))
+            session.set_metric("incomplete_accepted_workspace_row_count", int(incomplete_workspace_count))
+            session.set_metric("non_training_accepted_row_count", int(non_training_accepted_count))
+            session.set_metric("dropped_quarantined_sample_count", int(dropped_quarantined_count))
+            session.set_metric("total_workspace_attempt_count", int(total_workspace_attempts))
+            session.set_metric("consecutive_incomplete_or_dropped_count", int(consecutive_incomplete_or_dropped))
+            session.set_metric("remaining_complete_training_rows", int(_remaining_complete_rows()))
+            session.set_metric("complete_training_target_reached", bool(_complete_target_reached()))
+
+        def _record_deferred_workspace_attempts(attempt_count: int) -> None:
+            nonlocal total_workspace_attempts
+            nonlocal consecutive_incomplete_or_dropped
+            if int(attempt_count) <= 0:
+                return
+            total_workspace_attempts += int(attempt_count)
+            consecutive_incomplete_or_dropped += int(attempt_count)
+            session.set_metric("total_workspace_attempt_count", int(total_workspace_attempts))
+            session.set_metric("consecutive_incomplete_or_dropped_count", int(consecutive_incomplete_or_dropped))
+            session.set_metric("remaining_complete_training_rows", int(_remaining_complete_rows()))
+            session.set_metric("complete_training_target_reached", bool(_complete_target_reached()))
+
+        def _enforce_continue_mode_budgets() -> None:
+            if not continue_until_valid:
+                return
+            stop_reasons: list[str] = []
+            if max_total_attempts is not None and int(total_workspace_attempts) >= int(max_total_attempts):
+                stop_reasons.append(
+                    "collect_pose_command_dataset: exceeded max_total_attempts="
+                    f"{int(max_total_attempts)} before reaching target_valid_sample_count={int(target_valid_samples)} "
+                    f"(complete_training_row_count={int(complete_training_row_count)})."
+                )
+            if configured_max_dropped_fraction is not None and int(total_workspace_attempts) > 0:
+                dropped_total = int(session.metrics.get("dropped_post_motion_telemetry_samples", 0) or 0) + int(
+                    session.metrics.get("dropped_pre_motion_telemetry_samples", 0) or 0
+                )
+                dropped_fraction = float(dropped_total) / float(max(1, int(total_workspace_attempts)))
+                if dropped_fraction > float(configured_max_dropped_fraction):
+                    stop_reasons.append(
+                        "collect_pose_command_dataset: exceeded max_dropped_fraction="
+                        f"{float(configured_max_dropped_fraction):.4f} before reaching target_valid_sample_count="
+                        f"{int(target_valid_samples)} (dropped_fraction={dropped_fraction:.4f})."
+                    )
+            if (
+                configured_max_consecutive_failures is not None
+                and int(consecutive_incomplete_or_dropped) >= int(configured_max_consecutive_failures)
+            ):
+                stop_reasons.append(
+                    "collect_pose_command_dataset: exceeded max_consecutive_failures="
+                    f"{int(configured_max_consecutive_failures)} before reaching target_valid_sample_count="
+                    f"{int(target_valid_samples)}."
+                )
+            if stop_reasons:
+                raise RuntimeError(" ".join(stop_reasons))
+
         command_owner = contextlib.nullcontext()
         if not self.config.dry_run and getattr(session.context.servo_service, "is_connected", False):
             command_owner = session.context.servo_service.exclusive_bus_operation(
@@ -6084,6 +6998,9 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             session.add_sample(neutral_sample)
             accepted_count += int(bool(neutral_sample.extra.get("capture_accepted")))
             rejected_count += int(not bool(neutral_sample.extra.get("capture_accepted")))
+            _apply_runtime_row_counters(neutral_sample, workspace_attempt=False)
+            session.set_metric("accepted_sample_count", int(accepted_count))
+            session.set_metric("rejected_sample_count", int(rejected_count))
             progress += 1
             session.update_progress(progress, total, {"phase": "initial_neutral", "step_index": -1})
 
@@ -6098,12 +7015,12 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             max_runtime_step_index = int(resume_from)
             schedule_cycle = 0
             while True:
-                if continue_until_valid and accepted_count >= int(target_valid_samples):
+                if _complete_target_reached():
                     break
                 if (not continue_until_valid) and schedule_cycle > 0:
                     break
                 for step_offset, base_step in enumerate(command_steps):
-                    if continue_until_valid and accepted_count >= int(target_valid_samples):
+                    if _complete_target_reached():
                         break
                     runtime_step_index = int(base_step.index) + int(schedule_cycle) * int(scheduled_command_count)
                     max_runtime_step_index = max(max_runtime_step_index, runtime_step_index)
@@ -6124,6 +7041,8 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                     session.set_metric("next_command_index_to_resume", int(runtime_step_index) + 1)
                     commands_completed_in_run += 1
                     if bool(command_result.get("command_deferred_or_dropped")):
+                        _record_deferred_workspace_attempts(int(samples_per_command))
+                        _enforce_continue_mode_budgets()
                         session.update_progress(
                             progress,
                             total,
@@ -6134,6 +7053,8 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                                 "accepted_samples": int(accepted_count),
                                 "rejected_samples": int(rejected_count),
                                 "deferred": True,
+                                "complete_training_row_count": int(complete_training_row_count),
+                                "remaining_complete_training_rows": int(_remaining_complete_rows()),
                             },
                         )
                         continue
@@ -6143,7 +7064,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                     if settle_time_s > 0.0:
                         session.context.sleep_fn(settle_time_s)
                     for sample_index in range(samples_per_command):
-                        if continue_until_valid and accepted_count >= int(target_valid_samples):
+                        if _complete_target_reached():
                             break
                         sample = self._capture_dataset_sample(
                             session=session,
@@ -6163,6 +7084,10 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                         session.add_sample(sample)
                         accepted_count += int(bool(sample.extra.get("capture_accepted")))
                         rejected_count += int(not bool(sample.extra.get("capture_accepted")))
+                        _apply_runtime_row_counters(sample, workspace_attempt=True)
+                        _enforce_continue_mode_budgets()
+                        session.set_metric("accepted_sample_count", int(accepted_count))
+                        session.set_metric("rejected_sample_count", int(rejected_count))
                         progress += 1
                         session.update_progress(
                             progress,
@@ -6173,6 +7098,8 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                                 "command_label": str(base_step.label),
                                 "accepted_samples": int(accepted_count),
                                 "rejected_samples": int(rejected_count),
+                                "complete_training_row_count": int(complete_training_row_count),
+                                "remaining_complete_training_rows": int(_remaining_complete_rows()),
                             },
                         )
                     previous_pair_command_cm = list(base_step.pair_command_cm)
@@ -6238,6 +7165,9 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 session.add_sample(final_sample)
                 accepted_count += int(bool(final_sample.extra.get("capture_accepted")))
                 rejected_count += int(not bool(final_sample.extra.get("capture_accepted")))
+                _apply_runtime_row_counters(final_sample, workspace_attempt=False)
+                session.set_metric("accepted_sample_count", int(accepted_count))
+                session.set_metric("rejected_sample_count", int(rejected_count))
                 progress += 1
                 session.update_progress(
                     progress,
@@ -6289,6 +7219,9 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         tendon_displacement_cm: list[float],
         servo_ids: list[int],
         neutral_ticks: list[int],
+        skip_post_command_telemetry: bool = False,
+        profile_velocity_override: int | None = None,
+        profile_acceleration_override: int | None = None,
         record_failure_context_on_error: bool = True,
     ) -> dict[str, Any]:
         servo_service = session.context.servo_service
@@ -6363,35 +7296,48 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                     "profile_acceleration": None,
                 },
             }
+        original_profile_velocity = getattr(servo_service.dxl_bus.config, "single_segment_experiment_default_profile_velocity", None)
+        original_profile_acc = getattr(servo_service.dxl_bus.config, "single_segment_experiment_default_profile_acceleration", None)
+        if profile_velocity_override is not None:
+            servo_service.dxl_bus.config.single_segment_experiment_default_profile_velocity = int(profile_velocity_override)
+        if profile_acceleration_override is not None:
+            servo_service.dxl_bus.config.single_segment_experiment_default_profile_acceleration = int(profile_acceleration_override)
         try:
-            command = servo_service.command_displacement(
-                tendon_displacements_cm=list(requested_cable_command_cm),
-                neutral_ticks=command_neutral_ticks,
-                servo_ids=command_servo_ids,
-                motion_workflow="experiment_motion",
-                parallel_mirror_pairs=parallel_mirror_pairs or None,
-                telemetry_retry_count=int(self.config.telemetry_retry_count),
-                telemetry_retry_delay_s=float(self.config.telemetry_retry_delay_s),
-                allow_recovered_packet_errors=bool(self.config.allow_recovered_packet_errors),
-                write_goal_attempts=self.config.goal_write_retry_attempts,
-            )
-            if float(self.config.post_write_settle_s) > 0.0:
-                session.context.sleep_fn(float(self.config.post_write_settle_s))
-        except Exception as exc:
-            if record_failure_context_on_error:
-                self._record_failure_context(
-                    session=session,
-                    exc=exc,
-                    requested_cable_command_cm=requested_cable_command_cm,
+            try:
+                command = servo_service.command_displacement(
+                    tendon_displacements_cm=list(requested_cable_command_cm),
+                    neutral_ticks=command_neutral_ticks,
                     servo_ids=command_servo_ids,
+                    motion_workflow="experiment_motion",
+                    parallel_mirror_pairs=parallel_mirror_pairs or None,
+                    telemetry_retry_count=int(self.config.telemetry_retry_count),
+                    telemetry_retry_delay_s=float(self.config.telemetry_retry_delay_s),
+                    allow_recovered_packet_errors=bool(self.config.allow_recovered_packet_errors),
+                    skip_post_command_telemetry=bool(skip_post_command_telemetry),
+                    write_goal_attempts=self.config.goal_write_retry_attempts,
                 )
-            LOG.exception(
-                "Collect-pose command failed | requested_cable_cm=%s | servo_ids=%s | error=%s",
-                requested_cable_command_cm,
-                list(command_servo_ids),
-                exc,
-            )
-            raise
+                if float(self.config.post_write_settle_s) > 0.0:
+                    session.context.sleep_fn(float(self.config.post_write_settle_s))
+            except Exception as exc:
+                if record_failure_context_on_error:
+                    self._record_failure_context(
+                        session=session,
+                        exc=exc,
+                        requested_cable_command_cm=requested_cable_command_cm,
+                        servo_ids=command_servo_ids,
+                    )
+                LOG.exception(
+                    "Collect-pose command failed | requested_cable_cm=%s | servo_ids=%s | error=%s",
+                    requested_cable_command_cm,
+                    list(command_servo_ids),
+                    exc,
+                )
+                raise
+        finally:
+            if profile_velocity_override is not None:
+                servo_service.dxl_bus.config.single_segment_experiment_default_profile_velocity = original_profile_velocity
+            if profile_acceleration_override is not None:
+                servo_service.dxl_bus.config.single_segment_experiment_default_profile_acceleration = original_profile_acc
         motion_profile = _servo_motion_profile_from_result(command)
         command_metadata = {**dict(parallel_command_metadata), **dict(command.command_metadata or {})}
         if command_metadata.get("parallel_single_demo"):
@@ -6848,14 +7794,12 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             or (not pretension_source.accepted or not pretension_source.usable)
             or (not strict_pretension and pretension_source.source_type not in {"manual", "algorithmic"})
         )
-        drops = int(session.metrics.get("dropped_post_motion_telemetry_samples", 0) or 0)
         base_train = bool(
             (not servo_only_mode)
             and runtime_tip_policy is not None
             and runtime_tip_policy.thesis_trusted
             and bool(robot_positions)
         )
-        allow_partial = bool(self.config.allow_partial_dataset_after_telemetry_drops)
         metrics = {
             **dict(session.metrics),
             "dataset_mode": str(self.config.dataset_mode or "workspace_coverage"),
@@ -6875,8 +7819,8 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             "tracker_connected": bool(session.context.tracking_service is not None),
             "registration_available": bool(snapshot is not None and getattr(snapshot, "registration_state", None) == "loaded"),
             "run_trust_mode": "servo_only" if servo_only_mode else str(self.config.run_trust_mode or "thesis_trusted"),
-            "valid_for_model_training": bool((not parallel_single_demo) and base_train and (drops == 0 or allow_partial)),
-            "valid_for_thesis_repeatability": bool((not parallel_single_demo) and base_train and (drops == 0 or allow_partial)),
+            "valid_for_model_training": bool((not parallel_single_demo) and base_train),
+            "valid_for_thesis_repeatability": bool((not parallel_single_demo) and base_train),
             "not_model_training_ready": bool(servo_only_mode or parallel_single_demo or not robot_positions),
             "parallel_single_demo": bool(parallel_single_demo),
             "true_two_segment_control": False,
@@ -6936,7 +7880,11 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         quality = _collect_pose_dataset_quality_summary(
             samples=list(session.samples),
             metrics=summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else dict(session.metrics),
-            max_current_warning_ma=self.config.max_current_warning_ma,
+            max_current_warning_ma=(
+                self.config.current_warning_ma
+                if self.config.current_warning_ma is not None
+                else self.config.max_current_warning_ma
+            ),
         )
         summary_metrics = summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else dict(session.metrics)
         final_recommendation = _collect_pose_long_run_recommendation(
@@ -7017,6 +7965,13 @@ def _collect_pose_dataset_quality_summary(
     current_summary = _collect_pose_current_summary(samples)
     max_abs_current = current_summary.get("max_abs_current_ma")
     trainable = bool(metrics.get("valid_for_model_training"))
+    validity_status = str(metrics.get("model_training_validity_status", "not_applicable") or "not_applicable")
+    validity_reason = str(metrics.get("model_training_validity_reason", "") or "")
+    validity_checks = dict(metrics.get("model_training_validity_checks", {}) or {})
+    model_training_warnings = [str(value) for value in list(metrics.get("model_training_warnings", []) or []) if str(value)]
+    hard_invalid_reasons = [
+        str(value) for value in list(metrics.get("model_training_hard_invalidation_reasons", []) or []) if str(value)
+    ]
     failure_category = str(failure_context.get("failure_category") or metrics.get("failure_category") or "")
     unrec = int(metrics.get("unrecovered_packet_error_count", 0) or 0)
     drops = int(metrics.get("dropped_post_motion_telemetry_samples", 0) or 0)
@@ -7051,6 +8006,9 @@ def _collect_pose_dataset_quality_summary(
         "next_command_index_to_resume": int(metrics.get("next_command_index_to_resume", 0) or 0),
         "recovered_packet_error_count": int(metrics.get("recovered_packet_error_count", 0) or 0),
         "unrecovered_packet_error_count": int(metrics.get("unrecovered_packet_error_count", 0) or 0),
+        "transport_burst_count": int(metrics.get("transport_burst_count", 0) or 0),
+        "consecutive_transport_burst_failures": int(metrics.get("consecutive_transport_burst_failures", 0) or 0),
+        "total_post_motion_packet_failure_events": int(metrics.get("total_post_motion_packet_failure_events", 0) or 0),
         "tracker_stale_count": sum(
             1
             for sample in rejected
@@ -7067,12 +8025,41 @@ def _collect_pose_dataset_quality_summary(
         "high_current_warning": bool(high_current_warning),
         "max_abs_current_ma_by_servo": dict(current_summary.get("max_abs_current_ma_by_servo", {}) or {}),
         "mean_abs_current_ma_by_servo": dict(current_summary.get("mean_abs_current_ma_by_servo", {}) or {}),
+        "p95_abs_current_ma_by_servo": dict(current_summary.get("p95_abs_current_ma_by_servo", {}) or {}),
+        "input_voltage_min_mv_by_servo": dict(current_summary.get("input_voltage_min_mv_by_servo", {}) or {}),
+        "current_voltage_correlation_notes_by_servo": dict(
+            current_summary.get("current_voltage_correlation_notes_by_servo", {}) or {}
+        ),
         "peak_current_sample_by_servo": dict(current_summary.get("peak_current_sample_by_servo", {}) or {}),
+        "transient_current_spike_count_by_servo": dict(
+            metrics.get("transient_current_spike_count_by_servo", {}) or {}
+        ),
+        "sustained_current_exceedance_count_by_servo": dict(
+            metrics.get("sustained_current_exceedance_count_by_servo", {}) or {}
+        ),
+        "transient_current_spike_drop_count": int(metrics.get("transient_current_spike_drop_count", 0) or 0),
         "trainability_status": {
             "valid_for_model_training": trainable,
             "not_model_training_ready": bool(metrics.get("not_model_training_ready")),
             "run_trust_mode": str(metrics.get("run_trust_mode", "unknown")),
         },
+        "model_training_validity_status": validity_status,
+        "model_training_validity_reason": validity_reason,
+        "model_training_validity_checks": validity_checks,
+        "model_training_warnings": model_training_warnings,
+        "model_training_hard_invalidation_reasons": hard_invalid_reasons,
+        "dropped_samples_excluded_from_training": bool(metrics.get("dropped_samples_excluded_from_training")),
+        "accepted_rows_complete": bool(metrics.get("accepted_rows_complete")),
+        "accepted_workspace_sample_count": int(metrics.get("accepted_workspace_sample_count", 0) or 0),
+        "complete_training_row_count": int(metrics.get("complete_training_row_count", 0) or 0),
+        "target_valid_sample_count": int(metrics.get("target_valid_sample_count", 0) or 0),
+        "remaining_complete_training_rows": int(metrics.get("remaining_complete_training_rows", 0) or 0),
+        "non_training_accepted_row_count": int(metrics.get("non_training_accepted_row_count", 0) or 0),
+        "incomplete_accepted_workspace_row_count": int(metrics.get("incomplete_accepted_workspace_row_count", 0) or 0),
+        "dropped_quarantined_sample_count": int(metrics.get("dropped_quarantined_sample_count", 0) or 0),
+        "modeling_export_row_count": int(metrics.get("modeling_export_row_count", 0) or 0),
+        "modeling_legacy_row_count": int(metrics.get("modeling_legacy_row_count", 0) or 0),
+        "accepted_training_row_count": int(metrics.get("accepted_training_row_count", 0) or 0),
         "recommendation": recommendation,
     }
 
@@ -7096,6 +8083,10 @@ def _collect_pose_long_run_recommendation(*, success: bool, metrics: dict[str, A
 def _render_collect_pose_dataset_quality_summary(quality: dict[str, Any]) -> str:
     max_by_servo = dict(quality.get("max_abs_current_ma_by_servo", {}) or {})
     max_by_servo_text = ", ".join(f"{sid}:{int(val)}" for sid, val in sorted(max_by_servo.items())) if max_by_servo else "n/a"
+    p95_by_servo = dict(quality.get("p95_abs_current_ma_by_servo", {}) or {})
+    p95_by_servo_text = ", ".join(f"{sid}:{float(val):.1f}" for sid, val in sorted(p95_by_servo.items())) if p95_by_servo else "n/a"
+    voltage_min = dict(quality.get("input_voltage_min_mv_by_servo", {}) or {})
+    voltage_min_text = ", ".join(f"{sid}:{int(val)}" for sid, val in sorted(voltage_min.items())) if voltage_min else "n/a"
     lines = [
         "Collect-Pose Dataset Quality Summary",
         f"Accepted samples: {quality.get('accepted_sample_count')}",
@@ -7106,13 +8097,41 @@ def _render_collect_pose_dataset_quality_summary(quality: dict[str, Any]) -> str
         f"Next command index to resume: {quality.get('next_command_index_to_resume')}",
         f"Recovered packet errors: {quality.get('recovered_packet_error_count')}",
         f"Unrecovered packet errors: {quality.get('unrecovered_packet_error_count')}",
+        f"Transport bursts: {quality.get('transport_burst_count')}",
         f"Telemetry retries: {quality.get('servo_telemetry_retry_count')}",
         f"Write-goal packet errors: {quality.get('write_goal_packet_error_count')}",
         f"Tracker stale count: {quality.get('tracker_stale_count')}",
         f"Max abs current (mA): {quality.get('max_abs_current_ma')}",
         f"Max abs current by servo (mA): {max_by_servo_text}",
+        f"P95 abs current by servo (mA): {p95_by_servo_text}",
+        f"Input voltage minimum by servo (mV): {voltage_min_text}",
+        f"Transient current spikes by servo: {quality.get('transient_current_spike_count_by_servo')}",
+        f"Sustained current exceedances by servo: {quality.get('sustained_current_exceedance_count_by_servo')}",
+        f"Transient current spike dropped samples: {quality.get('transient_current_spike_drop_count')}",
+        f"Model training validity status: {quality.get('model_training_validity_status')}",
+        f"Model training validity reason: {quality.get('model_training_validity_reason')}",
+        f"Dropped rows excluded from training: {quality.get('dropped_samples_excluded_from_training')}",
+        f"Accepted rows complete: {quality.get('accepted_rows_complete')}",
+        (
+            "Training row counts: "
+            f"accepted_workspace={quality.get('accepted_workspace_sample_count')}, "
+            f"export={quality.get('modeling_export_row_count')}, "
+            f"legacy={quality.get('modeling_legacy_row_count')}, "
+            f"accepted_training={quality.get('accepted_training_row_count')}, "
+            f"complete_training={quality.get('complete_training_row_count')}, "
+            f"target_complete_training={quality.get('target_valid_sample_count')}, "
+            f"remaining_complete_training={quality.get('remaining_complete_training_rows')}"
+        ),
+        f"Accepted non-training rows: {quality.get('non_training_accepted_row_count')}",
+        f"Incomplete accepted workspace rows: {quality.get('incomplete_accepted_workspace_row_count')}",
+        f"Dropped/quarantined sample count: {quality.get('dropped_quarantined_sample_count')}",
         f"Recommendation: {quality.get('recommendation')}",
     ]
+    warnings = [str(value) for value in list(quality.get("model_training_warnings", []) or []) if str(value)]
+    if warnings:
+        lines.append("Model training warnings:")
+        for warning in warnings:
+            lines.append(f"- {warning}")
     return "\n".join(lines).strip() + "\n"
 
 
@@ -7164,8 +8183,10 @@ def _collect_pose_current_values(samples: list[ExperimentTimeseriesSample]) -> l
 
 def _collect_pose_current_summary(samples: list[ExperimentTimeseriesSample]) -> dict[str, Any]:
     abs_series_by_servo: dict[str, list[float]] = {}
+    voltage_series_by_servo: dict[str, list[int]] = {}
     max_abs_by_servo: dict[str, int] = {}
     peak_info_by_servo: dict[str, dict[str, Any]] = {}
+    current_voltage_pairs_by_servo: dict[str, list[tuple[int, int]]] = {}
     global_max_abs: int | None = None
     for sequence_index, sample in enumerate(samples):
         for source in ("servo_feedback_at_command", "servo_feedback_at_capture"):
@@ -7174,11 +8195,15 @@ def _collect_pose_current_summary(samples: list[ExperimentTimeseriesSample]) -> 
                 if not isinstance(item, dict):
                     continue
                 current = item.get("present_current_ma")
+                voltage_mv = item.get("present_voltage_mv")
                 if current is None:
                     continue
                 sid = str(servo_id)
                 abs_current = abs(int(current))
                 abs_series_by_servo.setdefault(sid, []).append(float(abs_current))
+                if voltage_mv is not None:
+                    voltage_series_by_servo.setdefault(sid, []).append(int(voltage_mv))
+                    current_voltage_pairs_by_servo.setdefault(sid, []).append((int(abs_current), int(voltage_mv)))
                 if global_max_abs is None or int(abs_current) > int(global_max_abs):
                     global_max_abs = int(abs_current)
                 if sid not in max_abs_by_servo or int(abs_current) > int(max_abs_by_servo[sid]):
@@ -7190,17 +8215,49 @@ def _collect_pose_current_summary(samples: list[ExperimentTimeseriesSample]) -> 
                         "phase": str(sample.phase or ""),
                         "source": str(source),
                         "abs_current_ma": int(abs_current),
+                        "command_at_peak_current_cm": list(sample.extra.get("resolved_cable_command_cm", []) or []),
+                        "voltage_at_peak_mv": (int(voltage_mv) if voltage_mv is not None else None),
                         "resolved_cable_command_cm": list(sample.extra.get("resolved_cable_command_cm", []) or []),
                         "resolved_pair_command_cm": list(sample.extra.get("resolved_pair_command_cm", []) or []),
                     }
     mean_abs_by_servo: dict[str, float] = {}
+    p95_abs_by_servo: dict[str, float] = {}
+    voltage_min_by_servo: dict[str, int] = {}
+    current_voltage_notes_by_servo: dict[str, str] = {}
     for sid, series in abs_series_by_servo.items():
         if series:
             mean_abs_by_servo[str(sid)] = float(sum(series) / len(series))
+            sorted_series = sorted(float(value) for value in series)
+            rank = max(0, min(len(sorted_series) - 1, int(math.ceil(0.95 * len(sorted_series))) - 1))
+            p95_abs_by_servo[str(sid)] = float(sorted_series[rank])
+    for sid, series in voltage_series_by_servo.items():
+        if series:
+            voltage_min_by_servo[str(sid)] = int(min(series))
+    for sid, pairs in current_voltage_pairs_by_servo.items():
+        if len(pairs) < 3:
+            continue
+        highs = [voltage for current, voltage in pairs if current >= 700]
+        lows = [voltage for current, voltage in pairs if current <= 250]
+        if highs and lows:
+            high_mean = float(sum(highs) / len(highs))
+            low_mean = float(sum(lows) / len(lows))
+            if high_mean + 50.0 < low_mean:
+                current_voltage_notes_by_servo[str(sid)] = (
+                    f"voltage droop likely under high load (mean_high={high_mean:.0f} mV, mean_low={low_mean:.0f} mV)"
+                )
+            else:
+                current_voltage_notes_by_servo[str(sid)] = (
+                    f"no clear voltage droop trend (mean_high={high_mean:.0f} mV, mean_low={low_mean:.0f} mV)"
+                )
     return {
         "max_abs_current_ma": int(global_max_abs) if global_max_abs is not None else None,
         "max_abs_current_ma_by_servo": {str(sid): int(value) for sid, value in sorted(max_abs_by_servo.items())},
         "mean_abs_current_ma_by_servo": {str(sid): float(value) for sid, value in sorted(mean_abs_by_servo.items())},
+        "p95_abs_current_ma_by_servo": {str(sid): float(value) for sid, value in sorted(p95_abs_by_servo.items())},
+        "input_voltage_min_mv_by_servo": {str(sid): int(value) for sid, value in sorted(voltage_min_by_servo.items())},
+        "current_voltage_correlation_notes_by_servo": {
+            str(sid): str(value) for sid, value in sorted(current_voltage_notes_by_servo.items())
+        },
         "peak_current_sample_by_servo": {str(sid): dict(info) for sid, info in sorted(peak_info_by_servo.items())},
     }
 
@@ -8048,6 +9105,11 @@ def _record_collect_pose_run_provenance(
             "runtime_tip_trust_level": runtime_tip_policy.trust_label if runtime_tip_policy is not None else "servo_only",
             "pretension_source_type": pretension_source.source_type,
             "pretension_message": pretension_source.message,
+            "operating_mode": str(session.context.settings.robot.operating_context().operating_mode),
+            "active_segment": str(session.context.settings.robot.active_segment_key()),
+            "commanded_servo_ids": [int(value) for value in session.context.settings.robot.commanded_servo_ids()],
+            "baud": int(session.context.settings.serial.baudrate),
+            "parallel_single_demo": bool(parallel_single_demo),
         },
     }
     if parallel_single_demo:

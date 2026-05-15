@@ -788,11 +788,9 @@ class ServoService:
             workflow_name = SINGLE_SEGMENT_WORKFLOW_EXPERIMENT
             preferred_mode = getattr(self.dxl_bus.config, "single_segment_experiment_preferred_operating_mode", None)
             allowed_modes = list(getattr(self.dxl_bus.config, "single_segment_experiment_allowed_operating_modes", []) or [])
-            # Ordinary 4-servo experiment motion is always position-only. Keep
-            # current/profile writes out of this path to reduce setup fragility.
-            goal_current_ma = None
-            profile_velocity = None
-            profile_acceleration = None
+            goal_current_ma = getattr(self.dxl_bus.config, "single_segment_experiment_default_goal_current_ma", None)
+            profile_velocity = getattr(self.dxl_bus.config, "single_segment_experiment_default_profile_velocity", None)
+            profile_acceleration = getattr(self.dxl_bus.config, "single_segment_experiment_default_profile_acceleration", None)
             current_aware = False
         resolved_allowed = sorted({int(value) for value in allowed_modes}) if allowed_modes else []
         if preferred_mode not in (None, ""):
@@ -4455,9 +4453,9 @@ class ServoService:
                     else None
                 ),
                 preferred_operating_mode=configuration_summary.preferred_operating_mode,
-                goal_current_ma=None,
-                profile_velocity=None,
-                profile_acceleration=None,
+                goal_current_ma=configuration_summary.default_goal_current_ma,
+                profile_velocity=configuration_summary.default_profile_velocity,
+                profile_acceleration=configuration_summary.default_profile_acceleration,
                 clamp_reason=clamp_reason,
                 limit_source="single_segment_hardware_envelope",
             )
@@ -4539,9 +4537,21 @@ class ServoService:
 
         message_parts = [
             f"Commanded {len(payload)} servo(s) with the simple Position-control path for single-segment motion.",
-            "Position Control Mode only; no Goal Current writes in ordinary experiment motion.",
             "Simple experiment motion enforces hardware-informed bounds only.",
         ]
+        if (
+            configuration_summary.default_goal_current_ma is None
+            and configuration_summary.default_profile_velocity is None
+            and configuration_summary.default_profile_acceleration is None
+        ):
+            message_parts.append("Position Control Mode only; no Goal Current/Profile writes in ordinary experiment motion.")
+        else:
+            message_parts.append(
+                "Position Control Mode with configured motion profile overrides "
+                f"(goal current={configuration_summary.default_goal_current_ma}, "
+                f"profile velocity={configuration_summary.default_profile_velocity}, "
+                f"profile acceleration={configuration_summary.default_profile_acceleration})."
+            )
         if command_metadata.get("mirrored_parallel"):
             message_parts.append("parallel_single mirrored command expanded to all configured source/mirror servos.")
         if pair_notes:

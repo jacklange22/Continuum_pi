@@ -81,6 +81,13 @@ class PreflightCheck:
     message: str
 
 
+PLANNED_OUTPUT_NOT_CREATED_YET = "not_created_yet"
+PLANNED_OUTPUT_AVAILABLE = "available"
+PLANNED_OUTPUT_OWNED_BY_CURRENT_RUN = "owned_by_current_run"
+PLANNED_OUTPUT_EXISTING_PREVIOUS_RUN = "existing_previous_run"
+PLANNED_OUTPUT_CONFLICT = "conflict"
+
+
 @dataclass
 class PreflightReport:
     """Structured preflight report for the GUI."""
@@ -90,6 +97,7 @@ class PreflightReport:
     overwrite_targets: list[str] = field(default_factory=list)
     experiment_name: str = ""
     planned_output_dir: str = ""
+    planned_output_state: str = PLANNED_OUTPUT_NOT_CREATED_YET
 
     @property
     def requires_confirmation(self) -> bool:
@@ -130,10 +138,20 @@ def evaluate_preflight(
     planned_output_dir: Path,
     project_root: Path,
     servo_calibration_summary=None,
+    active_run_output_dir: Path | None = None,
 ) -> PreflightReport:
-    """Evaluate experiment-specific guardrails for the GUI workspace."""
+    """Evaluate experiment-specific guardrails for the GUI workspace.
+
+    ``active_run_output_dir`` lets the caller mark one directory as belonging to the
+    in-flight run so it is treated as ``owned_by_current_run`` rather than a stale
+    conflict.
+    """
     checks: list[PreflightCheck] = []
     overwrite_targets: list[str] = []
+    planned_output_state = classify_planned_output_state(
+        planned_output_dir=planned_output_dir,
+        active_run_output_dir=active_run_output_dir,
+    )
 
     if config_error:
         checks.append(
@@ -149,6 +167,7 @@ def evaluate_preflight(
             planned_output_dir=planned_output_dir,
             checks=checks,
             overwrite_targets=overwrite_targets,
+            planned_output_state=planned_output_state,
         )
 
     payload = dict(config_payload or {})
@@ -163,12 +182,29 @@ def evaluate_preflight(
             message=_output_message(output_root, planned_output_dir),
         )
     )
-    if planned_output_dir.exists():
+    if planned_output_state == PLANNED_OUTPUT_OWNED_BY_CURRENT_RUN:
+        checks.append(
+            _ok(
+                "planned_output_dir",
+                "Planned Output",
+                f"Output folder created for active run: {planned_output_dir}",
+            )
+        )
+    elif planned_output_state == PLANNED_OUTPUT_EXISTING_PREVIOUS_RUN:
         checks.append(
             _blocked(
                 "planned_output_dir",
                 "Planned Output",
-                f"Planned output folder already exists: {planned_output_dir}",
+                f"Planned output folder already exists from a previous run: {planned_output_dir}. "
+                "Refresh to allocate a unique timestamp before running.",
+            )
+        )
+    elif planned_output_state == PLANNED_OUTPUT_CONFLICT:
+        checks.append(
+            _blocked(
+                "planned_output_dir",
+                "Planned Output",
+                f"Planned output folder is in a conflict state: {planned_output_dir}.",
             )
         )
 
@@ -907,7 +943,8 @@ def evaluate_preflight(
                 _ok(
                     "single_segment",
                     "Single Segment",
-                    f"Active segment {settings.robot.active_segment_label()} ({settings.robot.active_segment_key()}) matches the 4-servo single-segment modeling workspace.",
+                    f"Single Segment: only {settings.robot.active_segment_key()} {commanded_servo_ids}. "
+                    "This is not all-8 parallel_single demo mode.",
                 )
             )
         collect_debug_mode = bool(
@@ -1725,6 +1762,7 @@ def evaluate_preflight(
         planned_output_dir=planned_output_dir,
         checks=checks,
         overwrite_targets=overwrite_targets,
+        planned_output_state=planned_output_state,
     )
 
 
@@ -2046,6 +2084,7 @@ def _finalize_report(
     planned_output_dir: Path,
     checks: list[PreflightCheck],
     overwrite_targets: list[str],
+    planned_output_state: str = PLANNED_OUTPUT_NOT_CREATED_YET,
 ) -> PreflightReport:
     if any(check.status == PREFLIGHT_BLOCKED for check in checks):
         overall_status = RUN_BLOCKED
@@ -2059,4 +2098,36 @@ def _finalize_report(
         overwrite_targets=list(overwrite_targets),
         experiment_name=experiment_name,
         planned_output_dir=str(planned_output_dir),
+        planned_output_state=str(planned_output_state),
     )
+
+
+def classify_planned_output_state(
+    *,
+    planned_output_dir: Path,
+    active_run_output_dir: Path | None,
+) -> str:
+    """Classify a planned output directory in its run-lifecycle state.
+
+    States:
+    - ``not_created_yet``: directory does not yet exist on disk.
+    - ``available``: directory does not exist; safe to allocate.
+    - ``owned_by_current_run``: directory exists and matches the in-flight run's output dir.
+    - ``existing_previous_run``: directory exists and belongs to a prior run.
+    - ``conflict``: directory exists in an unexpected state (e.g., not a directory).
+    """
+    planned = Path(planned_output_dir)
+    if active_run_output_dir is not None:
+        try:
+            planned_resolved = planned.resolve()
+            active_resolved = Path(active_run_output_dir).resolve()
+        except Exception:
+            planned_resolved = planned
+            active_resolved = Path(active_run_output_dir)
+        if planned_resolved == active_resolved:
+            return PLANNED_OUTPUT_OWNED_BY_CURRENT_RUN
+    if not planned.exists():
+        return PLANNED_OUTPUT_NOT_CREATED_YET
+    if planned.is_dir():
+        return PLANNED_OUTPUT_EXISTING_PREVIOUS_RUN
+    return PLANNED_OUTPUT_CONFLICT

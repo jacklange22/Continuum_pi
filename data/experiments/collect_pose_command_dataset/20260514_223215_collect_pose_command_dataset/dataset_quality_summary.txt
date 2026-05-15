@@ -7,9 +7,24 @@ Dropped pre-motion samples: 0
 Next command index to resume: 4109
 Recovered packet errors: 0
 Unrecovered packet errors: 18
+Transport bursts: 0
 Telemetry retries: 0
 Write-goal packet errors: 0
 Tracker stale count: 0
 Max abs current (mA): 2887
 Max abs current by servo (mA): 5:413, 6:367, 7:2887, 8:1803
+Model training validity status: invalid
+Model training validity reason: accepted_count_meets_target
+Dropped rows excluded from training: True
+Accepted rows complete: True
+Training row counts: accepted_workspace=4091, export=4082, legacy=4082, accepted_training=4082, complete_training=4082
+Accepted non-training rows: 2
+Incomplete accepted workspace rows: 9
+Dropped/quarantined sample count: 18
 Recommendation: partial_data_telemetry_drops_exportable
+Model training warnings:
+- 18 dropped telemetry samples excluded from training export.
+- 18 unrecovered packet-error events were recorded and quarantined.
+- 18 rejected samples were excluded from training rows.
+- 9 accepted workspace rows were excluded due to incomplete training fields.
+- 2 accepted non-training phase rows were excluded from modeling export.

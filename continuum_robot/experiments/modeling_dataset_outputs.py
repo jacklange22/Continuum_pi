@@ -22,6 +22,7 @@ from continuum_robot.experiments.tracker_timing_outputs import (
     _fmt,
     _new_image,
 )
+from continuum_robot.data.model_training_validity import NON_TRAINING_PHASES, sample_has_complete_command_servo_tip
 try:
     from continuum_robot.gui.theme import COLORS
 except Exception:
@@ -115,6 +116,34 @@ def build_modeling_dataset_summary_lines(*, metadata, summary, metrics: dict[str
     ]
     for label, value in build_modeling_dataset_summary_pairs(metrics=metrics):
         lines.append(f"{label}: {value}")
+    validity_status = str(metrics.get("model_training_validity_status", "not_applicable") or "not_applicable")
+    validity_reason = str(metrics.get("model_training_validity_reason", "") or "")
+    hard_invalid_reasons = [str(value) for value in list(metrics.get("model_training_hard_invalidation_reasons", []) or []) if str(value)]
+    validity_warnings = [str(value) for value in list(metrics.get("model_training_warnings", []) or []) if str(value)]
+    lines.extend(
+        [
+            "",
+            "Trainability:",
+            f"- Status: {validity_status}",
+            f"- Reason: {validity_reason or 'n/a'}",
+            (
+                "- Row counts: "
+                f"export={int(metrics.get('modeling_export_row_count', 0) or 0)}, "
+                f"legacy={int(metrics.get('modeling_legacy_row_count', 0) or 0)}, "
+                f"accepted={int(metrics.get('accepted_training_row_count', 0) or 0)}"
+            ),
+            f"- Accepted rows complete: {bool(metrics.get('accepted_rows_complete'))}",
+            f"- Dropped rows excluded: {bool(metrics.get('dropped_samples_excluded_from_training'))}",
+        ]
+    )
+    if hard_invalid_reasons:
+        lines.append("- Hard invalidation reasons:")
+        for reason in hard_invalid_reasons:
+            lines.append(f"  - {reason}")
+    if validity_warnings:
+        lines.append("- Warnings:")
+        for warning in validity_warnings:
+            lines.append(f"  - {warning}")
     lines.extend(
         [
             "",
@@ -321,15 +350,24 @@ def _qt_plotting_is_safe() -> bool:
 
 def _build_export_rows(*, samples) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for sequence_index, sample in enumerate(samples):
-        tip_payload = dict(sample.pose_in_robot_frame.get("tip", {}) or {})
-        tool_payload = dict(sample.pose_in_tracker_frame.get("0A", {}) or {})
+    for source_sequence_index, sample in enumerate(samples):
+        phase = str(getattr(sample, "phase", "") or "")
+        if phase in NON_TRAINING_PHASES:
+            continue
         extra = dict(sample.extra or {})
         if bool(extra.get("modeling_export_exclude")):
             continue
+        if not bool(extra.get("capture_accepted")):
+            continue
+        if not sample_has_complete_command_servo_tip(sample):
+            continue
+        tip_payload = dict(sample.pose_in_robot_frame.get("tip", {}) or {})
+        tool_payload = dict(sample.pose_in_tracker_frame.get("0A", {}) or {})
+        sequence_index = len(rows)
         rows.append(
             {
                 "sequence_index": int(sequence_index),
+                "source_sequence_index": int(source_sequence_index),
                 "phase": str(sample.phase or ""),
                 "step_index": int(sample.step_index),
                 "sample_index": int(sample.sample_index),

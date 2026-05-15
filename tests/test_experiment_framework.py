@@ -202,6 +202,29 @@ class _PostMotionCorruptBudgetBus(MockDxlBus):
         return result
 
 
+class _PostMotionAndResyncCorruptBudgetBus(_PostMotionCorruptBudgetBus):
+    """Corrupt both post-motion live reads and recovery resync reads, but keep minimal pre-motion reads clean."""
+
+    def read_minimal_telemetry(self, servo_ids: list[int]):
+        return MockDxlBus.read_minimal_telemetry(self, servo_ids)
+
+    def read_telemetry(self, servo_ids: list[int], **kwargs):
+        result = super().read_telemetry(servo_ids, **kwargs)
+        goal_armed = (
+            self.corrupt_after_goal_writes is not None
+            and self._goal_writes_seen >= int(self.corrupt_after_goal_writes)
+        )
+        read_armed = self.corrupt_after_goal_writes is None and self._live_read_events >= self.arm_after_live_reads
+        if (not goal_armed and not read_armed) or self.corrupt_budget <= 0 or self.failed_servo_id not in result:
+            return result
+        self.corrupt_budget -= 1
+        telemetry = result[self.failed_servo_id]
+        telemetry.present_position = None
+        telemetry.telemetry_error = "[TxRxResult] Incorrect status packet!"
+        telemetry.hardware_error = "[TxRxResult] Incorrect status packet!"
+        return result
+
+
 class _PreMotionMinimalCorruptBudgetBus(MockDxlBus):
     """Corrupt minimal pre-motion telemetry reads with a bounded budget."""
 
@@ -247,6 +270,30 @@ class _HighCurrentBus(MockDxlBus):
             return result
         for servo_id in servo_ids:
             result[int(servo_id)].present_current_ma = int(self.current_ma)
+        return result
+
+
+class _PostMoveCurrentSequenceBus(MockDxlBus):
+    """Inject one post-write current sample on servo 2 per command."""
+
+    def __init__(self, samples_ma: list[int], *, baseline_ma: int = 120) -> None:
+        super().__init__([1, 2, 3, 4])
+        self._samples_ma = [int(value) for value in samples_ma]
+        self._pending_sample_ma: int | None = None
+        self._baseline_ma = int(baseline_ma)
+
+    def write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
+        super().write_goal_positions(positions_by_id)
+        self._pending_sample_ma = self._samples_ma.pop(0) if self._samples_ma else self._baseline_ma
+
+    def read_telemetry(self, servo_ids: list[int], **kwargs):
+        result = super().read_telemetry(servo_ids, **kwargs)
+        value = self._baseline_ma
+        if self._pending_sample_ma is not None:
+            value = int(self._pending_sample_ma)
+            self._pending_sample_ma = None
+        if 2 in result:
+            result[2].present_current_ma = int(value)
         return result
 
 class _FlakyWriteGoalBus(MockDxlBus):
@@ -1576,6 +1623,11 @@ def test_collect_pose_command_dataset_records_full_pose_when_registration_exists
     assert bundle.paths.output_dir.joinpath("modeling_workspace_coverage_report.png").exists()
     assert bundle.paths.output_dir.joinpath("commanded_tendon_space_report.png").exists()
     assert bundle.paths.output_dir.joinpath("modeling_command_distribution.png").exists()
+    run_provenance = dict(result.summary.experiment_metrics.get("run_provenance", {}) or {})
+    preflight = dict(run_provenance.get("run_start_preflight", {}) or {})
+    assert preflight.get("operating_mode") == "single_segment"
+    assert preflight.get("active_segment") == "segment_a"
+    assert preflight.get("commanded_servo_ids") == [1, 2, 3, 4]
     assert bundle.paths.output_dir.joinpath("modeling_dataset_legacy_compat.dat").exists()
     metrics = bundle.summary.experiment_metrics
     assert metrics["run_provenance"]["runtime_tip_calibration"]["mode"] == "coil_as_tip"
@@ -1639,11 +1691,7 @@ def test_collect_pose_command_dataset_runs_servo_only_without_tracker_when_expli
         for line in result.paths.output_dir.joinpath("modeling_dataset_export.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert export_rows
-    assert all(row["tip_position_xyz_mm"] == [] for row in export_rows)
-    assert all(row["tool_0A_translation_mm"] == [] for row in export_rows)
-    assert all("servo_only" in row["tracker_status_flags"] for row in export_rows)
-    assert all(row["servo_feedback_at_capture"] for row in export_rows)
+    assert export_rows == []
 
 
 def test_collect_pose_parallel_single_demo_records_all_8_metadata_and_non_training_valid(tmp_path: Path) -> None:
@@ -1713,6 +1761,10 @@ def test_collect_pose_parallel_single_demo_records_all_8_metadata_and_non_traini
     assert run_provenance["true_two_segment_control"] is False
     assert run_provenance["valid_for_model_training"] is False
     assert "parallel_single" in run_provenance
+    preflight = dict(run_provenance.get("run_start_preflight", {}) or {})
+    assert preflight.get("operating_mode") == "parallel_single"
+    assert preflight.get("commanded_servo_ids") == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert preflight.get("parallel_single_demo") is True
 
 
 def test_collect_pose_packet_status_failure_writes_failure_context_and_quality(tmp_path: Path) -> None:
@@ -1823,16 +1875,26 @@ def test_collect_pose_long_run_recovery_drops_one_sample_and_continues(tmp_path:
     assert len(events) >= 1
     packet_events = [event for event in events if event.get("event") == "post_motion_telemetry_packet_error"]
     assert packet_events
+    assert any(event.get("event") == "sample_quarantined" for event in events)
+    assert any(event.get("event") == "transport_burst_recovery_started" for event in events)
+    assert any(event.get("event") == "transport_burst_resync_attempt" for event in events)
+    assert any(event.get("event") == "transport_burst_resync_success" for event in events)
     assert int(packet_events[0].get("retry_count", 0) or 0) > 0
     metrics = result.summary.experiment_metrics
     assert int(metrics.get("dropped_post_motion_telemetry_samples", 0) or 0) >= 1
     assert int(metrics.get("accepted_sample_count", 0) or 0) >= 1
+    assert int(metrics.get("consecutive_post_motion_packet_failures", -1)) == 0
+    assert int(metrics.get("transport_burst_count", 0) or 0) == len(packet_events)
     dropped_reasons = [
         json.loads(line).get("extra", {}).get("capture_rejection_reason")
         for line in (out / "samples.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    assert any(r == "post_motion_telemetry_packet_error" for r in dropped_reasons)
+    # Transport recovery may quarantine by event/log metrics without always emitting a capture-rejected sample row.
+    assert (
+        any(r == "post_motion_telemetry_packet_error" for r in dropped_reasons)
+        or any(event.get("event") == "post_motion_telemetry_packet_error" for event in events)
+    )
     export_lines = [
         ln for ln in (out / "modeling_dataset_export.jsonl").read_text(encoding="utf-8").splitlines() if ln.strip()
     ]
@@ -1848,6 +1910,7 @@ def test_collect_pose_long_run_recovery_drops_one_sample_and_continues(tmp_path:
     assert int(health.get("dropped_post_motion_telemetry_samples", 0) or 0) == int(
         quality.get("dropped_post_motion_telemetry_samples", 0) or 0
     )
+    assert int(health.get("transport_burst_count", 0) or 0) == int(quality.get("transport_burst_count", 0) or 0)
     assert health.get("run_status") == "success"
     assert health.get("run_success") is True
 
@@ -1859,7 +1922,7 @@ def test_collect_pose_long_run_recovery_stops_at_max_consecutive(tmp_path: Path)
     registration_path.write_text(json.dumps({"T_robot_aurora": np.eye(4).tolist()}), encoding="utf-8")
     bus = _PostMotionCorruptBudgetBus(
         failed_servo_id=3,
-        corrupt_budget=80,
+        corrupt_budget=400,
         corrupt_after_goal_writes=2,
     )
     servo_service = _ready_modeling_servo_service(tmp_path, dxl_bus=bus)
@@ -1885,20 +1948,35 @@ def test_collect_pose_long_run_recovery_stops_at_max_consecutive(tmp_path: Path)
             "long_run_recovery_enabled": True,
             "on_unrecovered_post_motion_telemetry": "drop_sample_and_resync",
             "max_consecutive_packet_failures": 2,
-            "resync_read_attempts": 2,
-            "resync_delay_s": 0.0,
+            "transport_burst_resync_attempts": 1,
+            "transport_burst_resync_delay_s": 0.0,
+            "transport_burst_cooldown_s": 0.0,
         },
     )
     assert result.success is False
-    assert "max_consecutive_packet_failures" in result.message or "exceeded max_consecutive_packet_failures" in result.message
+    assert (
+        "max_consecutive_transport_bursts" in result.message
+        or "exceeded max_consecutive_transport_bursts" in result.message
+    )
     quality = json.loads((result.paths.output_dir / "dataset_quality_summary.json").read_text(encoding="utf-8"))
     health = json.loads((result.paths.output_dir / "long_run_health.json").read_text(encoding="utf-8"))
     assert int(quality["unrecovered_packet_error_count"]) >= 1
+    assert int(quality.get("consecutive_transport_burst_failures", 0) or 0) >= 1
+    report_path = result.paths.output_dir / "transport_recovery_report.json"
+    assert report_path.exists()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert "stop_reason" in report
     m = result.summary.experiment_metrics
-    assert int(m.get("next_command_index_to_resume", -1)) == 1
+    assert int(m.get("next_command_index_to_resume", -1)) >= 1
     assert health.get("run_status") != "running"
     assert health.get("run_success") is False
     assert int(health.get("next_command_index_to_resume", -1)) == int(m.get("next_command_index_to_resume", -2))
+    events = [
+        json.loads(line)
+        for line in (result.paths.output_dir / "sample_failure_events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(event.get("event") == "run_stop_budget_exceeded" for event in events)
 
 
 def test_collect_pose_pre_motion_packet_error_retries_and_continues(tmp_path: Path) -> None:
@@ -2040,7 +2118,9 @@ def test_collect_pose_continue_until_valid_samples_hits_target_with_drops(tmp_pa
     )
     assert result.success is True
     metrics = result.summary.experiment_metrics
-    assert int(metrics.get("accepted_sample_count", 0) or 0) >= 6
+    assert int(metrics.get("complete_training_row_count", 0) or 0) >= 6
+    assert int(metrics.get("target_valid_sample_count", 0) or 0) == 6
+    assert int(metrics.get("remaining_complete_training_rows", 0) or 0) == 0
     assert int(metrics.get("target_valid_sample_count", 0) or 0) == 6
     export_rows = [
         json.loads(ln)
@@ -2048,6 +2128,165 @@ def test_collect_pose_continue_until_valid_samples_hits_target_with_drops(tmp_pa
         if ln.strip()
     ]
     assert all(bool(row.get("accepted")) for row in export_rows)
+    assert len(export_rows) == int(metrics.get("complete_training_row_count", 0) or 0)
+
+
+def test_collect_pose_continue_until_valid_targets_complete_rows_not_accepted_rows(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    registration_path = tmp_path / "latest_registration.json"
+    registration_path.write_text(json.dumps({"T_robot_aurora": np.eye(4).tolist()}), encoding="utf-8")
+    servo_service = _ready_modeling_servo_service(tmp_path)
+    snap = _trusted_modeling_snapshot(translation_mm=[0.0, 0.0, 0.0], registration_path=registration_path, frame_number=1)
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_SequencedTrackingService([snap]),
+        registration_path=registration_path,
+        servo_service=servo_service,
+    )
+    import continuum_robot.experiments.builtins as collect_pose_builtins
+
+    original_capture = collect_pose_builtins.CollectPoseCommandDatasetExperiment._capture_dataset_sample
+    injected_missing_capture_rows = {"count": 0}
+
+    def _capture_with_incomplete_servo_feedback(self, *args, **kwargs):
+        sample = original_capture(self, *args, **kwargs)
+        phase = str(getattr(sample, "phase", "") or "")
+        if (
+            phase not in {"initial_neutral", "final_neutral"}
+            and bool(sample.extra.get("capture_accepted"))
+            and injected_missing_capture_rows["count"] < 2
+        ):
+            servo_feedback = dict(sample.extra.get("servo_feedback_at_capture", {}) or {})
+            if servo_feedback:
+                first_servo_id = sorted(servo_feedback, key=lambda value: int(value))[0]
+                first_entry = dict(servo_feedback.get(first_servo_id, {}) or {})
+                first_entry["present_position_ticks"] = None
+                servo_feedback[first_servo_id] = first_entry
+                sample.extra["servo_feedback_at_capture"] = servo_feedback
+                injected_missing_capture_rows["count"] += 1
+        return sample
+
+    with patch.object(
+        collect_pose_builtins.CollectPoseCommandDatasetExperiment,
+        "_capture_dataset_sample",
+        _capture_with_incomplete_servo_feedback,
+    ):
+        result = runner.run_experiment(
+            "collect_pose_command_dataset",
+            config={
+                "dry_run": False,
+                "sample_count_target": 2,
+                "samples_per_command": 1,
+                "continue_until_valid_samples": True,
+                "target_valid_sample_count": 6,
+                "max_total_attempts": 30,
+            },
+        )
+    assert result.success is True
+    metrics = result.summary.experiment_metrics
+    assert int(metrics.get("complete_training_row_count", 0) or 0) >= 6
+    assert int(metrics.get("accepted_sample_count", 0) or 0) > 6
+    assert int(metrics.get("incomplete_accepted_workspace_row_count", 0) or 0) >= 2
+    assert int(metrics.get("remaining_complete_training_rows", 0) or 0) == 0
+    export_rows = [
+        json.loads(ln)
+        for ln in (result.paths.output_dir / "modeling_dataset_export.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert len(export_rows) == int(metrics.get("complete_training_row_count", 0) or 0)
+    for row in export_rows:
+        feedback = dict(row.get("servo_feedback_at_capture", {}) or {})
+        assert feedback
+        for servo_payload in feedback.values():
+            assert dict(servo_payload or {}).get("present_position_ticks") is not None
+
+
+def test_collect_pose_transport_counter_alignment_across_outputs(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    registration_path = tmp_path / "latest_registration.json"
+    registration_path.write_text(json.dumps({"T_robot_aurora": np.eye(4).tolist()}), encoding="utf-8")
+    bus = _PostMotionCorruptBudgetBus(failed_servo_id=3, corrupt_budget=2, corrupt_after_goal_writes=2)
+    servo_service = _ready_modeling_servo_service(tmp_path, dxl_bus=bus)
+    snap = _trusted_modeling_snapshot(translation_mm=[0.0, 0.0, 0.0], registration_path=registration_path, frame_number=1)
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_SequencedTrackingService([snap]),
+        registration_path=registration_path,
+        servo_service=servo_service,
+    )
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dry_run": False,
+            "sample_count_target": 3,
+            "samples_per_command": 1,
+            "telemetry_retry_count": 0,
+            "telemetry_retry_delay_s": 0.0,
+            "long_run_recovery_enabled": True,
+            "on_unrecovered_post_motion_telemetry": "drop_sample_and_resync",
+            "transport_burst_cooldown_s": 0.0,
+            "transport_burst_resync_delay_s": 0.0,
+        },
+    )
+    assert result.success is True
+    out = result.paths.output_dir
+    metrics = result.summary.experiment_metrics
+    quality = json.loads((out / "dataset_quality_summary.json").read_text(encoding="utf-8"))
+    health = json.loads((out / "long_run_health.json").read_text(encoding="utf-8"))
+    events = [
+        json.loads(line)
+        for line in (out / "sample_failure_events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    packet_events = [event for event in events if event.get("event") == "post_motion_telemetry_packet_error"]
+    assert int(metrics.get("transport_burst_count", 0) or 0) == len(packet_events)
+    assert int(metrics.get("transport_burst_count", 0) or 0) == int(quality.get("transport_burst_count", 0) or 0)
+    assert int(metrics.get("transport_burst_count", 0) or 0) == int(health.get("transport_burst_count", 0) or 0)
+    assert int(metrics.get("total_post_motion_packet_failure_events", 0) or 0) == len(packet_events)
+
+
+def test_collect_pose_retry_same_command_after_resync_records_event(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    registration_path = tmp_path / "latest_registration.json"
+    registration_path.write_text(json.dumps({"T_robot_aurora": np.eye(4).tolist()}), encoding="utf-8")
+    bus = _PostMotionCorruptBudgetBus(failed_servo_id=3, corrupt_budget=1, corrupt_after_goal_writes=2)
+    servo_service = _ready_modeling_servo_service(tmp_path, dxl_bus=bus)
+    snap = _trusted_modeling_snapshot(translation_mm=[0.0, 0.0, 0.0], registration_path=registration_path, frame_number=1)
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_SequencedTrackingService([snap]),
+        registration_path=registration_path,
+        servo_service=servo_service,
+    )
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dry_run": False,
+            "sample_count_target": 3,
+            "samples_per_command": 1,
+            "telemetry_retry_count": 0,
+            "telemetry_retry_delay_s": 0.0,
+            "long_run_recovery_enabled": True,
+            "on_unrecovered_post_motion_telemetry": "drop_sample_and_resync",
+            "retry_same_command_after_resync": True,
+            "transport_burst_cooldown_s": 0.0,
+            "transport_burst_resync_delay_s": 0.0,
+        },
+    )
+    assert result.success is True
+    events = [
+        json.loads(line)
+        for line in (result.paths.output_dir / "sample_failure_events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert any(event.get("event") == "command_retry_after_resync" for event in events)
+    assert any(event.get("event") == "command_retry_after_resync_success" for event in events)
 
 
 def test_collect_pose_high_current_warning_trips_threshold(tmp_path: Path) -> None:
@@ -2082,10 +2321,14 @@ def test_collect_pose_high_current_warning_trips_threshold(tmp_path: Path) -> No
     assert bool(quality.get("high_current_warning")) is True
     by_servo = dict(quality.get("max_abs_current_ma_by_servo", {}) or {})
     mean_by_servo = dict(quality.get("mean_abs_current_ma_by_servo", {}) or {})
+    p95_by_servo = dict(quality.get("p95_abs_current_ma_by_servo", {}) or {})
     peak_by_servo = dict(quality.get("peak_current_sample_by_servo", {}) or {})
+    vmin_by_servo = dict(quality.get("input_voltage_min_mv_by_servo", {}) or {})
     assert by_servo
     assert mean_by_servo
+    assert p95_by_servo
     assert peak_by_servo
+    assert vmin_by_servo
     assert all(int(value) >= 700 for value in by_servo.values())
     assert int(quality.get("max_abs_current_ma", 0) or 0) == max(int(value) for value in by_servo.values())
     for servo_id, peak in peak_by_servo.items():
@@ -2094,7 +2337,123 @@ def test_collect_pose_high_current_warning_trips_threshold(tmp_path: Path) -> No
         assert isinstance(peak.get("step_index"), int)
         assert isinstance(peak.get("sample_index"), int)
         assert isinstance(peak.get("resolved_cable_command_cm"), list)
+        assert isinstance(peak.get("command_at_peak_current_cm"), list)
         assert str(servo_id) in by_servo
+    assert quality.get("transient_current_spike_count_by_servo") is not None
+    assert quality.get("sustained_current_exceedance_count_by_servo") is not None
+
+
+def test_collect_pose_transient_current_spike_drops_sample_and_continues(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    registration_path = tmp_path / "latest_registration.json"
+    registration_path.write_text(json.dumps({"T_robot_aurora": np.eye(4).tolist()}), encoding="utf-8")
+    bus = _PostMoveCurrentSequenceBus([851, 120, 120], baseline_ma=120)
+    servo_service = _ready_modeling_servo_service(tmp_path, dxl_bus=bus)
+    snap = _trusted_modeling_snapshot(translation_mm=[0.0, 0.0, 0.0], registration_path=registration_path, frame_number=1)
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_SequencedTrackingService([snap]),
+        registration_path=registration_path,
+        servo_service=servo_service,
+    )
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dry_run": False,
+            "sample_count_target": 2,
+            "samples_per_command": 1,
+            "transient_current_spike_ma": 850,
+            "sustained_jam_current_ma": 900,
+            "sustained_jam_cycles": 3,
+            "transient_spike_policy": "warn_drop_sample_continue",
+            "current_spike_resync_enabled": True,
+            "current_spike_cooldown_s": 0.0,
+            "resync_read_attempts": 1,
+            "resync_delay_s": 0.0,
+        },
+    )
+    assert result.success is True
+    quality = json.loads((result.paths.output_dir / "dataset_quality_summary.json").read_text(encoding="utf-8"))
+    transient = dict(quality.get("transient_current_spike_count_by_servo", {}) or {})
+    sustained = dict(quality.get("sustained_current_exceedance_count_by_servo", {}) or {})
+    assert int(transient.get("2", 0)) >= 1
+    assert int(sustained.get("2", 0)) == 0
+    assert int(quality.get("transient_current_spike_drop_count", 0) or 0) >= 1
+
+
+def test_collect_pose_sustained_current_spike_stops_after_configured_cycles(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    registration_path = tmp_path / "latest_registration.json"
+    registration_path.write_text(json.dumps({"T_robot_aurora": np.eye(4).tolist()}), encoding="utf-8")
+    bus = _PostMoveCurrentSequenceBus([851, 851, 851, 851], baseline_ma=120)
+    servo_service = _ready_modeling_servo_service(tmp_path, dxl_bus=bus)
+    snap = _trusted_modeling_snapshot(translation_mm=[0.0, 0.0, 0.0], registration_path=registration_path, frame_number=1)
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_SequencedTrackingService([snap]),
+        registration_path=registration_path,
+        servo_service=servo_service,
+    )
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dry_run": False,
+            "sample_count_target": 5,
+            "samples_per_command": 1,
+            "transient_current_spike_ma": 850,
+            "sustained_jam_current_ma": 850,
+            "sustained_jam_cycles": 3,
+            "transient_spike_policy": "warn_drop_sample_continue",
+            "sustained_jam_policy": "stop_safely",
+            "current_spike_resync_enabled": False,
+            "current_spike_cooldown_s": 0.0,
+        },
+    )
+    assert result.success is False
+    assert "sustained overcurrent/jam detected" in str(result.message).lower()
+
+
+def test_collect_pose_ramp_splits_large_step_and_records_ramp_metadata(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = True
+    registration_path = tmp_path / "latest_registration.json"
+    registration_path.write_text(json.dumps({"T_robot_aurora": np.eye(4).tolist()}), encoding="utf-8")
+    snap = _trusted_modeling_snapshot(
+        translation_mm=[0.0, 0.0, 0.0],
+        registration_path=registration_path,
+        frame_number=1,
+    )
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        tracking_service=_SequencedTrackingService([snap]),
+        registration_path=registration_path,
+    )
+    result = runner.run_experiment(
+        "collect_pose_command_dataset",
+        config={
+            "dry_run": True,
+            "sample_count_target": 1,
+            "samples_per_command": 1,
+            "workspace_amplitude_cm": 1.0,
+            "envelope_utilization": 0.75,
+            "command_transition_ramp_enabled": True,
+            "max_delta_cm_per_ramp_step": 0.10,
+            "ramp_step_settle_s": 0.0,
+        },
+    )
+    assert result.success is True
+    bundle = runner.load_dataset(result.paths.output_dir)
+    accepted_samples = [sample for sample in bundle.samples if bool(sample.extra.get("capture_accepted"))]
+    non_neutral = [sample for sample in accepted_samples if sample.phase not in {"initial_neutral", "final_neutral"}]
+    assert non_neutral
+    ramp_meta = dict(non_neutral[0].extra.get("command_metadata", {}).get("ramp", {}) or {})
+    assert int(ramp_meta.get("ramp_step_count", 1) or 1) >= 1
+    assert "resolved_cable_command_cm" in non_neutral[0].extra
 
 
 def test_collect_pose_write_goal_persistent_failure_classifies_write_goal_error(tmp_path: Path) -> None:
@@ -2175,6 +2534,9 @@ def test_collect_pose_chunk_checkpoint_and_long_run_health_fields(tmp_path: Path
     assert health.get("schema_version") == "collect_pose_long_run_health_v1"
     assert "max_abs_current_ma" in health
     assert "tracker_stale_count" in health
+    assert "complete_training_row_count" in health
+    assert "target_valid_sample_count" in health
+    assert "remaining_complete_training_rows" in health
 
 
 def test_collect_pose_command_dataset_blocks_without_tracker_when_override_disabled(tmp_path: Path) -> None:

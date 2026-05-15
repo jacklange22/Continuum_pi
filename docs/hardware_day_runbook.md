@@ -110,6 +110,22 @@ Stop reasons to take seriously:
 - Background readiness uses cached telemetry during active experiments. Use explicit `Refresh Readiness` or `Discover / Read Servo` when you need a fresh bus read.
 - `parallel_single` is mirrored single-segment babble/testing only, not full two-segment kinematics.
 
+1 Mbps all-8 transport diagnostic:
+
+```bash
+python -m continuum_robot.diagnostics.servo_transport_diagnostic \
+  --port /dev/ttyACM0 \
+  --baud 1000000 \
+  --servo-ids 1,2,3,4,5,6,7,8 \
+  --duration 30 \
+  --read-rate-hz 10 \
+  --fields minimal
+```
+
+- If `bus_ready_for_parallel_single=true`, the all-8 bus profile is ready for `parallel_single` demo runs.
+- If one servo reports repeated failures, inspect that servo’s cable/connector path first.
+- If voltage dips are reported, inspect power headroom and mechanical/tendon loading before larger motions.
+
 ## 7. Export Workflow
 
 CLI export:

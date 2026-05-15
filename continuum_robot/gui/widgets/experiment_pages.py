@@ -3013,6 +3013,17 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
     def _sync_collection_summary(self, *, state: ExperimentViewState, mode: str) -> None:
         tracking_service = getattr(self.controller, "tracking_service", None)
         tracking_snapshot = tracking_service.get_snapshot() if tracking_service is not None else None
+        operating_context = self.controller.settings.robot.operating_context()
+        commanded_ids = [int(value) for value in operating_context.commanded_servo_ids]
+        if operating_context.operating_mode == "parallel_single":
+            operating_scope = (
+                "Parallel Single Demo: all 8 servos, same 4-tendon command to both spines."
+            )
+        else:
+            operating_scope = (
+                f"Single Segment: only {self.controller.settings.robot.active_segment_key()} "
+                f"{commanded_ids}."
+            )
         try:
             pretension_source = self.controller.servo_service.pretension_source_summary(list(self.controller.settings.robot.servo_ids))
             pretension_label = f"{pretension_source.source_type} ({'accepted' if pretension_source.accepted else 'not accepted'})"
@@ -3021,6 +3032,7 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         planned_commands, planned_captures, duration_label = self._plan_preview(mode=mode)
         self.collection_summary_widget.set_pairs(
             [
+                ("Operating Scope", operating_scope),
                 ("Mode Summary", self._mode_blurb(mode)),
                 (
                     "Runtime Tip",

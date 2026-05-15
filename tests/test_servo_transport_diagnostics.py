@@ -183,8 +183,10 @@ def test_servo_transport_diagnostic_reports_minimal_schema(tmp_path: Path) -> No
     assert result.achieved_read_rate_hz is not None
     assert result.achieved_read_rate_hz > 0.0
     assert result.success_count_by_servo == {"5": 1, "6": 1, "7": 1, "8": 1}
+    assert result.failure_count_by_servo == {"5": 0, "6": 0, "7": 0, "8": 0}
     assert result.failure_count_by_type == {}
-    assert "stable" in result.recommended_next_action.lower()
+    assert result.bus_ready_for_parallel_single is True
+    assert "ready for parallel_single" in result.recommended_next_action.lower()
 
 
 def test_one_servo_motion_soak_summary_generation(tmp_path: Path) -> None:

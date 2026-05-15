@@ -1,5 +1,8 @@
 {
+  "accepted_rows_complete": true,
   "accepted_sample_count": 4093,
+  "accepted_training_row_count": 4082,
+  "accepted_workspace_sample_count": 4091,
   "command_range_per_tendon_cm": {
     "tendon_1": {
       "max": 0.749267578125,
@@ -22,10 +25,15 @@
       "span": 1.499085505258345
     }
   },
+  "complete_training_row_count": 4082,
+  "consecutive_transport_burst_failures": 0,
   "dropped_post_motion_telemetry_samples": 18,
   "dropped_pre_motion_telemetry_samples": 0,
+  "dropped_quarantined_sample_count": 18,
+  "dropped_samples_excluded_from_training": true,
   "failure_count": 0,
   "high_current_warning": true,
+  "incomplete_accepted_workspace_row_count": 9,
   "max_abs_current_ma": 2887,
   "max_abs_current_ma_by_servo": {
     "5": 413,
@@ -57,7 +65,38 @@
       "span": 20.603671183418157
     }
   },
+  "model_training_hard_invalidation_reasons": [
+    "accepted_count_meets_target"
+  ],
+  "model_training_validity_checks": {
+    "accepted_count_meets_target": false,
+    "accepted_rows_complete": true,
+    "dropped_rows_excluded": true,
+    "no_invalid_transforms_in_accepted_rows": true,
+    "not_mock": true,
+    "not_parallel_demo": true,
+    "not_servo_only": true,
+    "pose_labels_available": true,
+    "real_hardware": true,
+    "registration_or_coil_tip_policy_present": true,
+    "run_success": true,
+    "startup_provenance_present": true,
+    "tracker_connected": true,
+    "trusted_run_mode": true
+  },
+  "model_training_validity_reason": "accepted_count_meets_target",
+  "model_training_validity_status": "invalid",
+  "model_training_warnings": [
+    "18 dropped telemetry samples excluded from training export.",
+    "18 unrecovered packet-error events were recorded and quarantined.",
+    "18 rejected samples were excluded from training rows.",
+    "9 accepted workspace rows were excluded due to incomplete training fields.",
+    "2 accepted non-training phase rows were excluded from modeling export."
+  ],
+  "modeling_export_row_count": 4082,
+  "modeling_legacy_row_count": 4082,
   "next_command_index_to_resume": 4109,
+  "non_training_accepted_row_count": 2,
   "peak_current_sample_by_servo": {
     "5": {
       "abs_current_ma": 413,
@@ -144,12 +183,14 @@
   },
   "schema_version": "collect_pose_dataset_quality_v1",
   "servo_telemetry_retry_count": 0,
+  "total_post_motion_packet_failure_events": 18,
   "tracker_stale_count": 0,
   "trainability_status": {
-    "not_model_training_ready": false,
+    "not_model_training_ready": true,
     "run_trust_mode": "thesis_trusted",
     "valid_for_model_training": false
   },
+  "transport_burst_count": 0,
   "unrecovered_packet_error_count": 18,
   "write_goal_packet_error_count": 0
 }

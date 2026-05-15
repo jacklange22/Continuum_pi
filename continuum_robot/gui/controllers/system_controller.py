@@ -1240,8 +1240,20 @@ class SystemController:
             if settings.runtime.mock_mode
             else "Servo hardware path: real OpenRB serial validation and DYNAMIXEL SDK transport enabled."
         )
+        if context.operating_mode == "parallel_single":
+            operating_scope_note = (
+                "Parallel Single Demo: all 8 servos, same 4-tendon command to both spines."
+            )
+        elif context.operating_mode == "single_segment":
+            operating_scope_note = (
+                f"Single Segment: only {settings.robot.active_segment_key()} "
+                f"{settings.robot.active_segment_servo_ids()}."
+            )
+        else:
+            operating_scope_note = f"Operating scope: {context.operating_mode}."
         return (
             f"Operating mode: {context.operating_mode}\n"
+            f"{operating_scope_note}\n"
             f"Expected servo IDs: {context.expected_servo_ids}\n"
             f"All configured servo IDs: {context.all_configured_servo_ids}\n"
             f"Active segment: {settings.robot.active_segment_label()} ({settings.robot.active_segment_key()}) "
@@ -1282,9 +1294,18 @@ class SystemController:
         )
 
     def _build_live_config_summary(self) -> str:
+        if self.state.operating_mode == "parallel_single":
+            operating_scope_note = "Parallel Single Demo: all 8 servos, same 4-tendon command to both spines."
+        elif self.state.operating_mode == "single_segment":
+            operating_scope_note = (
+                f"Single Segment: only {self.state.active_segment_key} {self.state.active_segment_servo_ids}."
+            )
+        else:
+            operating_scope_note = f"Operating scope: {self.state.operating_mode}."
         return (
             f"Hardware profile: {self.state.robot_config}\n"
             f"Operating mode: {self.state.operating_mode}\n"
+            f"{operating_scope_note}\n"
             f"Selected servo: {self.state.selected_servo_id}\n"
             f"Expected servo IDs: {self.state.expected_servo_ids}\n"
             f"Active segment: {self.state.active_segment_label} ({self.state.active_segment_key}) "
