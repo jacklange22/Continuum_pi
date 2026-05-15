@@ -114,8 +114,11 @@ class RegistrationTab(QWidget):
         self.load_button.setProperty("variant", "ghost")
         self.runtime_tip_button = QPushButton("Open Runtime Tip Calibration")
         self.runtime_tip_button.setProperty("variant", "ghost")
-        self.trial_mode_button = QPushButton("Trial Mode (N landmarks × K captures)")
-        self.trial_mode_button.setProperty("variant", "ghost")
+        # Promoted to a primary-styled button so the operator can find it on the
+        # secondary row at a glance. The previous variant="ghost" sat next to the
+        # other ghost buttons and was reported as invisible on a real bench.
+        self.trial_mode_button = QPushButton("Run Registration Trial →")
+        self.trial_mode_button.setProperty("role", "primary")
         self.trial_mode_button.setToolTip(
             "Capture many samples across many landmarks and run the registration_trial "
             "experiment to compare averaging methods and find the best 4-of-N subset. "
@@ -131,9 +134,10 @@ class RegistrationTab(QWidget):
         self.load_button.clicked.connect(lambda: self._safe_call(self.controller.load_latest_result))
         self.runtime_tip_button.clicked.connect(self._open_runtime_tip_calibration)
         self.trial_mode_button.clicked.connect(self._open_registration_trial)
-        # Hide the button if no trial launcher was provided by the app shell;
-        # the production flow stays unchanged for callers that don't wire it.
-        self.trial_mode_button.setVisible(self.open_registration_trial is not None)
+        # Always visible. The opener callback may be None in standalone tests; in that
+        # case the click handler is a no-op (no exception raised). This keeps the
+        # button discoverable even if the host app shell forgets to wire it.
+        self.trial_mode_button.setVisible(True)
 
         self.selection_hint = QLabel("Select exactly four unique model points in capture order.")
         self.selection_hint.setProperty("role", "hint")
