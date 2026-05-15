@@ -130,7 +130,7 @@ Typical live sequence:
 2. Launch the GUI or run tracker diagnostics first.
 3. In `Tracking`, connect Aurora and verify `0A`/`0B` visibility, freshness, valid transforms, and timing.
 4. Run or accept `0B` pivot calibration so the pen-probe tip file is current.
-5. In `Registration`, select four suitable landmarks, capture repeated `0B` samples, solve, review FRE/RMSE, and save the accepted registration.
+5. In `Registration`, select four suitable landmarks, capture repeated `0B` samples, solve, review FRE/RMSE, and save the accepted registration. To diagnose which landmarks and how many samples actually drive FRE on this rig, click **Run Registration Trial →** on the Registration tab; it captures N landmarks × K samples, sweeps averaging methods and subsets, and produces a report. After review, `python -m continuum_robot.data.promote_registration_trial --run-dir <trial>` writes the chosen subset as the new active registration (backing up the previous one first).
 6. Confirm `T_robot_tip` is computable from live `0A`, registration, and the selected runtime tip policy. For thesis repeatability, the current trusted path is `coil_as_tip`.
 7. In `System`/`Servos`, connect OpenRB, prepare the DYNAMIXEL bus, scan IDs, verify telemetry, capture neutral/bounds, and only then jog or command motion.
 8. In `Pretension`, characterize or capture the startup pretension state and accept the source before thesis-grade experiments.
@@ -145,6 +145,7 @@ Important built-in experiment/workflow names:
 - `pivot_calibration`: `0B` pivot calibration and generated tip-file workflow.
 - `pivot_validation`: offline/live validation of pivot calibration quality.
 - `registration_validation`: registration artifact validation and repeatability analysis.
+- `registration_trial`: capture N landmarks × K samples, sweep averaging methods and label subsets, recommend the protocol that minimizes FRE on the actual rig. See `docs/registration_trial_workflow.md`.
 - `tracker_timing_validation`: tracker timing/freshness characterization.
 - `servo_tracker_sync_validation`: timing relationship between servo commands and tracker samples.
 - `pretension_validation`: current/travel and startup-state pretension characterization.
@@ -221,7 +222,19 @@ Run an experiment from the CLI:
 
 ```bash
 .venv/bin/python scripts/run_lab_workflow.py experiment -- --experiment single_segment_repeatability --config config/experiment_single_segment_repeatability.example.yaml
+.venv/bin/python scripts/run_lab_workflow.py experiment -- --experiment registration_trial --config config/experiment_registration_trial.example.yaml
 ```
+
+Promote a `registration_trial` result into the active registration slot only after you have reviewed its `trial_report.md`:
+
+```bash
+.venv/bin/python -m continuum_robot.data.promote_registration_trial \
+  --run-dir data/experiments/registration_trial/<run> \
+  [--subset L1,L2,L4,L7] \
+  --operator-note "Trial T3: L4/L7 lowers FRE by 0.4 mm"
+```
+
+The promote tool backs up the current `latest_registration.json` to a timestamped sibling before overwriting. Pass `--dry-run` to validate inputs without writing anything.
 
 Run tests:
 

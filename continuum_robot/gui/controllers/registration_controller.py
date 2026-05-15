@@ -469,7 +469,13 @@ class RegistrationController:
         ]
         self.state.model_point_display_labels = dict(display_labels)
         self.state.model_point_enabled = dict(enabled_lookup)
-        if snapshot.active or snapshot.pending_accept or snapshot.averaged_points_by_label:
+        # The operator's selection must persist across refresh while the workflow is idle.
+        # `snapshot.averaged_points_by_label` is non-empty whenever a previous registration
+        # is loaded, so it must NOT be in this gate — including it would snap the selection
+        # back to the previous run's labels on every poll and silently override toggle clicks
+        # before the user can start the next session. Only an active or pending-accept
+        # session legitimately locks the selection.
+        if snapshot.active or snapshot.pending_accept:
             self._selected_model_labels = self._filter_selected_labels(snapshot.labels, ordered_labels)
         elif self._selected_model_labels:
             self._selected_model_labels = self._filter_selected_labels(self._selected_model_labels, ordered_labels)

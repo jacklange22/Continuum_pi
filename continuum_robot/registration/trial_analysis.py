@@ -427,3 +427,156 @@ def summarize_trial(results: Mapping[str, RegistrationTrialResult]) -> dict[str,
         "best_max_residual_mm": float(best.max_residual_mm) if best else None,
         "best_loo_max_minus_keep_mm": float(best.loo_max_minus_keep_mm) if best else None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Samples-per-point study
+# ---------------------------------------------------------------------------
+#
+# The method sweep and the subset search both use the *full* captured pool
+# at each landmark. That answers "which method and which subset are best?"
+# but not "did I capture enough samples per landmark?" — the operator's
+# real question on the bench.
+#
+# The samples-per-point study draws random subsamples of size k from the
+# captured pool (with k = 1, 3, 5, ..., up to K) and solves the full-N-point
+# registration using mean averaging for each draw. Bootstrap iterations
+# smooth out the random choice of which k were drawn. The output curve
+# (FRE vs k) lets the operator pick the smallest k that lands within an
+# operator-tunable epsilon of the best FRE the dataset can produce — i.e.
+# diminishing-returns answered from the actual data, not intuition.
+#
+# Math: same Kabsch solve as everywhere else. Mean averaging is fixed to
+# keep this axis honest; comparing across averaging methods is the job of
+# `sweep_methods()`, and stacking the two knobs makes both noisier.
+
+DEFAULT_SAMPLES_PER_POINT_LADDER: tuple[int, ...] = (1, 3, 5, 10, 20, 30, 50)
+"""Default k values to evaluate. The actual ladder is capped at the dataset's K."""
+
+
+def samples_per_point_study(
+    captures_by_label: Mapping[str, Sequence[Sequence[float]]],
+    truth_robot_by_label: Mapping[str, Sequence[float]],
+    *,
+    k_values: Iterable[int] = DEFAULT_SAMPLES_PER_POINT_LADDER,
+    bootstrap_iterations: int = 40,
+    random_seed: int = 7,
+) -> list[dict[str, object]]:
+    """Return per-(k, iteration) FRE rows for a samples-per-point sweep.
+
+    For each k in ``k_values`` (capped to the minimum pool size across all
+    labels), draw ``bootstrap_iterations`` random k-subsets from each label,
+    take the mean of each subset, solve the full-N-point registration, and
+    record FRE. Returns one row per (k, iteration). Aggregation is the
+    caller's job — see :func:`aggregate_samples_per_point`.
+    """
+    shared = sorted(set(captures_by_label.keys()) & set(truth_robot_by_label.keys()))
+    if len(shared) < 3:
+        return []
+    pools = {label: np.asarray(captures_by_label[label], dtype=float) for label in shared}
+    truth_subset = {label: list(truth_robot_by_label[label]) for label in shared}
+    min_pool = min(int(pool.shape[0]) for pool in pools.values())
+    if min_pool < 1:
+        return []
+    rng = np.random.default_rng(int(random_seed))
+    rows: list[dict[str, object]] = []
+    iterations = max(1, int(bootstrap_iterations))
+    for k_raw in sorted({int(v) for v in k_values}):
+        k = int(min(k_raw, min_pool))
+        if k < 1:
+            continue
+        for iteration in range(iterations):
+            averaged: dict[str, list[float]] = {}
+            for label in shared:
+                pool = pools[label]
+                if pool.shape[0] == k:
+                    draw = pool
+                else:
+                    idx = rng.choice(pool.shape[0], size=k, replace=False)
+                    draw = pool[idx]
+                averaged[label] = [float(np.mean(draw[:, axis])) for axis in range(3)]
+            solved = solve_with_metrics(averaged, truth_subset)
+            rows.append(
+                {
+                    "k": int(k),
+                    "k_requested": int(k_raw),
+                    "iteration": int(iteration),
+                    "fre_mm": float(solved["fre_mm"]),
+                    "max_residual_mm": float(solved["max_residual_mm"]),
+                }
+            )
+        if k == min_pool:
+            # Drawing without replacement at k=min_pool returns the whole pool every
+            # iteration, so further k values would be capped to the same draw. Stop
+            # to avoid pointless duplicate rows.
+            break
+    return rows
+
+
+def aggregate_samples_per_point(rows: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
+    """Reduce per-iteration rows to per-k summary statistics."""
+    by_k: dict[int, list[float]] = {}
+    for row in rows:
+        fre = row.get("fre_mm")
+        if fre is None:
+            continue
+        by_k.setdefault(int(row["k"]), []).append(float(fre))
+    out: list[dict[str, object]] = []
+    for k, values in sorted(by_k.items()):
+        arr = np.asarray(values, dtype=float)
+        out.append(
+            {
+                "k": int(k),
+                "iteration_count": int(arr.size),
+                "fre_mean_mm": float(np.mean(arr)) if arr.size else None,
+                "fre_std_mm": float(np.std(arr, ddof=0)) if arr.size else None,
+                "fre_min_mm": float(np.min(arr)) if arr.size else None,
+                "fre_max_mm": float(np.max(arr)) if arr.size else None,
+                "fre_p95_mm": float(np.percentile(arr, 95)) if arr.size else None,
+            }
+        )
+    return out
+
+
+def recommend_samples_per_point(
+    aggregated: Sequence[Mapping[str, object]],
+    *,
+    epsilon_mm: float = 0.02,
+) -> dict[str, object]:
+    """Pick the smallest k whose mean FRE is within ``epsilon_mm`` of the best.
+
+    Returns the recommended k, the FRE at that k, the best FRE in the ladder,
+    and a one-line plain-English rationale.
+    """
+    eligible = [row for row in aggregated if row.get("fre_mean_mm") is not None]
+    if not eligible:
+        return {
+            "recommended_k": None,
+            "recommended_fre_mean_mm": None,
+            "best_fre_mean_mm": None,
+            "rationale": "Insufficient samples-per-point data to make a recommendation.",
+        }
+    best_fre = float(min(float(row["fre_mean_mm"]) for row in eligible))
+    threshold = best_fre + float(max(0.0, epsilon_mm))
+    recommended = None
+    for row in sorted(eligible, key=lambda r: int(r["k"])):
+        if float(row["fre_mean_mm"]) <= threshold:
+            recommended = int(row["k"])
+            recommended_fre = float(row["fre_mean_mm"])
+            break
+    if recommended is None:
+        last = max(eligible, key=lambda r: int(r["k"]))
+        recommended = int(last["k"])
+        recommended_fre = float(last["fre_mean_mm"])
+    return {
+        "recommended_k": int(recommended),
+        "recommended_fre_mean_mm": float(recommended_fre),
+        "best_fre_mean_mm": best_fre,
+        "epsilon_mm": float(epsilon_mm),
+        "rationale": (
+            f"FRE bottoms out at {best_fre:.4f} mm in the captured ladder; "
+            f"k={recommended} reaches within {epsilon_mm:.3f} mm of that "
+            f"(actual={recommended_fre:.4f} mm). Capturing more samples per "
+            "landmark beyond that point does not measurably improve FRE on this data."
+        ),
+    }

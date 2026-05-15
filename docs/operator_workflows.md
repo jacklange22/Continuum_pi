@@ -131,6 +131,43 @@ Success criteria:
 - repeated registration-validation summary is written under `data/registrations/validation/`
 - tracking pipeline can use the saved registration on the next refresh
 
+## Workflow 5A: Registration Trial (diagnosis)
+
+Applies when standard 4-point FRE is varying run-to-run or you want
+measured evidence for which landmarks and how many samples are right.
+
+1. In `Registration`, click **Run Registration Trial →**.
+2. Select N landmarks (default: all enabled candidates in
+   `config/registration.yaml`) and K samples per landmark.
+3. Capture all landmarks. Use **Capture Batch** to auto-fill at the
+   configured rate or **Capture One** for manual control.
+4. **Stop & Analyze** when done. The dialog's result phase reports:
+   - best averaging method and its FRE
+   - best landmark subset (any size 4..N) and its FRE
+   - samples-per-point recommendation (smallest k within
+     `samples_per_point_epsilon_mm` of the captured pool's best)
+   - other recommendations: coplanarity, diminishing returns, dominant
+     landmark
+5. Inspect the run directory's `trial_report.md`, `.json`, and four
+   PNG reports.
+6. To replace the active registration with the trial's recommendation:
+   ```bash
+   python -m continuum_robot.data.promote_registration_trial \
+     --run-dir <run> [--subset L1,L2,L4,L7] \
+     --operator-note "Trial T3 lowers FRE 0.4 mm"
+   ```
+
+Rules:
+
+- the trial NEVER auto-modifies `latest_registration.json`
+- promotion is explicit; current artifact is backed up to
+  `latest_registration_backup_<timestamp>.json` before the new one is
+  written
+- trial outputs are NOT marked thesis-valid or model-training-valid;
+  they are protocol diagnosis only
+
+See `docs/registration_trial_workflow.md` for the full reference.
+
 ## Workflow 5B: Runtime Tip Calibration
 
 Applies now as an advanced workflow launched from `Registration`.

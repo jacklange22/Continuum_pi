@@ -90,6 +90,20 @@ Use them for:
 - validation/error metrics
 - saved artifact conventions
 
+Two registration experiments live side by side and serve different purposes:
+
+- `registration_validation` measures repeatability across saved
+  registrations and flags FRE drift over time.
+- `registration_trial` (in `continuum_robot/experiments/registration_trial.py`
+  + `continuum_robot/registration/trial_analysis.py`) captures
+  N landmarks × K samples once and sweeps averaging methods, label
+  subsets, leave-one-out residuals, and samples-per-point diminishing
+  returns. The GUI launcher is **Run Registration Trial →** on the
+  Registration tab. Trial runs never auto-replace
+  `latest_registration.json`; use
+  `continuum_robot/data/promote_registration_trial.py` after manual
+  review of `trial_report.md`.
+
 ### Servo / Hardware Interface
 - `references/openrb-150.md`
 - `references/xc330-m288.md`

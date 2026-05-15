@@ -33,9 +33,13 @@ from continuum_robot.experiments.framework import (
 )
 from continuum_robot.registration.trial_analysis import (
     AVERAGING_METHODS,
+    DEFAULT_SAMPLES_PER_POINT_LADDER,
     RegistrationTrialResult,
     SubsetSolveResult,
+    aggregate_samples_per_point,
     evaluate_all_subsets,
+    recommend_samples_per_point,
+    samples_per_point_study,
     summarize_subset_search,
     summarize_trial,
     sweep_methods,
@@ -71,6 +75,19 @@ class RegistrationTrialConfig:
     registration_yaml_path: str = "config/registration.yaml"
     """Source of truth landmark coordinates. Must define candidate_landmarks."""
 
+    samples_per_point_ladder: list[int] = field(
+        default_factory=lambda: list(DEFAULT_SAMPLES_PER_POINT_LADDER)
+    )
+    """k values evaluated by the samples-per-point study. Capped at min(K) at runtime."""
+
+    samples_per_point_bootstrap_iterations: int = 40
+    """Random k-subset draws per k. Smooths out the choice of which samples are in the subset."""
+
+    samples_per_point_epsilon_mm: float = 0.02
+    """Diminishing-returns tolerance: smallest k whose mean FRE is within epsilon of the best."""
+
+    random_seed: int = 7
+
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any] | None) -> "RegistrationTrialConfig":
         payload = dict(payload or {})
@@ -83,6 +100,16 @@ class RegistrationTrialConfig:
             trimmed_fraction=float(payload.get("trimmed_fraction") or 0.2),
             mad_k=float(payload.get("mad_k") or 3.5),
             registration_yaml_path=str(payload.get("registration_yaml_path") or "config/registration.yaml"),
+            samples_per_point_ladder=[
+                int(v) for v in (payload.get("samples_per_point_ladder") or DEFAULT_SAMPLES_PER_POINT_LADDER)
+            ],
+            samples_per_point_bootstrap_iterations=int(
+                payload.get("samples_per_point_bootstrap_iterations") or 40
+            ),
+            samples_per_point_epsilon_mm=float(
+                payload.get("samples_per_point_epsilon_mm") or 0.02
+            ),
+            random_seed=int(payload.get("random_seed") or 7),
         )
 
 
@@ -177,14 +204,37 @@ class RegistrationTrialExperiment(BaseExperiment):
         subset_summary = summarize_subset_search(subsets)
         subset_summary["averaging_method_used"] = best_method
 
+        # Samples-per-point study: does the captured K actually help? Mean averaging
+        # is fixed here so the samples-per-point axis is not stacked on top of the
+        # averaging-method axis (which is the sweep's job).
+        spp_rows = samples_per_point_study(
+            captures,
+            truth_subset,
+            k_values=self.config.samples_per_point_ladder,
+            bootstrap_iterations=int(self.config.samples_per_point_bootstrap_iterations),
+            random_seed=int(self.config.random_seed),
+        )
+        spp_summary = aggregate_samples_per_point(spp_rows)
+        spp_recommendation = recommend_samples_per_point(
+            spp_summary,
+            epsilon_mm=float(self.config.samples_per_point_epsilon_mm),
+        )
+
         metrics = {
             "method_sweep": _sweep_results_to_payload(sweep),
             "method_summary": sweep_summary,
             "subset_search_summary": subset_summary,
             "subset_search_count": len(subsets),
+            "samples_per_point_summary": spp_summary,
+            "samples_per_point_recommendation": spp_recommendation,
             "landmark_labels_captured": selected_labels,
             "captures_per_landmark_target": int(self.config.captures_per_landmark),
-            "trial_recommendations": _build_recommendations(sweep_summary, subset_summary, sweep),
+            "trial_recommendations": _build_recommendations(
+                sweep_summary,
+                subset_summary,
+                sweep,
+                spp_recommendation=spp_recommendation,
+            ),
         }
         session.metrics.update(metrics)
         session.metrics["summary_requirements"] = {"force_status": "success"}
@@ -282,6 +332,8 @@ def _build_recommendations(
     sweep_summary: Mapping[str, Any],
     subset_summary: Mapping[str, Any],
     sweep_results: Mapping[str, RegistrationTrialResult],
+    *,
+    spp_recommendation: Mapping[str, Any] | None = None,
 ) -> list[str]:
     """Plain-English findings the operator can act on. No new math, no fudging."""
     recs: list[str] = []
@@ -339,6 +391,24 @@ def _build_recommendations(
                     f"{delta:+.4f} mm. Diminishing returns past size {prev} on this data."
                 )
                 break
+    # Samples-per-point recommendation: smallest k that lands within epsilon of
+    # the captured pool's best FRE. Lets the operator stop over-capturing.
+    if isinstance(spp_recommendation, Mapping):
+        recommended_k = spp_recommendation.get("recommended_k")
+        if recommended_k is not None:
+            best_fre = spp_recommendation.get("best_fre_mean_mm")
+            achieved = spp_recommendation.get("recommended_fre_mean_mm")
+            epsilon = spp_recommendation.get("epsilon_mm")
+            if best_fre is not None and achieved is not None:
+                recs.append(
+                    f"Samples per landmark: k={int(recommended_k)} reaches mean FRE "
+                    f"{float(achieved):.4f} mm, within "
+                    f"{float(epsilon) if epsilon is not None else 0.02:.3f} mm of the captured "
+                    f"pool's best ({float(best_fre):.4f} mm). Capturing more samples per landmark "
+                    "beyond that point does not measurably improve FRE on this data."
+                )
+            else:
+                recs.append(f"Samples-per-point recommendation: k={int(recommended_k)}.")
     return recs
 
 

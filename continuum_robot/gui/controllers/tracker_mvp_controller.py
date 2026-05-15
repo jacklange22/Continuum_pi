@@ -489,8 +489,25 @@ class TrackerMvpController:
             )
         )
         live_tip_status = self._render_live_pose_status(snapshot)
+        # The live robot-frame position must be displayed whenever T_robot_tip is
+        # actually available and not stale, regardless of which exact label the
+        # tracking service stamped on `tip_pose_status` for trust accounting.
+        #
+        # In coil_as_tip mode (operator-selected, README-trusted) T_coil_tip is
+        # identity and the tracking service may stamp the status as either
+        # "coil_as_tip" (per-frame update path) or "identity_tip_fallback" (the
+        # cached label from the artifact-load path, used before live frames flow
+        # — e.g. mock mode or before the first packet). Both produce the same
+        # valid math; both should surface the live position. Other modes still
+        # require "ok" so identity_tip_fallback never leaks the lower-trust
+        # display path elsewhere.
+        runtime_tip_mode = str(getattr(snapshot, "runtime_tip_mode", "") or "")
+        if runtime_tip_mode == "coil_as_tip":
+            acceptable_statuses = ("ok", "coil_as_tip", "identity_tip_fallback")
+        else:
+            acceptable_statuses = ("ok",)
         live_pose_ready = bool(
-            snapshot.tip_pose_status == "ok"
+            snapshot.tip_pose_status in acceptable_statuses
             and snapshot.T_robot_tip is not None
             and not snapshot.tracker_data_stale
         )
