@@ -1,0 +1,33 @@
+# Registration trial experiment example config.
+#
+# Two ways to drive this:
+#
+# 1. Replay an existing saved registration record:
+#    set source_record_path to a JSON file containing either
+#    raw_captured_landmarks_aurora_xyz (saved registration record) or a
+#    {"captures_by_label": {...}} block.
+#
+# 2. Live capture (GUI Registration tab "Trial Mode" button):
+#    leave source_record_path empty. The controller writes the captures
+#    into session.metrics["registration_trial_captures"] before execute.
+
+source_record_path: "data/registrations/latest_registration.json"
+
+# Target captures per landmark. Live capture should aim for this; the analysis
+# itself only uses whatever was actually recorded.
+captures_per_landmark: 50
+
+# Empty list = use every truth label that has captures.
+# Set to a subset like ["L1","L2","L5","L9"] to restrict.
+landmark_labels: []
+
+# Subset sizes to exhaustively search. 4-of-N tells you which 4 you should use
+# in production. 5..8 tell you whether adding more landmarks helps.
+subset_sizes: [4, 5, 6, 7, 8]
+
+# Averaging methods compared on the same captures.
+averaging_methods: ["mean", "median", "trimmed_mean", "mad_filtered_mean"]
+trimmed_fraction: 0.2
+mad_k: 3.5
+
+registration_yaml_path: "config/registration.yaml"

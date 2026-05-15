@@ -11,7 +11,8 @@ exposes its own residuals and the same FRE definition is applied across them.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Mapping, Sequence
+from itertools import combinations
+from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -297,6 +298,101 @@ def sweep_methods(
             mad_k=mad_k,
         )
         for method in methods
+    }
+
+
+@dataclass
+class SubsetSolveResult:
+    """One solved subset of labels."""
+
+    labels: tuple[str, ...]
+    size: int
+    fre_mm: float
+    max_residual_mm: float
+    worst_landmark_label: str | None
+    per_label_residual_mm: dict[str, float]
+    geometry_rank: int | None
+    geometry_condition_number: float | None
+
+
+def evaluate_all_subsets(
+    averaged_measured_by_label: Mapping[str, Sequence[float]],
+    truth_robot_by_label: Mapping[str, Sequence[float]],
+    *,
+    sizes: Iterable[int] = (4, 5, 6, 7, 8),
+) -> list[SubsetSolveResult]:
+    """Solve registration for every label subset of the requested sizes.
+
+    Each subset is fit with the standard Kabsch solve; nothing about the math
+    changes between subsets. The point is to surface which subset of the
+    captured landmarks happens to fit best, and at what size the residual stops
+    improving — a measurement-driven answer to "do I need 4, 5, or 8 points?".
+    """
+    shared_labels = sorted(set(averaged_measured_by_label.keys()) & set(truth_robot_by_label.keys()))
+    out: list[SubsetSolveResult] = []
+    for size in sorted({int(s) for s in sizes}):
+        if size < 3 or size > len(shared_labels):
+            continue
+        for combo in combinations(shared_labels, size):
+            subset_measured = {label: averaged_measured_by_label[label] for label in combo}
+            subset_truth = {label: truth_robot_by_label[label] for label in combo}
+            solved = solve_with_metrics(subset_measured, subset_truth)
+            geom = solved.get("geometry") if isinstance(solved, dict) else None
+            geom_rank = geom.get("geometry_rank") if isinstance(geom, dict) else None
+            geom_cond = geom.get("condition_number") if isinstance(geom, dict) else None
+            out.append(
+                SubsetSolveResult(
+                    labels=tuple(combo),
+                    size=int(size),
+                    fre_mm=float(solved["fre_mm"]),
+                    max_residual_mm=float(solved["max_residual_mm"]),
+                    worst_landmark_label=solved["worst_landmark_label"],
+                    per_label_residual_mm=dict(solved["residual_norms_mm_by_label"]),
+                    geometry_rank=int(geom_rank) if geom_rank is not None else None,
+                    geometry_condition_number=(
+                        float(geom_cond) if geom_cond is not None else None
+                    ),
+                )
+            )
+    return out
+
+
+def summarize_subset_search(
+    subset_results: Sequence[SubsetSolveResult],
+) -> dict[str, object]:
+    """Reduce the per-subset list to a per-size best-of and a global best."""
+    by_size: dict[int, list[SubsetSolveResult]] = {}
+    for item in subset_results:
+        by_size.setdefault(item.size, []).append(item)
+    per_size_best: dict[int, dict[str, object]] = {}
+    for size, items in sorted(by_size.items()):
+        best = min(items, key=lambda result: result.fre_mm)
+        per_size_best[size] = {
+            "size": int(size),
+            "subset_count": len(items),
+            "best_labels": list(best.labels),
+            "best_fre_mm": float(best.fre_mm),
+            "best_max_residual_mm": float(best.max_residual_mm),
+            "best_worst_landmark_label": best.worst_landmark_label,
+            "best_geometry_rank": best.geometry_rank,
+            "best_geometry_condition_number": best.geometry_condition_number,
+        }
+    global_best: dict[str, object] | None = None
+    if subset_results:
+        best = min(subset_results, key=lambda result: result.fre_mm)
+        global_best = {
+            "size": int(best.size),
+            "labels": list(best.labels),
+            "fre_mm": float(best.fre_mm),
+            "max_residual_mm": float(best.max_residual_mm),
+            "worst_landmark_label": best.worst_landmark_label,
+            "geometry_rank": best.geometry_rank,
+            "geometry_condition_number": best.geometry_condition_number,
+        }
+    return {
+        "per_size_best": per_size_best,
+        "global_best": global_best,
+        "total_subsets_evaluated": len(subset_results),
     }
 
 

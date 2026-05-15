@@ -6,10 +6,12 @@ import pytest
 from continuum_robot.registration.trial_analysis import (
     AVERAGING_METHODS,
     average_captures,
+    evaluate_all_subsets,
     evaluate_method,
     leave_one_out_fre,
     mad_outlier_mask,
     solve_with_metrics,
+    summarize_subset_search,
     summarize_trial,
     sweep_methods,
 )
@@ -189,6 +191,76 @@ def test_sweep_methods_produces_all_methods() -> None:
     assert summary["best_method"] in AVERAGING_METHODS
     assert summary["best_fre_mm"] >= 0
     assert len(summary["method_rows"]) == len(AVERAGING_METHODS)
+
+
+def _make_12_landmark_truth_with_height_variation() -> dict[str, list[float]]:
+    """A non-coplanar 12-landmark set so subset search has 3D spread to chew on."""
+    return {
+        "L1": [0.0, 35.0, -5.0],
+        "L2": [-35.0, 0.0, -5.0],
+        "L3": [0.0, -35.0, -5.0],
+        "L4": [35.0, 0.0, -5.0],
+        "L5": [0.0, 25.0, 5.0],
+        "L6": [-25.0, 0.0, 5.0],
+        "L7": [0.0, -25.0, 5.0],
+        "L8": [25.0, 0.0, 5.0],
+        "L9": [10.0, 25.0, 15.0],
+        "L10": [-25.0, 10.0, 15.0],
+        "L11": [-10.0, -25.0, 15.0],
+        "L12": [25.0, -10.0, 15.0],
+    }
+
+
+def test_evaluate_all_subsets_returns_one_entry_per_combination() -> None:
+    truth = {"L1": [0, 0, 0], "L2": [1, 0, 0], "L3": [0, 1, 0], "L4": [1, 1, 1], "L5": [-1, 0, 1]}
+    measured = {label: truth[label] for label in truth}  # identity (perfect data)
+    subsets = evaluate_all_subsets(measured, truth, sizes=(4, 5))
+    # C(5,4)=5 plus C(5,5)=1 = 6
+    assert len(subsets) == 6
+    assert all(result.fre_mm < 1e-9 for result in subsets)
+    assert {result.size for result in subsets} == {4, 5}
+
+
+def test_evaluate_all_subsets_skips_invalid_sizes() -> None:
+    truth = {"L1": [0, 0, 0], "L2": [1, 0, 0], "L3": [0, 1, 0]}
+    measured = dict(truth)
+    # 4 is impossible with only 3 labels; 2 is below the solver minimum.
+    subsets = evaluate_all_subsets(measured, truth, sizes=(2, 3, 4))
+    assert {result.size for result in subsets} == {3}
+    assert len(subsets) == 1
+
+
+def test_subset_search_finds_best_for_each_size() -> None:
+    truth = _make_12_landmark_truth_with_height_variation()
+    rng = np.random.default_rng(7)
+    # Identity transform + small noise per label, but bias L3 by 1.5 mm so subsets that
+    # avoid L3 should fit much better.
+    measured: dict[str, list[float]] = {}
+    for label, xyz in truth.items():
+        noise = rng.normal(scale=0.02, size=3)
+        bias = np.array([1.5, 0.0, 0.0]) if label == "L3" else np.zeros(3)
+        measured[label] = (np.asarray(xyz, dtype=float) + noise + bias).tolist()
+
+    subsets = evaluate_all_subsets(measured, truth, sizes=(4, 5, 6, 7, 8))
+    summary = summarize_subset_search(subsets)
+    per_size = summary["per_size_best"]
+    assert set(per_size.keys()) == {4, 5, 6, 7, 8}
+    # The global best should exclude L3 because L3 has the 1.5mm bias.
+    global_best = summary["global_best"]
+    assert global_best is not None
+    assert "L3" not in global_best["labels"]
+    # Including L3 in any subset would jack FRE; the best-of-4 should be tighter
+    # than any subset that includes L3.
+    best_size_4 = per_size[4]
+    assert "L3" not in best_size_4["best_labels"]
+    assert float(best_size_4["best_fre_mm"]) < 0.5
+
+
+def test_subset_search_summary_with_no_results_is_empty() -> None:
+    summary = summarize_subset_search([])
+    assert summary["global_best"] is None
+    assert summary["per_size_best"] == {}
+    assert summary["total_subsets_evaluated"] == 0
 
 
 def test_summary_picks_lowest_fre_method() -> None:

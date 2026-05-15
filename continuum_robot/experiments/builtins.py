@@ -23,6 +23,7 @@ from continuum_robot.experiments.experiment_models import ExperimentPoint
 from continuum_robot.experiments.framework import BaseExperiment, ExperimentHardwareRequirements, ExperimentSession
 from continuum_robot.experiments.critical_experiments import register_critical_experiments
 from continuum_robot.experiments.calibration_validation import register_calibration_validation_experiments
+from continuum_robot.experiments.registration_trial import register_registration_trial_experiment
 from continuum_robot.experiments.modeling_dataset_outputs import write_modeling_dataset_outputs
 from continuum_robot.experiments.pretension_validation_outputs import write_pretension_validation_outputs
 from continuum_robot.experiments.penprobe_chasing_demo import PenprobeChasingDemoExperiment
@@ -9519,6 +9520,7 @@ def register_builtin_experiments(registry) -> None:
     )
     register_calibration_validation_experiments(registry)
     register_critical_experiments(registry)
+    register_registration_trial_experiment(registry)
 
 
 def _load_neutral_ticks(session: ExperimentSession) -> list[int]:
