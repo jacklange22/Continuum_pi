@@ -115,6 +115,7 @@ Registration and runtime tip:
 - Legacy SolidWorks/reference assets remain protected inputs, not the default runtime architecture.
 - Runtime tip calibration is separated from `0B` pivot calibration and base registration; accepted calibration artifacts are currently lower-trust until their own validation is complete.
 - Registration quality still depends on physical landmark choice, base stability, and declared tip policy.
+- `registration_trial` exists as a side-by-side workflow that captures N landmarks × K samples once and analyzes the data four ways: averaging-method sweep (mean / median / trimmed_mean / mad_filtered_mean), exhaustive 4..8-of-N subset solve, per-landmark leave-one-out FRE, and a samples-per-point ladder that surfaces diminishing returns. The Registration tab's **Run Registration Trial →** button launches it. Trial runs never auto-replace `latest_registration.json`; promotion is explicit via `python -m continuum_robot.data.promote_registration_trial` after operator review of `trial_report.md`. Use this when the standard 4-point flow's FRE is varying run-to-run or you want to confirm which landmarks dominate the fit.
 
 Servo and hardware:
 
@@ -137,7 +138,7 @@ Pretension:
 Experiments:
 
 - The canonical path is `ExperimentRunner` plus built-in registry entries.
-- Important current experiments include `aurora_grid_accuracy`, `pivot_validation`, `registration_validation`, `tracker_timing_validation`, `servo_tracker_sync_validation`, `pretension_validation`, `single_segment_repeatability`, and `collect_pose_command_dataset`.
+- Important current experiments include `aurora_grid_accuracy`, `pivot_validation`, `registration_validation`, `registration_trial`, `tracker_timing_validation`, `servo_tracker_sync_validation`, `pretension_validation`, `single_segment_repeatability`, and `collect_pose_command_dataset`.
 - `single_segment_repeatability` is now the central live thesis experiment and includes strict preflight/provenance expectations.
 - Older `repeatability_dataset` remains hidden compatibility infrastructure.
 - Thesis-facing report figures are now split from dashboard/debug figures for the major validation and repeatability paths. Polished figures do not replace trust/provenance checks.
