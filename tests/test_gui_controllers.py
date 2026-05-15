@@ -4047,7 +4047,7 @@ def test_single_segment_repeatability_page_shows_fixed_target_catalog_and_baseli
 
     assert page.target_table.rowCount() == 17
     assert page.target_table.item(0, 0).text() == "T00"
-    assert page.protocol_summary_widget._pairs_signature is not None
+    assert "272 visits" in page.protocol_preview_label.text()
     assert page.comparison_summary_widget._pairs_signature is not None
     assert "baseline_run_path" in controller.refresh().config_text
 

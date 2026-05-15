@@ -76,8 +76,13 @@ from continuum_robot.experiments.calibration_validation import (
     list_registration_validation_candidates,
 )
 from continuum_robot.experiments.single_segment_repeatability import (
+    DEFAULT_INNER_RING_RADIUS_MM,
+    DEFAULT_OUTER_RING_RADIUS_MM,
     SingleSegmentRepeatabilityConfig,
+    TARGET_PRESETS,
+    TARGET_PRESET_LEGACY_17,
     build_legacy_17_point_targets,
+    build_targets_for_preset,
     generate_legacy_revisit_sequence,
     repeatability_ring_tick_defaults,
 )
@@ -750,12 +755,7 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
     refresh_policy = "manual"
     defer_visualization_until_data = True
     visualization_mode_override = VIS_MODE_PROJECTION
-    page_hint = (
-        "Live thesis repeatability protocol: the legacy 17-target single-segment pattern, "
-        "with each desired target revisited after approaching from every other target. "
-        "This page requires accepted registration, accepted 0A runtime tip calibration, connected servos, "
-        "and accepted pretension state."
-    )
+    page_hint = ""
 
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
         super().__init__(controller, experiment_name, parent)
@@ -763,13 +763,40 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
         self._target_table_signature: tuple[tuple[str, str, str, str, str, str], ...] | None = None
 
     def _build_parameter_sections(self) -> None:
-        protocol_card = ExperimentCard(
-            "Protocol",
-            "Fixed legacy protocol: 17 targets, 272 approach/repeat visits, 544 planned captures. "
-            "Repeatability metrics use the repeat captures after returning to the desired target.",
+        protocol_card = ExperimentCard("Protocol")
+        protocol_form = QFormLayout()
+        self.target_preset_combo = NoWheelComboBox()
+        for key, label in TARGET_PRESETS:
+            self.target_preset_combo.addItem(label, key)
+        self.target_preset_combo.currentIndexChanged.connect(
+            lambda _index: self._on_target_preset_changed()
         )
-        self.protocol_summary_widget = KeyValueSummaryWidget()
-        protocol_card.body_layout.addWidget(self.protocol_summary_widget)
+        self.visits_per_target_spin = QSpinBox()
+        self.visits_per_target_spin.setRange(0, 64)
+        self.visits_per_target_spin.setSpecialValueText("All other targets")
+        self.visits_per_target_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("visits_per_target", int(value))
+        )
+        self.settle_time_spin = QDoubleSpinBox()
+        self.settle_time_spin.setRange(0.0, 60.0)
+        self.settle_time_spin.setDecimals(2)
+        self.settle_time_spin.setSingleStep(0.25)
+        self.settle_time_spin.setSuffix(" s")
+        self.settle_time_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("settle_time_s", float(value))
+        )
+        protocol_form.addRow("Target Preset", self.target_preset_combo)
+        protocol_form.addRow("Visits per Target", self.visits_per_target_spin)
+        protocol_form.addRow("Settle Time", self.settle_time_spin)
+        protocol_card.body_layout.addLayout(protocol_form)
+
+        self.protocol_preview_label = QLabel("")
+        self.protocol_preview_label.setWordWrap(True)
+        self.protocol_preview_label.setProperty("role", "preview")
+        self.protocol_preview_label.setStyleSheet(
+            f"color: {COLORS.text_primary}; font-weight: 600; font-size: 13px; padding: 6px 0;"
+        )
+        protocol_card.body_layout.addWidget(self.protocol_preview_label)
 
         comparison_card = ExperimentCard(
             "Baseline Comparison",
@@ -800,42 +827,32 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
         self.comparison_summary_widget = KeyValueSummaryWidget()
         comparison_card.body_layout.addWidget(self.comparison_summary_widget)
 
-        config_card = ExperimentCard(
-            "Run Parameters",
-            "Only timing and gating parameters are exposed here. Target geometry and sequence structure are intentionally fixed.",
+        self.advanced_card = CollapsibleCard(
+            "Advanced",
+            "Geometry, capture timing, safety toggles, and the target catalog preview.",
+            expanded=False,
         )
-        form = QFormLayout()
-        self.tool_id_edit = QLineEdit()
-        self.tool_id_edit.editingFinished.connect(
-            lambda: self.controller.set_config_value("tool_id", self.tool_id_edit.text().strip().upper() or "0A")
+
+        geometry_label = QLabel("Geometry & seed")
+        geometry_label.setProperty("role", "subsection-title")
+        geometry_label.setStyleSheet(f"color: {COLORS.text_secondary}; font-weight: 600;")
+        self.advanced_card.body_layout.addWidget(geometry_label)
+        geometry_form = QFormLayout()
+        self.inner_radius_spin = QDoubleSpinBox()
+        self.inner_radius_spin.setRange(0.0, 50.0)
+        self.inner_radius_spin.setDecimals(2)
+        self.inner_radius_spin.setSingleStep(0.5)
+        self.inner_radius_spin.setSuffix(" mm")
+        self.inner_radius_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("inner_ring_radius_mm", float(value))
         )
-        self.settle_time_spin = QDoubleSpinBox()
-        self.settle_time_spin.setRange(0.0, 60.0)
-        self.settle_time_spin.setDecimals(3)
-        self.settle_time_spin.setSingleStep(0.25)
-        self.settle_time_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("settle_time_s", float(value))
-        )
-        self.capture_timeout_spin = QDoubleSpinBox()
-        self.capture_timeout_spin.setRange(0.0, 10.0)
-        self.capture_timeout_spin.setDecimals(3)
-        self.capture_timeout_spin.setSingleStep(0.05)
-        self.capture_timeout_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("capture_timeout_s", float(value))
-        )
-        self.capture_poll_spin = QDoubleSpinBox()
-        self.capture_poll_spin.setRange(0.001, 1.0)
-        self.capture_poll_spin.setDecimals(3)
-        self.capture_poll_spin.setSingleStep(0.005)
-        self.capture_poll_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("capture_poll_interval_s", float(value))
-        )
-        self.max_age_spin = QDoubleSpinBox()
-        self.max_age_spin.setRange(0.0, 5.0)
-        self.max_age_spin.setDecimals(3)
-        self.max_age_spin.setSingleStep(0.05)
-        self.max_age_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("max_tracker_age_s", float(value))
+        self.outer_radius_spin = QDoubleSpinBox()
+        self.outer_radius_spin.setRange(0.0, 50.0)
+        self.outer_radius_spin.setDecimals(2)
+        self.outer_radius_spin.setSingleStep(0.5)
+        self.outer_radius_spin.setSuffix(" mm")
+        self.outer_radius_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("outer_ring_radius_mm", float(value))
         )
         self.seed_spin = QSpinBox()
         self.seed_spin.setRange(0, 999999)
@@ -844,6 +861,62 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
         self.run_label_edit.editingFinished.connect(
             lambda: self.controller.set_config_value("run_label", self.run_label_edit.text().strip())
         )
+        self.tool_id_edit = QLineEdit()
+        self.tool_id_edit.editingFinished.connect(
+            lambda: self.controller.set_config_value("tool_id", self.tool_id_edit.text().strip().upper() or "0A")
+        )
+        geometry_form.addRow("Inner Ring Radius", self.inner_radius_spin)
+        geometry_form.addRow("Outer Ring Radius", self.outer_radius_spin)
+        geometry_form.addRow("Random Seed", self.seed_spin)
+        geometry_form.addRow("Run Label", self.run_label_edit)
+        geometry_form.addRow("Runtime Tool", self.tool_id_edit)
+        self.advanced_card.body_layout.addLayout(geometry_form)
+
+        capture_label = QLabel("Capture timing")
+        capture_label.setProperty("role", "subsection-title")
+        capture_label.setStyleSheet(f"color: {COLORS.text_secondary}; font-weight: 600;")
+        self.advanced_card.body_layout.addWidget(capture_label)
+        capture_hint = QLabel(
+            "Tracker wait: how long to wait for a valid reading at each capture before giving up. "
+            "Poll interval: how often to check while waiting. Max age: oldest tracker frame still acceptable."
+        )
+        capture_hint.setProperty("role", "hint")
+        capture_hint.setWordWrap(True)
+        self.advanced_card.body_layout.addWidget(capture_hint)
+        capture_form = QFormLayout()
+        self.capture_timeout_spin = QDoubleSpinBox()
+        self.capture_timeout_spin.setRange(0.0, 10.0)
+        self.capture_timeout_spin.setDecimals(3)
+        self.capture_timeout_spin.setSingleStep(0.05)
+        self.capture_timeout_spin.setSuffix(" s")
+        self.capture_timeout_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("capture_timeout_s", float(value))
+        )
+        self.capture_poll_spin = QDoubleSpinBox()
+        self.capture_poll_spin.setRange(0.001, 1.0)
+        self.capture_poll_spin.setDecimals(3)
+        self.capture_poll_spin.setSingleStep(0.005)
+        self.capture_poll_spin.setSuffix(" s")
+        self.capture_poll_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("capture_poll_interval_s", float(value))
+        )
+        self.max_age_spin = QDoubleSpinBox()
+        self.max_age_spin.setRange(0.0, 5.0)
+        self.max_age_spin.setDecimals(3)
+        self.max_age_spin.setSingleStep(0.05)
+        self.max_age_spin.setSuffix(" s")
+        self.max_age_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_tracker_age_s", float(value))
+        )
+        capture_form.addRow("Tracker Wait", self.capture_timeout_spin)
+        capture_form.addRow("Poll Interval", self.capture_poll_spin)
+        capture_form.addRow("Max Frame Age", self.max_age_spin)
+        self.advanced_card.body_layout.addLayout(capture_form)
+
+        safety_label = QLabel("Safety")
+        safety_label.setProperty("role", "subsection-title")
+        safety_label.setStyleSheet(f"color: {COLORS.text_secondary}; font-weight: 600;")
+        self.advanced_card.body_layout.addWidget(safety_label)
         self.return_center_check = QCheckBox("Return to center on finalize")
         self.return_center_check.toggled.connect(
             lambda value: self.controller.set_config_value("return_to_center_on_finalize", bool(value))
@@ -859,22 +932,14 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
         self.debug_coil_as_tip_check.toggled.connect(
             lambda value: self.controller.set_config_value("allow_debug_coil_as_tip", bool(value))
         )
-        form.addRow("Runtime Tool", self.tool_id_edit)
-        form.addRow("Settle Time (s)", self.settle_time_spin)
-        form.addRow("Capture Timeout (s)", self.capture_timeout_spin)
-        form.addRow("Capture Poll (s)", self.capture_poll_spin)
-        form.addRow("Max Tracker Age (s)", self.max_age_spin)
-        form.addRow("Random Seed", self.seed_spin)
-        form.addRow("Run Label", self.run_label_edit)
-        form.addRow("Finalize", self.return_center_check)
-        form.addRow("Rejected Captures", self.fail_rejected_check)
-        form.addRow("Debug Runtime Tip", self.debug_coil_as_tip_check)
-        config_card.body_layout.addLayout(form)
+        self.advanced_card.body_layout.addWidget(self.return_center_check)
+        self.advanced_card.body_layout.addWidget(self.fail_rejected_check)
+        self.advanced_card.body_layout.addWidget(self.debug_coil_as_tip_check)
 
-        target_card = ExperimentCard(
-            "Fixed Target Catalog",
-            "Target 0 is center; targets 1-8 use the configured inner ring and targets 9-16 use the configured outer ring.",
-        )
+        catalog_label = QLabel("Target catalog")
+        catalog_label.setProperty("role", "subsection-title")
+        catalog_label.setStyleSheet(f"color: {COLORS.text_secondary}; font-weight: 600;")
+        self.advanced_card.body_layout.addWidget(catalog_label)
         self.target_table = QTableWidget(0, 6)
         self.target_table.setHorizontalHeaderLabels(
             ["Target", "Ring", "Angle", "Command (mm)", "Command (ticks)", "Approaches"]
@@ -883,13 +948,16 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
         self.target_table.setSelectionMode(QAbstractItemView.NoSelection)
         self.target_table.verticalHeader().setVisible(False)
         self.target_table.horizontalHeader().setStretchLastSection(True)
-        self.target_table.setMinimumHeight(260)
-        target_card.body_layout.addWidget(self.target_table)
+        self.target_table.setMinimumHeight(220)
+        self.advanced_card.body_layout.addWidget(self.target_table)
 
         self.parameter_layout.addWidget(protocol_card)
         self.parameter_layout.addWidget(comparison_card)
-        self.parameter_layout.addWidget(config_card)
-        self.parameter_layout.addWidget(target_card)
+        self.parameter_layout.addWidget(self.advanced_card)
+
+    def _on_target_preset_changed(self) -> None:
+        key = str(self.target_preset_combo.currentData() or TARGET_PRESET_LEGACY_17)
+        self.controller.set_config_value("target_preset", key)
 
     def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
         _ = state
@@ -905,58 +973,39 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
         self._set_checkbox(self.fail_rejected_check, bool(config.fail_on_rejected_capture))
         self._set_checkbox(self.debug_coil_as_tip_check, bool(config.allow_debug_coil_as_tip))
         self._set_line_text(self.baseline_path_edit, str(config.baseline_run_path or ""))
+        self._set_double(self.inner_radius_spin, float(config.inner_ring_radius_mm))
+        self._set_double(self.outer_radius_spin, float(config.outer_ring_radius_mm))
+        self._set_spin(self.visits_per_target_spin, int(config.visits_per_target))
+        target_preset_index = self.target_preset_combo.findData(str(config.target_preset))
+        if target_preset_index >= 0 and target_preset_index != self.target_preset_combo.currentIndex():
+            with QSignalBlocker(self.target_preset_combo):
+                self.target_preset_combo.setCurrentIndex(target_preset_index)
         self._sync_protocol_summary(config)
         self._sync_comparison_summary(config)
         self._sync_target_table(config)
 
     def _sync_protocol_summary(self, config: SingleSegmentRepeatabilityConfig) -> None:
-        targets = build_legacy_17_point_targets(
+        targets = build_targets_for_preset(
+            config.target_preset,
             inner_ring_radius_mm=float(config.inner_ring_radius_mm),
             outer_ring_radius_mm=float(config.outer_ring_radius_mm),
         )
-        visits = generate_legacy_revisit_sequence(targets=targets, seed=int(config.random_seed))
-        planned_captures = len(visits) * 2
+        visits = generate_legacy_revisit_sequence(
+            targets=targets,
+            seed=int(config.random_seed),
+            visits_per_target=int(config.visits_per_target),
+        )
+        target_count = len(targets)
+        visit_count = len(visits)
+        planned_captures = visit_count * 2
         total_time_min = (planned_captures * float(config.settle_time_s)) / 60.0
-        ring_ticks = repeatability_ring_tick_defaults(
-            mapper=self.controller.servo_service.mapper,
-            inner_ring_radius_mm=float(config.inner_ring_radius_mm),
-            outer_ring_radius_mm=float(config.outer_ring_radius_mm),
-        )
-        spool_diameter_mm = float(self.controller.settings.robot.spool_diameter_cm) * 10.0
-        self.protocol_summary_widget.set_pairs(
-            [
-                ("Protocol", "Legacy 17-target single segment"),
-                ("Targets", "17 (center + 8 inner + 8 outer)"),
-                (
-                    "Ring Radii",
-                    (
-                        f"inner {float(config.inner_ring_radius_mm):.1f} mm "
-                        f"({int(ring_ticks['inner_ring_radius_ticks'])} ticks), "
-                        f"outer {float(config.outer_ring_radius_mm):.1f} mm "
-                        f"({int(ring_ticks['outer_ring_radius_ticks'])} ticks)"
-                    ),
-                ),
-                ("Spool Diameter", f"{spool_diameter_mm:.1f} mm"),
-                (
-                    "Repeatability Amplitude Cap",
-                    f"{int(config.max_target_tick_delta_from_startup)} ticks max from startup",
-                ),
-                ("Approach Visits", str(len(visits))),
-                ("Planned Captures", str(planned_captures)),
-                ("Repeat Captures Used For RMSE", str(len(visits))),
-                (
-                    "Run Validity Threshold",
-                    f">= {int(config.min_repeat_captures_per_target)} repeats/target "
-                    f"and >= {float(config.min_repeat_capture_fraction) * 100.0:.0f}% total repeat coverage",
-                ),
-                (
-                    "Rejected Capture Limit",
-                    f"<= {float(config.max_rejected_capture_fraction) * 100.0:.0f}% of all captures",
-                ),
-                ("Estimated Settle Time", f"{total_time_min:.1f} min"),
-                ("Required Pose Frame", "robot/base frame via 0A runtime tip"),
-                ("Run Trust", "Blocked unless registration, runtime tip calibration, pretension, and servos are ready"),
-            ]
+        if total_time_min >= 1.0:
+            duration_text = f"~{total_time_min:.1f} min"
+        else:
+            duration_text = f"~{total_time_min * 60.0:.0f} s"
+        self.protocol_preview_label.setText(
+            f"→ {target_count} targets · {visit_count} visits · "
+            f"{planned_captures} captures · {duration_text}"
         )
 
     def _sync_comparison_summary(self, config: SingleSegmentRepeatabilityConfig) -> None:
@@ -983,11 +1032,16 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
             self.controller.set_config_value("baseline_run_path", path)
 
     def _sync_target_table(self, config: SingleSegmentRepeatabilityConfig) -> None:
-        targets = build_legacy_17_point_targets(
+        targets = build_targets_for_preset(
+            config.target_preset,
             inner_ring_radius_mm=float(config.inner_ring_radius_mm),
             outer_ring_radius_mm=float(config.outer_ring_radius_mm),
         )
-        visits = generate_legacy_revisit_sequence(targets, seed=int(config.random_seed))
+        visits = generate_legacy_revisit_sequence(
+            targets,
+            seed=int(config.random_seed),
+            visits_per_target=int(config.visits_per_target),
+        )
         approaches_by_target: dict[int, int] = {}
         for visit in visits:
             approaches_by_target[int(visit.target_index)] = approaches_by_target.get(int(visit.target_index), 0) + 1
@@ -4070,6 +4124,58 @@ class CollapsibleSection(QWidget):
     def _set_open(self, open_: bool) -> None:
         self.toggle.setArrowType(Qt.DownArrow if open_ else Qt.RightArrow)
         self.body.setVisible(bool(open_))
+
+
+class CollapsibleCard(QFrame):
+    """Card-styled container with a collapsible body. Matches ExperimentCard chrome."""
+
+    def __init__(self, title: str, subtitle: str | None = None, *, expanded: bool = False, parent=None) -> None:
+        super().__init__(parent)
+        self.setProperty("role", "card")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(8)
+        self.toggle_button = QToolButton()
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setChecked(bool(expanded))
+        self.toggle_button.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self.toggle_button.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.toggle_button.setAutoRaise(True)
+        title_label = QLabel(title)
+        title_label.setProperty("role", "section-title")
+        title_label.setCursor(Qt.PointingHandCursor)
+        title_label.mousePressEvent = lambda _event: self.toggle_button.setChecked(not self.toggle_button.isChecked())
+        header_row.addWidget(self.toggle_button)
+        header_row.addWidget(title_label, 1)
+        layout.addLayout(header_row)
+
+        self._subtitle_label: QLabel | None = None
+        if subtitle:
+            subtitle_label = QLabel(subtitle)
+            subtitle_label.setProperty("role", "body")
+            subtitle_label.setWordWrap(True)
+            subtitle_label.setVisible(bool(expanded))
+            layout.addWidget(subtitle_label)
+            self._subtitle_label = subtitle_label
+
+        self.body = QWidget()
+        self.body.setVisible(bool(expanded))
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(0, 0, 0, 0)
+        self.body_layout.setSpacing(12)
+        layout.addWidget(self.body)
+
+        self.toggle_button.toggled.connect(self._on_toggle)
+
+    def _on_toggle(self, checked: bool) -> None:
+        self.toggle_button.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+        self.body.setVisible(bool(checked))
+        if self._subtitle_label is not None:
+            self._subtitle_label.setVisible(bool(checked))
 
 
 class KeyValueSummaryWidget(QWidget):

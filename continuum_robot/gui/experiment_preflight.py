@@ -26,6 +26,8 @@ from continuum_robot.experiments.single_segment_repeatability import (
     LEGACY_VISIT_COUNT,
     SingleSegmentRepeatabilityConfig,
     build_legacy_17_point_targets,
+    build_targets_for_preset,
+    generate_legacy_revisit_sequence,
     load_repeatability_metrics_from_run,
     repeatability_target_tick_profile,
 )
@@ -372,7 +374,8 @@ def evaluate_preflight(
                 )
             )
         else:
-            target_catalog = build_legacy_17_point_targets(
+            target_catalog = build_targets_for_preset(
+                config.target_preset,
                 inner_ring_radius_mm=float(config.inner_ring_radius_mm),
                 outer_ring_radius_mm=float(config.outer_ring_radius_mm),
             )
@@ -486,18 +489,22 @@ def evaluate_preflight(
                     "No baseline selected. The run will save full metrics, but no improvement delta will be computed.",
                 )
             )
+        preset_targets = build_targets_for_preset(
+            config.target_preset,
+            inner_ring_radius_mm=float(config.inner_ring_radius_mm),
+            outer_ring_radius_mm=float(config.outer_ring_radius_mm),
+        )
+        preset_visits = generate_legacy_revisit_sequence(
+            preset_targets,
+            seed=int(config.random_seed),
+            visits_per_target=int(config.visits_per_target),
+        )
         checks.append(
             _ok(
                 "protocol",
                 "Protocol",
-                f"Fixed legacy protocol: {LEGACY_TARGET_COUNT} targets, {LEGACY_VISIT_COUNT} approach/repeat visits, {LEGACY_CAPTURE_COUNT} planned captures.",
-            )
-        )
-        checks.append(
-            _ok(
-                "scientific_framing",
-                "Scientific Framing",
-                "This experiment measures single-segment repeatability after registration, runtime-tip calibration, and pretension. It does not validate those calibrations by itself.",
+                f"{config.target_preset} preset: {len(preset_targets)} targets, "
+                f"{len(preset_visits)} approach/repeat visits, {len(preset_visits) * 2} planned captures.",
             )
         )
 
