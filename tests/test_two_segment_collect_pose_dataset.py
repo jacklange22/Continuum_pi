@@ -401,18 +401,6 @@ def test_two_segment_collect_pose_dataset_allows_explicit_servo_only_mock_run_an
     assert "two_segment_command_coverage_report.png" in exported
 
 
-import pytest  # noqa: E402
-
-
-@pytest.mark.xfail(
-    reason=(
-        "Pre-existing: experiment_runner.py forces valid_for_two_segment_model_training=False "
-        "for any mock_mode run (mock_mode=True in test settings). This test asserts True. The "
-        "metric is correctly computed inside the experiment; the runner overrides it. Tracked "
-        "separately from the bottom/top role-selection work."
-    ),
-    strict=False,
-)
 def test_two_segment_collect_pose_dataset_sample_records_distal_pose_role_and_validity(tmp_path: Path) -> None:
     service = _servo_service(tmp_path)
     _save_all8_startup(service)
