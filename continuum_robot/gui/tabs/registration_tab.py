@@ -33,11 +33,19 @@ from continuum_robot.gui.widgets.registration_plot_widget import RegistrationPlo
 class RegistrationTab(QWidget):
     """Guided 4-point robot-body alignment workflow."""
 
-    def __init__(self, controller, workflow_controller=None, open_runtime_tip_calibration=None, parent=None) -> None:
+    def __init__(
+        self,
+        controller,
+        workflow_controller=None,
+        open_runtime_tip_calibration=None,
+        open_registration_trial=None,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.controller = controller
         self.workflow_controller = workflow_controller
         self.open_runtime_tip_calibration = open_runtime_tip_calibration
+        self.open_registration_trial = open_registration_trial
         self._selected_slot_labels: list[QLabel] = []
         self.setObjectName("registrationWorkspace")
         self.setStyleSheet(
@@ -106,6 +114,13 @@ class RegistrationTab(QWidget):
         self.load_button.setProperty("variant", "ghost")
         self.runtime_tip_button = QPushButton("Open Runtime Tip Calibration")
         self.runtime_tip_button.setProperty("variant", "ghost")
+        self.trial_mode_button = QPushButton("Trial Mode (N landmarks × K captures)")
+        self.trial_mode_button.setProperty("variant", "ghost")
+        self.trial_mode_button.setToolTip(
+            "Capture many samples across many landmarks and run the registration_trial "
+            "experiment to compare averaging methods and find the best 4-of-N subset. "
+            "Does not affect the production registration session."
+        )
 
         self.begin_button.clicked.connect(lambda: self._safe_call(self.controller.begin_session))
         self.capture_button.clicked.connect(lambda: self._safe_call(self.controller.capture_current_label_sample))
@@ -115,6 +130,10 @@ class RegistrationTab(QWidget):
         self.retry_button.clicked.connect(lambda: self._safe_call(self.controller.retry_session))
         self.load_button.clicked.connect(lambda: self._safe_call(self.controller.load_latest_result))
         self.runtime_tip_button.clicked.connect(self._open_runtime_tip_calibration)
+        self.trial_mode_button.clicked.connect(self._open_registration_trial)
+        # Hide the button if no trial launcher was provided by the app shell;
+        # the production flow stays unchanged for callers that don't wire it.
+        self.trial_mode_button.setVisible(self.open_registration_trial is not None)
 
         self.selection_hint = QLabel("Select exactly four unique model points in capture order.")
         self.selection_hint.setProperty("role", "hint")
@@ -214,6 +233,7 @@ class RegistrationTab(QWidget):
         button_row_secondary.addWidget(self.retry_button)
         button_row_secondary.addWidget(self.load_button)
         button_row_secondary.addWidget(self.runtime_tip_button)
+        button_row_secondary.addWidget(self.trial_mode_button)
         button_row_secondary.addStretch(1)
 
         self.points_table = QTableWidget(0, 6)
@@ -612,6 +632,10 @@ class RegistrationTab(QWidget):
     def _open_runtime_tip_calibration(self) -> None:
         if callable(self.open_runtime_tip_calibration):
             self.open_runtime_tip_calibration()
+
+    def _open_registration_trial(self) -> None:
+        if callable(self.open_registration_trial):
+            self.open_registration_trial()
 
     def _on_runtime_tip_mode_changed(self, _index: int) -> None:
         mode = self.runtime_tip_mode_combo.currentData()

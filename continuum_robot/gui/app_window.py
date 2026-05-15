@@ -219,6 +219,15 @@ class AppWindow(QMainWindow):
             settings=settings,
             project_root=context.project_root,
         )
+        from continuum_robot.gui.controllers.registration_trial_controller import (
+            RegistrationTrialController,
+        )
+
+        self.registration_trial_controller = RegistrationTrialController(
+            registration_service=registration_service,
+            experiment_runner=experiment_runner,
+            project_root=context.project_root,
+        )
 
         new_tab_widget = QTabWidget()
         self.system_tab = SystemTab(
@@ -230,6 +239,7 @@ class AppWindow(QMainWindow):
             self.registration_controller,
             workflow_controller=self.tracker_mvp_controller,
             open_runtime_tip_calibration=self._open_runtime_tip_calibration,
+            open_registration_trial=self._open_registration_trial,
         )
         self.servos_tab = ServosTab(
             self.servos_controller,
@@ -398,3 +408,35 @@ class AppWindow(QMainWindow):
         dialog.raise_()
         dialog.activateWindow()
         dialog.refresh()
+
+    def _open_registration_trial(self) -> None:
+        from continuum_robot.gui.widgets.registration_trial_dialog import (
+            RegistrationTrialDialog,
+        )
+
+        settings = getattr(getattr(self, "context", None), "settings", None)
+        registration_config = getattr(settings, "registration", None) if settings is not None else None
+        candidate_labels: list[str] = []
+        if registration_config is not None:
+            for landmark in registration_config.candidate_landmarks or []:
+                if bool(getattr(landmark, "enabled", True)):
+                    candidate_labels.append(str(landmark.id))
+            if not candidate_labels:
+                candidate_labels = list(registration_config.landmark_labels or [])
+        if not candidate_labels:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(
+                self,
+                "Trial Mode",
+                "No candidate landmarks are defined in registration.yaml.",
+            )
+            return
+        # Reset any prior trial state so the dialog opens with a clean slate.
+        self.registration_trial_controller.reset()
+        dialog = RegistrationTrialDialog(
+            self.registration_trial_controller,
+            candidate_labels=candidate_labels,
+            parent=self,
+        )
+        dialog.exec()

@@ -110,6 +110,7 @@ class ExperimentRunner:
         progress_callback=None,
         stop_requested=None,
         sample_callback=None,
+        inject_session_metrics: dict[str, Any] | None = None,
     ) -> ExperimentRunResult:
         """Run one registered experiment and write a canonical dataset."""
         experiment = self.registry.create(experiment_name, config or {})
@@ -149,6 +150,11 @@ class ExperimentRunner:
             progress_callback=progress_callback,
             sample_callback=sample_callback,
         )
+        # Hand the caller a hook to deposit metrics before the experiment runs.
+        # Used by trial-mode flows where the GUI/controller has already collected
+        # captures and wants the experiment to consume them instead of re-capturing.
+        if inject_session_metrics:
+            session.metrics.update(inject_session_metrics)
         success = False
         stage_name = "setup"
         message = ""
