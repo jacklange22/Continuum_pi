@@ -129,8 +129,6 @@ def build_tracking_scene_model(
             "Runtime tip source: "
             f"{str(getattr(live_state, 'runtime_tip_mode_message', 'missing')).strip() or 'missing'}"
         ),
-        f"Tip pose: {str(getattr(live_state, 'tip_pose_status', 'missing_registration')).replace('_', ' ')}",
-        "Tip glyph: shown" if registration_loaded and T_robot_tip is not None else "Tip glyph: hidden",
     ]
 
     if registration_loaded:

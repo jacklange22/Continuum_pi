@@ -1,0 +1,16 @@
+Two-Segment Collect-Pose Command Dataset
+dataset_schema_version: two_segment_collect_pose_dataset_v1
+schedule_type: None
+run_trust_mode: servo_only
+valid_for_two_segment_model_training: False
+valid_for_model_training: False
+accepted_sample_count: None
+rejected_sample_count: None
+pose_observation_sample_count: 0
+distal_only: None
+includes_intermediate_pose: None
+automatic_two_segment_pretension_validated: false
+two_segment_control_validated: false
+
+This dataset stores structured Segment A/B commands and optional pose observations.
+It does not implement two-segment kinematics, control, modeling, chasing, or automatic pretension.

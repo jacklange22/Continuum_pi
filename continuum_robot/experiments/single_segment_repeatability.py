@@ -45,6 +45,48 @@ DEFAULT_OUTER_RING_RADIUS_MM = 8.0
 DEFAULT_MAX_TARGET_TICK_DELTA_FROM_STARTUP = 650
 RUNTIME_TIP_POLICY_WORKFLOW = "single_segment_repeatability"
 
+TARGET_PRESET_LEGACY_17 = "legacy_17"
+TARGET_PRESET_CARDINAL_5 = "cardinal_5"
+TARGET_PRESET_CENTER_INNER_RING = "center_inner_ring"
+TARGET_PRESET_CENTER_OUTER_RING = "center_outer_ring"
+
+TARGET_PRESETS: tuple[tuple[str, str], ...] = (
+    (TARGET_PRESET_LEGACY_17, "Legacy 17 (center + inner ring + outer ring)"),
+    (TARGET_PRESET_CENTER_OUTER_RING, "Center + outer ring (9)"),
+    (TARGET_PRESET_CENTER_INNER_RING, "Center + inner ring (9)"),
+    (TARGET_PRESET_CARDINAL_5, "Cardinal 5 (center + 4 outer cardinals)"),
+)
+
+_PRESET_TARGET_INDICES: dict[str, tuple[int, ...]] = {
+    TARGET_PRESET_LEGACY_17: tuple(range(17)),
+    TARGET_PRESET_CARDINAL_5: (0, 9, 11, 13, 15),
+    TARGET_PRESET_CENTER_INNER_RING: (0, 1, 2, 3, 4, 5, 6, 7, 8),
+    TARGET_PRESET_CENTER_OUTER_RING: (0, 9, 10, 11, 12, 13, 14, 15, 16),
+}
+
+
+def normalize_target_preset(preset: str | None) -> str:
+    key = str(preset or "").strip().lower()
+    if key in _PRESET_TARGET_INDICES:
+        return key
+    return TARGET_PRESET_LEGACY_17
+
+
+def build_targets_for_preset(
+    preset: str,
+    *,
+    inner_ring_radius_mm: float = DEFAULT_INNER_RING_RADIUS_MM,
+    outer_ring_radius_mm: float = DEFAULT_OUTER_RING_RADIUS_MM,
+) -> list["LegacyRepeatabilityTarget"]:
+    """Return the target subset for the named preset."""
+    key = normalize_target_preset(preset)
+    catalog = build_legacy_17_point_targets(
+        inner_ring_radius_mm=inner_ring_radius_mm,
+        outer_ring_radius_mm=outer_ring_radius_mm,
+    )
+    indices = _PRESET_TARGET_INDICES[key]
+    return [catalog[index] for index in indices]
+
 
 LOG = logging.getLogger(__name__)
 
@@ -112,6 +154,8 @@ class SingleSegmentRepeatabilityConfig:
     inner_ring_radius_mm: float = DEFAULT_INNER_RING_RADIUS_MM
     outer_ring_radius_mm: float = DEFAULT_OUTER_RING_RADIUS_MM
     max_target_tick_delta_from_startup: int = DEFAULT_MAX_TARGET_TICK_DELTA_FROM_STARTUP
+    target_preset: str = TARGET_PRESET_LEGACY_17
+    visits_per_target: int = 0  # 0 = legacy "all other targets" behaviour
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "SingleSegmentRepeatabilityConfig":
@@ -150,6 +194,8 @@ class SingleSegmentRepeatabilityConfig:
                     )
                 ),
             ),
+            target_preset=normalize_target_preset(payload.get("target_preset")),
+            visits_per_target=max(0, int(payload.get("visits_per_target", 0))),
         )
 
 
@@ -171,11 +217,16 @@ class SingleSegmentRepeatabilityExperiment(BaseExperiment):
     def __init__(self, config: SingleSegmentRepeatabilityConfig) -> None:
         super().__init__(config)
         self.config: SingleSegmentRepeatabilityConfig
-        self._targets = build_legacy_17_point_targets(
+        self._targets = build_targets_for_preset(
+            self.config.target_preset,
             inner_ring_radius_mm=float(self.config.inner_ring_radius_mm),
             outer_ring_radius_mm=float(self.config.outer_ring_radius_mm),
         )
-        self._visits = generate_legacy_revisit_sequence(self._targets, seed=self.config.random_seed)
+        self._visits = generate_legacy_revisit_sequence(
+            self._targets,
+            seed=self.config.random_seed,
+            visits_per_target=int(self.config.visits_per_target),
+        )
         self._neutral_ticks: list[int] = []
         self._servo_ids: list[int] = []
 
@@ -756,23 +807,34 @@ def generate_legacy_revisit_sequence(
     targets: list[LegacyRepeatabilityTarget] | None = None,
     *,
     seed: int = 0,
+    visits_per_target: int = 0,
 ) -> list[LegacyRepeatabilityVisit]:
-    """Generate the legacy all-other-target approach sequence.
+    """Generate the approach-then-revisit sequence for the given target subset.
 
-    For each desired target, all other 16 targets are randomized once. Each
-    visit is executed as an approach capture at the randomized prior target,
-    followed by a repeat capture at the desired target.
+    For each desired target, ``visits_per_target`` other targets are picked
+    (shuffled), or every other target when ``visits_per_target`` is 0 (legacy
+    behaviour). Each visit is an approach capture at the prior target followed
+    by a repeat capture at the desired target.
     """
     catalog = list(targets or build_legacy_17_point_targets())
+    if not catalog:
+        return []
     by_index = {int(target.target_index): target for target in catalog}
-    if sorted(by_index) != list(range(LEGACY_TARGET_COUNT)):
-        raise ValueError("Legacy repeatability sequence requires target indices 0..16.")
+    ordered_indices = sorted(by_index)
     rng = random.Random(int(seed))
     visits: list[LegacyRepeatabilityVisit] = []
     sequence_index = 0
-    for desired_index in range(LEGACY_TARGET_COUNT):
-        approach_indices = [index for index in range(LEGACY_TARGET_COUNT) if index != desired_index]
-        rng.shuffle(approach_indices)
+    requested_visits = max(0, int(visits_per_target))
+    for desired_index in ordered_indices:
+        candidate_indices = [index for index in ordered_indices if index != desired_index]
+        rng.shuffle(candidate_indices)
+        if requested_visits > 0 and candidate_indices:
+            cap = min(requested_visits, len(candidate_indices))
+            approach_indices = candidate_indices[:cap]
+        else:
+            approach_indices = candidate_indices
+        if not approach_indices and len(ordered_indices) == 1:
+            approach_indices = [desired_index]
         for revisit_index, approach_index in enumerate(approach_indices):
             visits.append(
                 LegacyRepeatabilityVisit(
@@ -911,9 +973,9 @@ def compute_single_segment_repeatability_metrics(
                 "computed 3D Euclidean RMSE/max, and plotted XY clusters."
             ),
         },
-        "target_count": LEGACY_TARGET_COUNT,
-        "planned_visit_count": LEGACY_VISIT_COUNT,
-        "planned_capture_count": LEGACY_CAPTURE_COUNT,
+        "target_count": int(len(catalog)),
+        "planned_visit_count": int(len(catalog) * max(0, len(catalog) - 1)),
+        "planned_capture_count": int(2 * len(catalog) * max(0, len(catalog) - 1)),
         "valid_repeat_sample_count": int(len(accepted_repeat)),
         "valid_approach_sample_count": int(accepted_approach_count),
         "invalid_sample_count": int(rejected_count),

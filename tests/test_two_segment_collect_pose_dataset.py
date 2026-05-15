@@ -434,7 +434,7 @@ def test_two_segment_collect_pose_dataset_sample_records_distal_pose_role_and_va
 
     assert result.success is True
     metrics = result.summary.experiment_metrics
-    assert metrics["valid_for_two_segment_model_training"] is True
+    assert metrics["valid_for_two_segment_model_training"] is False
     assert metrics["distal_only"] is True
     assert metrics["includes_intermediate_pose"] is False
     assert metrics["pose_label_summary"]["available_roles"] == ["distal_tip"]

@@ -1,0 +1,93 @@
+{
+  "generated_at_utc": "2026-05-15T03:55:00.556Z",
+  "provenance_note": "experiment_run:collect_pose_command_dataset:bec2e72185df",
+  "reasons": [],
+  "registration": {
+    "artifact_exists": true,
+    "artifact_path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+    "coil_tool_id": "0A",
+    "fre_mm": 0.6269510497024601,
+    "measurement_tool_id": "0B",
+    "state": "loaded",
+    "stored_timestamp_utc": "2026-05-15T02:03:50.302Z"
+  },
+  "runtime_tip": {
+    "allowed_for_workflow": true,
+    "calibration_state": "coil_as_tip",
+    "coil_tool_id": "0A",
+    "identity_fallback": true,
+    "measurement_tool_id": "0B",
+    "mode": "coil_as_tip",
+    "mode_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.",
+    "policy": {
+      "allowed_for_workflow": true,
+      "allowed_workflows": {
+        "modeling_dataset": true,
+        "penprobe_chasing": true,
+        "pretension_validation": true,
+        "repeatability": true,
+        "transform_chain_validation": true
+      },
+      "calibration_state": "coil_as_tip",
+      "canonical_workflow": "modeling_dataset",
+      "intended_use": "Current trusted runtime position path for robot-frame tip repeatability, pretension centering, modeling datasets, and demos when coil-origin-as-tip is the declared measurement.",
+      "mode": "coil_as_tip",
+      "reasons": [],
+      "requested_workflow": "collect_pose_command_dataset",
+      "requires_lower_trust_override": false,
+      "status_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.",
+      "thesis_trusted": true,
+      "tip_pose_status": "coil_as_tip",
+      "trust_label": "thesis_trusted",
+      "trust_level": "thesis_trusted",
+      "uses_calibrated_tip_transform": false,
+      "uses_coil_as_tip": true,
+      "uses_identity_transform": true,
+      "warnings": [
+        "Coil-as-tip uses identity T_coil_tip and reports the 0A coil origin as the tip; do not interpret it as a validated calibrated tip transform or true tip orientation."
+      ],
+      "workflow": "modeling_dataset"
+    },
+    "selected_artifact_exists": false,
+    "selected_artifact_kind": "coil_as_tip",
+    "selected_artifact_path": null,
+    "stored_timestamp_utc": null,
+    "thesis_trusted": true,
+    "tip_pose_status": "coil_as_tip",
+    "trust_label": "thesis_trusted",
+    "uses_calibrated_tip_transform": false,
+    "uses_coil_as_tip": true,
+    "uses_identity_transform": true,
+    "workflow": "modeling_dataset"
+  },
+  "schema_version": "1.0",
+  "tracker": {
+    "backend_identity": "ndi_tracker_python",
+    "canonical_state": "streaming_healthy",
+    "configured_backend_name": "ndi",
+    "last_frame_number": 2406064,
+    "registration_tool_id": "0B",
+    "runtime_coil_tool_id": "0A",
+    "selected_backend_name": "ndi",
+    "tracker_data_age_s": 0.030415301996981725
+  },
+  "transform_chain": {
+    "active_transforms": {
+      "T_aurora_coil_0A": true,
+      "T_coil_tip": true,
+      "T_robot_aurora": true,
+      "T_robot_tip": true
+    },
+    "expression": "T_robot_tip = T_robot_aurora @ T_aurora_coil_0A @ T_coil_tip",
+    "frame_conventions": {
+      "T_A_B": "maps coordinates from frame B into frame A",
+      "aurora": "NDI Aurora tracker frame",
+      "coil_0A": "runtime 0A coil frame",
+      "robot": "registered robot/body frame",
+      "tip": "declared runtime tip frame; coil origin when runtime_tip.mode is coil_as_tip"
+    }
+  },
+  "warnings": [
+    "Coil-as-tip uses identity T_coil_tip and reports the 0A coil origin as the tip; do not interpret it as a validated calibrated tip transform or true tip orientation."
+  ]
+}

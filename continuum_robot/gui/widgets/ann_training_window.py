@@ -137,6 +137,43 @@ class AnnTrainingWindow(QWidget):
         dbg_row.addWidget(self.allow_lower_trust_check)
         dbg_row.addStretch(1)
         dataset_card.body_layout.addLayout(dbg_row)
+        explore_row = QHBoxLayout()
+        explore_row.setContentsMargins(0, 0, 0, 0)
+        explore_row.setSpacing(14)
+        self.allow_exploratory_check = QCheckBox("Allow exploratory training on incomplete-target runs")
+        self.allow_exploratory_check.setToolTip(
+            "Enable to train on runs whose complete_training_row_count is below target_valid_sample_count "
+            "but whose modeling_dataset_export.jsonl contains only complete rows. The source run is NOT relabeled as thesis-valid; "
+            "training metadata records source_run_valid_for_model_training=false and exploratory_training_override=true."
+        )
+        self.allow_exploratory_check.toggled.connect(self._on_allow_exploratory_toggled)
+        self.allow_parallel_demo_check = QCheckBox("Allow parallel_single-demo training (debug)")
+        self.allow_parallel_demo_check.toggled.connect(self._on_allow_parallel_demo_toggled)
+        explore_row.addWidget(self.allow_exploratory_check)
+        explore_row.addWidget(self.allow_parallel_demo_check)
+        explore_row.addStretch(1)
+        dataset_card.body_layout.addLayout(explore_row)
+        self.exploratory_warning_label = QLabel("")
+        self.exploratory_warning_label.setWordWrap(True)
+        self.exploratory_warning_label.setStyleSheet(f"color: {COLORS.warning_fg};")
+        self.exploratory_warning_label.setVisible(False)
+        dataset_card.body_layout.addWidget(self.exploratory_warning_label)
+        validate_row = QHBoxLayout()
+        validate_row.setContentsMargins(0, 0, 0, 0)
+        validate_row.setSpacing(10)
+        self.validate_rows_button = QPushButton("Validate rows for ANN")
+        self.validate_rows_button.setProperty("variant", "ghost")
+        self.validate_rows_button.setToolTip(
+            "Apply the complete_rows_only filter to the selected run and show how many rows "
+            "survive, which exclusion reasons appear, and whether the training minimum is met."
+        )
+        self.validate_rows_button.clicked.connect(self._on_validate_rows_clicked)
+        self.row_filter_status_label = QLabel("")
+        self.row_filter_status_label.setWordWrap(True)
+        self.row_filter_status_label.setStyleSheet(f"color: {COLORS.text_secondary};")
+        validate_row.addWidget(self.validate_rows_button)
+        validate_row.addWidget(self.row_filter_status_label, 1)
+        dataset_card.body_layout.addLayout(validate_row)
         self.dataset_list = QListWidget()
         self.dataset_list.currentItemChanged.connect(self._on_dataset_selected)
         self.dataset_list.setMinimumHeight(220)
@@ -348,6 +385,8 @@ class AnnTrainingWindow(QWidget):
         self.config_error_label.setVisible(bool(state.config_error))
         self.open_dataset_button.setEnabled(bool(state.selected_dataset_path))
         self.open_artifact_button.setEnabled(bool(state.selected_artifact_path))
+        self.validate_rows_button.setEnabled(bool(state.selected_dataset_path))
+        self.row_filter_status_label.setText(state.row_filter_status_text or "")
         self.benchmark_button.setEnabled(state.can_benchmark)
         self.train_button.setEnabled(state.can_train)
         self.run_sweep_button.setEnabled(state.can_run_sweep)
@@ -379,6 +418,13 @@ class AnnTrainingWindow(QWidget):
             self.allow_mock_training_check.setChecked(bool(state.allow_mock_training))
         with QSignalBlocker(self.allow_lower_trust_check):
             self.allow_lower_trust_check.setChecked(bool(state.allow_lower_trust_training))
+        with QSignalBlocker(self.allow_exploratory_check):
+            self.allow_exploratory_check.setChecked(bool(state.allow_exploratory_incomplete_target))
+        with QSignalBlocker(self.allow_parallel_demo_check):
+            self.allow_parallel_demo_check.setChecked(bool(state.allow_parallel_single_demo_training))
+        warning_text = str(state.exploratory_training_warning or "")
+        self.exploratory_warning_label.setText(warning_text)
+        self.exploratory_warning_label.setVisible(bool(warning_text))
 
     def _sync_dataset_list(self, state: AnnTrainingViewState) -> None:
         current_paths = [self.dataset_list.item(index).data(Qt.UserRole) for index in range(self.dataset_list.count())]
@@ -387,11 +433,12 @@ class AnnTrainingWindow(QWidget):
             with QSignalBlocker(self.dataset_list):
                 self.dataset_list.clear()
                 for dataset in state.datasets:
-                    tag = "trainable" if dataset.trainable_for_legacy_ann else "blocked"
                     label = (
-                        f"[{tag}] {dataset.run_name} | root={dataset.dataset_scan_root} | "
-                        f"{dataset.accepted_legacy_trainable_count} legacy rows | "
-                        f"{dataset.accepted_count} accepted"
+                        f"[{dataset.ann_training_category}] {dataset.run_name} | "
+                        f"root={dataset.dataset_scan_root} | "
+                        f"complete={dataset.complete_training_row_count}/"
+                        f"{dataset.target_valid_sample_count or '?'} | "
+                        f"export={dataset.modeling_export_row_count}"
                     )
                     item = QListWidgetItem(label)
                     item.setData(Qt.UserRole, str(dataset.path))
@@ -536,6 +583,18 @@ class AnnTrainingWindow(QWidget):
 
     def _on_allow_lower_trust_toggled(self, value: bool) -> None:
         self.controller.set_allow_lower_trust_training(bool(value))
+        self._refresh_state()
+
+    def _on_allow_exploratory_toggled(self, value: bool) -> None:
+        self.controller.set_allow_exploratory_incomplete_target(bool(value))
+        self._refresh_state()
+
+    def _on_allow_parallel_demo_toggled(self, value: bool) -> None:
+        self.controller.set_allow_parallel_single_demo_training(bool(value))
+        self._refresh_state()
+
+    def _on_validate_rows_clicked(self) -> None:
+        self.controller.validate_rows_for_ann()
         self._refresh_state()
 
     def _open_selected_dataset(self) -> None:

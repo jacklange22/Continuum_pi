@@ -19,6 +19,21 @@ Pair 2/4 Range: -0.750 .. 0.749 cm
 Workspace Span: x=65.253 mm, y=67.319 mm, z=20.604 mm
 Lower-Trust Override: no
 
+Trainability:
+- Status: invalid
+- Reason: accepted_count_meets_target
+- Row counts: export=4082, legacy=4082, accepted=4082
+- Accepted rows complete: True
+- Dropped rows excluded: True
+- Hard invalidation reasons:
+  - accepted_count_meets_target
+- Warnings:
+  - 18 dropped telemetry samples excluded from training export.
+  - 18 unrecovered packet-error events were recorded and quarantined.
+  - 18 rejected samples were excluded from training rows.
+  - 9 accepted workspace rows were excluded due to incomplete training fields.
+  - 2 accepted non-training phase rows were excluded from modeling export.
+
 Provenance:
 - Registration: /home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json @ 2026-05-14T02:53:35.354Z
 - Runtime tip: None (mode=coil_as_tip, trust=thesis_trusted, timestamp=None)

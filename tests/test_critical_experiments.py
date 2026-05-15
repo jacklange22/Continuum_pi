@@ -552,7 +552,7 @@ def test_repeatability_dataset_run_saves_prior_state_identity_and_target_catalog
     )
 
     assert result.success is True
-    assert result.paths.output_dir.parent == tmp_path / "data" / "experiments" / "repeatability_dataset"
+    assert result.paths.output_dir.parent == tmp_path / "data" / "mock_experiments" / "repeatability_dataset"
     assert result.summary.experiment_metrics["target_catalog"]
     assert result.summary.experiment_metrics["planned_visit_count"] == 34
     bundle = runner.load_dataset(result.paths.output_dir)
@@ -647,7 +647,7 @@ def test_aurora_grid_accuracy_run_saves_captured_point_dataset(tmp_path: Path) -
     )
 
     assert result.success is True
-    assert result.paths.output_dir.parent == tmp_path / "data" / "experiments" / "aurora_grid_accuracy"
+    assert result.paths.output_dir.parent == tmp_path / "data" / "mock_experiments" / "aurora_grid_accuracy"
     assert result.summary.experiment_metrics["point_count_aligned"] == 3
     assert result.summary.experiment_metrics["point_count_captured"] == 3
     assert result.summary.experiment_metrics["point_count_total"] == 4

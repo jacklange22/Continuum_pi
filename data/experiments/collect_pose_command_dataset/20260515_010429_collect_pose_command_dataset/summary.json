@@ -1,0 +1,924 @@
+{
+  "schema_version": "1.0",
+  "experiment_name": "collect_pose_command_dataset",
+  "run_id": "66c0d071c0ff",
+  "success": false,
+  "sample_counts": {
+    "total": 0
+  },
+  "dropped_frames": 0,
+  "invalid_transforms": 0,
+  "stage_pass_fail": {
+    "setup": "passed",
+    "precheck": "failed",
+    "execute": "skipped",
+    "finalize": "failed"
+  },
+  "status": "invalid_due_to_insufficient_samples",
+  "experiment_metrics": {
+    "precheck_failure_context": {
+      "experiment": "collect_pose_command_dataset",
+      "failed_servo_id": 1,
+      "missing_fields": [
+        "present_position",
+        "operating_mode",
+        "hardware_error_status"
+      ],
+      "telemetry_read_source": "experiment_owned",
+      "telemetry_bus_owner_during_read": "collect_pose_command_dataset_precheck",
+      "fresh_precheck_read_attempted": true,
+      "exclusive_bus_owner_snapshot": null,
+      "exclusive_bus_active": false,
+      "assessment_reason": "Present Position is unavailable. | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | read 0x0B failed: (5, 'Input/output error') | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | Current telemetry is unavailable. | Input voltage telemetry is unavailable. | Temperature telemetry is unavailable. | Operating Mode is unavailable.",
+      "assessment_blocking_reasons": [
+        "Present Position is unavailable.",
+        "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | read 0x0B failed: (5, 'Input/output error') | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+        "Current telemetry is unavailable.",
+        "Input voltage telemetry is unavailable.",
+        "Temperature telemetry is unavailable.",
+        "Operating Mode is unavailable."
+      ]
+    },
+    "failure_category": "simple_experiment_motion_rejected",
+    "failure_reason": "Simple single-segment experiment motion rejected after antagonistic-pair projection (parallel_single mirrored source servos 1->5, 2->6, 3->7, 4->8): stale/missing telemetry: servo 1 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 2 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 3 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 4 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 5 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 6 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 7 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 8 blocked motion: Present Position is unavailable..",
+    "failure_context": {
+      "failure_category": "simple_experiment_motion_rejected",
+      "failure_reason": "Simple single-segment experiment motion rejected after antagonistic-pair projection (parallel_single mirrored source servos 1->5, 2->6, 3->7, 4->8): stale/missing telemetry: servo 1 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 2 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 3 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 4 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 5 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 6 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 7 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 8 blocked motion: Present Position is unavailable..",
+      "sample_index_at_failure": 0,
+      "progress_fraction_at_failure": null,
+      "failed_servo_id": 1,
+      "telemetry_error_code": "packet_or_status_error",
+      "missing_fields": {
+        "1": [
+          "present_position",
+          "hardware_error_status"
+        ],
+        "2": [
+          "present_position",
+          "hardware_error_status"
+        ],
+        "3": [
+          "present_position",
+          "hardware_error_status"
+        ],
+        "4": [
+          "present_position",
+          "hardware_error_status"
+        ],
+        "5": [
+          "present_position",
+          "hardware_error_status"
+        ],
+        "6": [
+          "present_position",
+          "hardware_error_status"
+        ],
+        "7": [
+          "present_position",
+          "hardware_error_status"
+        ],
+        "8": [
+          "present_position",
+          "hardware_error_status"
+        ]
+      },
+      "last_valid_telemetry_by_servo": {
+        "1": {
+          "position_tick": null,
+          "current_ma": null,
+          "current_raw_unit": null,
+          "voltage_mv": null,
+          "voltage_raw_unit": null,
+          "temperature_c": null,
+          "operating_mode": 3,
+          "torque_enabled": null,
+          "hardware_error_code": null,
+          "hardware_error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "telemetry_error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "last_valid_packet_monotonic_s": null,
+          "last_valid_packet_wall_time": null,
+          "last_read_attempt_monotonic_s": 95711.353933631,
+          "read_duration_ms": 0.013147990102879703,
+          "packet_age_s": null,
+          "read_batch_started_monotonic_s": 95711.353927427,
+          "read_batch_completed_monotonic_s": 95711.354081501,
+          "read_batch_duration_ms": 0.15407400496769696,
+          "snapshot_age_s": 0.0,
+          "per_servo_packet_age_s": null,
+          "freshness_decision_source": "per_servo_last_valid_packet",
+          "read_source": "experiment_owned",
+          "telemetry_error_code": "packet_or_status_error",
+          "telemetry_error_detail": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "bus_owner": "collect_pose_command_dataset",
+          "read_sequence_index": 126
+        },
+        "2": {
+          "position_tick": null,
+          "current_ma": null,
+          "current_raw_unit": null,
+          "voltage_mv": null,
+          "voltage_raw_unit": null,
+          "temperature_c": null,
+          "operating_mode": 3,
+          "torque_enabled": null,
+          "hardware_error_code": null,
+          "hardware_error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "telemetry_error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "last_valid_packet_monotonic_s": null,
+          "last_valid_packet_wall_time": null,
+          "last_read_attempt_monotonic_s": 95711.353954538,
+          "read_duration_ms": 0.011851996532641351,
+          "packet_age_s": null,
+          "read_batch_started_monotonic_s": 95711.353927427,
+          "read_batch_completed_monotonic_s": 95711.354081501,
+          "read_batch_duration_ms": 0.15407400496769696,
+          "snapshot_age_s": 0.0,
+          "per_servo_packet_age_s": null,
+          "freshness_decision_source": "per_servo_last_valid_packet",
+          "read_source": "experiment_owned",
+          "telemetry_error_code": "packet_or_status_error",
+          "telemetry_error_detail": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "bus_owner": "collect_pose_command_dataset",
+          "read_sequence_index": 126
+        },
+        "3": {
+          "position_tick": null,
+          "current_ma": null,
+          "current_raw_unit": null,
+          "voltage_mv": null,
+          "voltage_raw_unit": null,
+          "temperature_c": null,
+          "operating_mode": 3,
+          "torque_enabled": null,
+          "hardware_error_code": null,
+          "hardware_error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "telemetry_error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "last_valid_packet_monotonic_s": null,
+          "last_valid_packet_wall_time": null,
+          "last_read_attempt_monotonic_s": 95711.353973335,
+          "read_duration_ms": 0.011424999684095383,
+          "packet_age_s": null,
+          "read_batch_started_monotonic_s": 95711.353927427,
+          "read_batch_completed_monotonic_s": 95711.354081501,
+          "read_batch_duration_ms": 0.15407400496769696,
+          "snapshot_age_s": 0.0,
+          "per_servo_packet_age_s": null,
+          "freshness_decision_source": "per_servo_last_valid_packet",
+          "read_source": "experiment_owned",
+          "telemetry_error_code": "packet_or_status_error",
+          "telemetry_error_detail": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "bus_owner": "collect_pose_command_dataset",
+          "read_sequence_index": 126
+        },
+        "4": {
+          "position_tick": null,
+          "current_ma": null,
+          "current_raw_unit": null,
+          "voltage_mv": null,
+          "voltage_raw_unit": null,
+          "temperature_c": null,
+          "operating_mode": 3,
+          "torque_enabled": null,
+          "hardware_error_code": null,
+          "hardware_error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "telemetry_error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "last_valid_packet_monotonic_s": null,
+          "last_valid_packet_wall_time": null,
+          "last_read_attempt_monotonic_s": 95711.35399089,
+          "read_duration_ms": 0.011555996024981141,
+          "packet_age_s": null,
+          "read_batch_started_monotonic_s": 95711.353927427,
+          "read_batch_completed_monotonic_s": 95711.354081501,
+          "read_batch_duration_ms": 0.15407400496769696,
+          "snapshot_age_s": 0.0,
+          "per_servo_packet_age_s": null,
+          "freshness_decision_source": "per_servo_last_valid_packet",
+          "read_source": "experiment_owned",
+          "telemetry_error_code": "packet_or_status_error",
+          "telemetry_error_detail": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "bus_owner": "collect_pose_command_dataset",
+          "read_sequence_index": 126
+        },
+        "5": {
+          "position_tick": null,
+          "current_ma": null,
+          "current_raw_unit": null,
+          "voltage_mv": null,
+          "voltage_raw_unit": null,
+          "temperature_c": null,
+          "operating_mode": 3,
+          "torque_enabled": null,
+          "hardware_error_code": null,
+          "hardware_error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "telemetry_error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "last_valid_packet_monotonic_s": null,
+          "last_valid_packet_wall_time": null,
+          "last_read_attempt_monotonic_s": 95711.354008575,
+          "read_duration_ms": 0.011352007277309895,
+          "packet_age_s": null,
+          "read_batch_started_monotonic_s": 95711.353927427,
+          "read_batch_completed_monotonic_s": 95711.354081501,
+          "read_batch_duration_ms": 0.15407400496769696,
+          "snapshot_age_s": 0.0,
+          "per_servo_packet_age_s": null,
+          "freshness_decision_source": "per_servo_last_valid_packet",
+          "read_source": "experiment_owned",
+          "telemetry_error_code": "packet_or_status_error",
+          "telemetry_error_detail": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "bus_owner": "collect_pose_command_dataset",
+          "read_sequence_index": 126
+        },
+        "6": {
+          "position_tick": null,
+          "current_ma": null,
+          "current_raw_unit": null,
+          "voltage_mv": null,
+          "voltage_raw_unit": null,
+          "temperature_c": null,
+          "operating_mode": 3,
+          "torque_enabled": null,
+          "hardware_error_code": null,
+          "hardware_error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "telemetry_error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "last_valid_packet_monotonic_s": null,
+          "last_valid_packet_wall_time": null,
+          "last_read_attempt_monotonic_s": 95711.35402602,
+          "read_duration_ms": 0.011203010217286646,
+          "packet_age_s": null,
+          "read_batch_started_monotonic_s": 95711.353927427,
+          "read_batch_completed_monotonic_s": 95711.354081501,
+          "read_batch_duration_ms": 0.15407400496769696,
+          "snapshot_age_s": 0.0,
+          "per_servo_packet_age_s": null,
+          "freshness_decision_source": "per_servo_last_valid_packet",
+          "read_source": "experiment_owned",
+          "telemetry_error_code": "packet_or_status_error",
+          "telemetry_error_detail": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "bus_owner": "collect_pose_command_dataset",
+          "read_sequence_index": 126
+        },
+        "7": {
+          "position_tick": null,
+          "current_ma": null,
+          "current_raw_unit": null,
+          "voltage_mv": null,
+          "voltage_raw_unit": null,
+          "temperature_c": null,
+          "operating_mode": 3,
+          "torque_enabled": null,
+          "hardware_error_code": null,
+          "hardware_error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "telemetry_error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "last_valid_packet_monotonic_s": null,
+          "last_valid_packet_wall_time": null,
+          "last_read_attempt_monotonic_s": 95711.354044538,
+          "read_duration_ms": 0.01127799623645842,
+          "packet_age_s": null,
+          "read_batch_started_monotonic_s": 95711.353927427,
+          "read_batch_completed_monotonic_s": 95711.354081501,
+          "read_batch_duration_ms": 0.15407400496769696,
+          "snapshot_age_s": 0.0,
+          "per_servo_packet_age_s": null,
+          "freshness_decision_source": "per_servo_last_valid_packet",
+          "read_source": "experiment_owned",
+          "telemetry_error_code": "packet_or_status_error",
+          "telemetry_error_detail": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "bus_owner": "collect_pose_command_dataset",
+          "read_sequence_index": 126
+        },
+        "8": {
+          "position_tick": null,
+          "current_ma": null,
+          "current_raw_unit": null,
+          "voltage_mv": null,
+          "voltage_raw_unit": null,
+          "temperature_c": null,
+          "operating_mode": 3,
+          "torque_enabled": null,
+          "hardware_error_code": null,
+          "hardware_error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "telemetry_error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "last_valid_packet_monotonic_s": null,
+          "last_valid_packet_wall_time": null,
+          "last_read_attempt_monotonic_s": 95711.354062223,
+          "read_duration_ms": 0.011369993444532156,
+          "packet_age_s": null,
+          "read_batch_started_monotonic_s": 95711.353927427,
+          "read_batch_completed_monotonic_s": 95711.354081501,
+          "read_batch_duration_ms": 0.15407400496769696,
+          "snapshot_age_s": 0.0,
+          "per_servo_packet_age_s": null,
+          "freshness_decision_source": "per_servo_last_valid_packet",
+          "read_source": "experiment_owned",
+          "telemetry_error_code": "packet_or_status_error",
+          "telemetry_error_detail": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+          "bus_owner": "collect_pose_command_dataset",
+          "read_sequence_index": 126
+        }
+      },
+      "last_commanded_goal_ticks": {
+        "1": 3653,
+        "2": 3359,
+        "3": 3507,
+        "4": 3365,
+        "5": 2109,
+        "6": 2398,
+        "7": 2516,
+        "8": 1858
+      },
+      "last_resolved_cable_command_cm": [
+        0.0,
+        0.0,
+        -0.0,
+        -0.0,
+        0.0,
+        0.0,
+        -0.0,
+        -0.0
+      ],
+      "command_metadata": {
+        "operating_mode": "parallel_single",
+        "mirrored_parallel": true,
+        "input_command_servo_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "mirror_pairs": {
+          "1": 5,
+          "2": 6,
+          "3": 7,
+          "4": 8
+        },
+        "expanded_command_servo_ids": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "source_resolved_displacements_cm": [
+          0.0,
+          0.0,
+          -0.0,
+          -0.0
+        ],
+        "preferred_operating_mode_experiment": 3,
+        "pre_motion_read_source": "experiment_owned_minimal_read_after_configuration",
+        "pre_motion_telemetry_profile": "minimal",
+        "operating_mode_hydration_events": [
+          {
+            "servo_id": 1,
+            "source": "targeted_read_telemetry",
+            "error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!"
+          },
+          {
+            "servo_id": 2,
+            "source": "targeted_read_telemetry",
+            "error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!"
+          },
+          {
+            "servo_id": 3,
+            "source": "targeted_read_telemetry",
+            "error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!"
+          },
+          {
+            "servo_id": 4,
+            "source": "targeted_read_telemetry",
+            "error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!"
+          },
+          {
+            "servo_id": 5,
+            "source": "targeted_read_telemetry",
+            "error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!"
+          },
+          {
+            "servo_id": 6,
+            "source": "targeted_read_telemetry",
+            "error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!"
+          },
+          {
+            "servo_id": 7,
+            "source": "targeted_read_telemetry",
+            "error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!"
+          },
+          {
+            "servo_id": 8,
+            "source": "targeted_read_telemetry",
+            "error": "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!"
+          },
+          {
+            "servo_id": 1,
+            "source": "last_verified_operating_mode_cache",
+            "mode": 3
+          },
+          {
+            "servo_id": 2,
+            "source": "last_verified_operating_mode_cache",
+            "mode": 3
+          },
+          {
+            "servo_id": 3,
+            "source": "last_verified_operating_mode_cache",
+            "mode": 3
+          },
+          {
+            "servo_id": 4,
+            "source": "last_verified_operating_mode_cache",
+            "mode": 3
+          },
+          {
+            "servo_id": 5,
+            "source": "last_verified_operating_mode_cache",
+            "mode": 3
+          },
+          {
+            "servo_id": 6,
+            "source": "last_verified_operating_mode_cache",
+            "mode": 3
+          },
+          {
+            "servo_id": 7,
+            "source": "last_verified_operating_mode_cache",
+            "mode": 3
+          },
+          {
+            "servo_id": 8,
+            "source": "last_verified_operating_mode_cache",
+            "mode": 3
+          }
+        ],
+        "pre_motion_read_sequence_indexes": [
+          126
+        ],
+        "pre_motion_read_batch_started_monotonic_s": 95711.353927427,
+        "pre_motion_read_batch_completed_monotonic_s": 95711.354081501,
+        "pre_motion_read_batch_duration_ms": 0.15407400496769696,
+        "pre_motion_read_sources": [
+          "experiment_owned"
+        ],
+        "pre_motion_bus_owners": [
+          "collect_pose_command_dataset"
+        ],
+        "pre_motion_freshness_decision_sources": [
+          "per_servo_last_valid_packet"
+        ],
+        "pre_motion_packet_ok_servo_ids": []
+      },
+      "telemetry_snapshot_fields": {
+        "read_batch_started_monotonic_s": true,
+        "read_batch_completed_monotonic_s": true,
+        "read_batch_duration_ms": true,
+        "snapshot_age_s": true,
+        "per_servo_packet_age_s": true,
+        "freshness_decision_source": true
+      },
+      "tracker_age_s": 0.0,
+      "bus_owner": {
+        "active": true,
+        "owner": "collect_pose_command_dataset",
+        "reason": "collect-pose finalize neutral return",
+        "servo_id": null,
+        "held_by_current_thread": true
+      },
+      "retry_count": 0,
+      "recovered_packet_error_count": 0,
+      "unrecovered_packet_error_count": 0,
+      "servo_telemetry_retry_count": 0
+    },
+    "dataset_mode": "workspace_coverage",
+    "dataset_mode_summary": "Bounded workspace-coverage collection for first-pass forward-model training.",
+    "command_step_count": 0,
+    "samples_per_command": 1,
+    "planned_capture_count": 2,
+    "accepted_sample_count": 0,
+    "rejected_sample_count": 0,
+    "accepted_capture_rate": null,
+    "robot_frame_tip_sample_count": 0,
+    "orientation_sample_count": 0,
+    "tracker_connected": true,
+    "registration_available": true,
+    "run_trust_mode": "thesis_trusted",
+    "valid_for_model_training": false,
+    "valid_for_thesis_repeatability": false,
+    "not_model_training_ready": true,
+    "parallel_single_demo": true,
+    "true_two_segment_control": false,
+    "runtime_tip_mode_used": "coil_as_tip",
+    "runtime_tip_trust_level": "thesis_trusted",
+    "runtime_tip_policy": {
+      "mode": "coil_as_tip",
+      "calibration_state": "coil_as_tip",
+      "tip_pose_status": "coil_as_tip",
+      "trust_label": "thesis_trusted",
+      "trust_level": "thesis_trusted",
+      "thesis_trusted": true,
+      "requested_workflow": "modeling_dataset",
+      "workflow": "modeling_dataset",
+      "canonical_workflow": "modeling_dataset",
+      "allowed_for_workflow": true,
+      "requires_lower_trust_override": false,
+      "uses_coil_as_tip": true,
+      "uses_calibrated_tip_transform": false,
+      "uses_identity_transform": true,
+      "intended_use": "Current trusted runtime position path for robot-frame tip repeatability, pretension centering, modeling datasets, and demos when coil-origin-as-tip is the declared measurement.",
+      "status_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.",
+      "reasons": [],
+      "warnings": [
+        "Coil-as-tip uses identity T_coil_tip and reports the 0A coil origin as the tip; do not interpret it as a validated calibrated tip transform or true tip orientation."
+      ],
+      "allowed_workflows": {
+        "repeatability": true,
+        "pretension_validation": true,
+        "penprobe_chasing": true,
+        "modeling_dataset": true,
+        "transform_chain_validation": true
+      }
+    },
+    "thesis_trusted_runtime_tip": true,
+    "pretension_source_used": "manual",
+    "pretension_source_message": "Accepted manual pretension/startup state is recorded for servo(s): 1, 2, 3, 4, 5, 6, 7, 8",
+    "requires_robot_frame_tip": true,
+    "lower_trust_active": false,
+    "sample_order_preserved": true,
+    "legacy_export_enabled": true,
+    "position_frame": "tracker",
+    "command_pair_range_cm": {},
+    "workspace_span_mm": {},
+    "command_norm_stats_cm": {},
+    "rejection_reasons": {},
+    "phase_counts": {},
+    "summary_requirements": {
+      "min_sample_count": 1,
+      "require_registration": true,
+      "registration_available": false,
+      "require_tip_calibration": true,
+      "tip_calibration_available": false,
+      "allow_partial_missing_registration": false,
+      "allow_partial_missing_tip_cal": false,
+      "invalid_transforms_are_fatal": false,
+      "force_status": "invalid_due_to_insufficient_samples"
+    },
+    "run_provenance": {
+      "hardware_profile": "robot_8servo.yaml",
+      "operating_mode": "parallel_single",
+      "expected_servo_ids": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "commanded_servo_ids": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "active_segment": {
+        "key": "segment_a",
+        "label": "Spine 1",
+        "servo_ids": [
+          1,
+          2,
+          3,
+          4
+        ],
+        "pairs": {
+          "axis_a": [
+            1,
+            3
+          ],
+          "axis_b": [
+            2,
+            4
+          ]
+        },
+        "segment_role": "proximal",
+        "segment_order_index": 0
+      },
+      "segments": {
+        "segment_a": {
+          "key": "segment_a",
+          "label": "Spine 1",
+          "segment_label": "Segment A",
+          "servo_ids": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "segment_role": "proximal",
+          "segment_order_index": 0,
+          "pairs": {
+            "axis_a": [
+              1,
+              3
+            ],
+            "axis_b": [
+              2,
+              4
+            ]
+          }
+        },
+        "segment_b": {
+          "key": "segment_b",
+          "label": "Spine 2",
+          "segment_label": "Segment B",
+          "servo_ids": [
+            5,
+            6,
+            7,
+            8
+          ],
+          "segment_role": "distal",
+          "segment_order_index": 1,
+          "pairs": {
+            "axis_a": [
+              5,
+              7
+            ],
+            "axis_b": [
+              6,
+              8
+            ]
+          }
+        }
+      },
+      "segment_order": [
+        "segment_a",
+        "segment_b"
+      ],
+      "two_segment_foundation": {
+        "schema_version": "two_segment_foundation_v1",
+        "available": true,
+        "operating_mode": "parallel_single",
+        "semantic_scope": "data_structures_and_metadata_only",
+        "segment_order": [
+          "segment_a",
+          "segment_b"
+        ],
+        "segments": {
+          "segment_a": {
+            "key": "segment_a",
+            "label": "Spine 1",
+            "segment_label": "Segment A",
+            "segment_role": "proximal",
+            "segment_order_index": 0,
+            "servo_ids": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "pairs": {
+              "axis_a": [
+                1,
+                3
+              ],
+              "axis_b": [
+                2,
+                4
+              ]
+            }
+          },
+          "segment_b": {
+            "key": "segment_b",
+            "label": "Spine 2",
+            "segment_label": "Segment B",
+            "segment_role": "distal",
+            "segment_order_index": 1,
+            "servo_ids": [
+              5,
+              6,
+              7,
+              8
+            ],
+            "pairs": {
+              "axis_a": [
+                5,
+                7
+              ],
+              "axis_b": [
+                6,
+                8
+              ]
+            }
+          }
+        },
+        "expected_servo_ids": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "commanded_servo_ids": [
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8
+        ],
+        "command_schema": {
+          "schema_version": "two_segment_command_v1",
+          "command_type": "tendon_displacement",
+          "units": "cm",
+          "canonical_representation": {
+            "segment_a": [
+              "a1",
+              "a2",
+              "a3",
+              "a4"
+            ],
+            "segment_b": [
+              "b1",
+              "b2",
+              "b3",
+              "b4"
+            ]
+          },
+          "flat_vector_rule": "Flatten only through the operating context commanded_servo_ids order.",
+          "control_enabled": false,
+          "segment_order": [
+            "segment_a",
+            "segment_b"
+          ],
+          "commanded_servo_ids": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8
+          ],
+          "segments": {
+            "segment_a": {
+              "key": "segment_a",
+              "label": "Spine 1",
+              "segment_label": "Segment A",
+              "segment_role": "proximal",
+              "segment_order_index": 0,
+              "servo_ids": [
+                1,
+                2,
+                3,
+                4
+              ],
+              "pairs": {
+                "axis_a": [
+                  1,
+                  3
+                ],
+                "axis_b": [
+                  2,
+                  4
+                ]
+              }
+            },
+            "segment_b": {
+              "key": "segment_b",
+              "label": "Spine 2",
+              "segment_label": "Segment B",
+              "segment_role": "distal",
+              "segment_order_index": 1,
+              "servo_ids": [
+                5,
+                6,
+                7,
+                8
+              ],
+              "pairs": {
+                "axis_a": [
+                  5,
+                  7
+                ],
+                "axis_b": [
+                  6,
+                  8
+                ]
+              }
+            }
+          }
+        },
+        "pose_schema": {
+          "schema_version": "two_segment_pose_observation_v1",
+          "frame": "robot",
+          "fields": {
+            "intermediate_pose": "optional pose for the Segment A distal end / Segment B base region",
+            "distal_tip_pose": "optional pose for the distal tip after Segment B",
+            "segment_poses": "optional segment-indexed pose map",
+            "tool_poses": "optional raw or registered tracker-tool pose map"
+          },
+          "tool_roles": {},
+          "tracking_enabled": false,
+          "multi_coil_tracking_required": "future_validation"
+        },
+        "enabled_capabilities": {
+          "all_8_readiness": true,
+          "manual_startup_capture": true
+        },
+        "blocked_capabilities": {
+          "two_segment_kinematics_control": true,
+          "two_segment_modeling": true,
+          "two_segment_penprobe_chasing": true,
+          "automatic_two_segment_pretension": true
+        },
+        "parallel_single_semantics": "mirrored single-segment testing only; not true two-segment control"
+      },
+      "mirror_mapping": {
+        "1": 5,
+        "2": 6,
+        "3": 7,
+        "4": 8
+      },
+      "tracker_backend": "ndi",
+      "registration_artifact": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+      "registration_status": "loaded",
+      "runtime_tip_mode": "coil_as_tip",
+      "runtime_tip_trust_status": "thesis_trusted",
+      "startup_pretension_artifact": {
+        "source_type": "manual",
+        "accepted": true,
+        "usable": true,
+        "message": "Accepted manual pretension/startup state is recorded for servo(s): 1, 2, 3, 4, 5, 6, 7, 8",
+        "updated_at_utc": "2026-05-15T01:03:51Z",
+        "note": null
+      },
+      "selected_segment_readiness": {},
+      "servo_sign_mapping_check": {},
+      "mock_mode": false
+    },
+    "run_trust": {
+      "run_trust_mode": "thesis_trusted",
+      "valid_for_model_training": true,
+      "valid_for_thesis_repeatability": false,
+      "valid_for_two_segment_model_training": false,
+      "include_in_evidence_index": false,
+      "data_quality_warnings": [],
+      "runtime_tip_policy": {
+        "mode": "coil_as_tip",
+        "calibration_state": "coil_as_tip",
+        "tip_pose_status": "coil_as_tip",
+        "trust_label": "thesis_trusted",
+        "trust_level": "thesis_trusted",
+        "thesis_trusted": true,
+        "requested_workflow": "collect_pose_command_dataset",
+        "workflow": "modeling_dataset",
+        "canonical_workflow": "modeling_dataset",
+        "allowed_for_workflow": true,
+        "requires_lower_trust_override": false,
+        "uses_coil_as_tip": true,
+        "uses_calibrated_tip_transform": false,
+        "uses_identity_transform": true,
+        "intended_use": "Current trusted runtime position path for robot-frame tip repeatability, pretension centering, modeling datasets, and demos when coil-origin-as-tip is the declared measurement.",
+        "status_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.",
+        "reasons": [],
+        "warnings": [
+          "Coil-as-tip uses identity T_coil_tip and reports the 0A coil origin as the tip; do not interpret it as a validated calibrated tip transform or true tip orientation."
+        ],
+        "allowed_workflows": {
+          "repeatability": true,
+          "pretension_validation": true,
+          "penprobe_chasing": true,
+          "modeling_dataset": true,
+          "transform_chain_validation": true
+        }
+      },
+      "success_does_not_imply_thesis_validity": true
+    },
+    "valid_for_two_segment_model_training": false,
+    "mock_mode": false,
+    "include_in_evidence_index": false,
+    "data_quality_warnings": [],
+    "stop_reason": "Finalize failed: Simple single-segment experiment motion rejected after antagonistic-pair projection (parallel_single mirrored source servos 1->5, 2->6, 3->7, 4->8): stale/missing telemetry: servo 1 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 2 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 3 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 4 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 5 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 6 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 7 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 8 blocked motion: Present Position is unavailable..",
+    "stage_messages": {
+      "precheck": "Servo precheck failed: Servo 1 is not ready for coordinated motion: Present Position is unavailable. | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | read 0x0B failed: (5, 'Input/output error') | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | Current telemetry is unavailable. | Input voltage telemetry is unavailable. | Temperature telemetry is unavailable. | Operating Mode is unavailable.",
+      "finalize": "Simple single-segment experiment motion rejected after antagonistic-pair projection (parallel_single mirrored source servos 1->5, 2->6, 3->7, 4->8): stale/missing telemetry: servo 1 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 2 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 3 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 4 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 5 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 6 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 7 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 8 blocked motion: Present Position is unavailable.."
+    }
+  },
+  "warning_messages": [],
+  "error_messages": [
+    "Servo precheck failed: Servo 1 is not ready for coordinated motion: Present Position is unavailable. | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | read 0x0B failed: (5, 'Input/output error') | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | Current telemetry is unavailable. | Input voltage telemetry is unavailable. | Temperature telemetry is unavailable. | Operating Mode is unavailable.",
+    "Finalize failed: Simple single-segment experiment motion rejected after antagonistic-pair projection (parallel_single mirrored source servos 1->5, 2->6, 3->7, 4->8): stale/missing telemetry: servo 1 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 2 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 3 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 4 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 5 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 6 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 7 blocked motion: Present Position is unavailable.; stale/missing telemetry: servo 8 blocked motion: Present Position is unavailable.."
+  ]
+}

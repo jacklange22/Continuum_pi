@@ -498,6 +498,16 @@ class SafetyConfig:
     servo_model: str = "XC330-M288-T"
     servo_reported_current_hard_limit_ma: int = 850
     servo_reported_current_warning_ma: int | None = None
+    current_warning_ma: int | None = 500
+    transient_current_spike_ma: int = 850
+    sustained_jam_current_ma: int = 850
+    sustained_jam_cycles: int = 3
+    transient_spike_policy: str = "warn_drop_sample_continue"
+    sustained_jam_policy: str = "stop_safely"
+    current_spike_resync_enabled: bool = True
+    current_spike_cooldown_s: float = 0.25
+    current_spike_return_to_previous_safe_goal: bool = False
+    current_spike_max_events_per_servo: int = 6
     current_safety_basis: str = (
         "XC330-M288-T servo-reported input-current estimate; hard safety uses absolute current magnitude."
     )

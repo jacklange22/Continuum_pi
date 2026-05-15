@@ -1,0 +1,155 @@
+{
+  "accepted_sample_count": 37,
+  "command_range_per_tendon_cm": {
+    "tendon_1": {
+      "max": 0.7031249999999999,
+      "min": -0.7265624999999999,
+      "span": 1.4296874999999998
+    },
+    "tendon_2": {
+      "max": 0.5616117293898383,
+      "min": -0.7331844650078225,
+      "span": 1.294796194397661
+    },
+    "tendon_3": {
+      "max": 0.7265624999999999,
+      "min": -0.7031249999999999,
+      "span": 1.4296874999999998
+    },
+    "tendon_4": {
+      "max": 0.7331844650078225,
+      "min": -0.5616117293898383,
+      "span": 1.294796194397661
+    }
+  },
+  "dropped_post_motion_telemetry_samples": 0,
+  "dropped_pre_motion_telemetry_samples": 0,
+  "failure_count": 0,
+  "high_current_warning": true,
+  "max_abs_current_ma": 844,
+  "max_abs_current_ma_by_servo": {
+    "1": 636,
+    "2": 844,
+    "3": 233,
+    "4": 179
+  },
+  "max_current_warning_ma": 800,
+  "mean_abs_current_ma_by_servo": {
+    "1": 190.94594594594594,
+    "2": 175.72972972972974,
+    "3": 76.91891891891892,
+    "4": 45.189189189189186
+  },
+  "measured_xyz_range_mm": {
+    "x": {
+      "max": 43.76005457130432,
+      "min": -16.57196185229835,
+      "span": 60.332016423602674
+    },
+    "y": {
+      "max": 11.69428083630848,
+      "min": -52.043598564656065,
+      "span": 63.737879400964545
+    },
+    "z": {
+      "max": 68.53687015392372,
+      "min": 28.74312755107737,
+      "span": 39.79374260284634
+    }
+  },
+  "next_command_index_to_resume": 36,
+  "peak_current_sample_by_servo": {
+    "1": {
+      "abs_current_ma": 636,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        -0.6562499999999999,
+        0.4607185194367739,
+        0.6562499999999999,
+        -0.4607185194367739
+      ],
+      "resolved_pair_command_cm": [
+        -0.6562499999999999,
+        0.4607185194367739
+      ],
+      "sample_index": 0,
+      "sequence_index": 9,
+      "source": "servo_feedback_at_command",
+      "step_index": 8
+    },
+    "2": {
+      "abs_current_ma": 844,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        -0.09375,
+        0.3598253094837093,
+        0.09375,
+        -0.3598253094837093
+      ],
+      "resolved_pair_command_cm": [
+        -0.09375,
+        0.3598253094837093
+      ],
+      "sample_index": 0,
+      "sequence_index": 15,
+      "source": "servo_feedback_at_command",
+      "step_index": 14
+    },
+    "3": {
+      "abs_current_ma": 233,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.4218749999999999,
+        -0.1950873452581452,
+        -0.4218749999999999,
+        0.1950873452581452
+      ],
+      "resolved_pair_command_cm": [
+        0.4218749999999999,
+        -0.1950873452581452
+      ],
+      "sample_index": 0,
+      "sequence_index": 20,
+      "source": "servo_feedback_at_command",
+      "step_index": 19
+    },
+    "4": {
+      "abs_current_ma": 179,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        -0.046875,
+        -0.5818446500782257,
+        0.046875,
+        0.5818446500782257
+      ],
+      "resolved_pair_command_cm": [
+        -0.046875,
+        -0.5818446500782257
+      ],
+      "sample_index": 0,
+      "sequence_index": 31,
+      "source": "servo_feedback_at_command",
+      "step_index": 30
+    }
+  },
+  "recommendation": "needs_more_coverage",
+  "recovered_packet_error_count": 0,
+  "rejected_sample_count": 0,
+  "sample_rate_stats": {
+    "max_dt_s": 2.396506885008421,
+    "mean_dt_s": 2.3295224402500025,
+    "mean_hz": 0.42927253359820855,
+    "min_dt_s": 2.268185243010521,
+    "sample_count": 37
+  },
+  "schema_version": "collect_pose_dataset_quality_v1",
+  "servo_telemetry_retry_count": 0,
+  "tracker_stale_count": 0,
+  "trainability_status": {
+    "not_model_training_ready": false,
+    "run_trust_mode": "thesis_trusted",
+    "valid_for_model_training": true
+  },
+  "unrecovered_packet_error_count": 0,
+  "write_goal_packet_error_count": 0
+}

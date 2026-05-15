@@ -118,6 +118,22 @@ Stop reasons to take seriously:
 - Two-segment kinematics control, automatic two-segment pretension, and two-segment penprobe chasing are NOT implemented. The foundation is data/metadata only.
 - The 1 Mbps baud migration is optional. Default 57 600 is fine for slow collection; raise to 1 000 000 only after every servo is reflashed (see `docs/operator_workflows.md` Workflow 11).
 
+1 Mbps all-8 transport diagnostic:
+
+```bash
+python -m continuum_robot.diagnostics.servo_transport_diagnostic \
+  --port /dev/ttyACM0 \
+  --baud 1000000 \
+  --servo-ids 1,2,3,4,5,6,7,8 \
+  --duration 30 \
+  --read-rate-hz 10 \
+  --fields minimal
+```
+
+- If `bus_ready_for_parallel_single=true`, the all-8 bus profile is ready for `parallel_single` demo runs.
+- If one servo reports repeated failures, inspect that servo’s cable/connector path first.
+- If voltage dips are reported, inspect power headroom and mechanical/tendon loading before larger motions.
+
 ## 7. Export Workflow
 
 CLI export:

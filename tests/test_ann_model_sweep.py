@@ -61,6 +61,37 @@ def test_ann_model_sweep_cli_no_linear_excludes_ridge_baseline(monkeypatch, tmp_
     assert parse_sweep_extra_hidden_layers_groups("bad")[0] is None
 
 
+def test_ann_model_sweep_cli_passes_exploratory_override(monkeypatch, tmp_path: Path) -> None:
+    """CLI flag must thread through to ``run_model_sweep.training_provenance``."""
+    import scripts.ann_model_sweep as cli
+
+    captured: dict[str, object] = {}
+
+    def _fake_run_model_sweep(**kwargs):
+        captured.update(kwargs)
+        root = tmp_path / "sweep_explo"
+        root.mkdir()
+        summary = root / "model_sweep_summary.json"
+        summary.write_text("{}", encoding="utf-8")
+        return SimpleNamespace(sweep_root=root, summary_json_path=summary, best_model={})
+
+    monkeypatch.setattr(cli, "run_model_sweep", _fake_run_model_sweep)
+    assert cli.main(
+        [
+            "--project-root",
+            str(tmp_path),
+            "--dataset-path",
+            str(tmp_path),
+            "--backend",
+            "cpu",
+            "--allow-exploratory-incomplete-target",
+        ]
+    ) == 0
+    provenance = captured.get("training_provenance")
+    assert isinstance(provenance, dict)
+    assert provenance.get("exploratory_training_override") is True
+
+
 def test_merge_ann_sweep_architectures_dedupes() -> None:
     out = merge_ann_sweep_architectures(defaults=[[32, 32], [64, 64]], extras=[[64, 64], [48, 48]])
     assert out == [[32, 32], [64, 64], [48, 48]]

@@ -22,6 +22,7 @@ class ServoTransportDiagnosticResult:
     fields: str
     sample_count: int
     success_count_by_servo: dict[str, int]
+    failure_count_by_servo: dict[str, int]
     failure_count_by_type: dict[str, int]
     mean_read_duration_ms_by_servo: dict[str, float | None]
     max_read_duration_ms_by_servo: dict[str, float | None]
@@ -32,6 +33,7 @@ class ServoTransportDiagnosticResult:
     voltage_summary_by_servo: dict[str, dict[str, int | None]]
     temperature_summary_by_servo: dict[str, dict[str, int | None]]
     recommended_next_action: str
+    bus_ready_for_parallel_single: bool
 
 
 def run_diagnostic(
@@ -53,6 +55,7 @@ def run_diagnostic(
     sample_count = 0
     successes: Counter[int] = Counter()
     failures: Counter[str] = Counter()
+    failures_by_servo: Counter[int] = Counter()
     durations: dict[int, list[float]] = defaultdict(list)
     ages: dict[int, list[float]] = defaultdict(list)
     positions: dict[int, list[int]] = defaultdict(list)
@@ -75,10 +78,12 @@ def run_diagnostic(
                 item = telemetry.get(int(servo_id))
                 if item is None:
                     failures["servo_missing"] += 1
+                    failures_by_servo[int(servo_id)] += 1
                     continue
                 failure_type = _classify_telemetry(item)
                 if failure_type:
                     failures[failure_type] += 1
+                    failures_by_servo[int(servo_id)] += 1
                 else:
                     successes[int(servo_id)] += 1
                 if item.read_duration_ms is not None:
@@ -104,7 +109,13 @@ def run_diagnostic(
 
     elapsed_s = max(0.0, time.monotonic() - run_started)
     achieved_read_rate_hz = (float(sample_count) / elapsed_s) if elapsed_s > 0.0 else None
-    recommendation = _recommendation(failures=failures, durations=durations, read_rate_hz=float(read_rate_hz))
+    recommendation, ready = _recommendation(
+        failures=failures,
+        failures_by_servo=failures_by_servo,
+        durations=durations,
+        voltages=voltages,
+        read_rate_hz=float(read_rate_hz),
+    )
     return ServoTransportDiagnosticResult(
         servo_ids=resolved_ids,
         duration_s=float(duration_s),
@@ -113,6 +124,7 @@ def run_diagnostic(
         fields=fields_name,
         sample_count=int(sample_count),
         success_count_by_servo={str(sid): int(successes[int(sid)]) for sid in resolved_ids},
+        failure_count_by_servo={str(sid): int(failures_by_servo.get(int(sid), 0)) for sid in resolved_ids},
         failure_count_by_type={str(k): int(v) for k, v in sorted(failures.items())},
         mean_read_duration_ms_by_servo={str(sid): _mean(durations[int(sid)]) for sid in resolved_ids},
         max_read_duration_ms_by_servo={str(sid): _max(durations[int(sid)]) for sid in resolved_ids},
@@ -123,6 +135,7 @@ def run_diagnostic(
         voltage_summary_by_servo={str(sid): _int_summary(voltages[int(sid)]) for sid in resolved_ids},
         temperature_summary_by_servo={str(sid): _int_summary(temperatures[int(sid)]) for sid in resolved_ids},
         recommended_next_action=recommendation,
+        bus_ready_for_parallel_single=bool(ready),
     )
 
 
@@ -170,16 +183,41 @@ def _int_summary(values: list[int]) -> dict[str, int | None]:
     }
 
 
-def _recommendation(*, failures: Counter[str], durations: dict[int, list[float]], read_rate_hz: float) -> str:
+def _recommendation(
+    *,
+    failures: Counter[str],
+    failures_by_servo: Counter[int],
+    durations: dict[int, list[float]],
+    voltages: dict[int, list[int]],
+    read_rate_hz: float,
+) -> tuple[str, bool]:
     if failures:
+        bad_servos = [str(sid) for sid, count in sorted(failures_by_servo.items()) if int(count) > 0]
+        if bad_servos:
+            return (
+                "Resolve packet/status failures first. Failing servo IDs: "
+                + ", ".join(bad_servos)
+                + ". Inspect those servo cables/connectors and rerun this diagnostic at 1 Mbps.",
+                False,
+            )
         return (
             "Resolve reported packet/status failures first. If failures cluster at higher read rates, rerun with "
-            "--fields minimal and lower --read-rate-hz to find a stable health-check cadence."
+            "--fields minimal and lower --read-rate-hz to find a stable health-check cadence.",
+            False,
         )
     max_duration = max((max(values) for values in durations.values() if values), default=0.0)
     if max_duration > (1000.0 / max(1e-6, read_rate_hz)):
-        return "Read duration exceeds the requested period; lower read-rate-hz or use --fields minimal at 57600 baud."
-    return "Transport read timing is stable for this diagnostic profile."
+        return (
+            "Read duration exceeds the requested period; lower read-rate-hz or use --fields minimal while checking bus wiring/power.",
+            False,
+        )
+    min_voltage = min((min(values) for values in voltages.values() if values), default=None)
+    if min_voltage is not None and int(min_voltage) < 4500:
+        return (
+            "Transport reads are stable, but input voltage dips were observed. Inspect power supply margin and tendon/mechanical load.",
+            False,
+        )
+    return ("Transport read timing is stable; bus is ready for parallel_single all-8 at this profile.", True)
 
 
 def _parse_servo_ids(raw: str) -> list[int]:

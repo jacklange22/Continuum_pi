@@ -123,6 +123,46 @@ class ConfigLoader:
             servo_reported_current_warning_ma=self._maybe_int(
                 safety_data.get("servo_reported_current_warning_ma")
             ),
+            current_warning_ma=self._maybe_int(
+                safety_data.get(
+                    "current_warning_ma",
+                    safety_data.get("servo_reported_current_warning_ma", 500),
+                )
+            ),
+            transient_current_spike_ma=int(
+                safety_data.get(
+                    "transient_current_spike_ma",
+                    safety_data.get(
+                        "servo_reported_current_hard_limit_ma",
+                        safety_data.get("max_current_ma", 850),
+                    ),
+                )
+            ),
+            sustained_jam_current_ma=int(
+                safety_data.get(
+                    "sustained_jam_current_ma",
+                    safety_data.get(
+                        "servo_reported_current_hard_limit_ma",
+                        safety_data.get("max_current_ma", 850),
+                    ),
+                )
+            ),
+            sustained_jam_cycles=max(1, int(safety_data.get("sustained_jam_cycles", 3))),
+            transient_spike_policy=str(
+                safety_data.get("transient_spike_policy", "warn_drop_sample_continue")
+            ).strip().lower(),
+            sustained_jam_policy=str(
+                safety_data.get("sustained_jam_policy", "stop_safely")
+            ).strip().lower(),
+            current_spike_resync_enabled=bool(safety_data.get("current_spike_resync_enabled", True)),
+            current_spike_cooldown_s=max(0.0, float(safety_data.get("current_spike_cooldown_s", 0.25))),
+            current_spike_return_to_previous_safe_goal=bool(
+                safety_data.get("current_spike_return_to_previous_safe_goal", False)
+            ),
+            current_spike_max_events_per_servo=max(
+                1,
+                int(safety_data.get("current_spike_max_events_per_servo", 6)),
+            ),
             current_safety_basis=str(
                 safety_data.get(
                     "current_safety_basis",

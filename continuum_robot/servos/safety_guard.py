@@ -17,6 +17,16 @@ class SafetyGuard:
         servo_model: str = "XC330-M288-T",
         servo_reported_current_hard_limit_ma: int | None = None,
         servo_reported_current_warning_ma: int | None = None,
+        current_warning_ma: int | None = 500,
+        transient_current_spike_ma: int | None = None,
+        sustained_jam_current_ma: int | None = None,
+        sustained_jam_cycles: int = 3,
+        transient_spike_policy: str = "warn_drop_sample_continue",
+        sustained_jam_policy: str = "stop_safely",
+        current_spike_resync_enabled: bool = True,
+        current_spike_cooldown_s: float = 0.25,
+        current_spike_return_to_previous_safe_goal: bool = False,
+        current_spike_max_events_per_servo: int = 6,
         current_safety_basis: str = (
             "servo-reported input-current estimate; hard safety uses absolute current magnitude"
         ),
@@ -57,6 +67,28 @@ class SafetyGuard:
             if servo_reported_current_warning_ma in (None, "")
             else int(servo_reported_current_warning_ma)
         )
+        self.current_warning_ma = (
+            int(current_warning_ma)
+            if current_warning_ma not in (None, "")
+            else self.servo_reported_current_warning_ma
+        )
+        self.transient_current_spike_ma = int(
+            self.servo_reported_current_hard_limit_ma
+            if transient_current_spike_ma in (None, "")
+            else transient_current_spike_ma
+        )
+        self.sustained_jam_current_ma = int(
+            self.servo_reported_current_hard_limit_ma
+            if sustained_jam_current_ma in (None, "")
+            else sustained_jam_current_ma
+        )
+        self.sustained_jam_cycles = max(1, int(sustained_jam_cycles))
+        self.transient_spike_policy = str(transient_spike_policy or "warn_drop_sample_continue").strip().lower()
+        self.sustained_jam_policy = str(sustained_jam_policy or "stop_safely").strip().lower()
+        self.current_spike_resync_enabled = bool(current_spike_resync_enabled)
+        self.current_spike_cooldown_s = max(0.0, float(current_spike_cooldown_s))
+        self.current_spike_return_to_previous_safe_goal = bool(current_spike_return_to_previous_safe_goal)
+        self.current_spike_max_events_per_servo = max(1, int(current_spike_max_events_per_servo))
         self.current_safety_basis = str(current_safety_basis or "").strip() or (
             "servo-reported input-current estimate; hard safety uses absolute current magnitude"
         )
@@ -112,6 +144,18 @@ class SafetyGuard:
                     f"{self.servo_reported_current_hard_limit_ma} mA "
                     f"(model={self.servo_model}; basis={self.current_safety_basis})."
                 )
+
+    def is_transient_current_spike(self, current_ma: int | None) -> bool:
+        """Return True when the sample meets the transient-spike threshold."""
+        if current_ma is None:
+            return False
+        return abs(int(current_ma)) >= int(self.transient_current_spike_ma)
+
+    def is_sustained_jam_current(self, current_ma: int | None) -> bool:
+        """Return True when the sample meets the sustained-jam threshold."""
+        if current_ma is None:
+            return False
+        return abs(int(current_ma)) >= int(self.sustained_jam_current_ma)
 
     def validate_temperature(self, temperature_c: int | None, *, require_present: bool = False) -> None:
         """Raise ValueError when temperature telemetry is missing or too high."""

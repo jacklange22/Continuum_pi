@@ -7,7 +7,12 @@ import argparse
 import sys
 from pathlib import Path
 
-from continuum_robot.modeling.ann_training import AnnTrainingConfig, run_model_sweep
+from continuum_robot.modeling.ann_training import (
+    AnnTrainingConfig,
+    load_modeling_dataset_summary,
+    run_model_sweep,
+    validate_legacy_ann_rows,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -32,6 +37,14 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help='Optional extra ANN widths, groups separated by | e.g. "48,48 | 96".',
     )
+    parser.add_argument(
+        "--allow-exploratory-incomplete-target",
+        action="store_true",
+        help=(
+            "Train on a source run whose only invalidity is target_valid_sample_count not being met. "
+            "Row-filter policy still applies; artifacts are annotated as exploratory and are not thesis-citable."
+        ),
+    )
     args = parser.parse_args(argv)
 
     project_root = args.project_root.resolve()
@@ -54,6 +67,50 @@ def main(argv: list[str] | None = None) -> int:
     def _status(msg: str) -> None:
         print(msg, flush=True)
 
+    row_filter = validate_legacy_ann_rows(dataset_path)
+    print(
+        f"Row filter: total_rows={row_filter.total_export_rows} accepted={row_filter.accepted_export_rows} "
+        f"complete={row_filter.complete_row_count} excluded={row_filter.excluded_row_count} "
+        f"target={row_filter.target_complete_row_count} can_train={row_filter.can_train}",
+        flush=True,
+    )
+    if row_filter.excluded_by_reason:
+        for reason, count in sorted(row_filter.excluded_by_reason.items()):
+            print(f"  excluded[{reason}] = {count}", flush=True)
+
+    # Build training provenance from the dataset summary so the sweep artifacts carry the same
+    # exploratory tagging the GUI controller would emit.
+    training_provenance: dict = {
+        "exploratory_training_override": bool(args.allow_exploratory_incomplete_target),
+    }
+    try:
+        summary = load_modeling_dataset_summary(dataset_path)
+        training_provenance.update(
+            {
+                "source_run_valid_for_model_training": summary.valid_for_model_training_flag,
+                "source_run_model_training_validity_status": summary.model_training_validity_status,
+                "source_validity_reason": summary.model_training_validity_reason,
+                "ann_training_category": summary.ann_training_category,
+                "complete_training_row_count": int(summary.complete_training_row_count),
+                "target_valid_sample_count": int(summary.target_valid_sample_count),
+                "source_run_id": summary.run_id,
+                "source_run_path": str(summary.path),
+            }
+        )
+    except Exception:
+        pass
+
+    if (
+        not bool(args.allow_exploratory_incomplete_target)
+        and training_provenance.get("source_run_valid_for_model_training") is False
+    ):
+        print(
+            "ERROR: source run is not valid_for_model_training. "
+            "Pass --allow-exploratory-incomplete-target to train on its complete rows anyway.",
+            flush=True,
+        )
+        return 2
+
     result = run_model_sweep(
         project_root=project_root,
         dataset_path=dataset_path,
@@ -62,6 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         include_linear_baseline=not bool(args.no_linear),
         extra_hidden_layers_text=str(args.extra_architectures or ""),
         status_callback=_status,
+        training_provenance=training_provenance,
     )
     print(f"Sweep root: {result.sweep_root}", flush=True)
     print(f"Summary JSON: {result.summary_json_path}", flush=True)

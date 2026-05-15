@@ -274,6 +274,12 @@ class SystemTab(QWidget):
         self.telemetry_freshness_spin.setDecimals(3)
         self.telemetry_freshness_spin.setSingleStep(0.05)
         self.telemetry_freshness_spin.valueChanged.connect(self._mark_parameter_dirty)
+        self.fine_jog_step_spin = QSpinBox()
+        self.fine_jog_step_spin.setRange(1, 512)
+        self.fine_jog_step_spin.valueChanged.connect(self._mark_parameter_dirty)
+        self.coarse_jog_step_spin = QSpinBox()
+        self.coarse_jog_step_spin.setRange(1, 1024)
+        self.coarse_jog_step_spin.valueChanged.connect(self._mark_parameter_dirty)
         self.figure_quality_combo = NoWheelComboBox()
         for label, value in (
             ("Low (120 dpi)", "low"),
@@ -309,6 +315,8 @@ class SystemTab(QWidget):
         self.parameters_form.addRow("Active segment", self.active_segment_combo)
         self.parameters_form.addRow("Resolved scope", self.operating_context_summary_label)
         self.parameters_form.addRow("Baudrate", self.baudrate_spin)
+        self.parameters_form.addRow("Fine jog (ticks)", self.fine_jog_step_spin)
+        self.parameters_form.addRow("Coarse jog (ticks)", self.coarse_jog_step_spin)
         parameters_layout.addLayout(self.parameters_form)
         save_row = QHBoxLayout()
         save_row.addWidget(self.save_parameters_button)
@@ -551,6 +559,8 @@ class SystemTab(QWidget):
             "poll_rate_hz": int(self.poll_rate_spin.value()),
             "figure_output_quality": str(self.figure_quality_combo.currentData() or "production"),
             "telemetry_freshness_timeout_s": float(self.telemetry_freshness_spin.value()),
+            "fine_jog_step_ticks": int(self.fine_jog_step_spin.value()),
+            "coarse_jog_step_ticks": int(self.coarse_jog_step_spin.value()),
         }
         handler = self._apply_runtime_parameters or self.controller.save_runtime_parameters
         try:
@@ -872,6 +882,8 @@ class SystemTab(QWidget):
             set_combo_value(self.figure_quality_combo, str(values["figure_output_quality"]), block_signals=False)
             self.figure_quality_combo.blockSignals(False)
             set_spinbox_value(self.telemetry_freshness_spin, float(values["telemetry_freshness_timeout_s"]), block_signals=True)
+            set_spinbox_value(self.fine_jog_step_spin, int(values["fine_jog_step_ticks"]), block_signals=True)
+            set_spinbox_value(self.coarse_jog_step_spin, int(values["coarse_jog_step_ticks"]), block_signals=True)
             self._sync_operating_mode_visibility()
         finally:
             self._updating_parameter_widgets = False
@@ -888,6 +900,8 @@ class SystemTab(QWidget):
             "poll_rate_hz": int(state.poll_rate_hz),
             "figure_output_quality": str(state.figure_output_quality),
             "telemetry_freshness_timeout_s": float(state.telemetry_freshness_timeout_s),
+            "fine_jog_step_ticks": int(state.fine_jog_step_ticks),
+            "coarse_jog_step_ticks": int(state.coarse_jog_step_ticks),
         }
 
     def _current_parameter_values(self) -> dict[str, object]:
@@ -901,6 +915,8 @@ class SystemTab(QWidget):
             "poll_rate_hz": int(self.poll_rate_spin.value()),
             "figure_output_quality": str(self.figure_quality_combo.currentData() or "production"),
             "telemetry_freshness_timeout_s": float(self.telemetry_freshness_spin.value()),
+            "fine_jog_step_ticks": int(self.fine_jog_step_spin.value()),
+            "coarse_jog_step_ticks": int(self.coarse_jog_step_spin.value()),
         }
 
     @staticmethod

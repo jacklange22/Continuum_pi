@@ -8,6 +8,8 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+pytestmark = pytest.mark.gui
+
 from PySide6.QtWidgets import QApplication, QScrollArea
 
 from continuum_robot.gui.controllers.data_management_controller import DataManagementController

@@ -1,9 +1,9 @@
 {
   "schema_version": "1.0",
   "review_status": "debug",
-  "notes": "",
+  "notes": " (restored from trash after bulk cleanup)",
   "created_at": "2026-05-12T23:41:17.827336+00:00",
-  "reviewed_at": "",
+  "reviewed_at": "2026-05-15T04:53:35.727758+00:00",
   "reviewer": "",
   "include_in_evidence_index": false,
   "intended_use": "debug"

@@ -31,6 +31,10 @@ from continuum_robot.experiments.schemas import (
 from continuum_robot.experiments.transform_chain_outputs import write_transform_chain_outputs
 from continuum_robot.experiments.validation import STATUS_PARTIAL_SUCCESS, STATUS_SUCCESS, classify_summary_status
 from continuum_robot.data.run_management import ensure_run_review
+from continuum_robot.data.model_training_validity import (
+    collect_pose_training_row_stats_from_samples,
+    evaluate_collect_pose_model_training_validity,
+)
 from continuum_robot.servos.segment_readiness import evaluate_selected_segment_readiness
 from continuum_robot.servos.sign_mapping_check import ServoMappingCheckRepository
 from continuum_robot.tracking.runtime_tip_policy import evaluate_runtime_tip_trust
@@ -106,6 +110,7 @@ class ExperimentRunner:
         progress_callback=None,
         stop_requested=None,
         sample_callback=None,
+        inject_session_metrics: dict[str, Any] | None = None,
     ) -> ExperimentRunResult:
         """Run one registered experiment and write a canonical dataset."""
         experiment = self.registry.create(experiment_name, config or {})
@@ -145,6 +150,11 @@ class ExperimentRunner:
             progress_callback=progress_callback,
             sample_callback=sample_callback,
         )
+        # Hand the caller a hook to deposit metrics before the experiment runs.
+        # Used by trial-mode flows where the GUI/controller has already collected
+        # captures and wants the experiment to consume them instead of re-capturing.
+        if inject_session_metrics:
+            session.metrics.update(inject_session_metrics)
         success = False
         stage_name = "setup"
         message = ""
@@ -683,6 +693,47 @@ class ExperimentRunner:
         if not success and status in {STATUS_SUCCESS, STATUS_PARTIAL_SUCCESS}:
             status = "failed"
         summary_success = bool(success and status in {STATUS_SUCCESS, STATUS_PARTIAL_SUCCESS})
+        if str(experiment_name).strip().lower() == "collect_pose_command_dataset":
+            row_stats = collect_pose_training_row_stats_from_samples(list(session.samples))
+            legacy_count_estimate = (
+                int(row_stats.get("accepted_training_row_count", 0) or 0)
+                if bool(metrics.get("legacy_export_enabled", True))
+                else 0
+            )
+            validity = evaluate_collect_pose_model_training_validity(
+                success=summary_success,
+                experiment_name=experiment_name,
+                metrics=metrics,
+                row_stats=row_stats,
+                legacy_row_count=legacy_count_estimate,
+            )
+            metrics["valid_for_model_training"] = bool(validity.get("valid_for_model_training"))
+            metrics["not_model_training_ready"] = bool(validity.get("not_model_training_ready"))
+            metrics["model_training_validity_status"] = str(validity.get("model_training_validity_status"))
+            metrics["model_training_validity_reason"] = str(validity.get("model_training_validity_reason"))
+            metrics["model_training_validity_checks"] = dict(validity.get("model_training_validity_checks", {}) or {})
+            metrics["model_training_warnings"] = list(validity.get("model_training_warnings", []) or [])
+            metrics["model_training_hard_invalidation_reasons"] = list(
+                validity.get("model_training_hard_invalidation_reasons", []) or []
+            )
+            metrics["dropped_samples_excluded_from_training"] = bool(
+                validity.get("dropped_samples_excluded_from_training")
+            )
+            metrics["accepted_rows_complete"] = bool(validity.get("accepted_rows_complete"))
+            metrics["modeling_export_row_count"] = int(validity.get("modeling_export_row_count", 0) or 0)
+            metrics["modeling_legacy_row_count"] = int(validity.get("modeling_legacy_row_count", 0) or 0)
+            metrics["accepted_training_row_count"] = int(validity.get("accepted_training_row_count", 0) or 0)
+            metrics["complete_training_row_count"] = int(validity.get("complete_training_row_count", 0) or 0)
+            metrics["accepted_workspace_sample_count"] = int(validity.get("accepted_workspace_sample_count", 0) or 0)
+            metrics["non_training_accepted_row_count"] = int(validity.get("non_training_accepted_row_count", 0) or 0)
+            metrics["incomplete_accepted_workspace_row_count"] = int(
+                validity.get("incomplete_accepted_workspace_row_count", 0) or 0
+            )
+            metrics["dropped_quarantined_sample_count"] = int(validity.get("dropped_quarantined_sample_count", 0) or 0)
+            run_provenance = dict(metrics.get("run_provenance", {}) or {})
+            if run_provenance:
+                run_provenance["valid_for_model_training"] = bool(metrics["valid_for_model_training"])
+                metrics["run_provenance"] = run_provenance
         return ExperimentSummary(
             schema_version=self.SCHEMA_VERSION,
             experiment_name=experiment_name,

@@ -1,0 +1,287 @@
+{
+  "accepted_sample_count": 536,
+  "command_range_per_tendon_cm": {
+    "tendon_1": {
+      "max": 0.99609375,
+      "min": -0.998046875,
+      "span": 1.994140625
+    },
+    "tendon_2": {
+      "max": 0.9945130315500683,
+      "min": -0.9972565157750343,
+      "span": 1.9917695473251027
+    },
+    "tendon_3": {
+      "max": 0.998046875,
+      "min": -0.99609375,
+      "span": 1.994140625
+    },
+    "tendon_4": {
+      "max": 0.9972565157750343,
+      "min": -0.9945130315500683,
+      "span": 1.9917695473251027
+    },
+    "tendon_5": {
+      "max": 0.99609375,
+      "min": -0.998046875,
+      "span": 1.994140625
+    },
+    "tendon_6": {
+      "max": 0.9945130315500683,
+      "min": -0.9972565157750343,
+      "span": 1.9917695473251027
+    },
+    "tendon_7": {
+      "max": 0.998046875,
+      "min": -0.99609375,
+      "span": 1.994140625
+    },
+    "tendon_8": {
+      "max": 0.9972565157750343,
+      "min": -0.9945130315500683,
+      "span": 1.9917695473251027
+    }
+  },
+  "dropped_post_motion_telemetry_samples": 0,
+  "dropped_pre_motion_telemetry_samples": 0,
+  "failure_count": 0,
+  "high_current_warning": true,
+  "max_abs_current_ma": 831,
+  "max_abs_current_ma_by_servo": {
+    "1": 831,
+    "2": 266,
+    "3": 198,
+    "4": 161,
+    "5": 453,
+    "6": 505,
+    "7": 529,
+    "8": 464
+  },
+  "max_current_warning_ma": 800,
+  "mean_abs_current_ma_by_servo": {
+    "1": 110.5848880597015,
+    "2": 74.24067164179104,
+    "3": 56.07369402985075,
+    "4": 26.863805970149254,
+    "5": 65.81529850746269,
+    "6": 63.19962686567164,
+    "7": 87.17723880597015,
+    "8": 77.7714552238806
+  },
+  "measured_xyz_range_mm": {
+    "x": {
+      "max": 39.94373186633507,
+      "min": -39.81429750480413,
+      "span": 79.7580293711392
+    },
+    "y": {
+      "max": 38.822870437039796,
+      "min": -40.72063649830609,
+      "span": 79.54350693534589
+    },
+    "z": {
+      "max": 65.8704147288391,
+      "min": 35.63188728929741,
+      "span": 30.238527439541684
+    }
+  },
+  "next_command_index_to_resume": 535,
+  "peak_current_sample_by_servo": {
+    "1": {
+      "abs_current_ma": 831,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.17578125,
+        -0.22359396433470513,
+        -0.17578125,
+        0.22359396433470513,
+        0.17578125,
+        -0.22359396433470513,
+        -0.17578125,
+        0.22359396433470513
+      ],
+      "resolved_pair_command_cm": [
+        0.17578125,
+        -0.22359396433470513
+      ],
+      "sample_index": 0,
+      "sequence_index": 362,
+      "source": "servo_feedback_at_command",
+      "step_index": 361
+    },
+    "2": {
+      "abs_current_ma": 266,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.34765625,
+        -0.6515775034293553,
+        -0.34765625,
+        0.6515775034293553,
+        0.34765625,
+        -0.6515775034293553,
+        -0.34765625,
+        0.6515775034293553
+      ],
+      "resolved_pair_command_cm": [
+        0.34765625,
+        -0.6515775034293553
+      ],
+      "sample_index": 0,
+      "sequence_index": 310,
+      "source": "servo_feedback_at_command",
+      "step_index": 309
+    },
+    "3": {
+      "abs_current_ma": 198,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.6875,
+        -0.9753086419753086,
+        -0.6875,
+        0.9753086419753086,
+        0.6875,
+        -0.9753086419753086,
+        -0.6875,
+        0.9753086419753086
+      ],
+      "resolved_pair_command_cm": [
+        0.6875,
+        -0.9753086419753086
+      ],
+      "sample_index": 0,
+      "sequence_index": 28,
+      "source": "servo_feedback_at_command",
+      "step_index": 27
+    },
+    "4": {
+      "abs_current_ma": 161,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.9140625,
+        -0.020576131687242816,
+        -0.9140625,
+        0.020576131687242816,
+        0.9140625,
+        -0.020576131687242816,
+        -0.9140625,
+        0.020576131687242816
+      ],
+      "resolved_pair_command_cm": [
+        0.9140625,
+        -0.020576131687242816
+      ],
+      "sample_index": 0,
+      "sequence_index": 176,
+      "source": "servo_feedback_at_command",
+      "step_index": 175
+    },
+    "5": {
+      "abs_current_ma": 453,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        -0.99609375,
+        -0.03429355281207136,
+        0.99609375,
+        0.03429355281207136,
+        -0.99609375,
+        -0.03429355281207136,
+        0.99609375,
+        0.03429355281207136
+      ],
+      "resolved_pair_command_cm": [
+        -0.99609375,
+        -0.03429355281207136
+      ],
+      "sample_index": 0,
+      "sequence_index": 257,
+      "source": "servo_feedback_at_capture",
+      "step_index": 256
+    },
+    "6": {
+      "abs_current_ma": 505,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.078125,
+        -0.9917695473251029,
+        -0.078125,
+        0.9917695473251029,
+        0.078125,
+        -0.9917695473251029,
+        -0.078125,
+        0.9917695473251029
+      ],
+      "resolved_pair_command_cm": [
+        0.078125,
+        -0.9917695473251029
+      ],
+      "sample_index": 0,
+      "sequence_index": 82,
+      "source": "servo_feedback_at_capture",
+      "step_index": 81
+    },
+    "7": {
+      "abs_current_ma": 529,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.984375,
+        -0.1522633744855968,
+        -0.984375,
+        0.1522633744855968,
+        0.984375,
+        -0.1522633744855968,
+        -0.984375,
+        0.1522633744855968
+      ],
+      "resolved_pair_command_cm": [
+        0.984375,
+        -0.1522633744855968
+      ],
+      "sample_index": 0,
+      "sequence_index": 128,
+      "source": "servo_feedback_at_command",
+      "step_index": 127
+    },
+    "8": {
+      "abs_current_ma": 464,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        -0.921875,
+        0.9753086419753085,
+        0.921875,
+        -0.9753086419753085,
+        -0.921875,
+        0.9753086419753085,
+        0.921875,
+        -0.9753086419753085
+      ],
+      "resolved_pair_command_cm": [
+        -0.921875,
+        0.9753086419753085
+      ],
+      "sample_index": 0,
+      "sequence_index": 81,
+      "source": "servo_feedback_at_command",
+      "step_index": 80
+    }
+  },
+  "recommendation": "needs_more_coverage",
+  "recovered_packet_error_count": 0,
+  "rejected_sample_count": 0,
+  "sample_rate_stats": {
+    "max_dt_s": 0.9166972130042268,
+    "mean_dt_s": 0.7576743898972016,
+    "mean_hz": 1.319828165415062,
+    "min_dt_s": 0.645462967993808,
+    "sample_count": 536
+  },
+  "schema_version": "collect_pose_dataset_quality_v1",
+  "servo_telemetry_retry_count": 0,
+  "tracker_stale_count": 0,
+  "trainability_status": {
+    "not_model_training_ready": true,
+    "run_trust_mode": "thesis_trusted",
+    "valid_for_model_training": false
+  },
+  "unrecovered_packet_error_count": 0,
+  "write_goal_packet_error_count": 0
+}

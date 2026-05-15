@@ -1,6 +1,0 @@
-Pretension debug bundle created by pretension_validation.
-Output directory: /home/continuum-pi/Continuum_pi/data/experiments/pretension_validation/20260512_223202_pretension_validation
-Algorithm: reliable_advanced_4servo_pretension
-Mode: conservative_startup
-Failures: {'current_only_lower_trust': 3, 'not_converged': 3, 'partial_pair_failure': 3}
-Attach this bundle plus the GUI/operator log if available.

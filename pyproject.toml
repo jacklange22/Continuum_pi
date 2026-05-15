@@ -34,3 +34,6 @@ include = ["continuum_robot*"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+markers = [
+    "gui: tests that instantiate PySide6/Qt widgets or controllers (skip in headless CI with `-m 'not gui'`)",
+]

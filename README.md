@@ -232,6 +232,8 @@ scripts/run_tests.sh hardware-safe
 
 Use the canonical runner instead of bare `pytest` so the active `.venv` Python is used and Python-version skips are not missed. It requires Python 3.10+; Python 3.11+ is recommended. Useful modes are `quick`, `hardware-safe`, `full-nongui`, and `gui`.
 
+The `gui` pytest marker is registered in `pyproject.toml` and applied at module scope to the truly Qt-dependent test files. `scripts/run_tests.sh full-nongui` therefore actually skips the GUI suite (`pytest -m "not gui"`), and `scripts/run_tests.sh gui` runs just the marked subset. If you add a new test file that imports PySide6 at module level and exercises real Qt widgets, set `pytestmark = pytest.mark.gui` near the top so the split keeps working.
+
 Run the no-hardware operator readiness checks before a bench session:
 
 ```bash

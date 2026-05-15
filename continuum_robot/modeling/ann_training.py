@@ -127,6 +127,11 @@ COLLECT_POSE_COMMAND_DATASET = "collect_pose_command_dataset"
 _LEGACY_ANN_LOW_TRUST_MODES = frozenset({"lower_trust", "debug"})
 _LEGACY_ANN_SERVO_BLOCKED_MODES = frozenset({"servo_only"})
 
+# Recommended minimum number of complete, row-filtered samples before training is meaningful.
+# The catalog-level exploratory-trainable categorization (see ``_categorize_ann_training``)
+# is the authoritative gate; this constant powers the row-filter report shown in the UI/CLI.
+MIN_COMPLETE_ROWS_FOR_TRAINING = 100
+
 
 class TorchUnavailableError(RuntimeError):
     """Raised when PyTorch-backed training features are requested but unavailable."""
@@ -156,6 +161,31 @@ class BackendReport:
     recommended_backend: str
     selected_dtype: str
     backend_options: list[BackendOption] = field(default_factory=list)
+
+
+ANN_TRAINING_CATEGORY_TRAINABLE = "Trainable"
+ANN_TRAINING_CATEGORY_TRAINABLE_WITH_WARNINGS = "Trainable with warnings"
+ANN_TRAINING_CATEGORY_EXPLORATORY_ONLY = "Exploratory only"
+ANN_TRAINING_CATEGORY_BLOCKED = "Blocked"
+
+
+@dataclass(frozen=True)
+class RowFilterReport:
+    """Result of applying the ``complete_rows_only`` filter to a run's modeling export.
+
+    Surfaces complete/excluded counts and the dominant exclusion reasons so the popout
+    and CLI can show operators exactly what survives before training starts.
+    """
+
+    export_path: Path | None
+    total_export_rows: int
+    accepted_export_rows: int
+    complete_row_count: int
+    excluded_row_count: int
+    excluded_by_reason: dict[str, int]
+    target_complete_row_count: int | None
+    can_train: bool
+    block_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -194,6 +224,20 @@ class ModelingDatasetSummary:
     trainable_for_legacy_ann: bool = False
     legacy_ann_rejection_reasons: tuple[str, ...] = ()
     discovery_warnings: tuple[str, ...] = ()
+    model_training_validity_status: str = "unknown"
+    model_training_validity_reason: str = ""
+    model_training_hard_invalidation_reasons: tuple[str, ...] = ()
+    model_training_warnings: tuple[str, ...] = ()
+    target_valid_sample_count: int = 0
+    complete_training_row_count: int = 0
+    modeling_export_row_count: int = 0
+    modeling_legacy_row_count: int = 0
+    incomplete_rows_excluded_from_training: int = 0
+    parallel_single_demo: bool = False
+    trainable_for_ann_exploratory: bool = False
+    ann_training_category: str = ANN_TRAINING_CATEGORY_BLOCKED
+    ann_training_blocking_reasons: tuple[str, ...] = ()
+    ann_training_warnings: tuple[str, ...] = ()
     metadata_payload: dict[str, Any] = field(default_factory=dict)
     summary_payload: dict[str, Any] = field(default_factory=dict)
 
@@ -456,28 +500,159 @@ def _finalize_legacy_ann_trainability(
     return trainable, tuple(ordered)
 
 
+_EXPLORATORY_SOFT_HARD_FAIL_REASONS = frozenset(
+    {
+        "accepted_count_meets_target",
+        "trusted_run_mode",
+    }
+)
+
+
+def _categorize_ann_training(
+    *,
+    structurally_ready_for_legacy_ann: bool,
+    trainable_for_legacy_ann: bool,
+    export_jsonl_path: Path | None,
+    accepted_legacy_trainable_count: int,
+    full_pose_available: bool,
+    accepted_count: int,
+    dataset_scan_root: str,
+    mock_mode_flag: bool | None,
+    run_trust_mode: str,
+    parallel_single_demo: bool,
+    valid_for_model_training_flag: bool | None,
+    model_training_validity_status: str,
+    model_training_hard_invalidation_reasons: tuple[str, ...],
+    model_training_warnings: tuple[str, ...],
+    target_valid_sample_count: int,
+    complete_training_row_count: int,
+    incomplete_rows_excluded_from_training: int,
+) -> tuple[str, bool, tuple[str, ...], tuple[str, ...]]:
+    """Tiered ANN training categorization.
+
+    Returns:
+        (category, trainable_for_ann_exploratory, blocking_reasons, warnings)
+    """
+    blocking: list[str] = []
+    warnings: list[str] = []
+
+    # Hard blocks (apply regardless of overrides at default — overrides are evaluated separately
+    # by ``effective_legacy_ann_training_allowed`` so the user can still consent to them).
+    if not structurally_ready_for_legacy_ann:
+        blocking.append("dataset bundle is not structurally ready (missing artifacts or zero accepted rows)")
+    if export_jsonl_path is None:
+        blocking.append("modeling_dataset_export.jsonl is missing")
+    if accepted_legacy_trainable_count <= 0:
+        blocking.append("no complete full-pose rows are available in the export")
+    if export_jsonl_path is not None and not full_pose_available and accepted_legacy_trainable_count > 0:
+        blocking.append("export contains incomplete rows (some accepted rows lack full ANN fields)")
+    if run_trust_mode in _LEGACY_ANN_SERVO_BLOCKED_MODES:
+        blocking.append("run_trust_mode=servo_only (no tracker pose labels)")
+
+    # Soft blocks unless the operator opts in. These show up as warnings, not blocking_reasons,
+    # so the UI tier surfaces them and the override checkboxes can release them.
+    if dataset_scan_root == "mock" or mock_mode_flag is True:
+        warnings.append("mock or dry-run dataset; requires explicit debug override")
+    if run_trust_mode in _LEGACY_ANN_LOW_TRUST_MODES:
+        warnings.append(f"run_trust_mode={run_trust_mode} (debug); requires lower-trust override")
+    if parallel_single_demo:
+        warnings.append("parallel_single demo dataset; only allowed with debug exploratory override")
+
+    # Target-completeness gate.
+    target_met = (target_valid_sample_count <= 0) or (
+        complete_training_row_count >= target_valid_sample_count
+    )
+    if not target_met:
+        warnings.append(
+            f"complete_training_row_count={complete_training_row_count} < "
+            f"target_valid_sample_count={target_valid_sample_count}: "
+            "not target-complete for thesis model training"
+        )
+    if incomplete_rows_excluded_from_training > 0:
+        warnings.append(
+            f"{incomplete_rows_excluded_from_training} accepted workspace rows were excluded "
+            "because one or more capture fields (e.g. servo position) were missing"
+        )
+
+    # Carry the model-training-validity warnings through verbatim so the operator sees the
+    # same messaging that appears on the run summary.
+    for message in model_training_warnings:
+        if message and message not in warnings:
+            warnings.append(message)
+
+    if blocking:
+        return ANN_TRAINING_CATEGORY_BLOCKED, False, tuple(blocking), tuple(warnings)
+
+    # The tier is decided by the source run's thesis-valid flag, not by the soft-block
+    # release gates (mock / lower-trust / parallel_single demo). Those gates still apply
+    # in ``effective_legacy_ann_training_allowed`` and surface here as warnings.
+    if bool(valid_for_model_training_flag):
+        if str(model_training_validity_status).lower() == "warning_valid" or warnings:
+            return (
+                ANN_TRAINING_CATEGORY_TRAINABLE_WITH_WARNINGS,
+                True,
+                (),
+                tuple(warnings),
+            )
+        return ANN_TRAINING_CATEGORY_TRAINABLE, True, (), tuple(warnings)
+
+    # Run is not target-complete or otherwise non-thesis-valid, but we have a clean export
+    # with complete rows. Allow exploratory training behind an explicit operator override.
+    return ANN_TRAINING_CATEGORY_EXPLORATORY_ONLY, True, (), tuple(warnings)
+
+
 def effective_legacy_ann_training_allowed(
     summary: ModelingDatasetSummary | None,
     *,
     allow_mock_training: bool = False,
     allow_lower_trust_training: bool = False,
+    allow_exploratory_incomplete_target: bool = False,
+    allow_parallel_single_demo_training: bool = False,
 ) -> bool:
-    """Return whether Benchmark/Train should be enabled for this dataset under optional debug overrides."""
+    """Return whether Benchmark/Train should be enabled for this dataset under optional debug overrides.
+
+    Tier:
+      - ``Trainable`` / ``Trainable with warnings`` → allowed by default.
+      - ``Exploratory only`` → requires ``allow_exploratory_incomplete_target=True``.
+      - ``Blocked`` → never allowed (hard data-completeness fail).
+
+    Additional independent debug toggles release mock, lower-trust, and parallel-single-demo
+    datasets that would otherwise stay soft-blocked.
+    """
     if summary is None:
         return False
-    if not summary.structurally_ready_for_legacy_ann:
+
+    # Hard blocks always win, even with any override.
+    if summary.ann_training_category == ANN_TRAINING_CATEGORY_BLOCKED:
         return False
+
     if summary.dataset_scan_root == "mock" and not allow_mock_training:
         return False
     if summary.mock_mode_flag is True and not allow_mock_training:
         return False
-    if summary.valid_for_model_training_flag is False and not allow_lower_trust_training:
-        return False
-    if summary.run_trust_mode in _LEGACY_ANN_SERVO_BLOCKED_MODES:
-        return False
     if summary.run_trust_mode in _LEGACY_ANN_LOW_TRUST_MODES and not allow_lower_trust_training:
         return False
+    if summary.parallel_single_demo and not allow_parallel_single_demo_training:
+        return False
+
+    if summary.ann_training_category == ANN_TRAINING_CATEGORY_EXPLORATORY_ONLY:
+        return bool(allow_exploratory_incomplete_target)
+
+    # Trainable or trainable-with-warnings.
     return True
+
+
+def ann_training_will_be_exploratory(
+    summary: ModelingDatasetSummary | None,
+    *,
+    allow_exploratory_incomplete_target: bool,
+) -> bool:
+    """Return True when training will operate in exploratory-only mode for this dataset."""
+    if summary is None:
+        return False
+    if summary.ann_training_category != ANN_TRAINING_CATEGORY_EXPLORATORY_ONLY:
+        return False
+    return bool(allow_exploratory_incomplete_target)
 
 
 def _compile_modeling_dataset_summary(
@@ -598,8 +773,47 @@ def _compile_modeling_dataset_summary(
         accepted_count=len(accepted_rows),
     )
 
+    model_training_validity_status = str(metrics.get("model_training_validity_status", "") or "")
+    model_training_validity_reason = str(metrics.get("model_training_validity_reason", "") or "")
+    model_training_hard_invalidation_reasons = tuple(
+        str(value)
+        for value in list(metrics.get("model_training_hard_invalidation_reasons", []) or [])
+        if str(value)
+    )
+    model_training_warnings_tuple = tuple(
+        str(value)
+        for value in list(metrics.get("model_training_warnings", []) or [])
+        if str(value)
+    )
+    target_valid_sample_count_val = int(metrics.get("target_valid_sample_count", 0) or 0)
+    complete_training_row_count_val = int(metrics.get("complete_training_row_count", 0) or 0)
+    modeling_export_row_count_val = int(metrics.get("modeling_export_row_count", 0) or 0)
+    modeling_legacy_row_count_val = int(metrics.get("modeling_legacy_row_count", 0) or 0)
+    incomplete_rows_excluded_val = int(metrics.get("incomplete_accepted_workspace_row_count", 0) or 0)
+    parallel_single_demo_flag = bool(metrics.get("parallel_single_demo", False))
+
     export_jsonl_path = export_path if export_path.is_file() else None
     catalog_experiment_name = str(metadata_payload.get("experiment_name") or "").strip()
+
+    ann_category, trainable_for_ann_exploratory, ann_blocking_reasons, ann_warnings = _categorize_ann_training(
+        structurally_ready_for_legacy_ann=structurally_ready_for_legacy_ann,
+        trainable_for_legacy_ann=bool(trainable_for_legacy_ann),
+        export_jsonl_path=export_jsonl_path,
+        accepted_legacy_trainable_count=int(accepted_legacy_trainable_count),
+        full_pose_available=bool(full_pose_available),
+        accepted_count=len(accepted_rows),
+        dataset_scan_root=dataset_scan_root,
+        mock_mode_flag=mock_mode_flag,
+        run_trust_mode=run_trust_mode,
+        parallel_single_demo=parallel_single_demo_flag,
+        valid_for_model_training_flag=valid_for_model_training_flag,
+        model_training_validity_status=model_training_validity_status,
+        model_training_hard_invalidation_reasons=model_training_hard_invalidation_reasons,
+        model_training_warnings=model_training_warnings_tuple,
+        target_valid_sample_count=target_valid_sample_count_val,
+        complete_training_row_count=complete_training_row_count_val,
+        incomplete_rows_excluded_from_training=incomplete_rows_excluded_val,
+    )
 
     return ModelingDatasetSummary(
         path=run_dir,
@@ -638,6 +852,20 @@ def _compile_modeling_dataset_summary(
         trainable_for_legacy_ann=bool(trainable_for_legacy_ann),
         legacy_ann_rejection_reasons=legacy_reasons,
         discovery_warnings=tuple(warnings),
+        model_training_validity_status=model_training_validity_status,
+        model_training_validity_reason=model_training_validity_reason,
+        model_training_hard_invalidation_reasons=model_training_hard_invalidation_reasons,
+        model_training_warnings=model_training_warnings_tuple,
+        target_valid_sample_count=int(target_valid_sample_count_val),
+        complete_training_row_count=int(complete_training_row_count_val),
+        modeling_export_row_count=int(modeling_export_row_count_val),
+        modeling_legacy_row_count=int(modeling_legacy_row_count_val),
+        incomplete_rows_excluded_from_training=int(incomplete_rows_excluded_val),
+        parallel_single_demo=bool(parallel_single_demo_flag),
+        trainable_for_ann_exploratory=bool(trainable_for_ann_exploratory),
+        ann_training_category=str(ann_category),
+        ann_training_blocking_reasons=ann_blocking_reasons,
+        ann_training_warnings=ann_warnings,
         metadata_payload=metadata_payload,
         summary_payload=summary_payload,
     )
@@ -1162,6 +1390,7 @@ def train_legacy_ann(
     time_fn: Callable[[], float] = time.perf_counter,
     split: DatasetSplit | None = None,
     artifact_dir: Path | None = None,
+    training_provenance: dict[str, Any] | None = None,
 ) -> TrainingResult:
     """Train the legacy full-pose ANN and save an artifact bundle.
 
@@ -1425,7 +1654,21 @@ def train_legacy_ann(
             "loss_report_plot_path": str(loss_report_plot_path),
             "split_manifest_path": str(split_manifest_path),
             "summary_text_path": str(summary_text_path),
+            "row_filter_report_path": str(artifact_dir_path / "row_filter_report.json"),
         },
+    }
+    if training_provenance:
+        metadata_payload["training_provenance"] = dict(training_provenance)
+    row_filter_report = _emit_row_filter_report_for_artifact(
+        artifact_dir=artifact_dir_path, dataset_path=Path(dataset_path)
+    )
+    metadata_payload["training_input_policy"] = "complete_rows_only"
+    metadata_payload["row_filter_report"] = {
+        "complete_row_count": int(row_filter_report.complete_row_count),
+        "excluded_row_count": int(row_filter_report.excluded_row_count),
+        "excluded_by_reason": dict(row_filter_report.excluded_by_reason),
+        "target_complete_row_count": row_filter_report.target_complete_row_count,
+        "report_path": str(artifact_dir_path / "row_filter_report.json"),
     }
     metadata_path.write_text(json.dumps(metadata_payload, indent=2), encoding="utf-8")
     config_path.write_text(json.dumps(config.to_dict(), indent=2), encoding="utf-8")
@@ -1584,6 +1827,7 @@ def train_linear_ridge_full_pose(
     ridge_alpha: float | None = None,
     stop_requested: Callable[[], bool] | None = None,
     time_fn: Callable[[], float] = time.perf_counter,
+    training_provenance: dict[str, Any] | None = None,
 ) -> TrainingResult:
     """Closed-form ridge linear map (4 cable cm -> 6 pose) for sweep baseline comparison."""
     if stop_requested is not None and stop_requested():
@@ -1773,7 +2017,21 @@ def train_linear_ridge_full_pose(
             "loss_report_plot_path": str(loss_report_plot_path),
             "split_manifest_path": str(split_manifest_path),
             "summary_text_path": str(summary_text_path),
+            "row_filter_report_path": str(artifact_dir_path / "row_filter_report.json"),
         },
+    }
+    if training_provenance:
+        metadata_payload["training_provenance"] = dict(training_provenance)
+    row_filter_report = _emit_row_filter_report_for_artifact(
+        artifact_dir=artifact_dir_path, dataset_path=Path(dataset_path)
+    )
+    metadata_payload["training_input_policy"] = "complete_rows_only"
+    metadata_payload["row_filter_report"] = {
+        "complete_row_count": int(row_filter_report.complete_row_count),
+        "excluded_row_count": int(row_filter_report.excluded_row_count),
+        "excluded_by_reason": dict(row_filter_report.excluded_by_reason),
+        "target_complete_row_count": row_filter_report.target_complete_row_count,
+        "report_path": str(artifact_dir_path / "row_filter_report.json"),
     }
     metadata_path.write_text(json.dumps(metadata_payload, indent=2), encoding="utf-8")
     config_path.write_text(json.dumps(config_dump, indent=2), encoding="utf-8")
@@ -1809,6 +2067,7 @@ def run_model_sweep(
     status_callback: Callable[[str], None] | None = None,
     stop_requested: Callable[[], bool] | None = None,
     time_fn: Callable[[], float] = time.perf_counter,
+    training_provenance: dict[str, Any] | None = None,
 ) -> ModelSweepResult:
     """Train linear ridge (optional) and several ANNs sharing one split; write sweep summaries."""
     _require_torch()
@@ -1841,6 +2100,7 @@ def run_model_sweep(
         artifact_name=f"{base_config.artifact_name.strip()}_model_sweep",
     )
     sweep_root.mkdir(parents=True, exist_ok=False)
+    _emit_row_filter_report_for_artifact(artifact_dir=sweep_root, dataset_path=Path(dataset_path))
     shared_split_path = sweep_root / "shared_split_manifest.json"
     shared_split_path.write_text(
         json.dumps(
@@ -1881,6 +2141,7 @@ def run_model_sweep(
             artifact_dir=lin_dir,
             stop_requested=stop_requested,
             time_fn=time_fn,
+            training_provenance=training_provenance,
         )
         meta = json.loads((lin_dir / "training_metadata.json").read_text(encoding="utf-8"))
         rows.append(
@@ -1910,6 +2171,7 @@ def run_model_sweep(
             progress_callback=None,
             stop_requested=stop_requested,
             time_fn=time_fn,
+            training_provenance=training_provenance,
         )
         meta = json.loads((sweep_root / sub / "training_metadata.json").read_text(encoding="utf-8"))
         rows.append(
@@ -2080,6 +2342,8 @@ def _load_export_rows(path: Path) -> list[dict[str, Any]]:
 
 
 def _row_filter_reason(row: dict[str, Any]) -> str | None:
+    if bool(row.get("modeling_export_exclude")):
+        return "modeling_export_exclude"
     command = np.asarray(row.get("resolved_cable_command_cm", []) or [], dtype=float)
     position = np.asarray(row.get("tip_position_xyz_mm", []) or [], dtype=float)
     tangent = np.asarray(row.get("tip_tangent_xyz", []) or [], dtype=float)
@@ -2096,6 +2360,117 @@ def _row_filter_reason(row: dict[str, Any]) -> str | None:
     if np.abs(tangent).max(initial=0.0) > LEGACY_TANGENT_THRESHOLD_RAD:
         return "legacy_tangent_threshold"
     return None
+
+
+def validate_legacy_ann_rows(
+    run_dir: Path,
+    *,
+    min_complete_rows: int = MIN_COMPLETE_ROWS_FOR_TRAINING,
+) -> RowFilterReport:
+    """Apply the ``complete_rows_only`` policy to one run and return a structured report.
+
+    Operators use this from the "Validate rows for ANN" button and from the CLI to confirm
+    how many rows will be trained on, why incomplete rows were dropped, and whether the
+    row count meets the recommended training minimum.
+    """
+    run_dir = Path(run_dir)
+    export_path = run_dir / "modeling_dataset_export.jsonl"
+    if not export_path.exists():
+        return RowFilterReport(
+            export_path=None,
+            total_export_rows=0,
+            accepted_export_rows=0,
+            complete_row_count=0,
+            excluded_row_count=0,
+            excluded_by_reason={},
+            target_complete_row_count=None,
+            can_train=False,
+            block_reason="No modeling_dataset_export.jsonl in run folder.",
+        )
+    rows = _load_export_rows(run_dir)
+    accepted_rows = [row for row in rows if bool(row.get("accepted"))]
+    complete = 0
+    excluded_by_reason: dict[str, int] = {}
+    for row in accepted_rows:
+        reason = _row_filter_reason(row)
+        if reason is None:
+            complete += 1
+        else:
+            excluded_by_reason[reason] = excluded_by_reason.get(reason, 0) + 1
+    excluded = sum(int(v) for v in excluded_by_reason.values())
+
+    target_complete_row_count: int | None = None
+    summary_path = run_dir / "summary.json"
+    if summary_path.is_file():
+        try:
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+            metrics = payload.get("experiment_metrics", {}) if isinstance(payload, dict) else {}
+            raw = metrics.get("target_valid_sample_count")
+            if raw in (None, ""):
+                raw = metrics.get("complete_training_row_count")
+            if raw not in (None, ""):
+                target_complete_row_count = int(raw)
+        except Exception:
+            target_complete_row_count = None
+
+    block_reason: str | None = None
+    can_train = True
+    if complete <= 0:
+        can_train = False
+        block_reason = "0 complete rows after row-level filtering."
+    elif complete < int(min_complete_rows):
+        can_train = False
+        block_reason = (
+            f"{complete} complete rows are below the {int(min_complete_rows)}-row training minimum."
+        )
+    return RowFilterReport(
+        export_path=export_path,
+        total_export_rows=len(rows),
+        accepted_export_rows=len(accepted_rows),
+        complete_row_count=int(complete),
+        excluded_row_count=int(excluded),
+        excluded_by_reason=dict(excluded_by_reason),
+        target_complete_row_count=target_complete_row_count,
+        can_train=bool(can_train),
+        block_reason=block_reason,
+    )
+
+
+def _write_row_filter_report(path: Path, report: RowFilterReport, *, dataset_path: Path) -> None:
+    """Persist a row-filter report next to a training artifact for later audit."""
+    payload = {
+        "training_input_policy": "complete_rows_only",
+        "dataset_path": str(dataset_path),
+        "export_path": str(report.export_path) if report.export_path is not None else None,
+        "total_export_rows": int(report.total_export_rows),
+        "accepted_export_rows": int(report.accepted_export_rows),
+        "complete_row_count": int(report.complete_row_count),
+        "excluded_row_count": int(report.excluded_row_count),
+        "excluded_by_reason": dict(report.excluded_by_reason),
+        "target_complete_row_count": report.target_complete_row_count,
+        "can_train": bool(report.can_train),
+        "block_reason": report.block_reason,
+        "min_complete_rows_recommended": int(MIN_COMPLETE_ROWS_FOR_TRAINING),
+    }
+    Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _emit_row_filter_report_for_artifact(
+    *, artifact_dir: Path, dataset_path: Path
+) -> RowFilterReport:
+    """Compute and write a row-filter report into an existing artifact directory.
+
+    Returns the report so callers can also persist its fields into ``training_metadata.json``.
+    Uses ``min_complete_rows=1`` so the report itself never refuses to emit; the
+    high-level catalog already drives the "trainable" decision before training starts.
+    """
+    report = validate_legacy_ann_rows(dataset_path, min_complete_rows=1)
+    _write_row_filter_report(
+        Path(artifact_dir) / "row_filter_report.json",
+        report,
+        dataset_path=dataset_path,
+    )
+    return report
 
 
 def _allocate_partition_counts(*, total: int, ratios: list[float]) -> list[int]:
@@ -2364,6 +2739,24 @@ def _dataset_metadata_for_artifact(*, prepared: PreparedLegacyAnnDataset) -> dic
         "pretension_summary": summary.pretension_summary,
         "filtered_reason_counts": dict(prepared.filtered_reason_counts),
         "prepared_sample_count": int(prepared.inputs.shape[0]),
+        "source_run_valid_for_model_training": summary.valid_for_model_training_flag,
+        "source_run_model_training_validity_status": summary.model_training_validity_status,
+        "source_run_model_training_validity_reason": summary.model_training_validity_reason,
+        "source_run_model_training_hard_invalidation_reasons": list(
+            summary.model_training_hard_invalidation_reasons
+        ),
+        "source_run_model_training_warnings": list(summary.model_training_warnings),
+        "ann_training_category": summary.ann_training_category,
+        "ann_training_blocking_reasons": list(summary.ann_training_blocking_reasons),
+        "ann_training_warnings": list(summary.ann_training_warnings),
+        "target_valid_sample_count": int(summary.target_valid_sample_count),
+        "complete_training_row_count": int(summary.complete_training_row_count),
+        "modeling_export_row_count": int(summary.modeling_export_row_count),
+        "modeling_legacy_row_count": int(summary.modeling_legacy_row_count),
+        "incomplete_rows_excluded_from_training": int(summary.incomplete_rows_excluded_from_training),
+        "parallel_single_demo": bool(summary.parallel_single_demo),
+        "run_trust_mode": summary.run_trust_mode,
+        "mock_mode_flag": summary.mock_mode_flag,
     }
 
 

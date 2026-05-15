@@ -118,7 +118,12 @@ class ExperimentTab(QWidget):
     def update(self, state: ExperimentViewState) -> bool:
         started = time.monotonic()
         self._update_selector(state)
-        self.filter_summary_label.setText(state.experiment_filter_summary)
+        if state.selected_experiment:
+            self.filter_summary_label.setText("")
+            self.filter_summary_label.setVisible(False)
+        else:
+            self.filter_summary_label.setText(state.experiment_filter_summary)
+            self.filter_summary_label.setVisible(bool(state.experiment_filter_summary))
         if not state.selected_experiment:
             self.selected_experiment_title.setText("Select An Experiment")
             self.selected_experiment_description.setText(
@@ -165,7 +170,8 @@ class ExperimentTab(QWidget):
 
         self.load_defaults_button.setEnabled(True)
         self.selected_experiment_title.setText(state.experiment_title)
-        self.selected_experiment_description.setText(state.experiment_description)
+        self.selected_experiment_description.setText("")
+        self.selected_experiment_description.setVisible(False)
         self.selected_badges_label.setText("  •  ".join(state.experiment_badges))
         self.selected_badges_label.setVisible(bool(state.experiment_badges))
         if state.selected_experiment != self._last_logged_selection:

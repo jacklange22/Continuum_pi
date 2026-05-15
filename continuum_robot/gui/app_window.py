@@ -219,6 +219,15 @@ class AppWindow(QMainWindow):
             settings=settings,
             project_root=context.project_root,
         )
+        from continuum_robot.gui.controllers.registration_trial_controller import (
+            RegistrationTrialController,
+        )
+
+        self.registration_trial_controller = RegistrationTrialController(
+            registration_service=registration_service,
+            experiment_runner=experiment_runner,
+            project_root=context.project_root,
+        )
 
         new_tab_widget = QTabWidget()
         self.system_tab = SystemTab(
@@ -230,11 +239,9 @@ class AppWindow(QMainWindow):
             self.registration_controller,
             workflow_controller=self.tracker_mvp_controller,
             open_runtime_tip_calibration=self._open_runtime_tip_calibration,
+            open_registration_trial=self._open_registration_trial,
         )
-        self.servos_tab = ServosTab(
-            self.servos_controller,
-            apply_runtime_parameters=self._save_and_apply_servo_jog_settings,
-        )
+        self.servos_tab = ServosTab(self.servos_controller)
         self.pretension_tab = PretensionTab(self.pretension_controller)
         self.experiment_tab = ExperimentTab(self.experiment_controller)
         self.modeling_tab = ModelingTab(self.modeling_controller)
@@ -300,18 +307,6 @@ class AppWindow(QMainWindow):
         )
         self.system_controller.state.last_error = None
         self.refresh()
-
-    def _save_and_apply_servo_jog_settings(self, *, fine_jog_step_ticks: int, coarse_jog_step_ticks: int) -> None:
-        self._save_and_apply_runtime_parameters(
-            mock_mode=bool(self.system_controller.state.mock_mode),
-            robot_config=str(self.system_controller.state.robot_config),
-            openrb_port=str(self.system_controller.state.openrb_port),
-            baudrate=int(self.system_controller.state.baudrate),
-            poll_rate_hz=int(self.system_controller.state.poll_rate_hz),
-            fine_jog_step_ticks=int(fine_jog_step_ticks),
-            coarse_jog_step_ticks=int(coarse_jog_step_ticks),
-            telemetry_freshness_timeout_s=float(self.system_controller.state.telemetry_freshness_timeout_s),
-        )
 
     def _shutdown_workspace(self) -> None:
         dialog = getattr(self, "runtime_tip_calibration_dialog", None)
@@ -398,3 +393,35 @@ class AppWindow(QMainWindow):
         dialog.raise_()
         dialog.activateWindow()
         dialog.refresh()
+
+    def _open_registration_trial(self) -> None:
+        from continuum_robot.gui.widgets.registration_trial_dialog import (
+            RegistrationTrialDialog,
+        )
+
+        settings = getattr(getattr(self, "context", None), "settings", None)
+        registration_config = getattr(settings, "registration", None) if settings is not None else None
+        candidate_labels: list[str] = []
+        if registration_config is not None:
+            for landmark in registration_config.candidate_landmarks or []:
+                if bool(getattr(landmark, "enabled", True)):
+                    candidate_labels.append(str(landmark.id))
+            if not candidate_labels:
+                candidate_labels = list(registration_config.landmark_labels or [])
+        if not candidate_labels:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(
+                self,
+                "Trial Mode",
+                "No candidate landmarks are defined in registration.yaml.",
+            )
+            return
+        # Reset any prior trial state so the dialog opens with a clean slate.
+        self.registration_trial_controller.reset()
+        dialog = RegistrationTrialDialog(
+            self.registration_trial_controller,
+            candidate_labels=candidate_labels,
+            parent=self,
+        )
+        dialog.exec()

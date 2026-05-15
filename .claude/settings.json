@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "Bash(scripts/run_tests.sh *)",
+      "Bash(.venv/bin/python -m pytest *)",
+      "Bash(/Users/jacklange/Continuum/pi_code/.venv/bin/python -m pytest *)",
+      "Bash(.venv/bin/python *)",
+      "Bash(/Users/jacklange/Continuum/pi_code/.venv/bin/python *)",
+      "Bash(python3 *)",
+      "Bash(python *)",
+      "Bash(.venv/bin/pip *)",
+      "Bash(/Users/jacklange/Continuum/pi_code/.venv/bin/pip *)",
+      "Bash(pip *)",
+      "Bash(pip3 *)",
+      "Bash(uv *)",
+      "Bash(uvx *)",
+      "Bash(git *)",
+      "Bash(gh *)",
+      "Bash(scripts/*)",
+      "Bash(./scripts/*)",
+      "Bash(bash scripts/*)",
+      "Bash(mkdir *)",
+      "Bash(mv *)",
+      "Bash(cp *)",
+      "Bash(touch *)",
+      "Bash(chmod *)",
+      "Bash(ln *)",
+      "Bash(tar *)",
+      "Bash(zip *)",
+      "Bash(unzip *)",
+      "Bash(make *)",
+      "Bash(pytest *)"
+    ]
+  }
+}

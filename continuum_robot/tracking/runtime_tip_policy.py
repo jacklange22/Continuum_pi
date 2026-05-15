@@ -60,6 +60,7 @@ _WORKFLOW_ALIASES: dict[str, str] = {
     "penprobe_platform": WORKFLOW_PENPROBE_CHASING,
     WORKFLOW_MODELING_DATASET: WORKFLOW_MODELING_DATASET,
     "collect_pose_command_dataset": WORKFLOW_MODELING_DATASET,
+    "two_segment_collect_pose_command_dataset": WORKFLOW_MODELING_DATASET,
     "motor_babble": WORKFLOW_MODELING_DATASET,
     "modeling": WORKFLOW_MODELING_DATASET,
     "modeling_platform": WORKFLOW_MODELING_DATASET,
