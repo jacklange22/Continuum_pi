@@ -188,11 +188,11 @@ class LightweightScene3DWidget(QWidget):
 
     def wheelEvent(self, event: QWheelEvent) -> None:  # pragma: no cover - exercised in GUI
         if not bool(event.modifiers() & self.ZOOM_MODIFIER):
-            event.accept()
+            event.ignore()
             return
         delta = event.angleDelta().y()
         if delta == 0:
-            event.accept()
+            event.ignore()
             return
         factor = 1.1 if delta > 0 else 1.0 / 1.1
         state = self._view_state
