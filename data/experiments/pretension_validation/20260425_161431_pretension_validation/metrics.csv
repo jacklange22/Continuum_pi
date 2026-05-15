@@ -1,2 +1,0 @@
-servo_id,accepted,status,stop_reason,final_position_tick,travel_used_ticks,travel_used_mm,baseline_current_ma,effective_trigger_current_ma,trigger_current_ma,hard_current_stop_ma,max_observed_current_ma,max_observed_filtered_current_ma,max_observed_displacement_mm,trigger_displacement_mm,tracker_metric_frame,tracker_metric_sample_count,trace_sample_count
-,,,,,,,,,,,,,,,,,
