@@ -661,7 +661,7 @@ def test_servos_tab_wraps_workspace_in_scroll_area(tmp_path: Path) -> None:
     assert tab.scroll_area.widget() is not None
 
 
-def test_servos_tab_selected_servo_panel_reflects_controller_state(tmp_path: Path) -> None:
+def test_servos_tab_telemetry_table_reflects_controller_state(tmp_path: Path) -> None:
     _app()
     service = _servo_service(tmp_path)
     service.connect("/dev/mock-openrb", 115200)
@@ -672,16 +672,14 @@ def test_servos_tab_selected_servo_panel_reflects_controller_state(tmp_path: Pat
 
     tab.update(controller.state)
 
-    assert tab.selected_servo_id_value_label.text() == "2"
-    assert tab.selected_servo_action_label.text() == "Tighten Fine"
-    assert tab.selected_servo_result_label.text() == "Sent"
-    assert tab.selected_servo_bounds_label.text() == "[0, 4095]"
-    assert tab.selected_servo_freshness_limit_label.text() == "0.250 s"
-    assert tab.selected_servo_position_label.text() == str(service.dxl_bus._state[2].present_position)
-    assert tab.selected_servo_current_draw_label.text() == str(service.dxl_bus._state[2].present_current_ma)
+    sorted_servo_ids = sorted(controller.state.telemetry)
+    row = sorted_servo_ids.index(2)
+    assert tab.telemetry_table.item(row, 0).text() == "2"
+    assert tab.telemetry_table.item(row, 3).text() == str(service.dxl_bus._state[2].present_position)
+    assert tab.telemetry_table.item(row, 4).text() == str(service.dxl_bus._state[2].present_current_ma)
 
 
-def test_servos_tab_hides_inactive_issue_rows_and_marks_selected_button(tmp_path: Path) -> None:
+def test_servos_tab_status_line_summarises_connection(tmp_path: Path) -> None:
     _app()
     service = _servo_service(tmp_path)
     service.connect("/dev/mock-openrb", 115200)
@@ -691,32 +689,40 @@ def test_servos_tab_hides_inactive_issue_rows_and_marks_selected_button(tmp_path
 
     tab.update(controller.state)
 
-    assert tab.missing_ids_label.isHidden() is True
-    assert tab.unexpected_ids_label.isHidden() is True
-    assert tab._selector_buttons[3].isChecked() is True
-    assert tab._selector_buttons[1].isChecked() is False
+    assert "Bus connected" in tab.status_label.text()
+    assert tab.jog_label.text() == "Jog: Servo 3"
 
 
-def test_servos_tab_hides_id_assignment_controls_from_operator_surface(tmp_path: Path) -> None:
+def test_servos_tab_drops_discover_and_id_assignment_buttons(tmp_path: Path) -> None:
     _app()
     tab = ServosTab(ServosController(_servo_service(tmp_path), _settings()))
 
-    assert hasattr(tab, "scan_button")
+    assert not hasattr(tab, "scan_button")
+    assert not hasattr(tab, "refresh_readiness_button")
     assert not hasattr(tab, "assign_button")
 
 
-def test_servos_tab_save_jog_settings_prefers_callback(tmp_path: Path) -> None:
+def test_system_tab_save_jog_settings_includes_fine_and_coarse_ticks(tmp_path: Path) -> None:
     _app()
-    controller = ServosController(_servo_service(tmp_path), _settings())
+    settings = _settings()
+    servo_service = _servo_service(tmp_path)
+    system_controller = SystemController(
+        tracking_service=_tracking_service(settings, tmp_path),
+        openrb_client=MockOpenRbClient(),
+        servo_service=servo_service,
+        settings=settings,
+    )
     received: list[dict] = []
-    tab = ServosTab(controller, apply_runtime_parameters=lambda **kwargs: received.append(dict(kwargs)))
+    tab = SystemTab(system_controller, apply_runtime_parameters=lambda **kwargs: received.append(dict(kwargs)))
 
-    tab.update(controller.state)
+    tab.update(system_controller.refresh())
     tab.fine_jog_step_spin.setValue(7)
     tab.coarse_jog_step_spin.setValue(31)
-    tab.save_servo_settings_button.click()
+    tab.save_parameters_button.click()
 
-    assert received == [{"fine_jog_step_ticks": 7, "coarse_jog_step_ticks": 31}]
+    assert received, "expected save callback to fire"
+    assert received[-1]["fine_jog_step_ticks"] == 7
+    assert received[-1]["coarse_jog_step_ticks"] == 31
 
 
 def test_pretension_tab_wraps_workspace_in_scroll_area(tmp_path: Path) -> None:
@@ -4338,7 +4344,6 @@ def test_registration_and_experiment_tabs_expose_resizable_layout_defaults(tmp_p
     assert repeatability_page.viewer_3d is None
     assert repeatability_page.viewer_placeholder is not None
     assert servos_tab.telemetry_table.minimumHeight() >= 190
-    assert servos_tab.calibration_table.minimumHeight() >= 160
     assert system_tab.status_text.minimumHeight() >= 160
 
 
@@ -4369,7 +4374,6 @@ def test_registration_servos_and_pretension_tabs_stack_splitters_on_narrow_width
 
     assert registration_tab.top_splitter.orientation() == Qt.Vertical
     assert registration_tab.lower_splitter.orientation() == Qt.Vertical
-    assert servos_tab.workspace_splitter.orientation() == Qt.Vertical
     assert pretension_tab.workspace_splitter.orientation() == Qt.Vertical
 
     registration_tab.resize(1500, 900)
@@ -4379,7 +4383,6 @@ def test_registration_servos_and_pretension_tabs_stack_splitters_on_narrow_width
 
     assert registration_tab.top_splitter.orientation() == Qt.Horizontal
     assert registration_tab.lower_splitter.orientation() == Qt.Horizontal
-    assert servos_tab.workspace_splitter.orientation() == Qt.Horizontal
     assert pretension_tab.workspace_splitter.orientation() == Qt.Horizontal
 
 
