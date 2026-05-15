@@ -18,6 +18,7 @@ from continuum_robot.modeling.ann_training import (
     BackendReport,
     MODEL_SWEEP_SINGLE_SPLIT_WARNING,
     ModelingDatasetSummary,
+    RowFilterReport,
     TorchUnavailableError,
     TrainedArtifactSummary,
     TrainingEstimate,
@@ -40,6 +41,7 @@ from continuum_robot.modeling.ann_training import (
     parse_hidden_layers_text,
     run_model_sweep,
     train_legacy_ann,
+    validate_legacy_ann_rows,
     validate_training_config,
 )
 
@@ -60,6 +62,8 @@ class AnnTrainingViewState:
     allow_lower_trust_training: bool = False
     allow_exploratory_incomplete_target: bool = False
     allow_parallel_single_demo_training: bool = False
+    row_filter_report: "RowFilterReport | None" = None
+    row_filter_status_text: str = ""
     selected_dataset_path: str = ""
     dataset_summary_pairs: list[tuple[str, str]] = field(default_factory=list)
     ann_training_category: str = ANN_TRAINING_CATEGORY_BLOCKED
@@ -317,6 +321,36 @@ class AnnTrainingController:
     def set_allow_parallel_single_demo_training(self, value: bool) -> None:
         with self._lock:
             self.state.allow_parallel_single_demo_training = bool(value)
+
+    def validate_rows_for_ann(self) -> RowFilterReport | None:
+        """Run the complete-rows-only filter on the selected dataset and surface the report.
+
+        Lets operators audit row counts, exclusion reasons, and target-completeness from the
+        popout before clicking Train, without running torch.
+        """
+        with self._lock:
+            dataset_path = self.state.selected_dataset_path
+        if not dataset_path:
+            return None
+        try:
+            report = validate_legacy_ann_rows(Path(dataset_path))
+        except Exception as exc:
+            with self._lock:
+                self.state.status_message = f"Row validation failed: {exc}"
+                self.state.row_filter_status_text = f"error: {exc}"
+                self.state.row_filter_report = None
+            return None
+        status = "ok" if report.can_train else f"blocked: {report.block_reason}"
+        summary_text = (
+            f"Row filter ({status}): {report.complete_row_count} complete, "
+            f"{report.excluded_row_count} excluded "
+            f"(target={report.target_complete_row_count})."
+        )
+        with self._lock:
+            self.state.row_filter_report = report
+            self.state.row_filter_status_text = summary_text
+            self.state.status_message = summary_text
+        return report
 
     def invalidate_catalog(self) -> None:
         with self._lock:

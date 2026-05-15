@@ -127,6 +127,11 @@ COLLECT_POSE_COMMAND_DATASET = "collect_pose_command_dataset"
 _LEGACY_ANN_LOW_TRUST_MODES = frozenset({"lower_trust", "debug"})
 _LEGACY_ANN_SERVO_BLOCKED_MODES = frozenset({"servo_only"})
 
+# Recommended minimum number of complete, row-filtered samples before training is meaningful.
+# The catalog-level exploratory-trainable categorization (see ``_categorize_ann_training``)
+# is the authoritative gate; this constant powers the row-filter report shown in the UI/CLI.
+MIN_COMPLETE_ROWS_FOR_TRAINING = 100
+
 
 class TorchUnavailableError(RuntimeError):
     """Raised when PyTorch-backed training features are requested but unavailable."""
@@ -162,6 +167,25 @@ ANN_TRAINING_CATEGORY_TRAINABLE = "Trainable"
 ANN_TRAINING_CATEGORY_TRAINABLE_WITH_WARNINGS = "Trainable with warnings"
 ANN_TRAINING_CATEGORY_EXPLORATORY_ONLY = "Exploratory only"
 ANN_TRAINING_CATEGORY_BLOCKED = "Blocked"
+
+
+@dataclass(frozen=True)
+class RowFilterReport:
+    """Result of applying the ``complete_rows_only`` filter to a run's modeling export.
+
+    Surfaces complete/excluded counts and the dominant exclusion reasons so the popout
+    and CLI can show operators exactly what survives before training starts.
+    """
+
+    export_path: Path | None
+    total_export_rows: int
+    accepted_export_rows: int
+    complete_row_count: int
+    excluded_row_count: int
+    excluded_by_reason: dict[str, int]
+    target_complete_row_count: int | None
+    can_train: bool
+    block_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -1630,10 +1654,22 @@ def train_legacy_ann(
             "loss_report_plot_path": str(loss_report_plot_path),
             "split_manifest_path": str(split_manifest_path),
             "summary_text_path": str(summary_text_path),
+            "row_filter_report_path": str(artifact_dir_path / "row_filter_report.json"),
         },
     }
     if training_provenance:
         metadata_payload["training_provenance"] = dict(training_provenance)
+    row_filter_report = _emit_row_filter_report_for_artifact(
+        artifact_dir=artifact_dir_path, dataset_path=Path(dataset_path)
+    )
+    metadata_payload["training_input_policy"] = "complete_rows_only"
+    metadata_payload["row_filter_report"] = {
+        "complete_row_count": int(row_filter_report.complete_row_count),
+        "excluded_row_count": int(row_filter_report.excluded_row_count),
+        "excluded_by_reason": dict(row_filter_report.excluded_by_reason),
+        "target_complete_row_count": row_filter_report.target_complete_row_count,
+        "report_path": str(artifact_dir_path / "row_filter_report.json"),
+    }
     metadata_path.write_text(json.dumps(metadata_payload, indent=2), encoding="utf-8")
     config_path.write_text(json.dumps(config.to_dict(), indent=2), encoding="utf-8")
     summary_text_path.write_text(_render_summary_text(metadata_payload), encoding="utf-8")
@@ -1981,10 +2017,22 @@ def train_linear_ridge_full_pose(
             "loss_report_plot_path": str(loss_report_plot_path),
             "split_manifest_path": str(split_manifest_path),
             "summary_text_path": str(summary_text_path),
+            "row_filter_report_path": str(artifact_dir_path / "row_filter_report.json"),
         },
     }
     if training_provenance:
         metadata_payload["training_provenance"] = dict(training_provenance)
+    row_filter_report = _emit_row_filter_report_for_artifact(
+        artifact_dir=artifact_dir_path, dataset_path=Path(dataset_path)
+    )
+    metadata_payload["training_input_policy"] = "complete_rows_only"
+    metadata_payload["row_filter_report"] = {
+        "complete_row_count": int(row_filter_report.complete_row_count),
+        "excluded_row_count": int(row_filter_report.excluded_row_count),
+        "excluded_by_reason": dict(row_filter_report.excluded_by_reason),
+        "target_complete_row_count": row_filter_report.target_complete_row_count,
+        "report_path": str(artifact_dir_path / "row_filter_report.json"),
+    }
     metadata_path.write_text(json.dumps(metadata_payload, indent=2), encoding="utf-8")
     config_path.write_text(json.dumps(config_dump, indent=2), encoding="utf-8")
     summary_text_path.write_text(_render_summary_text(metadata_payload), encoding="utf-8")
@@ -2052,6 +2100,7 @@ def run_model_sweep(
         artifact_name=f"{base_config.artifact_name.strip()}_model_sweep",
     )
     sweep_root.mkdir(parents=True, exist_ok=False)
+    _emit_row_filter_report_for_artifact(artifact_dir=sweep_root, dataset_path=Path(dataset_path))
     shared_split_path = sweep_root / "shared_split_manifest.json"
     shared_split_path.write_text(
         json.dumps(
@@ -2293,6 +2342,8 @@ def _load_export_rows(path: Path) -> list[dict[str, Any]]:
 
 
 def _row_filter_reason(row: dict[str, Any]) -> str | None:
+    if bool(row.get("modeling_export_exclude")):
+        return "modeling_export_exclude"
     command = np.asarray(row.get("resolved_cable_command_cm", []) or [], dtype=float)
     position = np.asarray(row.get("tip_position_xyz_mm", []) or [], dtype=float)
     tangent = np.asarray(row.get("tip_tangent_xyz", []) or [], dtype=float)
@@ -2309,6 +2360,117 @@ def _row_filter_reason(row: dict[str, Any]) -> str | None:
     if np.abs(tangent).max(initial=0.0) > LEGACY_TANGENT_THRESHOLD_RAD:
         return "legacy_tangent_threshold"
     return None
+
+
+def validate_legacy_ann_rows(
+    run_dir: Path,
+    *,
+    min_complete_rows: int = MIN_COMPLETE_ROWS_FOR_TRAINING,
+) -> RowFilterReport:
+    """Apply the ``complete_rows_only`` policy to one run and return a structured report.
+
+    Operators use this from the "Validate rows for ANN" button and from the CLI to confirm
+    how many rows will be trained on, why incomplete rows were dropped, and whether the
+    row count meets the recommended training minimum.
+    """
+    run_dir = Path(run_dir)
+    export_path = run_dir / "modeling_dataset_export.jsonl"
+    if not export_path.exists():
+        return RowFilterReport(
+            export_path=None,
+            total_export_rows=0,
+            accepted_export_rows=0,
+            complete_row_count=0,
+            excluded_row_count=0,
+            excluded_by_reason={},
+            target_complete_row_count=None,
+            can_train=False,
+            block_reason="No modeling_dataset_export.jsonl in run folder.",
+        )
+    rows = _load_export_rows(run_dir)
+    accepted_rows = [row for row in rows if bool(row.get("accepted"))]
+    complete = 0
+    excluded_by_reason: dict[str, int] = {}
+    for row in accepted_rows:
+        reason = _row_filter_reason(row)
+        if reason is None:
+            complete += 1
+        else:
+            excluded_by_reason[reason] = excluded_by_reason.get(reason, 0) + 1
+    excluded = sum(int(v) for v in excluded_by_reason.values())
+
+    target_complete_row_count: int | None = None
+    summary_path = run_dir / "summary.json"
+    if summary_path.is_file():
+        try:
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
+            metrics = payload.get("experiment_metrics", {}) if isinstance(payload, dict) else {}
+            raw = metrics.get("target_valid_sample_count")
+            if raw in (None, ""):
+                raw = metrics.get("complete_training_row_count")
+            if raw not in (None, ""):
+                target_complete_row_count = int(raw)
+        except Exception:
+            target_complete_row_count = None
+
+    block_reason: str | None = None
+    can_train = True
+    if complete <= 0:
+        can_train = False
+        block_reason = "0 complete rows after row-level filtering."
+    elif complete < int(min_complete_rows):
+        can_train = False
+        block_reason = (
+            f"{complete} complete rows are below the {int(min_complete_rows)}-row training minimum."
+        )
+    return RowFilterReport(
+        export_path=export_path,
+        total_export_rows=len(rows),
+        accepted_export_rows=len(accepted_rows),
+        complete_row_count=int(complete),
+        excluded_row_count=int(excluded),
+        excluded_by_reason=dict(excluded_by_reason),
+        target_complete_row_count=target_complete_row_count,
+        can_train=bool(can_train),
+        block_reason=block_reason,
+    )
+
+
+def _write_row_filter_report(path: Path, report: RowFilterReport, *, dataset_path: Path) -> None:
+    """Persist a row-filter report next to a training artifact for later audit."""
+    payload = {
+        "training_input_policy": "complete_rows_only",
+        "dataset_path": str(dataset_path),
+        "export_path": str(report.export_path) if report.export_path is not None else None,
+        "total_export_rows": int(report.total_export_rows),
+        "accepted_export_rows": int(report.accepted_export_rows),
+        "complete_row_count": int(report.complete_row_count),
+        "excluded_row_count": int(report.excluded_row_count),
+        "excluded_by_reason": dict(report.excluded_by_reason),
+        "target_complete_row_count": report.target_complete_row_count,
+        "can_train": bool(report.can_train),
+        "block_reason": report.block_reason,
+        "min_complete_rows_recommended": int(MIN_COMPLETE_ROWS_FOR_TRAINING),
+    }
+    Path(path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _emit_row_filter_report_for_artifact(
+    *, artifact_dir: Path, dataset_path: Path
+) -> RowFilterReport:
+    """Compute and write a row-filter report into an existing artifact directory.
+
+    Returns the report so callers can also persist its fields into ``training_metadata.json``.
+    Uses ``min_complete_rows=1`` so the report itself never refuses to emit; the
+    high-level catalog already drives the "trainable" decision before training starts.
+    """
+    report = validate_legacy_ann_rows(dataset_path, min_complete_rows=1)
+    _write_row_filter_report(
+        Path(artifact_dir) / "row_filter_report.json",
+        report,
+        dataset_path=dataset_path,
+    )
+    return report
 
 
 def _allocate_partition_counts(*, total: int, ratios: list[float]) -> list[int]:

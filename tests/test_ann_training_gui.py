@@ -436,3 +436,30 @@ def test_hidden_layers_preset_combo_updates_controller(tmp_path: Path) -> None:
     finally:
         window.close()
         controller.shutdown()
+
+
+def test_validate_rows_for_ann_button_runs_row_filter(tmp_path: Path) -> None:
+    """Clicking 'Validate rows for ANN' runs the filter and stores the report on the controller state."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    controller = AnnTrainingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+    )
+    controller.select_dataset(str(run_dir))
+    window = AnnTrainingWindow(controller)
+    try:
+        window.show()
+        window._refresh_state()
+        assert window.validate_rows_button.isEnabled()
+        window._on_validate_rows_clicked()
+        state = controller.refresh()
+        assert state.row_filter_report is not None
+        assert state.row_filter_report.complete_row_count >= 1
+        assert "Row filter" in state.row_filter_status_text
+        # Status label reflects the report so the operator can see counts at a glance.
+        assert window.row_filter_status_label.text() == state.row_filter_status_text
+    finally:
+        window.close()
+        controller.shutdown()

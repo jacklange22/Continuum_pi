@@ -16,6 +16,7 @@ from continuum_robot.modeling.ann_training import (
     ANN_TRAINING_CATEGORY_EXPLORATORY_ONLY,
     ANN_TRAINING_CATEGORY_TRAINABLE,
     ANN_TRAINING_CATEGORY_TRAINABLE_WITH_WARNINGS,
+    MIN_COMPLETE_ROWS_FOR_TRAINING,
     AnnTrainingConfig,
     ann_training_will_be_exploratory,
     build_grouped_split,
@@ -28,6 +29,7 @@ from continuum_robot.modeling.ann_training import (
     load_modeling_dataset_summary,
     parse_hidden_layers_text,
     prepare_legacy_ann_dataset,
+    validate_legacy_ann_rows,
     validate_training_config,
 )
 
@@ -673,3 +675,193 @@ def test_ann_run_review_debug_does_not_block_exploratory_training(tmp_path: Path
         summary, allow_exploratory_incomplete_target=True
     )
     assert summary.valid_for_model_training_flag is False
+
+
+# ---------------------------------------------------------------------------
+# Row-filter policy (complete_rows_only): RowFilterReport + validate_legacy_ann_rows.
+# ---------------------------------------------------------------------------
+
+
+def _write_run_with_export_rows(
+    tmp_path: Path,
+    *,
+    folder_name: str = "20260514_120000_row_filter_run",
+    complete_rows: int = 120,
+    incomplete_rows: int = 9,
+    target: int = 130,
+    extra_rows: list[dict] | None = None,
+    valid_for_model_training: bool = True,
+) -> Path:
+    """Build a real export fixture (complete rows + intentionally-incomplete rows)."""
+    run_dir = (
+        tmp_path / "data" / "experiments" / "collect_pose_command_dataset" / folder_name
+    )
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "experiment_name": "collect_pose_command_dataset",
+                "run_id": folder_name,
+                "timestamp_utc": "2026-05-14T12:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "experiment_name": "collect_pose_command_dataset",
+                "run_id": folder_name,
+                "success": True,
+                "sample_counts": {"total": complete_rows + incomplete_rows + len(extra_rows or [])},
+                "status": "success",
+                "experiment_metrics": {
+                    "dataset_mode": "workspace_coverage",
+                    "accepted_sample_count": complete_rows + incomplete_rows,
+                    "rejected_sample_count": 0,
+                    "run_trust_mode": "thesis_trusted",
+                    "valid_for_model_training": bool(valid_for_model_training),
+                    "target_valid_sample_count": int(target),
+                    "complete_training_row_count": int(complete_rows),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    with (run_dir / "modeling_dataset_export.jsonl").open("w", encoding="utf-8") as handle:
+        for i in range(complete_rows):
+            handle.write(
+                json.dumps(
+                    {
+                        "sequence_index": i,
+                        "step_index": i // 8,
+                        "sample_index": i,
+                        "accepted": True,
+                        "resolved_cable_command_cm": [0.001 * (i % 50), 0.002, 0.003, 0.004],
+                        "tip_position_xyz_mm": [1.0 + 0.01 * (i % 100), 2.0, 3.0],
+                        "tip_tangent_xyz": [0.01, 0.02, 0.03],
+                    }
+                )
+                + "\n"
+            )
+        for off in range(incomplete_rows):
+            # Accepted row but tip_position_xyz_mm is missing (the run 81842e42eca4 scenario).
+            handle.write(
+                json.dumps(
+                    {
+                        "sequence_index": complete_rows + off,
+                        "accepted": True,
+                        "resolved_cable_command_cm": [0.0, 0.0, 0.0, 0.0],
+                        "tip_position_xyz_mm": [],
+                        "tip_tangent_xyz": [],
+                    }
+                )
+                + "\n"
+            )
+        for extra in extra_rows or []:
+            handle.write(json.dumps(extra) + "\n")
+    return run_dir
+
+
+def test_validate_legacy_ann_rows_reports_complete_and_excluded_counts(tmp_path: Path) -> None:
+    """The row-filter report must mirror the run 81842e42eca4 shape: complete vs excluded + target."""
+    run_dir = _write_run_with_export_rows(tmp_path, complete_rows=120, incomplete_rows=9, target=130)
+    report = validate_legacy_ann_rows(run_dir)
+    assert report.complete_row_count == 120
+    assert report.excluded_row_count == 9
+    assert report.excluded_by_reason.get("missing_position") == 9
+    assert report.target_complete_row_count == 130
+    assert report.can_train is True
+    assert report.block_reason is None
+
+
+def test_validate_legacy_ann_rows_blocks_below_minimum(tmp_path: Path) -> None:
+    run_dir = _write_run_with_export_rows(tmp_path, complete_rows=10, incomplete_rows=0, target=100)
+    report = validate_legacy_ann_rows(run_dir, min_complete_rows=100)
+    assert report.complete_row_count == 10
+    assert report.can_train is False
+    assert "below" in (report.block_reason or "")
+
+
+def test_validate_legacy_ann_rows_blocks_zero_complete(tmp_path: Path) -> None:
+    run_dir = _write_run_with_export_rows(tmp_path, complete_rows=0, incomplete_rows=5)
+    report = validate_legacy_ann_rows(run_dir, min_complete_rows=1)
+    assert report.complete_row_count == 0
+    assert report.can_train is False
+    assert "0 complete rows" in (report.block_reason or "")
+
+
+def test_validate_legacy_ann_rows_missing_export_returns_block_reason(tmp_path: Path) -> None:
+    run_dir = tmp_path / "no_export"
+    run_dir.mkdir()
+    report = validate_legacy_ann_rows(run_dir)
+    assert report.export_path is None
+    assert report.can_train is False
+    assert "modeling_dataset_export.jsonl" in (report.block_reason or "")
+
+
+def test_row_filter_excludes_modeling_export_exclude_rows(tmp_path: Path) -> None:
+    """Rows tagged ``modeling_export_exclude=true`` must be excluded by reason name."""
+    extra = [
+        {
+            "sequence_index": 1000 + i,
+            "accepted": True,
+            "modeling_export_exclude": True,
+            "resolved_cable_command_cm": [0.01, 0.02, 0.03, 0.04],
+            "tip_position_xyz_mm": [1.0, 2.0, 3.0],
+            "tip_tangent_xyz": [0.01, 0.02, 0.03],
+        }
+        for i in range(3)
+    ]
+    run_dir = _write_run_with_export_rows(
+        tmp_path, complete_rows=20, incomplete_rows=0, extra_rows=extra
+    )
+    report = validate_legacy_ann_rows(run_dir, min_complete_rows=1)
+    assert report.complete_row_count == 20
+    assert report.excluded_by_reason.get("modeling_export_exclude") == 3
+
+
+def test_min_complete_rows_for_training_constant_default() -> None:
+    assert MIN_COMPLETE_ROWS_FOR_TRAINING == 100
+
+
+# ---------------------------------------------------------------------------
+# Training writes a row_filter_report.json sidecar and stamps training_metadata.json.
+# ---------------------------------------------------------------------------
+
+
+def test_train_legacy_ann_writes_row_filter_sidecar(tmp_path: Path) -> None:
+    """End-to-end training on a small fixture saves row_filter_report.json next to artifacts."""
+    pytest.importorskip("torch")
+    run_dir = _write_run_with_export_rows(
+        tmp_path, complete_rows=20, incomplete_rows=2, target=22, valid_for_model_training=True
+    )
+    config = AnnTrainingConfig(
+        artifact_root=str(tmp_path / "data" / "models" / "ann"),
+        artifact_name="row_filter_smoke",
+        epochs=1,
+        batch_size=4,
+        train_ratio=0.7,
+        validation_ratio=0.2,
+        test_ratio=0.1,
+    )
+    result = training_module.train_legacy_ann(
+        project_root=tmp_path,
+        dataset_path=run_dir,
+        config=config,
+        backend_name="cpu",
+    )
+    sidecar = result.artifact_dir / "row_filter_report.json"
+    assert sidecar.exists()
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert payload["training_input_policy"] == "complete_rows_only"
+    assert payload["complete_row_count"] == 20
+    assert payload["excluded_row_count"] == 2
+    assert payload["excluded_by_reason"].get("missing_position") == 2
+    assert payload["target_complete_row_count"] == 22
+    meta = json.loads(result.metadata_path.read_text(encoding="utf-8"))
+    assert meta["training_input_policy"] == "complete_rows_only"
+    assert meta["row_filter_report"]["complete_row_count"] == 20
+    assert meta["files"]["row_filter_report_path"].endswith("row_filter_report.json")
