@@ -163,6 +163,13 @@ class CollectPoseCommandDatasetConfig:
     hysteresis_cycle_count: int = 2
     hysteresis_prior_family_count: int = 4
     repeatability_block_count: int = 3
+    # angular_test_mesh mode (Wolfe MS thesis §3.2.3 p85). Produces a θ × φ grid where
+    # the cable pair commands trace circles of constant bending angle at evenly spaced
+    # plane-rotation angles. With theta_count=12, phi_count=24, samples_per_command=5,
+    # the schedule is the 288-position × 5-rep mesh Wolfe used to compare models.
+    test_mesh_theta_count: int = 12
+    test_mesh_phi_count: int = 24
+    test_mesh_amplitude_cm: float | None = None  # None ⇒ workspace_amplitude_cm
     allow_lower_trust_runtime_tip: bool = False
     allow_lower_trust_pretension: bool = False
     allow_no_tracker_test_run: bool = False
@@ -247,6 +254,13 @@ class CollectPoseCommandDatasetConfig:
             hysteresis_cycle_count=max(1, int(payload.get("hysteresis_cycle_count", 2))),
             hysteresis_prior_family_count=max(2, int(payload.get("hysteresis_prior_family_count", 4))),
             repeatability_block_count=max(1, int(payload.get("repeatability_block_count", 3))),
+            test_mesh_theta_count=max(2, int(payload.get("test_mesh_theta_count", 12))),
+            test_mesh_phi_count=max(3, int(payload.get("test_mesh_phi_count", 24))),
+            test_mesh_amplitude_cm=(
+                float(payload["test_mesh_amplitude_cm"])
+                if payload.get("test_mesh_amplitude_cm") not in (None, "")
+                else None
+            ),
             allow_lower_trust_runtime_tip=bool(payload.get("allow_lower_trust_runtime_tip", False)),
             allow_lower_trust_pretension=bool(payload.get("allow_lower_trust_pretension", False)),
             allow_no_tracker_test_run=bool(payload.get("allow_no_tracker_test_run", False)),
@@ -8429,7 +8443,7 @@ def _precheck_collect_pose_command_dataset(
                     raise RuntimeError(
                         f"Servo precheck failed: Servo {servo_id} is not ready for coordinated motion: {assessment.reason}"
                     )
-        if config.dataset_mode not in {"workspace_coverage", "hysteresis_path_dependence", "repeatability_linked"}:
+        if config.dataset_mode not in {"workspace_coverage", "hysteresis_path_dependence", "repeatability_linked", "angular_test_mesh"}:
             if not config.command_points and not bool(config.legacy_schedule_override):
                 raise RuntimeError(f"Unsupported modeling dataset mode: {config.dataset_mode}")
         return
@@ -8497,7 +8511,7 @@ def _precheck_collect_pose_command_dataset(
                 raise RuntimeError(
                     f"Servo precheck failed: Servo {servo_id} is not ready for coordinated motion: {assessment.reason}"
                 )
-    if config.dataset_mode not in {"workspace_coverage", "hysteresis_path_dependence", "repeatability_linked"}:
+    if config.dataset_mode not in {"workspace_coverage", "hysteresis_path_dependence", "repeatability_linked", "angular_test_mesh"}:
         if not config.command_points and not bool(config.legacy_schedule_override):
             raise RuntimeError(f"Unsupported modeling dataset mode: {config.dataset_mode}")
 
@@ -8671,7 +8685,76 @@ def _build_collect_pose_command_steps(
         return _build_collect_pose_workspace_steps(config=config, pair_limits=pair_limits)
     if config.dataset_mode == "hysteresis_path_dependence":
         return _build_collect_pose_hysteresis_steps(config=config, pair_limits=pair_limits)
+    if config.dataset_mode == "angular_test_mesh":
+        return _build_collect_pose_angular_test_mesh_steps(config=config, pair_limits=pair_limits)
     return _build_collect_pose_repeatability_linked_steps(config=config, pair_limits=pair_limits)
+
+
+def _build_collect_pose_angular_test_mesh_steps(
+    *,
+    config: CollectPoseCommandDatasetConfig,
+    pair_limits: dict[str, Any],
+) -> list[ModelingCommandStep]:
+    """Wolfe-style angular test mesh: θ × φ grid of constant-curvature targets.
+
+    Wolfe MS thesis §3.2.3 p85 evaluates models on a 12 × 24 grid where the cable
+    displacements come from pure-kinematics CC inverse:
+
+        Δℓ_i = -(d_{i,x} cos φ + d_{i,y} sin φ) · θ
+
+    For a 4-cable rig arranged at (±r, 0), (0, ±r), the differential pair-commands
+    reduce to ``pair_x = scale · sin(θ) · cos(φ)`` / ``pair_y = scale · sin(θ) · sin(φ)``
+    when ``scale`` represents the maximum per-pair displacement at θ = π/2. We use
+    ``sin(θ)`` rather than θ to keep the largest commands within the existing
+    workspace-amplitude bounds. The schedule is then ``theta_count × phi_count``
+    targets visited in order; ``samples_per_command`` (set to 5 for Wolfe's mesh)
+    captures each target multiple times.
+    """
+    theta_count = max(2, int(config.test_mesh_theta_count or 12))
+    phi_count = max(3, int(config.test_mesh_phi_count or 24))
+    amplitude_cm = float(
+        config.test_mesh_amplitude_cm
+        if config.test_mesh_amplitude_cm is not None
+        else config.workspace_amplitude_cm
+    )
+    bounds = list(
+        pair_limits.get(
+            "pair_bounds_cm",
+            [(-config.workspace_amplitude_cm, config.workspace_amplitude_cm)] * 2,
+        )
+        or []
+    )
+    pair_x_max = float(min(abs(bounds[0][0]), abs(bounds[0][1]))) if bounds else amplitude_cm
+    pair_y_max = float(min(abs(bounds[1][0]), abs(bounds[1][1]))) if len(bounds) > 1 else amplitude_cm
+    safe_amplitude = min(amplitude_cm, pair_x_max, pair_y_max)
+    steps: list[ModelingCommandStep] = []
+    index = 0
+    for k in range(1, theta_count + 1):
+        theta = math.pi / 2.0 * (k / float(theta_count))
+        radial = safe_amplitude * math.sin(theta)
+        for j in range(phi_count):
+            phi = 2.0 * math.pi * (j / float(phi_count))
+            pair_x = radial * math.cos(phi)
+            pair_y = radial * math.sin(phi)
+            steps.append(
+                ModelingCommandStep(
+                    index=index,
+                    phase="angular_test_mesh",
+                    label=f"mesh_{index:04d}_t{k:02d}_p{j:02d}",
+                    pair_command_cm=[pair_x, pair_y],
+                    cable_command_cm=_expand_pair_command_cm([pair_x, pair_y]),
+                    settle_time_s=float(config.settle_time_s),
+                    metadata={
+                        "mode_family": "angular_test_mesh",
+                        "theta_rad": theta,
+                        "phi_rad": phi,
+                        "theta_index": int(k),
+                        "phi_index": int(j),
+                    },
+                )
+            )
+            index += 1
+    return steps
 
 
 def _build_collect_pose_schedule_override_steps(config: CollectPoseCommandDatasetConfig) -> list[ModelingCommandStep]:
@@ -9381,6 +9464,13 @@ def _collect_pose_mode_summary(config: CollectPoseCommandDatasetConfig) -> str:
         return "Bounded workspace-coverage collection for first-pass forward-model training."
     if config.dataset_mode == "hysteresis_path_dependence":
         return "Ordered revisit protocol for state-aware and path-dependence modeling."
+    if config.dataset_mode == "angular_test_mesh":
+        theta_count = int(config.test_mesh_theta_count or 12)
+        phi_count = int(config.test_mesh_phi_count or 24)
+        return (
+            f"Wolfe-style angular test mesh ({theta_count}×{phi_count} θ×φ grid, "
+            f"{int(config.samples_per_command)} reps/cell) for thesis-grade model evaluation."
+        )
     return "Repeated trusted startup blocks for cross-revision modeling comparisons."
 
 
