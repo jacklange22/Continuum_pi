@@ -2,6 +2,10 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
+
+pytestmark = pytest.mark.gui
+
 from PySide6.QtWidgets import QApplication
 
 from continuum_robot.gui.experiment_visualization import ScatterSeries3D

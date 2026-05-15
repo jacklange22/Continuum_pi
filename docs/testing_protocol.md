@@ -110,6 +110,8 @@ For GUI-specific work:
 scripts/run_tests.sh gui
 ```
 
+The `gui` marker is registered in `pyproject.toml` and applied at module scope to the Qt-dependent test files (`test_gui_*.py`, `test_*_gui.py`, `test_no_wheel_combo_box.py`, `test_visualization_widgets.py`, `test_experiment_visualization_widget.py`). `full-nongui` runs `pytest -m "not gui"` and therefore actually skips the GUI suite. Tests that only need PySide6 inside a single test body (via `pytest.importorskip`) should NOT carry the module-level marker.
+
 ## Notes
 
 - Prefer the wrapper over individual scripts for normal lab use.

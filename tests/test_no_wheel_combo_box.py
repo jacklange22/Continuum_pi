@@ -8,6 +8,8 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+pytestmark = pytest.mark.gui
+
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtTest import QTest

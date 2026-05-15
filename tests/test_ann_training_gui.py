@@ -12,6 +12,8 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+pytestmark = pytest.mark.gui
+
 from PySide6.QtWidgets import QApplication
 
 from continuum_robot.gui.controllers import ann_training_controller as controller_module

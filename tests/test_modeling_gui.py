@@ -12,6 +12,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
 
+pytestmark = pytest.mark.gui
+
 from PySide6.QtWidgets import QApplication, QScrollArea
 
 from continuum_robot.gui.controllers.ann_training_controller import AnnTrainingController
