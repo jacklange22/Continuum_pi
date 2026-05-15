@@ -20,7 +20,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from continuum_robot.gui.controllers.modeling_controller import ModelingController, ModelingViewState
+from continuum_robot.gui.controllers.modeling_controller import (
+    HeadlineMetric,
+    ModelingController,
+    ModelingViewState,
+)
 from continuum_robot.gui.theme import COLORS, grouped_workspace_stylesheet
 from continuum_robot.gui.widgets.experiment_results_widget import ExperimentResultsWidget
 
@@ -179,40 +183,56 @@ class ModelingTab(QWidget):
         controls_card.body_layout.addLayout(action_row)
         left.addWidget(controls_card)
 
-        # Two-segment work moved to its own tab (TwoSegmentModelingTab). This tab now
+        # Two-segment work moved to its own tab (TwoSegmentModelingTab). This tab
         # focuses exclusively on the single-segment forward-comparison workflow
         # (Mike / Camarillo / ANN cable → tip pose).
 
-        results_card = _Card(
-            "Comparison Summary",
-            "Per-model position RMSE up top, side-by-side error views in the tabs below.",
+        # ── Right column: three clearly-separated cards ────────────────────────
+        #   1) Headline — big color-coded per-model RMSE blocks (the answer at-a-glance)
+        #   2) Details  — scope, per-axis breakdown, same-session caveat
+        #   3) Plots    — workspace overlay, histograms, heatmaps, loss curve
+        headline_card = _Card(
+            "Per-Model RMSE",
+            "Surgical target: ≤1mm (green). 1–3mm amber. >3mm red.",
         )
         self.status_label = QLabel("Select a dataset, choose models, then run a comparison.")
         self.status_label.setWordWrap(True)
-        self.status_label.setStyleSheet(f"color: {COLORS.text_primary};")
-        results_card.body_layout.addWidget(self.status_label)
+        self.status_label.setStyleSheet(f"color: {COLORS.text_secondary};")
+        headline_card.body_layout.addWidget(self.status_label)
+        self.headline_metrics_widget = _HeadlineMetricsWidget()
+        headline_card.body_layout.addWidget(self.headline_metrics_widget)
         # Same-session caveat chip. Visible when the test split is drawn from the
         # training run (default behavior). Tells the operator at a glance that the
         # numbers aren't from a separate test-mesh acquisition.
         self.same_session_chip = QLabel(
-            "Same-session evaluation — test samples come from the training dataset. "
-            "Run a separate test acquisition for thesis-grade numbers."
+            "⚠ Same-session evaluation — test samples come from the training dataset. "
+            "Collect a separate test acquisition for thesis-grade numbers."
         )
         self.same_session_chip.setWordWrap(True)
         self.same_session_chip.setStyleSheet(
             f"color: {COLORS.warning_fg}; background: {COLORS.warning_bg}; "
-            f"border: 1px solid {COLORS.warning_fg}; border-radius: 6px; padding: 6px 10px;"
+            f"border: 1px solid {COLORS.warning_fg}; border-radius: 8px; "
+            f"padding: 8px 12px; font-weight: 500;"
         )
         self.same_session_chip.setVisible(False)
-        results_card.body_layout.addWidget(self.same_session_chip)
-        # Headline RMSE row — per-model big number, the answer to "how well is each model running."
-        self.headline_pairs = _PairsWidget()
-        results_card.body_layout.addWidget(self.headline_pairs)
+        headline_card.body_layout.addWidget(self.same_session_chip)
+        right.addWidget(headline_card)
+
+        details_card = _Card(
+            "Details",
+            "Scope, per-axis breakdown, and any saved-output paths.",
+        )
         self.evaluation_pairs = _PairsWidget()
-        results_card.body_layout.addWidget(self.evaluation_pairs)
+        details_card.body_layout.addWidget(self.evaluation_pairs)
+        right.addWidget(details_card)
+
+        plots_card = _Card(
+            "Plots",
+            "Workspace overlay, error histograms, spatial heatmaps, and ANN loss curve.",
+        )
         self.results_widget = ExperimentResultsWidget()
-        results_card.body_layout.addWidget(self.results_widget)
-        right.addWidget(results_card, 1)
+        plots_card.body_layout.addWidget(self.results_widget)
+        right.addWidget(plots_card, 1)
 
     def update(self, state: ModelingViewState) -> None:
         self._sync_dataset_list(state)
@@ -220,10 +240,10 @@ class ModelingTab(QWidget):
         self.dataset_pairs.set_pairs(state.dataset_summary_pairs)
         self.artifact_pairs.set_pairs(state.artifact_summary_pairs)
         self.evaluation_pairs.set_pairs(state.evaluation_summary_pairs)
-        self.headline_pairs.set_pairs(state.headline_rmse_pairs)
+        self.headline_metrics_widget.set_metrics(state.headline_metrics)
         # Show the chip only after an evaluation has actually run on a same-session split.
         self.same_session_chip.setVisible(
-            bool(state.last_eval_same_session and state.headline_rmse_pairs)
+            bool(state.last_eval_same_session and state.headline_metrics)
         )
         self.results_widget.set_model(state.visualization_model)
         self.status_label.setText(state.status_message)
@@ -385,3 +405,103 @@ class _PairsWidget(QWidget):
             row_layout.addWidget(val, 2)
             self.layout_.addWidget(row)
         self.layout_.addStretch(1)
+
+
+# Color thresholds — matched to surgical-accuracy convention (Wolfe §3.2.4 p86
+# cites sub-millimeter as the surgical threshold). The amber tier covers Wolfe's
+# 2.24mm result; red is everything worse than that.
+_HEADLINE_THRESHOLD_GREEN_MM = 1.0
+_HEADLINE_THRESHOLD_AMBER_MM = 3.0
+
+
+def _headline_color_for_rmse(rmse_mm: float | None) -> tuple[str, str]:
+    """Return ``(border_color, accent_color)`` for the headline tile."""
+    if rmse_mm is None:
+        return (COLORS.text_muted, COLORS.text_muted)
+    if rmse_mm <= _HEADLINE_THRESHOLD_GREEN_MM:
+        return ("#16a34a", "#86efac")  # green
+    if rmse_mm <= _HEADLINE_THRESHOLD_AMBER_MM:
+        return ("#d97706", "#fcd34d")  # amber
+    return ("#dc2626", "#fca5a5")  # red
+
+
+class _HeadlineMetricsWidget(QWidget):
+    """Big color-coded per-model RMSE tiles.
+
+    Each completed model gets a tile: small label up top, big mm number in the
+    middle, threshold-coded border + accent. Models that ran but came back
+    unavailable get a muted tile with the reason.
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._signature: tuple = ()
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(0, 4, 0, 4)
+        self._layout.setSpacing(10)
+        self._empty_label = QLabel("Run a comparison to see per-model RMSE.")
+        self._empty_label.setStyleSheet(f"color: {COLORS.text_muted}; font-style: italic;")
+        self._layout.addWidget(self._empty_label)
+
+    def set_metrics(self, metrics: list[HeadlineMetric]) -> None:
+        signature = tuple(
+            (m.label, m.model_key, m.rmse_mm, m.status, m.reason) for m in metrics
+        )
+        if signature == self._signature:
+            return
+        self._signature = signature
+        # Clear previous tiles.
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        if not metrics:
+            self._empty_label = QLabel("Run a comparison to see per-model RMSE.")
+            self._empty_label.setStyleSheet(
+                f"color: {COLORS.text_muted}; font-style: italic;"
+            )
+            self._layout.addWidget(self._empty_label)
+            return
+        for metric in metrics:
+            tile = self._build_tile(metric)
+            self._layout.addWidget(tile, 1)
+
+    @staticmethod
+    def _build_tile(metric: HeadlineMetric) -> QFrame:
+        border_color, accent_color = _headline_color_for_rmse(metric.rmse_mm)
+        tile = QFrame()
+        tile.setStyleSheet(
+            f"background: {COLORS.surface_bg}; border: 2px solid {border_color}; "
+            f"border-radius: 12px;"
+        )
+        layout = QVBoxLayout(tile)
+        layout.setContentsMargins(14, 10, 14, 12)
+        layout.setSpacing(2)
+        label = QLabel(metric.label)
+        label.setStyleSheet(
+            f"color: {COLORS.text_muted}; font-weight: 700; font-size: 11px; "
+            f"letter-spacing: 0.6px;"
+        )
+        layout.addWidget(label)
+        if metric.status == "completed" and metric.rmse_mm is not None:
+            value = QLabel(f"{metric.rmse_mm:.2f}")
+            value.setStyleSheet(
+                f"color: {accent_color}; font-weight: 800; font-size: 30px;"
+            )
+            layout.addWidget(value)
+            unit = QLabel("mm RMSE")
+            unit.setStyleSheet(f"color: {COLORS.text_secondary}; font-size: 11px;")
+            layout.addWidget(unit)
+        else:
+            value = QLabel("—")
+            value.setStyleSheet(
+                f"color: {COLORS.text_muted}; font-weight: 600; font-size: 30px;"
+            )
+            layout.addWidget(value)
+            reason = QLabel(metric.reason or metric.status or "unavailable")
+            reason.setStyleSheet(f"color: {COLORS.text_muted}; font-size: 10px;")
+            reason.setWordWrap(True)
+            layout.addWidget(reason)
+        layout.addStretch(1)
+        return tile

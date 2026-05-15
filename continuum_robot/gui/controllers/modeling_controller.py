@@ -34,6 +34,22 @@ from continuum_robot.modeling.two_segment import (
 )
 
 
+@dataclass(frozen=True)
+class HeadlineMetric:
+    """One per-model RMSE for the big-number headline row in the Modeling tab.
+
+    The tab uses ``rmse_mm`` to color-code the block (green ≤ 1mm, amber ≤ 3mm,
+    red > 3mm) so the operator gets at-a-glance verdict on each model's performance
+    against the sub-millimeter surgical-accuracy target.
+    """
+
+    label: str
+    model_key: str
+    rmse_mm: float | None
+    status: str
+    reason: str = ""
+
+
 @dataclass
 class ModelingViewState:
     """UI-facing modeling tab snapshot."""
@@ -46,6 +62,7 @@ class ModelingViewState:
     artifact_summary_pairs: list[tuple[str, str]] = field(default_factory=list)
     evaluation_summary_pairs: list[tuple[str, str]] = field(default_factory=list)
     headline_rmse_pairs: list[tuple[str, str]] = field(default_factory=list)
+    headline_metrics: list[HeadlineMetric] = field(default_factory=list)
     include_mike: bool = True
     include_camarillo: bool = True
     include_ann: bool = True
@@ -176,6 +193,7 @@ class ModelingController:
             self.state.artifact_summary_pairs = build_artifact_summary_pairs(selected_artifact_details)
             self.state.evaluation_summary_pairs = build_evaluation_summary_pairs(self._last_result)
             self.state.headline_rmse_pairs = self._build_headline_rmse_pairs(self._last_result)
+            self.state.headline_metrics = self._build_headline_metrics(self._last_result)
             self.state.last_eval_same_session = self._eval_used_same_session(self._last_result)
             self.state.include_mike = bool(self.config.include_mike)
             self.state.include_camarillo = bool(self.config.include_camarillo)
@@ -430,6 +448,36 @@ class ModelingController:
                 f"Modeling comparison saved to {result.output_dir.name} "
                 f"using {result.selected_sample_count} samples."
             )
+
+    @staticmethod
+    def _build_headline_metrics(
+        result: ModelingEvaluationResult | None,
+    ) -> list[HeadlineMetric]:
+        """Structured per-model metrics for the big-number headline row.
+
+        Carries enough information for the UI to color-code each block by RMSE
+        threshold and to render "unavailable" tiles with a clear reason rather
+        than blanks.
+        """
+        if result is None:
+            return []
+        out: list[HeadlineMetric] = []
+        for evaluation in result.model_evaluations.values():
+            metrics = evaluation.metrics
+            out.append(
+                HeadlineMetric(
+                    label=metrics.label,
+                    model_key=metrics.model_key,
+                    rmse_mm=(
+                        float(metrics.position_rmse_mm)
+                        if metrics.status == "completed" and metrics.position_rmse_mm is not None
+                        else None
+                    ),
+                    status=str(metrics.status),
+                    reason=str(metrics.reason or ""),
+                )
+            )
+        return out
 
     @staticmethod
     def _build_headline_rmse_pairs(

@@ -333,6 +333,66 @@ def test_two_segment_controller_and_tab_expose_dataset_discovery(tmp_path: Path)
         controller.shutdown()
 
 
+def test_modeling_tab_headline_tile_colors(tmp_path: Path) -> None:
+    """Per-model RMSE tiles must color-code by surgical-accuracy threshold."""
+    from continuum_robot.gui.tabs.modeling_tab import _headline_color_for_rmse
+
+    # Sub-millimeter — green
+    green_border, _ = _headline_color_for_rmse(0.8)
+    assert green_border == "#16a34a"
+    # Wolfe's 2.24 mm — amber
+    amber_border, _ = _headline_color_for_rmse(2.24)
+    assert amber_border == "#d97706"
+    # 9.5 mm constant-curvature — red
+    red_border, _ = _headline_color_for_rmse(9.5)
+    assert red_border == "#dc2626"
+    # No value — muted/grey
+    muted_border, _ = _headline_color_for_rmse(None)
+    assert muted_border  # any non-empty color
+
+
+def test_modeling_tab_headline_widget_renders_tiles(tmp_path: Path) -> None:
+    """Setting headline metrics on the widget produces one tile per model."""
+    from continuum_robot.gui.controllers.modeling_controller import HeadlineMetric
+    from continuum_robot.gui.tabs.modeling_tab import _HeadlineMetricsWidget
+
+    _app()
+    widget = _HeadlineMetricsWidget()
+    widget.show()
+    widget.set_metrics(
+        [
+            HeadlineMetric(label="Mike", model_key="mike", rmse_mm=9.5, status="completed"),
+            HeadlineMetric(label="Camarillo", model_key="camarillo", rmse_mm=9.46, status="completed"),
+            HeadlineMetric(label="ANN", model_key="ann", rmse_mm=2.24, status="completed"),
+        ]
+    )
+    # One tile per metric — _layout.count() reflects the tile count exactly.
+    assert widget._layout.count() == 3
+    # Idempotent on identical input.
+    widget.set_metrics(
+        [
+            HeadlineMetric(label="Mike", model_key="mike", rmse_mm=9.5, status="completed"),
+            HeadlineMetric(label="Camarillo", model_key="camarillo", rmse_mm=9.46, status="completed"),
+            HeadlineMetric(label="ANN", model_key="ann", rmse_mm=2.24, status="completed"),
+        ]
+    )
+    assert widget._layout.count() == 3
+    # Unavailable tiles render too, with a reason.
+    widget.set_metrics(
+        [
+            HeadlineMetric(
+                label="ANN",
+                model_key="ann",
+                rmse_mm=None,
+                status="unavailable",
+                reason="No ANN artifact selected.",
+            ),
+        ]
+    )
+    assert widget._layout.count() == 1
+    widget.close()
+
+
 def test_modeling_tab_no_longer_has_two_segment_widgets(tmp_path: Path) -> None:
     """Sanity check: ModelingTab is single-segment only after the split."""
     _app()
