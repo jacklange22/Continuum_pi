@@ -1,0 +1,23 @@
+{
+  "experiment": "collect_pose_command_dataset",
+  "failed_servo_id": 1,
+  "missing_fields": [
+    "present_position",
+    "operating_mode",
+    "hardware_error_status"
+  ],
+  "telemetry_read_source": "experiment_owned",
+  "telemetry_bus_owner_during_read": "collect_pose_command_dataset_precheck",
+  "fresh_precheck_read_attempted": true,
+  "exclusive_bus_owner_snapshot": null,
+  "exclusive_bus_active": false,
+  "assessment_reason": "Present Position is unavailable. | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | read 0x0B failed: (5, 'Input/output error') | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | Current telemetry is unavailable. | Input voltage telemetry is unavailable. | Temperature telemetry is unavailable. | Operating Mode is unavailable.",
+  "assessment_blocking_reasons": [
+    "Present Position is unavailable.",
+    "[TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | [TxRxResult] Port is in use! | read 0x0B failed: (5, 'Input/output error') | [TxRxResult] Port is in use! | [TxRxResult] Port is in use!",
+    "Current telemetry is unavailable.",
+    "Input voltage telemetry is unavailable.",
+    "Temperature telemetry is unavailable.",
+    "Operating Mode is unavailable."
+  ]
+}

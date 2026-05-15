@@ -1,0 +1,13 @@
+schedule_type: single_axis_micro
+dry_run: false
+max_segment_displacement_mm: 0.1
+max_tick_delta_from_startup: 20
+samples_per_pattern: 1
+capture_repeats: 1
+settle_time_s: 0.0
+allow_servo_only_test_run: true
+run_trust_mode: servo_only
+capture_tracker_snapshot: true
+requested_tool_roles: {}
+run_label: ''
+dataset_tag: ''

@@ -1,0 +1,155 @@
+{
+  "accepted_sample_count": 17,
+  "command_range_per_tendon_cm": {
+    "tendon_1": {
+      "max": 0.43749999999999983,
+      "min": -0.43749999999999983,
+      "span": 0.8749999999999997
+    },
+    "tendon_2": {
+      "max": 0.30714567962451594,
+      "min": -0.466368930015645,
+      "span": 0.7735146096401609
+    },
+    "tendon_3": {
+      "max": 0.43749999999999983,
+      "min": -0.43749999999999983,
+      "span": 0.8749999999999997
+    },
+    "tendon_4": {
+      "max": 0.466368930015645,
+      "min": -0.30714567962451594,
+      "span": 0.7735146096401609
+    }
+  },
+  "dropped_post_motion_telemetry_samples": 0,
+  "dropped_pre_motion_telemetry_samples": 0,
+  "failure_count": 0,
+  "high_current_warning": false,
+  "max_abs_current_ma": 554,
+  "max_abs_current_ma_by_servo": {
+    "1": 505,
+    "2": 554,
+    "3": 254,
+    "4": 123
+  },
+  "max_current_warning_ma": 800,
+  "mean_abs_current_ma_by_servo": {
+    "1": 153.7058823529412,
+    "2": 102.5,
+    "3": 68.55882352941177,
+    "4": 32.911764705882355
+  },
+  "measured_xyz_range_mm": {
+    "x": {
+      "max": 8.807071811082423,
+      "min": -13.22920870792867,
+      "span": 22.036280519011093
+    },
+    "y": {
+      "max": 11.355994757097704,
+      "min": -8.854867452991186,
+      "span": 20.21086221008889
+    },
+    "z": {
+      "max": 68.44797064512585,
+      "min": 66.09210123079355,
+      "span": 2.355869414332304
+    }
+  },
+  "next_command_index_to_resume": 16,
+  "peak_current_sample_by_servo": {
+    "1": {
+      "abs_current_ma": 505,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.18749999999999994,
+        -0.06279609020338711,
+        -0.18749999999999994,
+        0.06279609020338711
+      ],
+      "resolved_pair_command_cm": [
+        0.18749999999999994,
+        -0.06279609020338711
+      ],
+      "sample_index": 0,
+      "sequence_index": 14,
+      "source": "servo_feedback_at_command",
+      "step_index": 13
+    },
+    "2": {
+      "abs_current_ma": 554,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.0,
+        -0.19732037014080644,
+        -0.0,
+        0.19732037014080644
+      ],
+      "resolved_pair_command_cm": [
+        0.0,
+        -0.19732037014080644
+      ],
+      "sample_index": 0,
+      "sequence_index": 2,
+      "source": "servo_feedback_at_command",
+      "step_index": 1
+    },
+    "3": {
+      "abs_current_ma": 254,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.18749999999999994,
+        -0.06279609020338711,
+        -0.18749999999999994,
+        0.06279609020338711
+      ],
+      "resolved_pair_command_cm": [
+        0.18749999999999994,
+        -0.06279609020338711
+      ],
+      "sample_index": 0,
+      "sequence_index": 14,
+      "source": "servo_feedback_at_command",
+      "step_index": 13
+    },
+    "4": {
+      "abs_current_ma": 123,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        -0.43749999999999983,
+        0.30714567962451594,
+        0.43749999999999983,
+        -0.30714567962451594
+      ],
+      "resolved_pair_command_cm": [
+        -0.43749999999999983,
+        0.30714567962451594
+      ],
+      "sample_index": 0,
+      "sequence_index": 9,
+      "source": "servo_feedback_at_command",
+      "step_index": 8
+    }
+  },
+  "recommendation": "needs_more_coverage",
+  "recovered_packet_error_count": 0,
+  "rejected_sample_count": 0,
+  "sample_rate_stats": {
+    "max_dt_s": 1.532028312998591,
+    "mean_dt_s": 1.4835274331253459,
+    "mean_hz": 0.6740690988728809,
+    "min_dt_s": 1.4231215840118239,
+    "sample_count": 17
+  },
+  "schema_version": "collect_pose_dataset_quality_v1",
+  "servo_telemetry_retry_count": 0,
+  "tracker_stale_count": 0,
+  "trainability_status": {
+    "not_model_training_ready": false,
+    "run_trust_mode": "thesis_trusted",
+    "valid_for_model_training": true
+  },
+  "unrecovered_packet_error_count": 0,
+  "write_goal_packet_error_count": 0
+}

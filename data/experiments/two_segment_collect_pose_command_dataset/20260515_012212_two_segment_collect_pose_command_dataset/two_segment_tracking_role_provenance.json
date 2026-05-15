@@ -1,0 +1,40 @@
+{
+  "two_segment_tracking_role_config": {
+    "registration_probe": {
+      "role_name": "registration_probe",
+      "tool_id": "0B",
+      "physical_meaning": "Pivot-calibrated registration/pen probe used for registration and pivot workflows.",
+      "pose_kind": "calibrated_tip",
+      "required_for_two_segment_model_training": false,
+      "required_for_control": false,
+      "trust_level": "registration_workflow",
+      "source": "registration.yaml",
+      "max_age_s": null,
+      "enabled": true
+    },
+    "distal_tip": {
+      "role_name": "distal_tip",
+      "tool_id": "0A",
+      "physical_meaning": "Distal/top robot coil or calibrated physical distal tip used as the primary two-segment output label.",
+      "pose_kind": "calibrated_tip",
+      "required_for_two_segment_model_training": true,
+      "required_for_control": false,
+      "trust_level": "runtime_tip_policy",
+      "source": "registration.yaml",
+      "max_age_s": 0.15,
+      "enabled": true
+    }
+  },
+  "pose_label_summary": {
+    "pose_observation_sample_count": 9,
+    "distal_pose_sample_count": 9,
+    "intermediate_pose_sample_count": 0,
+    "includes_intermediate_pose": false,
+    "distal_only": true,
+    "available_roles": [
+      "distal_tip",
+      "registration_probe"
+    ],
+    "missing_required_roles": []
+  }
+}

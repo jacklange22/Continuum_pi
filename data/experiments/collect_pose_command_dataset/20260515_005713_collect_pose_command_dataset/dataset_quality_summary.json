@@ -1,0 +1,155 @@
+{
+  "accepted_sample_count": 45,
+  "command_range_per_tendon_cm": {
+    "tendon_1": {
+      "max": 0.2812499999999998,
+      "min": -0.29062499999999974,
+      "span": 0.5718749999999995
+    },
+    "tendon_2": {
+      "max": 0.27777777777777746,
+      "min": -0.2925925925925923,
+      "span": 0.5703703703703698
+    },
+    "tendon_3": {
+      "max": 0.29062499999999974,
+      "min": -0.2812499999999998,
+      "span": 0.5718749999999995
+    },
+    "tendon_4": {
+      "max": 0.2925925925925923,
+      "min": -0.27777777777777746,
+      "span": 0.5703703703703698
+    }
+  },
+  "dropped_post_motion_telemetry_samples": 0,
+  "dropped_pre_motion_telemetry_samples": 0,
+  "failure_count": 0,
+  "high_current_warning": false,
+  "max_abs_current_ma": 597,
+  "max_abs_current_ma_by_servo": {
+    "5": 544,
+    "6": 597,
+    "7": 163,
+    "8": 157
+  },
+  "max_current_warning_ma": 800,
+  "mean_abs_current_ma_by_servo": {
+    "5": 130.9777777777778,
+    "6": 86.24444444444444,
+    "7": 47.855555555555554,
+    "8": 38.71111111111111
+  },
+  "measured_xyz_range_mm": {
+    "x": {
+      "max": 13.818157894006191,
+      "min": -10.419854223965274,
+      "span": 24.238012117971465
+    },
+    "y": {
+      "max": 11.558940846808,
+      "min": -9.92126090982164,
+      "span": 21.48020175662964
+    },
+    "z": {
+      "max": 68.99137461795327,
+      "min": 62.15210233737324,
+      "span": 6.839272280580026
+    }
+  },
+  "next_command_index_to_resume": 45,
+  "peak_current_sample_by_servo": {
+    "5": {
+      "abs_current_ma": 544,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        -0.2812499999999997,
+        0.05555555555555547,
+        0.2812499999999997,
+        -0.05555555555555547
+      ],
+      "resolved_pair_command_cm": [
+        -0.2812499999999997,
+        0.05555555555555547
+      ],
+      "sample_index": 0,
+      "sequence_index": 17,
+      "source": "servo_feedback_at_command",
+      "step_index": 16
+    },
+    "6": {
+      "abs_current_ma": 597,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        -0.07499999999999993,
+        -0.16666666666666652,
+        0.07499999999999993,
+        0.16666666666666652
+      ],
+      "resolved_pair_command_cm": [
+        -0.07499999999999993,
+        -0.16666666666666652
+      ],
+      "sample_index": 0,
+      "sequence_index": 7,
+      "source": "servo_feedback_at_command",
+      "step_index": 6
+    },
+    "7": {
+      "abs_current_ma": 163,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        -0.2812499999999997,
+        0.05555555555555547,
+        0.2812499999999997,
+        -0.05555555555555547
+      ],
+      "resolved_pair_command_cm": [
+        -0.2812499999999997,
+        0.05555555555555547
+      ],
+      "sample_index": 0,
+      "sequence_index": 17,
+      "source": "servo_feedback_at_command",
+      "step_index": 16
+    },
+    "8": {
+      "abs_current_ma": 157,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.03749999999999998,
+        -0.2777777777777775,
+        -0.03749999999999998,
+        0.2777777777777775
+      ],
+      "resolved_pair_command_cm": [
+        0.03749999999999998,
+        -0.2777777777777775
+      ],
+      "sample_index": 0,
+      "sequence_index": 10,
+      "source": "servo_feedback_at_command",
+      "step_index": 9
+    }
+  },
+  "recommendation": "needs_more_coverage",
+  "recovered_packet_error_count": 0,
+  "rejected_sample_count": 0,
+  "sample_rate_stats": {
+    "max_dt_s": 0.4299314450036036,
+    "mean_dt_s": 0.37214650713609776,
+    "mean_hz": 2.687113759835155,
+    "min_dt_s": 0.32463586899393704,
+    "sample_count": 45
+  },
+  "schema_version": "collect_pose_dataset_quality_v1",
+  "servo_telemetry_retry_count": 0,
+  "tracker_stale_count": 0,
+  "trainability_status": {
+    "not_model_training_ready": false,
+    "run_trust_mode": "thesis_trusted",
+    "valid_for_model_training": true
+  },
+  "unrecovered_packet_error_count": 0,
+  "write_goal_packet_error_count": 0
+}

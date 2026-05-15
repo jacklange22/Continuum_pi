@@ -1,0 +1,287 @@
+{
+  "accepted_sample_count": 8,
+  "command_range_per_tendon_cm": {
+    "tendon_1": {
+      "max": 0.5,
+      "min": -0.75,
+      "span": 1.25
+    },
+    "tendon_2": {
+      "max": 0.5555555555555554,
+      "min": -0.7777777777777778,
+      "span": 1.333333333333333
+    },
+    "tendon_3": {
+      "max": 0.75,
+      "min": -0.5,
+      "span": 1.25
+    },
+    "tendon_4": {
+      "max": 0.7777777777777778,
+      "min": -0.5555555555555554,
+      "span": 1.333333333333333
+    },
+    "tendon_5": {
+      "max": 0.5,
+      "min": -0.75,
+      "span": 1.25
+    },
+    "tendon_6": {
+      "max": 0.5555555555555554,
+      "min": -0.7777777777777778,
+      "span": 1.333333333333333
+    },
+    "tendon_7": {
+      "max": 0.75,
+      "min": -0.5,
+      "span": 1.25
+    },
+    "tendon_8": {
+      "max": 0.7777777777777778,
+      "min": -0.5555555555555554,
+      "span": 1.333333333333333
+    }
+  },
+  "dropped_post_motion_telemetry_samples": 0,
+  "dropped_pre_motion_telemetry_samples": 0,
+  "failure_count": 1,
+  "high_current_warning": false,
+  "max_abs_current_ma": 299,
+  "max_abs_current_ma_by_servo": {
+    "1": 282,
+    "2": 240,
+    "3": 183,
+    "4": 103,
+    "5": 294,
+    "6": 299,
+    "7": 119,
+    "8": 188
+  },
+  "max_current_warning_ma": 800,
+  "mean_abs_current_ma_by_servo": {
+    "1": 71.75,
+    "2": 49.875,
+    "3": 35.75,
+    "4": 25.375,
+    "5": 58.8125,
+    "6": 75.9375,
+    "7": 36.1875,
+    "8": 38.875
+  },
+  "measured_xyz_range_mm": {
+    "x": {
+      "max": 33.67045484137191,
+      "min": -14.583178731794362,
+      "span": 48.25363357316627
+    },
+    "y": {
+      "max": 32.00930931714919,
+      "min": -25.0301348621538,
+      "span": 57.03944417930299
+    },
+    "z": {
+      "max": 65.96444599087054,
+      "min": 49.259168955325876,
+      "span": 16.70527703554467
+    }
+  },
+  "next_command_index_to_resume": 7,
+  "peak_current_sample_by_servo": {
+    "1": {
+      "abs_current_ma": 282,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.25,
+        0.5555555555555554,
+        -0.25,
+        -0.5555555555555554,
+        0.25,
+        0.5555555555555554,
+        -0.25,
+        -0.5555555555555554
+      ],
+      "resolved_pair_command_cm": [
+        0.25,
+        0.5555555555555554
+      ],
+      "sample_index": 0,
+      "sequence_index": 6,
+      "source": "servo_feedback_at_command",
+      "step_index": 5
+    },
+    "2": {
+      "abs_current_ma": 240,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.25,
+        0.5555555555555554,
+        -0.25,
+        -0.5555555555555554,
+        0.25,
+        0.5555555555555554,
+        -0.25,
+        -0.5555555555555554
+      ],
+      "resolved_pair_command_cm": [
+        0.25,
+        0.5555555555555554
+      ],
+      "sample_index": 0,
+      "sequence_index": 6,
+      "source": "servo_feedback_at_command",
+      "step_index": 5
+    },
+    "3": {
+      "abs_current_ma": 183,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.5,
+        -0.7777777777777778,
+        -0.5,
+        0.7777777777777778,
+        0.5,
+        -0.7777777777777778,
+        -0.5,
+        0.7777777777777778
+      ],
+      "resolved_pair_command_cm": [
+        0.5,
+        -0.7777777777777778
+      ],
+      "sample_index": 0,
+      "sequence_index": 4,
+      "source": "servo_feedback_at_command",
+      "step_index": 3
+    },
+    "4": {
+      "abs_current_ma": 103,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.5,
+        -0.7777777777777778,
+        -0.5,
+        0.7777777777777778,
+        0.5,
+        -0.7777777777777778,
+        -0.5,
+        0.7777777777777778
+      ],
+      "resolved_pair_command_cm": [
+        0.5,
+        -0.7777777777777778
+      ],
+      "sample_index": 0,
+      "sequence_index": 4,
+      "source": "servo_feedback_at_command",
+      "step_index": 3
+    },
+    "5": {
+      "abs_current_ma": 294,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        -0.75,
+        -0.11111111111111116,
+        0.75,
+        0.11111111111111116,
+        -0.75,
+        -0.11111111111111116,
+        0.75,
+        0.11111111111111116
+      ],
+      "resolved_pair_command_cm": [
+        -0.75,
+        -0.11111111111111116
+      ],
+      "sample_index": 0,
+      "sequence_index": 5,
+      "source": "servo_feedback_at_capture",
+      "step_index": 4
+    },
+    "6": {
+      "abs_current_ma": 299,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.5,
+        -0.7777777777777778,
+        -0.5,
+        0.7777777777777778,
+        0.5,
+        -0.7777777777777778,
+        -0.5,
+        0.7777777777777778
+      ],
+      "resolved_pair_command_cm": [
+        0.5,
+        -0.7777777777777778
+      ],
+      "sample_index": 0,
+      "sequence_index": 4,
+      "source": "servo_feedback_at_capture",
+      "step_index": 3
+    },
+    "7": {
+      "abs_current_ma": 119,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.5,
+        -0.7777777777777778,
+        -0.5,
+        0.7777777777777778,
+        0.5,
+        -0.7777777777777778,
+        -0.5,
+        0.7777777777777778
+      ],
+      "resolved_pair_command_cm": [
+        0.5,
+        -0.7777777777777778
+      ],
+      "sample_index": 0,
+      "sequence_index": 4,
+      "source": "servo_feedback_at_capture",
+      "step_index": 3
+    },
+    "8": {
+      "abs_current_ma": 188,
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        0.25,
+        0.5555555555555554,
+        -0.25,
+        -0.5555555555555554,
+        0.25,
+        0.5555555555555554,
+        -0.25,
+        -0.5555555555555554
+      ],
+      "resolved_pair_command_cm": [
+        0.25,
+        0.5555555555555554
+      ],
+      "sample_index": 0,
+      "sequence_index": 6,
+      "source": "servo_feedback_at_command",
+      "step_index": 5
+    }
+  },
+  "recommendation": "run_failed",
+  "recovered_packet_error_count": 0,
+  "rejected_sample_count": 0,
+  "sample_rate_stats": {
+    "max_dt_s": 0.8308470269985264,
+    "mean_dt_s": 0.7170418112842266,
+    "mean_hz": 1.3946188133841084,
+    "min_dt_s": 0.6511383179895347,
+    "sample_count": 8
+  },
+  "schema_version": "collect_pose_dataset_quality_v1",
+  "servo_telemetry_retry_count": 0,
+  "tracker_stale_count": 0,
+  "trainability_status": {
+    "not_model_training_ready": true,
+    "run_trust_mode": "thesis_trusted",
+    "valid_for_model_training": false
+  },
+  "unrecovered_packet_error_count": 0,
+  "write_goal_packet_error_count": 0
+}
