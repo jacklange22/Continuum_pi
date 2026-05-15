@@ -33,3 +33,15 @@ tightening_rotation_by_servo:
   6: "cw"
   7: "cw"
   8: "cw"
+# Physical assembly: which fixed segment sits at the bottom (proximal) of the
+# stacked two-segment rig and which at the top (distal). The fixed segments
+# `segment_a` ([1,2,3,4]) and `segment_b` ([5,6,7,8]) are hardware identities
+# and do not move. Their *role* (bottom vs top) is selectable here so the
+# operator can flip the physical stack without renaming servos. The two-segment
+# kinematics convention is T_distal = T_bottom(q_bottom) * T_top(q_top); no
+# two-segment control is implemented yet.
+physical_assembly:
+  bottom_segment: "segment_a"
+  top_segment: "segment_b"
+  lower_tick_means_tension: true
+  notes: ""

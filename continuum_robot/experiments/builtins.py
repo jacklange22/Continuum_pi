@@ -33,6 +33,9 @@ from continuum_robot.experiments.two_segment_startup_validation import (
 from continuum_robot.experiments.two_segment_collect_pose_dataset import (
     TwoSegmentCollectPoseCommandDatasetExperiment,
 )
+from continuum_robot.experiments.two_segment_repeatability import (
+    TwoSegmentRepeatabilityExperiment,
+)
 from continuum_robot.experiments.schedules import (
     CommandScheduleConfig,
     command_schedule_checksum,
@@ -8364,6 +8367,14 @@ def register_builtin_experiments(registry) -> None:
         category="validation",
         tags=["Two Segment", "Dataset", "Commands", "Pose"],
         factory=TwoSegmentCollectPoseCommandDatasetExperiment.from_dict,
+    )
+    registry.register(
+        name=TwoSegmentRepeatabilityExperiment.name,
+        title="Two-Segment Repeatability (Scaffold)",
+        description=TwoSegmentRepeatabilityExperiment.description,
+        category="validation",
+        tags=["Two Segment", "Repeatability", "Open Loop"],
+        factory=TwoSegmentRepeatabilityExperiment.from_dict,
     )
     registry.register(
         name=TrackerTimingValidationExperiment.name,

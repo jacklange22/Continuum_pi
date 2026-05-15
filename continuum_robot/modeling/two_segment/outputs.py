@@ -181,6 +181,8 @@ def write_report_figures(
 def _summary_payload(*, config: Any, dataset: Any, bundle: Any, split: dict[str, Any], model_results: list[Any]) -> dict[str, Any]:
     best = _best_completed_model(model_results)
     source_ids = _source_dataset_run_ids(dataset.run_provenance)
+    completed_keys = sorted(result.model_key for result in model_results if result.status == "completed")
+    unavailable_keys = sorted(result.model_key for result in model_results if result.status != "completed")
     metrics = {
         "dataset_type": EXPERIMENT_NAME,
         "run_trust_mode": "lower_trust" if dataset.allow_lower_trust else "offline_modeling_analysis",
@@ -201,6 +203,9 @@ def _summary_payload(*, config: Any, dataset: Any, bundle: Any, split: dict[str,
             if best is not None
             else None
         ),
+        "completed_model_keys": completed_keys,
+        "unavailable_model_keys": unavailable_keys,
+        "completed_model_count": int(len(completed_keys)),
         "split_method": split.get("method"),
         "train_samples": len(split.get("train_indices", [])),
         "test_samples": len(split.get("test_indices", [])),
@@ -308,6 +313,19 @@ def _write_predictions_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def _summary_text(summary: dict[str, Any]) -> str:
     metrics = dict(summary.get("experiment_metrics", {}) or {})
+    models = dict(metrics.get("models") or {})
+    completed = sorted(
+        (
+            (key, dict(payload or {}))
+            for key, payload in models.items()
+            if str(dict(payload or {}).get("status") or "") == "completed"
+        ),
+        key=lambda item: float(dict(item[1].get("metrics") or {}).get("xyz_rmse_mm", float("inf"))),
+    )
+    unavailable_models = sorted(
+        key for key, payload in models.items() if str(dict(payload or {}).get("status") or "") != "completed"
+    )
+    best = dict(metrics.get("best_model_by_xyz_rmse") or {})
     lines = [
         "Two-Segment Modeling Scaffold",
         f"status: {summary.get('status')}",
@@ -320,6 +338,11 @@ def _summary_text(summary: dict[str, Any]) -> str:
         f"label_mode: {metrics.get('label_mode')}",
         f"direct_global_model: {metrics.get('direct_global_model')}",
         f"structured_composition_model: {metrics.get('structured_composition_model')}",
+        "",
+        f"models_completed: {[key for key, _ in completed]}",
+        f"models_unavailable: {unavailable_models}",
+        f"best_model: {best.get('model_key') or 'none'} "
+        f"(xyz_rmse_mm={best.get('xyz_rmse_mm') if best else 'n/a'})",
         f"physics_model_status: {metrics.get('physics_model_status')}",
         "",
         "This is offline modeling/data analysis only. It does not enable two-segment control, chasing, or automatic pretension.",

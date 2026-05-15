@@ -135,6 +135,79 @@ def test_two_segment_pose_observation_and_timeseries_sample_have_explicit_option
     assert payload["two_segment_pose"]["distal_tip_pose"]["translation_mm"] == [1.0, 2.0, 3.0]
 
 
+def test_two_segment_collect_pose_run_surfaces_long_run_health_in_detail_pairs(tmp_path: Path) -> None:
+    context = _dual_context()
+    foundation = build_two_segment_foundation_metadata(context)
+    run_dir = (
+        tmp_path / "data" / "experiments"
+        / "two_segment_collect_pose_command_dataset"
+        / "20260515_120000_two_segment_collect_pose_command_dataset"
+    )
+    run_dir.mkdir(parents=True)
+    metadata = {
+        "experiment_name": "two_segment_collect_pose_command_dataset",
+        "run_id": run_dir.name,
+        "trust_info": {"run_trust_mode": "thesis_trusted"},
+        "provenance_info": {"operating_mode": "dual_segment", "two_segment_foundation": foundation},
+    }
+    summary = {
+        "experiment_name": "two_segment_collect_pose_command_dataset",
+        "run_id": run_dir.name,
+        "success": True,
+        "status": "success",
+        "experiment_metrics": {
+            "dataset_type": "two_segment_collect_pose_command_dataset",
+            "run_trust_mode": "thesis_trusted",
+            "run_provenance": metadata["provenance_info"],
+        },
+    }
+    (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    (run_dir / "long_run_health.json").write_text(
+        json.dumps({
+            "schema_version": "two_segment_long_run_health_v1",
+            "stop_reason": "target_valid_sample_count_reached",
+            "cycles_completed": 2,
+            "accepted_samples": 100,
+            "rejected_samples": 5,
+            "command_failures": 1,
+            "transport_failures": 2,
+            "continue_until_valid_samples": True,
+            "target_valid_sample_count": 100,
+        }),
+        encoding="utf-8",
+    )
+
+    managed = summarize_run(run_dir)
+    detail = dict(detail_pairs_for_run(managed, project_root=tmp_path))
+
+    assert "Long-Run Health" in detail
+    text = detail["Long-Run Health"]
+    assert "stop=target_valid_sample_count_reached" in text
+    assert "accepted=100" in text
+    assert "target=100" in text
+
+
+def test_two_segment_repeatability_run_surfaces_scatter_metrics_in_detail_pairs(tmp_path: Path) -> None:
+    run_dir = tmp_path / "data" / "experiments" / "two_segment_repeatability" / "20260515_120500_two_segment_repeatability"
+    run_dir.mkdir(parents=True)
+    metadata = {"experiment_name": "two_segment_repeatability", "run_id": run_dir.name, "trust_info": {"run_trust_mode": "thesis_trusted"}, "provenance_info": {"operating_mode": "dual_segment"}}
+    summary = {"experiment_name": "two_segment_repeatability", "run_id": run_dir.name, "success": True, "status": "success", "experiment_metrics": {"run_trust_mode": "thesis_trusted"}}
+    (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    (run_dir / "two_segment_repeatability_scatter_metrics.json").write_text(
+        json.dumps({"aggregate_distal_rms_mm": 2.345, "aggregate_intermediate_rms_mm": 1.234}),
+        encoding="utf-8",
+    )
+
+    managed = summarize_run(run_dir)
+    detail = dict(detail_pairs_for_run(managed, project_root=tmp_path))
+
+    assert "Two-Segment Repeatability Scatter" in detail
+    assert "distal_rms_mm=2.345" in detail["Two-Segment Repeatability Scatter"]
+    assert "intermediate_rms_mm=1.234" in detail["Two-Segment Repeatability Scatter"]
+
+
 def test_dual_segment_run_provenance_validator_and_summary_show_foundation_metadata(tmp_path: Path) -> None:
     context = _dual_context()
     foundation = build_two_segment_foundation_metadata(context)

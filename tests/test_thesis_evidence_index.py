@@ -76,6 +76,135 @@ def test_evidence_index_excludes_mock_even_when_reviewed_by_default(tmp_path: Pa
     assert _included_run_ids(output_dir) == set()
 
 
+def _write_two_segment_run(
+    root: Path,
+    *,
+    experiment_name: str,
+    name: str,
+    metrics: dict,
+    review_status: str = "thesis_candidate",
+) -> Path:
+    run_dir = root / "data" / "experiments" / experiment_name / name
+    run_dir.mkdir(parents=True)
+    trust = {
+        "run_trust_mode": "thesis_trusted",
+        "valid_for_model_training": False,
+        "valid_for_thesis_repeatability": False,
+        "valid_for_two_segment_model_training": True,
+    }
+    provenance = {"operating_mode": "dual_segment", "mock_mode": False}
+    (run_dir / "metadata.json").write_text(
+        json.dumps({"experiment_name": experiment_name, "run_id": name, "provenance_info": provenance, "trust_info": trust}),
+        encoding="utf-8",
+    )
+    summary_metrics = dict(metrics)
+    summary_metrics.setdefault("run_trust", trust)
+    summary_metrics.setdefault("run_trust_mode", "thesis_trusted")
+    summary_metrics.setdefault("mock_mode", False)
+    summary_metrics.setdefault("valid_for_model_training", False)
+    summary_metrics.setdefault("valid_for_thesis_repeatability", False)
+    summary_metrics.setdefault("run_provenance", provenance)
+    (run_dir / "summary.json").write_text(
+        json.dumps({"experiment_name": experiment_name, "run_id": name, "success": True, "status": "success", "experiment_metrics": summary_metrics}),
+        encoding="utf-8",
+    )
+    (run_dir / "run_review.json").write_text(
+        json.dumps({"review_status": review_status, "include_in_evidence_index": False}),
+        encoding="utf-8",
+    )
+    return run_dir
+
+
+def test_evidence_index_surfaces_two_segment_collect_pose_metadata(tmp_path: Path) -> None:
+    _write_two_segment_run(
+        tmp_path,
+        experiment_name="two_segment_collect_pose_command_dataset",
+        name="20260515_120000_two_segment_collect_pose_command_dataset",
+        metrics={
+            "dataset_type": "two_segment_collect_pose_command_dataset",
+            "schedule_type": "random_babble",
+            "bottom_segment_key": "segment_b",
+            "top_segment_key": "segment_a",
+            "accepted_sample_count": 250,
+            "rejected_sample_count": 4,
+            "command_failure_count": 1,
+            "long_run_health": {
+                "stop_reason": "target_valid_sample_count_reached",
+                "transport_failures": 1,
+                "continue_until_valid_samples": True,
+                "target_valid_sample_count": 250,
+            },
+            "valid_for_two_segment_model_training": True,
+        },
+    )
+
+    output_dir = build_thesis_evidence_index(project_root=tmp_path)
+    payload = json.loads((output_dir / "thesis_evidence_index.json").read_text(encoding="utf-8"))
+    runs = payload["experiments"]["two_segment_collect_pose_command_dataset"]
+    assert runs, "Expected at least one collect-pose run in the index"
+    metrics = runs[0]["key_metrics"]
+    assert "two_segment_collect_pose" in metrics
+    tsc = metrics["two_segment_collect_pose"]
+    assert tsc["bottom_segment_key"] == "segment_b"
+    assert tsc["top_segment_key"] == "segment_a"
+    assert tsc["stop_reason"] == "target_valid_sample_count_reached"
+    assert tsc["transport_failures"] == 1
+    assert tsc["continue_until_valid_samples"] is True
+
+
+def test_evidence_index_surfaces_two_segment_repeatability_metadata(tmp_path: Path) -> None:
+    _write_two_segment_run(
+        tmp_path,
+        experiment_name="two_segment_repeatability",
+        name="20260515_120500_two_segment_repeatability",
+        metrics={
+            "dataset_type": "two_segment_repeatability",
+            "bottom_segment_key": "segment_a",
+            "top_segment_key": "segment_b",
+            "target_count": 13,
+            "repeat_visits": 3,
+            "scatter_metrics": {"aggregate_distal_rms_mm": 2.4, "aggregate_intermediate_rms_mm": 1.7},
+            "target_distal_rms_mm": 1.0,
+        },
+    )
+
+    output_dir = build_thesis_evidence_index(project_root=tmp_path)
+    payload = json.loads((output_dir / "thesis_evidence_index.json").read_text(encoding="utf-8"))
+    runs = payload["experiments"]["two_segment_repeatability"]
+    assert runs, "Expected at least one repeatability run in the index"
+    metrics = runs[0]["key_metrics"]
+    assert "two_segment_repeatability" in metrics
+    tsr = metrics["two_segment_repeatability"]
+    assert tsr["aggregate_distal_rms_mm"] == 2.4
+    assert tsr["target_distal_rms_mm"] == 1.0
+
+
+def test_evidence_index_surfaces_two_segment_startup_validation(tmp_path: Path) -> None:
+    _write_two_segment_run(
+        tmp_path,
+        experiment_name="two_segment_startup_validation",
+        name="20260515_120800_two_segment_startup_validation",
+        metrics={
+            "startup_type": "manual_two_segment_startup",
+            "bottom_segment_key": "segment_a",
+            "top_segment_key": "segment_b",
+            "final_accepted": True,
+            "tracker_available": False,
+            "stage_order": ["baseline", "bottom_pretensioned", "top_pretensioned", "bottom_recheck", "final_accept"],
+        },
+    )
+
+    output_dir = build_thesis_evidence_index(project_root=tmp_path)
+    payload = json.loads((output_dir / "thesis_evidence_index.json").read_text(encoding="utf-8"))
+    runs = payload["experiments"]["two_segment_startup_validation"]
+    assert runs
+    metrics = runs[0]["key_metrics"]
+    assert "two_segment_startup" in metrics
+    startup = metrics["two_segment_startup"]
+    assert startup["final_accepted"] is True
+    assert startup["bottom_segment_key"] == "segment_a"
+
+
 def test_evidence_index_debug_and_mock_flags_are_explicit(tmp_path: Path) -> None:
     _write_run(tmp_path, "debug-run", review_status="debug", trust_mode="debug")
     _write_run(tmp_path, "mock-run", review_status="thesis_candidate", trust_mode="mock", mock=True)

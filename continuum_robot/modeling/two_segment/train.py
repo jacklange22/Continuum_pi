@@ -186,6 +186,31 @@ def _prediction_rows(
     distal_slice = _slice_for(slices, "distal_tip", "position") or [0, 1, 2]
     errors = np.linalg.norm(y_pred[:, distal_slice] - y_true[:, distal_slice], axis=1)
     for index, sample in enumerate(samples):
+        # Bottom/top command magnitudes: physical-segment role aware. The
+        # 8-vector is always in commanded_servo_ids order (servos 1..4 →
+        # segment_a, 5..8 → segment_b). The role assignment determines which
+        # half maps to bottom vs top. Defaults assume A=bottom / B=top.
+        bottom_key, top_key = _resolve_bottom_top_keys(sample)
+        if bottom_key == "segment_b":
+            bottom_features = sample.feature_mm[4:]
+            top_features = sample.feature_mm[:4]
+        else:
+            bottom_features = sample.feature_mm[:4]
+            top_features = sample.feature_mm[4:]
+        bottom_magnitude = float(np.linalg.norm(bottom_features))
+        top_magnitude = float(np.linalg.norm(top_features))
+        # A small dead-band so floating-point near-zeros don't toggle pattern.
+        dead_band = 1e-6
+        bottom_active = bottom_magnitude > dead_band
+        top_active = top_magnitude > dead_band
+        if bottom_active and top_active:
+            command_pattern = "both"
+        elif bottom_active:
+            command_pattern = "bottom_only"
+        elif top_active:
+            command_pattern = "top_only"
+        else:
+            command_pattern = "zero"
         row = {
             "model_key": model_key,
             "status": status,
@@ -207,6 +232,11 @@ def _prediction_rows(
             "segment_b_d6_mm": float(sample.feature_mm[5]),
             "segment_b_d7_mm": float(sample.feature_mm[6]),
             "segment_b_d8_mm": float(sample.feature_mm[7]),
+            "bottom_segment_key": bottom_key,
+            "top_segment_key": top_key,
+            "bottom_command_magnitude_mm": bottom_magnitude,
+            "top_command_magnitude_mm": top_magnitude,
+            "command_pattern": command_pattern,
         }
         for role in ("intermediate_segment", "distal_tip"):
             position_slice = _slice_for(slices, role, "position")
@@ -251,6 +281,33 @@ def _prediction_rows(
         rows.append(row)
     _ = position_metrics
     return rows
+
+
+def _resolve_bottom_top_keys(sample: Any) -> tuple[str, str]:
+    """Resolve the bottom/top segment keys for a single accepted sample.
+
+    Reads first from the sample's source payload (saved at collection time);
+    falls back to the segment_metadata role labels (proximal/distal); finally
+    defaults to A=bottom / B=top.
+    """
+    source_payload = dict(getattr(sample, "source_payload", {}) or {})
+    extra = dict(source_payload.get("extra") or {})
+    assembly = dict(extra.get("physical_assembly") or {})
+    bottom_key = str(assembly.get("bottom_segment_key") or "")
+    top_key = str(assembly.get("top_segment_key") or "")
+    if bottom_key in {"segment_a", "segment_b"} and top_key in {"segment_a", "segment_b"} and bottom_key != top_key:
+        return bottom_key, top_key
+    # Fallback: look at segment_metadata roles on the sample object.
+    segment_metadata = dict(getattr(sample, "segment_metadata", {}) or {})
+    for key, data in segment_metadata.items():
+        role = str(data.get("role") or "").strip().lower()
+        if role == "proximal":
+            bottom_key = str(key)
+        elif role == "distal":
+            top_key = str(key)
+    if bottom_key in {"segment_a", "segment_b"} and top_key in {"segment_a", "segment_b"} and bottom_key != top_key:
+        return bottom_key, top_key
+    return "segment_a", "segment_b"
 
 
 def _slice_for(slices: dict[str, Any], role: str, kind: str) -> list[int] | None:

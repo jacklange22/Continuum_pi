@@ -376,7 +376,26 @@ def _rejection_reason(sample: dict[str, Any], *, metrics: dict[str, Any], allow_
         return "distal_tip_robot_frame_pose_missing"
     if not allow_lower_trust and "distal_tip" in list(extra.get("missing_required_pose_roles") or []):
         return "distal_tip_required_role_missing"
+    if not allow_lower_trust:
+        missing = _missing_measured_servo_positions(extra)
+        if missing:
+            return f"measured_servo_position_missing:{','.join(str(x) for x in missing)}"
     return None
+
+
+def _missing_measured_servo_positions(extra: dict[str, Any]) -> list[int]:
+    """Return servo IDs in 1..8 with a None/missing measured position_tick."""
+    feedback = _as_dict(extra.get("measured_servo_feedback"))
+    if not feedback:
+        # Older runs that did not record measured feedback at all are flagged
+        # as missing-all so they get rejected from trusted modeling exports.
+        return list(SERVO_ID_ORDER)
+    missing: list[int] = []
+    for servo_id in SERVO_ID_ORDER:
+        data = _as_dict(feedback.get(str(int(servo_id))))
+        if data.get("position_tick") in (None, ""):
+            missing.append(int(servo_id))
+    return missing
 
 
 def _segment_command_mm(command_record: dict[str, Any]) -> dict[str, list[float]]:

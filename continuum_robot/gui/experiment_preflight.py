@@ -1046,6 +1046,8 @@ def evaluate_preflight(
             checks.append(_blocked("operating_mode", "Operating Mode", DUAL_SEGMENT_BLOCK_MESSAGE))
         else:
             checks.append(_ok("operating_mode", "Operating Mode", "dual_segment all-8 manual startup validation is selected."))
+        checks.append(_physical_assembly_check(operating_context))
+        checks.append(_baud_advisory_check(settings))
         if not servo_connected:
             checks.append(_blocked("servo_service", "Servo Service", "Two-segment startup validation requires a connected ServoService."))
         else:
@@ -1110,6 +1112,8 @@ def evaluate_preflight(
             checks.append(_blocked("operating_mode", "Operating Mode", TWO_SEGMENT_DATASET_BLOCK_MESSAGE))
         else:
             checks.append(_ok("operating_mode", "Operating Mode", "dual_segment two-segment dataset mode is selected."))
+        checks.append(_physical_assembly_check(operating_context))
+        checks.append(_baud_advisory_check(settings))
         if expected_ids != [1, 2, 3, 4, 5, 6, 7, 8] or commanded_ids != expected_ids:
             checks.append(
                 _blocked(
@@ -1200,6 +1204,36 @@ def evaluate_preflight(
                 "scope",
                 "Scope",
                 "This experiment records structured two-segment command/pose data only; no kinematics, control, chasing, or automatic pretension is implemented.",
+            )
+        )
+
+    elif experiment_name == "two_segment_repeatability":
+        operating_context = settings.robot.operating_context()
+        if operating_context.operating_mode != "dual_segment":
+            checks.append(_blocked("operating_mode", "Operating Mode", DUAL_SEGMENT_BLOCK_MESSAGE))
+        else:
+            checks.append(_ok("operating_mode", "Operating Mode", "dual_segment two-segment repeatability is selected."))
+        checks.append(_physical_assembly_check(operating_context))
+        checks.append(_baud_advisory_check(settings))
+        if not servo_connected:
+            checks.append(_blocked("servo_service", "Servo Service", "Two-segment repeatability requires a connected ServoService."))
+        else:
+            checks.append(_ok("servo_service", "Servo Service", "ServoService is connected for all-8 telemetry."))
+        if not tracker_ready:
+            checks.append(
+                _warning(
+                    "tracking",
+                    "Tracking",
+                    "Tracker is unavailable. The run will execute but distal/intermediate scatter cannot be computed.",
+                )
+            )
+        else:
+            checks.append(_ok("tracking", "Tracking", "Tracker is available for distal/intermediate scatter."))
+        checks.append(
+            _info(
+                "scope",
+                "Scope",
+                "Open-loop repeatability: bottom/top tendon commands; no closed-loop control. Output reports scatter, not validated control accuracy.",
             )
         )
 
@@ -2038,6 +2072,68 @@ def _blocked(key: str, label: str, message: str) -> PreflightCheck:
 
 def _info(key: str, label: str, message: str) -> PreflightCheck:
     return PreflightCheck(key=key, label=label, status=PREFLIGHT_INFO, message=message)
+
+
+def _baud_advisory_check(settings) -> PreflightCheck:
+    """Soft-warn when 8-servo work runs at non-1 Mbps baud rates.
+
+    XC330 + OpenRB-150 supports up to 1 Mbps. Eight-servo work (`dual_segment`,
+    `parallel_single`) benefits substantially from the higher baud. This check
+    never blocks: it returns INFO at 1 Mbps, WARNING below 1 Mbps for 8-servo
+    modes, and INFO for 1-4 servo modes regardless.
+    """
+    baud = int(getattr(getattr(settings, "serial", None), "baudrate", 57600) or 57600)
+    mode = str(getattr(getattr(settings, "robot", None), "operating_mode", lambda: "single_segment")())
+    eight_servo_mode = mode in {"dual_segment", "parallel_single"}
+    if baud >= 1_000_000:
+        return _ok(
+            "baud_rate",
+            "Bus Baud",
+            f"DYNAMIXEL bus at {baud} bps. Confirm every servo is reflashed at this baud (DYNAMIXEL Wizard).",
+        )
+    if eight_servo_mode:
+        return _warning(
+            "baud_rate",
+            "Bus Baud",
+            (
+                f"DYNAMIXEL bus is at {baud} bps. Eight-servo work is recommended at 1 000 000 bps; "
+                "reflash every servo (DYNAMIXEL Wizard) and update `baudrate:` in system.yaml/system.local.yaml."
+            ),
+        )
+    return _info(
+        "baud_rate",
+        "Bus Baud",
+        f"DYNAMIXEL bus at {baud} bps (single-segment use).",
+    )
+
+
+def _physical_assembly_check(operating_context) -> PreflightCheck:
+    """Inspect the resolved bottom/top physical-role assignment for two-segment runs."""
+    assembly = dict(getattr(operating_context, "physical_assembly", {}) or {})
+    issues = list(getattr(operating_context, "physical_assembly_issues", []) or [])
+    bottom_key = assembly.get("bottom_segment_key") or ""
+    top_key = assembly.get("top_segment_key") or ""
+    bottom_label = assembly.get("bottom_segment_label") or bottom_key or "?"
+    top_label = assembly.get("top_segment_label") or top_key or "?"
+    bottom_ids = list(assembly.get("bottom_servo_ids") or [])
+    top_ids = list(assembly.get("top_servo_ids") or [])
+    if issues:
+        return _blocked(
+            "physical_assembly",
+            "Bottom/Top Assignment",
+            "Invalid bottom/top physical assembly: " + "; ".join(issues),
+        )
+    if not bottom_key or not top_key:
+        return _warning(
+            "physical_assembly",
+            "Bottom/Top Assignment",
+            "Bottom/top physical assembly is not configured. Configure `physical_assembly` in the robot config.",
+        )
+    return _ok(
+        "physical_assembly",
+        "Bottom/Top Assignment",
+        f"Bottom={bottom_label} ({bottom_ids}), Top={top_label} ({top_ids}).",
+    )
 
 
 def _finalize_report(

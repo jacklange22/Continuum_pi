@@ -34,17 +34,50 @@ BLOCK_MESSAGE = (
     "Two-segment dataset collection requires operating_mode=dual_segment and an all-8 startup foundation. "
     "This experiment collects structured two-segment command/pose data; it does not implement two-segment control."
 )
-SCHEDULE_TYPES = {"zero", "single_axis_micro", "segment_isolation", "small_combined"}
+# Bottom/top-aware schedules. The legacy `single_axis_micro`/`segment_isolation`/
+# `small_combined` schedules remain supported for backwards compatibility, but
+# the canonical thesis-grade schedules are bottom/top-oriented.
+SCHEDULE_TYPES = {
+    "zero",
+    "single_axis_micro",
+    "segment_isolation",
+    "small_combined",
+    "bottom_only_sweep",
+    "top_only_sweep",
+    "workspace_coverage",
+    "random_babble",
+    "structured_grid",
+    "mixed_training",
+}
+# Schedules that benefit from the higher-throughput long-run loop.
+LONG_RUN_FRIENDLY_SCHEDULES = {
+    "workspace_coverage",
+    "random_babble",
+    "structured_grid",
+    "mixed_training",
+    "bottom_only_sweep",
+    "top_only_sweep",
+}
 
 
 @dataclass
 class TwoSegmentCollectPoseDatasetConfig:
-    """Configuration for the bounded two-segment dataset MVP."""
+    """Configuration for a two-segment dataset collection run.
+
+    The default `max_segment_displacement_cm` is conservative; thesis-grade runs
+    are expected to ramp up to ±1.0 cm once the safety limits and motion are
+    validated on hardware. The configured command amplitude is honored at the
+    schedule level; safety still gates tick deltas via
+    `max_tick_delta_from_startup` and `SafetyConfig`.
+    """
 
     schedule_type: str = "single_axis_micro"
     dry_run: bool = True
-    max_segment_displacement_mm: float = 0.1
-    max_tick_delta_from_startup: int = 20
+    # Bounded tendon displacement amplitude. The legacy `max_segment_displacement_mm`
+    # field is still accepted on input but is converted to cm; one canonical
+    # field avoids the silent ÷10 cap that the original MVP had.
+    max_segment_displacement_cm: float = 0.25
+    max_tick_delta_from_startup: int = 320
     samples_per_pattern: int = 1
     capture_repeats: int = 1
     settle_time_s: float = 0.0
@@ -54,16 +87,46 @@ class TwoSegmentCollectPoseDatasetConfig:
     requested_tool_roles: dict[str, str] = field(default_factory=dict)
     run_label: str = ""
     dataset_tag: str = ""
+    # Long-run loop. When `continue_until_valid_samples` is true the experiment
+    # cycles through the schedule until at least `target_valid_sample_count`
+    # accepted samples have been collected (or a budget is exhausted).
+    continue_until_valid_samples: bool = False
+    target_valid_sample_count: int = 0
+    max_total_packet_failures: int | None = None
+    max_consecutive_packet_failures: int | None = None
+    max_total_dropped_samples: int | None = None
+    long_run_recovery_enabled: bool = False
+    drop_sample_on_transport_error: bool = True
+    pattern_count_budget: int = 0
+    # Random schedules use this seed for reproducibility.
+    random_seed: int = 0
+    # Optional grid density for `structured_grid` / `workspace_coverage`.
+    grid_points_per_axis: int = 5
+    # Optional command ramping. When set, large jumps between consecutive
+    # schedule steps are split into intermediate sub-commands of at most this
+    # tendon-displacement step size (in cm). Only the final target generates a
+    # sample; intermediate ramp steps preserve final range while reducing peak
+    # current draw / tendon shock. ``None`` disables ramping.
+    command_ramp_step_cm: float | None = None
+    command_ramp_settle_time_s: float = 0.05
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "TwoSegmentCollectPoseDatasetConfig":
         payload = dict(payload or {})
         requested_roles = payload.get("requested_tool_roles") or payload.get("tool_roles") or {}
+        # Backwards-compat: accept legacy `max_segment_displacement_mm` (mm) and
+        # convert to cm.
+        if "max_segment_displacement_cm" in payload:
+            amp_cm = max(0.0, float(payload.get("max_segment_displacement_cm", 0.25)))
+        elif "max_segment_displacement_mm" in payload:
+            amp_cm = max(0.0, float(payload.get("max_segment_displacement_mm", 0.1))) / 10.0
+        else:
+            amp_cm = 0.25
         return cls(
             schedule_type=str(payload.get("schedule_type", "single_axis_micro") or "single_axis_micro").strip().lower(),
             dry_run=bool(payload.get("dry_run", True)),
-            max_segment_displacement_mm=max(0.0, float(payload.get("max_segment_displacement_mm", 0.1))),
-            max_tick_delta_from_startup=max(0, int(payload.get("max_tick_delta_from_startup", 20))),
+            max_segment_displacement_cm=amp_cm,
+            max_tick_delta_from_startup=max(0, int(payload.get("max_tick_delta_from_startup", 320))),
             samples_per_pattern=max(1, int(payload.get("samples_per_pattern", payload.get("samples_per_command", 1)))),
             capture_repeats=max(1, int(payload.get("capture_repeats", 1))),
             settle_time_s=max(0.0, float(payload.get("settle_time_s", 0.0))),
@@ -73,7 +136,35 @@ class TwoSegmentCollectPoseDatasetConfig:
             requested_tool_roles={str(key).upper(): str(value) for key, value in dict(requested_roles or {}).items()},
             run_label=str(payload.get("run_label", "") or ""),
             dataset_tag=str(payload.get("dataset_tag", "") or ""),
+            continue_until_valid_samples=bool(payload.get("continue_until_valid_samples", False)),
+            target_valid_sample_count=max(0, int(payload.get("target_valid_sample_count", 0) or 0)),
+            max_total_packet_failures=(
+                None if payload.get("max_total_packet_failures") in (None, "")
+                else max(0, int(payload.get("max_total_packet_failures")))
+            ),
+            max_consecutive_packet_failures=(
+                None if payload.get("max_consecutive_packet_failures") in (None, "")
+                else max(0, int(payload.get("max_consecutive_packet_failures")))
+            ),
+            max_total_dropped_samples=(
+                None if payload.get("max_total_dropped_samples") in (None, "")
+                else max(0, int(payload.get("max_total_dropped_samples")))
+            ),
+            long_run_recovery_enabled=bool(payload.get("long_run_recovery_enabled", False)),
+            drop_sample_on_transport_error=bool(payload.get("drop_sample_on_transport_error", True)),
+            pattern_count_budget=max(0, int(payload.get("pattern_count_budget", 0) or 0)),
+            random_seed=int(payload.get("random_seed", 0) or 0),
+            grid_points_per_axis=max(1, int(payload.get("grid_points_per_axis", 5) or 5)),
+            command_ramp_step_cm=(
+                None if payload.get("command_ramp_step_cm") in (None, "")
+                else max(0.0, float(payload.get("command_ramp_step_cm")))
+            ),
+            command_ramp_settle_time_s=max(0.0, float(payload.get("command_ramp_settle_time_s", 0.05))),
         )
+
+    @property
+    def max_segment_displacement_mm(self) -> float:
+        return float(self.max_segment_displacement_cm) * 10.0
 
 
 @dataclass(frozen=True)
@@ -105,6 +196,14 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
         self._startup_ticks_by_servo: dict[int, int] = {}
         self._startup_provenance: dict[str, Any] = {}
         self._command_steps: list[TwoSegmentCommandStep] = []
+        self._sample_failure_events: list[dict[str, Any]] = []
+        self._long_run_health: dict[str, Any] = {}
+        self._transport_recovery_report: dict[str, Any] = {}
+        # Tracks the last-issued flat command (in cm) for ramping. Starts at
+        # zero (startup-relative zero), updated to the target after each
+        # successful issue.
+        self._previous_flat_cm: list[float] = [0.0] * 8
+        self._ramp_substep_count: int = 0
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None = None) -> "TwoSegmentCollectPoseCommandDatasetExperiment":
@@ -123,6 +222,15 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
         context = session.context.settings.robot.operating_context()
         if context.operating_mode != "dual_segment":
             raise RuntimeError(BLOCK_MESSAGE)
+        # Honest bottom/top assembly is required; otherwise the schedule
+        # builder silently falls back to defaults and the resulting data
+        # misrepresents which segment was commanded.
+        assembly_issues = list(getattr(context, "physical_assembly_issues", []) or [])
+        if assembly_issues:
+            raise RuntimeError(
+                "Two-segment dataset collection requires a valid bottom/top physical assembly. "
+                f"Issues: {'; '.join(assembly_issues)}"
+            )
         expected_ids = [int(value) for value in context.expected_servo_ids]
         commanded_ids = [int(value) for value in context.commanded_servo_ids]
         if expected_ids != [1, 2, 3, 4, 5, 6, 7, 8] or commanded_ids != expected_ids:
@@ -158,50 +266,159 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
 
     def execute(self, session: ExperimentSession) -> None:
         context = session.context.settings.robot.operating_context()
-        total = len(self._command_steps) * max(1, int(self.config.capture_repeats)) * max(1, int(self.config.samples_per_pattern))
-        accepted = 0
-        rejected = 0
-        command_failures = 0
-        progress = 0
         run_trust_mode = _run_trust_mode(self.config)
         role_configs = _effective_role_configs(session=session, config=self.config)
         tool_roles = _tool_roles_from_configs(role_configs)
         foundation = build_two_segment_foundation_metadata(context, tool_roles=tool_roles)
         startup_provenance = dict(self._startup_provenance)
         startup_provenance.setdefault("startup_ticks_by_servo", {str(key): int(value) for key, value in sorted(self._startup_ticks_by_servo.items())})
-        for repeat_index in range(max(1, int(self.config.capture_repeats))):
+        # Long-run state
+        continue_until_valid = bool(self.config.continue_until_valid_samples) and int(self.config.target_valid_sample_count or 0) > 0
+        target_valid = int(self.config.target_valid_sample_count or 0)
+        max_total_failures = self.config.max_total_packet_failures
+        max_consec_failures = self.config.max_consecutive_packet_failures
+        max_total_dropped = self.config.max_total_dropped_samples
+        accepted = 0
+        rejected = 0
+        command_failures = 0
+        transport_failures = 0
+        consecutive_transport_failures = 0
+        progress = 0
+        cycle = 0
+        sample_failure_events: list[dict[str, Any]] = []
+        total_target = (
+            int(target_valid)
+            if continue_until_valid
+            else len(self._command_steps) * max(1, int(self.config.capture_repeats)) * max(1, int(self.config.samples_per_pattern))
+        )
+        stop_reason: str = ""
+        repeats_to_run = max(1, int(self.config.capture_repeats))
+        while True:
+            if continue_until_valid and accepted >= int(target_valid):
+                stop_reason = "target_valid_sample_count_reached"
+                break
+            cycle += 1
             for step in self._command_steps:
                 session.raise_if_stop_requested()
+                if continue_until_valid and accepted >= int(target_valid):
+                    stop_reason = "target_valid_sample_count_reached"
+                    break
                 command_result = self._issue_command(session=session, command=step.command)
-                if not bool(command_result.get("success", False)):
+                command_ok = bool(command_result.get("success", False))
+                if not command_ok:
                     command_failures += 1
+                    sample_failure_events.append({
+                        "phase": str(step.phase),
+                        "step_index": int(step.index),
+                        "cycle": int(cycle),
+                        "failure_kind": "command_failed",
+                        "message": str(command_result.get("command_message") or ""),
+                    })
                 if float(self.config.settle_time_s) > 0.0:
                     session.context.sleep_fn(float(self.config.settle_time_s))
                 for sample_index in range(max(1, int(self.config.samples_per_pattern))):
-                    sample = self._capture_sample(
-                        session=session,
-                        step=step,
-                        command_result=command_result,
-                        repeat_index=repeat_index,
-                        sample_index=sample_index,
-                        run_trust_mode=run_trust_mode,
-                        foundation=foundation,
-                        startup_provenance=startup_provenance,
-                    )
+                    try:
+                        sample = self._capture_sample(
+                            session=session,
+                            step=step,
+                            command_result=command_result,
+                            repeat_index=int(cycle - 1),
+                            sample_index=sample_index,
+                            run_trust_mode=run_trust_mode,
+                            foundation=foundation,
+                            startup_provenance=startup_provenance,
+                        )
+                    except Exception as exc:
+                        transport_failures += 1
+                        consecutive_transport_failures += 1
+                        sample_failure_events.append({
+                            "phase": str(step.phase),
+                            "step_index": int(step.index),
+                            "cycle": int(cycle),
+                            "failure_kind": "sample_capture_error",
+                            "message": str(exc),
+                        })
+                        if max_consec_failures is not None and consecutive_transport_failures > int(max_consec_failures):
+                            stop_reason = f"max_consecutive_packet_failures_exceeded:{consecutive_transport_failures}"
+                            break
+                        if max_total_failures is not None and transport_failures > int(max_total_failures):
+                            stop_reason = f"max_total_packet_failures_exceeded:{transport_failures}"
+                            break
+                        if not bool(self.config.long_run_recovery_enabled):
+                            raise
+                        continue
+                    consecutive_transport_failures = 0
                     session.add_sample(sample)
-                    accepted += int(bool(sample.extra.get("capture_accepted")))
-                    rejected += int(not bool(sample.extra.get("capture_accepted")))
+                    accepted_flag = bool(sample.extra.get("capture_accepted"))
+                    accepted += int(accepted_flag)
+                    rejected += int(not accepted_flag)
+                    # Avoid double-counting: when the command write itself failed,
+                    # the `command_failed` event already captured the root cause
+                    # for this pattern. The downstream sample is rejected as a
+                    # consequence, so a second `capture_rejected` event would
+                    # double-count in the events log. Per-sample counters
+                    # (rejected, sample.extra.capture_accepted) remain accurate.
+                    if not accepted_flag and command_ok:
+                        sample_failure_events.append({
+                            "phase": str(step.phase),
+                            "step_index": int(step.index),
+                            "cycle": int(cycle),
+                            "failure_kind": "capture_rejected",
+                            "message": str(sample.extra.get("capture_rejection_reason") or ""),
+                        })
+                    if max_total_dropped is not None and rejected > int(max_total_dropped):
+                        stop_reason = f"max_total_dropped_samples_exceeded:{rejected}"
+                        break
                     progress += 1
+                    progress_total = max(progress, total_target)
                     session.update_progress(
                         progress,
-                        total,
+                        progress_total,
                         {
                             "phase": step.phase,
                             "step_index": int(step.index),
                             "accepted_samples": int(accepted),
                             "rejected_samples": int(rejected),
+                            "cycle": int(cycle),
                         },
                     )
+                    if continue_until_valid and accepted >= int(target_valid):
+                        stop_reason = "target_valid_sample_count_reached"
+                        break
+                if stop_reason:
+                    break
+            if stop_reason:
+                break
+            if not continue_until_valid:
+                if cycle >= repeats_to_run:
+                    stop_reason = "scheduled_repeat_count_reached"
+                    break
+        self._sample_failure_events = sample_failure_events
+        self._long_run_health = {
+            "schema_version": "two_segment_long_run_health_v1",
+            "stop_reason": stop_reason,
+            "cycles_completed": int(cycle),
+            "command_failures": int(command_failures),
+            "transport_failures": int(transport_failures),
+            "consecutive_transport_failures_at_stop": int(consecutive_transport_failures),
+            "rejected_samples": int(rejected),
+            "accepted_samples": int(accepted),
+            "target_valid_sample_count": int(target_valid) if continue_until_valid else None,
+            "continue_until_valid_samples": bool(continue_until_valid),
+            "max_total_packet_failures": max_total_failures,
+            "max_consecutive_packet_failures": max_consec_failures,
+            "max_total_dropped_samples": max_total_dropped,
+            "long_run_recovery_enabled": bool(self.config.long_run_recovery_enabled),
+            "command_ramp_step_cm": self.config.command_ramp_step_cm,
+            "command_ramp_substeps_total": int(self._ramp_substep_count),
+        }
+        self._transport_recovery_report = {
+            "schema_version": "two_segment_transport_recovery_v1",
+            "long_run_recovery_enabled": bool(self.config.long_run_recovery_enabled),
+            "transport_failures": int(transport_failures),
+            "events": list(sample_failure_events),
+            "stop_reason": stop_reason,
+        }
         pose_summary = _pose_label_summary(session.samples)
         data_quality_warnings = _data_quality_warnings(
             config=self.config,
@@ -231,6 +448,46 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
         session.set_metric("includes_intermediate_pose", bool(pose_summary.get("intermediate_pose_sample_count", 0)))
         session.set_metric("automatic_two_segment_pretension_validated", False)
         session.set_metric("two_segment_control_validated", False)
+        session.set_metric("long_run_health", dict(self._long_run_health))
+        session.set_metric("transport_recovery_report", dict(self._transport_recovery_report))
+        session.set_metric("sample_failure_event_count", len(self._sample_failure_events))
+        current_load_summary = _two_segment_current_load_summary(
+            samples=session.samples,
+            warning_ma=int(getattr(getattr(session.context.settings, "safety", None), "servo_reported_current_warning_ma", None) or 800),
+            hard_ma=int(getattr(getattr(session.context.settings, "safety", None), "servo_reported_current_hard_limit_ma", None) or 850),
+        )
+        session.set_metric("current_load_summary", current_load_summary)
+        for servo_id in current_load_summary.get("sustained_jam_servo_ids", []) or []:
+            session.add_warning(f"servo {servo_id} showed sustained current >= warning threshold")
+        tracker_freshness_summary = _two_segment_tracker_freshness_summary(
+            samples=session.samples,
+            stale_threshold_s=float(
+                getattr(getattr(session.context.settings, "serial", None), "tracker_max_stale_interval_s", None) or 0.25
+            ),
+        )
+        session.set_metric("tracker_freshness_summary", tracker_freshness_summary)
+        if tracker_freshness_summary.get("samples_stale", 0):
+            session.add_warning(
+                f"tracker reported {tracker_freshness_summary['samples_stale']} stale samples "
+                f"(threshold={tracker_freshness_summary['stale_threshold_s']:.3f} s, "
+                f"max freshness={tracker_freshness_summary['max_freshness_s']:.3f} s)"
+            )
+        # Registration provenance: same block as repeatability for cross-run
+        # comparability. Two collect-pose runs done with different registrations
+        # produce datasets that should be compared cautiously.
+        registration_summary = _two_segment_registration_summary(session=session)
+        session.set_metric("registration_summary", registration_summary)
+        if registration_summary.get("registration_state") not in {"loaded", "trusted"}:
+            session.add_warning(
+                f"Registration not fully loaded during collect-pose "
+                f"(state={registration_summary.get('registration_state')}); distal/intermediate "
+                "labels may be in tracker frame only."
+            )
+        session.set_metric("physical_assembly", dict(context.metadata().get("physical_assembly") or {}))
+        session.set_metric("bottom_segment_key", context.bottom_segment_key)
+        session.set_metric("top_segment_key", context.top_segment_key)
+        session.set_metric("bottom_servo_ids", list(context.bottom_servo_ids or []))
+        session.set_metric("top_servo_ids", list(context.top_servo_ids or []))
         for warning in data_quality_warnings:
             session.add_warning(str(warning))
 
@@ -262,18 +519,85 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
             "dry_run": bool(self.config.dry_run),
         }
         if self.config.dry_run:
+            self._previous_flat_cm = list(flat_cm)
             return result
+        # Optional command ramping: if any tendon jump exceeds the configured
+        # step, write intermediate sub-commands first. Intermediate writes do
+        # NOT generate samples — only the final target counts toward
+        # accepted/rejected.
+        ramp_substeps = self._ramp_command_writes(
+            session=session,
+            target_flat_cm=list(flat_cm),
+            commanded_ids=commanded_ids,
+            startup_ticks=startup_ticks,
+        )
         try:
             writer = getattr(session.context.servo_service, "_write_goal_positions", None)
             if not callable(writer):
                 raise RuntimeError("ServoService all-8 raw goal writer is unavailable.")
             writer(goals_by_servo)
-            result["command_message"] = "Wrote bounded all-8 raw goal ticks relative to manual startup artifact."
+            self._previous_flat_cm = list(flat_cm)
+            self._ramp_substep_count += int(ramp_substeps)
+            result["ramp_substeps"] = int(ramp_substeps)
+            result["command_message"] = (
+                f"Wrote bounded all-8 raw goal ticks relative to manual startup artifact "
+                f"({ramp_substeps} ramp substeps)."
+                if ramp_substeps
+                else "Wrote bounded all-8 raw goal ticks relative to manual startup artifact."
+            )
             return result
         except Exception as exc:
             result["success"] = False
             result["command_message"] = str(exc)
+            result["ramp_substeps"] = int(ramp_substeps)
             return result
+
+    def _ramp_command_writes(
+        self,
+        *,
+        session: ExperimentSession,
+        target_flat_cm: list[float],
+        commanded_ids: list[int],
+        startup_ticks: list[int],
+    ) -> int:
+        """Write intermediate goal-tick steps when the per-tendon jump exceeds the ramp threshold.
+
+        Returns the number of intermediate substeps written. Returns 0 when
+        ramping is disabled or no substeps are needed.
+        """
+        step_cm = self.config.command_ramp_step_cm
+        if step_cm is None or float(step_cm) <= 0.0:
+            return 0
+        previous = list(self._previous_flat_cm) if self._previous_flat_cm else [0.0] * len(target_flat_cm)
+        deltas = [float(t) - float(p) for t, p in zip(target_flat_cm, previous)]
+        max_abs_delta = max((abs(value) for value in deltas), default=0.0)
+        if max_abs_delta <= float(step_cm):
+            return 0
+        import math as _math
+
+        substep_count = max(1, int(_math.ceil(max_abs_delta / float(step_cm))) - 1)
+        if substep_count <= 0:
+            return 0
+        writer = getattr(session.context.servo_service, "_write_goal_positions", None)
+        if not callable(writer):
+            return 0
+        mapper = session.context.servo_service.mapper
+        sleep_fn = session.context.sleep_fn
+        settle = float(self.config.command_ramp_settle_time_s)
+        for k in range(1, substep_count + 1):
+            fraction = float(k) / float(substep_count + 1)  # never reaches 1.0
+            interim_flat = [float(p) + float(d) * fraction for p, d in zip(previous, deltas)]
+            interim_goals = mapper.to_goal_positions(interim_flat, startup_ticks)
+            interim_goals_by_servo = {int(sid): int(goal) for sid, goal in zip(commanded_ids, interim_goals)}
+            try:
+                writer(interim_goals_by_servo)
+            except Exception:
+                # If an intermediate write fails, abort the ramp and let the
+                # final write attempt report failure with full context.
+                return k - 1
+            if settle > 0.0:
+                sleep_fn(settle)
+        return substep_count
 
     def _capture_sample(
         self,
@@ -299,8 +623,26 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
         command_record = step.command.to_record(context=context)
         ordered_8 = step.command.to_flat(context=context)
         command_success = bool(command_result.get("success", False))
-        capture_accepted = bool(command_success)
-        rejection_reason = None if command_success else str(command_result.get("command_message") or "command_failed")
+        # Identify any commanded servo with a missing measured position. This
+        # mirrors the downstream modeling-loader rejection so the operator
+        # learns about telemetry drops at collection time, not after.
+        missing_measured_servo_ids = sorted(
+            int(servo_id)
+            for servo_id in commanded_ids
+            if dict(servo_feedback.get(str(int(servo_id)), {}) or {}).get("position_tick") is None
+        )
+        servo_only_run = _servo_only_mode(self.config)
+        # Trusted (non-servo-only/dry-run) runs reject the sample at capture
+        # time. Servo-only/dry-run runs record the missing IDs but stay
+        # accepted (the modeling loader still excludes them later).
+        telemetry_complete_failure = bool(missing_measured_servo_ids) and not servo_only_run
+        capture_accepted = bool(command_success) and not telemetry_complete_failure
+        if not command_success:
+            rejection_reason = str(command_result.get("command_message") or "command_failed")
+        elif telemetry_complete_failure:
+            rejection_reason = f"measured_servo_position_missing:{','.join(str(x) for x in missing_measured_servo_ids)}"
+        else:
+            rejection_reason = None
         missing_pose = not bool(pose_fields.get("pose_observations_present"))
         valid_for_two_segment_model_training = bool(
             capture_accepted
@@ -309,10 +651,12 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
         flags = ["capture_accepted" if capture_accepted else "capture_rejected"]
         if self.config.dry_run:
             flags.append("dry_run")
-        if _servo_only_mode(self.config):
+        if servo_only_run:
             flags.extend(["servo_only", "lower_trust", "not_model_training_ready"])
         if missing_pose:
             flags.append("pose_labels_missing")
+        if missing_measured_servo_ids:
+            flags.append("measured_servo_position_missing")
         return ExperimentTimeseriesSample(
             monotonic_time_s=session.elapsed_s(),
             wall_time_utc=datetime.now(timezone.utc).isoformat(),
@@ -348,6 +692,7 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
                 "goal_ticks_by_servo": dict(command_result.get("goal_ticks_by_servo", {}) or {}),
                 "startup_artifact_provenance": dict(startup_provenance),
                 "measured_servo_feedback": servo_feedback,
+                "missing_measured_servo_ids": list(missing_measured_servo_ids),
                 "pose_observations_present": bool(pose_fields.get("pose_observations_present")),
                 "available_pose_roles": list(pose_fields.get("available_roles", []) or []),
                 "missing_pose_roles": list(pose_fields.get("missing_roles", []) or []),
@@ -379,65 +724,193 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
             output_dir=paths.output_dir,
             metrics=dict(summary.experiment_metrics or {}),
             samples=session.samples,
+            sample_failure_events=list(self._sample_failure_events),
+            long_run_health=dict(self._long_run_health),
+            transport_recovery_report=dict(self._transport_recovery_report),
         )
 
 
 def build_two_segment_command_schedule(config: TwoSegmentCollectPoseDatasetConfig, *, context) -> list[TwoSegmentCommandStep]:
-    amp_cm = min(float(config.max_segment_displacement_mm) / 10.0, 0.01)
-    if amp_cm <= 0.0 or str(config.schedule_type) == "zero":
-        return [
-            TwoSegmentCommandStep(
-                index=0,
-                label="zero_startup",
-                phase="zero",
-                command=TwoSegmentCommand.from_mapping({"segment_a": [0.0, 0.0, 0.0, 0.0], "segment_b": [0.0, 0.0, 0.0, 0.0]}),
-            )
-        ]
-    patterns: list[tuple[str, str, list[float], list[float]]] = [
-        ("segment_a_axis_a_pos", "single_axis_micro", [amp_cm, 0.0, -amp_cm, 0.0], [0.0, 0.0, 0.0, 0.0]),
-        ("segment_a_axis_a_neg", "single_axis_micro", [-amp_cm, 0.0, amp_cm, 0.0], [0.0, 0.0, 0.0, 0.0]),
-        ("segment_a_axis_b_pos", "single_axis_micro", [0.0, amp_cm, 0.0, -amp_cm], [0.0, 0.0, 0.0, 0.0]),
-        ("segment_a_axis_b_neg", "single_axis_micro", [0.0, -amp_cm, 0.0, amp_cm], [0.0, 0.0, 0.0, 0.0]),
-        ("segment_b_axis_a_pos", "single_axis_micro", [0.0, 0.0, 0.0, 0.0], [amp_cm, 0.0, -amp_cm, 0.0]),
-        ("segment_b_axis_a_neg", "single_axis_micro", [0.0, 0.0, 0.0, 0.0], [-amp_cm, 0.0, amp_cm, 0.0]),
-        ("segment_b_axis_b_pos", "single_axis_micro", [0.0, 0.0, 0.0, 0.0], [0.0, amp_cm, 0.0, -amp_cm]),
-        ("segment_b_axis_b_neg", "single_axis_micro", [0.0, 0.0, 0.0, 0.0], [0.0, -amp_cm, 0.0, amp_cm]),
-    ]
+    """Build the per-segment command schedule.
+
+    The amplitude is taken from the configured ``max_segment_displacement_cm``;
+    no silent cap is applied (the legacy MVP capped at 0.01 cm). Hardware safety
+    is enforced separately via ``max_tick_delta_from_startup`` and the safety
+    guard. Schedules can be bottom/top-aware: when a physical assembly is
+    defined, ``bottom_only_sweep`` / ``top_only_sweep`` route the displacements
+    to the correct fixed segment.
+    """
+
+    amp_cm = max(0.0, float(config.max_segment_displacement_cm))
     schedule_type = str(config.schedule_type)
+    zero_step = TwoSegmentCommandStep(
+        index=0,
+        label="zero_startup",
+        phase="zero",
+        command=TwoSegmentCommand.from_mapping({"segment_a": [0.0, 0.0, 0.0, 0.0], "segment_b": [0.0, 0.0, 0.0, 0.0]}),
+    )
+    if amp_cm <= 0.0 or schedule_type == "zero":
+        return [zero_step]
+
+    assembly = dict(context.metadata().get("physical_assembly") or {}) if context is not None else {}
+    bottom_key = str(assembly.get("bottom_segment_key") or "segment_a")
+    top_key = str(assembly.get("top_segment_key") or "segment_b")
+
+    def _seg(values_bottom: list[float], values_top: list[float]) -> dict[str, list[float]]:
+        # values_bottom / values_top are tendon-vectors for the bottom and top
+        # *physical* segments; map them back to segment_a/segment_b by physical role.
+        mapping: dict[str, list[float]] = {bottom_key: list(values_bottom), top_key: list(values_top)}
+        # Ensure both keys exist, even when assembly metadata is empty.
+        mapping.setdefault("segment_a", [0.0, 0.0, 0.0, 0.0])
+        mapping.setdefault("segment_b", [0.0, 0.0, 0.0, 0.0])
+        return {"segment_a": mapping["segment_a"], "segment_b": mapping["segment_b"]}
+
+    patterns: list[tuple[str, str, list[float], list[float]]] = []
+    if schedule_type in {"single_axis_micro", "segment_isolation", "small_combined", "bottom_only_sweep", "top_only_sweep", "workspace_coverage", "structured_grid", "mixed_training"}:
+        single_axis_patterns: list[tuple[str, str, list[float], list[float]]] = [
+            ("bottom_axis_a_pos", "single_axis_micro", [amp_cm, 0.0, -amp_cm, 0.0], [0.0, 0.0, 0.0, 0.0]),
+            ("bottom_axis_a_neg", "single_axis_micro", [-amp_cm, 0.0, amp_cm, 0.0], [0.0, 0.0, 0.0, 0.0]),
+            ("bottom_axis_b_pos", "single_axis_micro", [0.0, amp_cm, 0.0, -amp_cm], [0.0, 0.0, 0.0, 0.0]),
+            ("bottom_axis_b_neg", "single_axis_micro", [0.0, -amp_cm, 0.0, amp_cm], [0.0, 0.0, 0.0, 0.0]),
+            ("top_axis_a_pos", "single_axis_micro", [0.0, 0.0, 0.0, 0.0], [amp_cm, 0.0, -amp_cm, 0.0]),
+            ("top_axis_a_neg", "single_axis_micro", [0.0, 0.0, 0.0, 0.0], [-amp_cm, 0.0, amp_cm, 0.0]),
+            ("top_axis_b_pos", "single_axis_micro", [0.0, 0.0, 0.0, 0.0], [0.0, amp_cm, 0.0, -amp_cm]),
+            ("top_axis_b_neg", "single_axis_micro", [0.0, 0.0, 0.0, 0.0], [0.0, -amp_cm, 0.0, amp_cm]),
+        ]
+        patterns = list(single_axis_patterns)
     if schedule_type == "segment_isolation":
-        patterns = [item for item in patterns if item[0].startswith("segment_a")][:2] + [item for item in patterns if item[0].startswith("segment_b")][:2]
+        patterns = [item for item in patterns if item[0].startswith("bottom")][:2] + [item for item in patterns if item[0].startswith("top")][:2]
     elif schedule_type == "small_combined":
         half = amp_cm / 2.0
         patterns.extend(
             [
-                ("combined_a_axis_a_b_axis_a_pos", "small_combined", [half, 0.0, -half, 0.0], [half, 0.0, -half, 0.0]),
-                ("combined_a_axis_b_b_axis_b_pos", "small_combined", [0.0, half, 0.0, -half], [0.0, half, 0.0, -half]),
+                ("combined_bottom_top_axis_a_pos", "small_combined", [half, 0.0, -half, 0.0], [half, 0.0, -half, 0.0]),
+                ("combined_bottom_top_axis_b_pos", "small_combined", [0.0, half, 0.0, -half], [0.0, half, 0.0, -half]),
                 ("combined_cross_axes", "small_combined", [half, 0.0, -half, 0.0], [0.0, -half, 0.0, half]),
             ]
         )
-    steps: list[TwoSegmentCommandStep] = [
-        TwoSegmentCommandStep(
-            index=0,
-            label="zero_startup",
-            phase="zero",
-            command=TwoSegmentCommand.from_mapping({"segment_a": [0.0, 0.0, 0.0, 0.0], "segment_b": [0.0, 0.0, 0.0, 0.0]}),
-        )
-    ]
-    max_patterns = max(1, int(config.capture_repeats)) * 9999
-    for index, (label, phase, segment_a, segment_b) in enumerate(patterns[:max_patterns], start=1):
+    elif schedule_type == "bottom_only_sweep":
+        patterns = [item for item in patterns if item[0].startswith("bottom")]
+    elif schedule_type == "top_only_sweep":
+        patterns = [item for item in patterns if item[0].startswith("top")]
+    elif schedule_type == "workspace_coverage":
+        patterns = _workspace_coverage_patterns(amp_cm)
+    elif schedule_type == "structured_grid":
+        patterns = _structured_grid_patterns(amp_cm, points=max(2, int(config.grid_points_per_axis)))
+    elif schedule_type == "random_babble":
+        patterns = _random_babble_patterns(amp_cm, sample_count=max(8, int(config.pattern_count_budget or 32)), seed=int(config.random_seed))
+    elif schedule_type == "mixed_training":
+        # Mix structured single-axis with workspace coverage and a few random samples.
+        mixed = list(patterns)
+        mixed.extend(_workspace_coverage_patterns(amp_cm))
+        mixed.extend(_random_babble_patterns(amp_cm, sample_count=max(8, int(config.pattern_count_budget or 16)), seed=int(config.random_seed)))
+        patterns = mixed
+
+    steps: list[TwoSegmentCommandStep] = [zero_step]
+    for index, (label, phase, bottom_values, top_values) in enumerate(patterns, start=1):
+        segments_mapping = _seg(bottom_values, top_values)
         steps.append(
             TwoSegmentCommandStep(
                 index=index,
                 label=label,
                 phase=phase,
-                command=TwoSegmentCommand.from_mapping({"segment_a": segment_a, "segment_b": segment_b}),
+                command=TwoSegmentCommand.from_mapping(segments_mapping),
             )
         )
-    _ = context
+    if int(config.pattern_count_budget) > 0:
+        steps = steps[: max(1, int(config.pattern_count_budget) + 1)]  # +1 for zero step
     return steps
 
 
-def write_two_segment_dataset_outputs(*, output_dir: Path, metrics: dict[str, Any], samples: list[ExperimentTimeseriesSample]) -> dict[str, Path]:
+def _workspace_coverage_patterns(amp_cm: float) -> list[tuple[str, str, list[float], list[float]]]:
+    """Cardinal + diagonal directions for both segments to cover workspace."""
+
+    if amp_cm <= 0.0:
+        return []
+    half = amp_cm / 2.0
+    cardinals_bottom = [
+        ("bottom_only_pos_x", "workspace_coverage", [amp_cm, 0.0, -amp_cm, 0.0], [0.0, 0.0, 0.0, 0.0]),
+        ("bottom_only_pos_y", "workspace_coverage", [0.0, amp_cm, 0.0, -amp_cm], [0.0, 0.0, 0.0, 0.0]),
+        ("bottom_only_neg_x", "workspace_coverage", [-amp_cm, 0.0, amp_cm, 0.0], [0.0, 0.0, 0.0, 0.0]),
+        ("bottom_only_neg_y", "workspace_coverage", [0.0, -amp_cm, 0.0, amp_cm], [0.0, 0.0, 0.0, 0.0]),
+    ]
+    cardinals_top = [
+        ("top_only_pos_x", "workspace_coverage", [0.0, 0.0, 0.0, 0.0], [amp_cm, 0.0, -amp_cm, 0.0]),
+        ("top_only_pos_y", "workspace_coverage", [0.0, 0.0, 0.0, 0.0], [0.0, amp_cm, 0.0, -amp_cm]),
+        ("top_only_neg_x", "workspace_coverage", [0.0, 0.0, 0.0, 0.0], [-amp_cm, 0.0, amp_cm, 0.0]),
+        ("top_only_neg_y", "workspace_coverage", [0.0, 0.0, 0.0, 0.0], [0.0, -amp_cm, 0.0, amp_cm]),
+    ]
+    combos = [
+        ("combo_pos_x_pos_x", "workspace_coverage", [half, 0.0, -half, 0.0], [half, 0.0, -half, 0.0]),
+        ("combo_pos_x_pos_y", "workspace_coverage", [half, 0.0, -half, 0.0], [0.0, half, 0.0, -half]),
+        ("combo_pos_y_pos_x", "workspace_coverage", [0.0, half, 0.0, -half], [half, 0.0, -half, 0.0]),
+        ("combo_pos_y_pos_y", "workspace_coverage", [0.0, half, 0.0, -half], [0.0, half, 0.0, -half]),
+        ("combo_neg_x_pos_x", "workspace_coverage", [-half, 0.0, half, 0.0], [half, 0.0, -half, 0.0]),
+        ("combo_neg_y_pos_y", "workspace_coverage", [0.0, -half, 0.0, half], [0.0, half, 0.0, -half]),
+        ("combo_neg_xy_neg_xy", "workspace_coverage", [-half, -half, half, half], [-half, -half, half, half]),
+    ]
+    return cardinals_bottom + cardinals_top + combos
+
+
+def _structured_grid_patterns(amp_cm: float, *, points: int) -> list[tuple[str, str, list[float], list[float]]]:
+    """Grid in 4D (bottom_x, bottom_y, top_x, top_y) tendon space at amp_cm scale."""
+
+    if amp_cm <= 0.0 or points < 2:
+        return []
+    grid_values = [amp_cm * (-1.0 + 2.0 * idx / (points - 1)) for idx in range(points)]
+    patterns: list[tuple[str, str, list[float], list[float]]] = []
+    # Cap the grid: a full Cartesian product across 4 axes would explode. Sweep
+    # bottom-X, bottom-Y, top-X, top-Y one at a time, fixing others at 0.
+    for label_prefix, axis in (("bottom_x", 0), ("bottom_y", 1), ("top_x", 0), ("top_y", 1)):
+        for value in grid_values:
+            if abs(value) < 1e-9:
+                continue
+            bottom = [0.0, 0.0, 0.0, 0.0]
+            top = [0.0, 0.0, 0.0, 0.0]
+            if label_prefix.startswith("bottom"):
+                bottom[axis] = value
+                bottom[axis + 2] = -value
+            else:
+                top[axis] = value
+                top[axis + 2] = -value
+            patterns.append((f"{label_prefix}_{value:+.3f}", "structured_grid", bottom, top))
+    return patterns
+
+
+def _random_babble_patterns(amp_cm: float, *, sample_count: int, seed: int) -> list[tuple[str, str, list[float], list[float]]]:
+    """Reproducible random tendon babble within the amp_cm hypercube.
+
+    Bottom and top tendons are sampled independently in tendon space; opposite
+    tendons are anti-correlated so total tendon length per segment is conserved
+    on average (this is descriptive, not a controller — kinematics may differ
+    on hardware until validated).
+    """
+
+    if amp_cm <= 0.0 or sample_count <= 0:
+        return []
+    import random
+    rng = random.Random(int(seed) or 0)
+    patterns: list[tuple[str, str, list[float], list[float]]] = []
+    for index in range(int(sample_count)):
+        bottom_x = rng.uniform(-amp_cm, amp_cm)
+        bottom_y = rng.uniform(-amp_cm, amp_cm)
+        top_x = rng.uniform(-amp_cm, amp_cm)
+        top_y = rng.uniform(-amp_cm, amp_cm)
+        bottom = [bottom_x, bottom_y, -bottom_x, -bottom_y]
+        top = [top_x, top_y, -top_x, -top_y]
+        patterns.append((f"random_{index:04d}", "random_babble", bottom, top))
+    return patterns
+
+
+def write_two_segment_dataset_outputs(
+    *,
+    output_dir: Path,
+    metrics: dict[str, Any],
+    samples: list[ExperimentTimeseriesSample],
+    sample_failure_events: list[dict[str, Any]] | None = None,
+    long_run_health: dict[str, Any] | None = None,
+    transport_recovery_report: dict[str, Any] | None = None,
+) -> dict[str, Path]:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     paths = {
@@ -448,6 +921,9 @@ def write_two_segment_dataset_outputs(*, output_dir: Path, metrics: dict[str, An
         "servo_position_coverage": output_dir / "two_segment_servo_position_coverage_report.png",
         "pose_coverage": output_dir / "two_segment_pose_coverage_report.png",
         "quality": output_dir / "two_segment_dataset_quality_report.png",
+        "long_run_health": output_dir / "long_run_health.json",
+        "sample_failure_events": output_dir / "sample_failure_events.jsonl",
+        "transport_recovery_report": output_dir / "transport_recovery_report.json",
     }
     _write_summary_text(paths["summary_text"], metrics)
     paths["role_provenance"].write_text(
@@ -455,6 +931,9 @@ def write_two_segment_dataset_outputs(*, output_dir: Path, metrics: dict[str, An
             {
                 "two_segment_tracking_role_config": metrics.get("two_segment_tracking_role_config", {}),
                 "pose_label_summary": metrics.get("pose_label_summary", {}),
+                "physical_assembly": metrics.get("physical_assembly", {}),
+                "bottom_segment_key": metrics.get("bottom_segment_key"),
+                "top_segment_key": metrics.get("top_segment_key"),
             },
             indent=2,
         ),
@@ -465,6 +944,17 @@ def write_two_segment_dataset_outputs(*, output_dir: Path, metrics: dict[str, An
     _write_servo_position_coverage(paths["servo_position_coverage"], samples)
     _write_pose_coverage(paths["pose_coverage"], samples, metrics)
     _write_quality_report(paths["quality"], metrics)
+    paths["long_run_health"].write_text(
+        json.dumps(long_run_health or {}, indent=2),
+        encoding="utf-8",
+    )
+    paths["transport_recovery_report"].write_text(
+        json.dumps(transport_recovery_report or {}, indent=2),
+        encoding="utf-8",
+    )
+    with paths["sample_failure_events"].open("w", encoding="utf-8") as handle:
+        for event in list(sample_failure_events or []):
+            handle.write(json.dumps(event) + "\n")
     return paths
 
 
@@ -705,6 +1195,210 @@ def _two_segment_pose_observation(
     }
 
 
+def _two_segment_registration_summary(*, session) -> dict[str, Any]:
+    """Capture registration provenance from the tracking snapshot if available.
+
+    Mirrors the same helper in two_segment_repeatability.py. Surfaces the
+    registration file path, FRE, timestamp, and state so two runs can be
+    honestly compared. Returns a placeholder block when no tracker is connected.
+    """
+    placeholder = {
+        "schema_version": "two_segment_registration_summary_v1",
+        "registration_state": "tracker_unavailable",
+        "registration_path": None,
+        "stored_registration_fre_mm": None,
+        "stored_registration_timestamp_utc": None,
+        "stored_registration_measurement_tool_id": None,
+        "stored_registration_coil_tool_id": None,
+        "runtime_tip_mode": None,
+        "runtime_tip_trust_level": None,
+    }
+    tracking_service = getattr(session.context, "tracking_service", None)
+    if tracking_service is None:
+        return placeholder
+    try:
+        reader = getattr(tracking_service, "peek_snapshot", None)
+        snapshot = reader() if callable(reader) else tracking_service.get_snapshot()
+    except Exception as exc:
+        placeholder["registration_state"] = f"tracker_error:{exc}"
+        return placeholder
+    if snapshot is None:
+        return placeholder
+    return {
+        "schema_version": "two_segment_registration_summary_v1",
+        "registration_state": getattr(snapshot, "registration_state", "missing_registration"),
+        "registration_path": getattr(snapshot, "registration_path", None),
+        "stored_registration_fre_mm": getattr(snapshot, "stored_registration_fre_mm", None),
+        "stored_registration_timestamp_utc": getattr(snapshot, "stored_registration_timestamp_utc", None),
+        "stored_registration_measurement_tool_id": getattr(snapshot, "stored_registration_measurement_tool_id", None),
+        "stored_registration_coil_tool_id": getattr(snapshot, "stored_registration_coil_tool_id", None),
+        "runtime_tip_mode": getattr(snapshot, "runtime_tip_mode", None),
+        "runtime_tip_trust_level": getattr(snapshot, "runtime_tip_trust_level", None),
+    }
+
+
+def _two_segment_tracker_freshness_summary(
+    *,
+    samples: list[ExperimentTimeseriesSample],
+    stale_threshold_s: float = 0.25,
+) -> dict[str, Any]:
+    """Aggregate per-run tracker freshness statistics.
+
+    Captures the operator-visible distinction between "tracker is fast" and
+    "tracker is silently dropping frames." Counts samples where
+    ``freshness_s`` exceeded ``stale_threshold_s`` and reports the worst
+    observation. Descriptive only — does not change safety enforcement.
+    """
+
+    freshness_values: list[float] = []
+    samples_with_freshness = 0
+    samples_stale = 0
+    samples_with_stale_role_observation = 0
+    for sample in samples:
+        freshness = getattr(sample, "freshness_s", None)
+        if freshness is not None:
+            try:
+                value = float(freshness)
+            except (TypeError, ValueError):
+                value = None
+            if value is not None:
+                samples_with_freshness += 1
+                freshness_values.append(value)
+                if value > float(stale_threshold_s):
+                    samples_stale += 1
+        extra = dict(getattr(sample, "extra", {}) or {})
+        if list(extra.get("stale_pose_roles") or []):
+            samples_with_stale_role_observation += 1
+    if not freshness_values:
+        return {
+            "schema_version": "two_segment_tracker_freshness_summary_v1",
+            "stale_threshold_s": float(stale_threshold_s),
+            "samples_with_freshness": 0,
+            "samples_stale": 0,
+            "samples_with_stale_role_observation": int(samples_with_stale_role_observation),
+            "max_freshness_s": None,
+            "p95_freshness_s": None,
+            "median_freshness_s": None,
+            "mean_freshness_s": None,
+            "any_stale_observed": False,
+        }
+    arr = sorted(freshness_values)
+    n = len(arr)
+    p95_index = max(0, min(n - 1, int(round(0.95 * (n - 1)))))
+    return {
+        "schema_version": "two_segment_tracker_freshness_summary_v1",
+        "stale_threshold_s": float(stale_threshold_s),
+        "samples_with_freshness": int(samples_with_freshness),
+        "samples_stale": int(samples_stale),
+        "samples_with_stale_role_observation": int(samples_with_stale_role_observation),
+        "max_freshness_s": float(arr[-1]),
+        "p95_freshness_s": float(arr[p95_index]),
+        "median_freshness_s": float(arr[n // 2]),
+        "mean_freshness_s": float(sum(arr) / n),
+        "any_stale_observed": bool(samples_stale > 0 or samples_with_stale_role_observation > 0),
+    }
+
+
+def _two_segment_current_load_summary(
+    *,
+    samples: list[ExperimentTimeseriesSample],
+    warning_ma: int,
+    hard_ma: int,
+    sustained_sample_count: int = 3,
+) -> dict[str, Any]:
+    """Aggregate per-servo current/load statistics across the run.
+
+    Surfaces mean / median / p95 / max load_proxy_ma per servo, plus the count
+    of samples exceeding warning / hard thresholds and any servo with
+    `sustained_sample_count` consecutive samples >= the warning threshold.
+    Descriptive only — does not change safety enforcement.
+    """
+
+    per_servo_load: dict[int, list[float]] = {}
+    per_servo_signed: dict[int, list[float]] = {}
+    per_servo_warning_count: dict[int, int] = {}
+    per_servo_hard_count: dict[int, int] = {}
+    per_servo_consecutive_warning: dict[int, int] = {}
+    sustained_jam_servo_ids: set[int] = set()
+
+    for sample in samples:
+        extra = dict(getattr(sample, "extra", {}) or {})
+        feedback = dict(extra.get("measured_servo_feedback") or {})
+        # Track per-servo consecutive warning counts in capture order so
+        # transient spikes don't get flagged as sustained.
+        seen_servo_ids: set[int] = set()
+        for raw_id, data in feedback.items():
+            try:
+                servo_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            seen_servo_ids.add(servo_id)
+            entry = dict(data or {})
+            load = entry.get("load_proxy_ma")
+            signed = entry.get("signed_raw_current_ma")
+            if load is None:
+                # Don't reset the consecutive counter when telemetry is missing;
+                # a packet drop ≠ a known-low current. Keep the count flat.
+                continue
+            per_servo_load.setdefault(servo_id, []).append(float(load))
+            if signed is not None:
+                per_servo_signed.setdefault(servo_id, []).append(float(signed))
+            if float(load) >= float(warning_ma):
+                per_servo_warning_count[servo_id] = per_servo_warning_count.get(servo_id, 0) + 1
+                per_servo_consecutive_warning[servo_id] = per_servo_consecutive_warning.get(servo_id, 0) + 1
+                if per_servo_consecutive_warning[servo_id] >= int(sustained_sample_count):
+                    sustained_jam_servo_ids.add(servo_id)
+            else:
+                per_servo_consecutive_warning[servo_id] = 0
+            if float(load) >= float(hard_ma):
+                per_servo_hard_count[servo_id] = per_servo_hard_count.get(servo_id, 0) + 1
+        # Reset consecutive counters for servos not seen at all in this sample
+        # (sample-level absence == reset).
+        for servo_id in list(per_servo_consecutive_warning):
+            if servo_id not in seen_servo_ids:
+                per_servo_consecutive_warning[servo_id] = 0
+
+    def _stats(values: list[float]) -> dict[str, float | None]:
+        if not values:
+            return {"mean_ma": None, "median_ma": None, "p95_ma": None, "max_ma": None, "min_ma": None}
+        arr = sorted(values)
+        n = len(arr)
+        p95_index = max(0, min(n - 1, int(round(0.95 * (n - 1)))))
+        return {
+            "mean_ma": float(sum(arr) / n),
+            "median_ma": float(arr[n // 2]),
+            "p95_ma": float(arr[p95_index]),
+            "max_ma": float(arr[-1]),
+            "min_ma": float(arr[0]),
+        }
+
+    per_servo_summary = {}
+    for servo_id in sorted(set(list(per_servo_load) + list(per_servo_signed))):
+        per_servo_summary[str(servo_id)] = {
+            "servo_id": int(servo_id),
+            "load_proxy": _stats(per_servo_load.get(servo_id, [])),
+            "signed_current": _stats(per_servo_signed.get(servo_id, [])),
+            "warning_threshold_exceeded_count": int(per_servo_warning_count.get(servo_id, 0)),
+            "hard_threshold_exceeded_count": int(per_servo_hard_count.get(servo_id, 0)),
+            "sample_count": len(per_servo_load.get(servo_id, [])),
+        }
+
+    return {
+        "schema_version": "two_segment_current_load_summary_v1",
+        "warning_threshold_ma": int(warning_ma),
+        "hard_threshold_ma": int(hard_ma),
+        "sustained_sample_count": int(sustained_sample_count),
+        "per_servo": per_servo_summary,
+        "sustained_jam_servo_ids": sorted(sustained_jam_servo_ids),
+        "any_warning_observed": any(int(count) > 0 for count in per_servo_warning_count.values()),
+        "any_hard_observed": any(int(count) > 0 for count in per_servo_hard_count.values()),
+        "note": (
+            "Descriptive per-servo current/load aggregation across the run. "
+            "Does not change safety enforcement; see SafetyConfig for hard stops."
+        ),
+    }
+
+
 def _pose_label_summary(samples: list[ExperimentTimeseriesSample]) -> dict[str, Any]:
     distal = 0
     intermediate = 0
@@ -785,6 +1479,9 @@ def _sample_warnings(*, config: TwoSegmentCollectPoseDatasetConfig, missing_pose
 
 def _write_summary_text(path: Path, metrics: dict[str, Any]) -> None:
     pose = dict(metrics.get("pose_label_summary", {}) or {})
+    long_run = dict(metrics.get("long_run_health") or {})
+    current_load = dict(metrics.get("current_load_summary") or {})
+    tracker_fresh = dict(metrics.get("tracker_freshness_summary") or {})
     lines = [
         "Two-Segment Collect-Pose Command Dataset",
         f"dataset_schema_version: {metrics.get('dataset_schema_version', TWO_SEGMENT_DATASET_SCHEMA_VERSION)}",
@@ -792,17 +1489,66 @@ def _write_summary_text(path: Path, metrics: dict[str, Any]) -> None:
         f"run_trust_mode: {metrics.get('run_trust_mode')}",
         f"valid_for_two_segment_model_training: {metrics.get('valid_for_two_segment_model_training')}",
         f"valid_for_model_training: {metrics.get('valid_for_model_training')}",
+        f"bottom_segment_key: {metrics.get('bottom_segment_key', 'n/a')}",
+        f"top_segment_key: {metrics.get('top_segment_key', 'n/a')}",
         f"accepted_sample_count: {metrics.get('accepted_sample_count')}",
         f"rejected_sample_count: {metrics.get('rejected_sample_count')}",
+        f"command_failure_count: {metrics.get('command_failure_count', 0)}",
         f"pose_observation_sample_count: {pose.get('pose_observation_sample_count', 0)}",
         f"distal_only: {metrics.get('distal_only')}",
         f"includes_intermediate_pose: {metrics.get('includes_intermediate_pose')}",
         "automatic_two_segment_pretension_validated: false",
         "two_segment_control_validated: false",
+    ]
+    if long_run:
+        lines.extend([
+            "",
+            "Long-Run Health:",
+            f"  stop_reason: {long_run.get('stop_reason', 'n/a')}",
+            f"  cycles_completed: {long_run.get('cycles_completed', 0)}",
+            f"  transport_failures: {long_run.get('transport_failures', 0)}",
+            f"  continue_until_valid_samples: {long_run.get('continue_until_valid_samples', False)}",
+            f"  target_valid_sample_count: {long_run.get('target_valid_sample_count', 'n/a')}",
+        ])
+    if current_load:
+        sustained = list(current_load.get("sustained_jam_servo_ids") or [])
+        lines.extend([
+            "",
+            "Current/Load Summary:",
+            f"  warning_threshold_ma: {current_load.get('warning_threshold_ma', 'n/a')}",
+            f"  hard_threshold_ma: {current_load.get('hard_threshold_ma', 'n/a')}",
+            f"  any_warning_observed: {current_load.get('any_warning_observed', False)}",
+            f"  any_hard_observed: {current_load.get('any_hard_observed', False)}",
+            f"  sustained_jam_servo_ids: {sustained or 'none'}",
+        ])
+    if tracker_fresh:
+        lines.extend([
+            "",
+            "Tracker Freshness:",
+            f"  stale_threshold_s: {tracker_fresh.get('stale_threshold_s', 'n/a')}",
+            f"  samples_with_freshness: {tracker_fresh.get('samples_with_freshness', 0)}",
+            f"  samples_stale: {tracker_fresh.get('samples_stale', 0)}",
+            f"  max_freshness_s: {tracker_fresh.get('max_freshness_s', 'n/a')}",
+            f"  p95_freshness_s: {tracker_fresh.get('p95_freshness_s', 'n/a')}",
+            f"  any_stale_observed: {tracker_fresh.get('any_stale_observed', False)}",
+        ])
+    registration = dict(metrics.get("registration_summary") or {})
+    if registration:
+        lines.extend([
+            "",
+            "Registration Provenance:",
+            f"  registration_state: {registration.get('registration_state', 'unknown')}",
+            f"  registration_path: {registration.get('registration_path', 'n/a')}",
+            f"  stored_registration_fre_mm: {registration.get('stored_registration_fre_mm', 'n/a')}",
+            f"  stored_registration_timestamp_utc: {registration.get('stored_registration_timestamp_utc', 'n/a')}",
+            f"  runtime_tip_mode: {registration.get('runtime_tip_mode', 'n/a')}",
+            f"  runtime_tip_trust_level: {registration.get('runtime_tip_trust_level', 'n/a')}",
+        ])
+    lines.extend([
         "",
         "This dataset stores structured Segment A/B commands and optional pose observations.",
         "It does not implement two-segment kinematics, control, modeling, chasing, or automatic pretension.",
-    ]
+    ])
     Path(path).write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
 
