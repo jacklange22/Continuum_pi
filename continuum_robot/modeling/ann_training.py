@@ -347,6 +347,7 @@ class AnnTrainingConfig:
     standardize_io: bool = True
     weight_decay: float = 1e-4
     early_stopping_patience: int = 30
+    model_sweep_seeds_per_architecture: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -2335,8 +2336,17 @@ def run_model_sweep(
     stop_requested: Callable[[], bool] | None = None,
     time_fn: Callable[[], float] = time.perf_counter,
     training_provenance: dict[str, Any] | None = None,
+    seeds_per_architecture: int = 1,
 ) -> ModelSweepResult:
-    """Train linear ridge (optional) and several ANNs sharing one split; write sweep summaries."""
+    """Train linear ridge (optional) and several ANNs sharing one split; write sweep summaries.
+
+    ``seeds_per_architecture`` reproduces Wolfe's 10-seed methodology
+    (Thayer/Dartmouth MS thesis §3.2.2 p83): each ANN architecture is trained N
+    times with seeds ``base_config.random_seed`` through
+    ``base_config.random_seed + N - 1``. When N==1, sweep subdirs keep their legacy
+    names (e.g. ``ann_32_32``). When N>1, per-seed subdirs are tagged ``_s00``,
+    ``_s01``, ... so each artifact stays inspectable. The best-by-test-RMSE
+    selection runs across the full (architecture × seed) matrix."""
     _require_torch()
     output_target = _resolve_output_target(getattr(base_config, "output_target", OUTPUT_TARGET_XYZ))
     prepared = prepare_legacy_ann_dataset(dataset_path, output_target=output_target)
@@ -2421,35 +2431,53 @@ def run_model_sweep(
             )
         )
 
+    seeds_per_architecture = max(1, int(seeds_per_architecture))
+    base_seed = int(base_config.random_seed)
+    seed_list = list(range(base_seed, base_seed + seeds_per_architecture))
     for hidden in ann_list:
-        if stop_requested is not None and stop_requested():
-            raise RuntimeError("Model sweep cancelled.")
-        label = format_hidden_layers_for_ann_ui(hidden)
-        sub = _ann_sweep_subdir_name(hidden)
-        _status(f"Sweep: training ANN [{label}] -> {sub}")
-        cfg = AnnTrainingConfig(**base_config.to_dict())
-        cfg.hidden_layers = list(hidden)
-        train_legacy_ann(
-            project_root=project_root,
-            dataset_path=dataset_path,
-            config=cfg,
-            backend_name=backend_name,
-            split=split,
-            artifact_dir=sweep_root / sub,
-            progress_callback=None,
-            stop_requested=stop_requested,
-            time_fn=time_fn,
-            training_provenance=training_provenance,
-        )
-        meta = json.loads((sweep_root / sub / "training_metadata.json").read_text(encoding="utf-8"))
-        rows.append(
-            _sweep_summary_row_from_metadata(
-                meta,
-                model_key=f"legacy_ann_{sub}",
-                model_label=f"ANN [{label}]",
-                artifact_subdir=sub,
+        for seed_index, seed_value in enumerate(seed_list):
+            if stop_requested is not None and stop_requested():
+                raise RuntimeError("Model sweep cancelled.")
+            label = format_hidden_layers_for_ann_ui(hidden)
+            base_sub = _ann_sweep_subdir_name(hidden)
+            sub = (
+                base_sub
+                if seeds_per_architecture == 1
+                else f"{base_sub}_s{seed_index:02d}"
             )
-        )
+            seed_tag = (
+                "" if seeds_per_architecture == 1 else f" (seed {seed_index + 1}/{seeds_per_architecture})"
+            )
+            _status(f"Sweep: training ANN [{label}]{seed_tag} -> {sub}")
+            cfg = AnnTrainingConfig(**base_config.to_dict())
+            cfg.hidden_layers = list(hidden)
+            cfg.random_seed = int(seed_value)
+            train_legacy_ann(
+                project_root=project_root,
+                dataset_path=dataset_path,
+                config=cfg,
+                backend_name=backend_name,
+                split=split,
+                artifact_dir=sweep_root / sub,
+                progress_callback=None,
+                stop_requested=stop_requested,
+                time_fn=time_fn,
+                training_provenance=training_provenance,
+            )
+            meta = json.loads((sweep_root / sub / "training_metadata.json").read_text(encoding="utf-8"))
+            model_label = (
+                f"ANN [{label}]"
+                if seeds_per_architecture == 1
+                else f"ANN [{label}] s{seed_index:02d}"
+            )
+            rows.append(
+                _sweep_summary_row_from_metadata(
+                    meta,
+                    model_key=f"legacy_ann_{sub}",
+                    model_label=model_label,
+                    artifact_subdir=sub,
+                )
+            )
 
     best = select_best_sweep_row_by_test_position_rmse(rows)
     warnings_t = tuple(warnings_list)

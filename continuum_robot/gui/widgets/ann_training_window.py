@@ -324,11 +324,29 @@ class AnnTrainingWindow(QWidget):
         self.sweep_extra_edit.editingFinished.connect(
             lambda: self.controller.set_model_sweep_extra_hidden_layers_text(self.sweep_extra_edit.text().strip())
         )
+        # Wolfe trains 10 random seeds per architecture and picks the lowest-val-loss one
+        # (Thayer MS thesis §3.2.2 p83). Default 1 = legacy single-seed; raise to 5 or 10
+        # for thesis-grade variance estimates.
+        seeds_label = QLabel("Seeds")
+        seeds_label.setToolTip(
+            "Random seeds trained per architecture. Wolfe MS thesis §3.2.2 uses 10."
+        )
+        self.sweep_seeds_spin = QSpinBox()
+        self.sweep_seeds_spin.setRange(1, 50)
+        self.sweep_seeds_spin.setValue(1)
+        self.sweep_seeds_spin.setToolTip(
+            "Random seeds trained per architecture. 1 = single run, 10 = Wolfe's methodology."
+        )
+        self.sweep_seeds_spin.valueChanged.connect(
+            lambda value: self.controller.set_model_sweep_seeds_per_architecture(int(value))
+        )
         self.run_sweep_button = QPushButton("Run Model Sweep")
         self.run_sweep_button.setProperty("variant", "ghost")
         self.run_sweep_button.clicked.connect(self.controller.run_sweep)
         sweep_row.addWidget(self.sweep_include_linear_check, 2)
         sweep_row.addWidget(self.sweep_extra_edit, 3)
+        sweep_row.addWidget(seeds_label)
+        sweep_row.addWidget(self.sweep_seeds_spin)
         sweep_row.addWidget(self.run_sweep_button, 1)
         self.sweep_best_label = QLabel("")
         self.sweep_best_label.setWordWrap(True)
@@ -503,6 +521,10 @@ class AnnTrainingWindow(QWidget):
         with QSignalBlocker(self.sweep_include_linear_check):
             self.sweep_include_linear_check.setChecked(bool(config.model_sweep_include_linear_baseline))
         self._set_line_text(self.sweep_extra_edit, str(config.model_sweep_extra_hidden_layers_text or ""))
+        target_seeds = int(getattr(config, "model_sweep_seeds_per_architecture", 1) or 1)
+        if self.sweep_seeds_spin.value() != target_seeds:
+            with QSignalBlocker(self.sweep_seeds_spin):
+                self.sweep_seeds_spin.setValue(target_seeds)
         self._set_line_text(self.artifact_root_edit, self.controller.artifact_root_text())
 
     def _on_dataset_selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:

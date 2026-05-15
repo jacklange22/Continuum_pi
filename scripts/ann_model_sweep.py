@@ -45,6 +45,16 @@ def main(argv: list[str] | None = None) -> int:
             "Row-filter policy still applies; artifacts are annotated as exploratory and are not thesis-citable."
         ),
     )
+    parser.add_argument(
+        "--seeds-per-architecture",
+        type=int,
+        default=1,
+        help=(
+            "Number of random seeds to train per architecture (Wolfe MS thesis §3.2.2 trains 10 "
+            "per architecture and picks lowest-val-loss). Each seed gets its own artifact subdir "
+            "and its own row in the sweep summary; best-by-test-RMSE selection runs across all."
+        ),
+    )
     args = parser.parse_args(argv)
 
     project_root = args.project_root.resolve()
@@ -120,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         extra_hidden_layers_text=str(args.extra_architectures or ""),
         status_callback=_status,
         training_provenance=training_provenance,
+        seeds_per_architecture=int(args.seeds_per_architecture),
     )
     print(f"Sweep root: {result.sweep_root}", flush=True)
     print(f"Summary JSON: {result.summary_json_path}", flush=True)

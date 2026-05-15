@@ -457,6 +457,15 @@ class AnnTrainingController:
         with self._lock:
             self.config.model_sweep_extra_hidden_layers_text = str(value)
 
+    def set_model_sweep_seeds_per_architecture(self, value: int) -> None:
+        """How many random seeds to train per architecture in the sweep.
+
+        Wolfe trains 10 per architecture and picks the lowest-val-loss one
+        (Thayer/Dartmouth MS thesis §3.2.2 p83). 1 = legacy single-seed behavior.
+        """
+        with self._lock:
+            self.config.model_sweep_seeds_per_architecture = max(1, int(value))
+
     def run_sweep(self) -> None:
         if self._job_active():
             return
@@ -493,6 +502,9 @@ class AnnTrainingController:
                     status_callback=_on_status,
                     stop_requested=self._cancel_event.is_set,
                     training_provenance=training_provenance,
+                    seeds_per_architecture=int(
+                        getattr(config, "model_sweep_seeds_per_architecture", 1) or 1
+                    ),
                 )
                 best = result.best_model
                 best_text = ""

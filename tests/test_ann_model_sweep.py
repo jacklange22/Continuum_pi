@@ -348,3 +348,145 @@ def test_run_model_sweep_best_falls_back_to_test_loss() -> None:
     ]
     best = select_best_sweep_row_by_test_position_rmse(rows)
     assert best is not None and best["model_key"] == "b"
+
+
+def test_run_model_sweep_seeds_per_architecture_writes_per_seed_subdirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """seeds_per_architecture > 1 must produce one subdir per (architecture, seed) and
+    one row per pair in the sweep summary."""
+    # Build a small two-step fixture (re-using the structure of the existing test).
+    run_dir = tmp_path / "data" / "experiments" / "collect_pose_command_dataset" / "seed_fixture"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "schema_version": "1.0",
+        "experiment_name": "collect_pose_command_dataset",
+        "run_id": "seed",
+        "timestamp_utc": "2026-05-15T12:00:00+00:00",
+        "config_used": {"dataset_mode": "workspace_coverage"},
+    }
+    summary = {
+        "schema_version": "1.0",
+        "experiment_name": "collect_pose_command_dataset",
+        "run_id": "seed",
+        "success": True,
+        "sample_counts": {"total": 4},
+        "status": "success",
+        "experiment_metrics": {
+            "dataset_mode": "workspace_coverage",
+            "accepted_sample_count": 4,
+            "rejected_sample_count": 0,
+            "accepted_capture_rate": 1.0,
+            "run_trust_mode": "thesis_trusted",
+            "valid_for_model_training": True,
+            "target_valid_sample_count": 4,
+            "complete_training_row_count": 4,
+            "run_provenance": {
+                "runtime_tip_calibration": {"mode": "latest_accepted", "trust_level": "trusted"},
+                "pretension_artifact": {"active_source_type": "accepted_artifact", "status": "ready"},
+            },
+        },
+    }
+    (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    with (run_dir / "modeling_dataset_export.jsonl").open("w", encoding="utf-8") as handle:
+        for i in range(4):
+            handle.write(
+                json.dumps(
+                    {
+                        "sequence_index": i,
+                        "step_index": i // 2,
+                        "sample_index": i,
+                        "accepted": True,
+                        "resolved_cable_command_cm": [0.1 * i, 0.2, 0.3, 0.4],
+                        "tip_position_xyz_mm": [1.0 + i, 2.0, 3.0],
+                        "tip_tangent_xyz": [0.01, 0.02, 0.03],
+                    }
+                )
+                + "\n"
+            )
+
+    seen_seeds: list[int] = []
+
+    def _fake_ann(*, artifact_dir, split, config, **_kwargs) -> TrainingResult:
+        seen_seeds.append(int(config.random_seed))
+        ad = Path(artifact_dir)
+        ad.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "artifact_kind": "legacy_ann_xyz_v1",
+            "training": {
+                "test_loss": float(0.01 * config.random_seed + 0.1),
+                "training_wall_time_s": 0.01,
+                "epochs_completed": 1,
+                "best_validation_loss": 0.2,
+                "best_epoch": 1,
+            },
+            "evaluation": {
+                "validation": {"loss_mean": 0.25},
+                "test": {
+                    "loss_mean": 0.22,
+                    "position_rmse_xyz_mm": float(config.random_seed),  # smaller seed wins
+                },
+            },
+            "model": {
+                "family": "legacy_ann",
+                "hidden_layers": list(config.hidden_layers),
+                "output_target": "xyz",
+            },
+        }
+        (ad / "training_metadata.json").write_text(json.dumps(meta), encoding="utf-8")
+        (ad / "training_config.json").write_text(json.dumps(config.to_dict()), encoding="utf-8")
+        (ad / "loss_history.csv").write_text("epoch,train_loss,validation_loss,elapsed_s\n1,0.5,0.6,0.1\n", encoding="utf-8")
+        (ad / "loss_curve.png").write_bytes(b"")
+        (ad / "split_manifest.json").write_text("{}", encoding="utf-8")
+        (ad / "training_summary.txt").write_text("ok\n", encoding="utf-8")
+        (ad / "model.pt").write_bytes(b"")
+        return TrainingResult(
+            artifact_dir=ad,
+            model_path=ad / "model.pt",
+            metadata_path=ad / "training_metadata.json",
+            loss_history_path=ad / "loss_history.csv",
+            loss_plot_path=ad / "loss_curve.png",
+            split_manifest_path=ad / "split_manifest.json",
+            summary_text_path=ad / "training_summary.txt",
+            status="completed",
+            best_epoch=1,
+            best_validation_loss=0.2,
+            test_loss=0.1,
+            epochs_completed=1,
+            train_losses=[0.5],
+            validation_losses=[0.6],
+            estimate=_estimate_stub(),
+        )
+
+    monkeypatch.setattr(m, "train_legacy_ann", _fake_ann)
+    cfg = AnnTrainingConfig(
+        artifact_root=str(tmp_path / "data" / "models" / "ann"),
+        artifact_name="seed_sweep",
+        epochs=1,
+        batch_size=2,
+        train_ratio=0.5,
+        validation_ratio=0.25,
+        test_ratio=0.25,
+        random_seed=10,
+    )
+    result = run_model_sweep(
+        project_root=tmp_path,
+        dataset_path=run_dir,
+        base_config=cfg,
+        backend_name="cpu",
+        include_linear_baseline=False,
+        ann_hidden_layers_list=[[32, 32], [64, 64]],
+        seeds_per_architecture=3,
+    )
+    # 2 architectures × 3 seeds = 6 ANN runs, 6 summary rows.
+    summary_payload = json.loads(result.summary_json_path.read_text(encoding="utf-8"))
+    assert len(summary_payload["rows"]) == 6
+    # Seed values used were base_seed + 0..N-1.
+    assert sorted(set(seen_seeds)) == [10, 11, 12]
+    # Per-seed subdirs created with _s00/_s01/_s02 suffixes.
+    for hidden_dir in ("ann_32_32", "ann_64_64"):
+        for seed_suffix in ("_s00", "_s01", "_s02"):
+            assert (result.sweep_root / f"{hidden_dir}{seed_suffix}").is_dir()
+    # Best across (architecture × seed) goes to the smallest seed (smallest rmse).
+    assert summary_payload["best_model"]["artifact_subdir"].endswith("_s00")
