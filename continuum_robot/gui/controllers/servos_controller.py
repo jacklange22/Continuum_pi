@@ -111,6 +111,7 @@ class ServosController:
         self._last_pretension_result: PretensionRoutineResult | None = None
         self._motion_state_by_servo: dict[int, dict[str, object]] = {}
         self.latest_runtime_snapshot = None
+        self._initial_discovery_done = False
         operating_context = settings.robot.operating_context()
         self.state = ServosViewState(
             connected=servo_service.is_connected,
@@ -165,9 +166,28 @@ class ServosController:
             self.state.bench_debug_text = self._build_disconnected_bench_debug_text()
             if self.state.discovery_status == "idle":
                 self.state.discovery_message = "Connect OpenRB and the DYNAMIXEL bus before discovery."
+            self._initial_discovery_done = False
             self._sync_selected_servo_motion_state()
             self._sync_segment_readiness_summary()
             return self.state
+        if not self._initial_discovery_done:
+            self._initial_discovery_done = True
+            try:
+                if self.state.single_servo_mode:
+                    discovery = self.servo_service.discover_one_servo(
+                        expected_servo_id=self._expected_servo_id(),
+                        allow_scan=True,
+                    )
+                    self._apply_discovery_snapshot(discovery)
+                elif self.state.expected_servo_ids:
+                    snapshot = self.servo_service.build_configured_servo_bringup_snapshot(
+                        list(self.state.expected_servo_ids),
+                        allow_scan=True,
+                    )
+                    self._apply_configured_servo_snapshot(snapshot)
+            except Exception as exc:
+                self.state.last_error = str(exc)
+                self.state.status_message = f"Auto-discovery failed: {exc}"
         if self.state.single_servo_mode:
             return self._refresh_single_servo_state()
         self.state.servo_ids = list(self.state.expected_servo_ids)
