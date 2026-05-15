@@ -1473,3 +1473,254 @@ _FONT_5X7 = {
     "Y": ["10001", "10001", "01010", "00100", "00100", "00100", "00100"],
     "Z": ["11111", "00001", "00010", "00100", "01000", "10000", "11111"],
 }
+
+
+def _write_pretension_comparison_markdown(
+    *,
+    markdown_path: Path,
+    comparison_report: dict[str, Any],
+    manual_record_count: int,
+    algorithm_run_count: int,
+    metrics: dict[str, Any],
+) -> None:
+    """Write a human-readable comparison report.
+
+    Even when no manual baseline is present, the algorithm-only summary is
+    written so the run folder always has a top-level repeatability story."""
+
+    def _fmt(value: Any, fmt: str = ".3f") -> str:
+        if value is None:
+            return "—"
+        try:
+            return format(float(value), fmt)
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _verdict(better: Any) -> str:
+        if better is True:
+            return "ALGORITHM ✓"
+        if better is False:
+            return "MANUAL ✓"
+        return "—"
+
+    lines: list[str] = []
+    lines.append("# Pretension: Algorithm vs Manual Comparison")
+    lines.append("")
+    variant = str(metrics.get("tip_centering_variant") or "—")
+    lines.append(f"- Tip-centering variant: `{variant}`")
+    lines.append(f"- Algorithm runs: {int(algorithm_run_count)}")
+    lines.append(f"- Manual baselines: {int(manual_record_count)}")
+    band = comparison_report.get("target_load_band_ma") if isinstance(comparison_report, dict) else None
+    if isinstance(band, (list, tuple)) and len(band) >= 2:
+        lines.append(f"- Target tendon load band: {float(band[0]):.1f} – {float(band[1]):.1f} mA")
+    target_xy = comparison_report.get("tip_target_xy_mm") if isinstance(comparison_report, dict) else None
+    if isinstance(target_xy, (list, tuple)) and len(target_xy) >= 2:
+        lines.append(f"- Tip target XY: ({float(target_xy[0]):.2f}, {float(target_xy[1]):.2f}) mm")
+    lines.append("")
+
+    if manual_record_count == 0:
+        lines.append("> No manual baselines recorded for this run. Algorithm-only repeatability:")
+        lines.append("")
+        algo = comparison_report.get("algorithm_population_summary") if isinstance(comparison_report, dict) else None
+        if isinstance(algo, dict):
+            lines.append(f"- Mean per-run current spread across servos: **{_fmt(algo.get('per_run_current_spread_ma', {}).get('mean'))} mA**")
+            lines.append(f"- Mean per-run position spread across servos: **{_fmt(algo.get('per_run_position_spread_ticks', {}).get('mean'), '.1f')} ticks**")
+            tip_error = algo.get("tip_xy_error_to_target_mm", {})
+            lines.append(f"- Tip XY error to target: mean **{_fmt(tip_error.get('mean'))}** mm, std **{_fmt(tip_error.get('std'))}** mm")
+            lines.append(f"- Tip radial dispersion across runs: **{_fmt(algo.get('tip_radial_dispersion_mm'))}** mm")
+        markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return
+
+    cmp = comparison_report.get("comparison", {}) if isinstance(comparison_report, dict) else {}
+    algo_summary = comparison_report.get("algorithm_population_summary", {})
+    manual_summary = comparison_report.get("manual_population_summary", {})
+
+    lines.append("## Per-metric comparison (lower is better for spreads and errors)")
+    lines.append("")
+    lines.append("| Metric | Algorithm | Manual | Δ (algo − manual) | Verdict |")
+    lines.append("|---|---:|---:|---:|---|")
+
+    def _row(label: str, block_name: str, stat: str, unit: str, fmt: str = ".3f") -> None:
+        block = cmp.get(block_name, {}).get(stat, {}) if isinstance(cmp, dict) else {}
+        lines.append(
+            f"| {label} ({stat}) | {_fmt(block.get('algorithm'), fmt)} {unit} | "
+            f"{_fmt(block.get('manual'), fmt)} {unit} | "
+            f"{_fmt(block.get('delta_algorithm_minus_manual'), fmt)} | "
+            f"{_verdict(block.get('algorithm_better'))} |"
+        )
+
+    _row("Per-run current spread (max-min, mA)", "per_run_current_spread_ma", "mean", "mA")
+    _row("Per-run current spread (max-min, mA)", "per_run_current_spread_ma", "std", "mA")
+    _row("Per-run position spread (max-min, ticks)", "per_run_position_spread_ticks", "mean", "ticks", ".1f")
+    _row("Per-run position spread (max-min, ticks)", "per_run_position_spread_ticks", "std", "ticks", ".1f")
+    _row("Tip XY error to target (mm)", "tip_xy_error_to_target_mm", "mean", "mm")
+    _row("Tip XY error to target (mm)", "tip_xy_error_to_target_mm", "std", "mm")
+    radial = cmp.get("tip_radial_dispersion_mm", {}) if isinstance(cmp, dict) else {}
+    lines.append(
+        f"| Tip radial dispersion across runs (mm) | {_fmt(radial.get('algorithm'))} mm | "
+        f"{_fmt(radial.get('manual'))} mm | {_fmt(radial.get('delta_algorithm_minus_manual'))} | "
+        f"{_verdict(radial.get('algorithm_better'))} |"
+    )
+    lines.append("")
+
+    lines.append(
+        f"**Verdict tally:** algorithm wins {int(comparison_report.get('algorithm_wins', 0))} metrics, "
+        f"manual wins {int(comparison_report.get('manual_wins', 0))}, "
+        f"ties/missing {int(comparison_report.get('ties_or_missing', 0))}."
+    )
+    lines.append("")
+
+    lines.append("## Per-servo repeatability (std across runs)")
+    lines.append("")
+    lines.append("| Servo | Algorithm current std (mA) | Manual current std (mA) | Algorithm position std (ticks) | Manual position std (ticks) |")
+    lines.append("|---:|---:|---:|---:|---:|")
+    servo_ids = [int(sid) for sid in (algo_summary.get("servo_ids") or [])]
+    for sid in servo_ids:
+        a_c = (algo_summary.get("per_servo_current_std_ma") or {}).get(sid)
+        m_c = (manual_summary.get("per_servo_current_std_ma") or {}).get(sid)
+        a_p = (algo_summary.get("per_servo_position_std_ticks") or {}).get(sid)
+        m_p = (manual_summary.get("per_servo_position_std_ticks") or {}).get(sid)
+        lines.append(f"| {sid} | {_fmt(a_c)} | {_fmt(m_c)} | {_fmt(a_p, '.1f')} | {_fmt(m_p, '.1f')} |")
+    lines.append("")
+
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_pretension_algorithm_vs_manual_plot(
+    *,
+    plot_path: Path,
+    algorithm_run_rows: list[dict[str, Any]],
+    manual_baseline_records: list[dict[str, Any]],
+    comparison_report: dict[str, Any],
+) -> None:
+    """Render a 2x2 figure: tip XY scatter, per-servo final-current bars,
+    per-run current spread bars, and tip-error-to-target bars."""
+    if not algorithm_run_rows and not manual_baseline_records:
+        return
+    try:
+        fig, axes = create_figure(size="wide", nrows=2, ncols=2)
+    except TypeError:
+        # Older plotting helper may not accept nrows/ncols; fall back to a
+        # single-axes summary so we never silently lose the comparison report.
+        fig, ax = create_figure(size="wide")
+        ax.text(
+            0.5,
+            0.5,
+            "Comparison plot unavailable (multi-axes helper missing)",
+            transform=ax.transAxes,
+            ha="center",
+            va="center",
+        )
+        save_figure(fig, plot_path)
+        return
+
+    ax_scatter = axes[0][0]
+    ax_currents = axes[0][1]
+    ax_spread = axes[1][0]
+    ax_tip_err = axes[1][1]
+
+    target_xy = comparison_report.get("tip_target_xy_mm") if isinstance(comparison_report, dict) else None
+    tx, ty = (0.0, 0.0)
+    if isinstance(target_xy, (list, tuple)) and len(target_xy) >= 2:
+        tx, ty = float(target_xy[0]), float(target_xy[1])
+
+    algo_color = color("measured")
+    manual_color = color("reference")
+    algo_xy: list[tuple[float, float]] = []
+    for row in algorithm_run_rows:
+        xy = row.get("final_tip_xy_mm")
+        if xy is None:
+            xyz = row.get("final_tip_xyz_mm")
+            if isinstance(xyz, (list, tuple)) and len(xyz) >= 2:
+                xy = [xyz[0], xyz[1]]
+        if isinstance(xy, (list, tuple)) and len(xy) >= 2:
+            algo_xy.append((float(xy[0]), float(xy[1])))
+    manual_xy: list[tuple[float, float]] = []
+    for record in manual_baseline_records:
+        xy = record.get("tip_xy_mm")
+        if isinstance(xy, (list, tuple)) and len(xy) >= 2:
+            manual_xy.append((float(xy[0]), float(xy[1])))
+
+    if algo_xy:
+        ax_scatter.scatter([p[0] for p in algo_xy], [p[1] for p in algo_xy], color=algo_color, s=44, label="Algorithm", zorder=3)
+    if manual_xy:
+        ax_scatter.scatter([p[0] for p in manual_xy], [p[1] for p in manual_xy], color=manual_color, s=44, marker="x", label="Manual", zorder=3)
+    ax_scatter.scatter([tx], [ty], color=(0.1, 0.1, 0.1), marker="+", s=120, label="Target", zorder=4)
+    style_axes(ax_scatter, title="Tip XY (final)", xlabel="X (mm)", ylabel="Y (mm)")
+    set_equal_xy(ax_scatter)
+    legend(ax_scatter)
+
+    algo_summary = comparison_report.get("algorithm_population_summary", {}) if isinstance(comparison_report, dict) else {}
+    manual_summary = comparison_report.get("manual_population_summary", {}) if isinstance(comparison_report, dict) else {}
+    servo_ids = sorted({int(sid) for sid in algo_summary.get("servo_ids") or manual_summary.get("servo_ids") or []})
+
+    width = 0.4
+    xs = list(range(len(servo_ids)))
+    algo_means = [
+        float((algo_summary.get("per_servo_current_mean_ma") or {}).get(sid) or 0.0)
+        for sid in servo_ids
+    ]
+    manual_means = [
+        float((manual_summary.get("per_servo_current_mean_ma") or {}).get(sid) or 0.0)
+        for sid in servo_ids
+    ]
+    if servo_ids:
+        ax_currents.bar([x - width / 2 for x in xs], algo_means, width=width, color=algo_color, label="Algorithm")
+        ax_currents.bar([x + width / 2 for x in xs], manual_means, width=width, color=manual_color, label="Manual")
+        ax_currents.set_xticks(xs)
+        ax_currents.set_xticklabels([f"S{sid}" for sid in servo_ids])
+    style_axes(ax_currents, title="Mean final current by servo", xlabel="Servo", ylabel="Current (mA)")
+    legend(ax_currents)
+
+    def _spread_stat(block: dict[str, Any]) -> tuple[float, float]:
+        return float(block.get("mean") or 0.0), float(block.get("std") or 0.0)
+
+    algo_spread = _spread_stat(algo_summary.get("per_run_current_spread_ma", {}))
+    manual_spread = _spread_stat(manual_summary.get("per_run_current_spread_ma", {}))
+    spread_labels = ["Algorithm", "Manual"]
+    spread_means = [algo_spread[0], manual_spread[0]]
+    spread_stds = [algo_spread[1], manual_spread[1]]
+    spread_xs = [0, 1]
+    ax_spread.bar(
+        spread_xs,
+        spread_means,
+        yerr=spread_stds,
+        color=[algo_color, manual_color],
+        capsize=6,
+    )
+    ax_spread.set_xticks(spread_xs)
+    ax_spread.set_xticklabels(spread_labels)
+    style_axes(ax_spread, title="Per-run current spread (max-min)", xlabel="", ylabel="mA")
+    add_metric_box(
+        ax_spread,
+        [
+            ("Algorithm mean", f"{algo_spread[0]:.2f} mA"),
+            ("Algorithm std", f"{algo_spread[1]:.2f} mA"),
+            ("Manual mean", f"{manual_spread[0]:.2f} mA"),
+            ("Manual std", f"{manual_spread[1]:.2f} mA"),
+        ],
+    )
+
+    algo_tip_err = _spread_stat(algo_summary.get("tip_xy_error_to_target_mm", {}))
+    manual_tip_err = _spread_stat(manual_summary.get("tip_xy_error_to_target_mm", {}))
+    ax_tip_err.bar(
+        spread_xs,
+        [algo_tip_err[0], manual_tip_err[0]],
+        yerr=[algo_tip_err[1], manual_tip_err[1]],
+        color=[algo_color, manual_color],
+        capsize=6,
+    )
+    ax_tip_err.set_xticks(spread_xs)
+    ax_tip_err.set_xticklabels(spread_labels)
+    style_axes(ax_tip_err, title="Tip XY error to target", xlabel="", ylabel="mm")
+    add_metric_box(
+        ax_tip_err,
+        [
+            ("Algorithm mean", f"{algo_tip_err[0]:.2f} mm"),
+            ("Algorithm std", f"{algo_tip_err[1]:.2f} mm"),
+            ("Manual mean", f"{manual_tip_err[0]:.2f} mm"),
+            ("Manual std", f"{manual_tip_err[1]:.2f} mm"),
+        ],
+    )
+
+    save_figure(fig, plot_path)

@@ -841,3 +841,83 @@ def test_config_clamps_jacobian_step_gain_and_defaults_to_paired_then_tip() -> N
     # from_dict does NOT validate the variant string itself (validation happens
     # at dispatch time inside the experiment); the field is preserved verbatim.
     assert cfg3.tip_centering_variant == "garbage"
+
+
+def test_comparison_markdown_writes_with_manual_records(tmp_path: Path) -> None:
+    from continuum_robot.experiments.builtins import _build_pretension_comparison_report
+    from continuum_robot.experiments.pretension_validation_outputs import (
+        _write_pretension_comparison_markdown,
+    )
+
+    servo_ids = [1, 2, 3, 4]
+    algorithm_rows = [
+        {
+            "run_label": f"run_{i + 1:02d}",
+            "positions_by_servo": {sid: 2500 for sid in servo_ids},
+            "currents_ma_by_servo": {sid: 30.0 for sid in servo_ids},
+            "final_tip_xy_mm": [0.0, 0.0],
+        }
+        for i in range(5)
+    ]
+    manual_records = [
+        {
+            "positions_by_servo": {sid: 2500 + 10 * (sid - 2) for sid in servo_ids},
+            "currents_ma_by_servo": {sid: 28.0 + 4.0 * (sid - 2) for sid in servo_ids},
+            "tip_xy_mm": [1.0 + i * 0.5, -0.4 + i * 0.3],
+        }
+        for i in range(5)
+    ]
+    report = _build_pretension_comparison_report(
+        algorithm_run_rows=algorithm_rows,
+        manual_baseline_records=manual_records,
+        servo_ids=servo_ids,
+        tip_target_xy_mm=[0.0, 0.0],
+        target_load_band_ma=(20.0, 40.0),
+    )
+    md_path = tmp_path / "comparison.md"
+    _write_pretension_comparison_markdown(
+        markdown_path=md_path,
+        comparison_report=report,
+        manual_record_count=len(manual_records),
+        algorithm_run_count=len(algorithm_rows),
+        metrics={"tip_centering_variant": "paired_then_tip"},
+    )
+    text = md_path.read_text(encoding="utf-8")
+    assert "Algorithm vs Manual Comparison" in text
+    assert "ALGORITHM" in text  # at least one verdict cell wins for algorithm
+    assert "Per-servo repeatability" in text
+
+
+def test_comparison_markdown_handles_no_manual_records(tmp_path: Path) -> None:
+    from continuum_robot.experiments.builtins import _build_pretension_comparison_report
+    from continuum_robot.experiments.pretension_validation_outputs import (
+        _write_pretension_comparison_markdown,
+    )
+
+    servo_ids = [1, 2, 3, 4]
+    algorithm_rows = [
+        {
+            "run_label": "run_01",
+            "positions_by_servo": {sid: 2500 for sid in servo_ids},
+            "currents_ma_by_servo": {sid: 30.0 for sid in servo_ids},
+            "final_tip_xy_mm": [0.0, 0.0],
+        }
+    ]
+    report = _build_pretension_comparison_report(
+        algorithm_run_rows=algorithm_rows,
+        manual_baseline_records=[],
+        servo_ids=servo_ids,
+        tip_target_xy_mm=[0.0, 0.0],
+        target_load_band_ma=(20.0, 40.0),
+    )
+    md_path = tmp_path / "comparison_no_manual.md"
+    _write_pretension_comparison_markdown(
+        markdown_path=md_path,
+        comparison_report=report,
+        manual_record_count=0,
+        algorithm_run_count=1,
+        metrics={"tip_centering_variant": "paired_then_tip"},
+    )
+    text = md_path.read_text(encoding="utf-8")
+    assert "No manual baselines recorded" in text
+    assert "Tip radial dispersion across runs" in text
