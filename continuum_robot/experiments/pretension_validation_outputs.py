@@ -101,9 +101,13 @@ def _write_staged_pretension_outputs(
     load_proxy_report = output_dir / "pretension_load_proxy_by_servo_report.png"
     tendon_vs_load_proxy_report = output_dir / "pretension_tendon_displacement_vs_load_proxy_report.png"
     final_state_report = output_dir / "pretension_final_state_report.png"
+    comparison_markdown_path = output_dir / "pretension_algorithm_vs_manual.md"
+    comparison_plot_path = output_dir / "pretension_algorithm_vs_manual.png"
 
     run_rows = list(metrics.get("run_rows") or [])
     trace_rows = list(metrics.get("trace_rows") or [])
+    comparison_report = metrics.get("pretension_comparison_report") or {}
+    manual_baseline_records = list(metrics.get("manual_baseline_records") or [])
     _write_staged_metrics_csv(metrics_csv_path=metrics_csv_path, run_rows=run_rows)
     _write_staged_summary_text(
         summary_text_path=summary_text_path,
@@ -126,6 +130,19 @@ def _write_staged_pretension_outputs(
     _write_pretension_load_proxy_by_servo_report(plot_path=load_proxy_report, trace_rows=trace_rows, run_rows=run_rows)
     _write_pretension_tendon_vs_load_proxy_report(plot_path=tendon_vs_load_proxy_report, trace_rows=trace_rows, run_rows=run_rows)
     _write_pretension_final_state_report(plot_path=final_state_report, run_rows=run_rows, metrics=metrics)
+    _write_pretension_comparison_markdown(
+        markdown_path=comparison_markdown_path,
+        comparison_report=comparison_report,
+        manual_record_count=len(manual_baseline_records),
+        algorithm_run_count=len(run_rows),
+        metrics=metrics,
+    )
+    _write_pretension_algorithm_vs_manual_plot(
+        plot_path=comparison_plot_path,
+        algorithm_run_rows=run_rows,
+        manual_baseline_records=manual_baseline_records,
+        comparison_report=comparison_report,
+    )
     if current_vs_position_path.exists():
         response_alias_path.write_bytes(current_vs_position_path.read_bytes())
     return {
@@ -146,6 +163,8 @@ def _write_staged_pretension_outputs(
         "load_proxy_by_servo_report_path": load_proxy_report,
         "tendon_displacement_vs_load_proxy_report_path": tendon_vs_load_proxy_report,
         "final_state_report_path": final_state_report,
+        "algorithm_vs_manual_markdown_path": comparison_markdown_path,
+        "algorithm_vs_manual_plot_path": comparison_plot_path,
         "plot_path": response_alias_path,
     }
 

@@ -469,6 +469,16 @@ class ModelingCommandStep:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+PRETENSION_TIP_VARIANT_CURRENT_ONLY = "current_only"
+PRETENSION_TIP_VARIANT_PAIRED_THEN_TIP = "paired_then_tip"
+PRETENSION_TIP_VARIANT_JACOBIAN_LEARNED_TIP = "jacobian_learned_tip"
+PRETENSION_TIP_VARIANT_OPTIONS = (
+    PRETENSION_TIP_VARIANT_CURRENT_ONLY,
+    PRETENSION_TIP_VARIANT_PAIRED_THEN_TIP,
+    PRETENSION_TIP_VARIANT_JACOBIAN_LEARNED_TIP,
+)
+
+
 @dataclass
 class PretensionValidationExperimentConfig:
     """Config for one-servo pretension response validation."""
@@ -530,6 +540,48 @@ class PretensionValidationExperimentConfig:
     hard_current_stop_ma: int | None = None
     max_travel_ticks: int | None = None
     timeout_s: float | None = None
+    # --- Tip-centering variant + Jacobian-learning knobs --------------------
+    tip_centering_variant: str = PRETENSION_TIP_VARIANT_PAIRED_THEN_TIP
+    """Which post-takeup tip-centering routine to run.
+
+    - ``current_only``: stop after the symmetric paired take-up reaches the
+      target band. No tip feedback. Tip XY centering is whatever the symmetric
+      paired motion produces.
+    - ``paired_then_tip``: existing conservative pair-stepping with sign-flip
+      recovery. Robust but slow when the tip-vs-pair sign is unknown.
+    - ``jacobian_learned_tip``: probe each pair ``jacobian_probe_step_ticks``
+      ticks, measure tip XY delta, build a 2x2 Jacobian, then take an inverse-
+      Jacobian step toward the target XY. Fewer iterations on average; needs a
+      modestly accurate tracker.
+    """
+    jacobian_probe_step_ticks: int = 30
+    """How many ticks to probe each pair during Jacobian construction."""
+    jacobian_min_observable_tip_delta_mm: float = 0.20
+    """Minimum tip displacement (mm) required for a Jacobian probe to be trusted.
+    If a probe moves the tip by less than this, the Jacobian column is treated
+    as unreliable and the variant falls back to ``paired_then_tip``."""
+    jacobian_step_gain: float = 0.8
+    """Inverse-Jacobian step gain. 1.0 = move full predicted delta in one step;
+    0.8 leaves margin for nonlinearity."""
+    jacobian_max_pair_step_ticks: int = 25
+    """Max pair-tick delta per inverse-Jacobian step. Caps overshoot."""
+    # --- Manual-baseline capture (operator hand-tensions, we record state) --
+    manual_baseline_capture_count: int = 0
+    """Number of operator-paced manual-baseline records to capture BEFORE the
+    algorithm runs. 0 disables manual baseline capture. The experiment pauses
+    ``manual_baseline_pause_s`` seconds between captures so the operator can
+    re-tension the spine manually between them. Recorded baselines are written
+    into the run folder and used by the comparison report."""
+    manual_baseline_pause_s: float = 15.0
+    """Seconds between manual baseline captures (operator re-tensions in this
+    window). Long enough for human reaction; can be overridden for GUI-paced
+    flows that drive the experiment via session callbacks."""
+    manual_baseline_record_path: str = ""
+    """Optional path to a pre-recorded manual baselines JSON. If set, the
+    experiment skips the manual-capture phase and uses these records for the
+    comparison report. Format: list of dicts with keys
+    ``positions_by_servo``, ``currents_ma_by_servo``, ``tip_xy_mm``,
+    ``timestamp_utc``. Lets the GUI capture manual baselines separately."""
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "PretensionValidationExperimentConfig":
@@ -653,6 +705,20 @@ class PretensionValidationExperimentConfig:
                 int(payload["max_travel_ticks"]) if payload.get("max_travel_ticks") not in (None, "") else None
             ),
             timeout_s=float(payload["timeout_s"]) if payload.get("timeout_s") not in (None, "") else None,
+            tip_centering_variant=(
+                str(payload.get("tip_centering_variant", PRETENSION_TIP_VARIANT_PAIRED_THEN_TIP)).strip().lower()
+                if payload.get("tip_centering_variant") not in (None, "")
+                else PRETENSION_TIP_VARIANT_PAIRED_THEN_TIP
+            ),
+            jacobian_probe_step_ticks=max(1, int(payload.get("jacobian_probe_step_ticks", 30))),
+            jacobian_min_observable_tip_delta_mm=max(
+                0.0, float(payload.get("jacobian_min_observable_tip_delta_mm", 0.20))
+            ),
+            jacobian_step_gain=max(0.05, min(1.5, float(payload.get("jacobian_step_gain", 0.8)))),
+            jacobian_max_pair_step_ticks=max(1, int(payload.get("jacobian_max_pair_step_ticks", 25))),
+            manual_baseline_capture_count=max(0, int(payload.get("manual_baseline_capture_count", 0))),
+            manual_baseline_pause_s=max(0.0, float(payload.get("manual_baseline_pause_s", 15.0))),
+            manual_baseline_record_path=str(payload.get("manual_baseline_record_path") or ""),
         )
 
 
@@ -2297,6 +2363,12 @@ class PretensionValidationExperiment(BaseExperiment):
         quality_scores: list[float] = []
         accepted_runs = 0
         manual_startup_artifact = self._manual_startup_artifact_snapshot(servo_service, servo_ids)
+        manual_baseline_records: list[dict[str, Any]] = self._load_or_capture_manual_baselines(
+            session=session,
+            servo_service=servo_service,
+            tracker_service=tracker_service if include_tracker else None,
+            servo_ids=servo_ids,
+        )
 
         with servo_service.exclusive_bus_operation(
             owner="pretension_validation",
@@ -2501,19 +2573,59 @@ class PretensionValidationExperiment(BaseExperiment):
                         "high_load_transition_to_trim",
                     ):
                         reject_reasons.append(str(takeup_result["stop_reason"]))
-                    mode_result = self._run_conservative_startup_sequence(
-                        session=session,
-                        servo_service=servo_service,
-                        tracker_service=tracker_service if include_tracker else None,
-                        servo_ids=servo_ids,
-                        run_index=run_index,
-                        target_xy_mm=target_xy,
-                        baseline_current_ma_by_servo=baseline_current_ma_by_servo,
-                        effective_load_tolerance_ma=effective_load_tolerance_ma,
-                        trace_rows=trace_rows,
-                        startup_reference_ticks_by_servo=startup_reference_ticks,
-                        deadline_monotonic=run_deadline_monotonic,
-                    )
+                    variant = str(
+                        getattr(self.config, "tip_centering_variant", PRETENSION_TIP_VARIANT_PAIRED_THEN_TIP)
+                        or PRETENSION_TIP_VARIANT_PAIRED_THEN_TIP
+                    ).strip().lower()
+                    if variant not in PRETENSION_TIP_VARIANT_OPTIONS:
+                        variant = PRETENSION_TIP_VARIANT_PAIRED_THEN_TIP
+                    if variant == PRETENSION_TIP_VARIANT_CURRENT_ONLY or not include_tracker:
+                        # Stop here. Current take-up already reached the target
+                        # band; without tracker we cannot reliably center the
+                        # tip. Mark as 'converged' if the takeup phase reported
+                        # a successful stop reason.
+                        mode_result = {
+                            "stop_reason": "current_only_complete"
+                            if variant == PRETENSION_TIP_VARIANT_CURRENT_ONLY
+                            else "current_only_no_tracker",
+                            "move_count": 0,
+                            "travel_ticks": 0,
+                            "clipped_move_count": 0,
+                            "converged": variant == PRETENSION_TIP_VARIANT_CURRENT_ONLY,
+                            "packet_retry_count": 0,
+                            "telemetry_event_counts": {},
+                            "variant": variant,
+                        }
+                    elif variant == PRETENSION_TIP_VARIANT_JACOBIAN_LEARNED_TIP:
+                        mode_result = self._run_jacobian_tip_centering(
+                            session=session,
+                            servo_service=servo_service,
+                            tracker_service=tracker_service,
+                            servo_ids=servo_ids,
+                            run_index=run_index,
+                            target_xy_mm=target_xy,
+                            baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                            effective_load_tolerance_ma=effective_load_tolerance_ma,
+                            trace_rows=trace_rows,
+                            startup_reference_ticks_by_servo=startup_reference_ticks,
+                            deadline_monotonic=run_deadline_monotonic,
+                        )
+                        mode_result["variant"] = variant
+                    else:  # PRETENSION_TIP_VARIANT_PAIRED_THEN_TIP (default)
+                        mode_result = self._run_conservative_startup_sequence(
+                            session=session,
+                            servo_service=servo_service,
+                            tracker_service=tracker_service if include_tracker else None,
+                            servo_ids=servo_ids,
+                            run_index=run_index,
+                            target_xy_mm=target_xy,
+                            baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                            effective_load_tolerance_ma=effective_load_tolerance_ma,
+                            trace_rows=trace_rows,
+                            startup_reference_ticks_by_servo=startup_reference_ticks,
+                            deadline_monotonic=run_deadline_monotonic,
+                        )
+                        mode_result["variant"] = variant
                     clipped_move_count += int(mode_result.get("clipped_move_count", 0))
                     correction_move_count += int(mode_result.get("move_count", 0))
                     correction_travel_ticks += int(mode_result.get("travel_ticks", 0))
@@ -2521,7 +2633,12 @@ class PretensionValidationExperiment(BaseExperiment):
                     packet_retry_count += int(mode_result.get("packet_retry_count", 0) or 0)
                     stop_reason = str(mode_result.get("stop_reason") or "")
                     converged = bool(mode_result.get("converged", False))
-                    if stop_reason and stop_reason not in {"converged", "within_tolerance"}:
+                    if stop_reason and stop_reason not in {
+                        "converged",
+                        "within_tolerance",
+                        "current_only_complete",
+                        "jacobian_converged",
+                    }:
                         reject_reasons.append(stop_reason)
                 progress += 1
                 session.update_progress(progress, total_progress, {"phase": mode_kind, "run_index": run_index})
@@ -2612,10 +2729,22 @@ class PretensionValidationExperiment(BaseExperiment):
                     failure_counts[reason] = int(failure_counts.get(reason, 0)) + 1
 
                 run_trace_rows = trace_rows[trace_start_index:]
+                # Flatten the per-servo position/current dicts for the comparison
+                # report. The comparison helper expects integer-keyed dicts; the
+                # string-keyed dicts above are kept for legacy schema readers.
+                positions_int_keyed = {
+                    int(k): (int(v) if v is not None else None)
+                    for k, v in final_position_ticks.items()
+                }
+                currents_int_keyed = {
+                    int(k): (float(v) if v is not None else None)
+                    for k, v in final_currents_ma.items()
+                }
                 run_row = {
                     "run_index": int(run_index),
                     "run_label": run_label,
                     "mode": mode_kind,
+                    "variant": str(mode_result.get("variant") or ""),
                     "accepted": bool(accepted),
                     "reject_reasons": reject_reasons,
                     "stop_reason": stop_reason or ("characterization_complete" if mode_kind == "characterization" else "converged"),
@@ -2630,6 +2759,14 @@ class PretensionValidationExperiment(BaseExperiment):
                     "load_proxy_current_ma_by_servo": {str(k): v for k, v in current_above_baseline_ma.items()},
                     "start_position_ticks_by_servo": {str(k): v for k, v in start_position_ticks.items()},
                     "final_position_ticks_by_servo": {str(k): v for k, v in final_position_ticks.items()},
+                    # Flattened convenience keys for the comparison helper.
+                    "positions_by_servo": positions_int_keyed,
+                    "currents_ma_by_servo": currents_int_keyed,
+                    "final_tip_xy_mm": (
+                        [float(final.get("tip_xy_mm")[0]), float(final.get("tip_xy_mm")[1])]
+                        if isinstance(final.get("tip_xy_mm"), (list, tuple)) and len(final.get("tip_xy_mm")) >= 2
+                        else None
+                    ),
                     "startup_reference_ticks_by_servo": {str(k): v for k, v in startup_reference_ticks.items()},
                     "final_tendon_displacement_mm_by_servo": self._json_safe_keyed(final.get("tendon_displacement_mm") or {}),
                     "load_balance_error_ma": final.get("load_balance_error_ma"),
@@ -2711,6 +2848,22 @@ class PretensionValidationExperiment(BaseExperiment):
             final_tip_xy_points_mm=final_tip_xy_points_mm,
             quality_scores=quality_scores,
             manual_startup_artifact=manual_startup_artifact,
+        )
+        staged_metrics["tip_centering_variant"] = str(
+            getattr(self.config, "tip_centering_variant", PRETENSION_TIP_VARIANT_PAIRED_THEN_TIP)
+            or PRETENSION_TIP_VARIANT_PAIRED_THEN_TIP
+        )
+        staged_metrics["manual_baseline_records"] = list(manual_baseline_records)
+        staged_metrics["manual_baseline_record_count"] = int(len(manual_baseline_records))
+        staged_metrics["pretension_comparison_report"] = _build_pretension_comparison_report(
+            algorithm_run_rows=run_rows,
+            manual_baseline_records=manual_baseline_records,
+            servo_ids=servo_ids,
+            tip_target_xy_mm=self._target_xy(),
+            target_load_band_ma=(
+                float(self.config.takeup_target_load_proxy_ma),
+                float(self.config.high_load_proxy_ma),
+            ),
         )
         staged_metrics["runtime_tip_policy"] = runtime_tip_policy.to_dict() if runtime_tip_policy is not None else None
         staged_metrics["runtime_tip_mode_used"] = runtime_tip_policy.mode if runtime_tip_policy is not None else None
@@ -4942,6 +5095,391 @@ class PretensionValidationExperiment(BaseExperiment):
                 break
         if not result["stop_reason"]:
             result["stop_reason"] = "iteration_limit"
+        return result
+
+    # ---------------------------------------------------------------
+    # New: manual-baseline capture + Jacobian-learned tip centering
+    # ---------------------------------------------------------------
+
+    def _load_or_capture_manual_baselines(
+        self,
+        *,
+        session: ExperimentSession,
+        servo_service,
+        tracker_service,
+        servo_ids: list[int],
+    ) -> list[dict[str, Any]]:
+        """Return manual-baseline records.
+
+        Resolution order:
+        - If ``manual_baseline_record_path`` is set, load it (the GUI captures
+          baselines separately and writes the file).
+        - Else if ``manual_baseline_capture_count > 0``, run the operator-paced
+          inline capture phase. The phase pauses ``manual_baseline_pause_s``
+          seconds between captures so the operator can re-tension manually
+          between them. ``session.raise_if_stop_requested()`` is consulted each
+          pause tick so the GUI can advance early.
+        - Else return an empty list (no manual baseline comparison).
+        """
+        path = str(getattr(self.config, "manual_baseline_record_path", "") or "").strip()
+        if path:
+            resolved = Path(path)
+            if not resolved.is_absolute():
+                resolved = Path(session.context.project_root) / resolved
+            if not resolved.exists():
+                raise RuntimeError(
+                    f"manual_baseline_record_path is set but the file does not exist: {resolved}."
+                )
+            try:
+                payload = json.loads(resolved.read_text(encoding="utf-8"))
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to parse manual_baseline_record_path {resolved}: {exc}"
+                ) from exc
+            records = payload if isinstance(payload, list) else payload.get("records") or []
+            if not isinstance(records, list):
+                raise RuntimeError(
+                    f"manual_baseline_record_path payload must be a list of records: {resolved}"
+                )
+            return [dict(item) for item in records if isinstance(item, dict)]
+
+        capture_count = max(0, int(getattr(self.config, "manual_baseline_capture_count", 0) or 0))
+        if capture_count <= 0:
+            return []
+        pause_s = max(0.0, float(getattr(self.config, "manual_baseline_pause_s", 15.0) or 15.0))
+        records: list[dict[str, Any]] = []
+        for index in range(capture_count):
+            session.raise_if_stop_requested()
+            session.add_warning(
+                f"Pretension manual baseline capture {index + 1}/{capture_count}: "
+                "hand-tension the spine, then wait. The next capture happens automatically "
+                f"after {pause_s:.0f}s, or click Stop to advance early."
+            )
+            # Use the standard measurement helper so the record carries the same
+            # fields as algorithm runs (positions, currents, tip XY).
+            measurement = self._advanced_measurement(
+                servo_service=servo_service,
+                tracker_service=tracker_service,
+                servo_ids=servo_ids,
+                baseline_current_ma_by_servo={},
+                target_xy_mm=self._target_xy(),
+                trust_status="runtime_tip" if tracker_service is not None else "current_only_lower_trust",
+            )
+            record = {
+                "index": int(index),
+                "timestamp_utc": _utc_now_iso(),
+                "source": "manual_inline_capture",
+                "positions_by_servo": dict(measurement.get("measured_positions_ticks") or {}),
+                "currents_ma_by_servo": dict(measurement.get("raw_current_ma") or {}),
+                "tip_xy_mm": measurement.get("tip_xy_mm"),
+                "tip_xyz_mm": measurement.get("tip_xyz_mm"),
+                "tip_xy_error_mm": measurement.get("tip_xy_error_mm"),
+                "load_balance_error_ma": measurement.get("load_balance_error_ma"),
+                "pair_balance_error_ma": measurement.get("pair_balance_error_ma"),
+            }
+            records.append(record)
+            # Pause to let the operator re-tension before the next capture.
+            elapsed = 0.0
+            poll_step = 0.5
+            while elapsed < pause_s and index + 1 < capture_count:
+                try:
+                    session.raise_if_stop_requested()
+                except Exception:
+                    raise
+                session.context.sleep_fn(poll_step)
+                elapsed += poll_step
+        return records
+
+    def _run_jacobian_tip_centering(
+        self,
+        *,
+        session: ExperimentSession,
+        servo_service,
+        tracker_service,
+        servo_ids: list[int],
+        run_index: int,
+        target_xy_mm: list[float],
+        baseline_current_ma_by_servo: dict[int, float],
+        effective_load_tolerance_ma: float,
+        trace_rows: list[dict[str, Any]],
+        startup_reference_ticks_by_servo: dict[int, int | None] | None = None,
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, Any]:
+        """Jacobian-based tip centering.
+
+        Phase 1 (probe): with the spine in its current take-up state, command
+        each pair +``jacobian_probe_step_ticks`` (axis_a then axis_b), measure
+        tip XY delta, then command back to the pre-probe position. Build the
+        2x2 Jacobian J = [[dx/da, dx/db], [dy/da, dy/db]] (units mm per tick).
+
+        Phase 2 (drive): until tip error is within tolerance or iteration limit:
+          read tip XY -> compute error = current - target -> compute pair deltas
+          [da, db] = -J^-1 * error * step_gain, clipped to
+          ``jacobian_max_pair_step_ticks``. Apply paired commands.
+
+        If the probe response is below ``jacobian_min_observable_tip_delta_mm``,
+        the column is unreliable and the routine returns immediately with
+        ``stop_reason='jacobian_probe_unobservable'`` so the caller can fall
+        back to the paired_then_tip routine.
+        """
+        result: dict[str, Any] = {
+            "move_count": 0,
+            "travel_ticks": 0,
+            "clipped_move_count": 0,
+            "stop_reason": "",
+            "converged": False,
+            "packet_retry_count": 0,
+            "telemetry_event_counts": {},
+            "jacobian": None,
+            "jacobian_probe_response_mm": {},
+            "jacobian_iterations": 0,
+        }
+        if tracker_service is None:
+            result["stop_reason"] = "jacobian_requires_tracker"
+            return result
+        probe_ticks = max(1, int(getattr(self.config, "jacobian_probe_step_ticks", 30)))
+        min_response_mm = max(0.0, float(getattr(self.config, "jacobian_min_observable_tip_delta_mm", 0.20)))
+        step_gain = max(0.05, min(1.5, float(getattr(self.config, "jacobian_step_gain", 0.8))))
+        max_pair_step = max(1, int(getattr(self.config, "jacobian_max_pair_step_ticks", 25)))
+        max_iterations = max(1, int(getattr(self.config, "tip_center_max_iterations", 16)))
+        tip_tolerance_mm = max(0.0, float(getattr(self.config, "tip_center_tolerance_mm", 1.0)))
+        divergence_stop_mm = max(0.0, float(getattr(self.config, "tip_divergence_stop_mm", 2.0)))
+
+        pairs_map = session.context.settings.robot.active_segment_pairs() or {}
+        # Resolve axis-a / axis-b pair servo IDs from the explicit pairs map so
+        # this routine respects the segment's declared pairing instead of
+        # assuming positional indexing.
+        axis_a = [int(v) for v in (pairs_map.get("axis_a") or [])]
+        axis_b = [int(v) for v in (pairs_map.get("axis_b") or [])]
+        if len(axis_a) != 2 or len(axis_b) != 2:
+            # Fall back to the positional convention used by paired_then_tip
+            # so callers without explicit pair metadata still work.
+            if len(servo_ids) >= 4:
+                axis_a = [int(servo_ids[0]), int(servo_ids[2])]
+                axis_b = [int(servo_ids[1]), int(servo_ids[3])]
+            else:
+                result["stop_reason"] = "jacobian_requires_pair_metadata"
+                return result
+
+        def _read_tip() -> list[float] | None:
+            m = self._advanced_measurement(
+                servo_service=servo_service,
+                tracker_service=tracker_service,
+                servo_ids=servo_ids,
+                baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                target_xy_mm=target_xy_mm,
+                startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+                trust_status="runtime_tip",
+            )
+            self._merge_event_counts(result["telemetry_event_counts"], m.get("telemetry_event_counts"))
+            result["packet_retry_count"] += int(m.get("packet_retry_count", 0) or 0)
+            tip_xy = m.get("tip_xy_mm")
+            if tip_xy is None:
+                return None
+            return [float(tip_xy[0]), float(tip_xy[1])]
+
+        def _apply_probe(axis_pair: list[int], delta: int) -> dict[str, Any]:
+            telemetry, policy = self._read_live_telemetry_with_policy(servo_service, axis_pair)
+            self._merge_event_counts(result["telemetry_event_counts"], policy.get("event_counts"))
+            result["packet_retry_count"] += int(policy.get("packet_retry_count", 0) or 0)
+            move = self._apply_pair_command(
+                servo_service=servo_service,
+                telemetry=telemetry,
+                sid_a=int(axis_pair[0]),
+                delta_a=-int(delta),
+                sid_b=int(axis_pair[1]),
+                delta_b=int(delta),
+                reason="pretension_jacobian_probe",
+            )
+            result["move_count"] += int(move.get("move_count", 0))
+            result["travel_ticks"] += int(move.get("travel_ticks", 0))
+            result["clipped_move_count"] += int(move.get("clipped_move_count", 0))
+            return move
+
+        # --- Phase 1: probe -------------------------------------------------
+        pre_tip = _read_tip()
+        if pre_tip is None:
+            result["stop_reason"] = "jacobian_missing_tip_pose"
+            return result
+
+        # Probe axis A: +probe_ticks on first pair member, -probe_ticks on second.
+        move_a = _apply_probe(axis_a, probe_ticks)
+        if not bool(move_a.get("success")):
+            result["stop_reason"] = f"jacobian_probe_a_failed:{move_a.get('stop_reason')}"
+            # Try to restore before bailing.
+            _apply_probe(axis_a, -probe_ticks)
+            return result
+        session.context.sleep_fn(max(0.05, float(self.config.settle_verify_time_s)))
+        tip_after_a = _read_tip()
+        # Restore axis A to baseline.
+        restore_a = _apply_probe(axis_a, -probe_ticks)
+        if tip_after_a is None or not bool(restore_a.get("success")):
+            result["stop_reason"] = "jacobian_probe_a_unreadable"
+            return result
+        dxA = float(tip_after_a[0]) - float(pre_tip[0])
+        dyA = float(tip_after_a[1]) - float(pre_tip[1])
+
+        # Probe axis B.
+        move_b = _apply_probe(axis_b, probe_ticks)
+        if not bool(move_b.get("success")):
+            result["stop_reason"] = f"jacobian_probe_b_failed:{move_b.get('stop_reason')}"
+            _apply_probe(axis_b, -probe_ticks)
+            return result
+        session.context.sleep_fn(max(0.05, float(self.config.settle_verify_time_s)))
+        tip_after_b = _read_tip()
+        restore_b = _apply_probe(axis_b, -probe_ticks)
+        if tip_after_b is None or not bool(restore_b.get("success")):
+            result["stop_reason"] = "jacobian_probe_b_unreadable"
+            return result
+        dxB = float(tip_after_b[0]) - float(pre_tip[0])
+        dyB = float(tip_after_b[1]) - float(pre_tip[1])
+
+        # Build 2x2 Jacobian (tip mm per pair tick).
+        per_tick = float(probe_ticks)
+        J = [
+            [dxA / per_tick, dxB / per_tick],
+            [dyA / per_tick, dyB / per_tick],
+        ]
+        result["jacobian"] = J
+        result["jacobian_probe_response_mm"] = {
+            "axis_a_response_mm": [dxA, dyA],
+            "axis_b_response_mm": [dxB, dyB],
+            "probe_ticks": int(probe_ticks),
+        }
+        # Reject if either probe column is below the minimum observable response.
+        norm_a = (dxA * dxA + dyA * dyA) ** 0.5
+        norm_b = (dxB * dxB + dyB * dyB) ** 0.5
+        if norm_a < min_response_mm or norm_b < min_response_mm:
+            result["stop_reason"] = "jacobian_probe_unobservable"
+            return result
+        det = J[0][0] * J[1][1] - J[0][1] * J[1][0]
+        if abs(det) < 1e-9:
+            result["stop_reason"] = "jacobian_singular"
+            return result
+        inv_det = 1.0 / det
+        Jinv = [
+            [J[1][1] * inv_det, -J[0][1] * inv_det],
+            [-J[1][0] * inv_det, J[0][0] * inv_det],
+        ]
+
+        # --- Phase 2: drive -------------------------------------------------
+        best_error_mm = math.inf
+        for iteration in range(max_iterations):
+            session.raise_if_stop_requested()
+            if deadline_monotonic is not None and float(session.context.monotonic_fn()) > float(deadline_monotonic):
+                result["stop_reason"] = "runtime_budget_exhausted"
+                break
+            tip_xy = _read_tip()
+            if tip_xy is None:
+                result["stop_reason"] = "jacobian_missing_tip_pose"
+                break
+            x_err = float(tip_xy[0]) - float(target_xy_mm[0])
+            y_err = float(tip_xy[1]) - float(target_xy_mm[1])
+            err_mag = (x_err * x_err + y_err * y_err) ** 0.5
+            if err_mag <= tip_tolerance_mm:
+                result["converged"] = True
+                result["stop_reason"] = "jacobian_converged"
+                break
+            if err_mag < best_error_mm:
+                best_error_mm = err_mag
+            elif err_mag > best_error_mm + divergence_stop_mm:
+                result["stop_reason"] = "jacobian_tip_diverging"
+                break
+
+            # [da, db] = -Jinv * [x_err, y_err] * step_gain (in tick units).
+            da_raw = -(Jinv[0][0] * x_err + Jinv[0][1] * y_err) * step_gain
+            db_raw = -(Jinv[1][0] * x_err + Jinv[1][1] * y_err) * step_gain
+            da = max(-max_pair_step, min(max_pair_step, int(round(da_raw))))
+            db = max(-max_pair_step, min(max_pair_step, int(round(db_raw))))
+            if da == 0 and db == 0:
+                # Numerical clamp landed at zero: nudge in the direction of error.
+                da = (1 if da_raw > 0 else -1) if abs(da_raw) > 0 else 0
+                db = (1 if db_raw > 0 else -1) if abs(db_raw) > 0 else 0
+                if da == 0 and db == 0:
+                    result["stop_reason"] = "jacobian_step_underflow"
+                    break
+
+            telemetry, policy = self._read_live_telemetry_with_policy(servo_service, servo_ids)
+            self._merge_event_counts(result["telemetry_event_counts"], policy.get("event_counts"))
+            result["packet_retry_count"] += int(policy.get("packet_retry_count", 0) or 0)
+            iteration_moves: list[dict[str, Any]] = []
+            if da != 0:
+                move = self._apply_pair_command(
+                    servo_service=servo_service,
+                    telemetry=telemetry,
+                    sid_a=int(axis_a[0]),
+                    delta_a=-int(da),
+                    sid_b=int(axis_a[1]),
+                    delta_b=int(da),
+                    reason="pretension_jacobian_drive_axis_a",
+                )
+                iteration_moves.append({"pair_label": "axis_a", **move})
+                result["move_count"] += int(move.get("move_count", 0))
+                result["travel_ticks"] += int(move.get("travel_ticks", 0))
+                if not bool(move.get("success")):
+                    result["stop_reason"] = f"jacobian_drive_a_failed:{move.get('stop_reason')}"
+                    break
+            if db != 0:
+                telemetry, policy2 = self._read_live_telemetry_with_policy(servo_service, servo_ids)
+                self._merge_event_counts(result["telemetry_event_counts"], policy2.get("event_counts"))
+                move = self._apply_pair_command(
+                    servo_service=servo_service,
+                    telemetry=telemetry,
+                    sid_a=int(axis_b[0]),
+                    delta_a=-int(db),
+                    sid_b=int(axis_b[1]),
+                    delta_b=int(db),
+                    reason="pretension_jacobian_drive_axis_b",
+                )
+                iteration_moves.append({"pair_label": "axis_b", **move})
+                result["move_count"] += int(move.get("move_count", 0))
+                result["travel_ticks"] += int(move.get("travel_ticks", 0))
+                if not bool(move.get("success")):
+                    result["stop_reason"] = f"jacobian_drive_b_failed:{move.get('stop_reason')}"
+                    break
+
+            session.context.sleep_fn(max(0.05, float(self.config.settle_verify_time_s)))
+            after_m = self._advanced_measurement(
+                servo_service=servo_service,
+                tracker_service=tracker_service,
+                servo_ids=servo_ids,
+                baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                target_xy_mm=target_xy_mm,
+                startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+                trust_status="runtime_tip",
+            )
+            self._merge_event_counts(result["telemetry_event_counts"], after_m.get("telemetry_event_counts"))
+            result["packet_retry_count"] += int(after_m.get("packet_retry_count", 0) or 0)
+            row = self._advanced_stage_row(
+                mode_kind="conservative_startup",
+                run_index=run_index,
+                stage="jacobian_tip_centering",
+                target_xy_mm=target_xy_mm,
+                measurement=after_m,
+                extra={
+                    "iteration": int(iteration + 1),
+                    "jacobian": J,
+                    "jacobian_inverse": Jinv,
+                    "moves": iteration_moves,
+                    "axis_a_pair": list(axis_a),
+                    "axis_b_pair": list(axis_b),
+                    "pair_deltas": {"axis_a_ticks": int(da), "axis_b_ticks": int(db)},
+                    "raw_pair_deltas_unclipped": {"axis_a_ticks": float(da_raw), "axis_b_ticks": float(db_raw)},
+                    "tip_error_mm": [float(x_err), float(y_err)],
+                    "tip_error_magnitude_mm": float(err_mag),
+                },
+            )
+            trace_rows.append(row)
+            self._add_staged_sample(
+                session,
+                phase="pretension_jacobian_tip_centering",
+                run_index=run_index,
+                step_index=len(trace_rows) - 1,
+                payload=row,
+            )
+            result["jacobian_iterations"] = int(iteration + 1)
+        if not result["stop_reason"]:
+            result["stop_reason"] = "jacobian_iteration_limit"
         return result
 
     @staticmethod
@@ -8633,6 +9171,286 @@ def _pretension_current_only_explicit(config: PretensionValidationExperimentConf
         or getattr(config, "allow_current_only_when_tracker_missing", False)
         or explicit_mode in {"current_only", "servo_only", "lower_trust"}
     )
+
+
+def _summarize_pretension_population(
+    records: list[dict[str, Any]],
+    *,
+    servo_ids: list[int],
+    tip_target_xy_mm: list[float],
+) -> dict[str, Any]:
+    """Reduce a list of pretension end-states (manual or algorithm) to a single
+    population summary for the comparison report.
+
+    Each record must expose ``positions_by_servo``, ``currents_ma_by_servo``,
+    and optionally ``tip_xy_mm``. Spreads are reported as standard deviation
+    across records ("repeatability") and within-record max-minus-min across
+    servos ("equality")."""
+
+    def _per_servo_values(field_name: str) -> dict[int, list[float]]:
+        per_servo: dict[int, list[float]] = {int(sid): [] for sid in servo_ids}
+        for record in records:
+            block = record.get(field_name) or {}
+            for sid in servo_ids:
+                value = block.get(int(sid))
+                if value is None:
+                    value = block.get(str(int(sid)))
+                if value is None:
+                    continue
+                per_servo[int(sid)].append(float(value))
+        return per_servo
+
+    def _std(values: list[float]) -> float | None:
+        if not values:
+            return None
+        if len(values) < 2:
+            return 0.0
+        mean = sum(values) / len(values)
+        return math.sqrt(sum((v - mean) ** 2 for v in values) / len(values))
+
+    positions = _per_servo_values("positions_by_servo")
+    currents = _per_servo_values("currents_ma_by_servo")
+    per_run_current_spread_ma: list[float] = []
+    per_run_position_spread_ticks: list[float] = []
+    for record in records:
+        run_currents = record.get("currents_ma_by_servo") or {}
+        run_positions = record.get("positions_by_servo") or {}
+        c_values = [
+            float(run_currents.get(int(sid), run_currents.get(str(int(sid))) or 0.0))
+            for sid in servo_ids
+            if (run_currents.get(int(sid)) is not None or run_currents.get(str(int(sid))) is not None)
+        ]
+        if len(c_values) == len(servo_ids):
+            per_run_current_spread_ma.append(float(max(c_values) - min(c_values)))
+        p_values = [
+            float(run_positions.get(int(sid), run_positions.get(str(int(sid))) or 0.0))
+            for sid in servo_ids
+            if (run_positions.get(int(sid)) is not None or run_positions.get(str(int(sid))) is not None)
+        ]
+        if len(p_values) == len(servo_ids):
+            per_run_position_spread_ticks.append(float(max(p_values) - min(p_values)))
+
+    tip_points = [
+        (float(record["tip_xy_mm"][0]), float(record["tip_xy_mm"][1]))
+        for record in records
+        if isinstance(record.get("tip_xy_mm"), (list, tuple)) and len(record["tip_xy_mm"]) >= 2
+    ]
+    target_xy = (
+        float(tip_target_xy_mm[0]) if tip_target_xy_mm else 0.0,
+        float(tip_target_xy_mm[1]) if len(tip_target_xy_mm) > 1 else 0.0,
+    )
+    tip_errors_mm = [
+        math.sqrt((x - target_xy[0]) ** 2 + (y - target_xy[1]) ** 2)
+        for x, y in tip_points
+    ]
+    tip_xy_centroid = None
+    if tip_points:
+        cx = sum(x for x, _ in tip_points) / len(tip_points)
+        cy = sum(y for _, y in tip_points) / len(tip_points)
+        tip_xy_centroid = [float(cx), float(cy)]
+    tip_radial_dispersion_mm = None
+    if tip_xy_centroid is not None and len(tip_points) >= 2:
+        squared = [
+            (x - tip_xy_centroid[0]) ** 2 + (y - tip_xy_centroid[1]) ** 2
+            for x, y in tip_points
+        ]
+        tip_radial_dispersion_mm = float(math.sqrt(sum(squared) / len(squared)))
+
+    return {
+        "record_count": int(len(records)),
+        "servo_ids": [int(sid) for sid in servo_ids],
+        # Equality across servos within each record (max-min of the 4 servos).
+        # The MEAN of this metric tells you how unequal the 4 servos are on a
+        # typical run; the STD tells you whether that inequality is consistent.
+        "per_run_current_spread_ma": {
+            "mean": (sum(per_run_current_spread_ma) / len(per_run_current_spread_ma))
+            if per_run_current_spread_ma
+            else None,
+            "std": _std(per_run_current_spread_ma),
+            "min": (min(per_run_current_spread_ma) if per_run_current_spread_ma else None),
+            "max": (max(per_run_current_spread_ma) if per_run_current_spread_ma else None),
+            "count": len(per_run_current_spread_ma),
+        },
+        "per_run_position_spread_ticks": {
+            "mean": (sum(per_run_position_spread_ticks) / len(per_run_position_spread_ticks))
+            if per_run_position_spread_ticks
+            else None,
+            "std": _std(per_run_position_spread_ticks),
+            "min": (min(per_run_position_spread_ticks) if per_run_position_spread_ticks else None),
+            "max": (max(per_run_position_spread_ticks) if per_run_position_spread_ticks else None),
+            "count": len(per_run_position_spread_ticks),
+        },
+        # Repeatability across records per servo. The std of (servo i current)
+        # across records is the run-to-run consistency for that servo.
+        "per_servo_current_std_ma": {
+            int(sid): _std(values) for sid, values in currents.items()
+        },
+        "per_servo_position_std_ticks": {
+            int(sid): _std(values) for sid, values in positions.items()
+        },
+        "per_servo_current_mean_ma": {
+            int(sid): (sum(values) / len(values)) if values else None
+            for sid, values in currents.items()
+        },
+        "per_servo_position_mean_ticks": {
+            int(sid): (sum(values) / len(values)) if values else None
+            for sid, values in positions.items()
+        },
+        # Tip centering / repeatability.
+        "tip_xy_points_mm": [list(point) for point in tip_points],
+        "tip_xy_centroid_mm": tip_xy_centroid,
+        "tip_radial_dispersion_mm": tip_radial_dispersion_mm,
+        "tip_xy_error_to_target_mm": {
+            "mean": (sum(tip_errors_mm) / len(tip_errors_mm)) if tip_errors_mm else None,
+            "std": _std(tip_errors_mm),
+            "min": (min(tip_errors_mm) if tip_errors_mm else None),
+            "max": (max(tip_errors_mm) if tip_errors_mm else None),
+            "count": len(tip_errors_mm),
+        },
+    }
+
+
+def _build_pretension_comparison_report(
+    *,
+    algorithm_run_rows: list[dict[str, Any]],
+    manual_baseline_records: list[dict[str, Any]],
+    servo_ids: list[int],
+    tip_target_xy_mm: list[float],
+    target_load_band_ma: tuple[float, float],
+) -> dict[str, Any]:
+    """Build the algorithm-vs-manual comparison summary.
+
+    Each algorithm run row carries its final state under
+    ``final_positions_by_servo``, ``final_currents_ma_by_servo``, and
+    ``final_tip_xy_mm`` (set by the staged-pretension execute loop). We
+    normalize those into the same shape that manual baseline records use,
+    then summarize both populations and compute per-metric deltas."""
+    normalized_algorithm = []
+    for row in algorithm_run_rows:
+        positions = row.get("positions_by_servo") or row.get("final_position_ticks_by_servo") or {}
+        currents = row.get("currents_ma_by_servo") or row.get("final_current_ma_by_servo") or {}
+        normalized_algorithm.append(
+            {
+                "run_label": str(row.get("run_label", "")),
+                "positions_by_servo": dict(positions),
+                "currents_ma_by_servo": dict(currents),
+                "tip_xy_mm": row.get("final_tip_xy_mm"),
+                "tip_xyz_mm": row.get("final_tip_xyz_mm"),
+                "accepted": bool(row.get("accepted")),
+                "stop_reason": row.get("stop_reason"),
+                "tip_centering_variant": row.get("variant"),
+            }
+        )
+
+    algorithm_summary = _summarize_pretension_population(
+        normalized_algorithm,
+        servo_ids=servo_ids,
+        tip_target_xy_mm=tip_target_xy_mm,
+    )
+    manual_summary = _summarize_pretension_population(
+        manual_baseline_records,
+        servo_ids=servo_ids,
+        tip_target_xy_mm=tip_target_xy_mm,
+    )
+
+    def _delta_field(
+        algo_block: dict[str, Any],
+        manual_block: dict[str, Any],
+        field: str,
+    ) -> dict[str, Any]:
+        algo_value = algo_block.get(field)
+        manual_value = manual_block.get(field)
+        algorithm_better_when_smaller = field in {"std", "max", "mean"}
+        delta = (
+            float(algo_value) - float(manual_value)
+            if algo_value is not None and manual_value is not None
+            else None
+        )
+        improved = (
+            (bool(delta < 0.0) if algorithm_better_when_smaller else bool(delta > 0.0))
+            if delta is not None
+            else None
+        )
+        return {
+            "algorithm": algo_value,
+            "manual": manual_value,
+            "delta_algorithm_minus_manual": delta,
+            "algorithm_better": improved,
+        }
+
+    def _compare_block(
+        algo_block: dict[str, Any] | None, manual_block: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        out = {}
+        algo = algo_block or {}
+        manual = manual_block or {}
+        for field in ("mean", "std", "min", "max"):
+            out[field] = _delta_field(algo, manual, field)
+        return out
+
+    comparison = {
+        "per_run_current_spread_ma": _compare_block(
+            algorithm_summary.get("per_run_current_spread_ma"),
+            manual_summary.get("per_run_current_spread_ma"),
+        ),
+        "per_run_position_spread_ticks": _compare_block(
+            algorithm_summary.get("per_run_position_spread_ticks"),
+            manual_summary.get("per_run_position_spread_ticks"),
+        ),
+        "tip_xy_error_to_target_mm": _compare_block(
+            algorithm_summary.get("tip_xy_error_to_target_mm"),
+            manual_summary.get("tip_xy_error_to_target_mm"),
+        ),
+        "tip_radial_dispersion_mm": {
+            "algorithm": algorithm_summary.get("tip_radial_dispersion_mm"),
+            "manual": manual_summary.get("tip_radial_dispersion_mm"),
+            "delta_algorithm_minus_manual": (
+                float(algorithm_summary.get("tip_radial_dispersion_mm")) - float(manual_summary.get("tip_radial_dispersion_mm"))
+                if algorithm_summary.get("tip_radial_dispersion_mm") is not None
+                and manual_summary.get("tip_radial_dispersion_mm") is not None
+                else None
+            ),
+            "algorithm_better": (
+                (
+                    bool(
+                        float(algorithm_summary.get("tip_radial_dispersion_mm"))
+                        < float(manual_summary.get("tip_radial_dispersion_mm"))
+                    )
+                )
+                if algorithm_summary.get("tip_radial_dispersion_mm") is not None
+                and manual_summary.get("tip_radial_dispersion_mm") is not None
+                else None
+            ),
+        },
+    }
+
+    # A simple per-metric verdict: how many comparisons favored the algorithm?
+    wins = 0
+    losses = 0
+    ties = 0
+    for block in comparison.values():
+        for sub in (block.values() if isinstance(block, dict) else []):
+            if isinstance(sub, dict) and "algorithm_better" in sub:
+                value = sub.get("algorithm_better")
+                if value is True:
+                    wins += 1
+                elif value is False:
+                    losses += 1
+                else:
+                    ties += 1
+
+    return {
+        "schema_version": "1.0",
+        "comparison_kind": "algorithm_vs_manual_pretension",
+        "tip_target_xy_mm": [float(v) for v in tip_target_xy_mm],
+        "target_load_band_ma": [float(target_load_band_ma[0]), float(target_load_band_ma[1])],
+        "algorithm_population_summary": algorithm_summary,
+        "manual_population_summary": manual_summary,
+        "comparison": comparison,
+        "algorithm_wins": int(wins),
+        "manual_wins": int(losses),
+        "ties_or_missing": int(ties),
+    }
 
 
 def _collect_pose_pair_limits(

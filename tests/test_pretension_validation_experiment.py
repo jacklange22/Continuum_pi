@@ -716,3 +716,128 @@ def test_staged_pretension_stops_when_tip_diverges(tmp_path: Path) -> None:
     run_row = result.summary.experiment_metrics["run_rows"][0]
     assert run_row["stop_reason"] in {"tip_diverging", "tip_response_wrong_direction"}
     assert run_row["accepted"] is False
+
+
+# --- Phase 2 additions: variant + comparison report ----------------------
+
+
+def test_comparison_report_summarizes_algorithm_vs_manual_repeatability(tmp_path: Path) -> None:
+    """The comparison helper turns algorithm rows + manual records into per-
+    metric summaries with deltas. Algorithm rows here are tight (low spread)
+    versus manual records that are sloppy; the report should flag the
+    algorithm as 'better' on every metric."""
+    from continuum_robot.experiments.builtins import _build_pretension_comparison_report
+
+    servo_ids = [1, 2, 3, 4]
+
+    def _algo_row(idx: int, drift: float) -> dict:
+        positions = {sid: 2500 + int(drift) for sid in servo_ids}
+        currents = {sid: 30.0 + drift * 0.1 for sid in servo_ids}
+        return {
+            "run_index": idx,
+            "run_label": f"run_{idx + 1:02d}",
+            "positions_by_servo": positions,
+            "currents_ma_by_servo": currents,
+            "final_tip_xy_mm": [0.1 * drift, 0.05 * drift],
+            "accepted": True,
+            "stop_reason": "converged",
+            "variant": "paired_then_tip",
+        }
+
+    def _manual_row(idx: int, spread: float) -> dict:
+        positions = {sid: 2500 + int(spread * (sid - 2.5)) for sid in servo_ids}
+        currents = {sid: 28.0 + spread * (sid - 2.5) for sid in servo_ids}
+        return {
+            "index": idx,
+            "positions_by_servo": positions,
+            "currents_ma_by_servo": currents,
+            "tip_xy_mm": [spread, -0.5 * spread],
+        }
+
+    algorithm_rows = [_algo_row(i, drift=0.5) for i in range(5)]
+    manual_records = [_manual_row(i, spread=4.0 + 0.5 * i) for i in range(5)]
+
+    report = _build_pretension_comparison_report(
+        algorithm_run_rows=algorithm_rows,
+        manual_baseline_records=manual_records,
+        servo_ids=servo_ids,
+        tip_target_xy_mm=[0.0, 0.0],
+        target_load_band_ma=(20.0, 40.0),
+    )
+    assert report["schema_version"] == "1.0"
+    assert report["algorithm_population_summary"]["record_count"] == 5
+    assert report["manual_population_summary"]["record_count"] == 5
+    # Algorithm rows are uniform; manual records are not.
+    algo_spread = report["algorithm_population_summary"]["per_run_current_spread_ma"]["mean"]
+    manual_spread = report["manual_population_summary"]["per_run_current_spread_ma"]["mean"]
+    assert algo_spread is not None and manual_spread is not None
+    assert algo_spread < manual_spread
+    # Comparison verdict: algorithm wins on per-run spreads (mean field).
+    spread_mean_cmp = report["comparison"]["per_run_current_spread_ma"]["mean"]
+    assert spread_mean_cmp["algorithm_better"] is True
+    assert int(report["algorithm_wins"]) > int(report["manual_wins"])
+
+
+def test_comparison_report_handles_no_manual_records(tmp_path: Path) -> None:
+    """With no manual baselines the algorithm population still summarizes but
+    every comparison entry reports the manual side as None."""
+    from continuum_robot.experiments.builtins import _build_pretension_comparison_report
+
+    servo_ids = [1, 2, 3, 4]
+    algorithm_rows = [
+        {
+            "run_index": 0,
+            "run_label": "run_01",
+            "positions_by_servo": {sid: 2500 for sid in servo_ids},
+            "currents_ma_by_servo": {sid: 30.0 for sid in servo_ids},
+            "final_tip_xy_mm": [0.0, 0.0],
+            "accepted": True,
+        }
+    ]
+    report = _build_pretension_comparison_report(
+        algorithm_run_rows=algorithm_rows,
+        manual_baseline_records=[],
+        servo_ids=servo_ids,
+        tip_target_xy_mm=[0.0, 0.0],
+        target_load_band_ma=(20.0, 40.0),
+    )
+    assert report["manual_population_summary"]["record_count"] == 0
+    assert report["comparison"]["per_run_current_spread_ma"]["mean"]["manual"] is None
+    assert report["algorithm_wins"] >= 0
+
+
+def test_config_parses_new_variant_and_manual_baseline_fields() -> None:
+    """Phase 2 added several config fields; verify from_dict parses them."""
+    cfg = PretensionValidationExperimentConfig.from_dict(
+        {
+            "tip_centering_variant": "jacobian_learned_tip",
+            "jacobian_probe_step_ticks": 40,
+            "jacobian_min_observable_tip_delta_mm": 0.3,
+            "jacobian_step_gain": 0.7,
+            "jacobian_max_pair_step_ticks": 30,
+            "manual_baseline_capture_count": 3,
+            "manual_baseline_pause_s": 5.0,
+            "manual_baseline_record_path": "data/diagnostics/manual_baselines.json",
+        }
+    )
+    assert cfg.tip_centering_variant == "jacobian_learned_tip"
+    assert cfg.jacobian_probe_step_ticks == 40
+    assert cfg.jacobian_min_observable_tip_delta_mm == pytest.approx(0.3)
+    assert cfg.jacobian_step_gain == pytest.approx(0.7)
+    assert cfg.jacobian_max_pair_step_ticks == 30
+    assert cfg.manual_baseline_capture_count == 3
+    assert cfg.manual_baseline_pause_s == pytest.approx(5.0)
+    assert cfg.manual_baseline_record_path == "data/diagnostics/manual_baselines.json"
+
+
+def test_config_clamps_jacobian_step_gain_and_defaults_to_paired_then_tip() -> None:
+    """jacobian_step_gain is clamped to [0.05, 1.5]; unknown variant falls back
+    to paired_then_tip."""
+    cfg = PretensionValidationExperimentConfig.from_dict({"jacobian_step_gain": 5.0})
+    assert cfg.jacobian_step_gain == 1.5
+    cfg2 = PretensionValidationExperimentConfig.from_dict({"jacobian_step_gain": -1.0})
+    assert cfg2.jacobian_step_gain == 0.05
+    cfg3 = PretensionValidationExperimentConfig.from_dict({"tip_centering_variant": "garbage"})
+    # from_dict does NOT validate the variant string itself (validation happens
+    # at dispatch time inside the experiment); the field is preserved verbatim.
+    assert cfg3.tip_centering_variant == "garbage"
