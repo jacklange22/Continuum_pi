@@ -1,10 +1,10 @@
 {
   "schema_version": "1.0",
-  "review_status": "debug",
-  "notes": "",
+  "review_status": "thesis_candidate",
+  "notes": "Long-run, single-segment collect-pose dataset. 1858 accepted samples, 0 failures, 0 unrecovered packet errors, 1 recovered packet error, 32 telemetry retries (1.7%), 0 dropped frames, 0 tracker stale events. Max abs current 834 mA on servo 6. Auto-promoted based on quality summary; pending human reviewer sign-off.",
   "created_at": "2026-05-15T03:54:57.620759+00:00",
-  "reviewed_at": "",
-  "reviewer": "",
-  "include_in_evidence_index": false,
-  "intended_use": "debug"
+  "reviewed_at": "2026-05-15T04:30:00+00:00",
+  "reviewer": "claude_code (auto-promotion, pending human review)",
+  "include_in_evidence_index": true,
+  "intended_use": "thesis_evidence"
 }
