@@ -11,6 +11,7 @@ from continuum_robot.app.bootstrap import AppContext, build_app_context
 from continuum_robot.gui.controllers.data_management_controller import DataManagementController
 from continuum_robot.gui.controllers.experiment_controller import ExperimentController
 from continuum_robot.gui.controllers.modeling_controller import ModelingController
+from continuum_robot.gui.controllers.two_segment_modeling_controller import TwoSegmentModelingController
 from continuum_robot.gui.controllers.pretension_controller import PretensionController
 from continuum_robot.gui.controllers.registration_controller import RegistrationController
 from continuum_robot.gui.controllers.runtime_tip_calibration_controller import RuntimeTipCalibrationController
@@ -21,6 +22,7 @@ from continuum_robot.gui.controllers.tracking_controller import TrackingControll
 from continuum_robot.gui.tabs.data_management_tab import DataManagementTab
 from continuum_robot.gui.tabs.experiment_tab import ExperimentTab
 from continuum_robot.gui.tabs.modeling_tab import ModelingTab
+from continuum_robot.gui.tabs.two_segment_modeling_tab import TwoSegmentModelingTab
 from continuum_robot.gui.tabs.pretension_tab import PretensionTab
 from continuum_robot.gui.tabs.registration_tab import RegistrationTab
 from continuum_robot.gui.tabs.servos_tab import ServosTab
@@ -121,6 +123,11 @@ class AppWindow(QMainWindow):
             self.modeling_tab.update(modeling_state)
             self.statusBar().showMessage(modeling_state.status_message)
             return
+        elif current_widget is self.two_segment_modeling_tab:
+            two_segment_state = self.two_segment_modeling_controller.refresh()
+            self.two_segment_modeling_tab.update(two_segment_state)
+            self.statusBar().showMessage(two_segment_state.status_message)
+            return
         elif current_widget is self.data_management_tab:
             data_management_state = self.data_management_controller.refresh()
             self.data_management_tab.update(data_management_state)
@@ -210,6 +217,11 @@ class AppWindow(QMainWindow):
             artifact_root=context.project_root / "data" / "models" / "ann",
             results_root=context.project_root / "data" / "modeling_results",
         )
+        # Two-segment modeling now has its own controller and tab so single-segment
+        # workflows aren't competing with it for screen real estate.
+        self.two_segment_modeling_controller = TwoSegmentModelingController(
+            project_root=context.project_root,
+        )
         self.data_management_controller = DataManagementController(project_root=context.project_root)
         self.tracker_mvp_controller = TrackerMvpController(
             tracking_service=tracking_service,
@@ -248,6 +260,9 @@ class AppWindow(QMainWindow):
             self.modeling_controller,
             open_in_ann_training=self._open_collect_pose_ann_training,
         )
+        self.two_segment_modeling_tab = TwoSegmentModelingTab(
+            self.two_segment_modeling_controller,
+        )
         self.data_management_tab = DataManagementTab(
             self.data_management_controller,
             open_in_ann_training=self._open_collect_pose_ann_training,
@@ -260,6 +275,7 @@ class AppWindow(QMainWindow):
             (self.pretension_tab, "Pretension"),
             (self.experiment_tab, "Experiment"),
             (self.modeling_tab, "Modeling"),
+            (self.two_segment_modeling_tab, "2-Segment Modeling"),
             (self.data_management_tab, "Data"),
         ):
             new_tab_widget.addTab(widget, label)

@@ -7,15 +7,11 @@ from pathlib import Path
 from PySide6.QtCore import QSignalBlocker, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFrame,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
-    QDoubleSpinBox,
-    QSpinBox,
     QListWidget,
     QListWidgetItem,
     QPushButton,
@@ -183,124 +179,9 @@ class ModelingTab(QWidget):
         controls_card.body_layout.addLayout(action_row)
         left.addWidget(controls_card)
 
-        # Two-segment modeling is a separate workflow. Hide it behind a toggle so the
-        # default Modeling tab focuses on the single-segment comparison view; operators
-        # who need two-segment can pop it open with one click.
-        self.two_segment_toggle_button = QPushButton("▶ Two-Segment Modeling (offline, click to expand)")
-        self.two_segment_toggle_button.setProperty("variant", "ghost")
-        self.two_segment_toggle_button.setCheckable(True)
-        self.two_segment_toggle_button.toggled.connect(self._on_two_segment_toggle)
-        left.addWidget(self.two_segment_toggle_button)
-
-        two_segment_card = _Card(
-            "Two-Segment Modeling",
-            "Offline analysis for `two_segment_collect_pose_command_dataset` runs. This does not enable live control.",
-        )
-        two_segment_card.setVisible(False)
-        self._two_segment_card = two_segment_card
-        two_segment_buttons = QHBoxLayout()
-        two_segment_buttons.setContentsMargins(0, 0, 0, 0)
-        self.two_segment_refresh_button = QPushButton("Refresh Runs")
-        self.two_segment_refresh_button.setProperty("variant", "ghost")
-        self.two_segment_refresh_button.clicked.connect(self._refresh_catalogs)
-        self.two_segment_open_output_button = QPushButton("Open Output")
-        self.two_segment_open_output_button.setProperty("variant", "ghost")
-        self.two_segment_open_output_button.clicked.connect(self._open_two_segment_output)
-        self.two_segment_export_button = QPushButton("Export Bundle")
-        self.two_segment_export_button.setProperty("variant", "ghost")
-        self.two_segment_export_button.clicked.connect(self._export_two_segment_output)
-        two_segment_buttons.addWidget(self.two_segment_refresh_button)
-        two_segment_buttons.addWidget(self.two_segment_open_output_button)
-        two_segment_buttons.addWidget(self.two_segment_export_button)
-        two_segment_buttons.addStretch(1)
-        two_segment_card.body_layout.addLayout(two_segment_buttons)
-        self.two_segment_run_list = QListWidget()
-        self.two_segment_run_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.two_segment_run_list.setMinimumHeight(140)
-        self.two_segment_run_list.itemSelectionChanged.connect(self._on_two_segment_selection_changed)
-        two_segment_card.body_layout.addWidget(self.two_segment_run_list)
-        model_row = QHBoxLayout()
-        model_row.setContentsMargins(0, 0, 0, 0)
-        self.two_segment_linear_check = QCheckBox("Linear")
-        self.two_segment_linear_check.setChecked(True)
-        self.two_segment_linear_check.toggled.connect(lambda value: self.controller.set_two_segment_model_enabled("linear_baseline", bool(value)))
-        self.two_segment_ann_check = QCheckBox("ANN")
-        self.two_segment_ann_check.setChecked(True)
-        self.two_segment_ann_check.toggled.connect(lambda value: self.controller.set_two_segment_model_enabled("ann", bool(value)))
-        self.two_segment_camarillo_check = QCheckBox("Camarillo unavailable")
-        self.two_segment_camarillo_check.toggled.connect(lambda value: self.controller.set_two_segment_model_enabled("camarillo", bool(value)))
-        self.two_segment_mike_check = QCheckBox("Mike unavailable")
-        self.two_segment_mike_check.toggled.connect(lambda value: self.controller.set_two_segment_model_enabled("mike_constant_curvature", bool(value)))
-        model_row.addWidget(self.two_segment_linear_check)
-        model_row.addWidget(self.two_segment_ann_check)
-        model_row.addWidget(self.two_segment_camarillo_check)
-        model_row.addWidget(self.two_segment_mike_check)
-        model_row.addStretch(1)
-        two_segment_card.body_layout.addLayout(model_row)
-        label_row = QHBoxLayout()
-        label_row.setContentsMargins(0, 0, 0, 0)
-        label_row.addWidget(QLabel("Label Mode"))
-        self.two_segment_label_mode_combo = QComboBox()
-        for label, value in [
-            ("Auto", "auto"),
-            ("Distal XYZ", "distal_xyz"),
-            ("Distal Pose 6", "distal_pose6"),
-            ("Two-Coil XYZ", "two_coil_xyz"),
-            ("Two-Coil Pose 12", "two_coil_pose12"),
-        ]:
-            self.two_segment_label_mode_combo.addItem(label, value)
-        self.two_segment_label_mode_combo.currentIndexChanged.connect(self._on_two_segment_label_mode_changed)
-        self.two_segment_orientation_check = QCheckBox("Orientation if available")
-        self.two_segment_orientation_check.toggled.connect(
-            lambda value: self.controller.set_two_segment_include_orientation_if_available(bool(value))
-        )
-        label_row.addWidget(self.two_segment_label_mode_combo, 1)
-        label_row.addWidget(self.two_segment_orientation_check)
-        two_segment_card.body_layout.addLayout(label_row)
-        ann_row = QHBoxLayout()
-        ann_row.setContentsMargins(0, 0, 0, 0)
-        self.two_segment_ann_sweep_check = QCheckBox("ANN sweep")
-        self.two_segment_ann_sweep_check.toggled.connect(lambda value: self.controller.set_two_segment_ann_sweep_enabled(bool(value)))
-        ann_row.addWidget(self.two_segment_ann_sweep_check)
-        ann_row.addWidget(QLabel("Hidden"))
-        self.two_segment_hidden_combo = QComboBox()
-        for label in ["128,128", "64,64", "32,32"]:
-            self.two_segment_hidden_combo.addItem(label, label)
-        self.two_segment_hidden_combo.currentIndexChanged.connect(self._on_two_segment_hidden_changed)
-        ann_row.addWidget(self.two_segment_hidden_combo)
-        ann_row.addWidget(QLabel("Epochs"))
-        self.two_segment_epochs_spin = QSpinBox()
-        self.two_segment_epochs_spin.setRange(1, 5000)
-        self.two_segment_epochs_spin.setValue(200)
-        self.two_segment_epochs_spin.valueChanged.connect(lambda value: self.controller.set_two_segment_ann_epochs(int(value)))
-        ann_row.addWidget(self.two_segment_epochs_spin)
-        ann_row.addWidget(QLabel("Test"))
-        self.two_segment_test_fraction_spin = QDoubleSpinBox()
-        self.two_segment_test_fraction_spin.setRange(0.05, 0.9)
-        self.two_segment_test_fraction_spin.setSingleStep(0.05)
-        self.two_segment_test_fraction_spin.setValue(0.25)
-        self.two_segment_test_fraction_spin.valueChanged.connect(lambda value: self.controller.set_two_segment_test_fraction(float(value)))
-        ann_row.addWidget(self.two_segment_test_fraction_spin)
-        ann_row.addStretch(1)
-        two_segment_card.body_layout.addLayout(ann_row)
-        trust_row = QHBoxLayout()
-        trust_row.setContentsMargins(0, 0, 0, 0)
-        self.two_segment_strict_check = QCheckBox("Strict")
-        self.two_segment_strict_check.setChecked(True)
-        self.two_segment_strict_check.toggled.connect(lambda value: self.controller.set_two_segment_strict_mode(bool(value)))
-        self.two_segment_lower_trust_check = QCheckBox("Allow lower trust")
-        self.two_segment_lower_trust_check.toggled.connect(lambda value: self.controller.set_two_segment_allow_lower_trust(bool(value)))
-        self.two_segment_run_button = QPushButton("Run Two-Segment Modeling")
-        self.two_segment_run_button.setProperty("role", "primary")
-        self.two_segment_run_button.clicked.connect(self.controller.run_two_segment_modeling_analysis)
-        trust_row.addWidget(self.two_segment_strict_check)
-        trust_row.addWidget(self.two_segment_lower_trust_check)
-        trust_row.addWidget(self.two_segment_run_button)
-        trust_row.addStretch(1)
-        two_segment_card.body_layout.addLayout(trust_row)
-        self.two_segment_pairs = _PairsWidget()
-        two_segment_card.body_layout.addWidget(self.two_segment_pairs)
-        left.addWidget(two_segment_card)
+        # Two-segment work moved to its own tab (TwoSegmentModelingTab). This tab now
+        # focuses exclusively on the single-segment forward-comparison workflow
+        # (Mike / Camarillo / ANN cable → tip pose).
 
         results_card = _Card(
             "Comparison Summary",
@@ -350,27 +231,10 @@ class ModelingTab(QWidget):
         self.open_dataset_button.setEnabled(bool(state.selected_dataset_path))
         self.open_artifact_button.setEnabled(bool(state.selected_artifact_path))
         self.open_results_button.setEnabled(bool(state.last_output_path))
-        self._sync_two_segment_run_list(state)
-        self.two_segment_pairs.set_pairs(state.two_segment_summary_pairs)
-        self.two_segment_run_button.setEnabled(state.two_segment_can_run)
-        self.two_segment_open_output_button.setEnabled(state.two_segment_can_open_output)
-        self.two_segment_export_button.setEnabled(state.two_segment_can_export_output)
         self._set_checkbox(self.mike_check, state.include_mike)
         self._set_checkbox(self.camarillo_check, state.include_camarillo)
         self._set_checkbox(self.ann_check, state.include_ann)
-        self._set_checkbox(self.two_segment_linear_check, state.two_segment_include_linear)
-        self._set_checkbox(self.two_segment_ann_check, state.two_segment_include_ann)
-        self._set_checkbox(self.two_segment_camarillo_check, state.two_segment_include_camarillo)
-        self._set_checkbox(self.two_segment_mike_check, state.two_segment_include_mike)
-        self._set_checkbox(self.two_segment_strict_check, state.two_segment_strict_mode)
-        self._set_checkbox(self.two_segment_lower_trust_check, state.two_segment_allow_lower_trust)
-        self._set_checkbox(self.two_segment_orientation_check, state.two_segment_include_orientation_if_available)
-        self._set_checkbox(self.two_segment_ann_sweep_check, state.two_segment_ann_sweep_enabled)
         self._set_combo(self.scope_combo, state.evaluation_scope)
-        self._set_combo(self.two_segment_label_mode_combo, state.two_segment_label_mode)
-        self._set_combo(self.two_segment_hidden_combo, state.two_segment_ann_hidden_layers)
-        self._set_spin_value(self.two_segment_epochs_spin, state.two_segment_ann_epochs)
-        self._set_spin_value(self.two_segment_test_fraction_spin, state.two_segment_test_fraction)
 
     def _refresh_catalogs(self) -> None:
         self.controller.set_dataset_output_root(self.controller.dataset_output_root)
@@ -413,25 +277,6 @@ class ModelingTab(QWidget):
                     self.artifact_list.setCurrentRow(index)
                     break
 
-    def _sync_two_segment_run_list(self, state: ModelingViewState) -> None:
-        current_paths = [self.two_segment_run_list.item(index).data(Qt.UserRole) for index in range(self.two_segment_run_list.count())]
-        target_paths = list(state.two_segment_dataset_runs)
-        if current_paths != target_paths:
-            with QSignalBlocker(self.two_segment_run_list):
-                self.two_segment_run_list.clear()
-                for path in target_paths:
-                    run_path = Path(path)
-                    item = QListWidgetItem(run_path.name)
-                    item.setData(Qt.UserRole, str(path))
-                    self.two_segment_run_list.addItem(item)
-        selected = set(state.selected_two_segment_run_paths)
-        with QSignalBlocker(self.two_segment_run_list):
-            self.two_segment_run_list.clearSelection()
-            for index in range(self.two_segment_run_list.count()):
-                item = self.two_segment_run_list.item(index)
-                if item.data(Qt.UserRole) in selected:
-                    item.setSelected(True)
-
     def _on_dataset_selected(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
         if current is not None:
             self.controller.select_dataset(str(current.data(Qt.UserRole)))
@@ -440,37 +285,10 @@ class ModelingTab(QWidget):
         if current is not None:
             self.controller.select_artifact(str(current.data(Qt.UserRole)))
 
-    def _on_two_segment_toggle(self, checked: bool) -> None:
-        """Show or hide the two-segment workflow card."""
-        self._two_segment_card.setVisible(bool(checked))
-        self.two_segment_toggle_button.setText(
-            "▼ Two-Segment Modeling (offline, click to collapse)"
-            if checked
-            else "▶ Two-Segment Modeling (offline, click to expand)"
-        )
-
-    def _on_two_segment_selection_changed(self) -> None:
-        paths = [
-            str(item.data(Qt.UserRole))
-            for item in self.two_segment_run_list.selectedItems()
-        ]
-        self.controller.select_two_segment_runs(paths)
-        self.update(self.controller.refresh())
-
     def _on_scope_changed(self, _index: int) -> None:
         value = self.scope_combo.currentData()
         if value:
             self.controller.set_evaluation_scope(str(value))
-
-    def _on_two_segment_label_mode_changed(self, _index: int) -> None:
-        value = self.two_segment_label_mode_combo.currentData()
-        if value:
-            self.controller.set_two_segment_label_mode(str(value))
-
-    def _on_two_segment_hidden_changed(self, _index: int) -> None:
-        value = self.two_segment_hidden_combo.currentData()
-        if value:
-            self.controller.set_two_segment_ann_hidden_layers(str(value))
 
     def _open_selected_dataset(self) -> None:
         state = self.controller.refresh()
@@ -500,19 +318,6 @@ class ModelingTab(QWidget):
             return
         self._ann_training_opener(state.selected_dataset_path)
 
-    def _open_two_segment_output(self) -> None:
-        state = self.controller.refresh()
-        if state.two_segment_last_output_path:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(state.two_segment_last_output_path))))
-
-    def _export_two_segment_output(self) -> None:
-        try:
-            self.controller.export_last_two_segment_modeling_bundle()
-        except Exception as exc:
-            self.status_label.setText(f"Two-segment export failed: {exc}")
-            return
-        self.update(self.controller.refresh())
-
     @staticmethod
     def _set_checkbox(widget: QCheckBox, value: bool) -> None:
         if widget.isChecked() == bool(value):
@@ -527,14 +332,6 @@ class ModelingTab(QWidget):
                 with QSignalBlocker(widget):
                     widget.setCurrentIndex(index)
                 return
-
-    @staticmethod
-    def _set_spin_value(widget, value) -> None:
-        if widget.value() == value:
-            return
-        with QSignalBlocker(widget):
-            widget.setValue(value)
-
 
 class _Card(QFrame):
     def __init__(self, title: str, subtitle: str, parent=None) -> None:

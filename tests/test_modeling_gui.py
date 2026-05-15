@@ -293,33 +293,71 @@ def test_modeling_tab_train_ann_button_without_opener_does_not_crash(tmp_path: P
         controller.shutdown()
 
 
-def test_modeling_controller_and_tab_expose_two_segment_modeling_panel(tmp_path: Path) -> None:
+def test_two_segment_controller_and_tab_expose_dataset_discovery(tmp_path: Path) -> None:
+    """The new dedicated TwoSegmentModelingController + TwoSegmentModelingTab handle the
+    two-segment workflow. The single-segment ModelingTab no longer carries that UI."""
+    from continuum_robot.gui.controllers.two_segment_modeling_controller import (
+        TwoSegmentModelingController,
+    )
+    from continuum_robot.gui.tabs.two_segment_modeling_tab import TwoSegmentModelingTab
+
     _app()
-    run_dir = tmp_path / "data" / "experiments" / "two_segment_collect_pose_command_dataset" / "20260508_120000_two_segment_collect_pose_command_dataset"
+    run_dir = (
+        tmp_path
+        / "data"
+        / "experiments"
+        / "two_segment_collect_pose_command_dataset"
+        / "20260508_120000_two_segment_collect_pose_command_dataset"
+    )
     shutil.copytree(TWO_SEGMENT_FIXTURE, run_dir)
+    controller = TwoSegmentModelingController(project_root=tmp_path)
+    state = controller.refresh()
+
+    assert str(run_dir) in state.dataset_runs
+    assert state.can_run is True
+    trainability = controller.validate_trainability([run_dir])
+    assert trainability["samples_accepted"] == 6
+    assert trainability["samples_rejected"] == 0
+    assert "two_coil_xyz_available" in trainability
+
+    tab = TwoSegmentModelingTab(controller)
+    try:
+        tab.update(state)
+        assert tab.run_list.count() == 1
+        assert tab.run_button.isEnabled() is True
+        assert tab.strict_check.isChecked() is True
+        assert tab.label_mode_combo.currentData() == "auto"
+        assert tab.hidden_combo.currentData() == "128,128"
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_modeling_tab_no_longer_has_two_segment_widgets(tmp_path: Path) -> None:
+    """Sanity check: ModelingTab is single-segment only after the split."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
     controller = ModelingController(
         project_root=tmp_path,
         dataset_output_root=tmp_path / "data" / "experiments",
         artifact_root=tmp_path / "data" / "models" / "ann",
         results_root=tmp_path / "data" / "modeling_results",
     )
-    state = controller.refresh()
-
-    assert str(run_dir) in state.two_segment_dataset_runs
-    assert state.two_segment_can_run is True
-    trainability = controller.validate_two_segment_modeling_trainability([run_dir])
-    assert trainability["samples_accepted"] == 6
-    assert trainability["samples_rejected"] == 0
-    assert "two_coil_xyz_available" in trainability
-
+    controller.select_dataset(str(run_dir))
     tab = ModelingTab(controller)
     try:
-        tab.update(state)
-        assert tab.two_segment_run_list.count() == 1
-        assert tab.two_segment_run_button.isEnabled() is True
-        assert tab.two_segment_strict_check.isChecked() is True
-        assert tab.two_segment_label_mode_combo.currentData() == "auto"
-        assert tab.two_segment_hidden_combo.currentData() == "128,128"
+        tab.update(controller.refresh())
+        # None of the two-segment widgets exist on the single-segment Modeling tab.
+        for attr in (
+            "two_segment_run_list",
+            "two_segment_run_button",
+            "two_segment_strict_check",
+            "two_segment_label_mode_combo",
+            "two_segment_hidden_combo",
+            "two_segment_toggle_button",
+            "_two_segment_card",
+        ):
+            assert not hasattr(tab, attr), f"ModelingTab should not have {attr!r}"
     finally:
         tab.close()
         controller.shutdown()
@@ -351,32 +389,6 @@ def test_ann_training_window_uses_main_scroll_area(tmp_path: Path) -> None:
         controller.shutdown()
 
 
-def test_modeling_tab_two_segment_card_collapsed_by_default(tmp_path: Path) -> None:
-    """Two-segment workflow is hidden behind a toggle to keep the single-segment view clean."""
-    _app()
-    run_dir = _write_modeling_run(tmp_path)
-    artifact_dir = _write_artifact(tmp_path, run_dir)
-    controller = ModelingController(
-        project_root=tmp_path,
-        dataset_output_root=tmp_path / "data" / "experiments",
-        artifact_root=tmp_path / "data" / "models" / "ann",
-        results_root=tmp_path / "data" / "modeling_results",
-    )
-    controller.select_dataset(str(run_dir))
-    controller.select_artifact(str(artifact_dir))
-    tab = ModelingTab(controller)
-    try:
-        tab.show()  # isVisible() only reflects shown state
-        tab.update(controller.refresh())
-        # Collapsed: card hidden, toggle present.
-        assert tab._two_segment_card.isVisible() is False
-        assert tab.two_segment_toggle_button.isChecked() is False
-        # Expand and verify the card becomes visible.
-        tab.two_segment_toggle_button.setChecked(True)
-        assert tab._two_segment_card.isVisible() is True
-    finally:
-        tab.close()
-        controller.shutdown()
 
 
 def test_modeling_tab_same_session_chip_visible_after_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
