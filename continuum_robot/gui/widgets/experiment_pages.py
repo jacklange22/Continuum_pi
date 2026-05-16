@@ -2843,39 +2843,36 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
     show_visualization = True
     defer_visualization_until_data = True
     visualization_mode_override = VIS_MODE_PROJECTION
-    page_hint = (
-        "Use this workspace to collect single-segment Motor Babble modeling datasets with trusted registration, runtime tip, "
-        "pretension provenance, and ordered command/pose samples for later offline training."
-    )
+    page_hint = ""
 
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
         super().__init__(controller, experiment_name, parent)
-        self.run_button.setText("Run Motor Babble Dataset")
+        self.run_button.setText("Run Random Data Collection")
         self._training_window = None
 
     def _build_parameter_sections(self) -> None:
-        collection_card = ExperimentCard("Dataset Mode", "Choose the dataset family you want to collect. All modes preserve ordered command history and explicit accepted/rejected capture state.")
+        collection_card = ExperimentCard("Dataset")
         collection_form = QFormLayout()
         self.dataset_mode_combo = NoWheelComboBox()
         for label, value in (
-            ("Workspace Coverage", "workspace_coverage"),
-            ("Hysteresis / Path Dependence", "hysteresis_path_dependence"),
-            ("Repeatability Linked", "repeatability_linked"),
-            ("Angular Test Mesh (Wolfe §3.2.3)", "angular_test_mesh"),
+            ("Workspace Coverage — quasi-random reach across the bounded envelope", "workspace_coverage"),
+            ("Hysteresis / Path Dependence — same target reached from N prior states", "hysteresis_path_dependence"),
+            ("Repeatability Linked — repeat blocks of the same plan with new seeds", "repeatability_linked"),
+            ("Angular Test Mesh — spherical theta/phi sweep (Wolfe §3.2.3)", "angular_test_mesh"),
         ):
             self.dataset_mode_combo.addItem(label, value)
         self.dataset_mode_combo.currentIndexChanged.connect(
             lambda _index: self.controller.set_config_value("dataset_mode", str(self.dataset_mode_combo.currentData()))
         )
-        self.dry_run_check = QCheckBox("Dry Run")
-        self.dry_run_check.toggled.connect(lambda value: self.controller.set_config_value("dry_run", bool(value)))
-        self.run_label_edit = QLineEdit()
-        self.run_label_edit.editingFinished.connect(lambda: self.controller.set_config_value("run_label", self.run_label_edit.text().strip()))
-        self.dataset_tag_edit = QLineEdit()
-        self.dataset_tag_edit.editingFinished.connect(lambda: self.controller.set_config_value("dataset_tag", self.dataset_tag_edit.text().strip()))
         self.sample_target_spin = QSpinBox()
         self.sample_target_spin.setRange(1, 50000)
         self.sample_target_spin.valueChanged.connect(lambda value: self.controller.set_config_value("sample_count_target", int(value)))
+        self.workspace_amplitude_spin = QDoubleSpinBox()
+        self.workspace_amplitude_spin.setRange(0.05, 5.0)
+        self.workspace_amplitude_spin.setDecimals(3)
+        self.workspace_amplitude_spin.setSingleStep(0.05)
+        self.workspace_amplitude_spin.setSuffix(" cm")
+        self.workspace_amplitude_spin.valueChanged.connect(lambda value: self.controller.set_config_value("workspace_amplitude_cm", float(value)))
         self.samples_per_command_spin = QSpinBox()
         self.samples_per_command_spin.setRange(1, 20)
         self.samples_per_command_spin.valueChanged.connect(lambda value: self.controller.set_config_value("samples_per_command", int(value)))
@@ -2883,35 +2880,82 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         self.settle_time_spin.setRange(0.0, 60.0)
         self.settle_time_spin.setDecimals(3)
         self.settle_time_spin.setSingleStep(0.05)
+        self.settle_time_spin.setSuffix(" s")
         self.settle_time_spin.valueChanged.connect(lambda value: self.controller.set_config_value("settle_time_s", float(value)))
+        collection_form.addRow("Dataset Mode", self.dataset_mode_combo)
+        collection_form.addRow("Target Samples", self.sample_target_spin)
+        collection_form.addRow("Workspace Amplitude", self.workspace_amplitude_spin)
+        collection_form.addRow("Samples per Command", self.samples_per_command_spin)
+        collection_form.addRow("Settle Time", self.settle_time_spin)
+        collection_card.body_layout.addLayout(collection_form)
+
+        self.collection_preview_label = QLabel("")
+        self.collection_preview_label.setWordWrap(True)
+        self.collection_preview_label.setStyleSheet(
+            f"color: {COLORS.text_primary}; font-weight: 600; font-size: 13px; padding: 6px 0;"
+        )
+        collection_card.body_layout.addWidget(self.collection_preview_label)
+
+        self.advanced_card = CollapsibleCard(
+            "Advanced",
+            "Run identity, capture timing, coverage tuning, stability, trust overrides, and mode-specific knobs.",
+            expanded=False,
+        )
+
+        run_identity_label = QLabel("Run identity")
+        run_identity_label.setStyleSheet(f"color: {COLORS.text_secondary}; font-weight: 600;")
+        self.advanced_card.body_layout.addWidget(run_identity_label)
+        identity_form = QFormLayout()
+        self.run_label_edit = QLineEdit()
+        self.run_label_edit.editingFinished.connect(lambda: self.controller.set_config_value("run_label", self.run_label_edit.text().strip()))
+        self.dataset_tag_edit = QLineEdit()
+        self.dataset_tag_edit.editingFinished.connect(lambda: self.controller.set_config_value("dataset_tag", self.dataset_tag_edit.text().strip()))
+        self.dry_run_check = QCheckBox("Dry run (skip hardware writes)")
+        self.dry_run_check.toggled.connect(lambda value: self.controller.set_config_value("dry_run", bool(value)))
+        identity_form.addRow("Run Label", self.run_label_edit)
+        identity_form.addRow("Dataset Tag", self.dataset_tag_edit)
+        self.advanced_card.body_layout.addLayout(identity_form)
+        self.advanced_card.body_layout.addWidget(self.dry_run_check)
+
+        capture_label = QLabel("Capture timing")
+        capture_label.setStyleSheet(f"color: {COLORS.text_secondary}; font-weight: 600;")
+        self.advanced_card.body_layout.addWidget(capture_label)
+        capture_hint = QLabel(
+            "Per-sample cycle: write command → wait Post-Write Settle (bus flush, default 0 s) → "
+            "wait Settle Time (mechanical settling, default 0.15 s) → request a tracker reading. "
+            "If no fresh reading arrives within Capture Timeout (default 1 s), the sample is rejected and the runner moves on."
+        )
+        capture_hint.setProperty("role", "hint")
+        capture_hint.setWordWrap(True)
+        self.advanced_card.body_layout.addWidget(capture_hint)
+        capture_form = QFormLayout()
         self.capture_timeout_spin = QDoubleSpinBox()
         self.capture_timeout_spin.setRange(0.05, 30.0)
         self.capture_timeout_spin.setDecimals(3)
         self.capture_timeout_spin.setSingleStep(0.05)
+        self.capture_timeout_spin.setSuffix(" s")
         self.capture_timeout_spin.valueChanged.connect(lambda value: self.controller.set_config_value("capture_timeout_s", float(value)))
         self.tracker_age_spin = QDoubleSpinBox()
         self.tracker_age_spin.setRange(0.01, 5.0)
         self.tracker_age_spin.setDecimals(3)
         self.tracker_age_spin.setSingleStep(0.01)
+        self.tracker_age_spin.setSuffix(" s")
         self.tracker_age_spin.valueChanged.connect(lambda value: self.controller.set_config_value("max_tracker_age_s", float(value)))
-        collection_form.addRow("Dataset Mode", self.dataset_mode_combo)
-        collection_form.addRow("Dry Run", self.dry_run_check)
-        collection_form.addRow("Run Label", self.run_label_edit)
-        collection_form.addRow("Dataset Tag", self.dataset_tag_edit)
-        collection_form.addRow("Target Accepted Samples", self.sample_target_spin)
-        collection_form.addRow("Samples / Command", self.samples_per_command_spin)
-        collection_form.addRow("Settle Time (s)", self.settle_time_spin)
-        collection_form.addRow("Capture Timeout (s)", self.capture_timeout_spin)
-        collection_form.addRow("Max Tracker Age (s)", self.tracker_age_spin)
-        collection_card.body_layout.addLayout(collection_form)
+        self.post_write_settle_spin = QDoubleSpinBox()
+        self.post_write_settle_spin.setRange(0.0, 1.0)
+        self.post_write_settle_spin.setDecimals(3)
+        self.post_write_settle_spin.setSingleStep(0.01)
+        self.post_write_settle_spin.setSuffix(" s")
+        self.post_write_settle_spin.valueChanged.connect(lambda value: self.controller.set_config_value("post_write_settle_s", float(value)))
+        capture_form.addRow("Capture Timeout", self.capture_timeout_spin)
+        capture_form.addRow("Max Tracker Age", self.tracker_age_spin)
+        capture_form.addRow("Post-Write Settle", self.post_write_settle_spin)
+        self.advanced_card.body_layout.addLayout(capture_form)
 
-        protocol_card = ExperimentCard("Command Protocol", "Tune the safe pair-command envelope and the mode-specific sequence size without editing raw YAML.")
-        protocol_form = QFormLayout()
-        self.workspace_amplitude_spin = QDoubleSpinBox()
-        self.workspace_amplitude_spin.setRange(0.05, 5.0)
-        self.workspace_amplitude_spin.setDecimals(3)
-        self.workspace_amplitude_spin.setSingleStep(0.05)
-        self.workspace_amplitude_spin.valueChanged.connect(lambda value: self.controller.set_config_value("workspace_amplitude_cm", float(value)))
+        coverage_label = QLabel("Workspace coverage")
+        coverage_label.setStyleSheet(f"color: {COLORS.text_secondary}; font-weight: 600;")
+        self.advanced_card.body_layout.addWidget(coverage_label)
+        coverage_form = QFormLayout()
         self.envelope_utilization_spin = QDoubleSpinBox()
         self.envelope_utilization_spin.setRange(0.05, 1.0)
         self.envelope_utilization_spin.setDecimals(2)
@@ -2922,6 +2966,23 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         self.seed_spin = QSpinBox()
         self.seed_spin.setRange(0, 999999)
         self.seed_spin.valueChanged.connect(lambda value: self.controller.set_config_value("random_seed", int(value)))
+        coverage_form.addRow("Envelope Utilization", self.envelope_utilization_spin)
+        coverage_form.addRow("Random Seed", self.seed_spin)
+        self.advanced_card.body_layout.addLayout(coverage_form)
+        self.advanced_card.body_layout.addWidget(self.quasi_random_check)
+
+        self.mode_specific_label = QLabel("Mode-specific")
+        self.mode_specific_label.setStyleSheet(f"color: {COLORS.text_secondary}; font-weight: 600;")
+        self.advanced_card.body_layout.addWidget(self.mode_specific_label)
+        mode_specific_hint = QLabel(
+            "Hysteresis fields apply only to Hysteresis / Path Dependence: Targets × Cycles × Prior-State Families "
+            "is how many command points get visited. Repeatability Blocks applies only to Repeatability Linked — "
+            "the runner repeats the same plan that many times with different seeds."
+        )
+        mode_specific_hint.setProperty("role", "hint")
+        mode_specific_hint.setWordWrap(True)
+        self.advanced_card.body_layout.addWidget(mode_specific_hint)
+        mode_specific_form = QFormLayout()
         self.hysteresis_targets_spin = QSpinBox()
         self.hysteresis_targets_spin.setRange(1, 1000)
         self.hysteresis_targets_spin.valueChanged.connect(lambda value: self.controller.set_config_value("hysteresis_target_count", int(value)))
@@ -2934,23 +2995,16 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         self.repeatability_blocks_spin = QSpinBox()
         self.repeatability_blocks_spin.setRange(1, 100)
         self.repeatability_blocks_spin.valueChanged.connect(lambda value: self.controller.set_config_value("repeatability_block_count", int(value)))
-        protocol_form.addRow("Workspace Amplitude (cm)", self.workspace_amplitude_spin)
-        protocol_form.addRow("Envelope Utilization", self.envelope_utilization_spin)
-        protocol_form.addRow("Coverage Sampling", self.quasi_random_check)
-        protocol_form.addRow("Random Seed", self.seed_spin)
-        protocol_form.addRow("Hysteresis Targets", self.hysteresis_targets_spin)
-        protocol_form.addRow("Hysteresis Cycles", self.hysteresis_cycles_spin)
-        protocol_form.addRow("Prior-State Families", self.hysteresis_prior_spin)
-        protocol_form.addRow("Repeatability Blocks", self.repeatability_blocks_spin)
-        protocol_card.body_layout.addLayout(protocol_form)
+        mode_specific_form.addRow("Hysteresis Targets", self.hysteresis_targets_spin)
+        mode_specific_form.addRow("Hysteresis Cycles", self.hysteresis_cycles_spin)
+        mode_specific_form.addRow("Prior-State Families", self.hysteresis_prior_spin)
+        mode_specific_form.addRow("Repeatability Blocks", self.repeatability_blocks_spin)
+        self.advanced_card.body_layout.addLayout(mode_specific_form)
 
-        stability_card = ExperimentCard("Run Stability", "Bounded telemetry retry and warning-only load reporting for long modeling runs.")
+        stability_label = QLabel("Run stability")
+        stability_label.setStyleSheet(f"color: {COLORS.text_secondary}; font-weight: 600;")
+        self.advanced_card.body_layout.addWidget(stability_label)
         stability_form = QFormLayout()
-        self.post_write_settle_spin = QDoubleSpinBox()
-        self.post_write_settle_spin.setRange(0.0, 1.0)
-        self.post_write_settle_spin.setDecimals(3)
-        self.post_write_settle_spin.setSingleStep(0.01)
-        self.post_write_settle_spin.valueChanged.connect(lambda value: self.controller.set_config_value("post_write_settle_s", float(value)))
         self.telemetry_retry_count_spin = QSpinBox()
         self.telemetry_retry_count_spin.setRange(0, 5)
         self.telemetry_retry_count_spin.valueChanged.connect(lambda value: self.controller.set_config_value("telemetry_retry_count", int(value)))
@@ -2958,11 +3012,8 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         self.telemetry_retry_delay_spin.setRange(0.0, 0.5)
         self.telemetry_retry_delay_spin.setDecimals(3)
         self.telemetry_retry_delay_spin.setSingleStep(0.01)
+        self.telemetry_retry_delay_spin.setSuffix(" s")
         self.telemetry_retry_delay_spin.valueChanged.connect(lambda value: self.controller.set_config_value("telemetry_retry_delay_s", float(value)))
-        self.allow_recovered_packet_errors_check = QCheckBox("Continue after recovered packet errors")
-        self.allow_recovered_packet_errors_check.toggled.connect(
-            lambda value: self.controller.set_config_value("allow_recovered_packet_errors", bool(value))
-        )
         self.max_recovered_packet_errors_spin = QSpinBox()
         self.max_recovered_packet_errors_spin.setRange(0, 10000)
         self.max_recovered_packet_errors_spin.valueChanged.connect(
@@ -2976,16 +3027,26 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         self.max_current_warning_spin.valueChanged.connect(
             lambda value: self.controller.set_config_value("max_current_warning_ma", None if int(value) <= 0 else int(value))
         )
-        stability_form.addRow("Post-Write Settle (s)", self.post_write_settle_spin)
+        self.allow_recovered_packet_errors_check = QCheckBox("Continue after recovered packet errors")
+        self.allow_recovered_packet_errors_check.toggled.connect(
+            lambda value: self.controller.set_config_value("allow_recovered_packet_errors", bool(value))
+        )
         stability_form.addRow("Telemetry Retries", self.telemetry_retry_count_spin)
-        stability_form.addRow("Retry Delay (s)", self.telemetry_retry_delay_spin)
-        stability_form.addRow("Recovered Packet Errors", self.allow_recovered_packet_errors_check)
+        stability_form.addRow("Retry Delay", self.telemetry_retry_delay_spin)
         stability_form.addRow("Max Recovered / Run (0=off)", self.max_recovered_packet_errors_spin)
         stability_form.addRow("Current Warning mA (0=off)", self.max_current_warning_spin)
-        stability_card.body_layout.addLayout(stability_form)
+        self.advanced_card.body_layout.addLayout(stability_form)
+        self.advanced_card.body_layout.addWidget(self.allow_recovered_packet_errors_check)
 
-        trust_card = ExperimentCard("Trust Policy", "Default behavior blocks low-trust modeling runs. Only enable overrides deliberately, and the saved summary will record them as lower-trust data.")
-        trust_form = QFormLayout()
+        trust_label = QLabel("Trust overrides")
+        trust_label.setStyleSheet(f"color: {COLORS.text_secondary}; font-weight: 600;")
+        self.advanced_card.body_layout.addWidget(trust_label)
+        trust_hint = QLabel(
+            "Default behavior blocks low-trust runs. Enabling overrides will save the run as lower-trust data."
+        )
+        trust_hint.setProperty("role", "hint")
+        trust_hint.setWordWrap(True)
+        self.advanced_card.body_layout.addWidget(trust_hint)
         self.allow_lower_trust_runtime_tip_check = QCheckBox("Allow quick runtime-tip override / coil-as-tip")
         self.allow_lower_trust_runtime_tip_check.toggled.connect(lambda value: self.controller.set_config_value("allow_lower_trust_runtime_tip", bool(value)))
         self.allow_lower_trust_pretension_check = QCheckBox("Allow missing or lower-trust pretension source")
@@ -2996,13 +3057,12 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         )
         self.export_legacy_dat_check = QCheckBox("Write legacy-compatible .dat export")
         self.export_legacy_dat_check.toggled.connect(lambda value: self.controller.set_config_value("export_legacy_dat", bool(value)))
-        trust_form.addRow("Runtime Tip Override", self.allow_lower_trust_runtime_tip_check)
-        trust_form.addRow("Pretension Override", self.allow_lower_trust_pretension_check)
-        trust_form.addRow("No-Tracker Test", self.allow_no_tracker_test_check)
-        trust_form.addRow("Legacy Export", self.export_legacy_dat_check)
-        trust_card.body_layout.addLayout(trust_form)
+        self.advanced_card.body_layout.addWidget(self.allow_lower_trust_runtime_tip_check)
+        self.advanced_card.body_layout.addWidget(self.allow_lower_trust_pretension_check)
+        self.advanced_card.body_layout.addWidget(self.allow_no_tracker_test_check)
+        self.advanced_card.body_layout.addWidget(self.export_legacy_dat_check)
 
-        summary_card = ExperimentCard("Collection Summary", "Review the current trust state, planned sample volume, and active runtime dependencies before running.")
+        summary_card = ExperimentCard("Context")
         self.collection_summary_widget = KeyValueSummaryWidget()
         summary_card.body_layout.addWidget(self.collection_summary_widget)
         self.open_training_button = QPushButton("Open ANN Training Popout")
@@ -3011,10 +3071,8 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         summary_card.body_layout.addWidget(self.open_training_button, 0, Qt.AlignLeft)
 
         self.parameter_layout.addWidget(collection_card)
-        self.parameter_layout.addWidget(protocol_card)
-        self.parameter_layout.addWidget(stability_card)
-        self.parameter_layout.addWidget(trust_card)
         self.parameter_layout.addWidget(summary_card)
+        self.parameter_layout.addWidget(self.advanced_card)
 
     def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
         _ = state
@@ -3085,10 +3143,13 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         except Exception:
             pretension_label = "unavailable"
         planned_commands, planned_captures, duration_label = self._plan_preview(mode=mode)
+        self.collection_preview_label.setText(
+            f"→ {planned_commands} commands · {planned_captures} captures · {duration_label}  "
+            f"({self._mode_blurb(mode)})"
+        )
         self.collection_summary_widget.set_pairs(
             [
                 ("Operating Scope", operating_scope),
-                ("Mode Summary", self._mode_blurb(mode)),
                 (
                     "Runtime Tip",
                     (
@@ -3098,11 +3159,6 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
                     ),
                 ),
                 ("Pretension Source", pretension_label),
-                ("Preflight", state.preflight_report.summary),
-                ("Planned Commands", str(planned_commands)),
-                ("Planned Captures", str(planned_captures)),
-                ("Estimated Duration", duration_label),
-                ("Output Root", state.planned_output_dir or "n/a"),
             ]
         )
 
@@ -3146,14 +3202,22 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
             planned_commands = max(1, int((int(self.controller.get_config_value("sample_count_target", 120)) + samples_per_command - 1) / samples_per_command))
         planned_captures = int(planned_commands * samples_per_command + 2)
         estimated_s = float(planned_commands) * (settle_time_s + min(capture_timeout_s, 0.25)) + (2.0 * min(capture_timeout_s, 0.25))
-        return planned_commands, planned_captures, f"{estimated_s:.1f} s"
+        if estimated_s >= 3600.0:
+            duration_label = f"~{estimated_s / 3600.0:.1f} h"
+        elif estimated_s >= 60.0:
+            duration_label = f"~{estimated_s / 60.0:.1f} min"
+        else:
+            duration_label = f"~{estimated_s:.0f} s"
+        return planned_commands, planned_captures, duration_label
 
     @staticmethod
     def _mode_blurb(mode: str) -> str:
         if mode == "hysteresis_path_dependence":
             return "Revisits similar commands from different prior states for future state-aware modeling."
         if mode == "repeatability_linked":
-            return "Collects repeated trusted startup blocks for robot/system revision comparison."
+            return "Repeats trusted startup blocks for robot/system revision comparison."
+        if mode == "angular_test_mesh":
+            return "Spherical theta/phi sweep for angular accuracy characterization (Wolfe §3.2.3)."
         return "Bounded workspace exploration for first-pass forward-model training."
 
 

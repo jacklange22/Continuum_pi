@@ -9614,10 +9614,10 @@ def register_builtin_experiments(registry) -> None:
     )
     registry.register(
         name=CollectPoseCommandDatasetExperiment.name,
-        title="Motor Babble Modeling Dataset",
+        title="Random Data Collection",
         description=CollectPoseCommandDatasetExperiment.description,
         category="dataset",
-        tags=["Motor Babble", "Modeling", "Tracking", "Servo"],
+        tags=["Random Data Collection", "Modeling", "Tracking", "Servo"],
         default_config_path="config/experiment_collect_pose_command_dataset.example.yaml",
         factory=CollectPoseCommandDatasetExperiment.from_dict,
     )

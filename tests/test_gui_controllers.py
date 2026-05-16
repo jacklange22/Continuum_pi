@@ -2919,10 +2919,10 @@ def test_experiment_workspace_loads_motor_babble_page_and_summary(tmp_path: Path
     page = tab._page_for("collect_pose_command_dataset")
 
     assert state.selected_experiment == "collect_pose_command_dataset"
-    assert state.experiment_title == "Motor Babble Modeling Dataset"
-    assert page.dataset_mode_combo.count() == 3
+    assert state.experiment_title == "Random Data Collection"
+    assert page.dataset_mode_combo.count() == 4
     assert page.dataset_mode_combo.currentData() == "workspace_coverage"
-    assert page.run_button.text() == "Run Motor Babble Dataset"
+    assert page.run_button.text() == "Run Random Data Collection"
     assert page.telemetry_retry_count_spin.value() == 2
     assert page.allow_recovered_packet_errors_check.isChecked() is True
     assert page.open_training_button.text() == "Open ANN Training Popout"
