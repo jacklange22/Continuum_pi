@@ -31,15 +31,17 @@ def test_app_window_bootstraps_with_real_tabs() -> None:
         # The standalone Pretension tab was removed. Pretension is now a
         # one-click section on the Servos tab (driven by the
         # PretensionTrialController) and the underlying experiment is tuned
-        # on the Experiments tab pretension_validation page.
-        assert window.tab_widget.count() == 7
+        # on the Experiments tab pretension_validation page. After Pretension
+        # tab removal AND the 2-Segment Modeling tab addition the count is 8.
+        assert window.tab_widget.count() == 8
         assert window.tab_widget.tabText(0) == "System"
         assert window.tab_widget.tabText(1) == "Tracking"
         assert window.tab_widget.tabText(2) == "Registration"
         assert window.tab_widget.tabText(3) == "Servos"
         assert window.tab_widget.tabText(4) == "Experiment"
         assert window.tab_widget.tabText(5) == "Modeling"
-        assert window.tab_widget.tabText(6) == "Data"
+        assert window.tab_widget.tabText(6) == "2-Segment Modeling"
+        assert window.tab_widget.tabText(7) == "Data"
         # The new pretension controller is attached to the Servos tab.
         assert window.servos_tab.pretension_trial_controller is window.pretension_trial_controller
     finally:
