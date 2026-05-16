@@ -146,6 +146,18 @@ class ModelingTab(QWidget):
         self.dataset_list.setMinimumHeight(220)
         self.dataset_list.currentItemChanged.connect(self._on_dataset_selected)
         dataset_card.body_layout.addWidget(self.dataset_list)
+        # Empty-state hint — shown only when zero datasets are discovered, with a clear
+        # next action so the operator isn't left staring at a blank list.
+        self.dataset_empty_hint = QLabel(
+            "No collect_pose_command_dataset runs found. "
+            "Run one via the Experiment tab to populate this list."
+        )
+        self.dataset_empty_hint.setWordWrap(True)
+        self.dataset_empty_hint.setStyleSheet(
+            f"color: {COLORS.text_muted}; font-style: italic; padding: 6px 10px;"
+        )
+        self.dataset_empty_hint.setVisible(False)
+        dataset_card.body_layout.addWidget(self.dataset_empty_hint)
         # Positive identifier chip — surfaces dataset_mode at a glance. Especially useful
         # for spotting the new angular_test_mesh acquisitions intended as eval targets.
         self.dataset_mode_chip = QLabel("")
@@ -172,6 +184,18 @@ class ModelingTab(QWidget):
         self.artifact_list.setMinimumHeight(200)
         self.artifact_list.currentItemChanged.connect(self._on_artifact_selected)
         artifact_card.body_layout.addWidget(self.artifact_list)
+        # Mismatch chip — fires when the selected artifact was trained on a different
+        # dataset than the currently-selected one. Operator sees this before clicking
+        # Run Comparison and getting unexpected numbers.
+        self.artifact_mismatch_chip = QLabel("")
+        self.artifact_mismatch_chip.setWordWrap(True)
+        self.artifact_mismatch_chip.setStyleSheet(
+            f"color: {COLORS.warning_fg}; background: {COLORS.warning_bg}; "
+            f"border: 1px solid {COLORS.warning_fg}; border-radius: 8px; "
+            f"padding: 8px 12px; font-weight: 500;"
+        )
+        self.artifact_mismatch_chip.setVisible(False)
+        artifact_card.body_layout.addWidget(self.artifact_mismatch_chip)
         self.artifact_pairs = _PairsWidget()
         artifact_card.body_layout.addWidget(self.artifact_pairs)
         left.addWidget(artifact_card, 1)
@@ -354,8 +378,11 @@ class ModelingTab(QWidget):
         self._sync_history_list(state)
         self._sync_test_dataset_combo(state)
         self.dataset_pairs.set_pairs(state.dataset_summary_pairs)
+        self._sync_dataset_empty_hint(state)
         self._sync_dataset_mode_chip(state)
         self.artifact_pairs.set_pairs(state.artifact_summary_pairs)
+        self.artifact_mismatch_chip.setText(state.artifact_dataset_mismatch)
+        self.artifact_mismatch_chip.setVisible(bool(state.artifact_dataset_mismatch))
         self.evaluation_pairs.set_pairs(state.evaluation_summary_pairs)
         self.headline_metrics_widget.set_metrics(state.headline_metrics)
         # Copy-summary button is meaningful only when there's something to copy.
@@ -498,6 +525,9 @@ class ModelingTab(QWidget):
             pass
         # Fall back to status label echo.
         self.status_label.setText(text)
+
+    def _sync_dataset_empty_hint(self, state: ModelingViewState) -> None:
+        self.dataset_empty_hint.setVisible(len(state.datasets) == 0)
 
     def _sync_dataset_mode_chip(self, state: ModelingViewState) -> None:
         """Show the selected dataset's mode as a colored chip on the dataset card."""
@@ -734,6 +764,22 @@ class _HeadlineMetricsWidget(QWidget):
             f"background: {COLORS.surface_bg}; border: 2px solid {border_color}; "
             f"border-radius: 12px;"
         )
+        # Tooltip: full per-axis + mean/max breakdown without taking screen space.
+        tooltip_lines: list[str] = [f"{metric.label}"]
+        if metric.rmse_mm is not None:
+            tooltip_lines.append(f"Position RMSE: {metric.rmse_mm:.3f} mm")
+        if metric.per_axis_rmse_mm is not None:
+            x, y, z = metric.per_axis_rmse_mm
+            tooltip_lines.append(f"Per-axis RMSE — X {x:.3f}  Y {y:.3f}  Z {z:.3f} mm")
+        if metric.mean_position_error_mm is not None:
+            tooltip_lines.append(f"Mean position error: {metric.mean_position_error_mm:.3f} mm")
+        if metric.max_position_error_mm is not None:
+            tooltip_lines.append(f"Max position error: {metric.max_position_error_mm:.3f} mm")
+        if metric.status != "completed" or metric.rmse_mm is None:
+            tooltip_lines.append(f"Status: {metric.status}")
+            if metric.reason:
+                tooltip_lines.append(f"Reason: {metric.reason}")
+        tile.setToolTip("\n".join(tooltip_lines))
         layout = QVBoxLayout(tile)
         layout.setContentsMargins(14, 10, 14, 12)
         layout.setSpacing(2)

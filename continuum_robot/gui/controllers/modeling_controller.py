@@ -47,7 +47,8 @@ class HeadlineMetric:
 
     The tab uses ``rmse_mm`` to color-code the block (green ≤ 1mm, amber ≤ 3mm,
     red > 3mm) so the operator gets at-a-glance verdict on each model's performance
-    against the sub-millimeter surgical-accuracy target.
+    against the sub-millimeter surgical-accuracy target. ``per_axis_rmse_mm`` powers
+    the tile tooltip so hovering shows the X/Y/Z breakdown without scrolling.
     """
 
     label: str
@@ -55,6 +56,9 @@ class HeadlineMetric:
     rmse_mm: float | None
     status: str
     reason: str = ""
+    per_axis_rmse_mm: tuple[float, float, float] | None = None
+    mean_position_error_mm: float | None = None
+    max_position_error_mm: float | None = None
 
 
 @dataclass
@@ -79,6 +83,10 @@ class ModelingViewState:
     # *effective* evaluation dataset has fewer than ``MIN_EVAL_SAMPLES_WARN_THRESHOLD``
     # complete rows — small evals produce noisy RMSE numbers that won't reproduce.
     eval_sample_count_warning: str = ""
+    # Set when the selected ANN artifact's linked training dataset doesn't match the
+    # currently-selected dataset on this tab. Common operator mistake — surface it as a
+    # chip so the resulting evaluation numbers aren't read as "ANN trained on this".
+    artifact_dataset_mismatch: str = ""
     include_mike: bool = True
     include_camarillo: bool = True
     include_ann: bool = True
@@ -218,6 +226,10 @@ class ModelingController:
             self.state.last_eval_thesis_grade = self._eval_is_thesis_grade(self._last_result)
             self.state.eval_sample_count_warning = self._eval_sample_count_warning(
                 selected_dataset_summary, selected_test_dataset_path=self.state.selected_test_dataset_path
+            )
+            self.state.artifact_dataset_mismatch = self._artifact_dataset_mismatch_warning(
+                dataset_summary=selected_dataset_summary,
+                artifact_details=selected_artifact_details,
             )
             self.state.include_mike = bool(self.config.include_mike)
             self.state.include_camarillo = bool(self.config.include_camarillo)
@@ -507,6 +519,12 @@ class ModelingController:
         out: list[HeadlineMetric] = []
         for evaluation in result.model_evaluations.values():
             metrics = evaluation.metrics
+            axis_rmse = list(metrics.axis_position_rmse_mm or [])
+            per_axis = (
+                (float(axis_rmse[0]), float(axis_rmse[1]), float(axis_rmse[2]))
+                if len(axis_rmse) >= 3
+                else None
+            )
             out.append(
                 HeadlineMetric(
                     label=metrics.label,
@@ -518,6 +536,17 @@ class ModelingController:
                     ),
                     status=str(metrics.status),
                     reason=str(metrics.reason or ""),
+                    per_axis_rmse_mm=per_axis,
+                    mean_position_error_mm=(
+                        float(metrics.mean_position_error_mm)
+                        if metrics.mean_position_error_mm is not None
+                        else None
+                    ),
+                    max_position_error_mm=(
+                        float(metrics.max_position_error_mm)
+                        if metrics.max_position_error_mm is not None
+                        else None
+                    ),
                 )
             )
         return out
@@ -598,6 +627,43 @@ class ModelingController:
                 "collect more before citing the number."
             )
         return ""
+
+    @staticmethod
+    def _artifact_dataset_mismatch_warning(
+        *,
+        dataset_summary: ModelingDatasetSummary | None,
+        artifact_details: ArtifactDetails | None,
+    ) -> str:
+        """Detect when the selected ANN artifact was trained on a different dataset.
+
+        Operators routinely pick an artifact intending "the model trained on this run"
+        but actually point at one trained elsewhere. The resulting numbers then mean
+        something different. Surface this as a chip rather than letting it propagate
+        into a published RMSE.
+        """
+        if dataset_summary is None or artifact_details is None:
+            return ""
+        metadata = dict(artifact_details.metadata or {})
+        artifact_dataset = dict(metadata.get("dataset", {}) or {})
+        linked_run_name = str(artifact_dataset.get("run_name", "") or "").strip()
+        linked_path = str(artifact_dataset.get("path", "") or "").strip()
+        if not linked_run_name and not linked_path:
+            return ""
+        current_run_name = str(dataset_summary.run_name or "").strip()
+        current_path = str(dataset_summary.path)
+        # Match by run_name OR by resolved path — either is sufficient.
+        try:
+            if linked_path and Path(linked_path).resolve() == Path(current_path).resolve():
+                return ""
+        except Exception:
+            pass
+        if linked_run_name and linked_run_name == current_run_name:
+            return ""
+        return (
+            f"⚠ Selected ANN artifact was trained on '{linked_run_name or 'a different dataset'}'. "
+            f"You're evaluating against '{current_run_name}' — that's a cross-acquisition test "
+            "(legitimate, but the numbers are NOT 'how well this model fits its own training data')."
+        )
 
     @staticmethod
     def _eval_is_thesis_grade(result: ModelingEvaluationResult | None) -> bool:
