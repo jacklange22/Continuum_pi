@@ -62,7 +62,32 @@ max_runtime_s: 120.0
 include_tracker_displacement: true
 tracker_tool_id: "0A"
 move_to_reference: true
-pretension_start_mode: current_position  # current_position | manual_startup_artifact | release_200_from_current | full_release_4095
+# full_release_4095 is the most repeatable start condition because every run
+# begins from the same fully-slack reference tick. The safe-bounds preflight
+# clips the actual commanded target to each servo's safe_max_tick (typically
+# ~3200), so the algorithm never commands at the raw-tick wrap boundary.
+pretension_start_mode: full_release_4095  # current_position | manual_startup_artifact | release_200_from_current | full_release_4095
+
+# --- Phase 2 tip-centering variant + Jacobian probe -----------------------
+# Default is paired_then_tip; current_only is a useful baseline that skips
+# tip feedback entirely; jacobian_learned_tip is experimental and falls back
+# to paired_then_tip when the per-pair tip response is below
+# jacobian_min_observable_tip_delta_mm.
+tip_centering_variant: paired_then_tip  # current_only | paired_then_tip | jacobian_learned_tip
+jacobian_probe_step_ticks: 30
+jacobian_min_observable_tip_delta_mm: 0.20
+jacobian_step_gain: 0.8
+jacobian_max_pair_step_ticks: 25
+
+# --- Phase 2 manual-baseline comparison -----------------------------------
+# When non-zero, the experiment captures K manual baseline records BEFORE the
+# algorithm runs (operator hand-tensions between captures). If a sidecar JSON
+# already exists (typically written from the Servos tab "Record Manual
+# Baseline" button), the experiment uses that file via
+# manual_baseline_record_path and skips the inline capture phase.
+manual_baseline_capture_count: 0
+manual_baseline_pause_s: 15.0
+manual_baseline_record_path: ""  # path relative to project root; empty = unused
 
 untensioned_reference_tick:
 step_ticks:
