@@ -154,46 +154,6 @@ class ServosTab(QWidget):
         manual_buttons_widget.setLayout(manual_buttons)
         manual_layout.addRow(manual_buttons_widget)
 
-        self.pretension_servo_spin = QSpinBox()
-        self.pretension_servo_spin.setRange(1, 252)
-        self.pretension_servo_spin.valueChanged.connect(self._sync_servo_selection)
-        self.pretension_threshold_spin = QSpinBox()
-        self.pretension_threshold_spin.setRange(1, 5000)
-        self.pretension_threshold_spin.setValue(int(self.controller.state.default_pretension_threshold_ma))
-        self.start_pretension_button = QPushButton("Start")
-        self.start_pretension_button.setProperty("role", "primary")
-        self.cancel_pretension_button = QPushButton("Cancel")
-        self.cancel_pretension_button.setProperty("role", "danger")
-        self.accept_pretension_button = QPushButton("Accept")
-        self.retry_pretension_button = QPushButton("Retry")
-        self.start_pretension_button.clicked.connect(self._start_pretension)
-        self.cancel_pretension_button.clicked.connect(
-            lambda: self._safe_call(self.controller.cancel_pretension)
-        )
-        self.accept_pretension_button.clicked.connect(self._accept_pretension)
-        self.retry_pretension_button.clicked.connect(self._start_pretension)
-        self.pretension_hint = QLabel(
-            "Pretension uses present current as a practical threshold signal, not true tendon tension."
-        )
-        self.pretension_hint.setProperty("role", "hint")
-        self.pretension_hint.setWordWrap(True)
-
-        self.pretension_box = QGroupBox("Algorithmic Pretension (single servo)")
-        pretension_layout = QFormLayout(self.pretension_box)
-        pretension_layout.addRow("Servo", self.pretension_servo_spin)
-        pretension_layout.addRow("Threshold (mA)", self.pretension_threshold_spin)
-        pretension_buttons = QHBoxLayout()
-        pretension_buttons.setSpacing(10)
-        pretension_buttons.addWidget(self.start_pretension_button)
-        pretension_buttons.addWidget(self.cancel_pretension_button)
-        pretension_buttons.addWidget(self.retry_pretension_button)
-        pretension_buttons.addWidget(self.accept_pretension_button)
-        pretension_buttons.addStretch(1)
-        pretension_buttons_widget = QWidget()
-        pretension_buttons_widget.setLayout(pretension_buttons)
-        pretension_layout.addRow(pretension_buttons_widget)
-        pretension_layout.addRow(self.pretension_hint)
-
         # --- Segment Pretension Trial (4-servo, one-click) ---------------
         # Drives the pretension_validation experiment with the saved config so
         # the operator can pretension the whole active segment from one place.
@@ -247,7 +207,6 @@ class ServosTab(QWidget):
         content_layout.addWidget(telemetry_box)
         content_layout.addWidget(jog_box)
         content_layout.addWidget(self.manual_pretension_box)
-        content_layout.addWidget(self.pretension_box)
         content_layout.addWidget(self.segment_pretension_box)
         content_layout.addStretch(1)
 
@@ -328,20 +287,6 @@ class ServosTab(QWidget):
             manual_mode_available and state.manual_pretension_can_clear
         )
 
-        self.pretension_box.setVisible(True)
-        if selected_servo_id is not None and not self.pretension_servo_spin.hasFocus():
-            self.pretension_servo_spin.blockSignals(True)
-            self.pretension_servo_spin.setValue(int(selected_servo_id))
-            self.pretension_servo_spin.blockSignals(False)
-        max_servo_id = max([252, *state.servo_ids]) if state.servo_ids else 252
-        self.pretension_servo_spin.setMaximum(max_servo_id)
-        if not self.pretension_threshold_spin.hasFocus() and self.pretension_threshold_spin.value() <= 1:
-            self.pretension_threshold_spin.setValue(max(1, state.default_pretension_threshold_ma))
-        self.start_pretension_button.setEnabled(motion_ready and not state.pretension_running)
-        self.cancel_pretension_button.setEnabled(state.pretension_running)
-        self.retry_pretension_button.setEnabled(motion_ready and not state.pretension_running)
-        self.accept_pretension_button.setEnabled(state.pretension_result_can_accept)
-
     @staticmethod
     def _format_status(state: ServosViewState) -> str:
         if not state.connected:
@@ -397,16 +342,6 @@ class ServosTab(QWidget):
             return
         action = self.controller.fine_jog if mode == "fine" else self.controller.coarse_jog
         self._safe_call(action, int(servo_id), int(direction))
-
-    def _start_pretension(self) -> None:
-        self._safe_call(
-            self.controller.start_pretension,
-            int(self.pretension_servo_spin.value()),
-            int(self.pretension_threshold_spin.value()),
-        )
-
-    def _accept_pretension(self) -> None:
-        self._safe_call(self.controller.accept_pretension_result, int(self.pretension_servo_spin.value()))
 
     def _capture_manual_pretension(self) -> None:
         self._safe_call(
