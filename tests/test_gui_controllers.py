@@ -1993,66 +1993,6 @@ def test_servos_controller_supports_fine_and_coarse_jog_steps(tmp_path: Path, mo
     assert seen == [(1, "tighten_fine"), (1, "loosen_coarse")]
 
 
-def test_servos_controller_saves_startup_calibration_and_accepts_pretension(tmp_path: Path) -> None:
-    settings = _settings()
-    settings.runtime.robot_config = "robot_1servo.yaml"
-    settings.robot.mode = "1-servo"
-    settings.robot.servo_ids = [1]
-    settings.robot.tendon_to_servo = [1]
-    settings.robot.tightening_rotation_by_servo = {1: "cw"}
-    service = ServoService(
-        dxl_bus=MockDxlBus([1]),
-        mapper=TendonDisplacementMapper(spool_diameter_cm=1.2),
-        safety_guard=SafetyGuard(
-            min_offset_ticks=-600,
-            max_offset_ticks=600,
-            max_current_ma=850,
-            default_pretension_current_threshold_ma=220,
-            fine_jog_step_ticks=5,
-            coarse_jog_step_ticks=25,
-            software_position_margin_ticks=64,
-            telemetry_stale_after_s=0.25,
-            pretension_step_ticks=2,
-            pretension_timeout_s=2.0,
-            pretension_settle_time_s=0.0,
-            max_temperature_c=70,
-            time_fn=time.monotonic,
-        ),
-        neutral_calibration=NeutralCalibrationService(
-            path=tmp_path / "neutral_single.json",
-            context=ServoCalibrationContext(
-                robot_mode="1-servo",
-                servo_ids=[1],
-                tendon_to_servo=[1],
-                position_min_offset_ticks=-600,
-                position_max_offset_ticks=600,
-                default_pretension_current_threshold_ma=220,
-                tightening_rotation_by_servo={1: "cw"},
-            ),
-        ),
-        pretension_validation=PretensionValidationService(),
-    )
-    service.connect("/dev/mock-openrb", 115200)
-    service.dxl_bus._state[1].torque_enabled = True
-    service.dxl_bus._state[1].present_position = 4031
-    controller = ServosController(service, settings)
-
-    controller.save_startup_calibration(
-        servo_id=1,
-        min_offset_ticks=-100,
-        max_offset_ticks=120,
-        threshold_ma=230,
-    )
-    controller.start_pretension(1, 120)
-    controller._pretension_thread.join(timeout=1.0)
-    controller.refresh()
-    controller.accept_pretension_result(1)
-
-    assert controller.state.calibration_rows[0]["threshold"] == "120"
-    assert controller.state.pretension_result_can_accept is False
-    assert "Accepted pretension result" in controller.state.status_message
-
-
 def test_servos_controller_and_tab_support_manual_pretension_capture_and_accept(tmp_path: Path) -> None:
     _app()
     service = _servo_service(tmp_path)

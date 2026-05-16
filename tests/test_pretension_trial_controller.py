@@ -280,3 +280,125 @@ def test_run_pretension_trial_propagates_runner_failure(tmp_path: Path) -> None:
     state = ctrl.run_pretension_trial()
     assert state.last_run_accepted is False
     assert state.last_error is not None
+
+
+# --- Tightening-sign verification tests -----------------------------------
+
+
+class _SignTestServoService:
+    """Stub that simulates servo current responding to commanded-tick direction.
+
+    Each servo has a `sign` parameter:
+    - +1 (algorithm-consistent): decreasing tick raises current
+    - -1 (inverted): increasing tick raises current
+    - 0 (low response): current never changes
+    """
+
+    def __init__(self, *, sign_by_servo: dict[int, int], baseline_current_ma: float = 25.0, swing_ma: float = 6.0) -> None:
+        self._sign = dict(sign_by_servo)
+        self._baseline_current = float(baseline_current_ma)
+        self._swing = float(swing_ma)
+        self._positions: dict[int, int] = {int(sid): 2500 for sid in sign_by_servo}
+        self._current_offsets: dict[int, float] = {int(sid): 0.0 for sid in sign_by_servo}
+        self.is_connected = True
+        self._sleep_fn = lambda _s: None
+        self._goal_writes: list[dict[int, int]] = []
+
+    def read_live_telemetry(self, servo_ids: list[int]):
+        from dataclasses import dataclass
+
+        @dataclass
+        class _Entry:
+            present_position: int | None
+            present_current_ma: float | None
+
+        out = {}
+        for sid in servo_ids:
+            sid = int(sid)
+            out[sid] = _Entry(
+                present_position=self._positions.get(sid, 2500),
+                present_current_ma=self._baseline_current + self._current_offsets.get(sid, 0.0),
+            )
+        return out
+
+    def _write_goal_positions(self, positions_by_id):
+        self._goal_writes.append(dict(positions_by_id))
+        for sid, target in positions_by_id.items():
+            sid = int(sid)
+            prev = self._positions.get(sid, 2500)
+            delta = int(target) - int(prev)
+            self._positions[sid] = int(target)
+            # Sign convention: +1 sign means "decreasing tick raises current".
+            # delta < 0 (tighten) under sign=+1 => offset = +swing.
+            # delta > 0 (release) under sign=+1 => offset = -swing.
+            sign = self._sign.get(sid, 0)
+            if delta == 0:
+                self._current_offsets[sid] = 0.0
+            elif sign > 0:
+                self._current_offsets[sid] = -self._swing if delta > 0 else self._swing
+            elif sign < 0:
+                self._current_offsets[sid] = self._swing if delta > 0 else -self._swing
+            else:
+                self._current_offsets[sid] = 0.0
+
+
+def _build_sign_test_controller(tmp_path: Path, *, sign_by_servo: dict[int, int]):
+    settings = _settings()
+    servos = _SignTestServoService(sign_by_servo=sign_by_servo)
+    runner = _StubExperimentRunner(output_dir=tmp_path / "out")
+    return PretensionTrialController(
+        servo_service=servos,
+        tracking_service=None,
+        experiment_runner=runner,
+        settings=settings,
+        project_root=tmp_path,
+    )
+
+
+def test_verify_tightening_signs_all_consistent(tmp_path: Path) -> None:
+    ctrl = _build_sign_test_controller(tmp_path, sign_by_servo={1: 1, 2: 1, 3: 1, 4: 1})
+    report = ctrl.verify_tightening_signs(probe_ticks=5, settle_s=0.0)
+    assert report["all_consistent"] is True
+    assert report["any_inverted"] is False
+    assert "OK" in report["overall_verdict"]
+    assert all(row["verdict"] == "consistent" for row in report["per_servo"])
+
+
+def test_verify_tightening_signs_detects_inverted_servo(tmp_path: Path) -> None:
+    # Servo 3 is wired backwards: decreasing tick should release, increasing should tighten.
+    ctrl = _build_sign_test_controller(tmp_path, sign_by_servo={1: 1, 2: 1, 3: -1, 4: 1})
+    report = ctrl.verify_tightening_signs(probe_ticks=5, settle_s=0.0)
+    assert report["all_consistent"] is False
+    assert report["any_inverted"] is True
+    assert "STOP" in report["overall_verdict"]
+    verdicts = {row["servo_id"]: row["verdict"] for row in report["per_servo"]}
+    assert verdicts[1] == "consistent"
+    assert verdicts[2] == "consistent"
+    assert verdicts[3] == "inverted"
+    assert verdicts[4] == "consistent"
+
+
+def test_verify_tightening_signs_flags_low_response(tmp_path: Path) -> None:
+    # All servos report flat current (slack spine).
+    ctrl = _build_sign_test_controller(tmp_path, sign_by_servo={1: 0, 2: 0, 3: 0, 4: 0})
+    report = ctrl.verify_tightening_signs(probe_ticks=5, settle_s=0.0)
+    assert report["all_consistent"] is False
+    assert report["any_inverted"] is False
+    assert "REVIEW" in report["overall_verdict"]
+    assert all(row["verdict"] == "low_response" for row in report["per_servo"])
+
+
+def test_verify_tightening_signs_errors_when_disconnected(tmp_path: Path) -> None:
+    ctrl = _build_sign_test_controller(tmp_path, sign_by_servo={1: 1, 2: 1, 3: 1, 4: 1})
+    ctrl.servo_service.is_connected = False
+    with pytest.raises(RuntimeError, match="not connected"):
+        ctrl.verify_tightening_signs(probe_ticks=5)
+
+
+def test_verify_tightening_signs_restores_start_tick(tmp_path: Path) -> None:
+    """After the probe, every servo must be back at its starting tick."""
+    ctrl = _build_sign_test_controller(tmp_path, sign_by_servo={1: 1, 2: 1, 3: 1, 4: 1})
+    start_positions = {sid: ctrl.servo_service._positions[sid] for sid in (1, 2, 3, 4)}
+    report = ctrl.verify_tightening_signs(probe_ticks=5, settle_s=0.0)
+    for sid, start in start_positions.items():
+        assert ctrl.servo_service._positions[sid] == start, f"servo {sid} not restored to {start}"

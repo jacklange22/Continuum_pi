@@ -4,12 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-import threading
 
 from continuum_robot.config.settings import Settings
 from continuum_robot.servos.segment_readiness import evaluate_selected_segment_readiness
 from continuum_robot.servos.servo_service import (
-    PretensionRoutineResult,
     ServoBusBusyError,
     ServoMotionAssessment,
 )
@@ -79,9 +77,11 @@ class ServosViewState:
     selected_servo_motion_ready: bool = False
     blocking_reasons: list[str] = field(default_factory=list)
     selected_servo_external_power_ready: bool | None = None
-    pretension_running: bool = False
-    pretension_result_can_accept: bool = False
-    pretension_message: str = "Pretension not checked."
+    # Pretension lives in the Segment Pretension Trial section (driven by
+    # PretensionTrialController). The single-servo pretension worker is no
+    # longer driven from this controller; the underlying ServoService method
+    # is kept for diagnostic / test use only.
+    pretension_message: str = "Manual pretension idle."
     pretension_source_summary: str = "No accepted pretension source."
     pretension_source_type: str = "none"
     pretension_source_updated_at_utc: str | None = None
@@ -106,9 +106,6 @@ class ServosController:
     def __init__(self, servo_service, settings: Settings) -> None:
         self.servo_service = servo_service
         self.settings = settings
-        self._pretension_thread: threading.Thread | None = None
-        self._pretension_stop: threading.Event | None = None
-        self._last_pretension_result: PretensionRoutineResult | None = None
         self._motion_state_by_servo: dict[int, dict[str, object]] = {}
         self.latest_runtime_snapshot = None
         self._initial_discovery_done = False
@@ -483,76 +480,12 @@ class ServosController:
         finally:
             self.refresh()
 
-    def start_pretension(self, servo_id: int, threshold_ma: int | None = None) -> None:
-        if self._pretension_thread and self._pretension_thread.is_alive():
-            raise RuntimeError("Pretension is already running.")
-        self._pretension_stop = threading.Event()
-        self._last_pretension_result = None
-        self.state.pretension_running = True
-        self.state.pretension_result_can_accept = False
-        self.state.pretension_message = f"Pretension running for servo {servo_id}."
-        self.state.status_message = self.state.pretension_message
-        self.state.last_error = None
-
-        def _worker() -> None:
-            try:
-                result = self.servo_service.run_pretension_routine(
-                    servo_id=int(servo_id),
-                    threshold_ma=threshold_ma,
-                    stop_requested=(self._pretension_stop.is_set if self._pretension_stop else None),
-                )
-                self._last_pretension_result = result
-                self.state.pretension_message = result.message
-                self.state.status_message = result.message
-                self.state.last_error = None
-                self.state.pretension_result_can_accept = bool(result.success)
-            except Exception as exc:
-                self.state.last_error = str(exc)
-                self.state.pretension_message = f"Pretension failed: {exc}"
-                self.state.status_message = self.state.pretension_message
-            finally:
-                self.state.pretension_running = False
-
-        self._pretension_thread = threading.Thread(target=_worker, name="servo-pretension", daemon=True)
-        self._pretension_thread.start()
-
-    def cancel_pretension(self) -> None:
-        if self._pretension_stop is not None:
-            self._pretension_stop.set()
-            self.state.status_message = "Pretension cancel requested."
-            self.state.pretension_message = self.state.status_message
-
-    def accept_pretension_result(self, servo_id: int) -> None:
-        try:
-            self.servo_service.accept_pretension_result(int(servo_id))
-            self.state.pretension_result_can_accept = False
-            self.state.status_message = f"Accepted pretension result for servo {servo_id}."
-            self.state.pretension_message = self.state.status_message
-            self.state.last_error = None
-        except Exception as exc:
-            self.state.last_error = str(exc)
-            self.state.status_message = f"Accept pretension failed: {exc}"
-            self.state.pretension_message = self.state.status_message
-            raise
-        finally:
-            self.refresh()
-
-    def validate_pretension(self) -> None:
-        try:
-            result = self.servo_service.validate_pretension(
-                servo_ids=self.state.servo_ids,
-                tolerance_ma=self.settings.safety.pretension_current_balance_tolerance_ma,
-            )
-            self.state.pretension_message = result.message
-            self.state.status_message = result.message
-            self.state.last_error = None
-        except Exception as exc:
-            self.state.last_error = str(exc)
-            self.state.pretension_message = f"Pretension validation failed: {exc}"
-            self.state.status_message = self.state.pretension_message
-            raise
-        finally:
-            self.refresh()
+    # The single-servo "Path A" pretension routine (run_pretension_routine on
+    # ServoService) is no longer driven from the Servos tab. Pretension lives
+    # in one place: the staged 4-servo experiment, launched from the Servos
+    # tab "Segment Pretension Trial" section (PretensionTrialController) or
+    # tuned via the Experiments tab pretension_validation page. The underlying
+    # ServoService method is kept for diagnostic / test use.
 
     def capture_manual_pretension(self, note: str = "") -> None:
         try:
@@ -603,9 +536,10 @@ class ServosController:
             self.refresh()
 
     def shutdown(self) -> None:
-        self.cancel_pretension()
-        if self._pretension_thread is not None:
-            self._pretension_thread.join(timeout=1.0)
+        """Servos controller shutdown is a no-op now that the single-servo
+        pretension worker has been removed from this controller. The Segment
+        Pretension Trial path runs synchronously inside the ExperimentRunner."""
+        return None
 
     def _expected_servo_id(self) -> int | None:
         if self.state.selected_servo_id is not None:

@@ -216,6 +216,224 @@ class PretensionTrialController:
         )
         return self.state
 
+    def verify_tightening_signs(
+        self,
+        *,
+        probe_ticks: int = 5,
+        settle_s: float = 0.4,
+    ) -> dict[str, Any]:
+        """Jog each active-segment servo +probe_ticks, then -probe_ticks, while
+        snapshotting position + current at every step. The operator visually
+        confirms that decreasing-tick == tighten == higher current.
+
+        The algorithm assumes ``tightening = decreasing tick`` for every active
+        servo. This is hardcoded in the pretension stepping loop and in the
+        ``tightening_rotation_by_servo`` map in the robot config. If any servo
+        is physically wired or wound in reverse, the algorithm will RELEASE
+        that tendon while tightening the other three. This sign-test produces
+        the per-servo evidence the operator needs before the first trial run.
+
+        Returns a structured report with the per-servo delta-current
+        observations and a verdict for each servo:
+
+        - ``"consistent"``: decreasing tick raised current (and increasing
+          tick lowered it) by ``min_current_swing_ma`` or more in BOTH
+          directions. Tightening sign matches the algorithm's assumption.
+        - ``"inverted"``: the sign was the opposite. Tightening would
+          actually RELEASE that servo. STOP and fix the wiring/spool before
+          running pretension.
+        - ``"low_response"``: motion produced less than
+          ``min_current_swing_ma`` of swing in either direction. The probe
+          was too small or the spine was slack; rerun with a larger
+          ``probe_ticks`` once the spine is taut enough to register force.
+        - ``"missing_telemetry"``: a telemetry read failed during the probe.
+
+        Returns:
+            ``{"servo_id": int, "start_tick": int, "current_at_start_ma": float,
+               "after_decrease_tick_current_ma": float,
+               "after_increase_tick_current_ma": float,
+               "delta_decrease_ma": float, "delta_increase_ma": float,
+               "verdict": str, "note": str}`` per servo, plus an
+            ``overall_verdict`` summary and ``all_consistent: bool``.
+
+        Does not touch the production registration session or the manual-
+        baseline file. Does not torque-off afterwards. Each servo returns to
+        its starting tick at the end of its individual probe.
+        """
+        servo_ids = self._active_segment_servo_ids()
+        if not servo_ids:
+            raise RuntimeError(
+                "Cannot run sign-test: no active-segment servo IDs configured."
+            )
+        if not getattr(self.servo_service, "is_connected", False):
+            raise RuntimeError(
+                "Cannot run sign-test: the servo bus is not connected."
+            )
+        probe = max(1, int(probe_ticks))
+        settle = max(0.05, float(settle_s))
+        min_current_swing_ma = 2.0  # Below the typical noise floor + safety margin.
+
+        per_servo: list[dict[str, Any]] = []
+        all_consistent = True
+        any_inverted = False
+        for servo_id in servo_ids:
+            sid = int(servo_id)
+            # Read starting telemetry.
+            telemetry = self.servo_service.read_live_telemetry([sid])
+            entry = telemetry.get(sid)
+            if entry is None or entry.present_position is None or entry.present_current_ma is None:
+                per_servo.append(
+                    {
+                        "servo_id": sid,
+                        "start_tick": None,
+                        "current_at_start_ma": None,
+                        "after_decrease_tick_current_ma": None,
+                        "after_increase_tick_current_ma": None,
+                        "delta_decrease_ma": None,
+                        "delta_increase_ma": None,
+                        "verdict": "missing_telemetry",
+                        "note": "Could not read present_position / present_current_ma before probe.",
+                    }
+                )
+                all_consistent = False
+                continue
+            start_tick = int(entry.present_position)
+            start_current = float(entry.present_current_ma)
+            # Step 1: decrease tick by probe_ticks. Should TIGHTEN.
+            target_decrease = start_tick - probe
+            try:
+                self.servo_service._write_goal_positions({sid: int(target_decrease)})
+            except Exception as exc:
+                per_servo.append(
+                    {
+                        "servo_id": sid,
+                        "start_tick": start_tick,
+                        "current_at_start_ma": start_current,
+                        "after_decrease_tick_current_ma": None,
+                        "after_increase_tick_current_ma": None,
+                        "delta_decrease_ma": None,
+                        "delta_increase_ma": None,
+                        "verdict": "missing_telemetry",
+                        "note": f"Goal-write to tick {target_decrease} failed: {exc}",
+                    }
+                )
+                all_consistent = False
+                continue
+            _sleep = getattr(self.servo_service, "_sleep_fn", None) or __import__("time").sleep
+            _sleep(settle)
+            after_decrease_telemetry = self.servo_service.read_live_telemetry([sid])
+            after_decrease_entry = after_decrease_telemetry.get(sid)
+            after_decrease_current = (
+                float(after_decrease_entry.present_current_ma)
+                if after_decrease_entry is not None and after_decrease_entry.present_current_ma is not None
+                else None
+            )
+            # Step 2: return to start, then increase tick by probe_ticks. Should RELEASE.
+            self.servo_service._write_goal_positions({sid: int(start_tick)})
+            _sleep(settle)
+            target_increase = start_tick + probe
+            self.servo_service._write_goal_positions({sid: int(target_increase)})
+            _sleep(settle)
+            after_increase_telemetry = self.servo_service.read_live_telemetry([sid])
+            after_increase_entry = after_increase_telemetry.get(sid)
+            after_increase_current = (
+                float(after_increase_entry.present_current_ma)
+                if after_increase_entry is not None and after_increase_entry.present_current_ma is not None
+                else None
+            )
+            # Always restore to start tick.
+            self.servo_service._write_goal_positions({sid: int(start_tick)})
+            _sleep(settle)
+
+            delta_dec = (
+                after_decrease_current - start_current
+                if after_decrease_current is not None
+                else None
+            )
+            delta_inc = (
+                after_increase_current - start_current
+                if after_increase_current is not None
+                else None
+            )
+            verdict = "consistent"
+            note = ""
+            if delta_dec is None or delta_inc is None:
+                verdict = "missing_telemetry"
+                note = "Could not read current after one of the probe steps."
+                all_consistent = False
+            elif (
+                abs(delta_dec) < min_current_swing_ma
+                and abs(delta_inc) < min_current_swing_ma
+            ):
+                verdict = "low_response"
+                note = (
+                    f"Both directions produced |delta_current| < {min_current_swing_ma} mA. "
+                    "Probe too small or spine too slack to register tension; increase "
+                    "probe_ticks once the spine has some preload."
+                )
+                all_consistent = False
+            elif delta_dec > 0 and delta_inc <= 0:
+                # Algorithm-consistent: decreasing tick raised current.
+                verdict = "consistent"
+                note = "Decreasing tick raised current (tighten) as expected."
+            elif delta_dec < 0 and delta_inc >= 0:
+                verdict = "inverted"
+                note = (
+                    "Decreasing tick LOWERED current. This servo is wired or wound "
+                    "OPPOSITE the algorithm's assumption. The pretension routine "
+                    "would RELEASE this tendon while tightening the others. "
+                    "STOP and fix the wiring or spool direction before running pretension."
+                )
+                all_consistent = False
+                any_inverted = True
+            else:
+                # Mixed / ambiguous (e.g. both went up, or both went down).
+                verdict = "low_response"
+                note = (
+                    f"Ambiguous current swing: delta_decrease={delta_dec:+.2f} mA, "
+                    f"delta_increase={delta_inc:+.2f} mA. Expected opposite signs."
+                )
+                all_consistent = False
+            per_servo.append(
+                {
+                    "servo_id": sid,
+                    "start_tick": start_tick,
+                    "current_at_start_ma": start_current,
+                    "after_decrease_tick_current_ma": after_decrease_current,
+                    "after_increase_tick_current_ma": after_increase_current,
+                    "delta_decrease_ma": delta_dec,
+                    "delta_increase_ma": delta_inc,
+                    "verdict": verdict,
+                    "note": note,
+                }
+            )
+
+        overall_verdict = (
+            "STOP — at least one servo is wired or wound opposite the algorithm. "
+            "Fix the physical setup before running pretension."
+            if any_inverted
+            else (
+                "OK — every active servo's tightening sign matches the algorithm."
+                if all_consistent
+                else "REVIEW — one or more servos returned low-response or missing telemetry."
+            )
+        )
+        report = {
+            "schema_version": "1.0",
+            "generated_at_utc": _utc_now_iso(),
+            "probe_ticks": int(probe),
+            "settle_s": float(settle),
+            "min_current_swing_ma": float(min_current_swing_ma),
+            "servo_ids": list(servo_ids),
+            "per_servo": per_servo,
+            "all_consistent": bool(all_consistent),
+            "any_inverted": bool(any_inverted),
+            "overall_verdict": overall_verdict,
+        }
+        self.state.last_error = None
+        self.state.last_status = f"Tightening-sign verification: {overall_verdict}"
+        return report
+
     def clear_manual_baselines(self) -> PretensionTrialState:
         """Empty the manual-baseline records file. No-op if it does not exist."""
         path = self._resolve_manual_baseline_path()

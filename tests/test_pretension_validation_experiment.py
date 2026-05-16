@@ -921,3 +921,132 @@ def test_comparison_markdown_handles_no_manual_records(tmp_path: Path) -> None:
     text = md_path.read_text(encoding="utf-8")
     assert "No manual baselines recorded" in text
     assert "Tip radial dispersion across runs" in text
+
+
+# --- End-to-end smoke tests: variant dispatch + comparison report writes -----
+
+
+def test_smoke_current_only_variant_writes_run_folder_and_comparison_report(tmp_path: Path) -> None:
+    """End-to-end on mock: current_only variant runs without tracker, writes
+    metadata + summary + comparison markdown + comparison plot."""
+    service = _servo_service(tmp_path)
+    runner = _runner(tmp_path, service, tracking_service=None)
+    config = _advanced_config()
+    config.update(
+        {
+            "mode": "single_segment_staged",
+            "staged_strategy": "conservative_startup",
+            "tip_centering_variant": "current_only",
+            "include_tracker_displacement": False,
+            "allow_current_only_when_tracker_missing": True,
+            "run_trust_mode": "current_only",
+            "enable_tip_centering": False,
+            "repeat_runs": 1,
+        }
+    )
+    result = runner.run_experiment("pretension_validation", config=config)
+
+    # Run folder + standard artifacts.
+    out = result.paths.output_dir
+    assert (out / "metadata.json").exists()
+    assert (out / "summary.json").exists()
+    assert (out / "metrics.csv").exists()
+    assert (out / "pretension_summary.txt").exists()
+
+    # NEW Phase-2 comparison artifacts.
+    assert (out / "pretension_algorithm_vs_manual.md").exists()
+    md_text = (out / "pretension_algorithm_vs_manual.md").read_text(encoding="utf-8")
+    assert "Algorithm vs Manual Comparison" in md_text
+    # No baselines were captured so the no-manual branch should fire.
+    assert "No manual baselines recorded" in md_text
+
+    # Comparison report sits in metrics.
+    metrics = result.summary.experiment_metrics
+    assert "pretension_comparison_report" in metrics
+    assert metrics["tip_centering_variant"] == "current_only"
+    assert metrics["manual_baseline_record_count"] == 0
+
+
+def test_smoke_paired_then_tip_variant_writes_comparison_with_tracker(tmp_path: Path) -> None:
+    """End-to-end on mock with a static tracker: paired_then_tip variant runs
+    through the take-up + conservative-startup phases without partial_pair
+    failure under the new tolerance window."""
+    service = _servo_service(tmp_path)
+    runner = _runner(tmp_path, service, tracking_service=_StaticCoilTipTrackingService())
+    config = _advanced_config()
+    config.update(
+        {
+            "mode": "single_segment_staged",
+            "staged_strategy": "conservative_startup",
+            "tip_centering_variant": "paired_then_tip",
+            "include_tracker_displacement": True,
+            "enable_tip_centering": True,
+            "repeat_runs": 1,
+            "accept_max_load_balance_error_ma": 999.0,  # loose for mock
+            "accept_max_pair_balance_error_ma": 999.0,
+            "accept_max_final_tip_xy_offset_mm": 999.0,
+            "load_balance_tolerance_ma": 999.0,
+            "pair_balance_tolerance_ma": 999.0,
+            "tip_center_tolerance_mm": 999.0,
+            "tip_divergence_stop_mm": 999.0,
+        }
+    )
+    result = runner.run_experiment("pretension_validation", config=config)
+
+    out = result.paths.output_dir
+    assert (out / "metadata.json").exists()
+    assert (out / "summary.json").exists()
+    assert (out / "pretension_algorithm_vs_manual.md").exists()
+    metrics = result.summary.experiment_metrics
+    assert metrics["tip_centering_variant"] == "paired_then_tip"
+    # Crucial regression check: the strict-equality bug fix means moves should
+    # not return partial_pair_failure on a static-pose mock.
+    run_row = metrics["run_rows"][0]
+    assert run_row["stop_reason"] != "partial_pair_failure"
+
+
+def test_smoke_shipped_safety_yaml_carries_phase1_retune() -> None:
+    """The shipped config/safety.yaml file carries the Phase 1 retune
+    (travel budget 1600, operator-scale current thresholds, release-to-3500
+    reference, full_release_4095 default start mode).
+
+    This test reads the YAML file directly, NOT the loaded Settings, so it
+    is not affected by a machine-local system.local.yaml safety_overrides
+    block (the operator may legitimately override these for bench-specific
+    tuning; the test asserts the SHIPPED defaults are correct)."""
+    import yaml
+    payload = yaml.safe_load(Path("config/safety.yaml").read_text(encoding="utf-8"))
+    # Travel budget must cover release (3500) -> tensioned (~2500) range.
+    assert int(payload["pretension_max_travel_ticks"]) >= 1000
+    # Operator's scale: 30 mA = tight. Shipped trigger must be in the band,
+    # not the legacy 220 mA that over-tensioned tendons by 4-5x.
+    assert 15 <= int(payload["default_pretension_current_threshold_ma"]) <= 60
+    assert 5 <= int(payload["pretension_current_balance_tolerance_ma"]) <= 30
+    # Hard stop is absolute safety; should stay at 850 mA.
+    assert int(payload["pretension_hard_current_stop_ma"]) == 850
+    # Repeatable starting condition.
+    assert payload["pretension_start_mode"] == "full_release_4095"
+    # Reference tick is the slack target; clipped to safe_max by preflight.
+    assert int(payload["pretension_untensioned_reference_tick"]) == 3500
+
+
+def test_smoke_example_yaml_carries_phase2_variant_knobs() -> None:
+    """The example config that the Servos-tab one-click button loads must
+    expose the Phase 2 variant + manual-baseline knobs so they are tunable on
+    the Experiments tab."""
+    import yaml
+    payload = yaml.safe_load(
+        Path("config/experiment_pretension_validation.example.yaml").read_text(encoding="utf-8")
+    )
+    assert "tip_centering_variant" in payload
+    assert "jacobian_probe_step_ticks" in payload
+    assert "jacobian_min_observable_tip_delta_mm" in payload
+    assert "jacobian_step_gain" in payload
+    assert "jacobian_max_pair_step_ticks" in payload
+    assert "manual_baseline_capture_count" in payload
+    assert "manual_baseline_pause_s" in payload
+    assert "manual_baseline_record_path" in payload
+    # Repeatable start condition.
+    assert payload["pretension_start_mode"] == "full_release_4095"
+    # Default variant is the conservative one, not Jacobian.
+    assert payload["tip_centering_variant"] == "paired_then_tip"
