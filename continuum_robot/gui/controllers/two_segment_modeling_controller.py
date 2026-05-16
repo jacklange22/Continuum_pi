@@ -63,6 +63,11 @@ class TwoSegmentModelingController:
         self._catalog_dirty = True
         self._last_result: TwoSegmentModelingResult | None = None
         self.state = TwoSegmentModelingViewState()
+        # Per-tick disk-read cache for trainability validation — the 5 Hz refresh used
+        # to re-parse every selected samples.jsonl on every tick, blocking the paint
+        # thread. Keyed by (paths, per-path mtimes, flags) so it auto-invalidates when
+        # files change.
+        self._trainability_cache: tuple[tuple, list[tuple[str, str]]] | None = None
 
     # ---- catalog -----------------------------------------------------------------
     def discover_dataset_runs(self) -> list[Path]:
@@ -322,14 +327,32 @@ class TwoSegmentModelingController:
                     "dual_segment, all-8 startup, distal_tip robot-frame pose, trusted non-servo-only samples.",
                 ),
             ]
+        # Cache keyed by (paths, per-path mtimes, flags) — see __init__ comment.
+        mtimes: list[float] = []
+        for path in run_paths:
+            try:
+                mtimes.append(Path(path).stat().st_mtime)
+            except OSError:
+                mtimes.append(0.0)
+        cache_key = (
+            tuple(sorted(str(p) for p in run_paths)),
+            tuple(mtimes),
+            bool(allow_lower_trust),
+            str(self.state.label_mode),
+            "trainability_v1",
+        )
+        if self._trainability_cache is not None and self._trainability_cache[0] == cache_key:
+            return self._trainability_cache[1]
         try:
             summary = self.validate_trainability(
                 [Path(path) for path in run_paths],
                 allow_lower_trust=bool(allow_lower_trust),
             )
         except Exception as exc:
-            return [("Trainability", f"Could not inspect selected runs: {exc}")]
-        return [
+            pairs: list[tuple[str, str]] = [("Trainability", f"Could not inspect selected runs: {exc}")]
+            self._trainability_cache = (cache_key, pairs)
+            return pairs
+        pairs = [
             ("Runs", str(summary["runs_scanned"])),
             ("Samples", f"{summary['samples_accepted']} accepted / {summary['samples_rejected']} rejected"),
             ("Trainable", str(summary["trainable"])),
@@ -344,6 +367,8 @@ class TwoSegmentModelingController:
                 "Mike/Camarillo require validated geometry, stiffness, sign, and frame config.",
             ),
         ]
+        self._trainability_cache = (cache_key, pairs)
+        return pairs
 
     @staticmethod
     def _result_message(result: TwoSegmentModelingResult) -> str:
