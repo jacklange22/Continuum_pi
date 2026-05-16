@@ -271,6 +271,19 @@ class ModelingTab(QWidget):
             "Per-Model RMSE",
             "Surgical target: ≤1mm (green). 1–3mm amber. >3mm red.",
         )
+        # Quick-share toolbar — operator-friendly export buttons next to the headline.
+        toolbar_row = QHBoxLayout()
+        toolbar_row.setContentsMargins(0, 0, 0, 0)
+        self.copy_summary_button = QPushButton("Copy summary")
+        self.copy_summary_button.setProperty("variant", "ghost")
+        self.copy_summary_button.setToolTip(
+            "Copy a plain-text summary of the last evaluation (per-model RMSE + scope) "
+            "to the clipboard. Easy to paste into a lab notebook or chat."
+        )
+        self.copy_summary_button.clicked.connect(self._copy_summary_to_clipboard)
+        toolbar_row.addWidget(self.copy_summary_button)
+        toolbar_row.addStretch(1)
+        headline_card.body_layout.addLayout(toolbar_row)
         self.status_label = QLabel("Select a dataset, choose models, then run a comparison.")
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(f"color: {COLORS.text_secondary};")
@@ -345,6 +358,8 @@ class ModelingTab(QWidget):
         self.artifact_pairs.set_pairs(state.artifact_summary_pairs)
         self.evaluation_pairs.set_pairs(state.evaluation_summary_pairs)
         self.headline_metrics_widget.set_metrics(state.headline_metrics)
+        # Copy-summary button is meaningful only when there's something to copy.
+        self.copy_summary_button.setEnabled(bool(state.headline_metrics))
         # Show exactly one of the chips: positive when thesis-grade, caveat when not,
         # nothing before any evaluation has run.
         ran_an_eval = bool(state.headline_metrics)
@@ -447,6 +462,42 @@ class ModelingTab(QWidget):
         path_str = str(item.data(Qt.UserRole) or "")
         if path_str:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path_str))
+
+    def _copy_summary_to_clipboard(self) -> None:
+        """Push a plain-text version of the last evaluation to the system clipboard."""
+        state = self.controller.refresh()
+        if not state.headline_metrics:
+            self.status_label.setText("Nothing to copy yet — run a comparison first.")
+            return
+        lines: list[str] = []
+        lines.append(f"Modeling comparison — {state.selected_dataset_path}")
+        if state.selected_test_dataset_path:
+            lines.append(f"Test dataset (override): {state.selected_test_dataset_path}")
+        if state.last_eval_thesis_grade:
+            lines.append("Eval: thesis-grade (separate test acquisition)")
+        elif state.last_eval_same_session:
+            lines.append("Eval: same-session caveat applies — not thesis-grade")
+        for metric in state.headline_metrics:
+            if metric.rmse_mm is not None:
+                lines.append(f"  {metric.label}: {metric.rmse_mm:.3f} mm RMSE")
+            else:
+                lines.append(f"  {metric.label}: {metric.status} ({metric.reason or 'unavailable'})")
+        if state.eval_sample_count_warning:
+            lines.append(state.eval_sample_count_warning)
+        text = "\n".join(lines)
+        # Cheap clipboard access — works headless when no real Qt app is shown.
+        try:
+            from PySide6.QtGui import QGuiApplication
+
+            clipboard = QGuiApplication.clipboard()
+            if clipboard is not None:
+                clipboard.setText(text)
+                self.status_label.setText("Copied summary to clipboard.")
+                return
+        except Exception:
+            pass
+        # Fall back to status label echo.
+        self.status_label.setText(text)
 
     def _sync_dataset_mode_chip(self, state: ModelingViewState) -> None:
         """Show the selected dataset's mode as a colored chip on the dataset card."""

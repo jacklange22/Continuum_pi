@@ -520,6 +520,62 @@ def test_modeling_tab_history_list_double_click_opens_folder(tmp_path: Path, mon
         controller.shutdown()
 
 
+def test_modeling_tab_copy_summary_button_pushes_text_to_clipboard(tmp_path: Path) -> None:
+    """Clicking Copy Summary on a populated tab puts a plain-text summary on the clipboard."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    artifact_dir = _write_artifact(tmp_path, run_dir)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    controller.select_artifact(str(artifact_dir))
+    tab = ModelingTab(controller)
+    fake_metrics = ModelMetrics(
+        model_key="ann",
+        label="ANN",
+        status="completed",
+        sample_count=10,
+        position_rmse_mm=1.234,
+        axis_position_rmse_mm=[0.5, 0.5, 0.5],
+    )
+    fake_result = ModelingEvaluationResult(
+        dataset_summary=controller._selected_dataset_summary,
+        artifact_details=controller._selected_artifact_details,
+        evaluation_scope_requested="full_dataset",
+        evaluation_scope_used="full_dataset",
+        evaluation_scope_note="",
+        selected_sample_count=10,
+        output_dir=tmp_path / "data" / "modeling_results" / "clipfake",
+        summary_path=tmp_path / "summary.json",
+        metadata_path=tmp_path / "metadata.json",
+        comparison_csv_path=tmp_path / "comp.csv",
+        phase_csv_path=None,
+        plot_paths={},
+        model_evaluations={"ann": ModelEvaluation(metrics=fake_metrics, predictions=None)},
+        visualization_model=VisualizationModel(summary_lines=["ok"]),
+    )
+    controller._last_result = fake_result  # type: ignore[attr-defined]
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        assert tab.copy_summary_button.isEnabled()
+        tab._copy_summary_to_clipboard()
+        from PySide6.QtGui import QGuiApplication
+
+        clipboard = QGuiApplication.clipboard()
+        assert clipboard is not None
+        text = clipboard.text()
+        assert "1.234" in text
+        assert "ANN" in text
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
 def test_modeling_tab_workflow_header_renders_4_steps(tmp_path: Path) -> None:
     """Quick-start workflow header surfaces the 4-step journey without scrolling."""
     _app()
