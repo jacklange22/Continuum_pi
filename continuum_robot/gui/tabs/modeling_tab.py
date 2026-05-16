@@ -273,14 +273,28 @@ class ModelingTab(QWidget):
             "Open the ANN training popout with the currently selected modeling dataset preloaded."
         )
         self.train_ann_button.clicked.connect(self._open_ann_training_from_modeling)
+        self.validate_rows_button = QPushButton("Validate Rows")
+        self.validate_rows_button.setProperty("variant", "ghost")
+        self.validate_rows_button.setToolTip(
+            "Apply the complete_rows_only filter to the test dataset (or training "
+            "dataset if no override) and surface the count + exclusion reasons."
+        )
+        self.validate_rows_button.clicked.connect(self._on_validate_rows_clicked)
         self.open_results_button = QPushButton("Open Results Folder")
         self.open_results_button.setProperty("variant", "ghost")
         self.open_results_button.clicked.connect(self._open_results_folder)
         action_row.addWidget(self.evaluate_button)
         action_row.addWidget(self.train_ann_button)
+        action_row.addWidget(self.validate_rows_button)
         action_row.addWidget(self.open_results_button)
         action_row.addStretch(1)
         controls_card.body_layout.addLayout(action_row)
+        # Row-filter status echo. Hidden until Validate Rows is clicked at least once.
+        self.row_filter_status_label = QLabel("")
+        self.row_filter_status_label.setWordWrap(True)
+        self.row_filter_status_label.setStyleSheet(f"color: {COLORS.text_secondary};")
+        self.row_filter_status_label.setVisible(False)
+        controls_card.body_layout.addWidget(self.row_filter_status_label)
         left.addWidget(controls_card)
 
         # Two-segment work moved to its own tab (TwoSegmentModelingTab). This tab
@@ -387,6 +401,12 @@ class ModelingTab(QWidget):
         self.headline_metrics_widget.set_metrics(state.headline_metrics)
         # Copy-summary button is meaningful only when there's something to copy.
         self.copy_summary_button.setEnabled(bool(state.headline_metrics))
+        self.validate_rows_button.setEnabled(bool(state.selected_dataset_path))
+        if state.row_filter_status_text:
+            self.row_filter_status_label.setText(state.row_filter_status_text)
+            self.row_filter_status_label.setVisible(True)
+        else:
+            self.row_filter_status_label.setVisible(False)
         # Show exactly one of the chips: positive when thesis-grade, caveat when not,
         # nothing before any evaluation has run.
         ran_an_eval = bool(state.headline_metrics)
@@ -489,6 +509,10 @@ class ModelingTab(QWidget):
         path_str = str(item.data(Qt.UserRole) or "")
         if path_str:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path_str))
+
+    def _on_validate_rows_clicked(self) -> None:
+        self.controller.validate_rows_for_eval()
+        self.update(self.controller.refresh())
 
     def _copy_summary_to_clipboard(self) -> None:
         """Push a plain-text version of the last evaluation to the system clipboard."""

@@ -520,6 +520,35 @@ def test_modeling_tab_history_list_double_click_opens_folder(tmp_path: Path, mon
         controller.shutdown()
 
 
+def test_modeling_tab_validate_rows_button_runs_row_filter_on_eval_dataset(tmp_path: Path) -> None:
+    """Click 'Validate Rows' → row filter runs on the effective eval dataset, status echoes."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        # Button enabled when a dataset is selected.
+        assert tab.validate_rows_button.isEnabled() is True
+        # Status label hidden before first click.
+        assert tab.row_filter_status_label.isVisible() is False
+        tab._on_validate_rows_clicked()
+        state = controller.refresh()
+        assert state.row_filter_status_text  # populated by the validator
+        assert tab.row_filter_status_label.isVisible() is True
+        assert "Row filter" in state.row_filter_status_text
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
 def test_modeling_tab_empty_state_hint_when_no_datasets(tmp_path: Path) -> None:
     """When zero datasets are discovered, dataset card shows a clear next-action hint."""
     _app()

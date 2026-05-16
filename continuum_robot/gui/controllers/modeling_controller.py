@@ -28,6 +28,7 @@ from continuum_robot.modeling import (
     load_trained_artifact_details,
 )
 from continuum_robot.modeling.analysis import PastEvaluation, discover_past_evaluations
+from continuum_robot.modeling.ann_training import RowFilterReport, validate_legacy_ann_rows
 
 
 # Operator-visible threshold for "eval is too small to trust". RMSE on <100 samples is
@@ -87,6 +88,9 @@ class ModelingViewState:
     # currently-selected dataset on this tab. Common operator mistake — surface it as a
     # chip so the resulting evaluation numbers aren't read as "ANN trained on this".
     artifact_dataset_mismatch: str = ""
+    # Set by validate_rows_for_eval(). UI surfaces the row-filter status next to the
+    # Validate Rows button so operators can audit dataset health without leaving the tab.
+    row_filter_status_text: str = ""
     include_mike: bool = True
     include_camarillo: bool = True
     include_ann: bool = True
@@ -265,6 +269,42 @@ class ModelingController:
     def set_include_ann(self, value: bool) -> None:
         with self._lock:
             self.config.include_ann = bool(value)
+
+    def validate_rows_for_eval(self) -> RowFilterReport | None:
+        """Run the complete_rows_only row filter on the effective eval dataset.
+
+        Picks the test dataset if set (Wolfe-style override), else the selected
+        training dataset. Updates ``state.row_filter_status_text`` with the
+        result summary. Returns the report so callers can inspect details.
+        """
+        with self._lock:
+            test_path = self.state.selected_test_dataset_path
+            dataset_summary = self._selected_dataset_summary
+        target: Path | None = None
+        if test_path:
+            target = Path(test_path)
+        elif dataset_summary is not None:
+            target = Path(dataset_summary.path)
+        if target is None:
+            with self._lock:
+                self.state.row_filter_status_text = "Select a dataset first."
+            return None
+        try:
+            report = validate_legacy_ann_rows(target)
+        except Exception as exc:
+            with self._lock:
+                self.state.row_filter_status_text = f"Row validation failed: {exc}"
+            return None
+        status = "ok" if report.can_train else f"blocked: {report.block_reason}"
+        text = (
+            f"Row filter on {target.name}: {report.complete_row_count} complete, "
+            f"{report.excluded_row_count} excluded "
+            f"(target={report.target_complete_row_count}, {status})."
+        )
+        with self._lock:
+            self.state.row_filter_status_text = text
+            self.state.status_message = text
+        return report
 
     def set_test_dataset_path(self, value: str) -> None:
         """Optional override dataset to evaluate against (Wolfe §3.2.3).
