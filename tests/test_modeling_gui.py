@@ -809,39 +809,138 @@ def test_modeling_tab_small_eval_dataset_warning_chip(tmp_path: Path) -> None:
         controller.shutdown()
 
 
-def test_modeling_tab_thesis_grade_chip_replaces_caveat_when_separate_test_used(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """When evaluation_scope_used == 'separate_test_dataset', show the green
-    thesis-grade chip and hide the amber same-session caveat."""
-    _app()
-    run_dir = _write_modeling_run(tmp_path)
-    artifact_dir = _write_artifact(tmp_path, run_dir)
-    controller = ModelingController(
-        project_root=tmp_path,
-        dataset_output_root=tmp_path / "data" / "experiments",
-        artifact_root=tmp_path / "data" / "models" / "ann",
-        results_root=tmp_path / "data" / "modeling_results",
+def _write_real_hardware_test_run(
+    tmp_path: Path,
+    *,
+    name: str,
+    run_id: str,
+    complete_rows: int = 150,
+    mock: bool = False,
+    trust_mode: str = "thesis_trusted",
+) -> Path:
+    """Build a fixture that satisfies the strict 'real hardware' thesis-grade rule
+    when all flags are at defaults. Flip any flag/count to violate one rule at a time."""
+    run_dir = tmp_path / "data" / "experiments" / "collect_pose_command_dataset" / name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "schema_version": "1.0",
+        "experiment_name": "collect_pose_command_dataset",
+        "run_id": run_id,
+        "timestamp_utc": "2026-05-16T12:00:00+00:00",
+    }
+    summary = {
+        "schema_version": "1.0",
+        "experiment_name": "collect_pose_command_dataset",
+        "run_id": run_id,
+        "success": True,
+        "sample_counts": {"total": complete_rows},
+        "status": "success",
+        "experiment_metrics": {
+            "dataset_mode": "angular_test_mesh",
+            "accepted_sample_count": complete_rows,
+            "rejected_sample_count": 0,
+            "run_trust_mode": trust_mode,
+            "valid_for_model_training": True,
+            "target_valid_sample_count": complete_rows,
+            "complete_training_row_count": complete_rows,
+            "mock_mode": mock,
+            "run_provenance": {
+                "runtime_tip_calibration": {"mode": "latest_accepted", "trust_level": "trusted"},
+                "pretension_artifact": {"active_source_type": "accepted_artifact", "status": "ready"},
+                "mock_mode": mock,
+            },
+        },
+    }
+    (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    with (run_dir / "modeling_dataset_export.jsonl").open("w", encoding="utf-8") as handle:
+        for i in range(complete_rows):
+            handle.write(
+                json.dumps(
+                    {
+                        "sequence_index": i,
+                        "step_index": i // 8,
+                        "sample_index": i,
+                        "accepted": True,
+                        "resolved_cable_command_cm": [0.001 * (i % 50), 0.002, 0.003, 0.004],
+                        "tip_position_xyz_mm": [1.0 + 0.01 * (i % 100), 2.0, 3.0],
+                        "tip_tangent_xyz": [0.01, 0.02, 0.03],
+                    }
+                )
+                + "\n"
+            )
+    return run_dir
+
+
+def _make_thesis_grade_evaluation(
+    *,
+    tmp_path: Path,
+    controller: ModelingController,
+    train_run: Path,
+    test_run: Path,
+    exploratory: bool = False,
+) -> ModelingEvaluationResult:
+    """Build a populated ModelingEvaluationResult that should pass _eval_is_thesis_grade."""
+    from continuum_robot.modeling.ann_training import load_modeling_dataset_summary
+    from continuum_robot.modeling.analysis import (
+        ArtifactDetails as _ArtifactDetails,
+        ModelingEvaluationResult as _ModelingEvaluationResult,
     )
-    controller.select_dataset(str(run_dir))
-    controller.select_artifact(str(artifact_dir))
-    tab = ModelingTab(controller)
+
     fake_metrics = ModelMetrics(
         model_key="ann",
         label="ANN",
         status="completed",
         sample_count=10,
-        position_rmse_mm=1.2,
+        position_rmse_mm=1.0,
         axis_position_rmse_mm=[0.5, 0.5, 0.5],
     )
-    fake_result = ModelingEvaluationResult(
-        dataset_summary=controller._selected_dataset_summary,
-        artifact_details=controller._selected_artifact_details,
+    train_summary = load_modeling_dataset_summary(train_run)
+    test_summary = load_modeling_dataset_summary(test_run)
+    artifact_metadata = {
+        "training_provenance": {
+            "exploratory_training_override": bool(exploratory),
+        },
+    }
+    # We can't construct an ArtifactDetails without all fields; build a minimal stand-in
+    # using the existing _write_artifact + load helper.
+    artifact_dir = _write_artifact(tmp_path, train_run)
+    # Overwrite its metadata with our provenance fixture.
+    (artifact_dir / "training_metadata.json").write_text(
+        json.dumps(
+            {
+                "created_at_utc": "2026-05-16T00:00:00Z",
+                "status": "completed",
+                "model": {"output_target": "xyz", "hidden_layers": [32, 32]},
+                "training": {"epochs_completed": 1, "best_validation_loss": 0.5},
+                "dataset": {"run_name": train_summary.run_name, "path": str(train_run)},
+                "backend": {"selected_backend": "cpu"},
+                "files": {
+                    "loss_history_path": str(artifact_dir / "loss_history.csv"),
+                    "model_path": str(artifact_dir / "model.pt"),
+                },
+                **artifact_metadata,
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Force the controller to re-discover artifacts now that we've just written one;
+    # otherwise refresh() short-circuits because _catalog_dirty is False and the new
+    # artifact won't appear in state.artifact_details.
+    controller.set_artifact_root(controller.artifact_root)
+    controller.select_artifact(str(artifact_dir))
+    state = controller.refresh()
+    assert state.artifact_details is not None, (
+        "fixture invariant: artifact must be loadable; got None"
+    )
+    return _ModelingEvaluationResult(
+        dataset_summary=train_summary,
+        artifact_details=state.artifact_details,
         evaluation_scope_requested="full_dataset",
-        evaluation_scope_used="separate_test_dataset",  # ← thesis-grade trigger
+        evaluation_scope_used="separate_test_dataset",
         evaluation_scope_note="",
-        selected_sample_count=10,
-        output_dir=tmp_path / "data" / "modeling_results" / "thesis_fake",
+        selected_sample_count=150,
+        output_dir=tmp_path / "data" / "modeling_results" / "audit_fake",
         summary_path=tmp_path / "summary.json",
         metadata_path=tmp_path / "metadata.json",
         comparison_csv_path=tmp_path / "comp.csv",
@@ -849,17 +948,235 @@ def test_modeling_tab_thesis_grade_chip_replaces_caveat_when_separate_test_used(
         plot_paths={},
         model_evaluations={"ann": ModelEvaluation(metrics=fake_metrics, predictions=None)},
         visualization_model=VisualizationModel(summary_lines=["ok"]),
+        test_dataset_summary=test_summary,
     )
-    controller._last_result = fake_result  # type: ignore[attr-defined]
+
+
+def test_thesis_grade_chip_fires_when_all_conditions_met(tmp_path: Path) -> None:
+    """All 5 audit conditions satisfied ⇒ thesis-grade chip visible, caveat hidden."""
+    _app()
+    train_run = _write_real_hardware_test_run(tmp_path, name="train_run_real", run_id="train_001")
+    test_run = _write_real_hardware_test_run(tmp_path, name="test_run_real", run_id="test_002")
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(train_run))
+    tab = ModelingTab(controller)
     try:
         tab.show()
         tab.update(controller.refresh())
-        # Thesis-grade chip visible, same-session caveat hidden.
+        fake_result = _make_thesis_grade_evaluation(
+            tmp_path=tmp_path, controller=controller, train_run=train_run, test_run=test_run
+        )
+        controller._last_result = fake_result  # type: ignore[attr-defined]
+        tab.update(controller.refresh())
         assert tab.thesis_grade_chip.isVisible() is True
         assert tab.same_session_chip.isVisible() is False
     finally:
         tab.close()
         controller.shutdown()
+
+
+def test_thesis_grade_blocked_when_train_test_same_run_id(tmp_path: Path) -> None:
+    """Gate 2: same run_id between train and test ⇒ no thesis-grade chip."""
+    _app()
+    # Both runs carry the same run_id "shared_001" — even though paths differ.
+    train_run = _write_real_hardware_test_run(tmp_path, name="run_a", run_id="shared_001")
+    test_run = _write_real_hardware_test_run(tmp_path, name="run_b", run_id="shared_001")
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(train_run))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        fake_result = _make_thesis_grade_evaluation(
+            tmp_path=tmp_path, controller=controller, train_run=train_run, test_run=test_run
+        )
+        controller._last_result = fake_result  # type: ignore[attr-defined]
+        tab.update(controller.refresh())
+        assert tab.thesis_grade_chip.isVisible() is False
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_thesis_grade_blocked_when_train_test_same_path(tmp_path: Path) -> None:
+    """Gate 2: same resolved path between train and test (even if run_id strings differ)
+    ⇒ no thesis-grade chip. evaluate_models's same-path collapse also handles this at
+    the source — but the controller-side gate must defend it too."""
+    _app()
+    train_run = _write_real_hardware_test_run(tmp_path, name="single_run", run_id="single_001")
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(train_run))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        # Build a result whose test_dataset_summary points at the SAME run.
+        fake_result = _make_thesis_grade_evaluation(
+            tmp_path=tmp_path, controller=controller, train_run=train_run, test_run=train_run
+        )
+        controller._last_result = fake_result  # type: ignore[attr-defined]
+        tab.update(controller.refresh())
+        assert tab.thesis_grade_chip.isVisible() is False
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_thesis_grade_blocked_when_test_dataset_is_mock(tmp_path: Path) -> None:
+    """Gate 3: mock_mode test dataset ⇒ no thesis-grade chip."""
+    _app()
+    train_run = _write_real_hardware_test_run(tmp_path, name="real_train", run_id="t01")
+    test_run = _write_real_hardware_test_run(tmp_path, name="mock_test", run_id="t02", mock=True)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(train_run))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        fake_result = _make_thesis_grade_evaluation(
+            tmp_path=tmp_path, controller=controller, train_run=train_run, test_run=test_run
+        )
+        controller._last_result = fake_result  # type: ignore[attr-defined]
+        tab.update(controller.refresh())
+        assert tab.thesis_grade_chip.isVisible() is False
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_thesis_grade_blocked_when_test_dataset_servo_only(tmp_path: Path) -> None:
+    """Gate 3: servo_only / lower_trust test dataset ⇒ no thesis-grade chip."""
+    _app()
+    train_run = _write_real_hardware_test_run(tmp_path, name="real_train", run_id="t10")
+    test_run = _write_real_hardware_test_run(
+        tmp_path, name="servo_only_test", run_id="t11", trust_mode="servo_only"
+    )
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(train_run))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        fake_result = _make_thesis_grade_evaluation(
+            tmp_path=tmp_path, controller=controller, train_run=train_run, test_run=test_run
+        )
+        controller._last_result = fake_result  # type: ignore[attr-defined]
+        tab.update(controller.refresh())
+        assert tab.thesis_grade_chip.isVisible() is False
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_thesis_grade_blocked_when_test_dataset_too_few_complete_rows(tmp_path: Path) -> None:
+    """Gate 4: test dataset with <100 complete rows ⇒ no thesis-grade chip."""
+    _app()
+    train_run = _write_real_hardware_test_run(tmp_path, name="real_train", run_id="t20")
+    test_run = _write_real_hardware_test_run(
+        tmp_path, name="tiny_test", run_id="t21", complete_rows=50
+    )
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(train_run))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        fake_result = _make_thesis_grade_evaluation(
+            tmp_path=tmp_path, controller=controller, train_run=train_run, test_run=test_run
+        )
+        controller._last_result = fake_result  # type: ignore[attr-defined]
+        tab.update(controller.refresh())
+        assert tab.thesis_grade_chip.isVisible() is False
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_thesis_grade_blocked_when_artifact_is_exploratory(tmp_path: Path) -> None:
+    """Gate 5: ANN trained with exploratory_training_override ⇒ no thesis-grade chip."""
+    _app()
+    train_run = _write_real_hardware_test_run(tmp_path, name="real_train", run_id="t30")
+    test_run = _write_real_hardware_test_run(tmp_path, name="real_test", run_id="t31")
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(train_run))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        # Same as the all-good fixture, but with exploratory=True on the artifact.
+        fake_result = _make_thesis_grade_evaluation(
+            tmp_path=tmp_path,
+            controller=controller,
+            train_run=train_run,
+            test_run=test_run,
+            exploratory=True,
+        )
+        controller._last_result = fake_result  # type: ignore[attr-defined]
+        tab.update(controller.refresh())
+        assert tab.thesis_grade_chip.isVisible() is False
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_evaluate_models_collapses_test_override_when_paths_match(tmp_path: Path) -> None:
+    """Bug 1 fix at the analysis layer: if test_dataset_path == dataset_path, evaluate_models
+    must NOT set scope_used='separate_test_dataset'."""
+    from continuum_robot.modeling.analysis import evaluate_models, ModelingEvaluationConfig
+
+    pytest.importorskip("torch")
+    run_dir = _write_modeling_run(tmp_path)
+    config = ModelingEvaluationConfig(
+        include_mike=False,
+        include_camarillo=False,
+        include_ann=False,
+        evaluation_scope="full_dataset",
+        results_root=str(tmp_path / "data" / "modeling_results"),
+    )
+    result = evaluate_models(
+        project_root=tmp_path,
+        dataset_path=run_dir,
+        artifact_path=None,
+        config=config,
+        test_dataset_path=run_dir,  # ← intentionally the same as training
+    )
+    assert result.evaluation_scope_used != "separate_test_dataset"
+    assert result.test_dataset_summary is None
 
 
 def test_modeling_tab_dataset_mode_chip_highlights_angular_test_mesh(tmp_path: Path) -> None:

@@ -28,7 +28,11 @@ from continuum_robot.modeling import (
     load_trained_artifact_details,
 )
 from continuum_robot.modeling.analysis import PastEvaluation, discover_past_evaluations
-from continuum_robot.modeling.ann_training import RowFilterReport, validate_legacy_ann_rows
+from continuum_robot.modeling.ann_training import (
+    MIN_COMPLETE_ROWS_FOR_TRAINING,
+    RowFilterReport,
+    validate_legacy_ann_rows,
+)
 
 
 # Operator-visible threshold for "eval is too small to trust". RMSE on <100 samples is
@@ -754,13 +758,73 @@ class ModelingController:
     def _eval_is_thesis_grade(result: ModelingEvaluationResult | None) -> bool:
         """True when the last evaluation matches Wolfe's §3.2.3 cross-acquisition setup.
 
-        Requires: ``evaluation_scope_used == "separate_test_dataset"`` (artifact and test
-        come from different runs). Stronger than ``not same_session`` because a non-mesh
-        test dataset is still legitimate cross-acquisition data.
+        Strict gate (all conditions must hold):
+          1. ``evaluation_scope_used == "separate_test_dataset"`` — a real test override.
+          2. Train and test refer to different runs — both ``run_id`` AND resolved
+             ``path`` must differ. Defends against accidental clone-of-folder loops.
+          3. Test dataset is a real-hardware acquisition:
+             ``run_trust_mode == "thesis_trusted"``, ``mock_mode_flag is not True``,
+             ``"servo_only" not in run_trust_mode``. Picked per operator answer to the
+             "Real-hardware rule" audit question.
+          4. Test dataset has enough complete rows to evaluate against:
+             ``validate_legacy_ann_rows(...).complete_row_count >=
+             MIN_COMPLETE_ROWS_FOR_TRAINING``. Tolerates some excluded rows per the
+             operator's "resistant to <100% success" preference.
+          5. ANN artifact details MUST be loaded — Wolfe §3.2.3 is an ANN methodology,
+             so a result with no artifact_details (Mike/Camarillo-only or a stale
+             selection that failed to load) cannot be certified thesis-grade. The chip
+             is meant to signal "this evaluation is comparable to Wolfe's ANN numbers"
+             and that requires an actual ANN provenance to inspect.
+          6. ANN artifact was NOT trained with the exploratory override:
+             ``training_provenance.exploratory_training_override is not True``.
+             Exploratory artifacts carry their own warning per design.
+
+        Any failure ⇒ False ⇒ the green chip stays hidden and the amber same-session
+        caveat (or no chip) takes over.
         """
         if result is None:
             return False
-        return str(result.evaluation_scope_used or "").strip().lower() == "separate_test_dataset"
+        scope = str(result.evaluation_scope_used or "").strip().lower()
+        if scope != "separate_test_dataset":
+            return False
+        train_summary = result.dataset_summary
+        test_summary = result.test_dataset_summary
+        if train_summary is None or test_summary is None:
+            return False
+        # 2 — train and test must differ on both run_id AND path.
+        train_run_id = str(train_summary.run_id or "").strip()
+        test_run_id = str(test_summary.run_id or "").strip()
+        if train_run_id and test_run_id and train_run_id == test_run_id:
+            return False
+        try:
+            if Path(train_summary.path).resolve() == Path(test_summary.path).resolve():
+                return False
+        except Exception:
+            if str(train_summary.path) == str(test_summary.path):
+                return False
+        # 3 — test dataset must be real hardware.
+        if test_summary.mock_mode_flag is True:
+            return False
+        test_trust_mode = str(test_summary.run_trust_mode or "").strip().lower()
+        if test_trust_mode != "thesis_trusted":
+            return False
+        # 4 — test dataset must have enough complete rows.
+        try:
+            row_filter = validate_legacy_ann_rows(Path(test_summary.path))
+        except Exception:
+            return False
+        if int(row_filter.complete_row_count) < int(MIN_COMPLETE_ROWS_FOR_TRAINING):
+            return False
+        # 5 — ANN artifact details must be present (Wolfe §3.2.3 is an ANN methodology).
+        artifact_details = result.artifact_details
+        if artifact_details is None:
+            return False
+        # 6 — artifact must NOT carry the exploratory override.
+        metadata = dict(artifact_details.metadata or {})
+        provenance = dict(metadata.get("training_provenance", {}) or {})
+        if bool(provenance.get("exploratory_training_override")):
+            return False
+        return True
 
     @staticmethod
     def _eval_used_same_session(result: ModelingEvaluationResult | None) -> bool:

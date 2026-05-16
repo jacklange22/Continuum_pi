@@ -163,6 +163,11 @@ class ModelingEvaluationResult:
     plot_paths: dict[str, Path]
     model_evaluations: dict[str, ModelEvaluation]
     visualization_model: VisualizationModel
+    # Optional: when a separate test acquisition was used, this carries the test run's
+    # summary so callers (e.g. the thesis-grade gate) can inspect mock_mode_flag,
+    # run_trust_mode, run_id, accepted/complete row counts independently of the training
+    # dataset's summary. None ⇒ no test override (same-session evaluation).
+    test_dataset_summary: ModelingDatasetSummary | None = None
 
 
 def default_results_root(project_root: Path) -> Path:
@@ -244,13 +249,25 @@ def evaluate_models(
     """
     dataset_summary = load_modeling_dataset_summary(dataset_path)
     artifact_details = load_trained_artifact_details(artifact_path) if artifact_path is not None else None
-    eval_dataset_path = Path(test_dataset_path) if test_dataset_path is not None else Path(dataset_path)
+    # Resolve the test override: if the operator pointed the Test Dataset combo at the
+    # same dataset as the training one, that's NOT cross-acquisition — collapse the
+    # override and let scope resolution fall back to the standard same-session paths.
+    # Audit fix: prevents Bug 1 (test == train still claimed "separate_test_dataset").
+    test_override_path: Path | None = None
+    if test_dataset_path is not None:
+        try:
+            same_path = Path(test_dataset_path).resolve() == Path(dataset_path).resolve()
+        except Exception:
+            same_path = str(test_dataset_path) == str(dataset_path)
+        if not same_path:
+            test_override_path = Path(test_dataset_path)
+    eval_dataset_path = test_override_path if test_override_path is not None else Path(dataset_path)
     prepared = prepare_legacy_ann_dataset(eval_dataset_path)
     if prepared.inputs.shape[0] == 0:
         raise ValueError(
             "Selected evaluation dataset has no accepted full-pose samples after legacy filtering."
         )
-    if test_dataset_path is not None:
+    if test_override_path is not None:
         # Test-dataset path overrides scope: every accepted row is used.
         selected_indices = list(range(int(prepared.inputs.shape[0])))
         scope_used = "separate_test_dataset"
@@ -401,6 +418,15 @@ def evaluate_models(
     }
     metadata_path.write_text(json.dumps(metadata_payload, indent=2), encoding="utf-8")
     summary_path.write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
+    # When a separate test acquisition was used, carry its summary forward so the
+    # thesis-grade gate in ModelingController can check mock/dry-run/servo-only flags,
+    # run_id, and row-filter health independently of the training dataset.
+    test_dataset_summary_payload: ModelingDatasetSummary | None = None
+    if test_override_path is not None:
+        try:
+            test_dataset_summary_payload = load_modeling_dataset_summary(test_override_path)
+        except Exception:
+            test_dataset_summary_payload = None
     return ModelingEvaluationResult(
         dataset_summary=dataset_summary,
         artifact_details=artifact_details,
@@ -416,6 +442,7 @@ def evaluate_models(
         plot_paths=plot_paths,
         model_evaluations=evaluations,
         visualization_model=visualization,
+        test_dataset_summary=test_dataset_summary_payload,
     )
 
 
