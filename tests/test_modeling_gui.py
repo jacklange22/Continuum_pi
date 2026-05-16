@@ -520,6 +520,241 @@ def test_modeling_tab_history_list_double_click_opens_folder(tmp_path: Path, mon
         controller.shutdown()
 
 
+def test_modeling_tab_headline_status_label_reflects_state(tmp_path: Path) -> None:
+    """Status label echoes the dataset name pre-eval and the best RMSE post-eval."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        # Pre-eval: status label mentions the run name.
+        assert run_dir.name in tab.status_label.text()
+        # Inject a fake result and re-render — post-eval label changes.
+        fake_metrics = ModelMetrics(
+            model_key="ann",
+            label="ANN",
+            status="completed",
+            sample_count=10,
+            position_rmse_mm=0.87,
+        )
+        fake_result = ModelingEvaluationResult(
+            dataset_summary=controller._selected_dataset_summary,
+            artifact_details=controller._selected_artifact_details,
+            evaluation_scope_requested="full_dataset",
+            evaluation_scope_used="full_dataset",
+            evaluation_scope_note="",
+            selected_sample_count=10,
+            output_dir=tmp_path / "data" / "modeling_results" / "label_fake",
+            summary_path=tmp_path / "summary.json",
+            metadata_path=tmp_path / "metadata.json",
+            comparison_csv_path=tmp_path / "comp.csv",
+            phase_csv_path=None,
+            plot_paths={},
+            model_evaluations={"ann": ModelEvaluation(metrics=fake_metrics, predictions=None)},
+            visualization_model=VisualizationModel(summary_lines=["ok"]),
+        )
+        controller._last_result = fake_result  # type: ignore[attr-defined]
+        tab.update(controller.refresh())
+        text = tab.status_label.text().lower()
+        assert "ann" in text
+        assert "0.87" in text or "0.870" in text
+        assert "full dataset" in text or "10 samples" in text
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_modeling_tab_validate_rows_button_runs_row_filter_on_eval_dataset(tmp_path: Path) -> None:
+    """Click 'Validate Rows' → row filter runs on the effective eval dataset, status echoes."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        # Button enabled when a dataset is selected.
+        assert tab.validate_rows_button.isEnabled() is True
+        # Status label hidden before first click.
+        assert tab.row_filter_status_label.isVisible() is False
+        tab._on_validate_rows_clicked()
+        state = controller.refresh()
+        assert state.row_filter_status_text  # populated by the validator
+        assert tab.row_filter_status_label.isVisible() is True
+        assert "Row filter" in state.row_filter_status_text
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_modeling_tab_empty_state_hint_when_no_datasets(tmp_path: Path) -> None:
+    """When zero datasets are discovered, dataset card shows a clear next-action hint."""
+    _app()
+    (tmp_path / "data" / "experiments").mkdir(parents=True, exist_ok=True)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        assert tab.dataset_empty_hint.isVisible() is True
+        assert "Experiment tab" in tab.dataset_empty_hint.text()
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_modeling_tab_artifact_dataset_mismatch_chip(tmp_path: Path) -> None:
+    """Selecting an artifact trained on a different dataset triggers the mismatch chip."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    # Hand-craft an artifact whose metadata says it was trained on a different dataset.
+    artifact_dir = tmp_path / "data" / "models" / "ann" / "mismatch_artifact"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "training_metadata.json").write_text(
+        json.dumps(
+            {
+                "created_at_utc": "2026-05-15T00:00:00Z",
+                "status": "completed",
+                "model": {"output_target": "xyz", "hidden_layers": [32, 32]},
+                "training": {"epochs_completed": 1, "best_validation_loss": 0.5},
+                # Mismatch: artifact says it was trained on a different run name.
+                "dataset": {"run_name": "some_other_dataset_run", "path": str(tmp_path / "other")},
+                "backend": {"selected_backend": "cpu"},
+                "files": {"loss_history_path": str(artifact_dir / "loss_history.csv"),
+                          "model_path": str(artifact_dir / "model.pt")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifact_dir / "loss_history.csv").write_text(
+        "epoch,train_loss,validation_loss,elapsed_s\n1,0.5,0.6,0.1\n", encoding="utf-8"
+    )
+    (artifact_dir / "model.pt").write_bytes(b"x")
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    controller.select_artifact(str(artifact_dir))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        assert tab.artifact_mismatch_chip.isVisible() is True
+        text = tab.artifact_mismatch_chip.text().lower()
+        assert "different dataset" in text or "some_other_dataset_run" in text.lower()
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_modeling_tab_headline_tile_tooltip_has_per_axis_breakdown(tmp_path: Path) -> None:
+    """The headline tile's tooltip exposes per-axis RMSE + mean/max for the operator."""
+    from continuum_robot.gui.controllers.modeling_controller import HeadlineMetric
+    from continuum_robot.gui.tabs.modeling_tab import _HeadlineMetricsWidget
+
+    _app()
+    widget = _HeadlineMetricsWidget()
+    widget.show()
+    widget.set_metrics(
+        [
+            HeadlineMetric(
+                label="ANN",
+                model_key="ann",
+                rmse_mm=1.234,
+                status="completed",
+                per_axis_rmse_mm=(0.5, 0.6, 0.9),
+                mean_position_error_mm=1.1,
+                max_position_error_mm=2.5,
+            )
+        ]
+    )
+    # Find the only tile via its layout.
+    tile = widget._layout.itemAt(0).widget()
+    tooltip = tile.toolTip()
+    assert "0.500" in tooltip and "0.600" in tooltip and "0.900" in tooltip
+    assert "1.234" in tooltip
+    assert "mean position error" in tooltip.lower()
+    widget.close()
+
+
+def test_modeling_tab_copy_summary_button_pushes_text_to_clipboard(tmp_path: Path) -> None:
+    """Clicking Copy Summary on a populated tab puts a plain-text summary on the clipboard."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    artifact_dir = _write_artifact(tmp_path, run_dir)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    controller.select_artifact(str(artifact_dir))
+    tab = ModelingTab(controller)
+    fake_metrics = ModelMetrics(
+        model_key="ann",
+        label="ANN",
+        status="completed",
+        sample_count=10,
+        position_rmse_mm=1.234,
+        axis_position_rmse_mm=[0.5, 0.5, 0.5],
+    )
+    fake_result = ModelingEvaluationResult(
+        dataset_summary=controller._selected_dataset_summary,
+        artifact_details=controller._selected_artifact_details,
+        evaluation_scope_requested="full_dataset",
+        evaluation_scope_used="full_dataset",
+        evaluation_scope_note="",
+        selected_sample_count=10,
+        output_dir=tmp_path / "data" / "modeling_results" / "clipfake",
+        summary_path=tmp_path / "summary.json",
+        metadata_path=tmp_path / "metadata.json",
+        comparison_csv_path=tmp_path / "comp.csv",
+        phase_csv_path=None,
+        plot_paths={},
+        model_evaluations={"ann": ModelEvaluation(metrics=fake_metrics, predictions=None)},
+        visualization_model=VisualizationModel(summary_lines=["ok"]),
+    )
+    controller._last_result = fake_result  # type: ignore[attr-defined]
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        assert tab.copy_summary_button.isEnabled()
+        tab._copy_summary_to_clipboard()
+        from PySide6.QtGui import QGuiApplication
+
+        clipboard = QGuiApplication.clipboard()
+        assert clipboard is not None
+        text = clipboard.text()
+        assert "1.234" in text
+        assert "ANN" in text
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
 def test_modeling_tab_workflow_header_renders_4_steps(tmp_path: Path) -> None:
     """Quick-start workflow header surfaces the 4-step journey without scrolling."""
     _app()

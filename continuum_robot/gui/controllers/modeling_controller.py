@@ -28,6 +28,7 @@ from continuum_robot.modeling import (
     load_trained_artifact_details,
 )
 from continuum_robot.modeling.analysis import PastEvaluation, discover_past_evaluations
+from continuum_robot.modeling.ann_training import RowFilterReport, validate_legacy_ann_rows
 
 
 # Operator-visible threshold for "eval is too small to trust". RMSE on <100 samples is
@@ -47,7 +48,8 @@ class HeadlineMetric:
 
     The tab uses ``rmse_mm`` to color-code the block (green ≤ 1mm, amber ≤ 3mm,
     red > 3mm) so the operator gets at-a-glance verdict on each model's performance
-    against the sub-millimeter surgical-accuracy target.
+    against the sub-millimeter surgical-accuracy target. ``per_axis_rmse_mm`` powers
+    the tile tooltip so hovering shows the X/Y/Z breakdown without scrolling.
     """
 
     label: str
@@ -55,6 +57,9 @@ class HeadlineMetric:
     rmse_mm: float | None
     status: str
     reason: str = ""
+    per_axis_rmse_mm: tuple[float, float, float] | None = None
+    mean_position_error_mm: float | None = None
+    max_position_error_mm: float | None = None
 
 
 @dataclass
@@ -79,6 +84,17 @@ class ModelingViewState:
     # *effective* evaluation dataset has fewer than ``MIN_EVAL_SAMPLES_WARN_THRESHOLD``
     # complete rows — small evals produce noisy RMSE numbers that won't reproduce.
     eval_sample_count_warning: str = ""
+    # Set when the selected ANN artifact's linked training dataset doesn't match the
+    # currently-selected dataset on this tab. Common operator mistake — surface it as a
+    # chip so the resulting evaluation numbers aren't read as "ANN trained on this".
+    artifact_dataset_mismatch: str = ""
+    # Set by validate_rows_for_eval(). UI surfaces the row-filter status next to the
+    # Validate Rows button so operators can audit dataset health without leaving the tab.
+    row_filter_status_text: str = ""
+    # Friendly headline label shown at the top of the Per-Model RMSE card. Updates as
+    # the operator changes selection — before any eval, it shows "Ready to compare on
+    # <dataset_name>"; after an eval, it shows the eval scope + sample count.
+    headline_status_label: str = ""
     include_mike: bool = True
     include_camarillo: bool = True
     include_ann: bool = True
@@ -219,6 +235,14 @@ class ModelingController:
             self.state.eval_sample_count_warning = self._eval_sample_count_warning(
                 selected_dataset_summary, selected_test_dataset_path=self.state.selected_test_dataset_path
             )
+            self.state.artifact_dataset_mismatch = self._artifact_dataset_mismatch_warning(
+                dataset_summary=selected_dataset_summary,
+                artifact_details=selected_artifact_details,
+            )
+            self.state.headline_status_label = self._headline_status_label(
+                dataset_summary=selected_dataset_summary,
+                last_result=self._last_result,
+            )
             self.state.include_mike = bool(self.config.include_mike)
             self.state.include_camarillo = bool(self.config.include_camarillo)
             self.state.include_ann = bool(self.config.include_ann)
@@ -253,6 +277,42 @@ class ModelingController:
     def set_include_ann(self, value: bool) -> None:
         with self._lock:
             self.config.include_ann = bool(value)
+
+    def validate_rows_for_eval(self) -> RowFilterReport | None:
+        """Run the complete_rows_only row filter on the effective eval dataset.
+
+        Picks the test dataset if set (Wolfe-style override), else the selected
+        training dataset. Updates ``state.row_filter_status_text`` with the
+        result summary. Returns the report so callers can inspect details.
+        """
+        with self._lock:
+            test_path = self.state.selected_test_dataset_path
+            dataset_summary = self._selected_dataset_summary
+        target: Path | None = None
+        if test_path:
+            target = Path(test_path)
+        elif dataset_summary is not None:
+            target = Path(dataset_summary.path)
+        if target is None:
+            with self._lock:
+                self.state.row_filter_status_text = "Select a dataset first."
+            return None
+        try:
+            report = validate_legacy_ann_rows(target)
+        except Exception as exc:
+            with self._lock:
+                self.state.row_filter_status_text = f"Row validation failed: {exc}"
+            return None
+        status = "ok" if report.can_train else f"blocked: {report.block_reason}"
+        text = (
+            f"Row filter on {target.name}: {report.complete_row_count} complete, "
+            f"{report.excluded_row_count} excluded "
+            f"(target={report.target_complete_row_count}, {status})."
+        )
+        with self._lock:
+            self.state.row_filter_status_text = text
+            self.state.status_message = text
+        return report
 
     def set_test_dataset_path(self, value: str) -> None:
         """Optional override dataset to evaluate against (Wolfe §3.2.3).
@@ -507,6 +567,12 @@ class ModelingController:
         out: list[HeadlineMetric] = []
         for evaluation in result.model_evaluations.values():
             metrics = evaluation.metrics
+            axis_rmse = list(metrics.axis_position_rmse_mm or [])
+            per_axis = (
+                (float(axis_rmse[0]), float(axis_rmse[1]), float(axis_rmse[2]))
+                if len(axis_rmse) >= 3
+                else None
+            )
             out.append(
                 HeadlineMetric(
                     label=metrics.label,
@@ -518,6 +584,17 @@ class ModelingController:
                     ),
                     status=str(metrics.status),
                     reason=str(metrics.reason or ""),
+                    per_axis_rmse_mm=per_axis,
+                    mean_position_error_mm=(
+                        float(metrics.mean_position_error_mm)
+                        if metrics.mean_position_error_mm is not None
+                        else None
+                    ),
+                    max_position_error_mm=(
+                        float(metrics.max_position_error_mm)
+                        if metrics.max_position_error_mm is not None
+                        else None
+                    ),
                 )
             )
         return out
@@ -598,6 +675,80 @@ class ModelingController:
                 "collect more before citing the number."
             )
         return ""
+
+    @staticmethod
+    def _headline_status_label(
+        *,
+        dataset_summary: ModelingDatasetSummary | None,
+        last_result: ModelingEvaluationResult | None,
+    ) -> str:
+        """Build the friendly status label shown on the Per-Model RMSE card.
+
+        Before any eval: "Ready to compare on <dataset_name>".
+        After an eval: "Last eval: <best_label> <rmse> mm on <samples> samples [scope]".
+        """
+        if last_result is not None:
+            best = sorted(
+                (
+                    evaluation.metrics
+                    for evaluation in last_result.model_evaluations.values()
+                    if evaluation.metrics.status == "completed"
+                    and evaluation.metrics.position_rmse_mm is not None
+                ),
+                key=lambda m: float(m.position_rmse_mm),
+            )
+            scope = str(last_result.evaluation_scope_used or "").strip().lower()
+            scope_label = {
+                "separate_test_dataset": "separate test dataset",
+                "artifact_test_split": "held-out split",
+                "full_dataset": "full dataset",
+            }.get(scope, scope or "unknown scope")
+            if best:
+                return (
+                    f"Last eval: {best[0].label} {float(best[0].position_rmse_mm):.2f} mm "
+                    f"on {last_result.selected_sample_count} samples ({scope_label})."
+                )
+            return f"Last eval completed on {last_result.selected_sample_count} samples ({scope_label})."
+        if dataset_summary is not None:
+            return f"Ready to compare on {dataset_summary.run_name}."
+        return "Select a dataset to begin."
+
+    @staticmethod
+    def _artifact_dataset_mismatch_warning(
+        *,
+        dataset_summary: ModelingDatasetSummary | None,
+        artifact_details: ArtifactDetails | None,
+    ) -> str:
+        """Detect when the selected ANN artifact was trained on a different dataset.
+
+        Operators routinely pick an artifact intending "the model trained on this run"
+        but actually point at one trained elsewhere. The resulting numbers then mean
+        something different. Surface this as a chip rather than letting it propagate
+        into a published RMSE.
+        """
+        if dataset_summary is None or artifact_details is None:
+            return ""
+        metadata = dict(artifact_details.metadata or {})
+        artifact_dataset = dict(metadata.get("dataset", {}) or {})
+        linked_run_name = str(artifact_dataset.get("run_name", "") or "").strip()
+        linked_path = str(artifact_dataset.get("path", "") or "").strip()
+        if not linked_run_name and not linked_path:
+            return ""
+        current_run_name = str(dataset_summary.run_name or "").strip()
+        current_path = str(dataset_summary.path)
+        # Match by run_name OR by resolved path — either is sufficient.
+        try:
+            if linked_path and Path(linked_path).resolve() == Path(current_path).resolve():
+                return ""
+        except Exception:
+            pass
+        if linked_run_name and linked_run_name == current_run_name:
+            return ""
+        return (
+            f"⚠ Selected ANN artifact was trained on '{linked_run_name or 'a different dataset'}'. "
+            f"You're evaluating against '{current_run_name}' — that's a cross-acquisition test "
+            "(legitimate, but the numbers are NOT 'how well this model fits its own training data')."
+        )
 
     @staticmethod
     def _eval_is_thesis_grade(result: ModelingEvaluationResult | None) -> bool:

@@ -67,9 +67,9 @@ class AnnTrainingWindow(QWidget):
         content_root.setSpacing(12)
 
         hint = QLabel(
-            "Train the legacy full-pose ANN directly from canonical modeling datasets. "
-            "V1 keeps the scope to dataset selection, backend/device inspection, warmup runtime estimate, "
-            "training, cancellation, and artifact management."
+            "Train an ANN from a canonical collect_pose_command_dataset run. "
+            "Defaults: XYZ-only output (3-out), standardized I/O, random-grouped split, "
+            "L2 + early stopping. Run a multi-seed sweep for Wolfe-style variance estimates."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color: {COLORS.text_secondary};")
@@ -219,7 +219,11 @@ class AnnTrainingWindow(QWidget):
         artifact_card.body_layout.addWidget(self.artifact_pairs)
         left_column.addWidget(artifact_card, 1)
 
-        params_card = _Card("Training Parameters", "Legacy ANN architecture with full-pose output and grouped train/validation/test splits.")
+        params_card = _Card(
+            "Training Parameters",
+            "ANN architecture + optimizer knobs. Defaults are Wolfe-compatible "
+            "([32,32], ADAM, lr=1e-3, weight_decay=1e-4, early stopping).",
+        )
         params_form = QFormLayout()
         params_form.setContentsMargins(0, 0, 0, 0)
         params_form.setSpacing(10)
@@ -342,6 +346,11 @@ class AnnTrainingWindow(QWidget):
         )
         self.run_sweep_button = QPushButton("Run Model Sweep")
         self.run_sweep_button.setProperty("variant", "ghost")
+        self.run_sweep_button.setToolTip(
+            "Train a fleet (linear ridge baseline + N×M architectures × seeds) on the same "
+            "shared split. Best-by-test-RMSE is selected automatically. With Seeds≥10 this "
+            "matches Wolfe MS thesis §3.2.2 methodology for variance estimation."
+        )
         self.run_sweep_button.clicked.connect(self.controller.run_sweep)
         sweep_row.addWidget(self.sweep_include_linear_check, 2)
         sweep_row.addWidget(self.sweep_extra_edit, 3)

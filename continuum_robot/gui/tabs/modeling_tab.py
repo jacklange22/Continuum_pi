@@ -68,11 +68,13 @@ class ModelingTab(QWidget):
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(12)
 
-        title = QLabel("Modeling Analysis")
+        title = QLabel("Single-Segment Modeling")
         title.setProperty("role", "title")
         hint = QLabel(
-            "Browse canonical modeling datasets and trained ANN artifacts, then compare Mike, Camarillo, "
-            "and ANN predictions on the same selected dataset without mixing this workflow into training or control."
+            "Compare Mike, Camarillo, and a trained ANN on a single-segment "
+            "collect_pose_command_dataset run. Optionally evaluate against a separate "
+            "test acquisition (Wolfe §3.2.3) for thesis-grade cross-acquisition numbers. "
+            "Two-segment work lives on its own tab."
         )
         hint.setProperty("role", "hint")
         hint.setWordWrap(True)
@@ -129,7 +131,12 @@ class ModelingTab(QWidget):
         right.setSpacing(12)
         columns.addLayout(right, 4)
 
-        dataset_card = _Card("Modeling Datasets", "Canonical `collect_pose_command_dataset` runs available for evaluation.")
+        dataset_card = _Card(
+            "Modeling Datasets",
+            "Canonical collect_pose_command_dataset runs. "
+            "workspace_coverage runs are usually training sets; "
+            "angular_test_mesh runs are ideal Test Datasets (Wolfe §3.2.3).",
+        )
         dataset_buttons = QHBoxLayout()
         dataset_buttons.setContentsMargins(0, 0, 0, 0)
         self.refresh_button = QPushButton("Refresh")
@@ -146,6 +153,18 @@ class ModelingTab(QWidget):
         self.dataset_list.setMinimumHeight(220)
         self.dataset_list.currentItemChanged.connect(self._on_dataset_selected)
         dataset_card.body_layout.addWidget(self.dataset_list)
+        # Empty-state hint — shown only when zero datasets are discovered, with a clear
+        # next action so the operator isn't left staring at a blank list.
+        self.dataset_empty_hint = QLabel(
+            "No collect_pose_command_dataset runs found. "
+            "Run one via the Experiment tab to populate this list."
+        )
+        self.dataset_empty_hint.setWordWrap(True)
+        self.dataset_empty_hint.setStyleSheet(
+            f"color: {COLORS.text_muted}; font-style: italic; padding: 6px 10px;"
+        )
+        self.dataset_empty_hint.setVisible(False)
+        dataset_card.body_layout.addWidget(self.dataset_empty_hint)
         # Positive identifier chip — surfaces dataset_mode at a glance. Especially useful
         # for spotting the new angular_test_mesh acquisitions intended as eval targets.
         self.dataset_mode_chip = QLabel("")
@@ -159,7 +178,11 @@ class ModelingTab(QWidget):
         dataset_card.body_layout.addWidget(self.dataset_pairs)
         left.addWidget(dataset_card)
 
-        artifact_card = _Card("ANN Artifacts", "Previously trained ANN bundles from the ANN Training popout.")
+        artifact_card = _Card(
+            "ANN Artifacts",
+            "Forward (cable → tip pose) ANN bundles trained via the ANN Training popout. "
+            "Inverse models are hidden — train one via the popout for forward comparison here.",
+        )
         artifact_buttons = QHBoxLayout()
         artifact_buttons.setContentsMargins(0, 0, 0, 0)
         self.open_artifact_button = QPushButton("Open Artifact Folder")
@@ -172,6 +195,18 @@ class ModelingTab(QWidget):
         self.artifact_list.setMinimumHeight(200)
         self.artifact_list.currentItemChanged.connect(self._on_artifact_selected)
         artifact_card.body_layout.addWidget(self.artifact_list)
+        # Mismatch chip — fires when the selected artifact was trained on a different
+        # dataset than the currently-selected one. Operator sees this before clicking
+        # Run Comparison and getting unexpected numbers.
+        self.artifact_mismatch_chip = QLabel("")
+        self.artifact_mismatch_chip.setWordWrap(True)
+        self.artifact_mismatch_chip.setStyleSheet(
+            f"color: {COLORS.warning_fg}; background: {COLORS.warning_bg}; "
+            f"border: 1px solid {COLORS.warning_fg}; border-radius: 8px; "
+            f"padding: 8px 12px; font-weight: 500;"
+        )
+        self.artifact_mismatch_chip.setVisible(False)
+        artifact_card.body_layout.addWidget(self.artifact_mismatch_chip)
         self.artifact_pairs = _PairsWidget()
         artifact_card.body_layout.addWidget(self.artifact_pairs)
         left.addWidget(artifact_card, 1)
@@ -191,7 +226,11 @@ class ModelingTab(QWidget):
         history_card.body_layout.addWidget(self.history_hint)
         left.addWidget(history_card)
 
-        controls_card = _Card("Evaluation Controls", "Choose which models to compare and which dataset slice to use.")
+        controls_card = _Card(
+            "Evaluation Controls",
+            "Pick models, scope, and (optionally) a separate test dataset. Defaults are "
+            "Mike + Camarillo + ANN on the artifact's held-out split.",
+        )
         controls_row = QHBoxLayout()
         controls_row.setContentsMargins(0, 0, 0, 0)
         controls_row.setSpacing(10)
@@ -249,14 +288,28 @@ class ModelingTab(QWidget):
             "Open the ANN training popout with the currently selected modeling dataset preloaded."
         )
         self.train_ann_button.clicked.connect(self._open_ann_training_from_modeling)
+        self.validate_rows_button = QPushButton("Validate Rows")
+        self.validate_rows_button.setProperty("variant", "ghost")
+        self.validate_rows_button.setToolTip(
+            "Apply the complete_rows_only filter to the test dataset (or training "
+            "dataset if no override) and surface the count + exclusion reasons."
+        )
+        self.validate_rows_button.clicked.connect(self._on_validate_rows_clicked)
         self.open_results_button = QPushButton("Open Results Folder")
         self.open_results_button.setProperty("variant", "ghost")
         self.open_results_button.clicked.connect(self._open_results_folder)
         action_row.addWidget(self.evaluate_button)
         action_row.addWidget(self.train_ann_button)
+        action_row.addWidget(self.validate_rows_button)
         action_row.addWidget(self.open_results_button)
         action_row.addStretch(1)
         controls_card.body_layout.addLayout(action_row)
+        # Row-filter status echo. Hidden until Validate Rows is clicked at least once.
+        self.row_filter_status_label = QLabel("")
+        self.row_filter_status_label.setWordWrap(True)
+        self.row_filter_status_label.setStyleSheet(f"color: {COLORS.text_secondary};")
+        self.row_filter_status_label.setVisible(False)
+        controls_card.body_layout.addWidget(self.row_filter_status_label)
         left.addWidget(controls_card)
 
         # Two-segment work moved to its own tab (TwoSegmentModelingTab). This tab
@@ -271,6 +324,19 @@ class ModelingTab(QWidget):
             "Per-Model RMSE",
             "Surgical target: ≤1mm (green). 1–3mm amber. >3mm red.",
         )
+        # Quick-share toolbar — operator-friendly export buttons next to the headline.
+        toolbar_row = QHBoxLayout()
+        toolbar_row.setContentsMargins(0, 0, 0, 0)
+        self.copy_summary_button = QPushButton("Copy summary")
+        self.copy_summary_button.setProperty("variant", "ghost")
+        self.copy_summary_button.setToolTip(
+            "Copy a plain-text summary of the last evaluation (per-model RMSE + scope) "
+            "to the clipboard. Easy to paste into a lab notebook or chat."
+        )
+        self.copy_summary_button.clicked.connect(self._copy_summary_to_clipboard)
+        toolbar_row.addWidget(self.copy_summary_button)
+        toolbar_row.addStretch(1)
+        headline_card.body_layout.addLayout(toolbar_row)
         self.status_label = QLabel("Select a dataset, choose models, then run a comparison.")
         self.status_label.setWordWrap(True)
         self.status_label.setStyleSheet(f"color: {COLORS.text_secondary};")
@@ -341,10 +407,21 @@ class ModelingTab(QWidget):
         self._sync_history_list(state)
         self._sync_test_dataset_combo(state)
         self.dataset_pairs.set_pairs(state.dataset_summary_pairs)
+        self._sync_dataset_empty_hint(state)
         self._sync_dataset_mode_chip(state)
         self.artifact_pairs.set_pairs(state.artifact_summary_pairs)
+        self.artifact_mismatch_chip.setText(state.artifact_dataset_mismatch)
+        self.artifact_mismatch_chip.setVisible(bool(state.artifact_dataset_mismatch))
         self.evaluation_pairs.set_pairs(state.evaluation_summary_pairs)
         self.headline_metrics_widget.set_metrics(state.headline_metrics)
+        # Copy-summary button is meaningful only when there's something to copy.
+        self.copy_summary_button.setEnabled(bool(state.headline_metrics))
+        self.validate_rows_button.setEnabled(bool(state.selected_dataset_path))
+        if state.row_filter_status_text:
+            self.row_filter_status_label.setText(state.row_filter_status_text)
+            self.row_filter_status_label.setVisible(True)
+        else:
+            self.row_filter_status_label.setVisible(False)
         # Show exactly one of the chips: positive when thesis-grade, caveat when not,
         # nothing before any evaluation has run.
         ran_an_eval = bool(state.headline_metrics)
@@ -358,7 +435,9 @@ class ModelingTab(QWidget):
         self.eval_sample_count_chip.setText(state.eval_sample_count_warning)
         self.eval_sample_count_chip.setVisible(bool(state.eval_sample_count_warning))
         self.results_widget.set_model(state.visualization_model)
-        self.status_label.setText(state.status_message)
+        # Prefer the structured headline label when available; fall back to status_message
+        # only when no contextual label has been computed yet.
+        self.status_label.setText(state.headline_status_label or state.status_message)
         self.evaluate_button.setEnabled(state.can_evaluate)
         self.open_dataset_button.setEnabled(bool(state.selected_dataset_path))
         self.open_artifact_button.setEnabled(bool(state.selected_artifact_path))
@@ -447,6 +526,49 @@ class ModelingTab(QWidget):
         path_str = str(item.data(Qt.UserRole) or "")
         if path_str:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path_str))
+
+    def _on_validate_rows_clicked(self) -> None:
+        self.controller.validate_rows_for_eval()
+        self.update(self.controller.refresh())
+
+    def _copy_summary_to_clipboard(self) -> None:
+        """Push a plain-text version of the last evaluation to the system clipboard."""
+        state = self.controller.refresh()
+        if not state.headline_metrics:
+            self.status_label.setText("Nothing to copy yet — run a comparison first.")
+            return
+        lines: list[str] = []
+        lines.append(f"Modeling comparison — {state.selected_dataset_path}")
+        if state.selected_test_dataset_path:
+            lines.append(f"Test dataset (override): {state.selected_test_dataset_path}")
+        if state.last_eval_thesis_grade:
+            lines.append("Eval: thesis-grade (separate test acquisition)")
+        elif state.last_eval_same_session:
+            lines.append("Eval: same-session caveat applies — not thesis-grade")
+        for metric in state.headline_metrics:
+            if metric.rmse_mm is not None:
+                lines.append(f"  {metric.label}: {metric.rmse_mm:.3f} mm RMSE")
+            else:
+                lines.append(f"  {metric.label}: {metric.status} ({metric.reason or 'unavailable'})")
+        if state.eval_sample_count_warning:
+            lines.append(state.eval_sample_count_warning)
+        text = "\n".join(lines)
+        # Cheap clipboard access — works headless when no real Qt app is shown.
+        try:
+            from PySide6.QtGui import QGuiApplication
+
+            clipboard = QGuiApplication.clipboard()
+            if clipboard is not None:
+                clipboard.setText(text)
+                self.status_label.setText("Copied summary to clipboard.")
+                return
+        except Exception:
+            pass
+        # Fall back to status label echo.
+        self.status_label.setText(text)
+
+    def _sync_dataset_empty_hint(self, state: ModelingViewState) -> None:
+        self.dataset_empty_hint.setVisible(len(state.datasets) == 0)
 
     def _sync_dataset_mode_chip(self, state: ModelingViewState) -> None:
         """Show the selected dataset's mode as a colored chip on the dataset card."""
@@ -683,6 +805,22 @@ class _HeadlineMetricsWidget(QWidget):
             f"background: {COLORS.surface_bg}; border: 2px solid {border_color}; "
             f"border-radius: 12px;"
         )
+        # Tooltip: full per-axis + mean/max breakdown without taking screen space.
+        tooltip_lines: list[str] = [f"{metric.label}"]
+        if metric.rmse_mm is not None:
+            tooltip_lines.append(f"Position RMSE: {metric.rmse_mm:.3f} mm")
+        if metric.per_axis_rmse_mm is not None:
+            x, y, z = metric.per_axis_rmse_mm
+            tooltip_lines.append(f"Per-axis RMSE — X {x:.3f}  Y {y:.3f}  Z {z:.3f} mm")
+        if metric.mean_position_error_mm is not None:
+            tooltip_lines.append(f"Mean position error: {metric.mean_position_error_mm:.3f} mm")
+        if metric.max_position_error_mm is not None:
+            tooltip_lines.append(f"Max position error: {metric.max_position_error_mm:.3f} mm")
+        if metric.status != "completed" or metric.rmse_mm is None:
+            tooltip_lines.append(f"Status: {metric.status}")
+            if metric.reason:
+                tooltip_lines.append(f"Reason: {metric.reason}")
+        tile.setToolTip("\n".join(tooltip_lines))
         layout = QVBoxLayout(tile)
         layout.setContentsMargins(14, 10, 14, 12)
         layout.setSpacing(2)

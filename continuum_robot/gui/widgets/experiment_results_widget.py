@@ -112,8 +112,36 @@ class ExperimentResultsWidget(QWidget):
             chart.addAxis(axis_y, Qt.AlignLeft)
             series.attachAxis(axis_x)
             series.attachAxis(axis_y)
+            # Reference lines (e.g. surgical-accuracy 1mm target). We draw each as a
+            # QLineSeries spanning the full category range. Because QtCharts requires
+            # a numeric x-axis for a continuous line series, we attach the reference
+            # lines to a separate hidden QValueAxis pinned to (0, len(categories)).
+            has_reference = bool(model.reference_lines)
+            if has_reference and model.categories:
+                ref_axis_x = QValueAxis()
+                ref_axis_x.setRange(-0.5, len(model.categories) - 0.5)
+                ref_axis_x.setVisible(False)
+                chart.addAxis(ref_axis_x, Qt.AlignBottom)
+                pen_dash = Qt.DashLine
+                max_y_existing = max([float(v) for v in model.values] or [0.0])
+                ref_max = max([float(y) for y, _, _ in model.reference_lines] or [0.0])
+                target_y_max = max(max_y_existing, ref_max) * 1.15 if (max_y_existing or ref_max) else 1.0
+                axis_y.setRange(0.0, max(target_y_max, 0.001))
+                for y_value, ref_label, color_hex in model.reference_lines:
+                    line = QLineSeries()
+                    line.setName(ref_label)
+                    pen = line.pen()
+                    pen.setColor(QColor(color_hex))
+                    pen.setStyle(pen_dash)
+                    pen.setWidthF(1.8)
+                    line.setPen(pen)
+                    line.append(-0.5, float(y_value))
+                    line.append(len(model.categories) - 0.5, float(y_value))
+                    chart.addSeries(line)
+                    line.attachAxis(ref_axis_x)
+                    line.attachAxis(axis_y)
             _style_chart(chart, model.title)
-            chart.legend().setVisible(False)
+            chart.legend().setVisible(has_reference)
             return _chart_panel(chart, model.caption)
         if model.kind == "line":
             chart = QChart()

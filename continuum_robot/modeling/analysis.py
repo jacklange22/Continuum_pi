@@ -499,7 +499,15 @@ def build_modeling_visualization(
                 categories=comparison_labels,
                 values=[float(evaluation.metrics.position_rmse_mm or 0.0) for evaluation in available],
                 color_hex="#2563eb",
-                caption="RMS tip-position error on the selected evaluation set.",
+                caption=(
+                    "RMS tip-position error on the selected evaluation set. "
+                    "Reference lines: 1mm surgical-accuracy target (green), "
+                    "2.24mm Wolfe baseline (amber)."
+                ),
+                reference_lines=[
+                    (1.0, "1mm target (surgical)", "#16a34a"),
+                    (2.24, "Wolfe ANN baseline (2.24mm)", "#d97706"),
+                ],
             )
         )
         charts.append(

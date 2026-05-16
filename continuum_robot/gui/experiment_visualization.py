@@ -63,6 +63,11 @@ class ChartModel:
     color_hex: str = COLORS.selection_bg
     table_headers: list[str] = field(default_factory=list)
     table_rows: list[list[str]] = field(default_factory=list)
+    # Optional horizontal reference lines for ``kind=='bar'`` charts. Each entry is
+    # ``(y_value, label, color_hex)``. Renderer draws a dashed line across the chart
+    # at ``y_value`` with the label in the legend. Useful for accuracy targets
+    # (e.g. 1mm surgical-accuracy line) and physical floors (FLE etc.).
+    reference_lines: list[tuple[float, str, str]] = field(default_factory=list)
 
 
 @dataclass

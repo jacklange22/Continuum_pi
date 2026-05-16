@@ -900,7 +900,7 @@ def evaluate_preflight(
                 )
             )
         else:
-            checks.append(_ok("mode", "Run Mode", "Live Motor Babble collection will use the connected servo service."))
+            checks.append(_ok("mode", "Run Mode", "Live Random Data Collection will use the connected servo service."))
             checks.append(
                 PreflightCheck(
                     "neutral_setpoints",
@@ -915,7 +915,7 @@ def evaluate_preflight(
             )
         if operating_context.operating_mode == "parallel_single":
             if expected_dims != 8 or not operating_context.mirror_pairs:
-                checks.append(_blocked("single_segment", "Parallel Single", f"Parallel-single Motor Babble requires 8 commanded servos and mirror pairs; found {commanded_servo_ids}."))
+                checks.append(_blocked("single_segment", "Parallel Single", f"Parallel-single Random Data Collection requires 8 commanded servos and mirror pairs; found {commanded_servo_ids}."))
             else:
                 checks.append(
                     _ok(
@@ -944,7 +944,7 @@ def evaluate_preflight(
                         )
                     )
         elif expected_dims != 4:
-            checks.append(_blocked("single_segment", "Single Segment", f"Motor Babble currently supports exactly 4 active segment servos; found {commanded_servo_ids}."))
+            checks.append(_blocked("single_segment", "Single Segment", f"Random Data Collection currently supports exactly 4 active segment servos; found {commanded_servo_ids}."))
         else:
             checks.append(
                 _ok(
