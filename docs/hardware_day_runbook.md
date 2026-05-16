@@ -86,11 +86,46 @@ Pretension hardware ladder:
 
 ## 5. Servo And Pretension
 
+Pretension now lives in one place: the **Segment Pretension Trial** section on
+the Servos tab. Tuning happens on the Experiments tab `pretension_validation`
+page; the Servos-tab button just runs the saved config.
+
 1. Start with manual jog/readiness checks.
 2. Use manual startup capture as the fallback baseline.
-3. For automatic pretension, use `single_segment` only.
-4. Start with current-only or very small-travel validation before full tracker-enabled pretension.
-5. Treat current as servo-reported current estimate / load proxy, not tendon force.
+3. **Run the tightening-sign verification before the first pretension trial.**
+   Programmatically: drive `PretensionTrialController.verify_tightening_signs`
+   from a Python prompt or scripted runner, OR jog each active servo `-5` ticks
+   manually and confirm the tendon TIGHTENS; then `+5` and confirm it RELEASES.
+   The algorithm hardcodes `decreasing tick = tightening`. Any servo that is
+   physically wound the other way will be RELEASED by the algorithm while the
+   others tighten — STOP and fix the wiring/spool before running pretension.
+4. Optional but recommended: from the Servos tab, click **Record Manual Baseline**
+   5 times (hand-tension the spine between captures) so the trial run produces
+   a meaningful algorithm-vs-manual comparison report.
+5. Click **Run Pretension Trial** on the Servos tab. Defaults from
+   `config/experiment_pretension_validation.example.yaml`: `repeat_runs: 5`,
+   `tip_centering_variant: paired_then_tip`, target band [20, 40] mA, accept
+   gates at 15 mA balance and 2 mm tip XY offset.
+6. Inspect output in `data/experiments/pretension_validation/<run>/`:
+   - `pretension_algorithm_vs_manual.md` — per-metric Algorithm vs Manual table
+     with verdict cells
+   - `pretension_algorithm_vs_manual.png` — 2x2 figure (tip XY scatter,
+     per-servo final-current bars, per-run spread bars, tip-error bars)
+   - `summary.json`, `metrics.csv`, and the standard pretension figures
+7. Treat current as servo-reported current estimate / load proxy, not tendon
+   force. The Phase 1 retune scaled defaults to the live-rig tension scale
+   (15 mA light, 30 mA tight, 50 mA a lot).
+
+Variants available via `tip_centering_variant` in the Experiments tab config:
+
+- `current_only` — symmetric paired take-up only; no tip feedback. Useful
+  baseline that doesn't need a tracker.
+- `paired_then_tip` (default) — current-band take-up then conservative pair
+  stepping with sign-flip recovery for tip centering. Tracker required.
+- `jacobian_learned_tip` — experimental. Probes each pair to learn a 2x2 tip
+  Jacobian, then drives the tip to target via inverse Jacobian. Fails safe to
+  `jacobian_probe_unobservable` / `jacobian_singular` when the probe response
+  is below the configured threshold. Use only after `paired_then_tip` is solid.
 
 Stop reasons to take seriously:
 
@@ -100,6 +135,13 @@ Stop reasons to take seriously:
 - `tip_response_wrong_direction`
 - `safety_limit_rejected`
 - `current_noise_too_high`
+- `jacobian_probe_unobservable` (variant=jacobian_learned_tip only; the spine
+  isn't moving the tip enough for the Jacobian probe to be trustworthy)
+- `jacobian_singular` (variant=jacobian_learned_tip only; the learned Jacobian
+  has near-zero determinant — usually means both pairs move the tip in nearly
+  the same direction; switch to `paired_then_tip`)
+- `wrap_risk_blocked` (algorithm refused to command across the raw tick wrap
+  boundary; safety preflight working as intended)
 
 ## 6. Experiment Workflow
 
