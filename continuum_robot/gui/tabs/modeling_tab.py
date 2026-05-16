@@ -68,11 +68,13 @@ class ModelingTab(QWidget):
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(12)
 
-        title = QLabel("Modeling Analysis")
+        title = QLabel("Single-Segment Modeling")
         title.setProperty("role", "title")
         hint = QLabel(
-            "Browse canonical modeling datasets and trained ANN artifacts, then compare Mike, Camarillo, "
-            "and ANN predictions on the same selected dataset without mixing this workflow into training or control."
+            "Compare Mike, Camarillo, and a trained ANN on a single-segment "
+            "collect_pose_command_dataset run. Optionally evaluate against a separate "
+            "test acquisition (Wolfe §3.2.3) for thesis-grade cross-acquisition numbers. "
+            "Two-segment work lives on its own tab."
         )
         hint.setProperty("role", "hint")
         hint.setWordWrap(True)
@@ -129,7 +131,12 @@ class ModelingTab(QWidget):
         right.setSpacing(12)
         columns.addLayout(right, 4)
 
-        dataset_card = _Card("Modeling Datasets", "Canonical `collect_pose_command_dataset` runs available for evaluation.")
+        dataset_card = _Card(
+            "Modeling Datasets",
+            "Canonical collect_pose_command_dataset runs. "
+            "workspace_coverage runs are usually training sets; "
+            "angular_test_mesh runs are ideal Test Datasets (Wolfe §3.2.3).",
+        )
         dataset_buttons = QHBoxLayout()
         dataset_buttons.setContentsMargins(0, 0, 0, 0)
         self.refresh_button = QPushButton("Refresh")
@@ -171,7 +178,11 @@ class ModelingTab(QWidget):
         dataset_card.body_layout.addWidget(self.dataset_pairs)
         left.addWidget(dataset_card)
 
-        artifact_card = _Card("ANN Artifacts", "Previously trained ANN bundles from the ANN Training popout.")
+        artifact_card = _Card(
+            "ANN Artifacts",
+            "Forward (cable → tip pose) ANN bundles trained via the ANN Training popout. "
+            "Inverse models are hidden — train one via the popout for forward comparison here.",
+        )
         artifact_buttons = QHBoxLayout()
         artifact_buttons.setContentsMargins(0, 0, 0, 0)
         self.open_artifact_button = QPushButton("Open Artifact Folder")
@@ -215,7 +226,11 @@ class ModelingTab(QWidget):
         history_card.body_layout.addWidget(self.history_hint)
         left.addWidget(history_card)
 
-        controls_card = _Card("Evaluation Controls", "Choose which models to compare and which dataset slice to use.")
+        controls_card = _Card(
+            "Evaluation Controls",
+            "Pick models, scope, and (optionally) a separate test dataset. Defaults are "
+            "Mike + Camarillo + ANN on the artifact's held-out split.",
+        )
         controls_row = QHBoxLayout()
         controls_row.setContentsMargins(0, 0, 0, 0)
         controls_row.setSpacing(10)
