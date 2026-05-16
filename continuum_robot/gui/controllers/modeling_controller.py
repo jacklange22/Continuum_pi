@@ -91,6 +91,10 @@ class ModelingViewState:
     # Set by validate_rows_for_eval(). UI surfaces the row-filter status next to the
     # Validate Rows button so operators can audit dataset health without leaving the tab.
     row_filter_status_text: str = ""
+    # Friendly headline label shown at the top of the Per-Model RMSE card. Updates as
+    # the operator changes selection — before any eval, it shows "Ready to compare on
+    # <dataset_name>"; after an eval, it shows the eval scope + sample count.
+    headline_status_label: str = ""
     include_mike: bool = True
     include_camarillo: bool = True
     include_ann: bool = True
@@ -234,6 +238,10 @@ class ModelingController:
             self.state.artifact_dataset_mismatch = self._artifact_dataset_mismatch_warning(
                 dataset_summary=selected_dataset_summary,
                 artifact_details=selected_artifact_details,
+            )
+            self.state.headline_status_label = self._headline_status_label(
+                dataset_summary=selected_dataset_summary,
+                last_result=self._last_result,
             )
             self.state.include_mike = bool(self.config.include_mike)
             self.state.include_camarillo = bool(self.config.include_camarillo)
@@ -667,6 +675,43 @@ class ModelingController:
                 "collect more before citing the number."
             )
         return ""
+
+    @staticmethod
+    def _headline_status_label(
+        *,
+        dataset_summary: ModelingDatasetSummary | None,
+        last_result: ModelingEvaluationResult | None,
+    ) -> str:
+        """Build the friendly status label shown on the Per-Model RMSE card.
+
+        Before any eval: "Ready to compare on <dataset_name>".
+        After an eval: "Last eval: <best_label> <rmse> mm on <samples> samples [scope]".
+        """
+        if last_result is not None:
+            best = sorted(
+                (
+                    evaluation.metrics
+                    for evaluation in last_result.model_evaluations.values()
+                    if evaluation.metrics.status == "completed"
+                    and evaluation.metrics.position_rmse_mm is not None
+                ),
+                key=lambda m: float(m.position_rmse_mm),
+            )
+            scope = str(last_result.evaluation_scope_used or "").strip().lower()
+            scope_label = {
+                "separate_test_dataset": "separate test dataset",
+                "artifact_test_split": "held-out split",
+                "full_dataset": "full dataset",
+            }.get(scope, scope or "unknown scope")
+            if best:
+                return (
+                    f"Last eval: {best[0].label} {float(best[0].position_rmse_mm):.2f} mm "
+                    f"on {last_result.selected_sample_count} samples ({scope_label})."
+                )
+            return f"Last eval completed on {last_result.selected_sample_count} samples ({scope_label})."
+        if dataset_summary is not None:
+            return f"Ready to compare on {dataset_summary.run_name}."
+        return "Select a dataset to begin."
 
     @staticmethod
     def _artifact_dataset_mismatch_warning(

@@ -520,6 +520,58 @@ def test_modeling_tab_history_list_double_click_opens_folder(tmp_path: Path, mon
         controller.shutdown()
 
 
+def test_modeling_tab_headline_status_label_reflects_state(tmp_path: Path) -> None:
+    """Status label echoes the dataset name pre-eval and the best RMSE post-eval."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        # Pre-eval: status label mentions the run name.
+        assert run_dir.name in tab.status_label.text()
+        # Inject a fake result and re-render — post-eval label changes.
+        fake_metrics = ModelMetrics(
+            model_key="ann",
+            label="ANN",
+            status="completed",
+            sample_count=10,
+            position_rmse_mm=0.87,
+        )
+        fake_result = ModelingEvaluationResult(
+            dataset_summary=controller._selected_dataset_summary,
+            artifact_details=controller._selected_artifact_details,
+            evaluation_scope_requested="full_dataset",
+            evaluation_scope_used="full_dataset",
+            evaluation_scope_note="",
+            selected_sample_count=10,
+            output_dir=tmp_path / "data" / "modeling_results" / "label_fake",
+            summary_path=tmp_path / "summary.json",
+            metadata_path=tmp_path / "metadata.json",
+            comparison_csv_path=tmp_path / "comp.csv",
+            phase_csv_path=None,
+            plot_paths={},
+            model_evaluations={"ann": ModelEvaluation(metrics=fake_metrics, predictions=None)},
+            visualization_model=VisualizationModel(summary_lines=["ok"]),
+        )
+        controller._last_result = fake_result  # type: ignore[attr-defined]
+        tab.update(controller.refresh())
+        text = tab.status_label.text().lower()
+        assert "ann" in text
+        assert "0.87" in text or "0.870" in text
+        assert "full dataset" in text or "10 samples" in text
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
 def test_modeling_tab_validate_rows_button_runs_row_filter_on_eval_dataset(tmp_path: Path) -> None:
     """Click 'Validate Rows' → row filter runs on the effective eval dataset, status echoes."""
     _app()

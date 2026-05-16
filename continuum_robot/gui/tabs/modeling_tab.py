@@ -435,7 +435,9 @@ class ModelingTab(QWidget):
         self.eval_sample_count_chip.setText(state.eval_sample_count_warning)
         self.eval_sample_count_chip.setVisible(bool(state.eval_sample_count_warning))
         self.results_widget.set_model(state.visualization_model)
-        self.status_label.setText(state.status_message)
+        # Prefer the structured headline label when available; fall back to status_message
+        # only when no contextual label has been computed yet.
+        self.status_label.setText(state.headline_status_label or state.status_message)
         self.evaluate_button.setEnabled(state.can_evaluate)
         self.open_dataset_button.setEnabled(bool(state.selected_dataset_path))
         self.open_artifact_button.setEnabled(bool(state.selected_artifact_path))
