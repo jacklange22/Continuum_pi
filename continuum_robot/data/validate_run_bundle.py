@@ -20,9 +20,8 @@ EXPECTED_REPORT_FIGURES = {
         "thesis_02_sample_count_vs_quality.png",
     ],
     "registration_validation": [
-        "registration_frame_origins_report.png",
-        "registration_fre_report.png",
-        "registration_transform_spread_report.png",
+        "thesis_01_robot_origins_3d.png",
+        "thesis_02_within_vs_cross_run_quality.png",
     ],
     "single_segment_repeatability": [
         "repeatability_clusters_report.png",

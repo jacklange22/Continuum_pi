@@ -148,90 +148,6 @@ def _write_pivot_run(
     ).output_dir
 
 
-def test_registration_report_figures_use_thesis_labels_and_units(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    if importlib.util.find_spec("matplotlib") is None:
-        pytest.skip("matplotlib is required for report figure rendering")
-    metrics = {
-        "valid_run_count": 3,
-        "fre_summary_mm": {"mean": 0.45, "max": 0.52},
-        "robot_origin_spread_mm": {
-            "rms_distance_mm": 0.38,
-            "max_distance_mm": 0.55,
-        },
-        "consensus_robot_origin_in_aurora_mm": [10.1, 2.0, -1.0],
-        "per_run_rows": [
-            {
-                "fre_mm": 0.41,
-                "robot_origin_in_aurora_mm": [10.0, 2.0, -1.0],
-                "translation_delta_to_consensus_mm": 0.10,
-                "rotation_delta_to_consensus_deg": 0.02,
-            },
-            {
-                "fre_mm": 0.47,
-                "robot_origin_in_aurora_mm": [10.4, 1.8, -0.8],
-                "translation_delta_to_consensus_mm": 0.34,
-                "rotation_delta_to_consensus_deg": 0.80,
-            },
-            {
-                "fre_mm": 0.52,
-                "robot_origin_in_aurora_mm": [9.8, 2.3, -1.1],
-                "translation_delta_to_consensus_mm": 0.42,
-                "rotation_delta_to_consensus_deg": 0.65,
-            },
-        ],
-    }
-    captured: dict[str, list[tuple[str, str, str]]] = {}
-
-    def _capture_save(fig, path: Path, *, quality: str | None = None) -> Path:
-        _ = quality
-        captured[Path(path).name] = [
-            (ax.get_title(loc="left") or ax.get_title(), ax.get_xlabel(), ax.get_ylabel())
-            for ax in fig.axes
-        ]
-        Path(path).write_bytes(b"png")
-        import_matplotlib().close(fig)
-        return Path(path)
-
-    monkeypatch.setattr(calibration_validation_outputs, "save_figure", _capture_save)
-
-    calibration_validation_outputs._write_registration_origin_report(
-        path=tmp_path / "registration_frame_origins_report.png",
-        metrics=metrics,
-    )
-    calibration_validation_outputs._write_registration_fre_report(
-        path=tmp_path / "registration_fre_report.png",
-        metrics=metrics,
-    )
-    calibration_validation_outputs._write_registration_transform_spread_report(
-        path=tmp_path / "registration_transform_spread_report.png",
-        metrics=metrics,
-    )
-
-    assert captured["registration_frame_origins_report.png"][0] == (
-        "Registration Frame Origin Consistency",
-        "Aurora X (mm)",
-        "Aurora Y (mm)",
-    )
-    assert captured["registration_fre_report.png"][0] == (
-        "Registration FRE Distribution",
-        "FRE (mm)",
-        "Run count",
-    )
-    assert captured["registration_transform_spread_report.png"][0] == (
-        "Registration Transform Spread",
-        "",
-        "Translation delta (mm)",
-    )
-    assert captured["registration_transform_spread_report.png"][1] == (
-        "",
-        "Registration run",
-        "Rotation delta (deg)",
-    )
-
-
 def test_registration_validation_analysis_and_runner_outputs(tmp_path: Path) -> None:
     record_a = _write_registration_record(
         tmp_path,
@@ -293,18 +209,42 @@ def test_registration_validation_analysis_and_runner_outputs(tmp_path: Path) -> 
 
     assert result.success is True
     assert result.paths.output_dir.name.endswith("_registration_validation")
-    assert (result.paths.output_dir / "metrics.csv").exists()
-    assert (result.paths.output_dir / "registration_validation_summary.txt").exists()
-    assert (result.paths.output_dir / "registration_frame_origins_report.png").exists()
-    assert (result.paths.output_dir / "registration_fre_report.png").exists()
-    assert (result.paths.output_dir / "registration_transform_spread_report.png").exists()
-    assert (result.paths.output_dir / "registration_fre_histogram.png").exists()
-    assert (result.paths.output_dir / "registration_frame_origins.png").exists()
-    assert (result.paths.output_dir / "registration_transform_spread.png").exists()
+    assert (result.paths.output_dir / "samples.jsonl").exists()
+    assert (result.paths.output_dir / "debug.json").exists()
+    assert (result.paths.output_dir / "thesis_01_robot_origins_3d.png").exists()
+    assert (result.paths.output_dir / "thesis_02_within_vs_cross_run_quality.png").exists()
+    for removed in [
+        "registration_frame_origins_report.png",
+        "registration_fre_report.png",
+        "registration_transform_spread_report.png",
+        "registration_fre_histogram.png",
+        "registration_frame_origins.png",
+        "registration_transform_spread.png",
+        "metrics.csv",
+        "registration_validation_summary.txt",
+        "transform_chain_overview.png",
+        "transform_chain_summary.txt",
+    ]:
+        assert not (result.paths.output_dir / removed).exists(), f"deprecated registration artifact should be gone: {removed}"
     assert result.summary.experiment_metrics["units"]["translation_spread_mm"] == "mm"
-    registration_csv_header = (result.paths.output_dir / "metrics.csv").read_text(encoding="utf-8").splitlines()[0]
-    assert "translation_delta_to_consensus_mm" in registration_csv_header
-    assert "rotation_delta_to_consensus_deg" in registration_csv_header
+
+    # samples.jsonl is the canonical ExperimentTimeseriesSample contract;
+    # registration_validation aggregates other artifacts and emits no timeseries.
+    samples_text = (result.paths.output_dir / "samples.jsonl").read_text(encoding="utf-8").strip()
+    assert samples_text == "", "samples.jsonl must be empty for registration_validation (aggregation experiment)"
+
+    # Regression guard: GUI controller reloads the dataset after every run;
+    # samples.jsonl must remain a valid ExperimentTimeseriesSample stream.
+    reloaded = runner.load_dataset(result.paths.output_dir)
+    assert reloaded.samples == []
+    assert reloaded.summary.experiment_metrics["valid_run_count"] == 3
+
+    debug_payload = json.loads((result.paths.output_dir / "debug.json").read_text(encoding="utf-8"))
+    assert debug_payload["experiment_name"] == "registration_validation"
+    assert debug_payload["valid_run_count"] == 3
+    assert "outlier_detection" in debug_payload
+    assert "per_run_deltas" in debug_payload
+    assert "rotation_summary_deg" in debug_payload
 
     candidates = list_registration_validation_candidates(tmp_path)
     assert [candidate.path for candidate in candidates][:2] == [

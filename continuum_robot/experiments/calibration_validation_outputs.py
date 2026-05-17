@@ -49,66 +49,39 @@ except ModuleNotFoundError:
 
 
 def write_registration_validation_outputs(*, output_dir: Path, metadata, summary) -> dict[str, Path]:
-    """Write canonical output artifacts for registration validation."""
+    """Write canonical output artifacts for registration validation.
+
+    Figure contract (mirrors pivot_validation):
+      - 2 thesis-quality PNGs only
+      - debug.json folds in outliers, rotation deltas, and the run_review sidecar
+      - per-run rows live in summary.json under experiment_metrics.per_run_rows
+        (NOT in samples.jsonl, which is the typed timeseries contract loaded by
+        the GUI; aggregation experiments keep it empty)
+      - metrics.csv and registration_validation_summary.txt are intentionally
+        NOT written (GUI controller shows "not written" gracefully; bundle
+        exporter only picks them up if present)
+    """
     metrics = summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else {}
     output_dir = Path(output_dir)
-    csv_path = output_dir / "metrics.csv"
-    text_path = output_dir / "registration_validation_summary.txt"
-    origin_report_path = output_dir / "registration_frame_origins_report.png"
-    fre_report_path = output_dir / "registration_fre_report.png"
-    spread_report_path = output_dir / "registration_transform_spread_report.png"
-    fre_plot_path = output_dir / "registration_fre_histogram.png"
-    origin_plot_path = output_dir / "registration_frame_origins.png"
-    spread_plot_path = output_dir / "registration_transform_spread.png"
-    _write_rows_csv(
-        csv_path,
-        rows=metrics.get("per_run_rows") or [],
-        header_overrides={
-            "path": "path",
-            "label": "label",
-            "timestamp_utc": "timestamp_utc",
-            "measurement_tool_id": "measurement_tool_id",
-            "coil_tool_id": "coil_tool_id",
-            "fre_mm": "fre_mm",
-            "landmark_count": "landmark_count",
-            "robot_origin_in_aurora_mm": "robot_origin_in_aurora_mm",
-            "translation_delta_to_consensus_mm": "translation_delta_to_consensus_mm",
-            "rotation_delta_to_consensus_deg": "rotation_delta_to_consensus_deg",
-            "origin_distance_to_consensus_mm": "origin_distance_to_consensus_mm",
-            "run_index": "run_index",
-        },
-    )
-    text_path.write_text(
-        "\n".join(build_registration_validation_summary_lines(metadata=metadata, summary=summary, metrics=metrics)).strip() + "\n",
-        encoding="utf-8",
+    debug_json_path = output_dir / "debug.json"
+    thesis_01_path = output_dir / "thesis_01_robot_origins_3d.png"
+    thesis_02_path = output_dir / "thesis_02_within_vs_cross_run_quality.png"
+
+    _write_registration_debug_json(
+        path=debug_json_path, output_dir=output_dir, metadata=metadata, summary=summary, metrics=metrics,
     )
     for path, writer in [
-        (origin_report_path, lambda: _write_registration_origin_report(path=origin_report_path, metrics=metrics)),
-        (fre_report_path, lambda: _write_registration_fre_report(path=fre_report_path, metrics=metrics)),
-        (spread_report_path, lambda: _write_registration_transform_spread_report(path=spread_report_path, metrics=metrics)),
+        (thesis_01_path, lambda: _write_registration_thesis_01_robot_origins_3d(path=thesis_01_path, metrics=metrics)),
+        (thesis_02_path, lambda: _write_registration_thesis_02_within_vs_cross_run_quality(path=thesis_02_path, metrics=metrics)),
     ]:
         try:
             writer()
         except Exception:
             _write_plot_placeholder(path)
-    if _qt_plotting_is_safe():
-        _ensure_plot_qt_app()
-        _write_registration_fre_histogram(fre_plot_path=fre_plot_path, metrics=metrics)
-        _write_registration_origin_plot(origin_plot_path=origin_plot_path, metrics=metrics)
-        _write_registration_spread_plot(spread_plot_path=spread_plot_path, metrics=metrics)
-    else:
-        _write_plot_placeholder(fre_plot_path)
-        _write_plot_placeholder(origin_plot_path)
-        _write_plot_placeholder(spread_plot_path)
     return {
-        "metrics_csv_path": csv_path,
-        "summary_text_path": text_path,
-        "origin_report_path": origin_report_path,
-        "fre_report_path": fre_report_path,
-        "spread_report_path": spread_report_path,
-        "fre_plot_path": fre_plot_path,
-        "origin_plot_path": origin_plot_path,
-        "spread_plot_path": spread_plot_path,
+        "debug_json_path": debug_json_path,
+        "thesis_01_path": thesis_01_path,
+        "thesis_02_path": thesis_02_path,
     }
 
 
@@ -145,46 +118,6 @@ def write_pivot_validation_outputs(*, output_dir: Path, metadata, summary) -> di
     }
 
 
-def build_registration_validation_summary_lines(*, metadata, summary, metrics: dict[str, Any]) -> list[str]:
-    """Return human-readable registration-validation summary text."""
-    spread = dict(metrics.get("robot_origin_spread_mm", {}) or {})
-    lines = [
-        "Registration Validation Summary",
-        "Offline analysis of repeated saved registration solves. Metrics quantify FRE spread, transform spread, and where the downstream robot/model frame origin lands in Aurora space (all distances in mm, rotation in degrees).",
-        "",
-        f"Run ID: {metadata.run_id}",
-        f"Timestamp: {metadata.timestamp_utc}",
-        f"Status: {summary.status}",
-        f"Selected runs: {int(metrics.get('selected_run_count', 0) or 0)}",
-        f"Valid runs: {int(metrics.get('valid_run_count', 0) or 0)}",
-        f"Skipped runs: {int(metrics.get('invalid_run_count', 0) or 0)}",
-        "",
-        "Definitions:",
-        "- FRE is residual error on the fiducials used by each registration solve (not an external ground-truth held-out error).",
-        "- Translation/rotation spread values are transform deltas relative to a consensus transform across selected runs.",
-        "",
-        f"FRE mean / std / max (mm): {_metric_triplet(metrics.get('fre_summary_mm'))}",
-        f"Translation spread mean / std / max (mm): {_metric_triplet(metrics.get('translation_delta_to_consensus_summary_mm'))}",
-        f"Rotation spread mean / std / max (deg): {_metric_triplet(metrics.get('rotation_delta_to_consensus_summary_deg'))}",
-        f"Robot-origin RMS / max distance to consensus (mm): {_fmt(spread.get('rms_distance_mm'))} / {_fmt(spread.get('max_distance_mm'))}",
-        f"Robot-origin XYZ span (mm): x={_fmt(spread.get('span_x_mm'))}, y={_fmt(spread.get('span_y_mm'))}, z={_fmt(spread.get('span_z_mm'))}",
-        "",
-        "Saved plots:",
-        "- registration_frame_origins_report.png",
-        "- registration_fre_report.png",
-        "- registration_transform_spread_report.png",
-        "- registration_fre_histogram.png",
-        "- registration_frame_origins.png",
-        "- registration_transform_spread.png",
-    ]
-    invalid_runs = metrics.get("invalid_runs") or []
-    if invalid_runs:
-        lines.extend(["", "Skipped source artifacts:"])
-        for row in invalid_runs:
-            lines.append(f"- {row.get('path')}: {row.get('reason')}")
-    return lines
-
-
 def _write_rows_csv(
     path: Path,
     *,
@@ -217,152 +150,6 @@ def _csv_value(value: Any) -> Any:
     if isinstance(value, (list, dict)):
         return str(value)
     return value
-
-
-def _write_registration_origin_report(*, path: Path, metrics: dict[str, Any]) -> None:
-    rows = _registration_rows(metrics)
-    origins = [
-        [float(value) for value in row.get("robot_origin_in_aurora_mm")]
-        for row in rows
-        if isinstance(row.get("robot_origin_in_aurora_mm"), list) and len(row.get("robot_origin_in_aurora_mm")) >= 3
-    ]
-    with report_style() as plt:
-        fig, ax = plt.subplots(figsize=(5.4, 5.0), constrained_layout=True)
-    if not origins:
-        ax.text(0.5, 0.5, "No valid solved frame origins available", transform=ax.transAxes, ha="center", va="center")
-    else:
-        xs = [point[0] for point in origins]
-        ys = [point[1] for point in origins]
-        ax.scatter(xs, ys, s=34, color=color("measured"), alpha=0.78, linewidths=0, label="Solved origins")
-        consensus = metrics.get("consensus_robot_origin_in_aurora_mm")
-        if isinstance(consensus, list) and len(consensus) >= 2:
-            cx = float(consensus[0])
-            cy = float(consensus[1])
-            for x_value, y_value in zip(xs, ys):
-                ax.plot([cx, x_value], [cy, y_value], color=color("neutral"), linewidth=0.7, alpha=0.35)
-            ax.scatter(
-                [cx],
-                [cy],
-                s=70,
-                marker="X",
-                color=color("reference"),
-                edgecolors="white",
-                linewidths=0.8,
-                zorder=4,
-                label="Consensus origin",
-            )
-            xs.append(cx)
-            ys.append(cy)
-        set_equal_xy(ax, x_values=xs, y_values=ys, minimum_span=1.0)
-    style_axes(
-        ax,
-        title="Registration Frame Origin Consistency",
-        xlabel="Aurora X (mm)",
-        ylabel="Aurora Y (mm)",
-    )
-    legend(ax, loc="best")
-    spread = dict(metrics.get("robot_origin_spread_mm", {}) or {})
-    fre_summary = dict(metrics.get("fre_summary_mm", {}) or {})
-    add_metric_box(
-        ax,
-        _compact_metric_lines(
-            [
-                f"Mean FRE: {_fmt(fre_summary.get('mean'))} mm",
-                f"RMS origin spread: {_fmt(spread.get('rms_distance_mm'))} mm",
-                f"Max origin spread: {_fmt(spread.get('max_distance_mm'))} mm",
-                f"Runs: {int(metrics.get('valid_run_count', len(origins)) or 0)}",
-            ]
-        ),
-        loc="upper right",
-    )
-    save_figure(fig, path)
-
-
-def _write_registration_fre_report(*, path: Path, metrics: dict[str, Any]) -> None:
-    values = [
-        float(row.get("fre_mm"))
-        for row in _registration_rows(metrics)
-        if row.get("fre_mm") is not None
-    ]
-    with report_style() as plt:
-        fig, ax = plt.subplots(figsize=(7.2, 4.5), constrained_layout=True)
-    if not values:
-        ax.text(0.5, 0.5, "No valid FRE values available", transform=ax.transAxes, ha="center", va="center")
-    else:
-        bins = max(3, min(10, int(np.ceil(np.sqrt(len(values))))))
-        ax.hist(values, bins=bins, color=color("measured"), edgecolor="white", linewidth=0.8, alpha=0.88)
-        mean_fre = _optional_float((metrics.get("fre_summary_mm") or {}).get("mean"))
-        if mean_fre is not None:
-            ax.axvline(
-                mean_fre,
-                color=color("reference"),
-                linestyle="-",
-                linewidth=1.4,
-                label=f"Mean FRE ({mean_fre:.3f} mm)",
-            )
-            legend(ax, loc="upper right")
-    style_axes(
-        ax,
-        title="Registration FRE Distribution",
-        xlabel="FRE (mm)",
-        ylabel="Run count",
-    )
-    save_figure(fig, path)
-
-
-def _write_registration_transform_spread_report(*, path: Path, metrics: dict[str, Any]) -> None:
-    rows = _registration_rows(metrics)
-    labels = [f"R{index + 1}" for index, _row in enumerate(rows)]
-    translation_values = [
-        float(row.get("translation_delta_to_consensus_mm", 0.0) or 0.0)
-        for row in rows
-    ]
-    rotation_values = [
-        float(row.get("rotation_delta_to_consensus_deg", 0.0) or 0.0)
-        for row in rows
-    ]
-    with report_style() as plt:
-        fig, axes = plt.subplots(2, 1, figsize=(7.2, 5.8), constrained_layout=True, sharex=True)
-    top_ax, bottom_ax = axes
-    if not rows:
-        top_ax.text(0.5, 0.5, "No valid transform spread values available", transform=top_ax.transAxes, ha="center", va="center")
-        bottom_ax.set_visible(False)
-    else:
-        x_positions = list(range(len(rows)))
-        top_bars = top_ax.bar(
-            x_positions,
-            translation_values,
-            color=color("measured"),
-            edgecolor="white",
-            linewidth=0.7,
-        )
-        bottom_bars = bottom_ax.bar(
-            x_positions,
-            rotation_values,
-            color=color("fit"),
-            edgecolor="white",
-            linewidth=0.7,
-        )
-        if len(rows) <= 12:
-            top_ax.bar_label(top_bars, labels=[f"{value:.2f}" for value in translation_values], padding=2, fontsize=8)
-            bottom_ax.bar_label(bottom_bars, labels=[f"{value:.2f}" for value in rotation_values], padding=2, fontsize=8)
-        top_ax.set_ylim(0.0, max(translation_values + [0.0]) * 1.18 + 0.02)
-        bottom_ax.set_ylim(0.0, max(rotation_values + [0.0]) * 1.18 + 0.02)
-        bottom_ax.set_xticks(x_positions)
-        bottom_ax.set_xticklabels(labels)
-    style_axes(
-        top_ax,
-        title="Registration Transform Spread",
-        xlabel="",
-        ylabel="Translation delta (mm)",
-    )
-    style_axes(
-        bottom_ax,
-        title="",
-        xlabel="Registration run",
-        ylabel="Rotation delta (deg)",
-    )
-    save_figure(fig, path)
 
 
 def _pivot_rows(metrics: dict[str, Any]) -> list[dict[str, Any]]:
@@ -711,6 +498,335 @@ def _write_pivot_thesis_02_sample_count_vs_quality(*, path: Path, metrics: dict[
     save_figure(fig, path)
 
 
+def _registration_rows(metrics: dict[str, Any]) -> list[dict[str, Any]]:
+    return [dict(row) for row in list(metrics.get("per_run_rows") or [])]
+
+
+def _write_registration_debug_json(
+    *,
+    path: Path,
+    output_dir: Path,
+    metadata,
+    summary,
+    metrics: dict[str, Any],
+) -> None:
+    """Consolidate registration diagnostics into a single JSON file.
+
+    Outlier detection (per-run origin_distance_to_consensus_mm beyond mean+2σ),
+    full per-run translation + rotation deltas (which don't fit on the main
+    thesis figures), any skipped source artifacts, and the run_review sidecar
+    payload if present.
+    """
+    rows = _registration_rows(metrics)
+    origin_distance_summary = dict(metrics.get("origin_distance_to_consensus_summary_mm", {}) or {})
+    mean_dist = _optional_float(origin_distance_summary.get("mean")) or 0.0
+    std_dist = _optional_float(origin_distance_summary.get("std")) or 0.0
+    outlier_threshold_mm = mean_dist + 2.0 * std_dist
+
+    outliers: list[dict[str, Any]] = []
+    for row in rows:
+        distance = _optional_float(row.get("origin_distance_to_consensus_mm"))
+        if distance is None or std_dist <= 0.0:
+            continue
+        if distance > outlier_threshold_mm:
+            outliers.append(
+                {
+                    "label": row.get("label"),
+                    "path": row.get("path"),
+                    "origin_distance_to_consensus_mm": distance,
+                    "fre_mm": _optional_float(row.get("fre_mm")),
+                    "translation_delta_to_consensus_mm": _optional_float(row.get("translation_delta_to_consensus_mm")),
+                    "rotation_delta_to_consensus_deg": _optional_float(row.get("rotation_delta_to_consensus_deg")),
+                    "z_score": (distance - mean_dist) / std_dist if std_dist > 0 else None,
+                }
+            )
+
+    per_run_deltas = [
+        {
+            "label": row.get("label"),
+            "fre_mm": _optional_float(row.get("fre_mm")),
+            "translation_delta_to_consensus_mm": _optional_float(row.get("translation_delta_to_consensus_mm")),
+            "rotation_delta_to_consensus_deg": _optional_float(row.get("rotation_delta_to_consensus_deg")),
+            "origin_distance_to_consensus_mm": _optional_float(row.get("origin_distance_to_consensus_mm")),
+            "landmark_count": int(row.get("landmark_count", 0) or 0) or None,
+        }
+        for row in rows
+    ]
+
+    review_payload: dict[str, Any] | None = None
+    review_path = output_dir / "run_review.json"
+    if review_path.exists():
+        try:
+            review_payload = json.loads(review_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            review_payload = {"parse_error": True}
+
+    payload = {
+        "schema_version": "1.0",
+        "run_id": getattr(metadata, "run_id", None),
+        "experiment_name": getattr(metadata, "experiment_name", "registration_validation"),
+        "status": getattr(summary, "status", None),
+        "outlier_detection": {
+            "method": "origin_distance_to_consensus_mm > mean + 2*std",
+            "mean_distance_mm": mean_dist,
+            "std_distance_mm": std_dist,
+            "threshold_mm": outlier_threshold_mm,
+            "outlier_runs": outliers,
+            "outlier_count": len(outliers),
+        },
+        "per_run_deltas": per_run_deltas,
+        "rotation_summary_deg": dict(metrics.get("rotation_delta_to_consensus_summary_deg", {}) or {}),
+        "invalid_source_runs": list(metrics.get("invalid_runs") or []),
+        "selected_run_count": int(metrics.get("selected_run_count", 0) or 0),
+        "valid_run_count": int(metrics.get("valid_run_count", 0) or 0),
+        "run_review": review_payload,
+    }
+    path.write_text(json.dumps(payload, indent=2, default=_json_default), encoding="utf-8")
+
+
+def _write_registration_thesis_01_robot_origins_3d(*, path: Path, metrics: dict[str, Any]) -> None:
+    """Thesis figure 1: 3D scatter of solved robot-frame origins in Aurora space.
+
+    Each point is one registration solve; color encodes that run's FRE.
+    A consensus X marks the mean robot-origin, and a wireframe sphere at
+    radius = max per-run distance to consensus visually answers
+    "how consistently is the robot frame placed across re-solves?"
+    """
+    rows = _registration_rows(metrics)
+    points: list[tuple[float, float, float]] = []
+    fre_for_color: list[float] = []
+    labels: list[str] = []
+    for index, row in enumerate(rows):
+        origin = row.get("robot_origin_in_aurora_mm")
+        if not (isinstance(origin, list) and len(origin) >= 3):
+            continue
+        try:
+            point = (float(origin[0]), float(origin[1]), float(origin[2]))
+        except (TypeError, ValueError):
+            continue
+        points.append(point)
+        fre_for_color.append(float(row.get("fre_mm") or 0.0))
+        labels.append(f"R{index + 1}")
+
+    fig, ax = create_3d_figure(size="thesis_3d")
+    if not points:
+        ax.text2D(0.5, 0.5, "No valid solved frame origins available",
+                  transform=ax.transAxes, ha="center", va="center")
+        style_3d_axes(ax, title="")
+        fig.suptitle("Registration Robot-Origin Consistency (Aurora Frame)",
+                     fontsize=13, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    zs = [point[2] for point in points]
+
+    consensus = metrics.get("consensus_robot_origin_in_aurora_mm")
+    consensus_xyz: tuple[float, float, float] | None = None
+    if isinstance(consensus, list) and len(consensus) >= 3:
+        try:
+            consensus_xyz = (float(consensus[0]), float(consensus[1]), float(consensus[2]))
+        except (TypeError, ValueError):
+            consensus_xyz = None
+
+    # Wireframe spread reference: 3 great circles at radius = max distance to consensus.
+    if consensus_xyz is not None and len(points) >= 2:
+        cx, cy, cz = consensus_xyz
+        radius = max(
+            float(np.linalg.norm(np.asarray(point, dtype=float) - np.asarray(consensus_xyz, dtype=float)))
+            for point in points
+        )
+        if radius > 0.0:
+            theta = np.linspace(0.0, 2.0 * np.pi, 96)
+            circle_kwargs = {"color": color("neutral"), "alpha": 0.32, "linewidth": 0.9, "linestyle": "--"}
+            ax.plot(cx + radius * np.cos(theta), cy + radius * np.sin(theta), np.full_like(theta, cz), **circle_kwargs)
+            ax.plot(cx + radius * np.cos(theta), np.full_like(theta, cy), cz + radius * np.sin(theta), **circle_kwargs)
+            ax.plot(np.full_like(theta, cx), cy + radius * np.cos(theta), cz + radius * np.sin(theta),
+                    label=f"Max-spread sphere ({radius:.3f} mm)", **circle_kwargs)
+
+    scatter = ax.scatter(
+        xs, ys, zs,
+        c=fre_for_color, cmap="viridis",
+        s=70, depthshade=True, edgecolors="white", linewidths=0.6,
+    )
+
+    if consensus_xyz is not None:
+        cx, cy, cz = consensus_xyz
+        for px, py, pz in points:
+            ax.plot([cx, px], [cy, py], [cz, pz], color=color("neutral"), linewidth=0.9, alpha=0.55)
+        ax.scatter(
+            [cx], [cy], [cz],
+            s=200, marker="X",
+            color=color("reference"), edgecolors="white", linewidths=1.2,
+            depthshade=False, label="Consensus",
+        )
+
+    if len(points) <= 12:
+        for (px, py, pz), label_text in zip(points, labels):
+            ax.text(px, py, pz, f"  {label_text}", fontsize=8, color=color("text"), zorder=10)
+
+    pad_xs, pad_ys, pad_zs = list(xs), list(ys), list(zs)
+    if consensus_xyz is not None:
+        pad_xs.append(consensus_xyz[0])
+        pad_ys.append(consensus_xyz[1])
+        pad_zs.append(consensus_xyz[2])
+    set_equal_xyz(ax, x_values=pad_xs, y_values=pad_ys, z_values=pad_zs, minimum_span=1.0, pad_fraction=0.20)
+    style_3d_axes(ax, xlabel="Aurora X (mm)", ylabel="Aurora Y (mm)", zlabel="Aurora Z (mm)")
+
+    cbar = fig.colorbar(scatter, ax=ax, shrink=0.55, pad=0.12)
+    cbar.set_label("Per-run FRE (mm)")
+    cbar.outline.set_edgecolor(color("grid"))
+
+    legend(ax, loc="upper left")
+
+    fig.suptitle("Registration Robot-Origin Consistency (Aurora Frame)",
+                 fontsize=13, fontweight="bold", x=0.04, ha="left")
+
+    fre_summary = dict(metrics.get("fre_summary_mm", {}) or {})
+    distance_summary = dict(metrics.get("origin_distance_to_consensus_summary_mm", {}) or {})
+    spread = dict(metrics.get("robot_origin_spread_mm", {}) or {})
+    fig.text(
+        0.015, 0.02,
+        "  •  ".join(
+            _compact_metric_lines(
+                [
+                    f"Runs: {int(metrics.get('valid_run_count', len(points)) or 0)}",
+                    f"Mean FRE: {_fmt(fre_summary.get('mean'))} mm",
+                    f"Mean origin spread: {_fmt(distance_summary.get('mean') or spread.get('mean_distance_mm'))} mm",
+                    f"Max origin spread: {_fmt(distance_summary.get('max') or spread.get('max_distance_mm'))} mm",
+                ]
+            )
+        ),
+        fontsize=9, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white", "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
+def _write_registration_thesis_02_within_vs_cross_run_quality(*, path: Path, metrics: dict[str, Any]) -> None:
+    """Thesis figure 2: is within-run FRE a useful proxy for cross-run consistency?
+
+    2D scatter answering: does a low FRE solve also land close to the consensus?
+      - X axis: per-run FRE (mm) — solver's reported within-run residual
+      - Y axis: per-run origin distance to consensus (mm) — cross-run consistency
+      - Marker color: per-run rotation delta to consensus (deg) — rotation-quality face
+    Dashed regression line + correlation coefficient quantify the answer. 2D
+    because all three axes here are quality metrics in three different unit
+    families (mm/mm/deg); forcing them into XYZ would mislead by implying a
+    cubic space.
+    """
+    rows = _registration_rows(metrics)
+    fres: list[float] = []
+    distances: list[float] = []
+    rotations: list[float] = []
+    labels: list[str] = []
+    for index, row in enumerate(rows):
+        fre = _optional_float(row.get("fre_mm"))
+        dist = _optional_float(row.get("origin_distance_to_consensus_mm"))
+        rot = _optional_float(row.get("rotation_delta_to_consensus_deg"))
+        if fre is None or dist is None:
+            continue
+        fres.append(fre)
+        distances.append(dist)
+        rotations.append(rot if rot is not None else 0.0)
+        labels.append(f"R{index + 1}")
+
+    # constrained_layout=False so we can reserve bottom space for the metric strip.
+    fig, ax = create_figure(size="wide", constrained_layout=False)
+    fig.subplots_adjust(left=0.10, right=0.92, top=0.90, bottom=0.22)
+    if not fres:
+        ax.text(0.5, 0.5, "No per-run FRE / consensus-distance data available",
+                transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, xlabel="Per-run FRE (mm)", ylabel="Origin distance to consensus (mm)")
+        fig.suptitle("Registration Within-Run vs Cross-Run Quality",
+                     fontsize=13, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+
+    scatter = ax.scatter(
+        fres, distances,
+        c=rotations, cmap="viridis",
+        s=110, edgecolors="white", linewidths=0.8, zorder=3,
+    )
+
+    # Regression line + correlation (only when X actually varies).
+    correlation: float | None = None
+    if len(set(round(v, 9) for v in fres)) > 1 and len(set(round(v, 9) for v in distances)) > 1:
+        try:
+            slope, intercept = np.polyfit(fres, distances, 1)
+            x_min, x_max = float(min(fres)), float(max(fres))
+            x_pad = max((x_max - x_min) * 0.08, 0.01)
+            x_line = np.linspace(x_min - x_pad, x_max + x_pad, 64)
+            ax.plot(
+                x_line, slope * x_line + intercept,
+                color=color("neutral"), linewidth=1.4, linestyle="--", alpha=0.6, zorder=2,
+            )
+            with np.errstate(invalid="ignore", divide="ignore"):
+                corr = float(np.corrcoef(fres, distances)[0, 1])
+            if np.isfinite(corr):
+                correlation = corr
+        except (ValueError, FloatingPointError, np.linalg.LinAlgError):
+            pass
+
+    # Per-run labels above each marker.
+    for x_val, y_val, label_text in zip(fres, distances, labels):
+        ax.annotate(
+            label_text,
+            xy=(x_val, y_val),
+            xytext=(0, 9),
+            textcoords="offset points",
+            fontsize=9, fontweight="bold",
+            color=color("text"), ha="center",
+        )
+
+    # Y range with headroom for labels and a 0 floor.
+    y_max = max(distances)
+    ax.set_ylim(0.0, y_max * 1.25 + 0.02)
+    x_max = max(fres)
+    x_min = min(fres)
+    x_pad = max((x_max - x_min) * 0.12, 0.02)
+    ax.set_xlim(max(0.0, x_min - x_pad), x_max + x_pad)
+
+    style_axes(ax, xlabel="Per-run FRE (mm)", ylabel="Origin distance to consensus (mm)")
+    cbar = fig.colorbar(scatter, ax=ax, shrink=0.85, pad=0.02)
+    cbar.set_label("Rotation delta (deg)")
+    cbar.outline.set_edgecolor(color("grid"))
+
+    fig.suptitle("Registration Within-Run vs Cross-Run Quality",
+                 fontsize=13, fontweight="bold", x=0.04, ha="left")
+
+    def _corr_phrase(value: float | None) -> str | None:
+        if value is None:
+            return None
+        arrow = "↗" if value >= 0 else "↘"
+        sense = "FRE predicts spread" if value > 0.4 else (
+            "FRE inversely tracks spread" if value < -0.4 else "weak / no relationship"
+        )
+        return f"corr(FRE, spread) = {value:+.2f} {arrow}  ({sense})"
+
+    fre_summary = dict(metrics.get("fre_summary_mm", {}) or {})
+    distance_summary = dict(metrics.get("origin_distance_to_consensus_summary_mm", {}) or {})
+    rotation_summary = dict(metrics.get("rotation_delta_to_consensus_summary_deg", {}) or {})
+    fig.text(
+        0.015, 0.02,
+        "  •  ".join(
+            _compact_metric_lines(
+                [
+                    f"Runs: {len(fres)}",
+                    f"Mean FRE: {_fmt(fre_summary.get('mean'))} mm",
+                    f"Mean spread: {_fmt(distance_summary.get('mean'))} mm",
+                    f"Mean rotation delta: {_fmt(rotation_summary.get('mean'))} deg",
+                    _corr_phrase(correlation),
+                ]
+            )
+        ),
+        fontsize=9, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white", "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
 def _json_default(value: Any) -> Any:
     if isinstance(value, np.ndarray):
         return value.tolist()
@@ -725,10 +841,6 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Unserialisable type: {type(value).__name__}")
 
 
-def _registration_rows(metrics: dict[str, Any]) -> list[dict[str, Any]]:
-    return [dict(row) for row in list(metrics.get("per_run_rows") or [])]
-
-
 def _optional_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -740,133 +852,6 @@ def _optional_float(value: Any) -> float | None:
 
 def _compact_metric_lines(lines: list[str | None]) -> list[str]:
     return [str(line) for line in lines if line]
-
-
-def _write_registration_fre_histogram(*, fre_plot_path: Path, metrics: dict[str, Any]) -> None:
-    image = _new_publication_image(1180, 720)
-    painter = QPainter(image)
-    painter.setRenderHint(QPainter.Antialiasing, True)
-    _draw_title(
-        painter,
-        QRectF(34.0, 24.0, 1112.0, 56.0),
-        "REGISTRATION FRE DISTRIBUTION (MM)",
-        "Histogram of per-run fiducial registration error (FRE) across the selected saved solves.",
-    )
-    chart_rect = QRectF(36.0, 104.0, 740.0, 560.0)
-    summary_rect = QRectF(808.0, 104.0, 338.0, 560.0)
-    _draw_panel(painter, chart_rect, "FRE Histogram")
-    _draw_panel(painter, summary_rect, "Summary")
-    values = [float(row.get("fre_mm")) for row in (metrics.get("per_run_rows") or []) if row.get("fre_mm") is not None]
-    _draw_histogram(
-        painter,
-        chart_rect.adjusted(18.0, 38.0, -18.0, -28.0),
-        values=values,
-        color=QColor("#2563eb"),
-        x_label="FRE (mm)",
-        y_label="Count",
-        empty_text="No valid FRE values were available.",
-    )
-    _draw_summary_pairs(
-        painter,
-        summary_rect.adjusted(16.0, 36.0, -16.0, -16.0),
-        [
-            ("Valid Runs", str(int(metrics.get("valid_run_count", 0) or 0))),
-            ("Mean FRE (mm)", _metric_stat(metrics.get("fre_summary_mm"), "mean")),
-            ("Std FRE (mm)", _metric_stat(metrics.get("fre_summary_mm"), "std")),
-            ("Max FRE (mm)", _metric_stat(metrics.get("fre_summary_mm"), "max")),
-            ("Mean dT (mm)", _metric_stat(metrics.get("translation_delta_to_consensus_summary_mm"), "mean")),
-            ("Mean dR (deg)", _metric_stat(metrics.get("rotation_delta_to_consensus_summary_deg"), "mean")),
-        ],
-    )
-    painter.end()
-    image.save(str(fre_plot_path))
-
-
-def _write_registration_origin_plot(*, origin_plot_path: Path, metrics: dict[str, Any]) -> None:
-    image = _new_publication_image(1180, 760)
-    painter = QPainter(image)
-    painter.setRenderHint(QPainter.Antialiasing, True)
-    _draw_title(
-        painter,
-        QRectF(34.0, 24.0, 1112.0, 56.0),
-        "REGISTRATION FRAME ORIGINS (MM)",
-        "Projected 3D scatter of solved robot/model-frame origins expressed in Aurora space with equal projected scaling.",
-    )
-    scatter_rect = QRectF(36.0, 104.0, 820.0, 600.0)
-    summary_rect = QRectF(888.0, 104.0, 258.0, 600.0)
-    _draw_panel(painter, scatter_rect, "Solved Frame Origins (mm)")
-    _draw_panel(painter, summary_rect, "Spread")
-    points = [
-        np.asarray(row.get("robot_origin_in_aurora_mm") or [], dtype=float)
-        for row in (metrics.get("per_run_rows") or [])
-        if isinstance(row.get("robot_origin_in_aurora_mm"), list) and len(row.get("robot_origin_in_aurora_mm")) == 3
-    ]
-    _draw_projected_scatter(
-        painter,
-        scatter_rect.adjusted(18.0, 38.0, -18.0, -28.0),
-        points=points,
-        point_color=QColor("#0f766e"),
-        point_radius=5.0,
-        empty_text="No valid registration origins were available.",
-        axis_note="Projected axes in mm (equal projected scale)",
-    )
-    spread = dict(metrics.get("robot_origin_spread_mm", {}) or {})
-    _draw_summary_pairs(
-        painter,
-        summary_rect.adjusted(16.0, 36.0, -16.0, -16.0),
-        [
-            ("Std X (mm)", _fmt(spread.get("std_x_mm"))),
-            ("Std Y (mm)", _fmt(spread.get("std_y_mm"))),
-            ("Std Z (mm)", _fmt(spread.get("std_z_mm"))),
-            ("RMS Dist (mm)", _fmt(spread.get("rms_distance_mm"))),
-            ("Max Dist (mm)", _fmt(spread.get("max_distance_mm"))),
-            ("Span X (mm)", _fmt(spread.get("span_x_mm"))),
-            ("Span Y (mm)", _fmt(spread.get("span_y_mm"))),
-            ("Span Z (mm)", _fmt(spread.get("span_z_mm"))),
-        ],
-    )
-    painter.end()
-    image.save(str(origin_plot_path))
-
-
-def _write_registration_spread_plot(*, spread_plot_path: Path, metrics: dict[str, Any]) -> None:
-    rows = list(metrics.get("per_run_rows") or [])
-    labels = [f"R{index + 1}" for index in range(len(rows))]
-    translation_values = [float(row.get("translation_delta_to_consensus_mm", 0.0) or 0.0) for row in rows]
-    rotation_values = [float(row.get("rotation_delta_to_consensus_deg", 0.0) or 0.0) for row in rows]
-    image = _new_publication_image(1180, 760)
-    painter = QPainter(image)
-    painter.setRenderHint(QPainter.Antialiasing, True)
-    _draw_title(
-        painter,
-        QRectF(34.0, 24.0, 1112.0, 56.0),
-        "REGISTRATION TRANSFORM SPREAD (MM / DEG)",
-        "Per-run translation and rotation deltas relative to the consensus transform.",
-    )
-    top_rect = QRectF(36.0, 104.0, 1108.0, 280.0)
-    bottom_rect = QRectF(36.0, 414.0, 1108.0, 280.0)
-    _draw_panel(painter, top_rect, "Translation Delta To Consensus (mm)")
-    _draw_panel(painter, bottom_rect, "Rotation Delta To Consensus (deg)")
-    _draw_bar_chart(
-        painter,
-        top_rect.adjusted(18.0, 38.0, -18.0, -28.0),
-        labels=labels,
-        values=translation_values,
-        color=QColor("#2563eb"),
-        y_label="mm",
-        empty_text="No valid runs were available.",
-    )
-    _draw_bar_chart(
-        painter,
-        bottom_rect.adjusted(18.0, 38.0, -18.0, -28.0),
-        labels=labels,
-        values=rotation_values,
-        color=QColor("#dc2626"),
-        y_label="deg",
-        empty_text="No valid runs were available.",
-    )
-    painter.end()
-    image.save(str(spread_plot_path))
 
 
 def _draw_projected_scatter(
