@@ -980,14 +980,22 @@ def test_tracker_timing_validation_experiment_writes_canonical_outputs_and_summa
     assert result.summary.experiment_metrics["unique_frame_count"] == 1
     assert result.summary.experiment_metrics["requested_tool_ids"] == ["0A", "0B"]
     assert result.summary.experiment_metrics["servo_sync"]["enabled"] is False
-    assert result.paths.output_dir.joinpath("aurora_timing_histogram.png").exists()
-    assert result.paths.output_dir.joinpath("aurora_timing_breakdown.png").exists()
-    assert result.paths.output_dir.joinpath("aurora_timing_timeseries.png").exists()
-    assert result.paths.output_dir.joinpath("aurora_timing_summary.txt").exists()
-    assert not result.paths.output_dir.joinpath("aurora_timing_sync_offsets.png").exists()
-    summary_text = result.paths.output_dir.joinpath("aurora_timing_summary.txt").read_text(encoding="utf-8")
-    assert "GUI refresh rate is not used" in summary_text
-    assert "Backend get_frame" in summary_text
+    assert result.paths.output_dir.joinpath("thesis_01_cycle_time_distribution.png").exists()
+    assert result.paths.output_dir.joinpath("thesis_02_stage_time_budget.png").exists()
+    assert result.paths.output_dir.joinpath("debug.json").exists()
+    for removed in [
+        "aurora_timing_histogram.png",
+        "aurora_timing_breakdown.png",
+        "aurora_timing_timeseries.png",
+        "aurora_timing_summary.txt",
+        "aurora_timing_sync_offsets.png",
+    ]:
+        assert not result.paths.output_dir.joinpath(removed).exists(), f"deprecated tracker_timing artifact should be gone: {removed}"
+    debug_payload = json.loads((result.paths.output_dir / "debug.json").read_text(encoding="utf-8"))
+    assert debug_payload["experiment_name"] == "tracker_timing_validation"
+    assert "duplicate_frames" in debug_payload
+    assert "stage_stats" in debug_payload
+    assert debug_payload["rate"]["aurora_theoretical_max_hz"] == 40.0
     bundle = runner.load_dataset(result.paths.output_dir)
     assert any(sample.extra.get("record_kind") == "tracker_timing" for sample in bundle.samples)
 
@@ -1041,9 +1049,9 @@ def test_tracker_timing_validation_experiment_outputs_do_not_crash_when_optional
     )
 
     assert result.success is True
-    assert result.paths.output_dir.joinpath("aurora_timing_histogram.png").exists()
-    assert result.paths.output_dir.joinpath("aurora_timing_breakdown.png").exists()
-    assert result.paths.output_dir.joinpath("aurora_timing_timeseries.png").exists()
+    assert result.paths.output_dir.joinpath("thesis_01_cycle_time_distribution.png").exists()
+    assert result.paths.output_dir.joinpath("thesis_02_stage_time_budget.png").exists()
+    assert result.paths.output_dir.joinpath("debug.json").exists()
     assert result.summary.experiment_metrics["error_sample_count"] == 1
 
 
@@ -1189,11 +1197,22 @@ def test_servo_tracker_sync_validation_experiment_writes_canonical_outputs_and_s
     assert result.summary.experiment_metrics["servo_telemetry_sample_count"] > 0
     assert result.summary.experiment_metrics["servo_command_sample_count"] > 0
     assert result.summary.experiment_metrics["servo_tracker_sync"]["available"] is True
-    assert result.paths.output_dir.joinpath("servo_tracker_offset_histogram.png").exists()
-    assert result.paths.output_dir.joinpath("servo_tracker_offset_timeseries.png").exists()
-    assert result.paths.output_dir.joinpath("servo_tracker_pose_command_timeseries.png").exists()
-    assert result.paths.output_dir.joinpath("servo_tracker_validity_summary.png").exists()
-    assert result.paths.output_dir.joinpath("servo_tracker_sync_summary.txt").exists()
+    assert result.paths.output_dir.joinpath("thesis_01_pair_time_alignment.png").exists()
+    assert result.paths.output_dir.joinpath("thesis_02_motion_correspondence.png").exists()
+    assert result.paths.output_dir.joinpath("debug.json").exists()
+    for removed in [
+        "servo_tracker_offset_histogram.png",
+        "servo_tracker_offset_timeseries.png",
+        "servo_tracker_pose_command_timeseries.png",
+        "servo_tracker_validity_summary.png",
+        "servo_tracker_sync_summary.txt",
+    ]:
+        assert not result.paths.output_dir.joinpath(removed).exists(), f"deprecated servo_tracker_sync artifact should be gone: {removed}"
+    debug_payload = json.loads((result.paths.output_dir / "debug.json").read_text(encoding="utf-8"))
+    assert debug_payload["experiment_name"] == "servo_tracker_sync_validation"
+    assert "alignment" in debug_payload
+    assert "threshold_cross_rates" in debug_payload["alignment"]
+    assert "sample_counts" in debug_payload
     bundle = runner.load_dataset(result.paths.output_dir)
     assert any(sample.extra.get("record_kind") == "servo_command" for sample in bundle.samples)
     assert any(sample.extra.get("record_kind") == "servo_timing" for sample in bundle.samples)
@@ -1264,8 +1283,9 @@ def test_servo_tracker_sync_validation_outputs_do_not_crash_without_tip_pose(tmp
         },
     )
 
-    assert result.paths.output_dir.joinpath("servo_tracker_pose_command_timeseries.png").exists()
-    assert result.paths.output_dir.joinpath("servo_tracker_validity_summary.png").exists()
+    assert result.paths.output_dir.joinpath("thesis_01_pair_time_alignment.png").exists()
+    assert result.paths.output_dir.joinpath("thesis_02_motion_correspondence.png").exists()
+    assert result.paths.output_dir.joinpath("debug.json").exists()
 
 
 def test_servo_tracker_sync_validation_blocks_legacy_bridge_backend(tmp_path: Path) -> None:

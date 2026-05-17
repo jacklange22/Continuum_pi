@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
 import sys
 from typing import Any
+
+import numpy as np
 
 try:
     from PySide6.QtCore import QPointF, QRectF, Qt
@@ -17,6 +20,14 @@ try:
 except ModuleNotFoundError:
     _QT_AVAILABLE = False
 
+from continuum_robot.experiments.plotting import (
+    color,
+    create_figure,
+    legend,
+    report_style,
+    save_figure,
+    style_axes,
+)
 from continuum_robot.tracking.timing_benchmark import (
     extract_servo_timing_records,
     extract_tracker_timing_records,
@@ -161,42 +172,428 @@ def build_tracker_timing_summary_lines(*, metadata, summary, metrics: dict[str, 
     return lines
 
 
+AURORA_THEORETICAL_INTERVAL_MS = 25.0  # 40 Hz Aurora hardware target
+
+
 def write_tracker_timing_outputs(*, output_dir: Path, metadata, summary, samples) -> dict[str, Path]:
-    """Write stable figure/text artifacts for one timing-diagnostic run."""
+    """Write canonical artifacts for one timing-diagnostic run.
+
+    Figure contract: 2 thesis-quality PNGs only.
+      - thesis_01_cycle_time_distribution.png: histogram + CDF of per-cycle
+        total time with reference at 25 ms (40 Hz Aurora theoretical).
+      - thesis_02_stage_time_budget.png: horizontal stacked bar at four
+        percentiles (median / mean / p95 / p99), each decomposed by stage
+        (backend_call / parse / state_commit), explaining the rate gap.
+    Everything else (duplicate frame stats, per-tool valid rates, servo-sync
+    cross-stream offsets, raw error counts) goes into debug.json. The old
+    Qt-rendered histogram / breakdown / timeseries / sync-offsets PNGs and the
+    aurora_timing_summary.txt are intentionally NOT written.
+    """
     output_dir = Path(output_dir)
-    histogram_path = output_dir / "aurora_timing_histogram.png"
-    breakdown_path = output_dir / "aurora_timing_breakdown.png"
-    timeseries_path = output_dir / "aurora_timing_timeseries.png"
-    summary_text_path = output_dir / "aurora_timing_summary.txt"
-    sync_plot_path = output_dir / "aurora_timing_sync_offsets.png"
+    debug_json_path = output_dir / "debug.json"
+    thesis_01_path = output_dir / "thesis_01_cycle_time_distribution.png"
+    thesis_02_path = output_dir / "thesis_02_stage_time_budget.png"
     metrics = summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else {}
     tracker_records = extract_tracker_timing_records(samples)
     servo_records = extract_servo_timing_records(samples)
-    _write_summary_text(summary_text_path=summary_text_path, metadata=metadata, summary=summary, metrics=metrics)
-    if _qt_plotting_is_safe():
-        _ensure_plot_qt_app()
-        _write_histogram_plot(histogram_path=histogram_path, tracker_records=tracker_records, metrics=metrics)
-        _write_breakdown_plot(breakdown_path=breakdown_path, metrics=metrics)
-        _write_timeseries_plot(timeseries_path=timeseries_path, tracker_records=tracker_records, metrics=metrics)
-    else:
-        _write_plot_placeholder(histogram_path)
-        _write_plot_placeholder(breakdown_path)
-        _write_plot_placeholder(timeseries_path)
-        LOG.warning("Qt plotting backend unavailable; wrote placeholder timing plots under %s", output_dir)
-    written = {
-        "histogram_path": histogram_path,
-        "breakdown_path": breakdown_path,
-        "timeseries_path": timeseries_path,
-        "summary_text_path": summary_text_path,
+
+    _write_tracker_debug_json(
+        path=debug_json_path,
+        output_dir=output_dir,
+        metadata=metadata,
+        summary=summary,
+        metrics=metrics,
+        tracker_records=tracker_records,
+        servo_records=servo_records,
+    )
+    for path, writer in [
+        (thesis_01_path, lambda: _write_tracker_thesis_01_cycle_distribution(
+            path=thesis_01_path, tracker_records=tracker_records, metrics=metrics,
+        )),
+        (thesis_02_path, lambda: _write_tracker_thesis_02_stage_breakdown(
+            path=thesis_02_path, tracker_records=tracker_records, metrics=metrics,
+        )),
+    ]:
+        try:
+            writer()
+        except Exception:
+            _write_plot_placeholder(path)
+    return {
+        "debug_json_path": debug_json_path,
+        "thesis_01_path": thesis_01_path,
+        "thesis_02_path": thesis_02_path,
     }
-    if metrics.get("servo_sync", {}).get("enabled"):
-        if _qt_plotting_is_safe():
-            _ensure_plot_qt_app()
-            _write_sync_plot(sync_plot_path=sync_plot_path, metrics=metrics, servo_records=servo_records)
-        else:
-            _write_plot_placeholder(sync_plot_path)
-        written["sync_plot_path"] = sync_plot_path
-    return written
+
+
+def _filter_analyzed_cycle_times(tracker_records: list[dict[str, Any]]) -> list[float]:
+    """Return non-warmup total_cycle_ms values for analysis."""
+    values: list[float] = []
+    for record in tracker_records:
+        if record.get("warmup_discarded"):
+            continue
+        total = record.get("total_cycle_ms")
+        if total is None:
+            continue
+        try:
+            values.append(float(total))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
+def _filter_analyzed_stage_arrays(tracker_records: list[dict[str, Any]]) -> dict[str, list[float]]:
+    """Return per-stage timing arrays (non-warmup), keyed by stage name."""
+    stages = {"backend_call_ms": [], "parse_ms": [], "state_commit_ms": [], "total_cycle_ms": []}
+    for record in tracker_records:
+        if record.get("warmup_discarded"):
+            continue
+        for key in stages:
+            value = record.get(key)
+            if value is None:
+                continue
+            try:
+                stages[key].append(float(value))
+            except (TypeError, ValueError):
+                continue
+    return stages
+
+
+def _stage_percentile_table(stages: dict[str, list[float]]) -> dict[str, dict[str, float]]:
+    """For each stage compute median/mean/p95/p99 as a dict."""
+    out: dict[str, dict[str, float]] = {}
+    for stage, values in stages.items():
+        if not values:
+            out[stage] = {"median": 0.0, "mean": 0.0, "p95": 0.0, "p99": 0.0}
+            continue
+        arr = np.asarray(values, dtype=float)
+        out[stage] = {
+            "median": float(np.median(arr)),
+            "mean": float(arr.mean()),
+            "p95": float(np.percentile(arr, 95.0)),
+            "p99": float(np.percentile(arr, 99.0)),
+        }
+    return out
+
+
+def _hz_for_ms(value_ms: float) -> float | None:
+    if value_ms is None or value_ms <= 0.0:
+        return None
+    return 1000.0 / float(value_ms)
+
+
+def _write_tracker_thesis_01_cycle_distribution(
+    *,
+    path: Path,
+    tracker_records: list[dict[str, Any]],
+    metrics: dict[str, Any],
+) -> None:
+    """Thesis figure 1: cycle-time distribution + CDF + 40 Hz reference.
+
+    Answers "how fast and how consistent is the tracker?" in one chart.
+    Histogram (count) on left axis, cumulative fraction on right axis. The
+    25 ms vertical line is Aurora's 40 Hz theoretical interval; the shaded
+    region to its left is the "made the 40 Hz budget" zone. Observed mean,
+    p95, p99 marked with vertical lines.
+    """
+    values = _filter_analyzed_cycle_times(tracker_records)
+    fig, ax = create_figure(size="wide", constrained_layout=False)
+    fig.subplots_adjust(left=0.085, right=0.92, top=0.90, bottom=0.22)
+
+    if not values:
+        ax.text(0.5, 0.5, "No analyzed tracker cycles available",
+                transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, xlabel="Total cycle time (ms)", ylabel="Cycle count")
+        fig.suptitle("Tracker Cycle Time Distribution (40 Hz Aurora Target)",
+                     fontsize=13, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+
+    arr = np.asarray(values, dtype=float)
+    mean_ms = float(arr.mean())
+    p95_ms = float(np.percentile(arr, 95.0))
+    p99_ms = float(np.percentile(arr, 99.0))
+    realized_mean_hz = _hz_for_ms(mean_ms) or 0.0
+    realized_p95_hz = _hz_for_ms(p95_ms) or 0.0
+
+    x_min = max(0.0, float(arr.min()) * 0.95)
+    x_max = max(float(arr.max()) * 1.05, AURORA_THEORETICAL_INTERVAL_MS * 1.2)
+
+    # Shade the "made 40 Hz budget" zone
+    ax.axvspan(0.0, AURORA_THEORETICAL_INTERVAL_MS, color=color("accepted"), alpha=0.06, zorder=0)
+
+    bin_count = max(20, min(60, int(np.sqrt(len(arr)) * 2)))
+    counts, bins, _patches = ax.hist(
+        arr, bins=bin_count, range=(x_min, x_max),
+        color=color("measured"), edgecolor="white", linewidth=0.6, alpha=0.85, zorder=2,
+    )
+
+    # CDF overlay on twin y-axis
+    cdf_ax = ax.twinx()
+    sorted_vals = np.sort(arr)
+    cdf_y = np.arange(1, len(sorted_vals) + 1) / float(len(sorted_vals))
+    cdf_ax.plot(sorted_vals, cdf_y, color=color("reference"), linewidth=1.6, alpha=0.85, zorder=3, label="CDF")
+    cdf_ax.set_ylim(0.0, 1.05)
+    cdf_ax.set_ylabel("Cumulative fraction", color=color("reference"))
+    cdf_ax.tick_params(axis="y", colors=color("reference"))
+    cdf_ax.spines["top"].set_visible(False)
+    cdf_ax.spines["right"].set_color(color("reference"))
+
+    # Reference lines
+    ax.axvline(AURORA_THEORETICAL_INTERVAL_MS, color=color("threshold"), linestyle="-",
+               linewidth=1.6, label=f"Aurora 40 Hz target ({AURORA_THEORETICAL_INTERVAL_MS:.0f} ms)", zorder=4)
+    ax.axvline(mean_ms, color=color("fit"), linestyle="--", linewidth=1.4,
+               label=f"Mean ({mean_ms:.1f} ms ≈ {realized_mean_hz:.1f} Hz)", zorder=4)
+    ax.axvline(p95_ms, color=color("rejected"), linestyle=":", linewidth=1.4,
+               label=f"p95 ({p95_ms:.1f} ms ≈ {realized_p95_hz:.1f} Hz)", zorder=4)
+    ax.axvline(p99_ms, color=color("rejected"), linestyle=":", linewidth=1.0, alpha=0.7,
+               label=f"p99 ({p99_ms:.1f} ms)", zorder=4)
+
+    style_axes(ax, xlabel="Total cycle time (ms)", ylabel="Cycle count")
+    ax.set_xlim(x_min, x_max)
+    legend(ax, loc="upper right", ncol=1)
+
+    fig.suptitle("Tracker Cycle Time Distribution (40 Hz Aurora Target)",
+                 fontsize=13, fontweight="bold", x=0.04, ha="left")
+
+    duplicate_ratio = _safe_ratio(metrics.get("duplicate_frame_ratio"))
+    fig.text(
+        0.015, 0.02,
+        "  •  ".join(
+            _strip_empty([
+                f"Samples: {len(values)}",
+                f"Realized: {realized_mean_hz:.1f} Hz mean / {realized_p95_hz:.1f} Hz at p95",
+                f"Target: 40 Hz (25 ms cycle)",
+                f"Duplicate frames: {duplicate_ratio:.1f}%" if duplicate_ratio is not None else None,
+            ])
+        ),
+        fontsize=9, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white", "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
+def _write_tracker_thesis_02_stage_breakdown(
+    *,
+    path: Path,
+    tracker_records: list[dict[str, Any]],
+    metrics: dict[str, Any],
+) -> None:
+    """Thesis figure 2: where the per-cycle time is spent at four percentiles.
+
+    Horizontal stacked bars at median / mean / p95 / p99 of total_cycle_ms,
+    each decomposed into backend_call / parse / state_commit. Each bar
+    labeled with total + equivalent Hz. 25 ms reference is the 40 Hz target.
+    Reads at a glance: which stage dominates and where the 40 → realized
+    rate gap actually lives.
+    """
+    stages = _filter_analyzed_stage_arrays(tracker_records)
+    table = _stage_percentile_table(stages)
+
+    fig, ax = create_figure(size="wide", constrained_layout=False)
+    fig.subplots_adjust(left=0.135, right=0.97, top=0.90, bottom=0.22)
+
+    percentile_labels = ["median", "mean", "p95", "p99"]
+    if not stages["total_cycle_ms"]:
+        ax.text(0.5, 0.5, "No analyzed stage timings available",
+                transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, xlabel="Time per cycle (ms)", ylabel="Percentile")
+        fig.suptitle("Tracker Per-Cycle Time Budget by Stage",
+                     fontsize=13, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+
+    stage_colors = {
+        "backend_call_ms": color("measured"),
+        "parse_ms": color("fit"),
+        "state_commit_ms": color("model"),
+    }
+    stage_display = {
+        "backend_call_ms": "backend_call (Aurora I/O)",
+        "parse_ms": "parse (decode response)",
+        "state_commit_ms": "state_commit (publish to listeners)",
+    }
+
+    y_positions = np.arange(len(percentile_labels))[::-1]  # top-to-bottom: median, mean, p95, p99
+    bar_height = 0.62
+    for stage_index, stage_key in enumerate(["backend_call_ms", "parse_ms", "state_commit_ms"]):
+        left_offsets = []
+        widths = []
+        for pct in percentile_labels:
+            cumulative_before = sum(
+                table[prior_stage][pct]
+                for prior_stage in ["backend_call_ms", "parse_ms", "state_commit_ms"][:stage_index]
+            )
+            left_offsets.append(cumulative_before)
+            widths.append(table[stage_key][pct])
+        ax.barh(
+            y_positions, widths, bar_height,
+            left=left_offsets,
+            color=stage_colors[stage_key],
+            edgecolor="white", linewidth=0.6,
+            label=stage_display[stage_key],
+            zorder=2,
+        )
+
+    # Per-bar total + Hz label on the right
+    max_total = 0.0
+    for y_pos, pct in zip(y_positions, percentile_labels):
+        total = table["total_cycle_ms"][pct]
+        max_total = max(max_total, total)
+        hz = _hz_for_ms(total)
+        label = f"{total:.1f} ms" + (f" ≈ {hz:.1f} Hz" if hz else "")
+        ax.text(total + max(max_total * 0.012, 0.4), y_pos, label,
+                va="center", ha="left", fontsize=9, color=color("text"))
+
+    # 40 Hz target reference line
+    ax.axvline(AURORA_THEORETICAL_INTERVAL_MS, color=color("threshold"), linestyle="-",
+               linewidth=1.6, label=f"Aurora 40 Hz target ({AURORA_THEORETICAL_INTERVAL_MS:.0f} ms)", zorder=3)
+
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels([label.upper() for label in percentile_labels])
+    style_axes(ax, xlabel="Time per cycle (ms)", ylabel="Percentile")
+    # Leave headroom on the right for per-bar labels
+    ax.set_xlim(0.0, max(max_total * 1.30, AURORA_THEORETICAL_INTERVAL_MS * 1.2))
+    legend(ax, loc="lower right", ncol=1)
+
+    fig.suptitle("Tracker Per-Cycle Time Budget by Stage",
+                 fontsize=13, fontweight="bold", x=0.04, ha="left")
+
+    n_samples = len(stages["total_cycle_ms"])
+    dominant_stage = max(
+        ["backend_call_ms", "parse_ms", "state_commit_ms"],
+        key=lambda s: table[s]["mean"],
+    )
+    dominant_pct = (
+        100.0 * table[dominant_stage]["mean"] / table["total_cycle_ms"]["mean"]
+        if table["total_cycle_ms"]["mean"] > 0 else 0.0
+    )
+    fig.text(
+        0.015, 0.02,
+        "  •  ".join(
+            _strip_empty([
+                f"Samples: {n_samples}",
+                f"Dominant stage: {stage_display[dominant_stage].split(' (')[0]} ({dominant_pct:.0f}% of mean cycle)",
+                f"Mean realized: {_hz_for_ms(table['total_cycle_ms']['mean']):.1f} Hz vs 40 Hz target" if table["total_cycle_ms"]["mean"] > 0 else None,
+            ])
+        ),
+        fontsize=9, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white", "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
+def _write_tracker_debug_json(
+    *,
+    path: Path,
+    output_dir: Path,
+    metadata,
+    summary,
+    metrics: dict[str, Any],
+    tracker_records: list[dict[str, Any]],
+    servo_records: list[dict[str, Any]],
+) -> None:
+    """Consolidate every diagnostic that doesn't make it onto thesis figures.
+
+    Duplicate-frame stats, per-tool valid-transform rates, raw error sample
+    counts, per-stage detailed stats, servo-sync cross-stream offsets if
+    servo logging was enabled, and the run_review sidecar payload.
+    """
+    duplicate_count = int(metrics.get("duplicate_frame_count", 0) or 0)
+    duplicate_ratio = _safe_ratio(metrics.get("duplicate_frame_ratio"))
+    per_tool_summary = dict(metrics.get("per_tool_summary", {}) or {})
+
+    review_payload: dict[str, Any] | None = None
+    review_path = output_dir / "run_review.json"
+    if review_path.exists():
+        try:
+            review_payload = json.loads(review_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            review_payload = {"parse_error": True}
+
+    sync_block: dict[str, Any] | None = None
+    sync_metrics = dict(metrics.get("servo_sync", {}) or {})
+    if sync_metrics.get("enabled"):
+        sync_block = {
+            "enabled": True,
+            "servo_telemetry_sample_count": len(servo_records),
+            "mean_offset_ms": sync_metrics.get("mean_offset_ms"),
+            "p95_offset_ms": sync_metrics.get("p95_offset_ms"),
+            "max_offset_ms": sync_metrics.get("max_offset_ms"),
+            "offsets_ms": list(sync_metrics.get("offsets_ms", []) or []),
+        }
+
+    payload = {
+        "schema_version": "1.0",
+        "run_id": getattr(metadata, "run_id", None),
+        "experiment_name": getattr(metadata, "experiment_name", "tracker_timing_validation"),
+        "status": getattr(summary, "status", None),
+        "sample_count_analyzed": int(metrics.get("sample_count_analyzed", 0) or 0),
+        "warmup_discarded_count": int(metrics.get("warmup_discarded_count", 0) or 0),
+        "rate": {
+            "effective_loop_rate_hz": metrics.get("effective_loop_rate_hz"),
+            "unique_frame_rate_hz": metrics.get("unique_frame_rate_hz"),
+            "aurora_theoretical_max_hz": 1000.0 / AURORA_THEORETICAL_INTERVAL_MS,
+        },
+        "duplicate_frames": {
+            "count": duplicate_count,
+            "ratio_percent": duplicate_ratio,
+            "note": "Aurora returns the same frame_number on consecutive reads when no new hardware frame is ready; these cycles do not deliver fresh data.",
+        },
+        "stage_stats": {
+            "backend_call_ms": dict(metrics.get("backend_call_ms_stats", {}) or {}),
+            "parse_ms": dict(metrics.get("parse_ms_stats", {}) or {}),
+            "state_commit_ms": dict(metrics.get("state_commit_ms_stats", {}) or {}),
+            "total_cycle_ms": dict(metrics.get("total_cycle_ms_stats", {}) or {}),
+        },
+        "per_tool_valid_rate": {
+            tool_id: float(s.get("valid_transform_rate", 0.0) or 0.0)
+            for tool_id, s in per_tool_summary.items()
+        },
+        "errors": {
+            "error_sample_count": int(metrics.get("error_sample_count", 0) or 0),
+            "invalid_or_missing_requested_tool_count": int(
+                metrics.get("invalid_or_missing_requested_tool_sample_count", 0) or 0
+            ),
+            "invalid_or_missing_requested_tool_ratio": metrics.get(
+                "invalid_or_missing_requested_tool_ratio"
+            ),
+        },
+        "servo_sync": sync_block,
+        "backend": {
+            "backend_identity": metrics.get("backend_identity"),
+            "configured_backend_name": metrics.get("configured_backend_name"),
+            "selected_backend_name": metrics.get("selected_backend_name"),
+            "requested_tool_ids": list(metrics.get("requested_tool_ids", []) or []),
+        },
+        "run_review": review_payload,
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, default=_debug_json_default), encoding="utf-8")
+
+
+def _safe_ratio(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value) * 100.0
+    except (TypeError, ValueError):
+        return None
+
+
+def _strip_empty(items: list[str | None]) -> list[str]:
+    return [str(item) for item in items if item]
+
+
+def _debug_json_default(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, Path):
+        return str(value)
+    raise TypeError(f"Unserialisable type: {type(value).__name__}")
 
 
 def _ensure_plot_qt_app() -> QApplication:

@@ -1726,11 +1726,9 @@ class ExperimentController:
             return pairs
         if bundle_experiment_name == "tracker_timing_validation":
             metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
-            histogram_path = bundle.paths.output_dir / "aurora_timing_histogram.png"
-            breakdown_path = bundle.paths.output_dir / "aurora_timing_breakdown.png"
-            timeseries_path = bundle.paths.output_dir / "aurora_timing_timeseries.png"
-            summary_text_path = bundle.paths.output_dir / "aurora_timing_summary.txt"
-            sync_plot_path = bundle.paths.output_dir / "aurora_timing_sync_offsets.png"
+            thesis_01_path = bundle.paths.output_dir / "thesis_01_cycle_time_distribution.png"
+            thesis_02_path = bundle.paths.output_dir / "thesis_02_stage_time_budget.png"
+            debug_path = bundle.paths.output_dir / "debug.json"
             pairs.extend(
                 [
                     ("Backend", str(metrics.get("backend_identity", "n/a") or "n/a")),
@@ -1756,27 +1754,18 @@ class ExperimentController:
                             else "n/a"
                         ),
                     ),
-                    ("Histogram", str(histogram_path) if histogram_path.exists() else "not written"),
-                    ("Breakdown Plot", str(breakdown_path) if breakdown_path.exists() else "not written"),
-                    ("Timeseries Plot", str(timeseries_path) if timeseries_path.exists() else "not written"),
-                    ("Summary Note", str(summary_text_path) if summary_text_path.exists() else "not written"),
-                    (
-                        "Sync Plot",
-                        str(sync_plot_path)
-                        if sync_plot_path.exists()
-                        else ("not written" if metrics.get("servo_sync", {}).get("enabled") else "not requested"),
-                    ),
+                    ("Cycle Distribution", str(thesis_01_path) if thesis_01_path.exists() else "not written"),
+                    ("Stage Time Budget", str(thesis_02_path) if thesis_02_path.exists() else "not written"),
+                    ("Debug JSON", str(debug_path) if debug_path.exists() else "not written"),
                 ]
             )
             return pairs
         if bundle_experiment_name == "servo_tracker_sync_validation":
             metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
             sync = dict(metrics.get("servo_tracker_sync", {}) or {})
-            histogram_path = bundle.paths.output_dir / "servo_tracker_offset_histogram.png"
-            timeseries_path = bundle.paths.output_dir / "servo_tracker_offset_timeseries.png"
-            pose_path = bundle.paths.output_dir / "servo_tracker_pose_command_timeseries.png"
-            validity_path = bundle.paths.output_dir / "servo_tracker_validity_summary.png"
-            summary_text_path = bundle.paths.output_dir / "servo_tracker_sync_summary.txt"
+            thesis_01_path = bundle.paths.output_dir / "thesis_01_pair_time_alignment.png"
+            thesis_02_path = bundle.paths.output_dir / "thesis_02_motion_correspondence.png"
+            debug_path = bundle.paths.output_dir / "debug.json"
             pairs.extend(
                 [
                     ("Backend", str(metrics.get("backend_identity", "n/a") or "n/a")),
@@ -1814,11 +1803,9 @@ class ExperimentController:
                         "Motion Metric Source",
                         str((metrics.get("tracker_motion_metric", {}) or {}).get("source", "unavailable") or "unavailable"),
                     ),
-                    ("Offset Histogram", str(histogram_path) if histogram_path.exists() else "not written"),
-                    ("Offset Timeseries", str(timeseries_path) if timeseries_path.exists() else "not written"),
-                    ("Pose / Command Plot", str(pose_path) if pose_path.exists() else "not written"),
-                    ("Validity Plot", str(validity_path) if validity_path.exists() else "not written"),
-                    ("Summary Note", str(summary_text_path) if summary_text_path.exists() else "not written"),
+                    ("Pair Time Alignment", str(thesis_01_path) if thesis_01_path.exists() else "not written"),
+                    ("Motion Correspondence", str(thesis_02_path) if thesis_02_path.exists() else "not written"),
+                    ("Debug JSON", str(debug_path) if debug_path.exists() else "not written"),
                 ]
             )
             return pairs
