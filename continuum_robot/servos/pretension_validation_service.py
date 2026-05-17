@@ -12,12 +12,27 @@ from typing import Any
 
 @dataclass
 class PretensionValidationResult:
-    """Summary of a current-balance validation attempt."""
+    """Summary of a current-balance validation attempt.
+
+    ``tracker_displacement_mm``, ``min_displacement_mm``, and ``displacement_passed``
+    are populated only by :meth:`PretensionValidationService.validate_current_and_displacement_balance`;
+    they stay ``None`` on classical current-balance-only results so existing
+    consumers see no change.
+
+    When the tracker-displacement gate is active, ``passed`` is True only if
+    BOTH the current-spread criterion AND the displacement-floor criterion are
+    satisfied. The dedicated ``current_passed`` / ``displacement_passed`` fields
+    let the caller surface exactly which gate triggered a fail.
+    """
 
     passed: bool
     currents_ma: list[int]
     spread_ma: int | None
     message: str
+    current_passed: bool | None = None
+    tracker_displacement_mm: float | None = None
+    min_displacement_mm: float | None = None
+    displacement_passed: bool | None = None
 
 
 @dataclass
@@ -70,6 +85,81 @@ class PretensionValidationService:
             currents_ma=values,
             spread_ma=spread,
             message=message,
+        )
+
+    def validate_current_and_displacement_balance(
+        self,
+        currents_ma: list[int | None],
+        tolerance_ma: int,
+        *,
+        tracker_displacement_mm: float | None,
+        min_displacement_mm: float,
+    ) -> PretensionValidationResult:
+        """Gate validation on BOTH current-spread balance AND a minimum tracker displacement.
+
+        The classical :meth:`validate_current_balance` accepts any servo set
+        whose absolute-current magnitudes lie within ``tolerance_ma`` of each
+        other. That check is symmetric -- if every cable is stuck in the same
+        way the currents can still look balanced, producing a false-pass on a
+        physically-stuck robot. This method adds a second criterion:
+
+        * If ``tracker_displacement_mm`` is ``None``, the displacement gate
+          fails (the operator asked for a tracker gate but the tracker did
+          not produce a usable reading).
+        * If ``tracker_displacement_mm < min_displacement_mm``, the gate
+          fails -- the cable did not visibly move enough to be considered
+          tensioned.
+        * Otherwise the gate passes.
+
+        Final ``passed`` is True only when both the current-spread gate and
+        the displacement gate pass. The individual gate outcomes are
+        surfaced via ``current_passed`` / ``displacement_passed`` so the
+        caller can show the operator exactly which criterion triggered a
+        failure.
+
+        Raises ``ValueError`` if ``min_displacement_mm`` is non-positive --
+        callers must commit to a positive floor when opting into this gate.
+        """
+        if not (float(min_displacement_mm) > 0.0):
+            raise ValueError("min_displacement_mm must be positive when the tracker gate is active")
+        floor = float(min_displacement_mm)
+        current_result = self.validate_current_balance(currents_ma, tolerance_ma)
+        current_passed = bool(current_result.passed)
+
+        if tracker_displacement_mm is None:
+            displacement_passed = False
+            displacement_part = (
+                f"Tracker displacement gate failed: no usable tracker reading "
+                f"(workflow minimum {floor:.3f} mm)."
+            )
+        else:
+            displacement_value = float(tracker_displacement_mm)
+            if displacement_value < floor:
+                displacement_passed = False
+                displacement_part = (
+                    f"Tracker displacement gate failed: {displacement_value:.3f} mm < "
+                    f"{floor:.3f} mm workflow minimum (cable may be stuck or not tensioning)."
+                )
+            else:
+                displacement_passed = True
+                displacement_part = (
+                    f"Tracker displacement gate passed: {displacement_value:.3f} mm >= "
+                    f"{floor:.3f} mm workflow minimum."
+                )
+
+        passed = current_passed and displacement_passed
+        message = f"{current_result.message} | {displacement_part}"
+        return PretensionValidationResult(
+            passed=passed,
+            currents_ma=list(current_result.currents_ma),
+            spread_ma=current_result.spread_ma,
+            message=message,
+            current_passed=current_passed,
+            tracker_displacement_mm=(
+                float(tracker_displacement_mm) if tracker_displacement_mm is not None else None
+            ),
+            min_displacement_mm=floor,
+            displacement_passed=displacement_passed,
         )
 
     def compute_tracker_displacement(
