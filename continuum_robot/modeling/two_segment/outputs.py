@@ -14,6 +14,7 @@ import yaml
 
 from continuum_robot.experiments.dataset_io import canonical_experiment_output_root, canonical_timestamped_path
 from continuum_robot.experiments.plotting import add_metric_box, color, create_figure, import_matplotlib, legend, save_figure, set_equal_xy, style_axes
+from continuum_robot.modeling.two_segment.visualization import write_hybrid_visualization_bundle
 
 
 EXPERIMENT_NAME = "two_segment_modeling"
@@ -174,8 +175,94 @@ def write_report_figures(
             model_key=best.model_key,
             quality=quality,
         )
+    hybrid_paths = _write_hybrid_comparison_figures(
+        output_dir=output_dir,
+        bundle=bundle,
+        split=split,
+        model_results=model_results,
+        quality=quality,
+    )
+    figures.update(hybrid_paths)
     _ = split
     return figures
+
+
+def _write_hybrid_comparison_figures(
+    *,
+    output_dir: Path,
+    bundle: Any,
+    split: dict[str, Any],
+    model_results: list[Any],
+    quality: str,
+) -> dict[str, Path]:
+    """Render hybrid-comparison visualizations when a hybrid result is present.
+
+    Quietly returns an empty dict when no hybrid result is in the suite -- the
+    classical figure path then behaves exactly as before. The comparison overlays
+    Mike CC, ANN, and Hybrid predictions on the same test split (and the same
+    label metadata) so the figures sit naturally next to the existing report.
+    """
+    hybrid_result = next(
+        (
+            result
+            for result in model_results
+            if result.model_key in {"hybrid_residual", "hybrid"} and result.status == "completed"
+            and result.predictions is not None
+        ),
+        None,
+    )
+    if hybrid_result is None:
+        return {}
+    label_metadata = getattr(bundle, "label_metadata", {})
+    test_indices = split.get("test_indices") or []
+    if not test_indices:
+        return {}
+    y_test = np.asarray(getattr(bundle, "y"), dtype=float)[test_indices, :]
+    predictions_by_model: dict[str, np.ndarray | None] = {hybrid_result.model_key: hybrid_result.predictions}
+    metrics_by_model: dict[str, dict[str, float | None]] = {
+        hybrid_result.model_key: dict(hybrid_result.metrics or {})
+    }
+    mike_result = next(
+        (
+            result
+            for result in model_results
+            if result.model_key in {"mike_constant_curvature", "mike"} and result.status == "completed"
+            and result.predictions is not None
+        ),
+        None,
+    )
+    if mike_result is not None:
+        predictions_by_model[mike_result.model_key] = mike_result.predictions
+        metrics_by_model[mike_result.model_key] = dict(mike_result.metrics or {})
+    ann_result = next(
+        (
+            result
+            for result in model_results
+            if result.model_key == "ann" and result.status == "completed" and result.predictions is not None
+        ),
+        None,
+    )
+    if ann_result is not None:
+        predictions_by_model[ann_result.model_key] = ann_result.predictions
+        metrics_by_model[ann_result.model_key] = dict(ann_result.metrics or {})
+    status_details = dict(hybrid_result.status_details or {})
+    mike_only_xyz = status_details.get("mike_only_xyz_rmse_mm")
+    hybrid_xyz = status_details.get("hybrid_xyz_rmse_mm")
+    if mike_only_xyz is None and mike_result is not None:
+        mike_only_xyz = dict(mike_result.metrics or {}).get("xyz_rmse_mm")
+    if hybrid_xyz is None:
+        hybrid_xyz = dict(hybrid_result.metrics or {}).get("xyz_rmse_mm")
+    return write_hybrid_visualization_bundle(
+        output_dir=output_dir,
+        y_true=y_test,
+        predictions_by_model=predictions_by_model,
+        label_metadata=label_metadata,
+        hybrid_loss_history=hybrid_result.loss_history or None,
+        mike_only_xyz_rmse_mm=float(mike_only_xyz) if isinstance(mike_only_xyz, (int, float)) else None,
+        hybrid_xyz_rmse_mm=float(hybrid_xyz) if isinstance(hybrid_xyz, (int, float)) else None,
+        metrics_by_model=metrics_by_model,
+        quality=quality,
+    )
 
 
 def _summary_payload(*, config: Any, dataset: Any, bundle: Any, split: dict[str, Any], model_results: list[Any]) -> dict[str, Any]:
