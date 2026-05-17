@@ -43,6 +43,7 @@ FIGURE_SIZES = {
     "tall": (6.0, 7.0),
     "two_panel": (7.2, 5.8),
     "three_panel": (7.2, 7.2),
+    "thesis_3d": (8.0, 7.2),
 }
 
 
@@ -120,6 +121,82 @@ def create_figure(*, size: str = "wide", constrained_layout: bool = True):
     with report_style() as plt:
         fig, ax = plt.subplots(figsize=FIGURE_SIZES.get(size, FIGURE_SIZES["wide"]), constrained_layout=constrained_layout)
     return fig, ax
+
+
+def create_3d_figure(*, size: str = "square", constrained_layout: bool = True):
+    """Create a styled matplotlib figure with a 3D axes (mplot3d)."""
+    with report_style() as plt:
+        fig = plt.figure(figsize=FIGURE_SIZES.get(size, FIGURE_SIZES["square"]), constrained_layout=constrained_layout)
+        ax = fig.add_subplot(111, projection="3d")
+    return fig, ax
+
+
+def style_3d_axes(
+    ax,
+    *,
+    title: str = "",
+    xlabel: str = "",
+    ylabel: str = "",
+    zlabel: str = "",
+    labelpad: float = 10.0,
+    view_elev: float = 22.0,
+    view_azim: float = -55.0,
+) -> None:
+    """Apply common 3D axis title/label treatment matching style_axes.
+
+    Default labelpad and view angle are tuned for thesis figures: enough label
+    padding to avoid clipping inside a constrained-layout canvas, and a slight
+    front-right camera that keeps the data cube readable.
+    """
+    if title:
+        ax.set_title(str(title), loc="left", pad=10, fontweight="bold")
+    if xlabel:
+        ax.set_xlabel(str(xlabel), labelpad=labelpad)
+    if ylabel:
+        ax.set_ylabel(str(ylabel), labelpad=labelpad)
+    if zlabel:
+        ax.set_zlabel(str(zlabel), labelpad=labelpad)
+    ax.tick_params(colors=SEMANTIC_COLORS["axis"])
+    for axis_label in (ax.xaxis, ax.yaxis, ax.zaxis):
+        axis_label.label.set_color(SEMANTIC_COLORS["text"])
+        axis_label.pane.set_edgecolor(SEMANTIC_COLORS["grid"])
+        axis_label.pane.set_facecolor((1.0, 1.0, 1.0, 0.0))
+    ax.grid(True)
+    ax.view_init(elev=float(view_elev), azim=float(view_azim))
+
+
+def set_equal_xyz(
+    ax,
+    *,
+    x_values: Iterable[float],
+    y_values: Iterable[float],
+    z_values: Iterable[float],
+    pad_fraction: float = 0.12,
+    minimum_span: float = 1.0,
+) -> None:
+    """Set equal x/y/z scaling around the supplied values (cubic bounding box)."""
+    xs = [float(value) for value in x_values]
+    ys = [float(value) for value in y_values]
+    zs = [float(value) for value in z_values]
+    if not xs or not ys or not zs:
+        return
+    x_mid = (min(xs) + max(xs)) / 2.0
+    y_mid = (min(ys) + max(ys)) / 2.0
+    z_mid = (min(zs) + max(zs)) / 2.0
+    span = max(
+        max(xs) - min(xs),
+        max(ys) - min(ys),
+        max(zs) - min(zs),
+        float(minimum_span),
+    )
+    half_span = (span * (1.0 + float(pad_fraction))) / 2.0
+    ax.set_xlim(x_mid - half_span, x_mid + half_span)
+    ax.set_ylim(y_mid - half_span, y_mid + half_span)
+    ax.set_zlim(z_mid - half_span, z_mid + half_span)
+    try:
+        ax.set_box_aspect((1.0, 1.0, 1.0))
+    except (AttributeError, ValueError):
+        pass
 
 
 def save_figure(fig, path: Path, *, quality: str | None = None) -> Path:

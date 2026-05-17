@@ -16,9 +16,8 @@ EXPECTED_REPORT_FIGURES = {
         "aurora_grid_residuals_report.png",
     ],
     "pivot_validation": [
-        "pivot_tip_offsets_report.png",
-        "pivot_rmse_report.png",
-        "pivot_axis_spread_report.png",
+        "thesis_01_tip_vectors_3d.png",
+        "thesis_02_sample_count_vs_quality.png",
     ],
     "registration_validation": [
         "registration_frame_origins_report.png",

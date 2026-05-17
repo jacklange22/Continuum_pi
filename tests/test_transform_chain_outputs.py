@@ -66,7 +66,7 @@ def test_build_transform_chain_summary_records_policy(tmp_path) -> None:
     assert summary["transform_chain"]["expression"].startswith("T_robot_tip")
 
 
-def test_write_transform_chain_outputs_creates_json_text_and_png(tmp_path) -> None:
+def test_write_transform_chain_outputs_emits_only_json(tmp_path) -> None:
     paths = write_transform_chain_outputs(
         output_dir=tmp_path / "out",
         snapshot=_snapshot(tmp_path),
@@ -74,9 +74,10 @@ def test_write_transform_chain_outputs_creates_json_text_and_png(tmp_path) -> No
     )
 
     assert paths["json"].exists()
-    assert paths["txt"].exists()
-    assert paths["png"].exists()
-    assert paths["png"].read_bytes().startswith(b"\x89PNG")
+    # .txt and overview .png duplicated the JSON and had no consumers; gone.
+    assert "txt" not in paths
+    assert "png" not in paths
+    assert not (paths["json"].parent / "transform_chain_summary.txt").exists()
+    assert not (paths["json"].parent / "transform_chain_overview.png").exists()
     payload = json.loads(paths["json"].read_text(encoding="utf-8"))
     assert payload["runtime_tip"]["policy"]["trust_label"] == "thesis_trusted"
-    assert "Runtime Tip Policy" in paths["txt"].read_text(encoding="utf-8")

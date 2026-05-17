@@ -368,19 +368,45 @@ def test_pivot_validation_analysis_and_runner_outputs(tmp_path: Path) -> None:
 
     assert result.success is True
     assert result.paths.output_dir.name.endswith("_pivot_validation")
-    assert (result.paths.output_dir / "metrics.csv").exists()
-    assert (result.paths.output_dir / "pivot_validation_summary.txt").exists()
-    assert (result.paths.output_dir / "pivot_tip_offsets_report.png").exists()
-    assert (result.paths.output_dir / "pivot_rmse_report.png").exists()
-    assert (result.paths.output_dir / "pivot_axis_spread_report.png").exists()
-    assert (result.paths.output_dir / "pivot_tip_scatter.png").exists()
-    assert (result.paths.output_dir / "pivot_axis_histograms.png").exists()
-    assert (result.paths.output_dir / "pivot_quality_summary.png").exists()
+    assert (result.paths.output_dir / "samples.jsonl").exists()
+    assert (result.paths.output_dir / "debug.json").exists()
+    assert (result.paths.output_dir / "thesis_01_tip_vectors_3d.png").exists()
+    assert (result.paths.output_dir / "thesis_02_sample_count_vs_quality.png").exists()
+    # File contract: pivot run directory holds exactly these PNGs plus canonical
+    # infrastructure files. Old per-quantity figures and the duplicate text/CSV
+    # rollups must be gone.
+    for removed in [
+        "pivot_tip_offsets_report.png",
+        "pivot_rmse_report.png",
+        "pivot_axis_spread_report.png",
+        "pivot_tip_scatter.png",
+        "pivot_axis_histograms.png",
+        "pivot_quality_summary.png",
+        "metrics.csv",
+        "pivot_validation_summary.txt",
+        "transform_chain_overview.png",
+        "transform_chain_summary.txt",
+    ]:
+        assert not (result.paths.output_dir / removed).exists(), f"deprecated pivot artifact should be gone: {removed}"
     assert result.summary.experiment_metrics["units"]["per_run_rows"]["distance_to_consensus_mm"] == "mm"
-    pivot_csv_header = (result.paths.output_dir / "metrics.csv").read_text(encoding="utf-8").splitlines()[0]
-    assert "tip_offset_norm_mm" in pivot_csv_header
-    assert "tip_offset_deviation_to_consensus_mm" in pivot_csv_header
-    assert "pivot_rmse_mm" in pivot_csv_header
+
+    # samples.jsonl is the canonical ExperimentTimeseriesSample contract; pivot_validation
+    # is an aggregation experiment and emits no timeseries samples. Anything else in this
+    # file would break the post-run ExperimentDatasetLoader round-trip below.
+    samples_text = (result.paths.output_dir / "samples.jsonl").read_text(encoding="utf-8").strip()
+    assert samples_text == "", "samples.jsonl must be empty for pivot_validation (aggregation experiment)"
+
+    # Regression guard: GUI controller reloads the dataset after every run; samples.jsonl
+    # must remain a valid ExperimentTimeseriesSample stream.
+    reloaded = runner.load_dataset(result.paths.output_dir)
+    assert reloaded.samples == []
+    assert reloaded.summary.experiment_metrics["valid_run_count"] == 3
+
+    debug_payload = json.loads((result.paths.output_dir / "debug.json").read_text(encoding="utf-8"))
+    assert debug_payload["experiment_name"] == "pivot_validation"
+    assert debug_payload["valid_run_count"] == 3
+    assert "outlier_detection" in debug_payload
+    assert "sample_rejection_by_run" in debug_payload
 
     candidates = list_pivot_validation_candidates(tmp_path)
     assert candidates[0].path == str(run_c.relative_to(tmp_path))
