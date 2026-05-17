@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import math
 from pathlib import Path
 import random
 from typing import Any
@@ -26,8 +27,11 @@ from continuum_robot.experiments.metrics import (
 from continuum_robot.experiments.pivot_utils import (
     PivotCalibrationResult,
     PivotInputParseError,
+    PivotRansacFailure,
+    RansacPivotCalibrationResult,
     load_pivot_transforms_with_report,
     solve_pivot_calibration,
+    solve_pivot_calibration_ransac,
     write_tip_vector_file,
 )
 from continuum_robot.experiments.sample_builders import sample_from_tracking_snapshot
@@ -236,10 +240,36 @@ class PivotCalibrationConfig:
     synthetic_noise_std_mm: float = 0.25
     synthetic_outlier_count: int = 0
     acceptance: dict[str, Any] = field(default_factory=dict)
+    use_ransac: bool = False
+    """When True, run RANSAC outlier rejection instead of the classical std-dev pass."""
+    ransac_inlier_threshold_mm: float = 1.0
+    """Residual-norm cutoff (mm) for a pose to count as a RANSAC inlier."""
+    ransac_minimum_sample_size: int = 3
+    """Poses drawn per RANSAC iteration; 3 conditions per-sample fits well."""
+    ransac_min_consensus_size: int | None = None
+    """Required inlier count; defaults to ``max(min_samples, ceil(0.5 N))``."""
+    ransac_max_iterations: int = 1000
+    """Hard iteration cap; adaptive shrinking will typically stop sooner."""
+    ransac_confidence: float = 0.99
+    """Target probability of sampling an all-inlier minimum set at least once."""
+    ransac_seed: int | None = None
+    """Optional dedicated seed for RANSAC; falls back to ``seed`` when None."""
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "PivotCalibrationConfig":
         payload = dict(payload or {})
+        raw_ransac_seed = payload.get("ransac_seed")
+        ransac_seed: int | None
+        if raw_ransac_seed is None or raw_ransac_seed == "":
+            ransac_seed = None
+        else:
+            ransac_seed = int(raw_ransac_seed)
+        raw_ransac_floor = payload.get("ransac_min_consensus_size")
+        ransac_floor: int | None
+        if raw_ransac_floor is None or raw_ransac_floor == "":
+            ransac_floor = None
+        else:
+            ransac_floor = int(raw_ransac_floor)
         return cls(
             tool_id=str(payload.get("tool_id", "0B")),
             sample_count=int(payload.get("sample_count", 80)),
@@ -257,6 +287,13 @@ class PivotCalibrationConfig:
             synthetic_noise_std_mm=float(payload.get("synthetic_noise_std_mm", 0.25)),
             synthetic_outlier_count=int(payload.get("synthetic_outlier_count", 0)),
             acceptance=dict(payload.get("acceptance", {}) or {}),
+            use_ransac=bool(payload.get("use_ransac", False)),
+            ransac_inlier_threshold_mm=float(payload.get("ransac_inlier_threshold_mm", 1.0)),
+            ransac_minimum_sample_size=int(payload.get("ransac_minimum_sample_size", 3)),
+            ransac_min_consensus_size=ransac_floor,
+            ransac_max_iterations=int(payload.get("ransac_max_iterations", 1000)),
+            ransac_confidence=float(payload.get("ransac_confidence", 0.99)),
+            ransac_seed=ransac_seed,
         )
 
 
@@ -684,14 +721,38 @@ class PivotCalibrationExperiment(BaseExperiment):
             raise RuntimeError("Insufficient samples for pivot calibration")
         rotations = [T[0:3, 0:3] for T in transforms]
         translations = [T[0:3, 3] for T in transforms]
+        ransac_result: RansacPivotCalibrationResult | None = None
         try:
-            result = solve_pivot_calibration(
-                rotations,
-                translations,
-                std_dev_threshold=self.config.std_dev_threshold,
-                min_samples=self.config.min_samples,
-            )
-        except ValueError as exc:
+            if self.config.use_ransac:
+                effective_seed = (
+                    self.config.ransac_seed
+                    if self.config.ransac_seed is not None
+                    else int(self.config.seed)
+                )
+                effective_floor = (
+                    int(self.config.ransac_min_consensus_size)
+                    if self.config.ransac_min_consensus_size is not None
+                    else max(int(self.config.min_samples), math.ceil(0.5 * len(rotations)))
+                )
+                ransac_result = solve_pivot_calibration_ransac(
+                    rotations,
+                    translations,
+                    inlier_threshold_mm=self.config.ransac_inlier_threshold_mm,
+                    minimum_sample_size=self.config.ransac_minimum_sample_size,
+                    min_consensus_size=effective_floor,
+                    max_iterations=self.config.ransac_max_iterations,
+                    confidence=self.config.ransac_confidence,
+                    seed=effective_seed,
+                )
+                result = ransac_result.to_pivot_calibration_result()
+            else:
+                result = solve_pivot_calibration(
+                    rotations,
+                    translations,
+                    std_dev_threshold=self.config.std_dev_threshold,
+                    min_samples=self.config.min_samples,
+                )
+        except (ValueError, PivotRansacFailure) as exc:
             status = STATUS_INVALID_INSUFFICIENT_SAMPLES
             session.metrics.update(
                 {
@@ -701,6 +762,12 @@ class PivotCalibrationExperiment(BaseExperiment):
                     "tip_calibration_available": False,
                     "status": status,
                     "summary_requirements": {"force_status": status},
+                    "pivot_solver": "ransac" if self.config.use_ransac else "classical_std_dev",
+                    "ransac_failure_partial": (
+                        dict(exc.partial)
+                        if isinstance(exc, PivotRansacFailure) and exc.partial
+                        else None
+                    ),
                 }
             )
             raise RuntimeError(str(exc)) from exc
@@ -709,23 +776,25 @@ class PivotCalibrationExperiment(BaseExperiment):
             result.tip_vector_local_mm,
         )
         status = STATUS_SUCCESS
-        session.metrics.update(
-            {
-                "tip_vector_local_mm": result.tip_vector_local_mm,
-                "pivot_point_tracker_mm": result.pivot_point_tracker_mm,
-                "rmse_mm": result.rmse_mm,
-                "sample_count_total": result.sample_count_total,
-                "sample_count_used": result.sample_count_used,
-                "sample_count_rejected": result.sample_count_rejected,
-                "pivot_residuals_mm": result.residuals_mm,
-                "pivot_inlier_mask": result.inlier_mask,
-                "pivot_rejected_indices": result.rejected_indices,
-                "tip_output_file": str(output_tip_path),
-                "tip_calibration_available": True,
-                "status": status,
-                "summary_requirements": {"force_status": status},
-            }
-        )
+        metrics_update: dict[str, Any] = {
+            "tip_vector_local_mm": result.tip_vector_local_mm,
+            "pivot_point_tracker_mm": result.pivot_point_tracker_mm,
+            "rmse_mm": result.rmse_mm,
+            "sample_count_total": result.sample_count_total,
+            "sample_count_used": result.sample_count_used,
+            "sample_count_rejected": result.sample_count_rejected,
+            "pivot_residuals_mm": result.residuals_mm,
+            "pivot_inlier_mask": result.inlier_mask,
+            "pivot_rejected_indices": result.rejected_indices,
+            "tip_output_file": str(output_tip_path),
+            "tip_calibration_available": True,
+            "status": status,
+            "summary_requirements": {"force_status": status},
+            "pivot_solver": "ransac" if self.config.use_ransac else "classical_std_dev",
+        }
+        if ransac_result is not None:
+            metrics_update["pivot_ransac"] = ransac_result.to_dict()
+        session.metrics.update(metrics_update)
 
     def finalize(self, session: ExperimentSession) -> None:
         if self._tracking_started_here:
