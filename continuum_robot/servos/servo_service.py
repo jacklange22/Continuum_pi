@@ -5917,6 +5917,38 @@ class ServoService:
         self.safety_guard.validate_currents(currents)
         return self.pretension_validation.validate_current_balance(currents, tolerance_ma)
 
+    def validate_pretension_with_tracker_displacement_gate(
+        self,
+        servo_ids: list[int],
+        tolerance_ma: int,
+        *,
+        tracker_displacement_mm: float | None,
+        min_displacement_mm: float,
+    ) -> PretensionValidationResult:
+        """Run the classic current-balance check AND require visible cable motion.
+
+        ``tracker_displacement_mm`` is the magnitude (mm) of the tracker-frame
+        displacement that the caller computed between before/after snapshots of
+        the validation probe (see
+        :meth:`PretensionValidationService.compute_tracker_displacement`).
+        ``None`` means the tracker could not produce a usable reading -- that
+        will fail the gate, on the principle that "if the tracker is required
+        and the tracker is not reporting, we cannot certify the pretension".
+
+        Returns a :class:`PretensionValidationResult` whose ``passed`` field
+        reflects the combined gate. The classic ``validate_pretension`` is left
+        unchanged so existing call sites are not affected.
+        """
+        telemetry = self.read_telemetry(servo_ids)
+        currents = [telemetry[sid].present_current_ma for sid in servo_ids]
+        self.safety_guard.validate_currents(currents)
+        return self.pretension_validation.validate_current_and_displacement_balance(
+            currents,
+            tolerance_ma,
+            tracker_displacement_mm=tracker_displacement_mm,
+            min_displacement_mm=min_displacement_mm,
+        )
+
     def accept_pretension_result(self, servo_id: int):
         return self.neutral_calibration.mark_pretension_accepted(int(servo_id))
 

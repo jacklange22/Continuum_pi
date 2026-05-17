@@ -9,11 +9,17 @@ def test_parser_parses_valid_packet_and_filters_to_0A_0B() -> None:
     out = parser.parse_transform_packet(frame)
 
     assert set(out.keys()) == {"0A", "0B"}
+    # Default parser leaves validity unknown (the compatibility-packet's per-record
+    # quality float requires an operator-confirmed convention to interpret, so we
+    # don't claim a validity from it unless ``derive_validity_from_quality`` is on).
     assert out["0A"].valid is None
     assert out["0B"].valid is None
     assert out["0A"].tool_sn == 0x00004130
     assert out["0B"].tool_sn == 0x00004230
     assert out["0A"].translation_xyz == (10.0, 20.0, 30.0)
+    # frame_number from the packet header should be propagated onto every record.
+    assert out["0A"].frame_number == 7
+    assert out["0B"].frame_number == 7
 
 
 def test_parser_rejects_crc_mismatch() -> None:
