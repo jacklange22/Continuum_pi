@@ -165,6 +165,14 @@ class ModelingController:
         self._last_two_segment_result: TwoSegmentModelingResult | None = None
         self.config = ModelingEvaluationConfig(results_root=str(self.results_root))
         self.state = ModelingViewState()
+        # Per-tick disk-read caches keyed by (path, mtime). The 5 Hz refresh timer was
+        # hammering summary.json reads and JSONL parses on every tick, which blocked the
+        # GUI paint thread and made scrolling feel choppy. mtime-keyed caches keep the
+        # cache fresh when data actually changes on disk while making steady-state ticks
+        # nearly free (microsecond stat() vs. multi-millisecond read+parse).
+        self._eval_warn_cache: tuple[tuple[str, float, str], str] | None = None
+        self._past_eval_cache: tuple[tuple[str, float, str], list[PastEvaluation]] | None = None
+        self._trainability_cache: tuple[tuple, list[tuple[str, str]]] | None = None
 
     def refresh(self) -> ModelingViewState:
         with self._lock:
@@ -631,18 +639,31 @@ class ModelingController:
 
         Lets the operator compare today's run to yesterday's without leaving the tab.
         Cheap — only reads each evaluation's ``summary.json``.
+
+        Cached by (results_root, dir mtime, dataset_run_name) so the 5 Hz refresh timer
+        doesn't re-scan the whole evaluations directory on every tick. Directory mtime
+        updates when an eval is added/removed, so new runs surface within one tick.
         """
         if dataset_summary is None:
             return []
         try:
-            return discover_past_evaluations(
+            dir_mtime = self.results_root.stat().st_mtime if self.results_root.exists() else 0.0
+        except OSError:
+            dir_mtime = 0.0
+        cache_key = (str(self.results_root), dir_mtime, str(dataset_summary.run_name))
+        if self._past_eval_cache is not None and self._past_eval_cache[0] == cache_key:
+            return self._past_eval_cache[1]
+        try:
+            result = discover_past_evaluations(
                 project_root=self.project_root,
                 results_root=self.results_root,
                 dataset_run_name=dataset_summary.run_name,
                 limit=10,
             )
         except Exception:
-            return []
+            result = []
+        self._past_eval_cache = (cache_key, result)
+        return result
 
     def _eval_sample_count_warning(
         self,
@@ -666,19 +687,33 @@ class ModelingController:
         if effective_path is None:
             return ""
         # Count rows cheaply from summary.json metrics (no jsonl parse needed).
+        # Cache by (path, summary.json mtime) so the 5 Hz refresh tick doesn't re-read
+        # the same file on every fire — stat() is microseconds, json.loads is milliseconds.
+        summary_path = effective_path / "summary.json"
         try:
-            payload = json.loads((effective_path / "summary.json").read_text(encoding="utf-8"))
+            mtime = summary_path.stat().st_mtime
+        except OSError:
+            return ""
+        cache_key = (str(summary_path), mtime, "eval_warn_v1")
+        if self._eval_warn_cache is not None and self._eval_warn_cache[0] == cache_key:
+            return self._eval_warn_cache[1]
+        try:
+            payload = json.loads(summary_path.read_text(encoding="utf-8"))
             metrics = payload.get("experiment_metrics", {}) if isinstance(payload, dict) else {}
             accepted = int(metrics.get("accepted_sample_count", 0) or 0)
         except Exception:
+            self._eval_warn_cache = (cache_key, "")
             return ""
         if accepted < MIN_EVAL_SAMPLES_WARN_THRESHOLD and accepted > 0:
-            return (
+            result = (
                 f"⚠ Evaluation dataset has only {accepted} accepted samples "
                 f"(< {MIN_EVAL_SAMPLES_WARN_THRESHOLD}). RMSE on this few rows is noisy; "
                 "collect more before citing the number."
             )
-        return ""
+        else:
+            result = ""
+        self._eval_warn_cache = (cache_key, result)
+        return result
 
     @staticmethod
     def _headline_status_label(
@@ -913,14 +948,35 @@ class ModelingController:
                 ("Selection", "Select one or more two_segment_collect_pose_command_dataset runs."),
                 ("Required", "dual_segment, all-8 startup, distal_tip robot-frame pose, trusted non-servo-only samples."),
             ]
+        # Cache by (sorted paths tuple, per-path dir mtimes, allow_lower_trust, label_mode).
+        # The validation reads summary.json, metadata.json, config_snapshot.yaml AND iterates
+        # samples.jsonl line-by-line for each selected run — the single most expensive thing
+        # the refresh tick can do. Dir-mtime keying invalidates when any of those files change.
+        mtimes: list[float] = []
+        for path in run_paths:
+            try:
+                mtimes.append(Path(path).stat().st_mtime)
+            except OSError:
+                mtimes.append(0.0)
+        cache_key = (
+            tuple(sorted(str(p) for p in run_paths)),
+            tuple(mtimes),
+            bool(allow_lower_trust),
+            str(self.state.two_segment_label_mode),
+            "trainability_v1",
+        )
+        if self._trainability_cache is not None and self._trainability_cache[0] == cache_key:
+            return self._trainability_cache[1]
         try:
             summary = self.validate_two_segment_modeling_trainability(
                 [Path(path) for path in run_paths],
                 allow_lower_trust=bool(allow_lower_trust),
             )
         except Exception as exc:
-            return [("Trainability", f"Could not inspect selected runs: {exc}")]
-        return [
+            pairs: list[tuple[str, str]] = [("Trainability", f"Could not inspect selected runs: {exc}")]
+            self._trainability_cache = (cache_key, pairs)
+            return pairs
+        pairs = [
             ("Runs", str(summary["runs_scanned"])),
             ("Samples", f"{summary['samples_accepted']} accepted / {summary['samples_rejected']} rejected"),
             ("Trainable", str(summary["trainable"])),
@@ -932,6 +988,8 @@ class ModelingController:
             ("Input Features", "8 tendon displacements (mm)"),
             ("Physics Models", "Mike/Camarillo require validated geometry, stiffness, sign, and frame config."),
         ]
+        self._trainability_cache = (cache_key, pairs)
+        return pairs
 
     @staticmethod
     def _two_segment_result_message(result: TwoSegmentModelingResult) -> str:

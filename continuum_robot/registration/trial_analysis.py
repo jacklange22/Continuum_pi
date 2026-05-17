@@ -16,12 +16,34 @@ from typing import Iterable, Mapping, Sequence
 
 import numpy as np
 
-from continuum_robot.registration.rigid_solver import RigidRegistrationSolver
+from continuum_robot.registration.rigid_solver import (
+    RansacRegistrationResult,
+    RigidRegistrationFailure,
+    RigidRegistrationSolver,
+)
 from continuum_robot.registration.validation import (
     compute_fre_mm,
     compute_geometry_diagnostics,
     compute_residual_norms_mm,
 )
+
+
+@dataclass(frozen=True)
+class RansacOptions:
+    """Tunable knobs for opting registration into RANSAC outlier rejection.
+
+    All fields have safe defaults that match :meth:`RigidRegistrationSolver.solve_T_robot_aurora_ransac`.
+    Pass an instance to :func:`evaluate_method` (or :func:`solve_with_metrics_ransac`)
+    to switch the inner solve from the classical least-squares fit to the
+    RANSAC variant. ``None`` keeps the classical behavior unchanged.
+    """
+
+    inlier_threshold_mm: float = 1.0
+    minimum_sample_size: int = 3
+    min_consensus_size: int | None = None
+    max_iterations: int = 1000
+    confidence: float = 0.99
+    seed: int | None = None
 
 
 AVERAGING_METHODS = ("mean", "median", "trimmed_mean", "mad_filtered_mean")
@@ -56,6 +78,13 @@ class RegistrationTrialResult:
     geometry: dict[str, object]
     """Output of :func:`compute_geometry_diagnostics` on the *truth* landmarks."""
     method_params: dict[str, object] = field(default_factory=dict)
+    ransac: dict[str, object] | None = None
+    """RANSAC-specific diagnostics when the inner solve used :class:`RansacOptions`.
+
+    Includes inlier/reject counts per label, iteration history, and the
+    threshold/confidence settings actually applied. ``None`` when the
+    classical least-squares solve was used (the default).
+    """
 
 
 def mad_outlier_mask(
@@ -202,9 +231,88 @@ def solve_with_metrics(
     }
 
 
+def solve_with_metrics_ransac(
+    measured_aurora_by_label: Mapping[str, Sequence[float]],
+    truth_robot_by_label: Mapping[str, Sequence[float]],
+    *,
+    options: RansacOptions,
+) -> dict[str, object]:
+    """RANSAC variant of :func:`solve_with_metrics`.
+
+    Returns the same dict shape so callers that just want FRE and per-label
+    residuals can swap solvers without code changes, plus a ``"ransac"`` key
+    carrying the iteration history, inlier/reject masks, and the actual
+    threshold/iteration-budget the run used.
+
+    The reported ``fre_mm`` and per-label residuals are computed *on every
+    landmark* using the refit transform -- not just on inliers -- so the
+    metric is comparable across solver choices. Use ``ransac.inlier_*``
+    fields when you need inlier-only stats.
+    """
+    labels = sorted(set(measured_aurora_by_label.keys()) & set(truth_robot_by_label.keys()))
+    if len(labels) < 3:
+        raise ValueError(
+            "At least 3 landmark correspondences are required to solve a rigid registration"
+        )
+    measured = np.asarray([measured_aurora_by_label[label] for label in labels], dtype=float)
+    truth = np.asarray([truth_robot_by_label[label] for label in labels], dtype=float)
+    solver = RigidRegistrationSolver()
+    ransac_result: RansacRegistrationResult = solver.solve_T_robot_aurora_ransac(
+        measured,
+        truth,
+        inlier_threshold_mm=options.inlier_threshold_mm,
+        minimum_sample_size=options.minimum_sample_size,
+        min_consensus_size=options.min_consensus_size,
+        max_iterations=options.max_iterations,
+        confidence=options.confidence,
+        seed=options.seed,
+    )
+    residuals = np.asarray(ransac_result.residuals_xyz_mm, dtype=float)
+    residuals_by_label = {
+        label: residuals[idx, :].tolist() for idx, label in enumerate(labels)
+    }
+    fre = float(compute_fre_mm(list(residuals_by_label.values())))
+    residual_norms = compute_residual_norms_mm(residuals_by_label)
+    worst_label = max(residual_norms, key=residual_norms.get) if residual_norms else None
+    geometry = compute_geometry_diagnostics(truth)
+    inlier_labels = [labels[index] for index in ransac_result.inlier_indices if 0 <= index < len(labels)]
+    rejected_labels = [labels[index] for index in ransac_result.rejected_indices if 0 <= index < len(labels)]
+    ransac_diagnostics: dict[str, object] = {
+        "converged": bool(ransac_result.converged),
+        "inlier_threshold_mm": float(ransac_result.inlier_threshold_mm),
+        "minimum_sample_size": int(ransac_result.minimum_sample_size),
+        "min_consensus_size": int(ransac_result.min_consensus_size),
+        "iterations_run": int(ransac_result.iterations_run),
+        "best_consensus_size": int(ransac_result.best_consensus_size),
+        "sample_count_total": int(ransac_result.sample_count_total),
+        "sample_count_used": int(ransac_result.sample_count_used),
+        "inlier_rmse_mm": float(ransac_result.inlier_rmse_mm),
+        "all_point_rmse_mm": float(ransac_result.all_point_rmse_mm),
+        "inlier_indices": list(ransac_result.inlier_indices),
+        "rejected_indices": list(ransac_result.rejected_indices),
+        "inlier_labels": list(inlier_labels),
+        "rejected_labels": list(rejected_labels),
+        "iteration_history": [dict(row) for row in ransac_result.iteration_history],
+        "seed": int(options.seed) if options.seed is not None else None,
+    }
+    return {
+        "labels": labels,
+        "T_robot_aurora": ransac_result.T_target_source.tolist(),
+        "fre_mm": fre,
+        "residuals_xyz_by_label": residuals_by_label,
+        "residual_norms_mm_by_label": residual_norms,
+        "max_residual_mm": max(residual_norms.values()) if residual_norms else 0.0,
+        "worst_landmark_label": worst_label,
+        "geometry": geometry,
+        "ransac": ransac_diagnostics,
+    }
+
+
 def leave_one_out_fre(
     measured_aurora_by_label: Mapping[str, Sequence[float]],
     truth_robot_by_label: Mapping[str, Sequence[float]],
+    *,
+    ransac_options: RansacOptions | None = None,
 ) -> dict[str, float]:
     """Return FRE that would be obtained if each landmark were excluded.
 
@@ -213,6 +321,10 @@ def leave_one_out_fre(
 
     Requires at least 4 shared landmarks; for fewer, the result is empty
     (a 3-point fit is exactly determined and LOO is meaningless).
+
+    When ``ransac_options`` is provided the per-subset solve goes through the
+    RANSAC path; subsets where RANSAC fails to converge are skipped (no row
+    in the returned dict) so the caller can still summarize what worked.
     """
     shared = sorted(set(measured_aurora_by_label.keys()) & set(truth_robot_by_label.keys()))
     if len(shared) < 4:
@@ -221,7 +333,15 @@ def leave_one_out_fre(
     for excluded in shared:
         subset_measured = {label: measured_aurora_by_label[label] for label in shared if label != excluded}
         subset_truth = {label: truth_robot_by_label[label] for label in shared if label != excluded}
-        result = solve_with_metrics(subset_measured, subset_truth)
+        if ransac_options is None:
+            result = solve_with_metrics(subset_measured, subset_truth)
+        else:
+            try:
+                result = solve_with_metrics_ransac(
+                    subset_measured, subset_truth, options=ransac_options
+                )
+            except RigidRegistrationFailure:
+                continue
         out[excluded] = float(result["fre_mm"])
     return out
 
@@ -233,6 +353,7 @@ def evaluate_method(
     method: str = "mean",
     trimmed_fraction: float = 0.2,
     mad_k: float = 3.5,
+    ransac_options: RansacOptions | None = None,
 ) -> RegistrationTrialResult:
     """Run a single averaging method end-to-end and return a trial result.
 
@@ -240,6 +361,12 @@ def evaluate_method(
     array (already in the Aurora frame, with any tip offset applied at capture
     time). ``truth_robot_by_label`` maps each label to its nominal location in
     the robot frame. This function does no I/O.
+
+    When ``ransac_options`` is supplied, the per-landmark capture averaging is
+    unchanged but the inner registration solve switches to the RANSAC variant
+    (:func:`solve_with_metrics_ransac`). The classical FRE/per-label residuals
+    are still computed on every landmark using the refit transform; RANSAC's
+    inlier/reject mask appears on ``RegistrationTrialResult.ransac``.
     """
     averaging: dict[str, CaptureAveraging] = {}
     averaged_measured: dict[str, list[float]] = {}
@@ -253,8 +380,15 @@ def evaluate_method(
         averaging[label] = result
         averaged_measured[label] = result.averaged_xyz_mm
 
-    solve = solve_with_metrics(averaged_measured, truth_robot_by_label)
-    loo = leave_one_out_fre(averaged_measured, truth_robot_by_label)
+    if ransac_options is None:
+        solve = solve_with_metrics(averaged_measured, truth_robot_by_label)
+        ransac_diagnostics: dict[str, object] | None = None
+    else:
+        solve = solve_with_metrics_ransac(
+            averaged_measured, truth_robot_by_label, options=ransac_options
+        )
+        ransac_diagnostics = dict(solve["ransac"]) if isinstance(solve.get("ransac"), dict) else None
+    loo = leave_one_out_fre(averaged_measured, truth_robot_by_label, ransac_options=ransac_options)
     keep_fre = float(solve["fre_mm"])
     loo_max_drop = 0.0
     if loo:
@@ -273,6 +407,7 @@ def evaluate_method(
             "trimmed_fraction": float(trimmed_fraction),
             "mad_k": float(mad_k),
         },
+        ransac=ransac_diagnostics,
     )
 
 
@@ -283,11 +418,16 @@ def sweep_methods(
     methods: Sequence[str] = AVERAGING_METHODS,
     trimmed_fraction: float = 0.2,
     mad_k: float = 3.5,
+    ransac_options: RansacOptions | None = None,
 ) -> dict[str, RegistrationTrialResult]:
     """Run every averaging method on the same captures and return a comparison.
 
     No data is altered; each method is a fresh post-processing pass over the
     same raw captures. The caller decides what to do with the resulting FREs.
+
+    Passing ``ransac_options`` switches the inner registration solve to the
+    RANSAC variant for every method in the sweep, so the comparison stays
+    apples-to-apples across averaging strategies.
     """
     return {
         method: evaluate_method(
@@ -296,6 +436,7 @@ def sweep_methods(
             method=method,
             trimmed_fraction=trimmed_fraction,
             mad_k=mad_k,
+            ransac_options=ransac_options,
         )
         for method in methods
     }

@@ -71,7 +71,13 @@ class ExperimentResultsWidget(QWidget):
         layout.addWidget(self.tabs)
 
     def set_model(self, model: VisualizationModel) -> None:
-        signature = repr(asdict(model))
+        # Object identity is enough — the controller only swaps in a new VisualizationModel
+        # when a new evaluation completes. The previous signature scheme called
+        # ``repr(asdict(model))`` on every 5 Hz refresh tick, which deep-copied and
+        # stringified every chart's values list (thousands of floats) just to compare a
+        # hash. Per the modeling-tab snappiness audit, this was a major paint-thread
+        # blocker during scroll. id() is O(1) and detects exactly what matters here.
+        signature = id(model)
         if self._model_signature == signature:
             return
         self._model_signature = signature

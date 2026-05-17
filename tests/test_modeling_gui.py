@@ -1452,3 +1452,87 @@ def test_modeling_controller_filters_inverse_artifacts(tmp_path: Path) -> None:
     assert forward_dir.name in artifact_names
     assert inverse_dir.name not in artifact_names  # inverse hidden from the comparison list
     controller.shutdown()
+
+
+def test_modeling_refresh_caches_eval_warn_disk_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: repeated refresh() ticks must not re-read the eval summary.json from
+    disk. The 5 Hz refresh timer was hammering this read on every fire — caching by
+    (path, mtime) is what unblocks scroll-thread paint."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    # Prime: do an initial refresh so the cache fills.
+    controller.refresh()
+
+    # Count Path.read_text calls during 10 subsequent refresh ticks. With the cache
+    # working, the eval warn path reads zero times (cache hit on each tick); without
+    # it, it would read 10 times.
+    read_count = {"n": 0}
+    real_read_text = Path.read_text
+
+    def _counting_read_text(self, *args, **kwargs):
+        if self.name == "summary.json" and str(self).startswith(str(run_dir)):
+            read_count["n"] += 1
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _counting_read_text)
+    for _ in range(10):
+        controller.refresh()
+    assert read_count["n"] == 0, (
+        f"eval-warn cache miss on steady-state refresh — {read_count['n']} disk reads "
+        "across 10 ticks (expected 0 once primed). The 5 Hz refresh timer would block "
+        "the GUI paint thread."
+    )
+
+    # Sanity: bumping the file's mtime invalidates the cache → next refresh re-reads.
+    (run_dir / "summary.json").touch()
+    controller.refresh()
+    assert read_count["n"] >= 1, "cache should re-read after mtime change"
+    controller.shutdown()
+
+
+def test_modeling_refresh_caches_trainability_jsonl_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: the two-segment trainability pairs builder must cache its result
+    across refresh() ticks instead of re-parsing samples.jsonl every 200ms.
+    """
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    controller.refresh()  # prime
+
+    # Spy on the validator that does the heavy JSONL parse.
+    call_count = {"n": 0}
+    real_validate = controller.validate_two_segment_modeling_trainability
+
+    def _counting_validate(*args, **kwargs):
+        call_count["n"] += 1
+        return real_validate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        controller, "validate_two_segment_modeling_trainability", _counting_validate
+    )
+    for _ in range(10):
+        controller.refresh()
+    # No selected two-segment runs in this fixture, so the validator shouldn't fire at
+    # all — but if it did, the cache should keep the count at most 1.
+    assert call_count["n"] <= 1, (
+        f"trainability cache miss — validator called {call_count['n']} times across "
+        "10 steady-state ticks (expected ≤1)."
+    )
+    controller.shutdown()

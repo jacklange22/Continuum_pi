@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import csv
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -26,6 +28,86 @@ class PivotCalibrationResult:
     residuals_mm: list[list[float]]
     inlier_mask: list[bool]
     rejected_indices: list[int]
+
+
+@dataclass
+class RansacPivotCalibrationResult:
+    """Output of a RANSAC-augmented pivot calibration solve.
+
+    Mirrors :class:`PivotCalibrationResult` so downstream code can treat the
+    two interchangeably, then adds RANSAC-specific diagnostics that make the
+    run auditable (best-consensus growth, iteration budget, seed used).
+    """
+
+    tip_vector_local_mm: list[float]
+    pivot_point_tracker_mm: list[float]
+    rmse_mm: float
+    sample_count_total: int
+    sample_count_used: int
+    sample_count_rejected: int
+    residuals_mm: list[list[float]]
+    inlier_mask: list[bool]
+    rejected_indices: list[int]
+    iterations_run: int
+    best_consensus_size: int
+    iteration_history: list[dict[str, Any]]
+    converged: bool
+    inlier_threshold_mm: float
+    minimum_sample_size: int
+    min_consensus_size: int
+    seed: int | None
+
+    def to_pivot_calibration_result(self) -> PivotCalibrationResult:
+        """Project to the classical :class:`PivotCalibrationResult` shape.
+
+        Useful when wiring RANSAC into an experiment path that already
+        consumes a :class:`PivotCalibrationResult` and shouldn't have to
+        learn the richer schema.
+        """
+        return PivotCalibrationResult(
+            tip_vector_local_mm=list(self.tip_vector_local_mm),
+            pivot_point_tracker_mm=list(self.pivot_point_tracker_mm),
+            rmse_mm=float(self.rmse_mm),
+            sample_count_total=int(self.sample_count_total),
+            sample_count_used=int(self.sample_count_used),
+            sample_count_rejected=int(self.sample_count_rejected),
+            residuals_mm=[list(row) for row in self.residuals_mm],
+            inlier_mask=list(self.inlier_mask),
+            rejected_indices=list(self.rejected_indices),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tip_vector_local_mm": list(self.tip_vector_local_mm),
+            "pivot_point_tracker_mm": list(self.pivot_point_tracker_mm),
+            "rmse_mm": float(self.rmse_mm),
+            "sample_count_total": int(self.sample_count_total),
+            "sample_count_used": int(self.sample_count_used),
+            "sample_count_rejected": int(self.sample_count_rejected),
+            "residuals_mm": [list(row) for row in self.residuals_mm],
+            "inlier_mask": list(self.inlier_mask),
+            "rejected_indices": list(self.rejected_indices),
+            "iterations_run": int(self.iterations_run),
+            "best_consensus_size": int(self.best_consensus_size),
+            "iteration_history": [dict(row) for row in self.iteration_history],
+            "converged": bool(self.converged),
+            "inlier_threshold_mm": float(self.inlier_threshold_mm),
+            "minimum_sample_size": int(self.minimum_sample_size),
+            "min_consensus_size": int(self.min_consensus_size),
+            "seed": int(self.seed) if self.seed is not None else None,
+        }
+
+
+class PivotRansacFailure(ValueError):
+    """Raised when RANSAC cannot produce a consensus that meets the floor.
+
+    Carries the partial iteration record so the operator can see how the
+    run progressed (best consensus size achieved, iterations attempted).
+    """
+
+    def __init__(self, message: str, *, partial: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.partial = dict(partial or {})
 
 
 @dataclass
@@ -110,6 +192,217 @@ def solve_pivot_calibration(
         inlier_mask=[bool(value) for value in keep_mask.tolist()],
         rejected_indices=[int(index) for index, keep in enumerate(keep_mask.tolist()) if not keep],
     )
+
+
+def solve_pivot_calibration_ransac(
+    rotations: list[np.ndarray],
+    translations_mm: list[np.ndarray],
+    *,
+    inlier_threshold_mm: float = 1.0,
+    minimum_sample_size: int = 3,
+    min_consensus_size: int | None = None,
+    max_iterations: int = 1000,
+    confidence: float = 0.99,
+    seed: int | None = None,
+) -> RansacPivotCalibrationResult:
+    """Solve pivot calibration with RANSAC outlier rejection.
+
+    The classical pivot system ``A x = b`` (with ``A_i = [R_i | -I]`` and
+    ``b_i = -t_i``) yields ``x = [tip_local; pivot_tracker]``. Each pose i
+    contributes a 3D residual ``R_i @ tip + t_i - pivot``; an inlier is a
+    pose whose residual norm is at most ``inlier_threshold_mm``.
+
+    The algorithm samples ``minimum_sample_size`` poses uniformly at random,
+    fits ``x`` via least squares on the sample, scores inliers on every
+    pose, and keeps the largest-consensus result. The iteration budget
+    shrinks adaptively once a good consensus appears, following
+    ``k = log(1 - p) / log(1 - w^n)``. The final tip/pivot are refit on
+    the best inlier set via the same least-squares solver used by
+    :func:`solve_pivot_calibration`, so the recovered math is identical to
+    the standard solve -- just on a clean subset of poses.
+
+    Parameters
+    ----------
+    rotations : Per-pose 3x3 rotation matrices.
+    translations_mm : Per-pose 3-vector translations in millimeters.
+    inlier_threshold_mm : Residual-norm cutoff in mm for a pose to count
+        as an inlier.
+    minimum_sample_size : Number of poses in a random sample. The unknown
+        vector has 6 components, so technically 2 poses are sufficient
+        (6 equations); 3 is a more conservative default that conditions
+        the per-sample fit better when rotations are similar.
+    min_consensus_size : Minimum inlier count for the run to be considered
+        converged. Defaults to ``max(6, ceil(0.5 N))`` so a half-corrupted
+        dataset of at least 12 poses can still pass.
+    max_iterations : Hard cap on iterations; adaptive shrinking will usually
+        stop sooner once a strong consensus is found.
+    confidence : Desired probability of sampling an all-inlier minimum set
+        at least once, used to compute the adaptive iteration budget.
+    seed : Optional integer seed for reproducibility.
+
+    Returns
+    -------
+    :class:`RansacPivotCalibrationResult` containing the recovered tip and
+    pivot, per-pose residuals on every input (not just inliers), the
+    inlier/reject masks, and a per-iteration history.
+
+    Raises
+    ------
+    ValueError
+        If inputs are inconsistent or there are not enough poses to draw a
+        single minimum sample.
+    PivotRansacFailure
+        If no sample produced a consensus that met ``min_consensus_size``.
+    """
+    if len(rotations) != len(translations_mm):
+        raise ValueError("rotations and translations_mm length mismatch")
+    n_total = len(rotations)
+    sample_size = int(minimum_sample_size)
+    if sample_size < 2:
+        raise ValueError(
+            "minimum_sample_size must be at least 2 (6 equations are required to determine "
+            "the 6-vector [tip; pivot])"
+        )
+    if n_total < sample_size:
+        raise ValueError(
+            f"At least {sample_size} poses are required for RANSAC pivot calibration; received {n_total}"
+        )
+    if inlier_threshold_mm <= 0:
+        raise ValueError("inlier_threshold_mm must be positive")
+    if not (0.0 < confidence < 1.0):
+        raise ValueError("confidence must lie in the open interval (0, 1)")
+    if max_iterations < 1:
+        raise ValueError("max_iterations must be at least 1")
+    consensus_floor = (
+        int(min_consensus_size)
+        if min_consensus_size is not None
+        else max(6, math.ceil(0.5 * n_total))
+    )
+    consensus_floor = max(consensus_floor, sample_size)
+
+    A_full, b_full = _assemble_system(rotations, translations_mm)
+    rng = np.random.default_rng(seed)
+    best_mask: np.ndarray | None = None
+    best_consensus = 0
+    best_inlier_rmse = math.inf
+    iteration_history: list[dict[str, Any]] = []
+    iteration_budget = int(max_iterations)
+    iteration = 0
+
+    while iteration < iteration_budget:
+        sample_indices = rng.choice(n_total, size=sample_size, replace=False)
+        sample_rows = np.repeat(_indices_to_mask(sample_indices, n_total), 3)
+        A_sample = A_full[sample_rows, :]
+        b_sample = b_full[sample_rows]
+        try:
+            x_candidate, *_ = np.linalg.lstsq(A_sample, b_sample, rcond=None)
+        except np.linalg.LinAlgError:
+            iteration += 1
+            continue
+        residuals_full = (A_full @ x_candidate - b_full).reshape(-1, 3)
+        residual_norms = np.linalg.norm(residuals_full, axis=1)
+        inlier_mask = residual_norms <= inlier_threshold_mm
+        consensus_size = int(inlier_mask.sum())
+        inlier_rmse_mm = (
+            float(np.sqrt(np.mean(residual_norms[inlier_mask] ** 2)))
+            if consensus_size > 0
+            else float("inf")
+        )
+
+        improved = consensus_size > best_consensus or (
+            consensus_size == best_consensus and inlier_rmse_mm < best_inlier_rmse
+        )
+        if improved:
+            best_consensus = consensus_size
+            best_mask = inlier_mask
+            best_inlier_rmse = inlier_rmse_mm
+            inlier_ratio = consensus_size / n_total
+            if 0.0 < inlier_ratio < 1.0:
+                denom = math.log(1.0 - inlier_ratio ** sample_size)
+                if denom < 0.0:
+                    required = math.ceil(math.log(1.0 - confidence) / denom)
+                    iteration_budget = min(int(max_iterations), max(iteration + 1, required))
+            elif inlier_ratio >= 1.0:
+                iteration_budget = iteration + 1
+
+        iteration_history.append(
+            {
+                "iteration": int(iteration),
+                "sample_indices": [int(value) for value in sample_indices.tolist()],
+                "consensus_size": int(consensus_size),
+                "inlier_rmse_mm": inlier_rmse_mm,
+                "best_consensus_size_so_far": int(best_consensus),
+                "iteration_budget": int(iteration_budget),
+            }
+        )
+        iteration += 1
+
+    iterations_run = iteration
+    if best_mask is None or best_consensus < consensus_floor:
+        partial = {
+            "best_consensus_size": int(best_consensus),
+            "min_consensus_size": consensus_floor,
+            "iterations_run": int(iterations_run),
+            "iteration_history": [dict(row) for row in iteration_history],
+            "inlier_threshold_mm": float(inlier_threshold_mm),
+            "sample_count_total": int(n_total),
+        }
+        raise PivotRansacFailure(
+            f"RANSAC pivot calibration failed: best consensus was {best_consensus} of "
+            f"{n_total} poses (need at least {consensus_floor}) within "
+            f"{inlier_threshold_mm:.3f} mm after {iterations_run} iterations.",
+            partial=partial,
+        )
+
+    inlier_indices = np.flatnonzero(best_mask)
+    inlier_rows = np.repeat(best_mask, 3)
+    A_inlier = A_full[inlier_rows, :]
+    b_inlier = b_full[inlier_rows]
+    x_final, *_ = np.linalg.lstsq(A_inlier, b_inlier, rcond=None)
+    residuals_final_all = (A_full @ x_final - b_full).reshape(-1, 3)
+    residual_norms_final = np.linalg.norm(residuals_final_all, axis=1)
+    final_mask = residual_norms_final <= inlier_threshold_mm
+    # Honor the consensus indices even if the refit nudges a borderline
+    # residual past the threshold by epsilon -- stable inlier accounting.
+    final_mask[inlier_indices] = True
+    final_inlier_indices = np.flatnonzero(final_mask)
+    if final_inlier_indices.size == 0:
+        raise PivotRansacFailure(
+            "RANSAC pivot calibration final refit produced no inliers; this should not happen "
+            "and likely indicates degenerate input geometry.",
+            partial={
+                "best_consensus_size": int(best_consensus),
+                "iterations_run": int(iterations_run),
+            },
+        )
+    inlier_residual_norms = residual_norms_final[final_inlier_indices]
+    inlier_rmse = float(np.sqrt(np.mean(inlier_residual_norms ** 2)))
+    rejected = np.flatnonzero(~final_mask)
+    return RansacPivotCalibrationResult(
+        tip_vector_local_mm=[float(value) for value in x_final[0:3]],
+        pivot_point_tracker_mm=[float(value) for value in x_final[3:6]],
+        rmse_mm=inlier_rmse,
+        sample_count_total=int(n_total),
+        sample_count_used=int(final_inlier_indices.size),
+        sample_count_rejected=int(rejected.size),
+        residuals_mm=[[float(value) for value in row] for row in residuals_final_all],
+        inlier_mask=[bool(value) for value in final_mask.tolist()],
+        rejected_indices=[int(value) for value in rejected.tolist()],
+        iterations_run=int(iterations_run),
+        best_consensus_size=int(best_consensus),
+        iteration_history=iteration_history,
+        converged=True,
+        inlier_threshold_mm=float(inlier_threshold_mm),
+        minimum_sample_size=sample_size,
+        min_consensus_size=int(consensus_floor),
+        seed=seed,
+    )
+
+
+def _indices_to_mask(indices: np.ndarray, total: int) -> np.ndarray:
+    mask = np.zeros(int(total), dtype=bool)
+    mask[indices] = True
+    return mask
 
 
 def load_pivot_transforms(
