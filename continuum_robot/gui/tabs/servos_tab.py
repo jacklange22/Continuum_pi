@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Callable
 
 from PySide6.QtCore import Qt, QTimer
@@ -139,9 +140,12 @@ class ServosTab(QWidget):
         self.joystick_readout_label = QLabel("X = +0.000 cm   Y = +0.000 cm")
         self.joystick_readout_label.setProperty("role", "hint")
         self.joystick_readout_label.setWordWrap(True)
-        self.joystick_per_servo_label = QLabel("Servo deltas: —")
+        self.joystick_per_servo_label = QLabel("Tendon deltas: —")
         self.joystick_per_servo_label.setProperty("role", "hint")
         self.joystick_per_servo_label.setWordWrap(True)
+        self.joystick_last_action_label = QLabel("No XY drive command sent yet.")
+        self.joystick_last_action_label.setProperty("role", "hint")
+        self.joystick_last_action_label.setWordWrap(True)
         self.joystick_center_button = QPushButton("Return to Center")
         self.joystick_center_button.clicked.connect(self._center_joystick)
         self.joystick_blocker_label = QLabel("")
@@ -161,6 +165,7 @@ class ServosTab(QWidget):
         joystick_layout.addLayout(joystick_radius_row)
         joystick_layout.addWidget(self.joystick_readout_label)
         joystick_layout.addWidget(self.joystick_per_servo_label)
+        joystick_layout.addWidget(self.joystick_last_action_label)
         joystick_layout.addWidget(self.joystick_blocker_label)
         joystick_layout.addWidget(self.joystick_center_button, 0, Qt.AlignLeft)
         joystick_layout.addStretch(1)
@@ -173,17 +178,21 @@ class ServosTab(QWidget):
         jog_row_layout.addWidget(jog_box, 1)
         jog_row_layout.addWidget(joystick_box, 1)
 
-        # Throttled command dispatch: coalesce drag motion to ~12 Hz so the bus
+        # Throttled command dispatch: coalesce drag motion to ~20 Hz so the bus
         # is never asked to deliver writes faster than command_displacement can
         # complete a round-trip. The puck still tracks the cursor at full rate.
         self._joystick_pending_xy_cm: tuple[float, float] | None = None
         self._joystick_last_sent_xy_cm: tuple[float, float] | None = None
         self._joystick_send_in_flight = False
         self._joystick_send_timer = QTimer(self)
-        self._joystick_send_timer.setInterval(80)
+        self._joystick_send_timer.setInterval(50)
         self._joystick_send_timer.timeout.connect(self._maybe_send_joystick_command)
         self._joystick_send_timer.start()
         self.joystick_widget.position_changed.connect(self._on_joystick_position_changed)
+        # On mouse release, flush the final position immediately — a fast drag
+        # that ends between throttle ticks should still leave the servos at the
+        # operator's last puck position rather than wherever the throttle paused.
+        self.joystick_widget.drag_released.connect(self._on_joystick_drag_released)
 
         self.manual_pretension_summary_label = QLabel("No accepted pretension source.")
         self.manual_pretension_summary_label.setWordWrap(True)
@@ -358,12 +367,12 @@ class ServosTab(QWidget):
     # --- XY drive (joystick) handlers ------------------------------------
 
     def _sync_joystick_availability(self, state: ServosViewState) -> None:
-        servo_ids = self._active_segment_servo_ids(state)
+        servo_ids = self._joystick_dispatch_servo_ids(state)
         block_reason = ""
         if not state.connected:
             block_reason = "Bus disconnected — connect on the System tab."
         elif len(servo_ids) != 4:
-            block_reason = "XY drive needs an active 4-tendon segment."
+            block_reason = "XY drive needs the active 4-tendon segment commanded on the bus."
         elif (state.pretension_source_type or "none").lower() in {"none", ""}:
             block_reason = "Accept a pretension source first (Manual Pretension or Pretension Trial)."
         elif "pending" in (state.pretension_source_type or "").lower():
@@ -386,8 +395,19 @@ class ServosTab(QWidget):
         self.joystick_center_button.setEnabled(x_cm != 0.0 or y_cm != 0.0)
         self._refresh_joystick_readout(self.controller.state)
 
+    def _on_joystick_drag_released(self, x_cm: float, y_cm: float) -> None:
+        # Make sure the final puck position commits even if it landed between
+        # throttle ticks; the throttle would otherwise leave a stale request in
+        # the queue forever once the user stopped moving the mouse.
+        self._joystick_pending_xy_cm = (float(x_cm), float(y_cm))
+        self._maybe_send_joystick_command()
+
     def _center_joystick(self) -> None:
         self.joystick_widget.center()
+        # Belt-and-braces: bypass the throttle so Center always takes effect
+        # immediately even if a send is mid-flight.
+        self._joystick_pending_xy_cm = (0.0, 0.0)
+        self._maybe_send_joystick_command()
 
     def _refresh_joystick_readout(self, state: ServosViewState) -> None:
         x_cm, y_cm = self.joystick_widget.position_cm()
@@ -396,7 +416,7 @@ class ServosTab(QWidget):
         )
         deltas = self._joystick_servo_deltas_cm(state, x_cm, y_cm)
         if not deltas:
-            self.joystick_per_servo_label.setText("Servo deltas: —")
+            self.joystick_per_servo_label.setText("Tendon deltas: —")
             return
         delta_text = "   ".join(f"{servo_id}: {value:+.3f} cm" for servo_id, value in deltas)
         self.joystick_per_servo_label.setText(f"Tendon deltas: {delta_text}")
@@ -408,22 +428,33 @@ class ServosTab(QWidget):
         if pending == self._joystick_last_sent_xy_cm:
             return
         state = self.controller.state
-        if not self.joystick_widget.isEnabled() or not self._joystick_motion_allowed(state):
+        if not self._joystick_motion_allowed(state):
             return
-        servo_ids = self._active_segment_servo_ids(state)
+        servo_ids = self._joystick_dispatch_servo_ids(state)
         if len(servo_ids) != 4:
             return
-        displacements = self._joystick_displacement_vector(state, pending[0], pending[1])
+        displacements = self._joystick_displacement_vector_for_dispatch(servo_ids, pending[0], pending[1])
         if displacements is None:
+            self.joystick_last_action_label.setText(
+                "XY drive: could not build displacement vector — check operating mode."
+            )
             return
         self._joystick_send_in_flight = True
+        timestamp = datetime.now().strftime("%H:%M:%S")
         try:
             self.controller.set_tendon_displacements(displacements)
             self.controller.apply_displacement()
             self._joystick_last_sent_xy_cm = pending
+            self.joystick_last_action_label.setText(
+                f"Sent X={pending[0]:+.3f} cm  Y={pending[1]:+.3f} cm  at {timestamp}"
+            )
+            # Refresh telemetry view so the table reflects the new position
+            # without waiting for the next app-window refresh tick.
+            self.update(self.controller.state)
         except Exception as exc:  # noqa: BLE001 — surface but never crash the GUI
             self.controller.state.last_error = str(exc)
             self.controller.state.status_message = f"XY drive command rejected: {exc}"
+            self.joystick_last_action_label.setText(f"XY drive error at {timestamp}: {exc}")
         finally:
             self._joystick_send_in_flight = False
 
@@ -437,44 +468,39 @@ class ServosTab(QWidget):
         return True
 
     @staticmethod
-    def _active_segment_servo_ids(state: ServosViewState) -> list[int]:
-        ids = list(state.active_segment_servo_ids or [])
-        if ids:
-            return [int(value) for value in ids]
+    def _joystick_dispatch_servo_ids(state: ServosViewState) -> list[int]:
+        """Servo IDs in the order command_displacement consumes them.
+
+        Mirrors what ServosController.apply_displacement passes: state.servo_ids
+        (the currently commanded set). Joystick displacement vectors must be
+        positional against this list, not against settings.robot.tendon_to_servo
+        — the two can diverge after discovery or operator overrides.
+        """
         return [int(value) for value in (state.servo_ids or [])]
 
-    def _joystick_displacement_vector(
-        self,
-        state: ServosViewState,
+    @staticmethod
+    def _joystick_displacement_vector_for_dispatch(
+        servo_ids: list[int],
         x_cm: float,
         y_cm: float,
     ) -> list[float] | None:
-        """Translate an XY puck position into a 4-element tendon displacement list.
+        """Translate an XY puck position into a tendon displacement vector.
 
-        Uses the same antagonistic-pair convention as the penprobe chasing demo:
-        axis_a = [servo_ids[0], servo_ids[2]] responds to X, axis_b = [s[1], s[3]]
-        responds to Y; the lower index loosens (-) and the higher tightens (+).
+        Uses the antagonistic-pair convention from the penprobe chasing demo:
+        axis_a = [servo_ids[0], servo_ids[2]] responds to X, axis_b =
+        [servo_ids[1], servo_ids[3]] responds to Y; the lower position in each
+        pair loosens, the higher tightens. The output is positional against the
+        provided servo_ids list, which command_displacement consumes directly.
         """
-        tendon_to_servo = [int(value) for value in (self.controller.settings.robot.tendon_to_servo or [])]
-        if len(tendon_to_servo) != 4:
+        if len(servo_ids) != 4:
             return None
-        servo_ids = self._active_segment_servo_ids(state)
-        if len(servo_ids) < 4:
-            return None
-        # axis_a (X) uses the segment's first and third commanded servos; axis_b
-        # (Y) uses the second and fourth. Look those ids up inside the tendon
-        # list so any reordering in tendon_to_servo is honored.
-        axis_a = [int(servo_ids[0]), int(servo_ids[2])]
-        axis_b = [int(servo_ids[1]), int(servo_ids[3])]
         displacements = [0.0] * 4
-        for axis_pair, axis_value in ((axis_a, float(x_cm)), (axis_b, float(y_cm))):
-            try:
-                low_index = tendon_to_servo.index(axis_pair[0])
-                high_index = tendon_to_servo.index(axis_pair[1])
-            except ValueError:
-                return None
-            displacements[low_index] = -axis_value
-            displacements[high_index] = axis_value
+        # X axis on pair (0, 2)
+        displacements[0] = -float(x_cm)
+        displacements[2] = float(x_cm)
+        # Y axis on pair (1, 3)
+        displacements[1] = -float(y_cm)
+        displacements[3] = float(y_cm)
         return displacements
 
     def _joystick_servo_deltas_cm(
@@ -483,11 +509,11 @@ class ServosTab(QWidget):
         x_cm: float,
         y_cm: float,
     ) -> list[tuple[int, float]]:
-        displacements = self._joystick_displacement_vector(state, x_cm, y_cm)
+        servo_ids = self._joystick_dispatch_servo_ids(state)
+        displacements = self._joystick_displacement_vector_for_dispatch(servo_ids, x_cm, y_cm)
         if displacements is None:
             return []
-        tendon_to_servo = [int(value) for value in (self.controller.settings.robot.tendon_to_servo or [])]
-        return [(tendon_to_servo[i], displacements[i]) for i in range(len(displacements))]
+        return [(servo_ids[i], displacements[i]) for i in range(len(displacements))]
 
     @staticmethod
     def _format_status(state: ServosViewState) -> str:
