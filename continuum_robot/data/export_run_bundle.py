@@ -65,11 +65,19 @@ CORE_FILENAMES = {
     "training_config.json",
     "loss_history.csv",
     "evaluation_metadata.json",
+    # registration_sampling_study artifacts
+    "registration_sampling_study_summary.txt",
+    "registration_candidate.json",
+    "point_centers.csv",
+    "subset_results.csv",
+    "leave_one_out_results.csv",
+    "samples_per_point_results.csv",
 }
 
 OPTIONAL_LARGE_FILENAMES = {
     "samples.jsonl",
     "modeling_dataset_legacy_compat.dat",
+    "raw_point_samples.jsonl",
 }
 
 DEBUG_NAME_MARKERS = ("_debug", "debug_", "diagnostic")

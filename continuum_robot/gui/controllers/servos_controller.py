@@ -922,16 +922,21 @@ class ServosController:
             )
         self.state.segment_readiness_summary = "; ".join(summaries)
         self.state.selected_servo_segment_label = selected_segment_label
-        if self.state.robot_mode == "dual_segment":
+        if self.state.robot_mode in {"dual_segment", "parallel_single"}:
             missing = sorted(int(value) for value in self.state.missing_servo_ids)
+            mode_label = (
+                "Parallel-single demo (both spines)"
+                if self.state.robot_mode == "parallel_single"
+                else "All-8"
+            )
             if not self.state.connected:
-                self.state.all_8_readiness_summary = "Disconnected: all 8 expected servos are unread."
+                self.state.all_8_readiness_summary = f"Disconnected: {mode_label.lower()} expects 8 servos and none are read."
             elif missing:
-                self.state.all_8_readiness_summary = "All-8 readiness incomplete; missing " + ", ".join(str(value) for value in missing) + "."
+                self.state.all_8_readiness_summary = f"{mode_label} readiness incomplete; missing " + ", ".join(str(value) for value in missing) + "."
             elif len(expected) == 8:
-                self.state.all_8_readiness_summary = "All-8 readiness: all expected servos are readable."
+                self.state.all_8_readiness_summary = f"{mode_label} readiness: all expected servos are readable."
             else:
-                self.state.all_8_readiness_summary = f"dual_segment expects 8 IDs; current context has {expected}."
+                self.state.all_8_readiness_summary = f"{self.state.robot_mode} expects 8 IDs; current context has {expected}."
         else:
             self.state.all_8_readiness_summary = ""
         active_ids_for_mapping = [int(value) for value in self.state.active_segment_servo_ids or expected]

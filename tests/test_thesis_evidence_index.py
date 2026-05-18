@@ -216,3 +216,226 @@ def test_evidence_index_debug_and_mock_flags_are_explicit(tmp_path: Path) -> Non
     )
 
     assert _included_run_ids(output_dir) == {"debug-run", "mock-run"}
+
+
+def _write_run_with_thesis_validity(
+    root: Path,
+    name: str,
+    *,
+    review_status: str,
+    valid_for_thesis_repeatability: bool,
+    valid_for_model_training: bool = False,
+    trust_mode: str = "thesis_trusted",
+    experiment_name: str = "single_segment_repeatability",
+) -> Path:
+    run_dir = root / "data" / "experiments" / experiment_name / name
+    run_dir.mkdir(parents=True)
+    provenance = {"operating_mode": "single_segment", "mock_mode": False}
+    trust = {
+        "run_trust_mode": trust_mode,
+        "valid_for_model_training": bool(valid_for_model_training),
+        "valid_for_thesis_repeatability": bool(valid_for_thesis_repeatability),
+    }
+    (run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "experiment_name": experiment_name,
+                "run_id": name,
+                "provenance_info": provenance,
+                "trust_info": trust,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "experiment_name": experiment_name,
+                "run_id": name,
+                "success": True,
+                "status": "success",
+                "experiment_metrics": {
+                    "run_provenance": provenance,
+                    "run_trust": trust,
+                    "run_trust_mode": trust_mode,
+                    "valid_for_model_training": trust["valid_for_model_training"],
+                    "valid_for_thesis_repeatability": trust["valid_for_thesis_repeatability"],
+                    "mock_mode": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "run_review.json").write_text(
+        json.dumps({"review_status": review_status, "include_in_evidence_index": False}),
+        encoding="utf-8",
+    )
+    return run_dir
+
+
+def _payload(index_dir: Path) -> dict:
+    return json.loads((index_dir / "thesis_evidence_index.json").read_text(encoding="utf-8"))
+
+
+def _run_entries(payload: dict, experiment: str) -> list[dict]:
+    return list(payload.get("experiments", {}).get(experiment, []))
+
+
+def test_thesis_candidate_with_failing_validity_is_included_as_lower_trust(tmp_path: Path) -> None:
+    _write_run_with_thesis_validity(
+        tmp_path,
+        "candidate-failing-validity",
+        review_status="thesis_candidate",
+        valid_for_thesis_repeatability=False,
+    )
+
+    output_dir = build_thesis_evidence_index(project_root=tmp_path)
+
+    payload = _payload(output_dir)
+    entries = _run_entries(payload, "single_segment_repeatability")
+    assert len(entries) == 1, "lower-trust run must still be included per operator preference"
+    entry = entries[0]
+    assert entry["run_id"] == "candidate-failing-validity"
+    assert entry["trust_level"] == "lower_trust"
+    assert entry["trust_warnings"], "the inconsistency must be surfaced on the run entry"
+    assert any("valid_for_thesis_repeatability=False" in str(item) for item in entry["trust_warnings"])
+    assert payload["run_count_lower_trust"] == 1
+    assert payload["warnings"], "top-level warnings list must include the lower-trust run"
+    assert any("candidate-failing-validity" in str(item) for item in payload["warnings"])
+
+
+def test_thesis_candidate_with_passing_validity_is_thesis_trusted(tmp_path: Path) -> None:
+    _write_run_with_thesis_validity(
+        tmp_path,
+        "candidate-passing-validity",
+        review_status="thesis_candidate",
+        valid_for_thesis_repeatability=True,
+    )
+
+    output_dir = build_thesis_evidence_index(project_root=tmp_path)
+
+    payload = _payload(output_dir)
+    entries = _run_entries(payload, "single_segment_repeatability")
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["trust_level"] == "thesis_trusted"
+    assert not entry["trust_warnings"]
+    assert payload["run_count_lower_trust"] == 0
+    assert not payload["warnings"]
+
+
+def _write_registration_sampling_study_run(
+    root: Path,
+    *,
+    name: str,
+    review_status: str,
+    recommendation_valid: bool,
+) -> Path:
+    run_dir = root / "data" / "experiments" / "registration_sampling_study" / name
+    run_dir.mkdir(parents=True)
+    (run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "experiment_name": "registration_sampling_study",
+                "run_id": name,
+                "provenance_info": {"operating_mode": "single_segment", "mock_mode": False},
+                "trust_info": {
+                    "run_trust_mode": "thesis_trusted",
+                    "valid_for_model_training": False,
+                    "valid_for_thesis_repeatability": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "experiment_name": "registration_sampling_study",
+                "run_id": name,
+                "success": True,
+                "status": "success",
+                "experiment_metrics": {
+                    "run_trust_mode": "thesis_trusted",
+                    "valid_for_model_training": False,
+                    "valid_for_thesis_repeatability": False,
+                    "valid_for_registration_protocol_recommendation": bool(recommendation_valid),
+                    "candidate_registration_fre_mm": 0.42,
+                    "recommended_protocol": {
+                        "recommended_subset_size": 12,
+                        "recommended_samples_per_point": 20,
+                        "recommended_averaging_method": "mean",
+                        "rationale": "test",
+                    },
+                    "run_provenance": {"operating_mode": "single_segment", "mock_mode": False},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "run_review.json").write_text(
+        json.dumps({"review_status": review_status, "include_in_evidence_index": False}),
+        encoding="utf-8",
+    )
+    return run_dir
+
+
+def test_evidence_index_registration_study_recommendation_valid_is_thesis_trusted(tmp_path: Path) -> None:
+    _write_registration_sampling_study_run(
+        tmp_path,
+        name="rsstudy-good",
+        review_status="thesis_candidate",
+        recommendation_valid=True,
+    )
+
+    output_dir = build_thesis_evidence_index(project_root=tmp_path)
+
+    payload = _payload(output_dir)
+    entries = _run_entries(payload, "registration_sampling_study")
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["trust_level"] == "thesis_trusted"
+    assert not entry["trust_warnings"]
+    # The study's recommendation should surface in the per-run key_metrics.
+    metrics = entry.get("key_metrics", {})
+    assert metrics.get("candidate_registration_fre_mm") == 0.42
+    assert metrics.get("recommended_protocol", {}).get("recommended_subset_size") == 12
+
+
+def test_evidence_index_registration_study_recommendation_invalid_is_lower_trust(tmp_path: Path) -> None:
+    _write_registration_sampling_study_run(
+        tmp_path,
+        name="rsstudy-bad",
+        review_status="thesis_candidate",
+        recommendation_valid=False,
+    )
+
+    output_dir = build_thesis_evidence_index(project_root=tmp_path)
+
+    payload = _payload(output_dir)
+    entries = _run_entries(payload, "registration_sampling_study")
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["trust_level"] == "lower_trust"
+    assert any("valid_for_registration_protocol_recommendation=False" in str(item) for item in entry["trust_warnings"])
+
+
+def test_modeling_candidate_with_failing_model_training_is_lower_trust(tmp_path: Path) -> None:
+    # Modeling-experiment naming triggers an additional gate on valid_for_model_training.
+    _write_run_with_thesis_validity(
+        tmp_path,
+        "modeling-candidate-failing",
+        review_status="advisor_share",
+        valid_for_thesis_repeatability=True,
+        valid_for_model_training=False,
+        experiment_name="collect_pose_command_dataset",
+    )
+
+    output_dir = build_thesis_evidence_index(project_root=tmp_path)
+
+    payload = _payload(output_dir)
+    entries = _run_entries(payload, "collect_pose_command_dataset")
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["trust_level"] == "lower_trust"
+    assert any("valid_for_model_training=False" in str(item) for item in entry["trust_warnings"])

@@ -566,6 +566,62 @@ def test_servos_controller_dual_segment_groups_all_8_readiness_by_segment(tmp_pa
     assert controller.state.selected_servo_segment_label == "Segment B / distal"
 
 
+def test_servos_controller_parallel_single_surfaces_all_8_readiness(tmp_path: Path) -> None:
+    settings = _settings_dual_segment()
+    settings.robot.mode = "parallel_single"
+    context = settings.robot.operating_context()
+    servo_service = _servo_service(
+        tmp_path,
+        dxl_bus=MockDxlBus([1, 2, 3, 4, 5, 6, 7, 8]),
+        context_servo_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+        robot_mode="parallel_single",
+    )
+    calibration_context = servo_service.neutral_calibration.context
+    calibration_context.expected_servo_ids = list(context.expected_servo_ids)
+    calibration_context.commanded_servo_ids = list(context.commanded_servo_ids)
+    calibration_context.segments = settings.robot.segment_metadata()
+    calibration_context.segment_order = settings.robot.segment_order()
+    calibration_context.mode_profile = context.mode_profile
+    calibration_context.mode_capabilities = context.mode_capabilities
+    calibration_context.mode_notes = context.mode_notes
+    servo_service.connect("/dev/mock-openrb", 57600)
+
+    controller = ServosController(servo_service, settings)
+
+    assert controller.state.robot_mode == "parallel_single"
+    assert controller.state.expected_servo_ids == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert controller.state.all_8_readiness_summary, "parallel_single should populate the all-8 readiness summary"
+    assert "Parallel-single demo" in controller.state.all_8_readiness_summary
+    assert "all expected servos are readable" in controller.state.all_8_readiness_summary
+
+
+def test_servos_controller_parallel_single_reports_missing_when_one_servo_absent(tmp_path: Path) -> None:
+    settings = _settings_dual_segment()
+    settings.robot.mode = "parallel_single"
+    context = settings.robot.operating_context()
+    servo_service = _servo_service(
+        tmp_path,
+        dxl_bus=MockDxlBus([1, 2, 3, 4, 5, 6, 7]),  # servo 8 missing
+        context_servo_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+        robot_mode="parallel_single",
+    )
+    calibration_context = servo_service.neutral_calibration.context
+    calibration_context.expected_servo_ids = list(context.expected_servo_ids)
+    calibration_context.commanded_servo_ids = list(context.commanded_servo_ids)
+    calibration_context.segments = settings.robot.segment_metadata()
+    calibration_context.segment_order = settings.robot.segment_order()
+    calibration_context.mode_profile = context.mode_profile
+    calibration_context.mode_capabilities = context.mode_capabilities
+    calibration_context.mode_notes = context.mode_notes
+    servo_service.connect("/dev/mock-openrb", 57600)
+
+    controller = ServosController(servo_service, settings)
+
+    assert controller.state.missing_servo_ids == [8]
+    assert "Parallel-single demo" in controller.state.all_8_readiness_summary
+    assert "missing 8" in controller.state.all_8_readiness_summary
+
+
 def test_dual_segment_manual_capture_reads_and_saves_all_8_servo_state(tmp_path: Path) -> None:
     settings = _settings_dual_segment()
     operating_context = settings.robot.operating_context()

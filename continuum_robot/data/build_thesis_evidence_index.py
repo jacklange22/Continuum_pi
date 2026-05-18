@@ -42,8 +42,9 @@ def build_thesis_evidence_index(
             include_unreviewed=include_unreviewed,
         )
     ]
+    grouped_experiments, top_level_warnings, lower_trust_count = _group_runs(included)
     payload = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "project_root": str(project_root),
         "experiment_name_filter": experiment_name,
@@ -52,7 +53,9 @@ def build_thesis_evidence_index(
         "include_unreviewed": bool(include_unreviewed),
         "run_count_scanned": len(runs),
         "run_count_included": len(included),
-        "experiments": _group_runs(included),
+        "run_count_lower_trust": int(lower_trust_count),
+        "warnings": list(top_level_warnings),
+        "experiments": grouped_experiments,
     }
     (output_dir / "thesis_evidence_index.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     (output_dir / "thesis_evidence_index.md").write_text(_render_markdown(payload), encoding="utf-8")
@@ -107,13 +110,22 @@ def _include_run(
     return False
 
 
-def _group_runs(runs: list[ManagedRunSummary]) -> dict[str, list[dict[str, Any]]]:
+def _group_runs(
+    runs: list[ManagedRunSummary],
+) -> tuple[dict[str, list[dict[str, Any]]], list[str], int]:
     grouped: dict[str, list[dict[str, Any]]] = {}
+    top_level_warnings: list[str] = []
+    lower_trust_count = 0
     for run in runs:
-        grouped.setdefault(run.experiment_name, []).append(_run_payload(run))
+        payload = _run_payload(run)
+        if payload.get("trust_level") == "lower_trust":
+            lower_trust_count += 1
+            for warning in payload.get("trust_warnings", []) or []:
+                top_level_warnings.append(f"{run.experiment_name}/{run.run_id or run.run_dir.name}: {warning}")
+        grouped.setdefault(run.experiment_name, []).append(payload)
     for entries in grouped.values():
         entries.sort(key=lambda item: str(item.get("timestamp_label") or ""), reverse=True)
-    return dict(sorted(grouped.items()))
+    return dict(sorted(grouped.items())), top_level_warnings, lower_trust_count
 
 
 def _run_payload(run: ManagedRunSummary) -> dict[str, Any]:
@@ -121,7 +133,70 @@ def _run_payload(run: ManagedRunSummary) -> dict[str, Any]:
     payload["run_dir"] = str(run.run_dir)
     payload["review"] = run.review.to_dict()
     payload["key_metrics"] = _extract_key_metrics(run.run_dir)
+    trust_level, trust_warnings = _assess_trust_level(run)
+    payload["trust_level"] = trust_level
+    payload["trust_warnings"] = trust_warnings
     return payload
+
+
+def _assess_trust_level(run: ManagedRunSummary) -> tuple[str, list[str]]:
+    """Derive a trust label for an included run.
+
+    A run that is curated as ``thesis_candidate``/``advisor_share`` but whose own
+    summary reports the relevant validity flag as ``False`` is still included
+    (per operator preference), but tagged ``lower_trust`` with a specific reason
+    so downstream readers and the index header surface the inconsistency.
+    """
+    review_status = (run.review.review_status or "").strip().lower()
+    if review_status not in {"thesis_candidate", "advisor_share"}:
+        return "thesis_trusted", []
+    warnings: list[str] = []
+    experiment_name = (run.experiment_name or "").lower()
+    is_modeling_experiment = (
+        "modeling" in experiment_name
+        or "collect_pose" in experiment_name
+        or "two_segment" in experiment_name
+    )
+    is_registration_protocol_study = experiment_name == "registration_sampling_study"
+    if is_registration_protocol_study:
+        # This experiment is never thesis_repeatability- or model-training-valid by design;
+        # the appropriate trust gate is whether a registration protocol recommendation
+        # was produced. Look it up directly from the run's summary.json.
+        recommendation_valid = _registration_protocol_recommendation_valid(run.run_dir)
+        if recommendation_valid is False:
+            warnings.append(
+                f"review_status={review_status!r} but valid_for_registration_protocol_recommendation=False"
+            )
+    else:
+        if run.valid_for_thesis_repeatability is False:
+            warnings.append(
+                f"review_status={review_status!r} but summary.valid_for_thesis_repeatability=False"
+            )
+        if is_modeling_experiment and run.valid_for_model_training is False:
+            warnings.append(
+                f"review_status={review_status!r} but summary.valid_for_model_training=False"
+            )
+    if (run.run_trust_mode or "").strip().lower() in {"servo_only", "current_only", "lower_trust", "debug", "debug_only"}:
+        warnings.append(
+            f"review_status={review_status!r} but run_trust_mode={run.run_trust_mode!r}"
+        )
+    return ("lower_trust" if warnings else "thesis_trusted", warnings)
+
+
+def _registration_protocol_recommendation_valid(run_dir: Path) -> bool | None:
+    """Return the run's `valid_for_registration_protocol_recommendation` flag or None."""
+    summary_path = Path(run_dir) / "summary.json"
+    if not summary_path.exists():
+        return None
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    metrics = summary.get("experiment_metrics") if isinstance(summary.get("experiment_metrics"), dict) else {}
+    value = metrics.get("valid_for_registration_protocol_recommendation")
+    if isinstance(value, bool):
+        return value
+    return None
 
 
 def _extract_key_metrics(run_dir: Path) -> dict[str, Any]:
@@ -156,6 +231,14 @@ def _extract_key_metrics(run_dir: Path) -> dict[str, Any]:
         "includes_intermediate_label",
         "label_mode",
         "physics_model_status",
+        # registration_sampling_study
+        "captured_label_count",
+        "captured_sample_count_total",
+        "candidate_registration_fre_mm",
+        "candidate_registration_max_residual_mm",
+        "candidate_registration_label_count",
+        "recommended_protocol",
+        "valid_for_registration_protocol_recommendation",
     ]
     extracted = {key: metrics[key] for key in useful_keys if key in metrics}
     dataset_type = str(metrics.get("dataset_type") or "")
@@ -235,10 +318,17 @@ def _render_markdown(payload: dict[str, Any]) -> str:
         f"Created: {payload.get('created_at_utc')}",
         f"Runs scanned: {payload.get('run_count_scanned')}",
         f"Runs included: {payload.get('run_count_included')}",
+        f"Lower-trust included: {payload.get('run_count_lower_trust', 0)}",
         "",
         "This index lists reviewed thesis/advisor evidence only by default. It does not include raw samples.",
         "",
     ]
+    top_warnings = payload.get("warnings") if isinstance(payload.get("warnings"), list) else []
+    if top_warnings:
+        lines.extend(["## Lower-trust warnings", ""])
+        for warning in top_warnings:
+            lines.append(f"- {warning}")
+        lines.append("")
     experiments = payload.get("experiments")
     if not isinstance(experiments, dict) or not experiments:
         lines.append("No candidate evidence runs found.")
@@ -250,12 +340,14 @@ def _render_markdown(payload: dict[str, Any]) -> str:
             figures = run.get("report_figures") if isinstance(run.get("report_figures"), list) else []
             warnings = run.get("data_quality_warnings") if isinstance(run.get("data_quality_warnings"), list) else []
             validation = run.get("validation_issues") if isinstance(run.get("validation_issues"), list) else []
+            trust_warnings = run.get("trust_warnings") if isinstance(run.get("trust_warnings"), list) else []
             lines.extend(
                 [
                     f"### {run.get('run_id') or Path(str(run.get('run_dir'))).name}",
                     "",
                     f"- Path: `{run.get('run_dir')}`",
                     f"- Validation: `{run.get('validation_status')}`",
+                    f"- Trust level: `{run.get('trust_level', 'thesis_trusted')}`",
                     f"- Trust mode: `{run.get('run_trust_mode')}`",
                     f"- Review status: `{(run.get('review') or {}).get('review_status', 'debug')}`",
                     f"- Model training valid: `{run.get('valid_for_model_training')}`",
@@ -265,6 +357,8 @@ def _render_markdown(payload: dict[str, Any]) -> str:
                     f"- Stop/failure reason: `{run.get('stop_or_failure_reason') or 'n/a'}`",
                 ]
             )
+            if trust_warnings:
+                lines.append(f"- Trust warnings: {'; '.join(str(item) for item in trust_warnings)}")
             if metrics:
                 lines.append(f"- Key metrics: `{json.dumps(metrics, sort_keys=True)}`")
             if figures:

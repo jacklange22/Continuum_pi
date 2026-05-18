@@ -1945,6 +1945,17 @@ def test_collect_pose_long_run_recovery_drops_one_sample_and_continues(tmp_path:
     assert int(health.get("transport_burst_count", 0) or 0) == int(quality.get("transport_burst_count", 0) or 0)
     assert health.get("run_status") == "success"
     assert health.get("run_success") is True
+    # F-2: post-motion drops are not "recoveries"; the sample is lost. The bus is resynced
+    # for the next command, and the event is named bus_resynced_after_drop, not the old
+    # misleading post_motion_telemetry_resync_success.
+    event_names = {event.get("event") for event in events}
+    assert "bus_resynced_after_drop" in event_names
+    assert "post_motion_telemetry_resync_success" not in event_names
+    bus_resynced = [event for event in events if event.get("event") == "bus_resynced_after_drop"]
+    assert bus_resynced and bus_resynced[0].get("sample_recovered") is False
+    assert int(metrics.get("recovered_packet_error_count", 0) or 0) == 0
+    assert int(quality.get("recovered_packet_error_count", 0) or 0) == 0
+    assert int(health.get("recovered_packet_error_count", 0) or 0) == 0
 
 
 def test_collect_pose_long_run_recovery_stops_at_max_consecutive(tmp_path: Path) -> None:
@@ -2079,6 +2090,12 @@ def test_collect_pose_pre_motion_packet_error_retries_and_continues(tmp_path: Pa
     retries = int(metrics.get("servo_telemetry_retry_count", 0) or 0)
     assert retries == int(quality.get("servo_telemetry_retry_count", 0) or 0)
     assert retries == int(health.get("servo_telemetry_retry_count", 0) or 0)
+    # F-2: a within-command retry that produces a usable sample is a real recovery.
+    # The same counter must agree across summary / quality / health writers.
+    recovered = int(metrics.get("recovered_packet_error_count", 0) or 0)
+    assert recovered >= 1
+    assert recovered == int(quality.get("recovered_packet_error_count", 0) or 0)
+    assert recovered == int(health.get("recovered_packet_error_count", 0) or 0)
 
 
 def test_collect_pose_workspace_boundary_rejection_skips_command_and_continues(tmp_path: Path) -> None:

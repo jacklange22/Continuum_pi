@@ -3,6 +3,7 @@ PyYAML>=6.0
 pyserial>=3.5
 dynamixel-sdk>=3.7
 scikit-surgerynditracker>=0.8
+matplotlib>=3.8
 PySide6>=6.7
 
 [dev]
