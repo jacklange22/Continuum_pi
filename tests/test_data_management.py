@@ -614,6 +614,9 @@ def test_data_management_controller_validates_marks_and_trashes_selected_run(tmp
     )
     (run_dir / "modeling_workspace_coverage_report.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     (run_dir / "commanded_tendon_space_report.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    # Thesis-figure contract additions (validator expects these specific filenames).
+    (run_dir / "thesis_01_workspace_coverage_3d.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (run_dir / "thesis_02_command_and_workspace_2d.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     controller = DataManagementController(project_root=tmp_path)
     state = controller.refresh()
     item = next(entry for entry in state.items if entry.path == run_dir)

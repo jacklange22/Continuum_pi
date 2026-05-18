@@ -7057,6 +7057,26 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 "tracker_age_s": self._collect_pose_tracker_age_s(session),
             },
         )
+        # Note: renamed from "post_motion_telemetry_resync_success" because that name
+        # misleadingly implied sample recovery. The bus was resynced after a post-motion
+        # packet error, but the original sample was already dropped (synthetic_drop=True /
+        # modeling_export_exclude=True). This event means the bus is healthy again for the
+        # next command; it does NOT mean the sample was recovered. See
+        # recovered_packet_error_count for true recoveries.
+        self._append_collect_pose_failure_event(
+            session,
+            event="bus_resynced_after_drop",
+            payload={
+                "step_index": int(step_index_for_event),
+                "failed_servo_id": ctx.get("failed_servo_id"),
+                "retry_count": retry_count,
+                "resync_read_attempts": int(self.config.resync_read_attempts),
+                "resync_delay_s": float(self.config.resync_delay_s),
+                "consecutive_post_motion_packet_failures": 0,
+                "total_post_motion_packet_failure_events": int(total_ev),
+                "sample_recovered": False,
+            },
+        )
         command_metadata = dict(parallel_command_metadata)
         if bool(self.config.retry_same_command_after_resync) and step is not None:
             self._append_collect_pose_failure_event(
@@ -7146,6 +7166,12 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 }
                 session.set_metric("consecutive_post_motion_packet_failures", 0)
                 session.set_metric("consecutive_transport_burst_failures", 0)
+                if command_retries_attempted > 0:
+                    # A previously-failing command produced a usable sample after retry/resync; this is a real recovery.
+                    session.set_metric(
+                        "recovered_packet_error_count",
+                        int(session.metrics.get("recovered_packet_error_count", 0) or 0) + 1,
+                    )
                 return result
             except Exception as exc:
                 if initial_exception is None:

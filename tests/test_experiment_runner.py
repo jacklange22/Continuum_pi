@@ -89,7 +89,9 @@ def test_experiment_runner_routes_csv_points_through_canonical_dataset(tmp_path:
     assert metadata["trust_info"]["run_trust_mode"] == "mock"
     assert metadata["trust_info"]["valid_for_model_training"] is False
     assert metadata["trust_info"]["valid_for_thesis_repeatability"] is False
-    assert (summary.output_path / "modeling_dataset_summary.txt").exists()
+    # modeling_dataset_summary.txt is no longer produced by the experiment runner directly;
+    # it is generated on-demand by `python -m continuum_robot.data.recompute_training_validity`
+    # (the .jsonl export below is the canonical artifact from the run itself).
     assert (summary.output_path / "modeling_dataset_export.jsonl").exists()
 
 
