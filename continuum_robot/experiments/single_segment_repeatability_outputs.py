@@ -206,7 +206,7 @@ def _signed_int(value: Any) -> str:
 def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, summary, samples) -> dict[str, Path]:
     """Write canonical artifacts for one repeatability run.
 
-    Figure contract: 3 thesis-quality PNGs (justified — each answers a distinct
+    Figure contract: 4 thesis-quality PNGs (justified — each answers a distinct
     thesis claim, see docstrings below). No CSVs, no .txt; everything else lives
     in debug.json.
 
@@ -221,6 +221,10 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
       - thesis_03_path_dependence_vs_total.png: paired-metric per target
         (total RMS as circle, path-dep RMS as triangle, connected by a thin
         vertical line). Answers 'is the result approach-direction independent'.
+      - thesis_04_tip_position_clusters_xy.png: top-down XY scatter of every
+        accepted repeat capture, one color per target, with the per-target
+        XY-RMSE listed in the legend. Answers 'how does the workspace layout
+        and per-target cluster tightness look at a glance'.
 
     debug.json consolidates: per-target metrics, path_dependence_by_approach,
     group metrics, run_validity, legacy_style_comparison (was a separate CSV),
@@ -237,6 +241,7 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
     thesis_01_path = output_dir / "thesis_01_target_returns_3d.png"
     thesis_02_path = output_dir / "thesis_02_per_target_rms_bar.png"
     thesis_03_path = output_dir / "thesis_03_path_dependence_vs_total.png"
+    thesis_04_path = output_dir / "thesis_04_tip_position_clusters_xy.png"
 
     _write_repeatability_debug_json(
         path=debug_json_path,
@@ -256,6 +261,9 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
         (thesis_03_path, lambda: _write_repeatability_thesis_03_path_dependence_vs_total(
             path=thesis_03_path, metrics=metrics,
         )),
+        (thesis_04_path, lambda: _write_repeatability_thesis_04_tip_position_clusters_xy(
+            path=thesis_04_path, samples=samples, metrics=metrics,
+        )),
     ]:
         try:
             writer()
@@ -267,6 +275,7 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
         "thesis_01_path": thesis_01_path,
         "thesis_02_path": thesis_02_path,
         "thesis_03_path": thesis_03_path,
+        "thesis_04_path": thesis_04_path,
     }
 
 
@@ -596,6 +605,118 @@ def _write_repeatability_thesis_03_path_dependence_vs_total(
         bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
               "edgecolor": color("grid"), "alpha": 0.94},
     )
+    save_figure(fig, path)
+
+
+def _write_repeatability_thesis_04_tip_position_clusters_xy(
+    *,
+    path: Path,
+    samples,
+    metrics: dict[str, Any],
+) -> None:
+    """Thesis figure 4: XY scatter of every repeat capture, colored per target.
+
+    Top-down view of the spine workspace. Each target's accepted repeat
+    captures form a tight cluster at the target's nominal XY location, drawn
+    in its own color. The legend lists every target with its per-target
+    XY-RMSE (mm), so a single chart conveys both the spatial layout of the
+    17 targets and how tight each return cluster is. Mirrors the layout the
+    operator already uses on the bench for at-a-glance triage.
+    """
+    import matplotlib
+
+    per_target = _ordered_per_target(metrics)
+    points_by_target = _repeat_points_by_target(samples=samples)
+
+    fig, ax = create_figure(size="square", constrained_layout=False)
+    # Leave room on the right for the per-target legend.
+    fig.subplots_adjust(left=0.12, right=0.70, top=0.93, bottom=0.10)
+
+    if not per_target or not points_by_target:
+        ax.text(
+            0.5, 0.5,
+            "No accepted repeat captures with robot-frame tip positions.",
+            transform=ax.transAxes, ha="center", va="center",
+        )
+        style_axes(ax, xlabel="x (mm)", ylabel="y (mm)")
+        ax.set_title("Tip Position Clusters and RMSE")
+        save_figure(fig, path)
+        return
+
+    cmap = matplotlib.colormaps.get_cmap("tab20")
+    handles: list[Any] = []
+    labels: list[str] = []
+    all_xs: list[float] = []
+    all_ys: list[float] = []
+
+    for plot_index, row in enumerate(per_target):
+        tidx = int(row.get("target_index", plot_index) or 0)
+        pts = points_by_target.get(tidx, [])
+        if not pts:
+            continue
+        arr = np.asarray(pts, dtype=float)
+        xs = arr[:, 0]
+        ys = arr[:, 1]
+        all_xs.extend(float(v) for v in xs)
+        all_ys.extend(float(v) for v in ys)
+        cluster_color = cmap(plot_index % cmap.N)
+        scatter = ax.scatter(
+            xs, ys,
+            s=18, color=cluster_color, edgecolors="none", zorder=2,
+        )
+        display_number = str(tidx + 1)
+        ax.annotate(
+            display_number,
+            xy=(float(np.mean(xs)), float(np.mean(ys))),
+            xytext=(6, 6),
+            textcoords="offset points",
+            fontsize=9,
+            color=color("text"),
+            zorder=3,
+        )
+        xy_rms = _optional_float(row.get("XY_RMSE_mm")) or _repeatability_error_value(row)
+        rms_text = f"{xy_rms:.3f} mm" if xy_rms is not None else "n/a"
+        handles.append(scatter)
+        labels.append(f"{display_number} (RMSE: {rms_text})")
+
+    if not handles:
+        ax.text(
+            0.5, 0.5,
+            "No accepted repeat captures with robot-frame tip positions.",
+            transform=ax.transAxes, ha="center", va="center",
+        )
+        style_axes(ax, xlabel="x (mm)", ylabel="y (mm)")
+        ax.set_title("Tip Position Clusters and RMSE")
+        save_figure(fig, path)
+        return
+
+    # Equal aspect with a small margin so clusters near the edge are not clipped.
+    if all_xs and all_ys:
+        span = max(
+            max(all_xs) - min(all_xs),
+            max(all_ys) - min(all_ys),
+            1.0,
+        )
+        pad = max(span * 0.06, 2.0)
+        x_mid = (max(all_xs) + min(all_xs)) / 2.0
+        y_mid = (max(all_ys) + min(all_ys)) / 2.0
+        half = span / 2.0 + pad
+        ax.set_xlim(x_mid - half, x_mid + half)
+        ax.set_ylim(y_mid - half, y_mid + half)
+    ax.set_aspect("equal", adjustable="box")
+
+    style_axes(ax, xlabel="x (mm)", ylabel="y (mm)")
+    ax.set_title("Tip Position Clusters and RMSE", fontsize=12)
+
+    ax.legend(
+        handles, labels,
+        loc="center left",
+        bbox_to_anchor=(1.02, 0.5),
+        ncol=1, fontsize=8, frameon=False,
+        markerscale=1.6, labelspacing=0.6,
+        handlelength=1.0, handletextpad=0.6,
+    )
+
     save_figure(fig, path)
 
 

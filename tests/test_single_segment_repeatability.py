@@ -735,6 +735,7 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     assert (result.paths.output_dir / "thesis_01_target_returns_3d.png").exists()
     assert (result.paths.output_dir / "thesis_02_per_target_rms_bar.png").exists()
     assert (result.paths.output_dir / "thesis_03_path_dependence_vs_total.png").exists()
+    assert (result.paths.output_dir / "thesis_04_tip_position_clusters_xy.png").exists()
     for removed in [
         "repeatability_summary.txt",
         "repeatability_clusters_report.png",
