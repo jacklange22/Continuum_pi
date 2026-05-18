@@ -34,6 +34,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from continuum_robot.gui.widgets.registration_landmark_map_widget import (
+    RegistrationLandmarkMapWidget,
+)
+
 
 class RegistrationTrialDialog(QDialog):
     """Three-phase dialog: setup → capture → result."""
@@ -41,12 +45,38 @@ class RegistrationTrialDialog(QDialog):
     AUTO_CAPTURE_INTERVAL_MS = 60
     """Interval between automatic captures; just above the tracker poll rate."""
 
-    def __init__(self, trial_controller, *, candidate_labels: Iterable[str], parent=None) -> None:
+    def __init__(
+        self,
+        trial_controller,
+        *,
+        candidate_labels: Iterable[str],
+        candidate_points_by_label: dict[str, list[float]] | None = None,
+        candidate_display_labels: dict[str, str] | None = None,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
         self.trial_controller = trial_controller
         self.candidate_labels = list(candidate_labels)
+        # XYZ + display labels are optional so existing call sites (and tests)
+        # that pass only labels keep working; the capture-phase map is only
+        # drawn when both are provided.
+        self._candidate_points_by_label: dict[str, list[float]] = {
+            str(label): [float(value) for value in coords]
+            for label, coords in (candidate_points_by_label or {}).items()
+            if isinstance(coords, (list, tuple)) and len(coords) >= 2
+        }
+        self._candidate_display_labels: dict[str, str] = {
+            str(label): str(text)
+            for label, text in (candidate_display_labels or {}).items()
+        }
+        # Fixed numeric labels (1..N) follow the candidate-list order so the
+        # operator can always identify "this is point 7" regardless of which
+        # landmarks they selected for this trial.
+        self._fixed_numeric_labels: dict[str, int] = {
+            label: index + 1 for index, label in enumerate(self.candidate_labels)
+        }
         self.setWindowTitle("Registration Trial Mode")
-        self.resize(640, 560)
+        self.resize(720, 620)
 
         self._auto_timer = QTimer(self)
         self._auto_timer.setInterval(self.AUTO_CAPTURE_INTERVAL_MS)
@@ -137,6 +167,27 @@ class RegistrationTrialDialog(QDialog):
         layout.addWidget(self.progress_label)
         layout.addWidget(self.overall_progress)
         layout.addWidget(self.status_label)
+
+        # The capture-phase map shows all candidate landmarks with their fixed
+        # 1..N labels and highlights the active one. Only drawn when the caller
+        # provided XYZ coordinates -- the dialog still works without them
+        # (used by old call sites and headless tests).
+        self.capture_map: RegistrationLandmarkMapWidget | None = None
+        if self._candidate_points_by_label:
+            map_box = QGroupBox("Landmark map", widget)
+            map_layout = QVBoxLayout(map_box)
+            self.capture_map = RegistrationLandmarkMapWidget(widget)
+            self.capture_map.setMinimumHeight(280)
+            map_legend = QLabel(
+                "Active landmark is highlighted. Completed landmarks are dimmed; "
+                "candidates not in this trial appear faded for spatial reference.",
+                widget,
+            )
+            map_legend.setWordWrap(True)
+            map_legend.setProperty("role", "hint")
+            map_layout.addWidget(self.capture_map)
+            map_layout.addWidget(map_legend)
+            layout.addWidget(map_box, stretch=1)
 
         button_row = QHBoxLayout()
         self.capture_one_button = QPushButton("Capture One")
@@ -251,6 +302,33 @@ class RegistrationTrialDialog(QDialog):
         self.next_button.setEnabled(has_current)
         # Stop is allowed any time captures exist.
         self.stop_button.setEnabled(total_captured > 0)
+        self._refresh_capture_map(state)
+
+    def _refresh_capture_map(self, state) -> None:
+        """Push the controller's progress into the capture-phase landmark map.
+
+        ``completed_labels`` is computed locally rather than tracked on the
+        controller so this view stays decoupled from controller state shape
+        changes -- a landmark is "completed" once its captured-count reaches
+        the configured per-landmark quota.
+        """
+        if self.capture_map is None:
+            return
+        target = int(state.captures_per_landmark)
+        captured_counts = dict(state.captured_counts_by_label or {})
+        completed = [
+            label
+            for label, count in captured_counts.items()
+            if int(count) >= target > 0
+        ]
+        self.capture_map.set_trial_capture_state(
+            points_by_label=self._candidate_points_by_label,
+            display_labels=self._candidate_display_labels,
+            fixed_numeric_labels=self._fixed_numeric_labels,
+            trial_labels=list(state.landmark_labels),
+            active_label=state.current_label,
+            completed_labels=completed,
+        )
 
     def _on_capture_one_clicked(self) -> None:
         try:

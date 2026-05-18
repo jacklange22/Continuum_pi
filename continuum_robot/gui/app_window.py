@@ -416,10 +416,25 @@ class AppWindow(QMainWindow):
         settings = getattr(getattr(self, "context", None), "settings", None)
         registration_config = getattr(settings, "registration", None) if settings is not None else None
         candidate_labels: list[str] = []
+        candidate_points_by_label: dict[str, list[float]] = {}
+        candidate_display_labels: dict[str, str] = {}
         if registration_config is not None:
             for landmark in registration_config.candidate_landmarks or []:
-                if bool(getattr(landmark, "enabled", True)):
-                    candidate_labels.append(str(landmark.id))
+                if not bool(getattr(landmark, "enabled", True)):
+                    continue
+                label_id = str(landmark.id)
+                candidate_labels.append(label_id)
+                xyz = getattr(landmark, "xyz_mm", None) or []
+                try:
+                    coords = [float(value) for value in xyz]
+                except (TypeError, ValueError):
+                    coords = []
+                if len(coords) >= 2:
+                    if len(coords) < 3:
+                        coords.append(0.0)
+                    candidate_points_by_label[label_id] = coords[:3]
+                display = getattr(landmark, "display_label", None) or label_id
+                candidate_display_labels[label_id] = str(display)
             if not candidate_labels:
                 candidate_labels = list(registration_config.landmark_labels or [])
         if not candidate_labels:
@@ -436,6 +451,8 @@ class AppWindow(QMainWindow):
         dialog = RegistrationTrialDialog(
             self.registration_trial_controller,
             candidate_labels=candidate_labels,
+            candidate_points_by_label=candidate_points_by_label or None,
+            candidate_display_labels=candidate_display_labels or None,
             parent=self,
         )
         dialog.exec()
