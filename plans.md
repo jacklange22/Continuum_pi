@@ -1,6 +1,6 @@
 # Continuum Robot Platform Plan
 
-Last updated: 2026-05-07
+Last updated: 2026-05-17
 
 This is the living execution plan for the continuum robot operator platform. It is deliberately more candid than the README: it should help choose the next slice of work, reject distractions, and keep the research validation ladder intact.
 
@@ -91,11 +91,13 @@ The project should move up this ladder in order. A later rung is lower-trust if 
 8. Pretension/startup-state characterization
    Done when pretension validation or manual pretension capture creates an accepted startup-state source for every configured servo, with current/travel evidence and clear lower-trust flags where needed.
 
-9. Single-segment repeatability
+9. Single-segment repeatability — **GATING; zero live bench runs as of 2026-05-17**
    Done when `single_segment_repeatability` runs with live tracker, accepted registration, a thesis-trusted runtime tip policy outcome, accepted pretension source, neutral return on finalize, and outputs path-dependence/repeatability plots and summary metrics.
+   `data/experiments/single_segment_repeatability/` is empty. Every claim above this rung — modeling datasets, hysteresis interpretation, two-segment work — is structurally lower-trust until at least one `single_segment_repeatability` bench run is captured and promoted to `thesis_candidate`. **This is the single most important next bench session.**
 
-10. Hysteresis and modeling datasets
+10. Hysteresis and modeling datasets — **partially executed out of order**
     Done when repeatability has established a trusted baseline and `collect_pose_command_dataset` can collect model-training data with provenance good enough to compare against repeatability/hysteresis observations.
+    28+ `collect_pose_command_dataset` runs exist as of mid-May (largest: 1858 accepted samples, `20260515_021043`, promoted to `thesis_candidate`). The collection infrastructure (Wolfe-style `angular_test_mesh` mode, `workspace_coverage`, `hysteresis_path_dependence`, `repeatability_linked`) is mature, and ANN/HybridResidualModel training is consuming these datasets — but rung 9 has not gated this. Treat current modeling outputs as exploratory rather than thesis evidence until rung 9 lands.
 
 11. Two-segment scaling
     Current status is foundation only: `dual_segment` exposes all-8 readiness, segment metadata, and manual startup artifact scope. Full two-segment control, modeling, penprobe chasing, and automatic two-segment pretension remain intentionally blocked until the single-segment ladder is credible.
@@ -115,6 +117,7 @@ Registration and runtime tip:
 - Legacy SolidWorks/reference assets remain protected inputs, not the default runtime architecture.
 - Runtime tip calibration is separated from `0B` pivot calibration and base registration; accepted calibration artifacts are currently lower-trust until their own validation is complete.
 - Registration quality still depends on physical landmark choice, base stability, and declared tip policy.
+- The rigid solver now exposes an opt-in RANSAC outlier-rejection variant (`solve_T_robot_aurora_ransac`) alongside the canonical SVD solve, for cases where one landmark is dragging FRE up.
 - `registration_trial` exists as a side-by-side workflow that captures N landmarks × K samples once and analyzes the data four ways: averaging-method sweep (mean / median / trimmed_mean / mad_filtered_mean), exhaustive 4..8-of-N subset solve, per-landmark leave-one-out FRE, and a samples-per-point ladder that surfaces diminishing returns. The Registration tab's **Run Registration Trial →** button launches it. Trial runs never auto-replace `latest_registration.json`; promotion is explicit via `python -m continuum_robot.data.promote_registration_trial` after operator review of `trial_report.md`. Use this when the standard 4-point flow's FRE is varying run-to-run or you want to confirm which landmarks dominate the fit.
 
 Servo and hardware:
@@ -131,6 +134,8 @@ Servo and hardware:
 Pretension:
 
 - Pretension validation, current/travel capture, conservative staged automatic single-segment pretension, manual startup-state capture, acceptance, and calibration-artifact integration exist.
+- One-click segment pretension now lives on the `Servos` tab (the standalone `Pretension` tab was removed).
+- An algorithm-vs-manual comparison report is generated alongside pretension runs, making the choice of policy auditable.
 - Automatic pretension is single-segment only for now. `dual_segment` and `parallel_single` automatic pretension are explicitly blocked.
 - The hard research problem remains open: choosing and validating a pretension/startup policy that is repeatable and does not mask hysteresis.
 - Pretension should be described as startup-state control/characterization, not true tendon-force measurement.
@@ -138,16 +143,21 @@ Pretension:
 Experiments:
 
 - The canonical path is `ExperimentRunner` plus built-in registry entries.
-- Important current experiments include `aurora_grid_accuracy`, `pivot_validation`, `registration_validation`, `registration_trial`, `tracker_timing_validation`, `servo_tracker_sync_validation`, `pretension_validation`, `single_segment_repeatability`, and `collect_pose_command_dataset`.
-- `single_segment_repeatability` is now the central live thesis experiment and includes strict preflight/provenance expectations.
-- Older `repeatability_dataset` remains hidden compatibility infrastructure.
-- Thesis-facing report figures are now split from dashboard/debug figures for the major validation and repeatability paths. Polished figures do not replace trust/provenance checks.
+- Important current experiments include `aurora_grid_accuracy`, `pivot_calibration`, `pivot_validation`, `registration_validation`, `registration_trial`, `tracker_timing_validation`, `servo_tracker_sync_validation`, `pretension_validation`, `single_segment_repeatability`, `collect_pose_command_dataset`, `penprobe_chasing_demo`, plus the two-segment counterparts `two_segment_startup_validation`, `two_segment_collect_pose_command_dataset`, and `two_segment_repeatability`.
+- `single_segment_repeatability` is now the central live thesis experiment and includes strict preflight/provenance expectations. **Zero live bench runs yet — see Validation Ladder rung 9.**
+- Older `repeatability_dataset` remains hidden compatibility infrastructure and should not be used for new work.
+- Thesis-facing report figures are now split from dashboard/debug figures: the project has standardized on a **two-figure thesis contract** per experiment (one canonical headline + one supporting view), already applied to `pivot_validation`, `registration_validation`, `tracker_timing_validation`, and `servo_tracker_sync_validation`. Polished figures do not replace trust/provenance checks.
+- `collect_pose_command_dataset` (GUI-labeled "Random Data Collection") supports four dataset modes: `workspace_coverage`, `hysteresis_path_dependence`, `repeatability_linked`, and `angular_test_mesh` (Wolfe-style cross-acquisition).
+- Workspace-boundary command rejections are now skipped and counted rather than terminating the run (`workspace_boundary_skip_count` metric + `command_skipped_workspace_boundary` event).
+- CI runs the full non-GUI test suite on every push and PR.
 
 GUI:
 
-- The GUI is broad and useful: `System`, `Tracking`, `Registration`, `Servos`, `Pretension`, `Experiment`, `Modeling`, and `Data`.
+- The GUI is broad and useful, with 8 tabs: `System`, `Tracking`, `Registration`, `Servos`, `Experiment`, `Modeling`, `2-Segment Modeling`, and `Data`. (The standalone `Pretension` tab was removed; pretension lives on `Servos`.)
+- The `Modeling` tab has matured into a thesis-grade surface: thesis-grade chip with 6 hard gates, RMSE chart with 1 mm target line and Wolfe baseline reference, top-K worst predictions, separate test-dataset picker (Wolfe §3.2.3 cross-acquisition evaluation), and a multi-seed sweep. `HybridResidualModel` is wired in with before/after visualization.
+- The `Data` tab has a grouped tree view and a bulk quick-clean action alongside discover/migrate/review/safely-delete.
 - The GUI should continue to prioritize validation status, preflight checks, artifact trust, and operator-visible failure reasons.
-- Visualization is helpful but should not become a substitute for numeric validation.
+- Visualization is helpful but should not become a substitute for numeric validation. The Modeling tab's thesis-grade chip and 1 mm target line make this explicit.
 
 Data and docs:
 

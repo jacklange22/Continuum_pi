@@ -50,16 +50,18 @@ Runtime tool roles:
 
 Working baseline workflows:
 
-- PySide6 operator GUI with `System`, `Tracking`, `Registration`, `Servos`, `Pretension`, `Experiment`, `Modeling`, and `Data` tabs.
-- Python-native Aurora path through `scikit-surgerynditracker`, `TrackingBackendRouter`, `TrackerBackendNDI`, and `TrackingService`.
+- PySide6 operator GUI with `System`, `Tracking`, `Registration`, `Servos`, `Experiment`, `Modeling`, `2-Segment Modeling`, and `Data` tabs.
+- Python-native Aurora path through `scikit-surgerynditracker`, `TrackingBackendRouter`, `TrackerBackendNDI`, and `TrackingService`, with `frame_number` plumb-through, opt-in validity heuristic, and a tracker-displacement gate for safer hardware runs.
 - Tracker diagnostics, smoke tests, and timing benchmarks.
-- GUI-guided 4-point robot/body registration using `0B`, candidate landmarks from `config/registration.yaml`, repeated captures, solve/review/save, and persisted registration artifacts.
+- GUI-guided 4-point robot/body registration using `0B`, candidate landmarks from `config/registration.yaml`, repeated captures, solve/review/save, persisted registration artifacts, optional RANSAC outlier rejection, and a **Run Registration Trial** sweep that replays captures across averaging methods and label subsets to recommend the lowest-FRE protocol.
 - Runtime tip policy support for `coil_as_tip`, accepted runtime tip calibration artifacts, and quick 4-point overrides, with trust status recorded in preflight, metadata, and transform-chain outputs.
 - OpenRB/DYNAMIXEL transport through the Robotis SDK, including connect, scan, telemetry, ID assignment, operating mode writes, goal position writes, and conservative one-servo bring-up tools.
 - Servo calibration artifacts with neutral ticks, safe bounds, pretension thresholds, tightening metadata, and compatibility checks.
-- Pretension validation and manual/automatic pretension state persistence used by experiment preflight.
-- Canonical experiment runner with structured metadata, samples, summaries, plots, and config snapshots.
-- Data-management GUI support for discovering, migrating, reviewing, and safely deleting runtime artifacts.
+- One-click segment pretension on the `Servos` tab plus pretension validation, with manual/automatic state persistence and an algorithm-vs-manual comparison report used by experiment preflight.
+- Canonical experiment runner with structured metadata, samples, summaries, thesis-grade figures (two-figure contract per experiment), and config snapshots. Workspace-boundary command rejections are skipped-and-continued instead of aborting the run.
+- Modeling tab with thesis-grade chip, headline RMSE chart against the 1 mm target and Wolfe baseline reference, top-K worst predictions, separate test-dataset picker (Wolfe §3.2.3 cross-acquisition eval), and a multi-seed sweep. `HybridResidualModel` ships with before/after visualization. Two-segment modeling lives in its own dedicated tab.
+- Data-management GUI with grouped tree view, bulk quick-clean, and discover/migrate/review/safely-delete support for runtime artifacts.
+- CI runs the full non-GUI test suite on every push and PR (see `.github/workflows/tests.yml`).
 
 In-progress or still bench-sensitive workflows:
 
@@ -102,7 +104,7 @@ The repository installs Python dependencies, but hardware-side vendor/runtime se
 - `continuum_robot/hardware/`: OpenRB, DYNAMIXEL, Aurora, and mock hardware clients.
 - `continuum_robot/experiments/`: experiment framework, registry, built-ins, schemas, output writers, validation experiments, repeatability workflow, and dataset tools.
 - `continuum_robot/gui/`: PySide6 tabs, controllers, widgets, theme, preflight checks, and visualization helpers.
-- `continuum_robot/modeling/`: ANN training and modeling analysis helpers.
+- `continuum_robot/modeling/`: ANN training, modeling analysis helpers, `HybridResidualModel`, and the `two_segment/` modeling stack.
 - `config/`: runtime YAML/JSON configuration and example experiment configs.
 - `data/`: runtime outputs, diagnostics, calibration artifacts, experiment datasets, logs, models, and modeling results.
 - `docs/`: deeper architecture, workflow, trace, validation, and testing notes.
@@ -133,9 +135,9 @@ Typical live sequence:
 5. In `Registration`, select four suitable landmarks, capture repeated `0B` samples, solve, review FRE/RMSE, and save the accepted registration. To diagnose which landmarks and how many samples actually drive FRE on this rig, click **Run Registration Trial →** on the Registration tab; it captures N landmarks × K samples, sweeps averaging methods and subsets, and produces a report. After review, `python -m continuum_robot.data.promote_registration_trial --run-dir <trial>` writes the chosen subset as the new active registration (backing up the previous one first).
 6. Confirm `T_robot_tip` is computable from live `0A`, registration, and the selected runtime tip policy. For thesis repeatability, the current trusted path is `coil_as_tip`.
 7. In `System`/`Servos`, connect OpenRB, prepare the DYNAMIXEL bus, scan IDs, verify telemetry, capture neutral/bounds, and only then jog or command motion.
-8. In `Pretension`, characterize or capture the startup pretension state and accept the source before thesis-grade experiments.
+8. On the `Servos` tab, click **Run Pretension Trial** for one-click segment pretension; characterize or capture the startup pretension state and accept the source before thesis-grade experiments. The algorithm-vs-manual comparison report is generated alongside.
 9. In `Experiment`, run validation or repeatability experiments only after preflight checks pass.
-10. Use `Data` and `Modeling` to inspect datasets, outputs, trained artifacts, and migration status.
+10. Use `Data` to inspect/migrate/review/safely-delete datasets and outputs; use `Modeling` and `2-Segment Modeling` to train models and review thesis-grade plots.
 
 ## Validation And Experiments
 
@@ -149,9 +151,11 @@ Important built-in experiment/workflow names:
 - `tracker_timing_validation`: tracker timing/freshness characterization.
 - `servo_tracker_sync_validation`: timing relationship between servo commands and tracker samples.
 - `pretension_validation`: current/travel and startup-state pretension characterization.
-- `single_segment_repeatability`: canonical live thesis repeatability protocol using the legacy 17-target all-other-approaches structure.
-- `collect_pose_command_dataset`: motor-babble/modeling dataset collection.
-- `command_schedule_validation`, `replay_runner`, `dataset_schema_roundtrip`, `transform_chain_validation`, `tracker_pipeline_mock`: support/diagnostic workflows.
+- `single_segment_repeatability`: canonical live thesis repeatability protocol using the legacy 17-target all-other-approaches structure. **Status: zero live bench runs as of 2026-05-17 — this is the gating thesis experiment.**
+- `collect_pose_command_dataset`: GUI-labeled "Random Data Collection" — modeling dataset collection with `workspace_coverage`, `hysteresis_path_dependence`, `repeatability_linked`, and `angular_test_mesh` (Wolfe-style) modes.
+- `two_segment_startup_validation`, `two_segment_collect_pose_command_dataset`, `two_segment_repeatability`: two-segment counterparts. Foundational; full two-segment kinematics/control still ahead.
+- `penprobe_chasing_demo`: pen-probe demo / smoke.
+- `command_schedule_validation`, `replay_runner`, `dataset_schema_roundtrip`, `transform_chain_validation`, `tracker_pipeline_mock`: support/diagnostic workflows. `command_schedule_validation` and `replay_runner` are hidden from the operator dropdown but still runnable via CLI.
 
 Current validation ladder:
 

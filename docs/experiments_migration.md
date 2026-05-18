@@ -28,7 +28,43 @@ The old experiment approach mixed valuable lab concepts with duplicated helper c
   - when servo/current workflows are ready, this should become either a dedicated diagnostic experiment or a pretension/calibration service that the main experiments declare as a requirement
 - `dataset collection`
   - now represented directly by `single_segment_repeatability`
-  - `collect_pose_command_dataset` is the canonical single-segment Motor Babble modeling dataset workspace, with legacy schedule overrides retained only as an internal compatibility seam
+  - `collect_pose_command_dataset` (GUI-labeled "Random Data Collection") is the canonical single-segment modeling dataset workspace, with `workspace_coverage`, `hysteresis_path_dependence`, `repeatability_linked`, and `angular_test_mesh` (Wolfe-style) dataset modes
+
+## Canonical Experiments Registered Today
+
+For the avoidance of doubt, this is the full set of experiments registered in the framework as of this writing. Names are the canonical strings consumed by `run_experiment.py`, `ExperimentRegistry`, and the GUI runner:
+
+Tracking / calibration / registration:
+- `tracker_pipeline_mock`
+- `tracker_timing_validation`
+- `servo_tracker_sync_validation`
+- `aurora_grid_accuracy`
+- `pivot_calibration`
+- `pivot_validation`
+- `registration_validation`
+- `registration_trial` — sweep replay/comparison of saved registration captures (see [`registration_trial_workflow.md`](registration_trial_workflow.md))
+
+Pretension / startup:
+- `pretension_validation`
+
+Single-segment runs and datasets:
+- `single_segment_repeatability` — the thesis-gating repeatability experiment
+- `collect_pose_command_dataset` — modeling dataset collection
+- `repeatability_dataset` — hidden compatibility infrastructure; do not use for new work
+- `penprobe_chasing_demo` — pen-probe demo / smoke
+
+Two-segment:
+- `two_segment_startup_validation`
+- `two_segment_collect_pose_command_dataset`
+- `two_segment_repeatability`
+
+Utility / framework-internal:
+- `command_schedule_validation`
+- `dataset_schema_roundtrip`
+- `replay_runner`
+- `transform_chain_validation`
+
+`command_schedule_validation` and `replay_runner` are hidden from the operator dropdown but still runnable via CLI.
 
 ## Legacy Files To Treat As Reference Inputs
 

@@ -57,7 +57,7 @@ The other segment being disconnected is informational only in this mode.
 14. Do not use automatic pretension until sign/mapping and neutral/safe bounds pass.
 15. When ready, run conservative `pretension_validation` from `current_position` mode only.
 16. Repeat pretension validation three times before thesis-style repeatability claims.
-17. Run a tiny `single_segment_repeatability` or `collect_pose_command_dataset` session.
+17. Run a tiny `single_segment_repeatability` or `collect_pose_command_dataset` session. For `collect_pose_command_dataset`, available `dataset_mode` values are `workspace_coverage`, `hysteresis_path_dependence`, `repeatability_linked`, and `angular_test_mesh` (Wolfe §3.2.3 cross-acquisition test mesh).
 18. Validate/export the run bundle from Data, then mark the run review status.
 
 Stop immediately if:

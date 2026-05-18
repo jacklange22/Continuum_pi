@@ -1,5 +1,7 @@
 # Data Curation and GUI Performance Audit
 
+> **HISTORICAL — archived 2026-05-17.** This was a point-in-time audit. Live inventory numbers below were accurate on 2026-05-12 and have drifted since. To regenerate fresh inventory, use the `data_curation` CLI rather than maintaining this file. The performance fixes described under "Fixes Made" already shipped — see `docs/architecture.md` for the current Data subsystem.
+
 Generated: 2026-05-12
 
 ## Data Inventory

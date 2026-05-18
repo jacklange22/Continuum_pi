@@ -45,7 +45,7 @@ Success criteria:
 
 ## Workflow 2: Startup Calibration And Pretension
 
-Applies now for one-servo bring-up and scales later to 4 servos.
+Applies now for one-servo bring-up and scales to whole-segment one-click pretension. All pretension controls live on the `Servos` tab (there is no separate `Pretension` tab).
 
 1. Put the robot or single tendon path in the intended neutral starting pose.
 2. In `Servos`, use fine/coarse jog to reach the intended neutral position conservatively.
@@ -53,15 +53,17 @@ Applies now for one-servo bring-up and scales later to 4 servos.
    - current Present Position becomes the neutral setpoint
    - conservative software min/max bounds are saved around that point
    - the pretension/current threshold is saved
-4. Start the cautious pretension routine.
+4. Start the cautious pretension routine. For a whole segment, click **Run Pretension Trial** for one-click segment pretension.
 5. Let the routine stop on threshold, cancel it, or retry as needed.
 6. Accept the pretension result only after reviewing the final current / position.
+7. The run writes an algorithm-vs-manual comparison report (markdown + figures) so the chosen policy is auditable.
 
 Success criteria:
 
 - startup calibration artifact is saved with neutral, bounds, threshold, and direction
 - pretension run stops safely on threshold, overcurrent, travel limit, timeout, cancel, or telemetry failure
 - accepted result is visible in the calibration summary
+- algorithm-vs-manual comparison report is reviewable before promoting to thesis-trusted use
 
 ## Workflow 3: Pivot Calibration
 
@@ -211,16 +213,17 @@ Target acceptance:
 - robot-frame metrics available only when the full live transform chain is trusted
 - repeatability summary is comparable to the `< 1 mm` target
 
-## Workflow 7: Motor Babble Modeling Dataset
+## Workflow 7: Modeling Dataset Collection (Random Data Collection)
 
 Applies now in `Experiment`.
 
 1. Open the Experiment workspace.
-2. Select `collect_pose_command_dataset`.
-3. Choose the dataset mode:
-   - `Workspace Coverage` for first-pass forward-model data
-   - `Hysteresis / Path Dependence` for ordered state-history datasets
-   - `Repeatability Linked` for trusted startup-state comparison blocks
+2. Select `Random Data Collection` (operator label for `collect_pose_command_dataset`).
+3. Choose the `dataset_mode`:
+   - `workspace_coverage` — first-pass forward-model data
+   - `hysteresis_path_dependence` — ordered state-history datasets
+   - `repeatability_linked` — trusted startup-state comparison blocks
+   - `angular_test_mesh` — Wolfe §3.2.3 cross-acquisition test mesh
 4. Review the collection summary:
    - runtime tip mode
    - pretension source
@@ -380,14 +383,13 @@ CLI:
 
 GUI:
 
-1. Open the Modeling workspace.
-2. Use the `Two-Segment Modeling` section.
-3. Select one or more `two_segment_collect_pose_command_dataset` runs.
-4. Check trainability status: accepted/rejected samples, rejection reasons, and orientation availability.
-5. Choose the label mode. `Auto` uses `two_coil_xyz` when every accepted sample has `intermediate_segment` and `distal_tip` robot-frame XYZ labels; otherwise it uses `distal_xyz`.
-6. Keep `Strict` enabled for thesis-facing work.
-7. Choose model families and run analysis.
-8. Open or export the output bundle.
+1. Open the `2-Segment Modeling` tab (separate from the single-segment `Modeling` tab).
+2. Select one or more `two_segment_collect_pose_command_dataset` runs.
+3. Check trainability status: accepted/rejected samples, rejection reasons, and orientation availability.
+4. Choose the label mode. `Auto` uses `two_coil_xyz` when every accepted sample has `intermediate_segment` and `distal_tip` robot-frame XYZ labels; otherwise it uses `distal_xyz`.
+5. Keep `Strict` enabled for thesis-facing work.
+6. Choose model families and run analysis.
+7. Open or export the output bundle.
 
 Data tab shortcut:
 
@@ -441,7 +443,7 @@ Physics model readiness:
 7. one-servo OpenRB bring-up
 8. startup calibration and pretension
 9. single-segment repeatability
-10. Motor Babble modeling dataset collection
+10. Modeling dataset collection ("Random Data Collection" / `collect_pose_command_dataset`)
 11. Two-segment startup validation and dataset collection
 12. Two-segment modeling analysis only after trusted two-segment dataset labels exist
 

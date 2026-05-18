@@ -70,11 +70,13 @@ Status:
 
 ### `TRK-V001` Tracker Doctor / Smoke / Benchmark
 
-Method:
+Method (preferred):
 
-- `scripts/run_tracker_doctor.py`
-- `scripts/run_tracker_smoke.py`
-- `scripts/run_tracker_benchmark.py`
+- `scripts/run_lab_workflow.py tracker-doctor -- ...`
+- `scripts/run_lab_workflow.py tracker-smoke -- ...`
+- `scripts/run_lab_workflow.py tracker-benchmark -- ...`
+
+(Direct scripts `scripts/run_tracker_doctor.py`, `scripts/run_tracker_smoke.py`, `scripts/run_tracker_benchmark.py` still exist as the underlying entry points.)
 
 Acceptance:
 
@@ -149,7 +151,21 @@ Acceptance:
 - repeated runs report per-landmark residual trends across runs
 - the GUI shows whether any landmark is consistently worse than the others
 
-### `REG-V005` Runtime Tip Calibration Chain Validation
+### `REG-V006` Registration Trial — Sweep Replay
+
+Method:
+
+- click **Run Registration Trial →** on the Registration tab to capture N landmarks × K samples
+- review `trial_report.md` for the averaging-method sweep (mean / median / trimmed_mean / mad_filtered_mean), 4..8-of-N subset solves, per-landmark leave-one-out FRE, and samples-per-point ladder
+- alternatively, replay on already-captured data via `python -m continuum_robot.registration.trial_cli data/registrations/latest_registration.json --output-dir data/diagnostics/registration_trial`
+
+Acceptance:
+
+- four trial output reports written (point_spread, subset_rms, samples_per_point, method_comparison)
+- recommendations surface coplanar-truth-geometry warnings, outlier-landmark callouts (LOO drop > 0.05 mm), and capture-count warnings (all methods agreeing within 0.01 mm)
+- promotion to `latest_registration.json` is explicit via `python -m continuum_robot.data.promote_registration_trial --run-dir <trial>` after operator review (never automatic)
+
+### `REG-V007` Runtime Tip Calibration Chain Validation
 
 Method:
 
@@ -186,7 +202,7 @@ Acceptance:
 - review dataset bundle written under `data/pivot_calibration/`
 - RMSE and inlier/outlier counts saved
 
-### `EXP-V002` Single-Segment Repeatability
+### `EXP-V002` Single-Segment Repeatability — **OPEN / GATING**
 
 Method:
 
@@ -198,12 +214,14 @@ Acceptance:
 - summary includes repeatability metrics, run-validity coverage, and provenance
 - target comparison possible against `< 1 mm`
 
-### `EXP-V003` Motor Babble Modeling Dataset
+Status: `data/experiments/single_segment_repeatability/` is empty as of 2026-05-17. This is the gating thesis experiment; every claim that depends on rung 9 of the validation ladder is structurally lower-trust until at least one run lands here.
+
+### `EXP-V003` Modeling Dataset (Random Data Collection)
 
 Method:
 
-- run `collect_pose_command_dataset` in the canonical Motor Babble workspace
-- collect `workspace_coverage`, `hysteresis_path_dependence`, and later `repeatability_linked` datasets under trusted preflight
+- run `collect_pose_command_dataset` (operator label: "Random Data Collection")
+- collect `workspace_coverage`, `hysteresis_path_dependence`, `repeatability_linked`, or `angular_test_mesh` (Wolfe §3.2.3 cross-acquisition) datasets under trusted preflight
 
 Acceptance:
 
@@ -212,6 +230,58 @@ Acceptance:
 - accepted vs rejected captures are explicit
 - ordered export rows are preserved for later offline ANN / state-aware training
 - robot-frame tip tangent/orientation are present when the transform chain is trusted
+- workspace-boundary command rejections are skipped-and-counted (`workspace_boundary_skip_count` metric + `command_skipped_workspace_boundary` event) rather than aborting the run
+
+## Modeling Validation
+
+### `MOD-V001` Thesis-Grade Gate Chip
+
+Method:
+
+- train an ANN run from the Modeling tab
+- inspect the thesis-grade chip and per-dataset mode chip
+
+Acceptance:
+
+- chip enforces all 6 hard gates (dataset trust, sample count, runtime-tip trust, registration trust, pretension provenance, and tracker freshness)
+- chip explicitly distinguishes thesis-grade, near-thesis, and debug-only states
+
+### `MOD-V002` Wolfe Cross-Acquisition Evaluation
+
+Method:
+
+- in the Modeling tab, pick a separate test dataset distinct from the training dataset
+- train and review the headline RMSE chart
+
+Acceptance:
+
+- the RMSE chart shows the 1 mm target line and the Wolfe baseline reference
+- top-K worst predictions are surfaced
+- the mismatch chip is shown if training and test datasets use incompatible modes
+- a per-axis tooltip and copy-summary-to-clipboard action are available
+
+### `MOD-V003` Multi-Seed Sweep
+
+Method:
+
+- run the ANN sweep with `seeds_per_architecture` > 1
+
+Acceptance:
+
+- per-architecture variance is reported across seeds
+- sweep result rows are sorted/filterable in the popout
+- small-eval-dataset warning chip is surfaced when the eval dataset is too small to be informative
+
+### `MOD-V004` HybridResidualModel Before/After
+
+Method:
+
+- train a `HybridResidualModel` from the Modeling tab
+
+Acceptance:
+
+- before/after visualization bundle is written
+- both the baseline physics prediction and the residual-corrected prediction are reviewable
 
 ## GUI Validation
 

@@ -98,19 +98,20 @@ Pass criteria:
 
 ## 7. Regression Test Gate
 
-Run this before and after hardware-focused edits:
+`scripts/run_tests.sh` accepts one of these mode arguments:
 
-```bash
-scripts/run_tests.sh hardware-safe
-```
-
-For GUI-specific work:
-
-```bash
-scripts/run_tests.sh gui
-```
+| Mode | Use when | What runs |
+|---|---|---|
+| `quick` | sanity check between edits | fast core suite (servo, active-segment, config, runtime-tip-policy) |
+| `hardware-safe` | before/after hardware-focused edits | broader servo/experiment/calibration coverage |
+| `single-segment` | before a single-segment bench day | repeatability, pretension, penprobe, modeling analysis, runtime tip, servo safety |
+| `two-segment` | before any two-segment bench day | full two-segment regression net (math, structural, experiments, modeling, validators, exports, end-to-end) |
+| `full-nongui` | CI / pre-push gate | every test except those marked `gui` |
+| `gui` | GUI-only work | `test_gui_controllers.py`, `test_gui_bootstrap.py` |
 
 The `gui` marker is registered in `pyproject.toml` and applied at module scope to the Qt-dependent test files (`test_gui_*.py`, `test_*_gui.py`, `test_no_wheel_combo_box.py`, `test_visualization_widgets.py`, `test_experiment_visualization_widget.py`). `full-nongui` runs `pytest -m "not gui"` and therefore actually skips the GUI suite. Tests that only need PySide6 inside a single test body (via `pytest.importorskip`) should NOT carry the module-level marker.
+
+CI runs `full-nongui` on every push/PR — see [`.github/workflows/tests.yml`](../.github/workflows/tests.yml).
 
 ## Notes
 

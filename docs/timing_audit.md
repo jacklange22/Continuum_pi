@@ -51,7 +51,7 @@ The text summary (`aurora_timing_summary.txt`) is no longer written — debug.js
 
 All three streams record `monotonic_time_s` from the same host clock. To produce paired `(servo_state, tracker_pose)` records — what downstream modeling actually consumes — the analysis matches each tracker frame to its **nearest-neighbor servo telemetry sample** by monotonic time. The bigger the residual offset of that match, the bigger the temporal uncertainty in the pair.
 
-The matching is performed by `_pair_tracker_to_servo_*` helpers in the analysis side and surfaced as `tracker_to_servo_telemetry_offsets_ms` in the experiment metrics. `servo_tracker_sync_validation` runs this same matching against a scripted motion, characterizing the offset distribution under controlled conditions.
+The matching is performed in the experiment analysis side and surfaced as `tracker_to_servo_telemetry_offsets_ms` in the experiment metrics. `servo_tracker_sync_validation` runs this same matching against a scripted motion, characterizing the offset distribution under controlled conditions.
 
 ### Why this is a forward-link to collect_pose
 

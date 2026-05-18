@@ -26,9 +26,10 @@ Repeatability target: `< 1.0 mm` tip-position RMS in robot frame for the main re
 Current repo state:
 - Real OpenRB / DYNAMIXEL transport exists.
 - Position writes, richer telemetry reads, and torque-disabled ID assignment exist.
-- A richer single-file servo calibration artifact now exists and is surfaced in the GUI.
-- A cautious startup pretension routine now exists for one-servo bring-up.
-- Full multi-servo closed-loop safety and tendon-aware control are still pending.
+- A richer single-file servo calibration artifact exists and is surfaced in the GUI.
+- One-click whole-segment pretension lives on the Servos tab; an algorithm-vs-manual comparison report is generated alongside each pretension run.
+- A safety guard layer (`SafetyGuard`, `SegmentReadiness`, `MotorControlSupervisor`) enforces telemetry freshness, operating mode, current/voltage/temperature, hardware-error, and bounds checks on coordinated motion. Workspace-boundary command rejections are now skipped-and-counted rather than terminating runs.
+- Full multi-servo closed-loop control beyond position commands is still ahead.
 
 ### Tracking Subsystem
 
@@ -75,14 +76,16 @@ Current repo state:
 ### Experiment Subsystem
 
 - `EXP-001` The canonical experiment runner shall remain the only execution path for experiments.
-- `EXP-002` The critical experiments are `pivot_calibration`, `aurora_grid_accuracy`, and `single_segment_repeatability`.
+- `EXP-002` The critical experiments are `pivot_calibration`, `pivot_validation`, `aurora_grid_accuracy`, `registration_validation`, `registration_trial`, `pretension_validation`, `tracker_timing_validation`, `servo_tracker_sync_validation`, and `single_segment_repeatability`.
 - `EXP-003` The main scientific outcome is the single-segment repeatability experiment, which must log commanded motion plus measured pose under the legacy 17-target revisit protocol.
 - `EXP-004` Experiments shall support dry-run or offline execution where logically possible.
-- `EXP-005` Repeatability datasets shall be analyzable against the `< 1 mm` target.
+- `EXP-005` Repeatability datasets shall be analyzable against the `< 1 mm` target. The Modeling tab's headline RMSE chart now visualizes this target alongside a Wolfe baseline reference line.
+- `EXP-006` Thesis-facing experiments shall emit a **two-figure thesis contract** (one headline + one supporting view), separate from dashboard/debug figures. Already applied to `pivot_validation`, `registration_validation`, `tracker_timing_validation`, and `servo_tracker_sync_validation`.
 
 Current repo state:
-- Canonical framework and the three critical experiments exist.
-- Live repeatability still depends on the remaining servo calibration/safety phases.
+- Canonical framework and the listed critical experiments exist.
+- **`single_segment_repeatability` has zero live bench runs as of 2026-05-17 — it is the gating experiment for the acceptance target below.**
+- Two-segment counterparts (`two_segment_startup_validation`, `two_segment_collect_pose_command_dataset`, `two_segment_repeatability`) exist as foundation; full two-segment control is still ahead.
 
 ### Data / Logging
 
@@ -96,9 +99,9 @@ Current repo state:
 
 The initial integrated acceptance target for this repo is:
 
-1. Bring up the 4-servo OpenRB / `XC330-M288-T` system.
+1. Bring up the 4-servo OpenRB / `XC330-M288-T` system — **done** (one-servo validation, multi-servo coordinated motion, safety guard).
    - first through one-servo validation with external power and conservative jog / pretension
-2. Validate tracker health and tool visibility.
-3. Generate or load a valid pen-probe tip file.
-4. Perform 4-point body registration from a larger candidate landmark set.
-5. Run the repeatability dataset experiment and compute robot-frame repeatability against the `< 1 mm` target.
+2. Validate tracker health and tool visibility — **done** (dry/diagnostic); bench validation re-confirmed per session.
+3. Generate or load a valid pen-probe tip file — **done** (artifact present, lower-trust until validation re-run).
+4. Perform 4-point body registration from a larger candidate landmark set — **done** (artifact present; `registration_trial` available for sweep-replay comparison).
+5. Run the repeatability dataset experiment and compute robot-frame repeatability against the `< 1 mm` target — **not yet met**. `data/experiments/single_segment_repeatability/` is empty; this is the top open item on this spec.

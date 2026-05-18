@@ -1,3 +1,7 @@
+> **HISTORICAL — archived 2026-05-17.** This is the original Codex seed prompt that bootstrapped the codebase. It has no canonical authority anymore — the current sources of truth are `AGENTS.md`, `docs/architecture.md`, and `docs/system_spec.md`. Kept for archaeological reference only.
+
+---
+
 Build a production-oriented Python codebase for a tendon-driven continuum robot that runs entirely on a Raspberry Pi and integrates:
 
 1. Direct Aurora EM tracker serial input into the Pi

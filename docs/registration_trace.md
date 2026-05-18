@@ -129,7 +129,7 @@ For the current simple 4-point GUI flow:
   - confirms the capture-time tip offset provenance
   - averages repeated samples per selected label
   - builds measured and nominal point sets in label order
-  - solves `T_robot_aurora` through `RigidRegistrationSolver.solve_T_robot_aurora(...)`
+  - solves `T_robot_aurora` through `RigidRegistrationSolver.solve_T_robot_aurora(...)` (or the opt-in `solve_T_robot_aurora_ransac(...)` variant when outlier rejection is enabled in the solver config)
   - computes residuals and FRE
   - stores a pending `RegistrationRecord`
   - updates `RegistrationSnapshot.pending_accept=True`
@@ -138,7 +138,9 @@ Relevant functions:
 
 - `RegistrationController.solve_session`
 - `RegistrationService._solve_simple_registration`
-- `continuum_robot/registration/rigid_solver.py`
+- `continuum_robot/registration/rigid_solver.py` — both the SVD solver and the RANSAC outlier-rejection variant
+
+For sweep-style replay/comparison of an existing capture (e.g. "what would RANSAC vs trimmed-mean look like on this exact set?") see [`registration_trial_workflow.md`](registration_trial_workflow.md) — the registration_trial experiment + CLI evaluates every averaging method and label subset against captures you already have, without bench time.
 
 ## Save / Overwrite
 

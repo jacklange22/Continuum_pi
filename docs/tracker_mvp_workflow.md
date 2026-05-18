@@ -5,9 +5,7 @@ This is the operator path for tomorrow's Pi session. Ignore servos and full expe
 The canonical GUI homes are now:
 
 - `Tracking`: tracker connect, validation, live tool status, staged `0B` pivot calibration, and accepted tip-file review
-- `Registration`: registration prerequisites, 4-point capture, solve/review/save, and live robot-frame pose summary
-
-`Tracker Legacy` remains in the GUI only as a compatibility/diagnostic surface.
+- `Registration`: registration prerequisites, 4-point capture, solve/review/save, live robot-frame pose summary, and the **Run Registration Trial** launcher for sweep replay/comparison (see [`registration_trial_workflow.md`](registration_trial_workflow.md))
 
 ## Exact Order
 
