@@ -625,8 +625,17 @@ class WorkspaceRepeatabilityMapExperiment(BaseExperiment):
             pass
 
     def write_outputs(self, session: ExperimentSession, paths, summary) -> None:
-        """Emit the workspace-repeatability artifact bundle into the run folder."""
+        """Emit the workspace-repeatability artifact bundle into the run folder.
+
+        Also lifts the workspace-wide summary (mean / median / p95 / max RMS,
+        worst-targets list) into ``session.metrics`` so the GUI summary widget
+        can show the headline numbers next to the figure links without
+        re-reading the JSON.
+        """
         from continuum_robot.experiments.workspace_repeatability_map_outputs import (
+            compute_workspace_repeatability_metrics,
+            group_visits_by_target,
+            summarize_workspace_repeatability,
             write_workspace_repeatability_map_outputs,
         )
 
@@ -642,6 +651,23 @@ class WorkspaceRepeatabilityMapExperiment(BaseExperiment):
             samples=samples_extra,
             thesis_goal_rms_mm=float(self.config.thesis_goal_rms_mm),
         )
+        # Mirror the headline summary into session metrics so the GUI summary
+        # widget can render it without re-parsing the JSON. The bundle on
+        # disk remains the source of truth.
+        targets_by_index = {
+            int(target.get("target_index", index)): dict(target)
+            for index, target in enumerate(target_catalog)
+        }
+        per_target_rows = compute_workspace_repeatability_metrics(
+            visits_by_target=group_visits_by_target(samples_extra),
+            targets_by_index=targets_by_index,
+        )
+        workspace_summary = summarize_workspace_repeatability(
+            per_target_rows,
+            worst_n=5,
+            thesis_goal_rms_mm=float(self.config.thesis_goal_rms_mm),
+        )
+        session.set_metric("workspace_summary", workspace_summary)
 
     # --- per-visit helpers --------------------------------------------------
 

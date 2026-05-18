@@ -517,3 +517,158 @@ def test_default_example_yaml_loads_cleanly() -> None:
     assert config.target_count == 100
     assert config.visits_per_target == 15
     assert math.isclose(config.max_amplitude_mm, 12.0, abs_tol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# GUI integration -- visible in dropdown, page constructs, preflight branch fires
+# ---------------------------------------------------------------------------
+
+
+class TestGuiIntegration:
+    """Pins the wiring that makes the experiment actually appear in the GUI.
+
+    These tests guard the three independent integration points so a future
+    refactor that forgets one of them gets caught immediately:
+
+    1. MODE_EXPERIMENT_VISIBILITY (controller-level allowlist by robot mode)
+    2. build_experiment_page (page widget factory)
+    3. evaluate_preflight (experiment-specific preflight gates)
+    """
+
+    def test_visible_in_single_segment_mode(self) -> None:
+        from continuum_robot.gui.controllers.experiment_controller import (
+            MODE_EXPERIMENT_VISIBILITY,
+        )
+
+        assert "workspace_repeatability_map" in MODE_EXPERIMENT_VISIBILITY["single_segment"]
+
+    def test_listed_in_manual_refresh_set(self) -> None:
+        from continuum_robot.gui.controllers.experiment_controller import (
+            ExperimentController,
+        )
+
+        assert "workspace_repeatability_map" in ExperimentController.MANUAL_REFRESH_EXPERIMENTS
+
+    def test_factory_resolves_workspace_page(self, tmp_path: Path) -> None:
+        """Construct the page through the same factory the experiment tab uses."""
+        import os
+
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PySide6.QtWidgets import QApplication
+
+        app = QApplication.instance() or QApplication([])
+        from tests.test_gui_controllers import _experiment_controller
+        from continuum_robot.gui.widgets.experiment_pages import (
+            WorkspaceRepeatabilityMapPage,
+            build_experiment_page,
+        )
+
+        from continuum_robot.gui.controllers.experiment_controller import ExperimentViewState
+
+        controller = _experiment_controller(tmp_path)
+        page = build_experiment_page(controller, "workspace_repeatability_map")
+        try:
+            assert isinstance(page, WorkspaceRepeatabilityMapPage)
+            # Page exposes the form widgets the operator interacts with.
+            assert hasattr(page, "target_count_spin")
+            assert hasattr(page, "max_amplitude_spin")
+            assert hasattr(page, "visits_spin")
+            assert hasattr(page, "neutral_settle_spin")
+            assert hasattr(page, "target_settle_spin")
+            assert hasattr(page, "seed_spin")
+            assert hasattr(page, "run_label_edit")
+            assert hasattr(page, "dry_run_check")
+            assert hasattr(page, "estimate_label")
+            # The controller has no config loaded yet, so triggering sync should
+            # pull the defaults from the experiment config class. This mirrors
+            # what the real GUI does when the operator first selects the
+            # experiment from the dropdown.
+            page._sync_parameters_from_state(ExperimentViewState())
+            assert page.target_count_spin.value() == DEFAULT_TARGET_COUNT
+            assert page.visits_spin.value() == DEFAULT_VISITS_PER_TARGET
+            assert math.isclose(page.max_amplitude_spin.value(), DEFAULT_MAX_AMPLITUDE_MM, abs_tol=1e-6)
+            assert page.dry_run_check.isChecked() is False
+            # The estimated-visits line is recomputed from the current widget values.
+            assert "Estimated visits" in page.estimate_label.text()
+            assert "1500" in page.estimate_label.text()  # 100 × 15 default
+        finally:
+            page.deleteLater()
+        _ = app
+
+    def _preflight_kwargs(self, controller, tmp_path: Path) -> dict:
+        return {
+            "settings": controller.settings,
+            "project_root": Path(__file__).resolve().parents[1],
+            "tracking_snapshot": controller.tracking_service.get_snapshot(),
+            "servo_calibration_summary": controller.servo_service.get_calibration_summary(),
+            "servo_connected": False,
+            "neutral_setpoints": {},
+            "output_root": tmp_path,
+            "planned_output_dir": tmp_path / "planned",
+            "active_run_output_dir": None,
+            "registration_path": tmp_path / "missing.json",
+            "config_error": None,
+        }
+
+    def test_dry_run_preflight_short_circuits_hardware_gates(self, tmp_path: Path) -> None:
+        """In dry-run mode the preflight skips tracker / registration / pivot gates so
+        the operator can preview the bundle on a developer machine without a robot."""
+        from tests.test_gui_controllers import _experiment_controller
+        from continuum_robot.gui.experiment_preflight import evaluate_preflight
+
+        controller = _experiment_controller(tmp_path)
+        payload = {
+            "dry_run": True,
+            "target_count": 12,
+            "visits_per_target": 3,
+            "max_amplitude_mm": 5.0,
+            "max_target_tick_delta_from_startup": 1200,
+        }
+        report = evaluate_preflight(
+            experiment_name="workspace_repeatability_map",
+            config_payload=payload,
+            **self._preflight_kwargs(controller, tmp_path),
+        )
+        # The dry-run notice is surfaced as INFO so the operator sees it before running.
+        check_ids = {check.key for check in report.checks}
+        assert "dry_run_mode" in check_ids
+        # The Vogel-target geometry check fires whether or not we are in dry-run.
+        assert "target_geometry" in check_ids
+
+    def test_live_preflight_blocks_on_mock_mode(self, tmp_path: Path) -> None:
+        """In live mode with mock_mode=True the preflight must block (this experiment is thesis-grade)."""
+        from tests.test_gui_controllers import _experiment_controller
+        from continuum_robot.gui.experiment_preflight import evaluate_preflight, PREFLIGHT_BLOCKED
+
+        controller = _experiment_controller(tmp_path)
+        # _settings() puts the runtime in mock_mode=True by default.
+        report = evaluate_preflight(
+            experiment_name="workspace_repeatability_map",
+            config_payload={"dry_run": False},
+            **self._preflight_kwargs(controller, tmp_path),
+        )
+        # Find the mock_mode check and confirm it blocks.
+        mock_check = next((check for check in report.checks if check.key == "mock_mode"), None)
+        assert mock_check is not None
+        assert mock_check.status == PREFLIGHT_BLOCKED
+
+    def test_controller_helpers_produce_workspace_specific_labels(self) -> None:
+        """The dropdown / history list use these helpers, so verify they
+        respond to workspace_repeatability_map specifically."""
+        from continuum_robot.gui.controllers.experiment_controller import ExperimentController
+
+        mode_label = ExperimentController._mode_label("workspace_repeatability_map", {"dry_run": False})
+        assert mode_label == "live workspace repeatability map"
+        dry_label = ExperimentController._mode_label("workspace_repeatability_map", {"dry_run": True})
+        assert dry_label == "dry-run workspace map"
+        cfg_label = ExperimentController._config_summary_label(
+            "workspace_repeatability_map",
+            {"target_count": 100, "visits_per_target": 15, "max_amplitude_mm": 12.0},
+        )
+        assert "vogel disk 100 pts" in cfg_label
+        assert "12.0 mm" in cfg_label
+        history_label = ExperimentController._history_metric_label(
+            experiment_name="workspace_repeatability_map",
+            metrics={"captured_visit_count": 1500, "rejected_visit_count": 3},
+        )
+        assert history_label == "visits=1500 rejected=3"

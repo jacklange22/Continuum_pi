@@ -26,6 +26,7 @@ from continuum_robot.experiments.dataset_io import (
     sanitize_output_name,
 )
 from continuum_robot.experiments.single_segment_repeatability import SingleSegmentRepeatabilityConfig
+from continuum_robot.experiments.workspace_repeatability_map import WorkspaceRepeatabilityMapConfig
 from continuum_robot.tracking.timing_benchmark import (
     compute_servo_tracker_sync_summary,
     compute_servo_sync_summary,
@@ -67,6 +68,7 @@ MODE_EXPERIMENT_VISIBILITY: dict[str, set[str]] = {
     "single_segment": {
         "pretension_validation",
         "single_segment_repeatability",
+        "workspace_repeatability_map",
         "collect_pose_command_dataset",
         "penprobe_chasing_demo",
         "registration_validation",
@@ -161,6 +163,7 @@ class ExperimentController:
         "registration_validation",
         "pivot_validation",
         "single_segment_repeatability",
+        "workspace_repeatability_map",
         "pretension_validation",
     }
 
@@ -746,6 +749,7 @@ class ExperimentController:
             )
         preferred_order = [
             "single_segment_repeatability",
+            "workspace_repeatability_map",
             "penprobe_chasing_demo",
             "collect_pose_command_dataset",
             "registration_validation",
@@ -1188,6 +1192,10 @@ class ExperimentController:
             if value is not None:
                 return f"repeatability={float(value):.3f} mm"
             return f"repeat_samples={int(metrics.get('valid_repeat_sample_count', 0) or 0)}"
+        if experiment_name == "workspace_repeatability_map":
+            captured = int(metrics.get("captured_visit_count") or 0)
+            rejected = int(metrics.get("rejected_visit_count") or 0)
+            return f"visits={captured} rejected={rejected}"
         if experiment_name == "aurora_grid_accuracy":
             value = metrics.get("overall_rms_error_mm")
             return f"grid_rms={float(value):.3f} mm" if value is not None else ""
@@ -1541,6 +1549,55 @@ class ExperimentController:
                 ]
             )
             return pairs
+        if bundle_experiment_name == "workspace_repeatability_map":
+            from continuum_robot.experiments.workspace_repeatability_map_outputs import (
+                AXIS_STDDEV_PNG,
+                PER_TARGET_CSV,
+                SCATTER_3D_PNG,
+                SUMMARY_JSON,
+                VISITS_JSONL,
+                XY_HEATMAP_PNG,
+            )
+
+            metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
+            summary_block = metrics.get("workspace_summary") if isinstance(metrics, dict) else {}
+            captured = int(metrics.get("captured_visit_count") or 0)
+            rejected = int(metrics.get("rejected_visit_count") or 0)
+            scatter_path = bundle.paths.output_dir / SCATTER_3D_PNG
+            xy_path = bundle.paths.output_dir / XY_HEATMAP_PNG
+            stddev_path = bundle.paths.output_dir / AXIS_STDDEV_PNG
+            per_target_path = bundle.paths.output_dir / PER_TARGET_CSV
+            visits_path = bundle.paths.output_dir / VISITS_JSONL
+            summary_path = bundle.paths.output_dir / SUMMARY_JSON
+            pairs.extend(
+                [
+                    ("Captured Visits", f"{captured} captured, {rejected} rejected"),
+                ]
+            )
+            # Surface workspace_summary fields if the experiment recorded them.
+            if isinstance(summary_block, dict):
+                for label_key, metric_key in (
+                    ("Workspace RMS mean", "workspace_rms_mean_mm"),
+                    ("Workspace RMS p95", "workspace_rms_p95_mm"),
+                    ("Workspace RMS max", "workspace_rms_max_mm"),
+                ):
+                    value = summary_block.get(metric_key)
+                    if value is not None:
+                        try:
+                            pairs.append((label_key, f"{float(value):.3f} mm"))
+                        except (TypeError, ValueError):
+                            pass
+            pairs.extend(
+                [
+                    ("3D Repeatability Map", str(scatter_path) if scatter_path.exists() else "not written"),
+                    ("XY Heatmap", str(xy_path) if xy_path.exists() else "not written"),
+                    ("Per-Axis Stddev Bars", str(stddev_path) if stddev_path.exists() else "not written"),
+                    ("Per-Target CSV", str(per_target_path) if per_target_path.exists() else "not written"),
+                    ("Per-Visit JSONL", str(visits_path) if visits_path.exists() else "not written"),
+                    ("Workspace Summary", str(summary_path) if summary_path.exists() else "not written"),
+                ]
+            )
+            return pairs
         if bundle_experiment_name == "aurora_grid_accuracy":
             metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
             report_path = bundle.paths.output_dir / "aurora_grid_alignment_report.png"
@@ -1821,6 +1878,10 @@ class ExperimentController:
             return "offline thesis validation"
         if experiment_name == "single_segment_repeatability":
             return "live thesis repeatability"
+        if experiment_name == "workspace_repeatability_map":
+            if bool(config_payload.get("dry_run", False)):
+                return "dry-run workspace map"
+            return "live workspace repeatability map"
         if experiment_name == "command_schedule_validation":
             return "software validation"
         if experiment_name == "tracker_timing_validation":
@@ -1843,6 +1904,18 @@ class ExperimentController:
                 f"cap {int(config.max_target_tick_delta_from_startup)} ticks, "
                 f"settle {float(config.settle_time_s):.2f}s, "
                 f"tool {config.tool_id}"
+            )
+        if experiment_name == "workspace_repeatability_map":
+            config = WorkspaceRepeatabilityMapConfig.from_dict(config_payload)
+            total_visits = int(config.target_count) * int(config.visits_per_target)
+            dry_suffix = " (dry-run)" if bool(config.dry_run) else ""
+            return (
+                f"vogel disk {int(config.target_count)} pts × {int(config.visits_per_target)} visits "
+                f"= {total_visits} captures, "
+                f"R={float(config.max_amplitude_mm):.1f} mm, "
+                f"settle {float(config.neutral_settle_s):.1f}+{float(config.target_settle_s):.1f}s, "
+                f"cap {int(config.max_target_tick_delta_from_startup)} ticks, "
+                f"tool {config.tool_id}{dry_suffix}"
             )
         if experiment_name == "aurora_grid_accuracy":
             captured_points = config_payload.get("captured_points", []) or []

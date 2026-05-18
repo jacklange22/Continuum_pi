@@ -86,6 +86,12 @@ from continuum_robot.experiments.single_segment_repeatability import (
     generate_legacy_revisit_sequence,
     repeatability_ring_tick_defaults,
 )
+from continuum_robot.experiments.workspace_repeatability_map import (
+    DEFAULT_MAX_AMPLITUDE_MM as WORKSPACE_DEFAULT_MAX_AMPLITUDE_MM,
+    DEFAULT_TARGET_COUNT as WORKSPACE_DEFAULT_TARGET_COUNT,
+    DEFAULT_VISITS_PER_TARGET as WORKSPACE_DEFAULT_VISITS_PER_TARGET,
+    WorkspaceRepeatabilityMapConfig,
+)
 from continuum_robot.gui.controllers.experiment_controller import ExperimentViewState
 from continuum_robot.gui.theme import COLORS, chip_stylesheet, semantic_chip_colors
 from continuum_robot.gui.view_utils import editable_update_blocked, preserve_scroll_position, set_line_edit_text, set_spinbox_value, set_text_document
@@ -4314,10 +4320,202 @@ class HistoryItemWidget(QWidget):
         )
 
 
+class WorkspaceRepeatabilityMapPage(ExperimentPageBase):
+    """Parameter form for the workspace repeatability map experiment.
+
+    Visits a Vogel-spiral disk of targets, returning to neutral between each
+    visit. The page exposes the operator-tunable parameters; the rest of the
+    experiment behaviour (round-robin shuffled ordering, per-visit capture,
+    output bundle) is fixed in the experiment class.
+    """
+
+    refresh_policy = "manual"
+    page_hint = (
+        "Visit a Vogel-spiral grid of targets (no dead zones), returning to neutral "
+        "between every visit, to map per-point repeatability across the workspace. "
+        "Output is a color-coded 3D map of the RMS spread per target. Defaults: "
+        "100 targets x 15 visits = 1500 captures, ~12 mm disk, ~100 minute run."
+    )
+
+    def __init__(self, controller, experiment_name: str, parent=None) -> None:
+        super().__init__(controller, experiment_name, parent)
+        self.run_button.setText("Run Workspace Map")
+
+    def _build_parameter_sections(self) -> None:
+        geometry_card = ExperimentCard(
+            "Target Geometry",
+            "Choose how many targets and how wide a disk to cover. The Vogel spiral keeps point spacing uniform across the disk so the heatmap has no dead zones.",
+        )
+        geometry_form = QFormLayout()
+        self.target_count_spin = QSpinBox()
+        self.target_count_spin.setRange(3, 1000)
+        self.target_count_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("target_count", int(value))
+        )
+        self.max_amplitude_spin = QDoubleSpinBox()
+        self.max_amplitude_spin.setRange(0.1, 30.0)
+        self.max_amplitude_spin.setDecimals(2)
+        self.max_amplitude_spin.setSingleStep(0.5)
+        self.max_amplitude_spin.setSuffix(" mm")
+        self.max_amplitude_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_amplitude_mm", float(value))
+        )
+        self.max_tick_spin = QSpinBox()
+        self.max_tick_spin.setRange(1, 4096)
+        self.max_tick_spin.setSingleStep(50)
+        self.max_tick_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_target_tick_delta_from_startup", int(value))
+        )
+        geometry_form.addRow("Target Count", self.target_count_spin)
+        geometry_form.addRow("Max Amplitude", self.max_amplitude_spin)
+        geometry_form.addRow("Max Tick Delta Cap", self.max_tick_spin)
+        geometry_card.body_layout.addLayout(geometry_form)
+        self.parameter_layout.addWidget(geometry_card)
+
+        schedule_card = ExperimentCard(
+            "Visit Schedule",
+            "Each cycle visits every target once in a freshly-shuffled order so timing drift averages across the workspace. Total captures = target count x visits per target.",
+        )
+        schedule_form = QFormLayout()
+        self.visits_spin = QSpinBox()
+        self.visits_spin.setRange(2, 200)
+        self.visits_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("visits_per_target", int(value))
+        )
+        self.neutral_settle_spin = QDoubleSpinBox()
+        self.neutral_settle_spin.setRange(0.0, 30.0)
+        self.neutral_settle_spin.setDecimals(2)
+        self.neutral_settle_spin.setSingleStep(0.1)
+        self.neutral_settle_spin.setSuffix(" s")
+        self.neutral_settle_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("neutral_settle_s", float(value))
+        )
+        self.target_settle_spin = QDoubleSpinBox()
+        self.target_settle_spin.setRange(0.0, 30.0)
+        self.target_settle_spin.setDecimals(2)
+        self.target_settle_spin.setSingleStep(0.1)
+        self.target_settle_spin.setSuffix(" s")
+        self.target_settle_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("target_settle_s", float(value))
+        )
+        self.seed_spin = QSpinBox()
+        self.seed_spin.setRange(0, 2_000_000_000)
+        self.seed_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("random_seed", int(value))
+        )
+        schedule_form.addRow("Visits per Target", self.visits_spin)
+        schedule_form.addRow("Neutral Settle", self.neutral_settle_spin)
+        schedule_form.addRow("Target Settle", self.target_settle_spin)
+        schedule_form.addRow("Random Seed", self.seed_spin)
+        schedule_card.body_layout.addLayout(schedule_form)
+        self.estimate_label = QLabel("Estimated visits: -")
+        self.estimate_label.setProperty("role", "muted")
+        schedule_card.body_layout.addWidget(self.estimate_label)
+        self.parameter_layout.addWidget(schedule_card)
+
+        run_card = ExperimentCard(
+            "Run Settings",
+            "Live thesis run uses the calibrated tip and writes the full output bundle. Dry-run synthesizes positions so you can preview the bundle shape before committing to a 2-hour real run.",
+        )
+        run_form = QFormLayout()
+        self.run_label_edit = QLineEdit()
+        self.run_label_edit.setPlaceholderText("optional short label persisted into summary.json")
+        self.run_label_edit.editingFinished.connect(
+            lambda: self.controller.set_config_value("run_label", self.run_label_edit.text().strip())
+        )
+        self.tool_id_edit = QLineEdit()
+        self.tool_id_edit.editingFinished.connect(
+            lambda: self.controller.set_config_value("tool_id", self.tool_id_edit.text().strip().upper())
+        )
+        self.thesis_goal_spin = QDoubleSpinBox()
+        self.thesis_goal_spin.setRange(0.01, 100.0)
+        self.thesis_goal_spin.setDecimals(2)
+        self.thesis_goal_spin.setSingleStep(0.1)
+        self.thesis_goal_spin.setSuffix(" mm")
+        self.thesis_goal_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("thesis_goal_rms_mm", float(value))
+        )
+        self.return_to_center_check = QCheckBox("Return to center on finalize")
+        self.return_to_center_check.toggled.connect(
+            lambda value: self.controller.set_config_value("return_to_center_on_finalize", bool(value))
+        )
+        self.dry_run_check = QCheckBox("Dry-run (synthesize positions instead of capturing)")
+        self.dry_run_check.toggled.connect(
+            lambda value: self.controller.set_config_value("dry_run", bool(value))
+        )
+        run_form.addRow("Run Label", self.run_label_edit)
+        run_form.addRow("Tool ID", self.tool_id_edit)
+        run_form.addRow("Thesis Goal", self.thesis_goal_spin)
+        run_form.addRow("Finalize", self.return_to_center_check)
+        run_form.addRow("Dry-Run", self.dry_run_check)
+        run_card.body_layout.addLayout(run_form)
+        self.parameter_layout.addWidget(run_card)
+
+    def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
+        _ = state
+        self._set_spin(
+            self.target_count_spin,
+            int(self.controller.get_config_value("target_count", WORKSPACE_DEFAULT_TARGET_COUNT)),
+        )
+        self._set_double(
+            self.max_amplitude_spin,
+            float(self.controller.get_config_value("max_amplitude_mm", WORKSPACE_DEFAULT_MAX_AMPLITUDE_MM)),
+        )
+        self._set_spin(
+            self.max_tick_spin,
+            int(self.controller.get_config_value("max_target_tick_delta_from_startup", 1200)),
+        )
+        self._set_spin(
+            self.visits_spin,
+            int(self.controller.get_config_value("visits_per_target", WORKSPACE_DEFAULT_VISITS_PER_TARGET)),
+        )
+        self._set_double(
+            self.neutral_settle_spin,
+            float(self.controller.get_config_value("neutral_settle_s", 1.5)),
+        )
+        self._set_double(
+            self.target_settle_spin,
+            float(self.controller.get_config_value("target_settle_s", 2.5)),
+        )
+        self._set_spin(
+            self.seed_spin,
+            int(self.controller.get_config_value("random_seed", 0)),
+        )
+        self._set_line_text(
+            self.run_label_edit,
+            str(self.controller.get_config_value("run_label", "") or ""),
+        )
+        self._set_line_text(
+            self.tool_id_edit,
+            str(self.controller.get_config_value("tool_id", "0A") or "0A").strip().upper(),
+        )
+        self._set_double(
+            self.thesis_goal_spin,
+            float(self.controller.get_config_value("thesis_goal_rms_mm", 1.0)),
+        )
+        self._set_checkbox(
+            self.return_to_center_check,
+            bool(self.controller.get_config_value("return_to_center_on_finalize", True)),
+        )
+        self._set_checkbox(
+            self.dry_run_check, bool(self.controller.get_config_value("dry_run", False))
+        )
+        total_visits = int(self.target_count_spin.value()) * int(self.visits_spin.value())
+        approx_minutes = total_visits * (
+            float(self.neutral_settle_spin.value())
+            + float(self.target_settle_spin.value())
+            + 0.1
+        ) / 60.0
+        self.estimate_label.setText(
+            f"Estimated visits: {total_visits} (approx {approx_minutes:.0f} minutes at current settle times)"
+        )
+
+
 def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBase:
     """Return the custom page widget for one supported experiment."""
     factories: dict[str, Callable[[object], ExperimentPageBase]] = {
         "single_segment_repeatability": lambda ctrl: SingleSegmentRepeatabilityPage(ctrl, "single_segment_repeatability"),
+        "workspace_repeatability_map": lambda ctrl: WorkspaceRepeatabilityMapPage(ctrl, "workspace_repeatability_map"),
         "registration_validation": lambda ctrl: RegistrationValidationPage(ctrl, "registration_validation"),
         "pivot_validation": lambda ctrl: PivotValidationPage(ctrl, "pivot_validation"),
         "aurora_grid_accuracy": lambda ctrl: AuroraGridAccuracyPage(ctrl, "aurora_grid_accuracy"),

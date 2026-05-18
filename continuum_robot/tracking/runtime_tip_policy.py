@@ -51,6 +51,7 @@ _WORKFLOW_ALIASES: dict[str, str] = {
     "single_segment_repeatability_platform": WORKFLOW_REPEATABILITY,
     "repeatability_dataset": WORKFLOW_REPEATABILITY,
     "repeatability_platform": WORKFLOW_REPEATABILITY,
+    "workspace_repeatability_map": WORKFLOW_REPEATABILITY,
     WORKFLOW_PRETENSION_VALIDATION: WORKFLOW_PRETENSION_VALIDATION,
     "pretension": WORKFLOW_PRETENSION_VALIDATION,
     "pretension_platform": WORKFLOW_PRETENSION_VALIDATION,

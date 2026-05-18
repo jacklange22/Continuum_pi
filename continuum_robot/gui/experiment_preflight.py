@@ -31,6 +31,11 @@ from continuum_robot.experiments.single_segment_repeatability import (
     load_repeatability_metrics_from_run,
     repeatability_target_tick_profile,
 )
+from continuum_robot.experiments.workspace_repeatability_map import (
+    WorkspaceRepeatabilityMapConfig,
+    build_workspace_repeatability_targets,
+    workspace_target_tick_profile,
+)
 from continuum_robot.experiments.penprobe_chasing_demo import (
     MAPPING_AGGRESSIVE_TICK_DEMO,
     MAPPING_PAIRED_XY_PROPORTIONAL,
@@ -505,6 +510,245 @@ def evaluate_preflight(
                 "Protocol",
                 f"{config.target_preset} preset: {len(preset_targets)} targets, "
                 f"{len(preset_visits)} approach/repeat visits, {len(preset_visits) * 2} planned captures.",
+            )
+        )
+
+    elif experiment_name == "workspace_repeatability_map":
+        # Workspace map shares hardware requirements with the 17-point thesis
+        # experiment: live mode, NDI backend, registered 0B pivot tip, runtime
+        # tip policy thesis-trusted, 4-servo single segment, neutrals + pretension
+        # accepted. Dry-run mode short-circuits these gates so the operator can
+        # exercise the bundle writer without hardware.
+        config = WorkspaceRepeatabilityMapConfig.from_dict(payload)
+        dry_run = bool(config.dry_run)
+        if dry_run:
+            checks.append(
+                _info(
+                    "dry_run_mode",
+                    "Dry-Run Mode",
+                    "Dry-run is enabled: positions are synthesized from commanded XY. The output "
+                    "bundle will be written but the data is NOT a thesis-grade measurement.",
+                )
+            )
+        if bool(settings.runtime.mock_mode):
+            checks.append(
+                _blocked(
+                    "mock_mode",
+                    "Runtime Mode",
+                    "Workspace repeatability is a live thesis experiment. Disable mock mode before running.",
+                )
+            )
+        else:
+            checks.append(_ok("runtime_mode", "Runtime Mode", "Live runtime mode is enabled."))
+        if not dry_run:
+            configured_backend = str(settings.serial.tracker_backend or "").strip().lower()
+            selected_backend = str(
+                tracking_snapshot.selected_backend_name or tracking_snapshot.backend_identity or ""
+            ).strip().lower()
+            if configured_backend not in {"ndi", ""}:
+                checks.append(
+                    _blocked(
+                        "configured_backend",
+                        "Configured Backend",
+                        f"Configured tracker backend is '{configured_backend}'. Workspace repeatability must use the active Python NDI path.",
+                    )
+                )
+            elif "bridge" in selected_backend:
+                checks.append(
+                    _blocked(
+                        "selected_backend",
+                        "Selected Backend",
+                        "The active tracker backend appears to be tracker_bridge. Use the Python NDI backend before running workspace repeatability.",
+                    )
+                )
+            elif tracking_snapshot.canonical_state == "streaming_healthy":
+                checks.append(
+                    _ok(
+                        "tracking_state",
+                        "Tracking",
+                        f"Tracker is healthy via {tracking_snapshot.backend_identity or tracking_snapshot.selected_backend_name or 'ndi'}.",
+                    )
+                )
+            else:
+                checks.append(
+                    _blocked(
+                        "tracking_state",
+                        "Tracking",
+                        f"Tracker must be streaming healthy. Current state is {tracking_snapshot.canonical_state}.",
+                    )
+                )
+            checks.append(
+                _strict_tool_gate_check(
+                    tool_id=config.tool_id,
+                    snapshot=tracking_snapshot,
+                    max_tracker_age_s=float(config.max_tracker_age_s),
+                )
+            )
+            if tracking_snapshot.registration_state == "loaded" and tracking_snapshot.T_robot_aurora is not None:
+                checks.append(
+                    _ok(
+                        "registration",
+                        "Base Registration",
+                        "Accepted base registration is loaded and available to the live transform chain.",
+                    )
+                )
+            else:
+                checks.append(
+                    _blocked(
+                        "registration",
+                        "Base Registration",
+                        f"Accepted base registration must be loaded. Runtime state is {tracking_snapshot.registration_state}.",
+                    )
+                )
+            pivot_tip_file = getattr(settings.registration, "penprobe_file", None)
+            if pivot_tip_file:
+                pivot_tip_path = _resolve_repo_path(project_root, pivot_tip_file)
+                if pivot_tip_path.exists():
+                    checks.append(
+                        _ok(
+                            "pivot_tip",
+                            "0B Pivot Tip Calibration",
+                            f"Pivot-calibrated 0B tip file is present: {pivot_tip_path}",
+                        )
+                    )
+                else:
+                    checks.append(
+                        _blocked(
+                            "pivot_tip",
+                            "0B Pivot Tip Calibration",
+                            f"Pivot-calibrated 0B tip file is missing: {pivot_tip_path}. Run and accept 0B pivot calibration first.",
+                        )
+                    )
+            else:
+                checks.append(
+                    _blocked(
+                        "pivot_tip",
+                        "0B Pivot Tip Calibration",
+                        "No penprobe_file is configured for the 0B pivot-calibrated tip.",
+                    )
+                )
+            runtime_tip_policy = evaluate_runtime_tip_trust(
+                snapshot=tracking_snapshot,
+                workflow=experiment_name,
+                allow_lower_trust=bool(config.allow_debug_coil_as_tip),
+            )
+            if runtime_tip_policy.allowed_for_workflow and runtime_tip_policy.thesis_trusted:
+                checks.append(
+                    _ok(
+                        "runtime_tip",
+                        "Runtime Tip Policy",
+                        runtime_tip_policy.status_message,
+                    )
+                )
+            else:
+                checks.append(
+                    _blocked(
+                        "runtime_tip",
+                        "Runtime Tip Policy",
+                        "Workspace repeatability requires thesis_trusted runtime tip policy output. "
+                        f"Requested workflow={runtime_tip_policy.requested_workflow}, "
+                        f"resolved canonical workflow={runtime_tip_policy.workflow}, "
+                        f"mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}.",
+                    )
+                )
+        servo_ids = [int(value) for value in settings.robot.active_segment_servo_ids()]
+        if len(servo_ids) == 4:
+            checks.append(
+                _ok(
+                    "single_segment",
+                    "Single-Segment Assumption",
+                    f"Active segment {settings.robot.active_segment_label()} ({settings.robot.active_segment_key()}) servo IDs: {servo_ids}.",
+                )
+            )
+        else:
+            checks.append(
+                _blocked(
+                    "single_segment",
+                    "Single-Segment Assumption",
+                    f"This protocol requires exactly 4 active segment servos/tendons. Found {servo_ids}.",
+                )
+            )
+        # Workspace-specific target-geometry envelope: tick excursion at the
+        # outermost target must fit inside the configured cap.
+        workspace_targets = build_workspace_repeatability_targets(
+            target_count=int(config.target_count),
+            max_amplitude_mm=float(config.max_amplitude_mm),
+        )
+        mapper = TendonDisplacementMapper(
+            spool_diameter_cm=float(settings.robot.spool_diameter_cm),
+            ticks_per_rev=int(settings.robot.ticks_per_revolution),
+        )
+        tick_profile = workspace_target_tick_profile(targets=workspace_targets, mapper=mapper)
+        max_tick_delta = int(tick_profile.get("max_abs_tick_delta", 0) or 0)
+        cap = int(config.max_target_tick_delta_from_startup)
+        if max_tick_delta > cap:
+            checks.append(
+                _blocked(
+                    "target_geometry",
+                    "Target Geometry",
+                    "Workspace target amplitude exceeds the configured experiment cap: "
+                    f"{max_tick_delta} ticks requested > {cap} ticks cap. "
+                    "Reduce max_amplitude_mm or raise max_target_tick_delta_from_startup intentionally.",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "target_geometry",
+                    "Target Geometry",
+                    (
+                        f"Vogel disk {len(workspace_targets)} targets at R={float(config.max_amplitude_mm):.1f} mm, "
+                        f"max target delta={max_tick_delta} ticks, "
+                        f"cap={cap} ticks, spool={float(settings.robot.spool_diameter_cm) * 10.0:.1f} mm."
+                    ),
+                )
+            )
+        if not dry_run:
+            if not servo_connected:
+                checks.append(
+                    _blocked(
+                        "servo_connection",
+                        "Servo Connection",
+                        "OpenRB / DYNAMIXEL service must be connected for live workspace map commands.",
+                    )
+                )
+            else:
+                checks.append(_ok("servo_connection", "Servo Connection", "Servo service is connected."))
+            missing_neutral = [servo_id for servo_id in servo_ids if int(servo_id) not in neutral_setpoints]
+            if missing_neutral:
+                checks.append(
+                    _blocked(
+                        "neutral_setpoints",
+                        "Neutral Setpoints",
+                        "Neutral setpoints are missing for servo(s): " + ", ".join(str(value) for value in missing_neutral),
+                    )
+                )
+            else:
+                checks.append(_ok("neutral_setpoints", "Neutral Setpoints", "Neutral setpoints exist for all configured tendons."))
+            checks.extend(
+                _selected_segment_truth_checks(
+                    settings=settings,
+                    servo_calibration_summary=servo_calibration_summary,
+                    project_root=project_root,
+                    servo_connected=servo_connected,
+                    require_startup=True,
+                    strict_startup=True,
+                    allow_calibration_creation=False,
+                    label_prefix="Workspace Map",
+                )
+            )
+            checks.append(
+                _pretension_artifact_check(
+                    servo_ids=servo_ids, servo_calibration_summary=servo_calibration_summary
+                )
+            )
+        total_visits = int(config.target_count) * int(config.visits_per_target)
+        checks.append(
+            _ok(
+                "protocol",
+                "Protocol",
+                f"Vogel disk: {int(config.target_count)} targets x {int(config.visits_per_target)} visits "
+                f"= {total_visits} planned captures.",
             )
         )
 
