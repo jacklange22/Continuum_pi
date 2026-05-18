@@ -18,6 +18,16 @@ data/logs/**
 data/tmp/**
 data/cache/**
 
+# Huge raw experiment files are synced Pi<->Mac with scripts/sync_pi_dataset.py,
+# not through GitHub. Keep summaries/manifests/plots in Git instead.
+data/experiments/**/samples.jsonl
+data/experiments/**/modeling_dataset_export.jsonl
+data/experiments/**/modeling_dataset_legacy_compat.dat
+data/experiments/**/workspace_map_visits.jsonl
+data/experiments/**/raw_point_samples.jsonl
+data/experiments/**/rejected_samples.jsonl
+data/experiments/**/sample_failure_events.jsonl
+
 # Large binary artifacts: prefer Git LFS or manual sync
 data/**/*.mp4
 data/**/*.mov
