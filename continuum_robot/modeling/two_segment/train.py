@@ -17,10 +17,19 @@ from continuum_robot.modeling.two_segment.outputs import allocate_output_dir, wr
 
 @dataclass
 class TwoSegmentModelingConfig:
-    """Configuration for offline two-segment modeling analysis."""
+    """Configuration for offline two-segment modeling analysis.
+
+    The three-fold split defaults are ``train 0.60 / val 0.20 / test 0.20``.
+    ``test_fraction`` is kept as the legacy knob; ``val_fraction`` was added
+    when the training path moved from "test-as-validation" to a true 3-fold
+    contract. The validation fold drives per-architecture early stopping and
+    cross-architecture model selection; the test fold is the FINAL held-out
+    accuracy report and is never touched by training decisions.
+    """
 
     allow_lower_trust: bool = False
-    test_fraction: float = 0.25
+    val_fraction: float = 0.20
+    test_fraction: float = 0.20
     random_seed: int = 0
     by_run_split: bool | None = None
     model_keys: list[str] = field(default_factory=lambda: ["linear_baseline", "camarillo", "mike_constant_curvature", "ann"])
@@ -64,14 +73,17 @@ def run_two_segment_modeling(
         label_mode=str(config.label_mode),
         include_orientation_if_available=bool(config.include_orientation_if_available),
     )
-    split = build_train_test_split(
+    split = build_train_val_test_split(
         samples=bundle.samples,
+        val_fraction=float(config.val_fraction),
         test_fraction=float(config.test_fraction),
         random_seed=int(config.random_seed),
         by_run_split=config.by_run_split,
     )
     X_train = bundle.X[split["train_indices"], :]
     y_train = bundle.y[split["train_indices"], :]
+    X_val = bundle.X[split["val_indices"], :]
+    y_val = bundle.y[split["val_indices"], :]
     X_test = bundle.X[split["test_indices"], :]
     y_test = bundle.y[split["test_indices"], :]
     output_dir = allocate_output_dir(
@@ -87,6 +99,8 @@ def run_two_segment_modeling(
         result = model.fit_predict(
             X_train=X_train,
             y_train=y_train,
+            X_val=X_val,
+            y_val=y_val,
             X_test=X_test,
             y_test=y_test,
             model_dir=model_dir,
@@ -124,6 +138,138 @@ def run_two_segment_modeling(
     )
 
 
+def build_train_val_test_split(
+    *,
+    samples: list[Any],
+    val_fraction: float = 0.20,
+    test_fraction: float = 0.20,
+    random_seed: int = 0,
+    by_run_split: bool | None = None,
+) -> dict[str, Any]:
+    """Return reproducible train / val / test indices.
+
+    The three folds are disjoint and exhaustive: every sample appears in
+    exactly one of ``train_indices``, ``val_indices``, ``test_indices``. The
+    validation fold drives early stopping and architecture/seed selection;
+    the test fold is reserved for the FINAL accuracy report on the selected
+    model and must NOT influence training decisions.
+
+    By-run mode (preferred when multiple runs are available):
+    - When ``len(unique_runs) >= 4`` the three folds are taken as whole runs
+      so generalization across runs is honest. The split sizes are computed
+      from ``val_fraction`` and ``test_fraction`` with at least one run per
+      fold (train, val, test) and the remainder going to train.
+    - When ``2 <= len(unique_runs) <= 3`` we can only split runs cleanly
+      into train + test (or train + val); to avoid degenerate one-sample
+      splits the function falls back to **random-within-the-pooled-data**
+      with a logged warning.
+    - When ``len(unique_runs) == 1`` we shuffle row indices and take three
+      contiguous random fractions, again with a logged warning because
+      same-run leakage cannot be ruled out from the data alone.
+
+    Raises ``ValueError`` for non-positive or excessive fractions, for
+    fewer than three samples, or if any of the three folds would end up
+    empty.
+    """
+
+    if not (val_fraction > 0.0):
+        raise ValueError("val_fraction must be positive")
+    if not (test_fraction > 0.0):
+        raise ValueError("test_fraction must be positive")
+    if val_fraction + test_fraction >= 1.0:
+        raise ValueError("val_fraction + test_fraction must be strictly less than 1.0")
+
+    n = len(samples)
+    if n < 3:
+        raise ValueError("At least 3 samples are required for a train/val/test split.")
+    run_names = [str(sample.run_dir) for sample in samples]
+    unique_runs = sorted(set(run_names))
+    rng = np.random.default_rng(int(random_seed))
+    warnings: list[str] = []
+
+    want_by_run = bool(by_run_split) if by_run_split is not None else True
+    can_by_run_three_folds = want_by_run and len(unique_runs) >= 4
+    can_by_run_two_folds = want_by_run and 2 <= len(unique_runs) <= 3
+
+    if can_by_run_three_folds:
+        shuffled_runs = list(unique_runs)
+        rng.shuffle(shuffled_runs)
+        n_runs = len(shuffled_runs)
+        test_run_count = max(1, int(round(n_runs * float(test_fraction))))
+        val_run_count = max(1, int(round(n_runs * float(val_fraction))))
+        # Ensure at least one run for train.
+        while test_run_count + val_run_count >= n_runs:
+            if val_run_count > 1:
+                val_run_count -= 1
+            elif test_run_count > 1:
+                test_run_count -= 1
+            else:
+                # n_runs must be >= 4 here; this branch only fires if the
+                # fractions are pathologically large for the run count.
+                raise ValueError("By-run split cannot leave at least one training run after splitting.")
+        test_runs = set(shuffled_runs[:test_run_count])
+        val_runs = set(shuffled_runs[test_run_count : test_run_count + val_run_count])
+        test_indices = sorted(index for index, run in enumerate(run_names) if run in test_runs)
+        val_indices = sorted(index for index, run in enumerate(run_names) if run in val_runs)
+        train_indices = sorted(
+            index
+            for index, run in enumerate(run_names)
+            if run not in test_runs and run not in val_runs
+        )
+        method = "by_run"
+        note = "By-run train/val/test split used; this is preferred for generalization when several real runs are available."
+    else:
+        if can_by_run_two_folds:
+            warnings.append(
+                f"by_run split requested but only {len(unique_runs)} unique runs available; "
+                "falling back to random pooled split with same-run leakage risk."
+            )
+        elif want_by_run and len(unique_runs) == 1:
+            warnings.append(
+                "Only one unique run present; random pooled split cannot rule out same-run leakage."
+            )
+        indices = np.arange(n)
+        rng.shuffle(indices)
+        test_count = max(1, int(round(n * float(test_fraction))))
+        val_count = max(1, int(round(n * float(val_fraction))))
+        while test_count + val_count >= n:
+            if val_count > 1:
+                val_count -= 1
+            elif test_count > 1:
+                test_count -= 1
+            else:
+                raise ValueError("Random split cannot leave at least one training sample after splitting.")
+        test_indices = sorted(int(value) for value in indices[:test_count])
+        val_indices = sorted(int(value) for value in indices[test_count : test_count + val_count])
+        train_indices = sorted(int(value) for value in indices[test_count + val_count :])
+        method = "random_pooled"
+        note = (
+            "Random pooled split used; consider collecting multiple runs and re-running for a "
+            "by-run split that supports a stronger generalization claim."
+        )
+
+    if not train_indices or not val_indices or not test_indices:
+        raise ValueError("Train/val/test split produced an empty partition.")
+    if set(train_indices) & set(val_indices) or set(train_indices) & set(test_indices) or set(val_indices) & set(test_indices):
+        raise AssertionError("Train/val/test split produced overlapping folds.")
+
+    return {
+        "schema_version": "two_segment_train_val_test_split_v1",
+        "method": method,
+        "note": note,
+        "val_fraction": float(val_fraction),
+        "test_fraction": float(test_fraction),
+        "random_seed": int(random_seed),
+        "train_indices": train_indices,
+        "val_indices": val_indices,
+        "test_indices": test_indices,
+        "run_names": run_names,
+        "val_runs": sorted({run_names[index] for index in val_indices}),
+        "test_runs": sorted({run_names[index] for index in test_indices}),
+        "warnings": list(warnings),
+    }
+
+
 def build_train_test_split(
     *,
     samples: list[Any],
@@ -131,44 +277,38 @@ def build_train_test_split(
     random_seed: int = 0,
     by_run_split: bool | None = None,
 ) -> dict[str, Any]:
-    """Return reproducible train/test indices, preferring by-run when useful."""
+    """Deprecated -- kept only so external callers reading legacy split manifests still work.
 
-    n = len(samples)
-    if n < 2:
-        raise ValueError("At least 2 samples are required for train/test split.")
-    run_names = [str(sample.run_dir) for sample in samples]
-    unique_runs = sorted(set(run_names))
-    use_by_run = bool(by_run_split) or (by_run_split is None and len(unique_runs) > 1)
-    rng = np.random.default_rng(int(random_seed))
-    if use_by_run and len(unique_runs) > 1:
-        shuffled_runs = list(unique_runs)
-        rng.shuffle(shuffled_runs)
-        test_run_count = max(1, min(len(shuffled_runs) - 1, int(round(len(shuffled_runs) * float(test_fraction)))))
-        test_runs = set(shuffled_runs[:test_run_count])
-        test_indices = [index for index, run in enumerate(run_names) if run in test_runs]
-        train_indices = [index for index, run in enumerate(run_names) if run not in test_runs]
-        method = "by_run"
-        note = "By-run split used; this is preferred for generalization when multiple real runs are available."
-    else:
-        indices = np.arange(n)
-        rng.shuffle(indices)
-        test_count = max(1, min(n - 1, int(round(n * float(test_fraction)))))
-        test_indices = sorted(int(value) for value in indices[:test_count])
-        train_indices = sorted(int(value) for value in indices[test_count:])
-        method = "single_run_random"
-        note = "Single-run random split can overestimate generalization; use by-run split when multiple real runs are available."
-    if not train_indices or not test_indices:
-        raise ValueError("Train/test split produced an empty partition.")
+    The thesis-grade training path is :func:`build_train_val_test_split`,
+    which produces a third (validation) fold so the test split can be a
+    true held-out report. This function will be removed once all callers
+    migrate.
+    """
+    val_fraction = max(0.05, float(test_fraction) * 0.6)
+    result = build_train_val_test_split(
+        samples=samples,
+        val_fraction=val_fraction,
+        test_fraction=float(test_fraction),
+        random_seed=random_seed,
+        by_run_split=by_run_split,
+    )
+    # Project to legacy two-fold shape: fold val_indices into train_indices so
+    # the legacy caller sees the same effective contract (everything that isn't
+    # test is "train"), but the underlying split still respects the new policy.
+    train_plus_val = sorted(set(result["train_indices"]) | set(result["val_indices"]))
     return {
         "schema_version": "two_segment_train_test_split_v1",
-        "method": method,
-        "note": note,
+        "method": result["method"],
+        "note": (
+            result["note"]
+            + " (legacy build_train_test_split caller; val fold folded into train for compatibility)"
+        ),
         "test_fraction": float(test_fraction),
         "random_seed": int(random_seed),
-        "train_indices": train_indices,
-        "test_indices": test_indices,
-        "run_names": run_names,
-        "test_runs": sorted({run_names[index] for index in test_indices}),
+        "train_indices": train_plus_val,
+        "test_indices": list(result["test_indices"]),
+        "run_names": list(result["run_names"]),
+        "test_runs": list(result["test_runs"]),
     }
 
 

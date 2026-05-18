@@ -52,7 +52,9 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Number of random seeds to train per architecture (Wolfe MS thesis §3.2.2 trains 10 "
             "per architecture and picks lowest-val-loss). Each seed gets its own artifact subdir "
-            "and its own row in the sweep summary; best-by-test-RMSE selection runs across all."
+            "and its own row in the sweep summary; the sweep-level 'best' selection picks the "
+            "lowest validation_position_rmse_xyz_mm across all seeds and architectures. The test "
+            "split is reserved as the final held-out report for the selected model only."
         ),
     )
     args = parser.parse_args(argv)

@@ -491,6 +491,8 @@ def test_two_segment_ann_reports_unavailable_when_torch_missing(monkeypatch) -> 
     result = model.fit_predict(
         X_train=np.zeros((2, 8)),
         y_train=np.zeros((2, 3)),
+        X_val=np.zeros((1, 8)),
+        y_val=np.zeros((1, 3)),
         X_test=np.zeros((1, 8)),
         y_test=np.zeros((1, 3)),
         model_dir=Path("/tmp/not_written_ann_missing"),
@@ -516,6 +518,8 @@ def test_two_segment_ann_sweep_skips_cleanly_when_torch_missing(monkeypatch, tmp
     result = model.fit_predict(
         X_train=np.zeros((2, 8)),
         y_train=np.zeros((2, 3)),
+        X_val=np.zeros((1, 8)),
+        y_val=np.zeros((1, 3)),
         X_test=np.zeros((1, 8)),
         y_test=np.zeros((1, 3)),
         model_dir=tmp_path / "ann_sweep_missing",
@@ -532,6 +536,8 @@ def test_two_segment_physics_adapters_remain_honestly_unavailable(tmp_path: Path
         model.fit_predict(
             X_train=np.zeros((2, 8)),
             y_train=np.zeros((2, 3)),
+            X_val=np.zeros((1, 8)),
+            y_val=np.zeros((1, 3)),
             X_test=np.zeros((1, 8)),
             y_test=np.zeros((1, 3)),
             model_dir=tmp_path / model.model_key,

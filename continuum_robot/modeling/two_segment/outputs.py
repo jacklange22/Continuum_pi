@@ -682,8 +682,19 @@ def _data_quality_warnings(*, dataset: Any, split: dict[str, Any]) -> list[str]:
     warnings: list[str] = []
     if dataset.allow_lower_trust:
         warnings.append("allow_lower_trust_used_outputs_not_thesis_trusted")
-    if split.get("method") == "single_run_random":
+    method = split.get("method")
+    # Legacy "single_run_random" came from build_train_test_split; the new
+    # three-fold path emits "random_pooled" for the same condition. Surface
+    # the same operator-facing warning in both cases so callers that parse
+    # the string list keep matching.
+    if method in {"single_run_random", "random_pooled"}:
         warnings.append("single_run_random_split_can_overestimate_generalization")
+    # The new split emits per-call warnings (e.g. "by_run requested but only N
+    # unique runs available") -- surface them so the operator notices.
+    for warning in split.get("warnings", []) or []:
+        warning_text = str(warning).strip()
+        if warning_text:
+            warnings.append(warning_text)
     if not dataset.orientation_available:
         warnings.append("orientation_labels_unavailable_position_only")
     if dataset.rejected_count:

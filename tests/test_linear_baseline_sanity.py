@@ -35,22 +35,33 @@ def _random_affine_dataset(
     rng = np.random.default_rng(seed)
     weights = rng.normal(scale=2.0, size=(feature_dim, label_dim))
     bias = rng.normal(scale=5.0, size=(label_dim,))
-    train_size = max(int(sample_count * 0.7), 1)
+    train_size = max(int(sample_count * 0.60), 1)
+    val_size = max(int(sample_count * 0.20), 1)
     X_full = rng.normal(scale=1.0, size=(sample_count, feature_dim))
     y_clean = X_full @ weights + bias
     y_full = y_clean + rng.normal(scale=noise_sigma, size=y_clean.shape)
-    return X_full[:train_size], y_full[:train_size], X_full[train_size:], y_full[train_size:]
+    return (
+        X_full[:train_size],
+        y_full[:train_size],
+        X_full[train_size : train_size + val_size],
+        y_full[train_size : train_size + val_size],
+        X_full[train_size + val_size :],
+        y_full[train_size + val_size :],
+    )
 
 
 def test_linear_baseline_recovers_affine_map_to_within_small_tolerance(tmp_path: Path) -> None:
     """No noise → recovered predictions should be ~exact on held-out samples."""
-    X_train, y_train, X_test, y_test = _random_affine_dataset(
+    X_train, y_train, X_val, y_val, X_test, y_test = _random_affine_dataset(
         sample_count=200, feature_dim=8, label_dim=3, noise_sigma=0.0, seed=7
     )
 
     model = LinearBaselineModel(ridge_alpha=1e-9)
     result = model.fit_predict(
-        X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test, model_dir=tmp_path / "linear"
+        X_train=X_train, y_train=y_train,
+        X_val=X_val, y_val=y_val,
+        X_test=X_test, y_test=y_test,
+        model_dir=tmp_path / "linear",
     )
 
     assert result.status == "completed"
@@ -62,13 +73,16 @@ def test_linear_baseline_recovers_affine_map_to_within_small_tolerance(tmp_path:
 
 def test_linear_baseline_beats_mean_predictor_on_noisy_linear_map(tmp_path: Path) -> None:
     """With moderate noise, the baseline should still substantially outperform predicting the per-axis mean."""
-    X_train, y_train, X_test, y_test = _random_affine_dataset(
+    X_train, y_train, X_val, y_val, X_test, y_test = _random_affine_dataset(
         sample_count=400, feature_dim=8, label_dim=3, noise_sigma=0.5, seed=13
     )
 
     model = LinearBaselineModel(ridge_alpha=1e-6)
     result = model.fit_predict(
-        X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test, model_dir=tmp_path / "linear"
+        X_train=X_train, y_train=y_train,
+        X_val=X_val, y_val=y_val,
+        X_test=X_test, y_test=y_test,
+        model_dir=tmp_path / "linear",
     )
 
     mean_prediction = np.broadcast_to(y_train.mean(axis=0), y_test.shape)
@@ -84,13 +98,18 @@ def test_linear_baseline_beats_mean_predictor_on_noisy_linear_map(tmp_path: Path
 
 def test_linear_baseline_persists_weights_and_intercept_to_disk(tmp_path: Path) -> None:
     """Operator must be able to inspect what the linear baseline actually learned."""
-    X_train, y_train, X_test, y_test = _random_affine_dataset(
+    X_train, y_train, X_val, y_val, X_test, y_test = _random_affine_dataset(
         sample_count=80, feature_dim=8, label_dim=3, noise_sigma=0.1, seed=21
     )
 
     model = LinearBaselineModel(ridge_alpha=1e-6)
     model_dir = tmp_path / "linear"
-    model.fit_predict(X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test, model_dir=model_dir)
+    model.fit_predict(
+        X_train=X_train, y_train=y_train,
+        X_val=X_val, y_val=y_val,
+        X_test=X_test, y_test=y_test,
+        model_dir=model_dir,
+    )
 
     artifact_path = model_dir / "linear_baseline_weights.json"
     assert artifact_path.exists(), "weights JSON must be written so the operator can audit the fit"
@@ -111,14 +130,17 @@ def test_linear_baseline_high_ridge_alpha_does_not_regularize_bias(tmp_path: Pat
     ``reg[-1, -1] = 0.0`` line), the bias will collapse toward zero and the
     test will fail loudly.
     """
-    X_train, y_train, X_test, y_test = _random_affine_dataset(
+    X_train, y_train, X_val, y_val, X_test, y_test = _random_affine_dataset(
         sample_count=200, feature_dim=8, label_dim=3, noise_sigma=0.2, seed=29
     )
 
     # Very large ridge alpha → weights driven toward zero, predictions should ≈ y_train.mean(axis=0).
     model = LinearBaselineModel(ridge_alpha=1e12)
     result = model.fit_predict(
-        X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test, model_dir=tmp_path / "linear"
+        X_train=X_train, y_train=y_train,
+        X_val=X_val, y_val=y_val,
+        X_test=X_test, y_test=y_test,
+        model_dir=tmp_path / "linear",
     )
 
     expected_mean = y_train.mean(axis=0)

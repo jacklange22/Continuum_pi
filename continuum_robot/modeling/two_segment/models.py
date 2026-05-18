@@ -21,7 +21,13 @@ from continuum_robot.modeling.two_segment.physics import (
 
 @dataclass(frozen=True)
 class ModelFitResult:
-    """Predictions, metrics, and artifact metadata for one model."""
+    """Predictions, metrics, and artifact metadata for one model.
+
+    ``metrics`` and ``predictions`` always refer to the **test** split (the
+    final held-out report). ``validation_metrics`` carries the same shape of
+    metrics on the **validation** split -- used for cross-architecture model
+    selection so the test split never participates in training decisions.
+    """
 
     model_key: str
     label: str
@@ -29,6 +35,8 @@ class ModelFitResult:
     reason: str = ""
     predictions: np.ndarray | None = None
     metrics: dict[str, Any] = field(default_factory=dict)
+    validation_metrics: dict[str, Any] = field(default_factory=dict)
+    validation_predictions: np.ndarray | None = None
     artifact_paths: dict[str, str] = field(default_factory=dict)
     loss_history: list[dict[str, float]] = field(default_factory=list)
     status_details: dict[str, Any] = field(default_factory=dict)
@@ -43,6 +51,8 @@ class BaseTwoSegmentModel:
         *,
         X_train: np.ndarray,
         y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
         X_test: np.ndarray,
         y_test: np.ndarray,
         model_dir: Path,
@@ -65,6 +75,8 @@ class LinearBaselineModel(BaseTwoSegmentModel):
         *,
         X_train: np.ndarray,
         y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
         X_test: np.ndarray,
         y_test: np.ndarray,
         model_dir: Path,
@@ -75,6 +87,11 @@ class LinearBaselineModel(BaseTwoSegmentModel):
         reg = float(self.ridge_alpha) * np.eye(X_aug.shape[1], dtype=float)
         reg[-1, -1] = 0.0
         weights = np.linalg.pinv(X_aug.T @ X_aug + reg) @ X_aug.T @ y_train
+        # Closed-form ridge has no early-stopping decision so the val fold is
+        # used only to report a parallel set of metrics for selection across
+        # models. The fit itself is uniquely determined by (X_train, y_train).
+        val_aug = np.concatenate([X_val, np.ones((X_val.shape[0], 1), dtype=float)], axis=1)
+        val_predictions = val_aug @ weights
         test_aug = np.concatenate([X_test, np.ones((X_test.shape[0], 1), dtype=float)], axis=1)
         predictions = test_aug @ weights
         artifact_path = model_dir / "linear_baseline_weights.json"
@@ -96,6 +113,8 @@ class LinearBaselineModel(BaseTwoSegmentModel):
             status="completed",
             predictions=predictions,
             metrics=all_metrics(y_test, predictions, label_metadata=label_metadata),
+            validation_metrics=all_metrics(y_val, val_predictions, label_metadata=label_metadata),
+            validation_predictions=val_predictions,
             artifact_paths={"weights": str(artifact_path)},
         )
 
@@ -114,12 +133,14 @@ class UnavailableModel(BaseTwoSegmentModel):
         *,
         X_train: np.ndarray,
         y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
         X_test: np.ndarray,
         y_test: np.ndarray,
         model_dir: Path,
         label_metadata: dict[str, Any] | None = None,
     ) -> ModelFitResult:
-        _ = X_train, y_train, X_test, y_test
+        _ = X_train, y_train, X_val, y_val, X_test, y_test
         model_dir.mkdir(parents=True, exist_ok=True)
         status = str(self.status_details.get("status") or "unavailable")
         metadata_path = model_dir / "model_status.json"
@@ -153,6 +174,8 @@ class MikeConstantCurvatureModel(BaseTwoSegmentModel):
         *,
         X_train: np.ndarray,
         y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
         X_test: np.ndarray,
         y_test: np.ndarray,
         model_dir: Path,
@@ -174,19 +197,16 @@ class MikeConstantCurvatureModel(BaseTwoSegmentModel):
             )
         if not label_metadata:
             raise ValueError("Mike constant-curvature predictions require label metadata.")
-        predictions = []
-        for command in np.asarray(X_test, dtype=float):
-            pose = two_segment_constant_curvature_prediction(command, self.config)
-            predictions.append(
-                fill_prediction_from_role_poses(
-                    label_metadata=label_metadata,
-                    intermediate_xyz=pose["intermediate_xyz"],
-                    distal_xyz=pose["distal_xyz"],
-                    intermediate_tangent=pose["intermediate_tangent"],
-                    distal_tangent=pose["distal_tangent"],
-                )
-            )
-        y_pred = np.stack(predictions, axis=0) if predictions else np.zeros_like(y_test)
+        # Mike CC has no trainable parameters -- "predictions" are direct
+        # geometric forward-kinematics evaluations. We compute predictions on
+        # both val and test so the sweep-level cross-architecture selector
+        # can compare it against the ANN/Hybrid on the same val fold.
+        y_pred = _mike_cc_predict_batch(X_test, config=self.config, label_metadata=label_metadata)
+        if y_pred.size == 0:
+            y_pred = np.zeros_like(y_test)
+        y_val_pred = _mike_cc_predict_batch(X_val, config=self.config, label_metadata=label_metadata)
+        if y_val_pred.size == 0:
+            y_val_pred = np.zeros_like(y_val)
         status = {
             **self.adapter_status.to_dict(),
             "status": "completed",
@@ -201,6 +221,8 @@ class MikeConstantCurvatureModel(BaseTwoSegmentModel):
             status="completed",
             predictions=y_pred,
             metrics=all_metrics(y_test, y_pred, label_metadata=label_metadata),
+            validation_metrics=all_metrics(y_val, y_val_pred, label_metadata=label_metadata),
+            validation_predictions=y_val_pred,
             artifact_paths={"metadata": str(status_path)},
             status_details=status,
         )
@@ -234,6 +256,8 @@ class TorchANNModel(BaseTwoSegmentModel):
         *,
         X_train: np.ndarray,
         y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
         X_test: np.ndarray,
         y_test: np.ndarray,
         model_dir: Path,
@@ -251,13 +275,16 @@ class TorchANNModel(BaseTwoSegmentModel):
             )
         if X_train.shape[0] < 2:
             return ModelFitResult(model_key=self.model_key, label=self.label, status="unavailable", reason="ANN requires at least 2 training samples.")
+        if X_val.shape[0] < 1:
+            return ModelFitResult(model_key=self.model_key, label=self.label, status="unavailable", reason="ANN requires at least 1 validation sample for early stopping.")
 
         model_dir.mkdir(parents=True, exist_ok=True)
-        predictions, history, state_dict, stats = _train_normalized_mlp(
+        test_predictions, val_predictions, history, state_dict, stats = _train_normalized_mlp(
             X_train=X_train,
             y_train=y_train,
+            X_val=X_val,
+            y_val=y_val,
             X_test=X_test,
-            y_test=y_test,
             hidden_layers=self.hidden_layers,
             learning_rate=self.learning_rate,
             epochs=self.epochs,
@@ -288,8 +315,10 @@ class TorchANNModel(BaseTwoSegmentModel):
             model_key=self.model_key,
             label=self.label,
             status="completed",
-            predictions=predictions,
-            metrics=all_metrics(y_test, predictions, label_metadata=label_metadata),
+            predictions=test_predictions,
+            metrics=all_metrics(y_test, test_predictions, label_metadata=label_metadata),
+            validation_metrics=all_metrics(y_val, val_predictions, label_metadata=label_metadata),
+            validation_predictions=val_predictions,
             artifact_paths={"model": str(model_path), "loss_history": str(history_path)},
             loss_history=history,
         )
@@ -323,6 +352,8 @@ class TorchANNSweepModel(BaseTwoSegmentModel):
         *,
         X_train: np.ndarray,
         y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
         X_test: np.ndarray,
         y_test: np.ndarray,
         model_dir: Path,
@@ -345,6 +376,8 @@ class TorchANNSweepModel(BaseTwoSegmentModel):
                 result = model.fit_predict(
                     X_train=X_train,
                     y_train=y_train,
+                    X_val=X_val,
+                    y_val=y_val,
                     X_test=X_test,
                     y_test=y_test,
                     model_dir=child_dir,
@@ -357,8 +390,10 @@ class TorchANNSweepModel(BaseTwoSegmentModel):
                         "seed": int(seed),
                         "status": result.status,
                         "reason": result.reason,
-                        "xyz_rmse_mm": result.metrics.get("xyz_rmse_mm"),
-                        "distal_xyz_rmse_mm": result.metrics.get("distal_xyz_rmse_mm"),
+                        "validation_xyz_rmse_mm": result.validation_metrics.get("xyz_rmse_mm"),
+                        "validation_distal_xyz_rmse_mm": result.validation_metrics.get("distal_xyz_rmse_mm"),
+                        "test_xyz_rmse_mm": result.metrics.get("xyz_rmse_mm"),
+                        "test_distal_xyz_rmse_mm": result.metrics.get("distal_xyz_rmse_mm"),
                         "best_epoch": _best_epoch(result.loss_history),
                     }
                 )
@@ -376,13 +411,22 @@ class TorchANNSweepModel(BaseTwoSegmentModel):
                 artifact_paths={"sweep_summary": str(sweep_path)},
                 metrics={"ann_sweep_candidate_count": len(candidates)},
             )
-        best = min(completed, key=lambda result: float(result.metrics.get("xyz_rmse_mm", float("inf"))))
+        # Architecture/seed selection across the sweep MUST use the validation
+        # fold; the test split is reserved for the FINAL held-out report on
+        # the selected candidate. Picking by test RMSE would overfit the test
+        # numbers to the sweep size.
+        best = min(
+            completed,
+            key=lambda result: float(result.validation_metrics.get("xyz_rmse_mm", float("inf"))),
+        )
         metrics = dict(best.metrics)
         metrics.update(
             {
                 "ann_sweep_candidate_count": len(candidates),
                 "ann_sweep_completed_count": len(completed),
                 "ann_best_epoch": _best_epoch(best.loss_history),
+                "ann_sweep_selection_basis": "validation_xyz_rmse_mm",
+                "ann_sweep_selected_validation_xyz_rmse_mm": best.validation_metrics.get("xyz_rmse_mm"),
             }
         )
         artifacts = dict(best.artifact_paths)
@@ -393,6 +437,8 @@ class TorchANNSweepModel(BaseTwoSegmentModel):
             status="completed",
             predictions=best.predictions,
             metrics=metrics,
+            validation_metrics=dict(best.validation_metrics),
+            validation_predictions=best.validation_predictions,
             artifact_paths=artifacts,
             loss_history=list(best.loss_history),
         )
@@ -441,6 +487,8 @@ class HybridResidualModel(BaseTwoSegmentModel):
         *,
         X_train: np.ndarray,
         y_train: np.ndarray,
+        X_val: np.ndarray,
+        y_val: np.ndarray,
         X_test: np.ndarray,
         y_test: np.ndarray,
         model_dir: Path,
@@ -484,6 +532,13 @@ class HybridResidualModel(BaseTwoSegmentModel):
                 status="unavailable",
                 reason="Hybrid residual model requires at least 2 training samples.",
             )
+        if X_val.shape[0] < 1:
+            return ModelFitResult(
+                model_key=self.model_key,
+                label=self.label,
+                status="unavailable",
+                reason="Hybrid residual model requires at least 1 validation sample for early stopping.",
+            )
         if X_test.shape[0] < 1:
             return ModelFitResult(
                 model_key=self.model_key,
@@ -495,17 +550,22 @@ class HybridResidualModel(BaseTwoSegmentModel):
         mike_pred_train = _mike_cc_predict_batch(
             X_train, config=self.config, label_metadata=label_metadata
         )
+        mike_pred_val = _mike_cc_predict_batch(
+            X_val, config=self.config, label_metadata=label_metadata
+        )
         mike_pred_test = _mike_cc_predict_batch(
             X_test, config=self.config, label_metadata=label_metadata
         )
         residual_train = y_train - mike_pred_train
-        residual_test = y_test - mike_pred_test
+        residual_val = y_val - mike_pred_val
 
-        ann_residual_pred, history, state_dict, stats = _train_normalized_mlp(
+        # The ANN-on-residual sees val for early stopping; test stays held out.
+        ann_residual_test_pred, ann_residual_val_pred, history, state_dict, stats = _train_normalized_mlp(
             X_train=X_train,
             y_train=residual_train,
+            X_val=X_val,
+            y_val=residual_val,
             X_test=X_test,
-            y_test=residual_test,
             hidden_layers=self.hidden_layers,
             learning_rate=self.learning_rate,
             epochs=self.epochs,
@@ -515,18 +575,21 @@ class HybridResidualModel(BaseTwoSegmentModel):
             torch=torch,
             nn=nn,
         )
-        hybrid_predictions = mike_pred_test + ann_residual_pred
+        hybrid_test_predictions = mike_pred_test + ann_residual_test_pred
+        hybrid_val_predictions = mike_pred_val + ann_residual_val_pred
 
-        mike_only_metrics = all_metrics(y_test, mike_pred_test, label_metadata=label_metadata)
-        hybrid_metrics = all_metrics(y_test, hybrid_predictions, label_metadata=label_metadata)
+        mike_only_test_metrics = all_metrics(y_test, mike_pred_test, label_metadata=label_metadata)
+        mike_only_val_metrics = all_metrics(y_val, mike_pred_val, label_metadata=label_metadata)
+        hybrid_test_metrics = all_metrics(y_test, hybrid_test_predictions, label_metadata=label_metadata)
+        hybrid_val_metrics = all_metrics(y_val, hybrid_val_predictions, label_metadata=label_metadata)
         residual_learn_metrics = all_metrics(
-            residual_test, ann_residual_pred, label_metadata=label_metadata
+            y_test - mike_pred_test, ann_residual_test_pred, label_metadata=label_metadata
         )
 
         breakdown = {
-            "mike_only": dict(mike_only_metrics),
-            "ann_residual_only": dict(residual_learn_metrics),
-            "hybrid": dict(hybrid_metrics),
+            "mike_only": {"validation": dict(mike_only_val_metrics), "test": dict(mike_only_test_metrics)},
+            "ann_residual_only": {"test": dict(residual_learn_metrics)},
+            "hybrid": {"validation": dict(hybrid_val_metrics), "test": dict(hybrid_test_metrics)},
         }
         breakdown_path = model_dir / "hybrid_breakdown.json"
         breakdown_path.write_text(json.dumps(breakdown, indent=2), encoding="utf-8")
@@ -552,15 +615,15 @@ class HybridResidualModel(BaseTwoSegmentModel):
         mike_predictions_path = model_dir / "hybrid_mike_predictions_test.npy"
         np.save(mike_predictions_path, mike_pred_test)
         ann_residual_path = model_dir / "hybrid_ann_residual_predictions_test.npy"
-        np.save(ann_residual_path, ann_residual_pred)
+        np.save(ann_residual_path, ann_residual_test_pred)
 
         improvement = None
-        mike_xyz = mike_only_metrics.get("xyz_rmse_mm")
-        hybrid_xyz = hybrid_metrics.get("xyz_rmse_mm")
+        mike_xyz = mike_only_test_metrics.get("xyz_rmse_mm")
+        hybrid_xyz = hybrid_test_metrics.get("xyz_rmse_mm")
         if isinstance(mike_xyz, (int, float)) and isinstance(hybrid_xyz, (int, float)):
             improvement = float(mike_xyz) - float(hybrid_xyz)
 
-        merged_metrics: dict[str, Any] = dict(hybrid_metrics)
+        merged_metrics: dict[str, Any] = dict(hybrid_test_metrics)
         if mike_xyz is not None:
             merged_metrics["mike_only_xyz_rmse_mm"] = float(mike_xyz)
         if hybrid_xyz is not None:
@@ -568,12 +631,18 @@ class HybridResidualModel(BaseTwoSegmentModel):
         if improvement is not None:
             merged_metrics["hybrid_xyz_rmse_improvement_over_mike_mm"] = improvement
 
+        merged_val_metrics: dict[str, Any] = dict(hybrid_val_metrics)
+        if mike_only_val_metrics.get("xyz_rmse_mm") is not None:
+            merged_val_metrics["mike_only_xyz_rmse_mm"] = float(mike_only_val_metrics["xyz_rmse_mm"])
+
         return ModelFitResult(
             model_key=self.model_key,
             label=self.label,
             status="completed",
-            predictions=hybrid_predictions,
+            predictions=hybrid_test_predictions,
             metrics=merged_metrics,
+            validation_metrics=merged_val_metrics,
+            validation_predictions=hybrid_val_predictions,
             artifact_paths={
                 "model": str(model_path),
                 "loss_history": str(history_path),
@@ -702,8 +771,9 @@ def _train_normalized_mlp(
     *,
     X_train: np.ndarray,
     y_train: np.ndarray,
+    X_val: np.ndarray,
+    y_val: np.ndarray,
     X_test: np.ndarray,
-    y_test: np.ndarray,
     hidden_layers: list[int],
     learning_rate: float,
     epochs: int,
@@ -712,15 +782,30 @@ def _train_normalized_mlp(
     batch_size: int,
     torch: Any,
     nn: Any,
-) -> tuple[np.ndarray, list[dict[str, float]], dict[str, Any], dict[str, np.ndarray]]:
-    """Train a z-score-normalized MLP on (X_train, y_train) and predict on X_test.
+) -> tuple[np.ndarray, np.ndarray, list[dict[str, float]], dict[str, Any], dict[str, np.ndarray]]:
+    """Train a z-score-normalized MLP and predict on val + test.
 
-    Returns ``(predictions_in_original_units, loss_history, best_state_dict,
-    normalization_stats)``. Validation loss is tracked on the test split (the
-    pre-existing convention in this codebase -- we are not adding a second
-    held-out fold here, just extracting the duplicated training plumbing so
-    the hybrid model can share it). The best-loss state is restored before
-    the final prediction pass so early stopping is honored.
+    Returns
+    -------
+    test_predictions
+        Predictions on ``X_test`` in original units. This is the FINAL
+        held-out evaluation set; the training loop must not see ``y_test``.
+    val_predictions
+        Predictions on ``X_val`` in original units. The val fold drives
+        early stopping AND cross-architecture model selection (the caller
+        compares val metrics across architectures and reports test metrics
+        only for the chosen one).
+    history
+        Per-epoch ``{epoch, train_loss, validation_loss}`` rows.
+    best_state_dict
+        The MLP state at the lowest val loss.
+    stats
+        Z-score normalization constants ``{x_mean, x_std, y_mean, y_std}``.
+
+    Early stopping uses validation loss with the configured ``patience``.
+    The test fold is touched ONCE at the end to compute predictions for the
+    operator-facing accuracy report; it never participates in training or
+    architecture selection.
     """
 
     torch.manual_seed(int(seed))
@@ -728,8 +813,9 @@ def _train_normalized_mlp(
     y_mean, y_std = _stats(y_train)
     x_train_t = torch.tensor((X_train - x_mean) / x_std, dtype=torch.float32)
     y_train_t = torch.tensor((y_train - y_mean) / y_std, dtype=torch.float32)
+    x_val_t = torch.tensor((X_val - x_mean) / x_std, dtype=torch.float32)
+    y_val_t = torch.tensor((y_val - y_mean) / y_std, dtype=torch.float32)
     x_test_t = torch.tensor((X_test - x_mean) / x_std, dtype=torch.float32)
-    y_test_t = torch.tensor((y_test - y_mean) / y_std, dtype=torch.float32)
     model = _mlp(input_dim=X_train.shape[1], output_dim=y_train.shape[1], hidden_layers=hidden_layers, nn=nn)
     optimizer = torch.optim.Adam(model.parameters(), lr=float(learning_rate))
     loss_fn = nn.MSELoss()
@@ -751,7 +837,7 @@ def _train_normalized_mlp(
         )
         model.eval()
         with torch.no_grad():
-            val_loss = float(loss_fn(model(x_test_t), y_test_t))
+            val_loss = float(loss_fn(model(x_val_t), y_val_t))
         history.append({"epoch": float(epoch), "train_loss": float(train_loss.detach()), "validation_loss": val_loss})
         if val_loss < best_loss:
             best_loss = val_loss
@@ -765,14 +851,22 @@ def _train_normalized_mlp(
         model.load_state_dict(best_state)
     model.eval()
     with torch.no_grad():
-        pred_norm = model(x_test_t).cpu().numpy()
-    predictions = pred_norm * y_std + y_mean
-    return predictions, history, best_state if best_state is not None else dict(model.state_dict()), {
-        "x_mean": x_mean,
-        "x_std": x_std,
-        "y_mean": y_mean,
-        "y_std": y_std,
-    }
+        test_pred_norm = model(x_test_t).cpu().numpy()
+        val_pred_norm = model(x_val_t).cpu().numpy()
+    test_predictions = test_pred_norm * y_std + y_mean
+    val_predictions = val_pred_norm * y_std + y_mean
+    return (
+        test_predictions,
+        val_predictions,
+        history,
+        best_state if best_state is not None else dict(model.state_dict()),
+        {
+            "x_mean": x_mean,
+            "x_std": x_std,
+            "y_mean": y_mean,
+            "y_std": y_std,
+        },
+    )
 
 
 def _mike_cc_predict_batch(

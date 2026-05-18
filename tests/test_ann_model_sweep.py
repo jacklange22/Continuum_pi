@@ -20,6 +20,7 @@ from continuum_robot.modeling.ann_training import (
     prepare_legacy_ann_dataset,
     run_model_sweep,
     select_best_sweep_row_by_test_position_rmse,
+    select_best_sweep_row_by_validation_position_rmse,
 )
 
 
@@ -105,13 +106,72 @@ def test_compute_pose_evaluation_metrics_basic() -> None:
     assert "mean" in metrics["position_error_l2_mm"]
 
 
-def test_select_best_sweep_row_by_test_position_rmse() -> None:
+def test_select_best_sweep_row_by_test_position_rmse_legacy_alias() -> None:
+    """The legacy test-based selector is kept ONLY for reading old sweep summaries.
+
+    New sweeps must select by validation; this is asserted in the val-based
+    selector tests below. This test just pins that the legacy alias still
+    works on legacy-shaped rows so old artifacts can still be inspected.
+    """
     rows = [
         {"model_key": "a", "test_position_rmse_xyz_mm": 2.0, "test_loss": 0.5},
         {"model_key": "b", "test_position_rmse_xyz_mm": 1.0, "test_loss": 0.9},
     ]
     best = select_best_sweep_row_by_test_position_rmse(rows)
     assert best is not None and best["model_key"] == "b"
+
+
+def test_select_best_sweep_row_by_validation_picks_lowest_val_rmse() -> None:
+    """The validation-based selector ignores the test split entirely."""
+    rows = [
+        {
+            "model_key": "a",
+            "validation_position_rmse_xyz_mm": 0.5,
+            "validation_loss_mean": 0.4,
+            # The test column has a worse value here -- selection must NOT see this.
+            "test_position_rmse_xyz_mm": 5.0,
+        },
+        {
+            "model_key": "b",
+            "validation_position_rmse_xyz_mm": 1.0,
+            "validation_loss_mean": 0.2,
+            # Tempting low test RMSE -- the bug would pick this; correct
+            # behavior is to pick "a" because its val RMSE is lower.
+            "test_position_rmse_xyz_mm": 0.1,
+        },
+    ]
+    best = select_best_sweep_row_by_validation_position_rmse(rows)
+    assert best is not None and best["model_key"] == "a"
+
+
+def test_select_best_sweep_row_by_validation_breaks_ties_by_validation_loss() -> None:
+    rows = [
+        {"model_key": "a", "validation_position_rmse_xyz_mm": 1.0, "validation_loss_mean": 0.4},
+        {"model_key": "b", "validation_position_rmse_xyz_mm": 1.0, "validation_loss_mean": 0.2},
+        {"model_key": "c", "validation_position_rmse_xyz_mm": 1.0, "validation_loss_mean": 0.6},
+    ]
+    best = select_best_sweep_row_by_validation_position_rmse(rows)
+    assert best is not None and best["model_key"] == "b"
+
+
+def test_select_best_sweep_row_by_validation_falls_back_to_loss_when_rmse_missing() -> None:
+    rows = [
+        {"model_key": "a", "validation_loss_mean": 0.4},  # no rmse field
+        {"model_key": "b", "validation_loss_mean": 0.2},
+    ]
+    best = select_best_sweep_row_by_validation_position_rmse(rows)
+    assert best is not None and best["model_key"] == "b"
+
+
+def test_select_best_sweep_row_by_validation_returns_none_for_legacy_rows() -> None:
+    """Legacy sweep summaries that lack any validation columns are not silently
+    'best-fitted' by a heuristic; the caller must detect None and decide what to do."""
+    legacy_rows = [
+        {"model_key": "a", "test_position_rmse_xyz_mm": 0.5, "test_loss": 0.4},
+        {"model_key": "b", "test_position_rmse_xyz_mm": 1.0, "test_loss": 0.2},
+    ]
+    best = select_best_sweep_row_by_validation_position_rmse(legacy_rows)
+    assert best is None
 
 
 def _estimate_stub(**_kwargs: object) -> TrainingEstimate:
@@ -251,6 +311,12 @@ def test_run_model_sweep_shared_split_and_summary(tmp_path: Path, monkeypatch: p
         ad.mkdir(parents=True, exist_ok=True)
         first = int(config.hidden_layers[0])
         rmse = {32: 3.0, 64: 2.0, 128: 1.0}.get(first, 9.0)
+        # The val RMSE mirrors the test RMSE here -- the new sweep selector
+        # picks by validation, so this lets the fixture make a deterministic
+        # claim about which architecture wins. In real training the two are
+        # correlated but not identical; the val vs test divergence case is
+        # covered by the dedicated unit tests above this one.
+        val_rmse = rmse
         meta = {
             "training": {
                 "test_loss": float(0.1 * rmse),
@@ -260,7 +326,14 @@ def test_run_model_sweep_shared_split_and_summary(tmp_path: Path, monkeypatch: p
                 "best_epoch": 2,
             },
             "evaluation": {
-                "validation": {"loss_mean": 0.25},
+                "validation": {
+                    "loss_mean": 0.25,
+                    "position_rmse_xyz_mm": val_rmse,
+                    "position_rmse_xy_mm": val_rmse * 0.9,
+                    "position_rmse_z_mm": val_rmse * 0.5,
+                    "position_error_l2_mm": {"mean": val_rmse, "median": val_rmse, "p95": val_rmse, "max": val_rmse},
+                    "tangent_angular_error_rad": {"mean": 0.05, "median": 0.05, "p95": 0.06, "max": 0.07},
+                },
                 "test": {
                     "loss_mean": 0.22,
                     "position_rmse_xyz_mm": rmse,
@@ -324,7 +397,12 @@ def test_run_model_sweep_shared_split_and_summary(tmp_path: Path, monkeypatch: p
 
     summary_payload = json.loads(result.summary_json_path.read_text(encoding="utf-8"))
     assert len(summary_payload["rows"]) == 4
+    # Selection is by validation_position_rmse_xyz_mm now; with the fixture's
+    # rmse map {32:3, 64:2, 128:1}, ann_128_128 has the lowest validation RMSE
+    # and therefore wins. The test_position_rmse_xyz_mm column is reported
+    # for the selected row as the held-out diagnostic.
     assert summary_payload["best_model"]["artifact_subdir"] == "ann_128_128"
+    assert summary_payload["best_model"]["validation_position_rmse_xyz_mm"] == pytest.approx(1.0)
     assert summary_payload["best_model"]["test_position_rmse_xyz_mm"] == pytest.approx(1.0)
     if result.comparison_png_path is not None:
         assert result.comparison_png_path.exists()

@@ -35,27 +35,45 @@ def _random_affine_dataset(
     label_dim: int,
     noise_sigma: float,
     seed: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Synthetic 60/20/20 train/val/test split of a noisy affine map.
+
+    Returns ``(X_train, y_train, X_val, y_val, X_test, y_test)`` so callers
+    pass a true validation fold into ``fit_predict``. The val fold matters
+    because the training loop early-stops on it; mixing test into val would
+    leak the held-out fold back into training decisions.
+    """
     rng = np.random.default_rng(seed)
     weights = rng.normal(scale=2.0, size=(feature_dim, label_dim))
     bias = rng.normal(scale=5.0, size=(label_dim,))
-    train_size = max(int(sample_count * 0.7), 1)
+    train_size = max(int(sample_count * 0.60), 1)
+    val_size = max(int(sample_count * 0.20), 1)
     X_full = rng.normal(scale=1.0, size=(sample_count, feature_dim))
     y_clean = X_full @ weights + bias
     y_full = y_clean + rng.normal(scale=noise_sigma, size=y_clean.shape)
-    return X_full[:train_size], y_full[:train_size], X_full[train_size:], y_full[train_size:]
+    return (
+        X_full[:train_size],
+        y_full[:train_size],
+        X_full[train_size : train_size + val_size],
+        y_full[train_size : train_size + val_size],
+        X_full[train_size + val_size :],
+        y_full[train_size + val_size :],
+    )
 
 
 def test_torch_ann_beats_mean_predictor_on_noisy_linear_map(tmp_path: Path) -> None:
     """The ANN trained for a few epochs must clearly beat the constant-mean baseline."""
 
-    X_train, y_train, X_test, y_test = _random_affine_dataset(
+    X_train, y_train, X_val, y_val, X_test, y_test = _random_affine_dataset(
         sample_count=400, feature_dim=8, label_dim=3, noise_sigma=0.3, seed=11
     )
 
     model = TorchANNModel(hidden_layers=[32, 32], learning_rate=1e-2, epochs=40, patience=10, seed=11, batch_size=64)
     result = model.fit_predict(
-        X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test, model_dir=tmp_path / "ann"
+        X_train=X_train, y_train=y_train,
+        X_val=X_val, y_val=y_val,
+        X_test=X_test, y_test=y_test,
+        model_dir=tmp_path / "ann",
     )
 
     assert result.status == "completed", f"ANN should train on this dataset; status={result.status} reason={result.reason}"
@@ -70,13 +88,18 @@ def test_torch_ann_beats_mean_predictor_on_noisy_linear_map(tmp_path: Path) -> N
 def test_torch_ann_persists_weights_and_loss_history(tmp_path: Path) -> None:
     """Operator must be able to load the saved ANN state and inspect convergence."""
 
-    X_train, y_train, X_test, y_test = _random_affine_dataset(
+    X_train, y_train, X_val, y_val, X_test, y_test = _random_affine_dataset(
         sample_count=200, feature_dim=8, label_dim=3, noise_sigma=0.1, seed=23
     )
 
     model_dir = tmp_path / "ann"
     model = TorchANNModel(hidden_layers=[16, 16], learning_rate=5e-3, epochs=30, patience=10, seed=23, batch_size=32)
-    result = model.fit_predict(X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test, model_dir=model_dir)
+    result = model.fit_predict(
+        X_train=X_train, y_train=y_train,
+        X_val=X_val, y_val=y_val,
+        X_test=X_test, y_test=y_test,
+        model_dir=model_dir,
+    )
 
     assert result.status == "completed"
     ann_model_path = model_dir / "ann_model.pt"
@@ -109,13 +132,18 @@ def test_torch_ann_loss_history_shows_overall_improvement(tmp_path: Path) -> Non
     learning rate is so high the loss never settles.
     """
 
-    X_train, y_train, X_test, y_test = _random_affine_dataset(
+    X_train, y_train, X_val, y_val, X_test, y_test = _random_affine_dataset(
         sample_count=400, feature_dim=8, label_dim=3, noise_sigma=0.2, seed=37
     )
 
     model_dir = tmp_path / "ann"
     model = TorchANNModel(hidden_layers=[32, 32], learning_rate=5e-3, epochs=40, patience=40, seed=37, batch_size=64)
-    result = model.fit_predict(X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test, model_dir=model_dir)
+    result = model.fit_predict(
+        X_train=X_train, y_train=y_train,
+        X_val=X_val, y_val=y_val,
+        X_test=X_test, y_test=y_test,
+        model_dir=model_dir,
+    )
 
     assert result.status == "completed"
     history = result.loss_history

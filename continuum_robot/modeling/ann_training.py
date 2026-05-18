@@ -1432,8 +1432,53 @@ def merge_ann_sweep_architectures(
     return out
 
 
+def select_best_sweep_row_by_validation_position_rmse(rows: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
+    """Pick the sweep row with lowest ``validation_position_rmse_xyz_mm`` (then ``validation_loss_mean`` tiebreaker).
+
+    Architecture/seed selection across a sweep must NOT see the test split,
+    otherwise the reported test number is implicitly the maximum of the
+    sweep's test-split fits and is overfit to that holdout. This selector
+    uses validation metrics only, so test stays a genuine held-out report.
+
+    Falls back gracefully when the validation columns are absent (e.g. when
+    reading legacy sweep summaries written before validation metrics were
+    emitted into the row): in that case the function returns ``None`` rather
+    than picking an arbitrary row, so the caller can detect the legacy
+    summary and refuse to claim a "best" model.
+    """
+    best: dict[str, Any] | None = None
+    best_key: tuple[float, float] | None = None
+    for row in rows:
+        xyz = row.get("validation_position_rmse_xyz_mm")
+        if xyz is not None and isinstance(xyz, (int, float)) and not math.isnan(float(xyz)):
+            tiebreaker = row.get("validation_loss_mean")
+            if tiebreaker is None or (isinstance(tiebreaker, float) and math.isnan(float(tiebreaker))):
+                tiebreaker_value = 1e308
+            else:
+                tiebreaker_value = float(tiebreaker)
+            key = (float(xyz), tiebreaker_value)
+        else:
+            val_loss = row.get("validation_loss_mean")
+            if val_loss is None or (isinstance(val_loss, float) and math.isnan(float(val_loss))):
+                continue
+            key = (1e308, float(val_loss))
+        if best is None or key < (best_key or (1e308, 1e308)):
+            best = dict(row)
+            best_key = key
+    return best
+
+
 def select_best_sweep_row_by_test_position_rmse(rows: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
-    """Pick the sweep row with lowest ``test_position_rmse_xyz_mm`` when present, else lowest ``test_loss``."""
+    """Deprecated -- kept only for backwards-compatible reads of legacy sweep summaries.
+
+    Selecting across a sweep by the test split is what makes the resulting
+    test number invalid as a thesis-grade prediction-accuracy report. New
+    code paths must call :func:`select_best_sweep_row_by_validation_position_rmse`
+    instead. This function survives only so loaders of pre-existing sweep
+    artifacts that lack the validation columns can still identify "the row
+    the old code would have chosen" for direct comparison; it must not be
+    used for new sweeps.
+    """
     best: dict[str, Any] | None = None
     best_key: tuple[float, float] | None = None
     for row in rows:
@@ -1961,22 +2006,34 @@ def _write_model_comparison_report_png(path: Path, rows: Sequence[dict[str, Any]
     except Exception:
         return False
     labels: list[str] = []
-    values: list[float] = []
+    val_values: list[float] = []
+    test_values: list[float] = []
     for row in rows:
         labels.append(str(row.get("model_label") or row.get("model_key") or "?"))
-        raw = row.get("test_position_rmse_xyz_mm")
-        if raw is None:
-            values.append(float("nan"))
-        else:
-            values.append(float(raw))
-    if not labels or not any(not math.isnan(v) for v in values):
+        raw_val = row.get("validation_position_rmse_xyz_mm")
+        val_values.append(float("nan") if raw_val is None else float(raw_val))
+        raw_test = row.get("test_position_rmse_xyz_mm")
+        test_values.append(float("nan") if raw_test is None else float(raw_test))
+    if not labels or not any(
+        not math.isnan(v) for v in (*val_values, *test_values)
+    ):
         return False
-    fig, ax = plt.subplots(figsize=(7.2, 4.5))
-    plot_vals = [0.0 if math.isnan(v) else v for v in values]
-    ax.bar(range(len(labels)), plot_vals, color=color("measured"))
-    ax.set_xticks(range(len(labels)))
+    fig, ax = plt.subplots(figsize=(8.4, 4.6))
+    indices = np.arange(len(labels), dtype=float)
+    bar_width = 0.38
+    val_plot = [0.0 if math.isnan(v) else v for v in val_values]
+    test_plot = [0.0 if math.isnan(v) else v for v in test_values]
+    ax.bar(indices - bar_width / 2.0, val_plot, width=bar_width, color=color("model"), label="validation (selection)")
+    ax.bar(indices + bar_width / 2.0, test_plot, width=bar_width, color=color("measured"), label="test (held-out report)")
+    ax.set_xticks(indices)
     ax.set_xticklabels(labels, rotation=25, ha="right")
-    style_axes(ax, title="Model sweep — test position RMSE (XYZ)", xlabel="Model", ylabel="mm (RMS of 3D error)")
+    style_axes(
+        ax,
+        title="Model sweep — XYZ RMSE per architecture (validation selects best; test is held-out diagnostic)",
+        xlabel="Model",
+        ylabel="mm (RMS of 3D error)",
+    )
+    ax.legend(loc="upper right")
     fig.tight_layout()
     save_figure(fig, path)
     plt.close(fig)
@@ -2022,16 +2079,24 @@ def _write_model_sweep_summary_artifacts(
         lines.append("")
     if best:
         lines.append(
-            "Best model (lowest test_position_rmse_xyz_mm when available, else test loss): "
+            "Best model (selected by lowest validation_position_rmse_xyz_mm; "
+            "test column reported only for the selected architecture's held-out evaluation): "
             f"{best.get('model_label') or best.get('model_key')} "
             f"| subdir={best.get('artifact_subdir')}"
+        )
+        lines.append(
+            "  val_xyz_rmse_mm="
+            f"{_fmt_number(best.get('validation_position_rmse_xyz_mm'))} "
+            f"test_xyz_rmse_mm={_fmt_number(best.get('test_position_rmse_xyz_mm'))}"
         )
         lines.append("")
     for row in rows:
         lines.append(
-            f"- {row.get('model_label')}: val_loss={_fmt_number(row.get('validation_loss_mean'))} "
-            f"test_loss={_fmt_number(row.get('test_loss'))} "
+            f"- {row.get('model_label')}: "
+            f"val_xyz_rmse_mm={_fmt_number(row.get('validation_position_rmse_xyz_mm'))} "
+            f"val_loss={_fmt_number(row.get('validation_loss_mean'))} "
             f"test_xyz_rmse_mm={_fmt_number(row.get('test_position_rmse_xyz_mm'))} "
+            f"test_loss={_fmt_number(row.get('test_loss'))} "
             f"time_s={_fmt_number(row.get('training_wall_time_s'))}"
         )
     txt_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
@@ -2046,28 +2111,51 @@ def _sweep_summary_row_from_metadata(
     model_label: str,
     artifact_subdir: str,
 ) -> dict[str, Any]:
+    """Project one trained-model metadata dict into a sweep-summary row.
+
+    The row carries BOTH validation-split and test-split position metrics. The
+    sweep-level "best architecture" selector picks by validation; the test
+    metrics are reserved for the FINAL accuracy report on the selected model
+    only, so they never participate in architecture/seed selection. Keeping
+    both in the row makes the sweep CSV/JSON honest and auditable -- the test
+    column is visible per architecture but flagged as diagnostic.
+    """
     training = dict(metadata.get("training", {}) or {})
     evaluation = dict(metadata.get("evaluation", {}) or {})
     val_block = dict(evaluation.get("validation") or {}) if evaluation.get("validation") else {}
     test_block = dict(evaluation.get("test") or {}) if evaluation.get("test") else {}
-    pos_err = dict(test_block.get("position_error_l2_mm") or {})
-    ang = test_block.get("tangent_angular_error_rad")
-    ang_d = dict(ang) if isinstance(ang, dict) else {}
+    test_pos_err = dict(test_block.get("position_error_l2_mm") or {})
+    test_ang = test_block.get("tangent_angular_error_rad")
+    test_ang_d = dict(test_ang) if isinstance(test_ang, dict) else {}
+    val_pos_err = dict(val_block.get("position_error_l2_mm") or {})
+    val_ang = val_block.get("tangent_angular_error_rad")
+    val_ang_d = dict(val_ang) if isinstance(val_ang, dict) else {}
     return {
         "model_key": model_key,
         "model_label": model_label,
         "artifact_subdir": artifact_subdir,
+        # Validation-split metrics (selection criterion).
         "validation_loss_mean": val_block.get("loss_mean"),
+        "validation_position_rmse_xyz_mm": val_block.get("position_rmse_xyz_mm"),
+        "validation_position_rmse_xy_mm": val_block.get("position_rmse_xy_mm"),
+        "validation_position_rmse_z_mm": val_block.get("position_rmse_z_mm"),
+        "validation_position_error_l2_mean_mm": val_pos_err.get("mean"),
+        "validation_position_error_l2_median_mm": val_pos_err.get("median"),
+        "validation_position_error_l2_p95_mm": val_pos_err.get("p95"),
+        "validation_position_error_l2_max_mm": val_pos_err.get("max"),
+        "validation_tangent_angular_error_mean_rad": val_ang_d.get("mean"),
+        "validation_tangent_angular_error_median_rad": val_ang_d.get("median"),
+        # Test-split metrics (held-out accuracy report -- diagnostic only at sweep level).
         "test_loss": training.get("test_loss"),
         "test_position_rmse_xyz_mm": test_block.get("position_rmse_xyz_mm"),
         "test_position_rmse_xy_mm": test_block.get("position_rmse_xy_mm"),
         "test_position_rmse_z_mm": test_block.get("position_rmse_z_mm"),
-        "test_position_error_l2_mean_mm": pos_err.get("mean"),
-        "test_position_error_l2_median_mm": pos_err.get("median"),
-        "test_position_error_l2_p95_mm": pos_err.get("p95"),
-        "test_position_error_l2_max_mm": pos_err.get("max"),
-        "test_tangent_angular_error_mean_rad": ang_d.get("mean"),
-        "test_tangent_angular_error_median_rad": ang_d.get("median"),
+        "test_position_error_l2_mean_mm": test_pos_err.get("mean"),
+        "test_position_error_l2_median_mm": test_pos_err.get("median"),
+        "test_position_error_l2_p95_mm": test_pos_err.get("p95"),
+        "test_position_error_l2_max_mm": test_pos_err.get("max"),
+        "test_tangent_angular_error_mean_rad": test_ang_d.get("mean"),
+        "test_tangent_angular_error_median_rad": test_ang_d.get("median"),
         "training_wall_time_s": training.get("training_wall_time_s"),
         "hidden_layers": list(dict(metadata.get("model", {}) or {}).get("hidden_layers") or []),
     }
@@ -2479,7 +2567,7 @@ def run_model_sweep(
                 )
             )
 
-    best = select_best_sweep_row_by_test_position_rmse(rows)
+    best = select_best_sweep_row_by_validation_position_rmse(rows)
     warnings_t = tuple(warnings_list)
     json_path, csv_path, txt_path, png_path = _write_model_sweep_summary_artifacts(
         sweep_root=sweep_root,

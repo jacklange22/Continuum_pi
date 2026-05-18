@@ -125,16 +125,23 @@ def _build_hybrid_synthetic_dataset(
     residual_scale_mm: float,
     noise_sigma_mm: float,
     seed: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Generate (X_train, y_train, X_test, y_test) where y = mike(X) + residual(X) + noise.
+    n_val: int | None = None,
+) -> tuple[
+    np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+]:
+    """Generate ``(X_train, y_train, X_val, y_val, X_test, y_test)`` where
+    ``y = mike(X) + residual(X) + noise``.
 
     The residual is a smooth multi-axis sinusoidal function of the command
     -- something the ANN can learn but Mike CC cannot model. ``noise_sigma_mm``
     adds independent Gaussian noise to every label coordinate so the test is
-    not perfectly fitted (which would be uninteresting).
+    not perfectly fitted (which would be uninteresting). ``n_val`` defaults
+    to ``max(1, n_test // 2)`` so a small val fold falls out of the same
+    distribution without artificially blowing up the dataset.
     """
     rng = np.random.default_rng(seed)
-    n_total = n_train + n_test
+    val_size = max(1, int(n_val if n_val is not None else max(1, n_test // 2)))
+    n_total = n_train + val_size + n_test
     # Commands span ±2 mm displacement across all 8 servos; not all axes need
     # to be excited but mixing both segments gives Mike CC a non-trivial pose.
     commands = rng.uniform(-2.0, 2.0, size=(n_total, 8))
@@ -150,7 +157,14 @@ def _build_hybrid_synthetic_dataset(
     )
     noise = rng.normal(scale=noise_sigma_mm, size=mike_distal.shape)
     y = mike_distal + residual + noise
-    return commands[:n_train], y[:n_train], commands[n_train:], y[n_train:]
+    return (
+        commands[:n_train],
+        y[:n_train],
+        commands[n_train : n_train + val_size],
+        y[n_train : n_train + val_size],
+        commands[n_train + val_size :],
+        y[n_train + val_size :],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -162,19 +176,23 @@ class TestHybridResidualModel:
     def test_hybrid_beats_mike_alone_on_residual_dataset(self, tmp_path: Path) -> None:
         config = _validated_mike_cc_config()
         label_metadata = _label_metadata_distal_only()
-        X_train, y_train, X_test, y_test = _build_hybrid_synthetic_dataset(
+        X_train, y_train, X_val, y_val, X_test, y_test = _build_hybrid_synthetic_dataset(
             n_train=240, n_test=60, config=config, residual_scale_mm=2.0, noise_sigma_mm=0.05, seed=101
         )
 
         mike_only = MikeConstantCurvatureModel(config=config).fit_predict(
-            X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test,
+            X_train=X_train, y_train=y_train,
+            X_val=X_val, y_val=y_val,
+            X_test=X_test, y_test=y_test,
             model_dir=tmp_path / "mike", label_metadata=label_metadata,
         )
         hybrid = HybridResidualModel(
             config=config, hidden_layers=[64, 64], learning_rate=5e-3,
             epochs=200, patience=30, seed=11, batch_size=64,
         ).fit_predict(
-            X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test,
+            X_train=X_train, y_train=y_train,
+            X_val=X_val, y_val=y_val,
+            X_test=X_test, y_test=y_test,
             model_dir=tmp_path / "hybrid", label_metadata=label_metadata,
         )
 
@@ -202,19 +220,23 @@ class TestHybridResidualModel:
         """
         config = _validated_mike_cc_config()
         label_metadata = _label_metadata_distal_only()
-        X_train, y_train, X_test, y_test = _build_hybrid_synthetic_dataset(
+        X_train, y_train, X_val, y_val, X_test, y_test = _build_hybrid_synthetic_dataset(
             n_train=80, n_test=40, config=config, residual_scale_mm=1.0, noise_sigma_mm=0.05, seed=102
         )
 
         ann_only = TorchANNModel(hidden_layers=[64, 64], learning_rate=5e-3, epochs=200, patience=30, seed=13, batch_size=32).fit_predict(
-            X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test,
+            X_train=X_train, y_train=y_train,
+            X_val=X_val, y_val=y_val,
+            X_test=X_test, y_test=y_test,
             model_dir=tmp_path / "ann", label_metadata=label_metadata,
         )
         hybrid = HybridResidualModel(
             config=config, hidden_layers=[64, 64], learning_rate=5e-3,
             epochs=200, patience=30, seed=13, batch_size=32,
         ).fit_predict(
-            X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test,
+            X_train=X_train, y_train=y_train,
+            X_val=X_val, y_val=y_val,
+            X_test=X_test, y_test=y_test,
             model_dir=tmp_path / "hybrid", label_metadata=label_metadata,
         )
 
@@ -230,19 +252,23 @@ class TestHybridResidualModel:
         """Sanity: when y = mike(X) (no residual), Hybrid should not be much worse than Mike."""
         config = _validated_mike_cc_config()
         label_metadata = _label_metadata_distal_only()
-        X_train, y_train, X_test, y_test = _build_hybrid_synthetic_dataset(
+        X_train, y_train, X_val, y_val, X_test, y_test = _build_hybrid_synthetic_dataset(
             n_train=120, n_test=40, config=config, residual_scale_mm=0.0, noise_sigma_mm=0.01, seed=103
         )
 
         mike_only = MikeConstantCurvatureModel(config=config).fit_predict(
-            X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test,
+            X_train=X_train, y_train=y_train,
+            X_val=X_val, y_val=y_val,
+            X_test=X_test, y_test=y_test,
             model_dir=tmp_path / "mike", label_metadata=label_metadata,
         )
         hybrid = HybridResidualModel(
             config=config, hidden_layers=[32, 32], learning_rate=1e-3,
             epochs=120, patience=20, seed=14, batch_size=32,
         ).fit_predict(
-            X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test,
+            X_train=X_train, y_train=y_train,
+            X_val=X_val, y_val=y_val,
+            X_test=X_test, y_test=y_test,
             model_dir=tmp_path / "hybrid", label_metadata=label_metadata,
         )
 
@@ -259,14 +285,16 @@ class TestHybridResidualModel:
     def test_hybrid_persists_breakdown_and_loss_history(self, tmp_path: Path) -> None:
         config = _validated_mike_cc_config()
         label_metadata = _label_metadata_distal_only()
-        X_train, y_train, X_test, y_test = _build_hybrid_synthetic_dataset(
+        X_train, y_train, X_val, y_val, X_test, y_test = _build_hybrid_synthetic_dataset(
             n_train=60, n_test=24, config=config, residual_scale_mm=0.6, noise_sigma_mm=0.05, seed=104
         )
         model_dir = tmp_path / "hybrid"
         result = HybridResidualModel(
             config=config, hidden_layers=[32, 32], epochs=40, patience=15, seed=15, batch_size=24,
         ).fit_predict(
-            X_train=X_train, y_train=y_train, X_test=X_test, y_test=y_test,
+            X_train=X_train, y_train=y_train,
+            X_val=X_val, y_val=y_val,
+            X_test=X_test, y_test=y_test,
             model_dir=model_dir, label_metadata=label_metadata,
         )
 
@@ -277,9 +305,16 @@ class TestHybridResidualModel:
         assert (model_dir / "hybrid_mike_predictions_test.npy").exists()
         assert (model_dir / "hybrid_ann_residual_predictions_test.npy").exists()
         breakdown = json.loads((model_dir / "hybrid_breakdown.json").read_text(encoding="utf-8"))
+        # breakdown shape is now per-component AND per-fold; the test split
+        # exists for all three components, the val split exists for mike_only
+        # and hybrid (ann_residual_only is reported on the test fold only).
         for key in ("mike_only", "ann_residual_only", "hybrid"):
             assert key in breakdown
-            assert "xyz_rmse_mm" in breakdown[key]
+            assert "test" in breakdown[key]
+            assert "xyz_rmse_mm" in breakdown[key]["test"]
+        for key in ("mike_only", "hybrid"):
+            assert "validation" in breakdown[key]
+            assert "xyz_rmse_mm" in breakdown[key]["validation"]
         payload = torch.load(model_dir / "hybrid_residual_model.pt", map_location="cpu", weights_only=False)
         assert payload["training_target"] == "mike_cc_residual"
         assert payload["input_dim"] == X_train.shape[1]
@@ -290,6 +325,8 @@ class TestHybridResidualModel:
         result = HybridResidualModel(config={}, hidden_layers=[16, 16], epochs=10, patience=5, seed=0, batch_size=8).fit_predict(
             X_train=np.zeros((4, 8), dtype=float),
             y_train=np.zeros((4, 3), dtype=float),
+            X_val=np.zeros((2, 8), dtype=float),
+            y_val=np.zeros((2, 3), dtype=float),
             X_test=np.zeros((2, 8), dtype=float),
             y_test=np.zeros((2, 3), dtype=float),
             model_dir=tmp_path / "hybrid",
@@ -307,6 +344,8 @@ class TestHybridResidualModel:
             HybridResidualModel(config=config).fit_predict(
                 X_train=np.zeros((4, 8), dtype=float),
                 y_train=np.zeros((4, 3), dtype=float),
+                X_val=np.zeros((2, 8), dtype=float),
+                y_val=np.zeros((2, 3), dtype=float),
                 X_test=np.zeros((2, 8), dtype=float),
                 y_test=np.zeros((2, 3), dtype=float),
                 model_dir=tmp_path / "hybrid",
@@ -691,10 +730,13 @@ class TestHybridEndToEndPipeline:
         breakdown_path = result.output_dir / "models" / "hybrid_residual" / "hybrid_breakdown.json"
         assert breakdown_path.exists()
         breakdown = json.loads(breakdown_path.read_text(encoding="utf-8"))
+        # Per-component AND per-fold shape: test exists for all three, val
+        # exists for mike_only and hybrid.
         for key in ("mike_only", "ann_residual_only", "hybrid"):
-            assert "xyz_rmse_mm" in breakdown[key]
-        # On this synthetic dataset Hybrid should beat Mike-only on XYZ RMSE.
-        assert float(breakdown["hybrid"]["xyz_rmse_mm"]) <= float(breakdown["mike_only"]["xyz_rmse_mm"])
+            assert "test" in breakdown[key]
+            assert "xyz_rmse_mm" in breakdown[key]["test"]
+        # On this synthetic dataset Hybrid should beat Mike-only on test XYZ RMSE.
+        assert float(breakdown["hybrid"]["test"]["xyz_rmse_mm"]) <= float(breakdown["mike_only"]["test"]["xyz_rmse_mm"])
 
     def test_run_two_segment_modeling_skips_hybrid_figures_when_mike_unavailable(self, tmp_path: Path) -> None:
         """No physics_models config -> Mike CC reports unavailable, Hybrid skips, no hybrid figures."""
