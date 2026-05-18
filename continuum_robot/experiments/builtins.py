@@ -29,6 +29,7 @@ from continuum_robot.experiments.pretension_validation_outputs import write_pret
 from continuum_robot.experiments.penprobe_chasing_demo import PenprobeChasingDemoExperiment
 from continuum_robot.experiments.servo_tracker_sync_outputs import write_servo_tracker_sync_outputs
 from continuum_robot.experiments.single_segment_repeatability import register_single_segment_repeatability
+from continuum_robot.experiments.workspace_repeatability_map import register_workspace_repeatability_map
 from continuum_robot.experiments.tracker_timing_outputs import write_tracker_timing_outputs
 from continuum_robot.experiments.two_segment_startup_validation import (
     TwoSegmentStartupValidationExperiment,
@@ -10705,6 +10706,7 @@ def register_builtin_experiments(registry) -> None:
         factory=ServoTrackerSyncValidationExperiment.from_dict,
     )
     register_single_segment_repeatability(registry)
+    register_workspace_repeatability_map(registry)
     registry.register(
         name=PretensionValidationExperiment.name,
         title="Pretension Validation",

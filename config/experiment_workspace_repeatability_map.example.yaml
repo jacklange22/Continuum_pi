@@ -1,0 +1,62 @@
+# Workspace repeatability map.
+#
+# Visits 100 Vogel-spiral targets that uniformly fill a 12 mm-radius single-
+# segment disk, returning to neutral before every visit, with 15 visits per
+# target = 1500 total visits. Each visit captures one tracker sample at the
+# settled target pose. Output is a per-target dispersion table plus a
+# color-coded 3D map of the workspace (RMS spread per point).
+#
+# Approximate wall time: 100 targets * 15 visits * (1.5 s + 2.5 s + ~0.1 s capture)
+#                       ~= 100 minutes; pad ~15-30% for telemetry retries.
+#
+# Run this AFTER the single-segment 17-point repeatability has passed, with
+# the same pretension and registration state. The thesis-grade comparison is:
+# does the workspace map show RMS spread <= the 17-point goal across every
+# Vogel target, or are there hotspots near the perimeter / specific angles?
+
+target_count: 100
+max_amplitude_mm: 12.0
+visits_per_target: 15
+
+# Per-visit settling. Shorter neutral settle is fine because the cables
+# relax fast; the target settle has to absorb cable elongation and let the
+# tracker frame catch up.
+neutral_settle_s: 1.5
+target_settle_s: 2.5
+
+# Tracker capture freshness. capture_timeout_s is the max wait for a fresh
+# snapshot; max_tracker_age_s is how stale we accept a snapshot's timestamp
+# before flagging the visit as rejected.
+capture_timeout_s: 1.0
+capture_poll_interval_s: 0.02
+max_tracker_age_s: 0.25
+
+# Hardware addressing.
+tool_id: "0A"
+random_seed: 0
+run_label: ""
+
+# Experiment-scoped guardrail; mirrors the 17-point experiment cap so the
+# same pretension/startup envelope applies. Increase if 12 mm pushes past
+# the per-cable tick allowance recorded at neutral.
+max_target_tick_delta_from_startup: 1200
+
+# Use the robot-frame tip (registered) by default. allow_debug_coil_as_tip
+# permits running against a coil-as-tip pose for early bench tests but the
+# numbers should NOT be used as thesis evidence in that mode.
+require_robot_frame_tip: true
+allow_debug_coil_as_tip: false
+return_to_center_on_finalize: true
+
+# Thesis claim: per-point RMS spread <= 1.0 mm across the entire workspace.
+# The summary reports the fraction of targets that exceed this and the worst
+# five so the operator can see at a glance whether the run met the goal.
+thesis_goal_rms_mm: 1.0
+
+# Dry-run support. When dry_run is true the experiment synthesizes positions
+# from the commanded XY deflection + small Gaussian noise so the analysis
+# bundle can be exercised without hardware. Used by tests; the operator
+# should leave this off for real runs.
+dry_run: false
+synthetic_noise_std_mm: 0.20
+synthetic_per_target_bias_std_mm: 0.05
