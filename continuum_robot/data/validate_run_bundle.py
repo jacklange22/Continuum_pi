@@ -24,8 +24,9 @@ EXPECTED_REPORT_FIGURES = {
         "thesis_02_within_vs_cross_run_quality.png",
     ],
     "single_segment_repeatability": [
-        "repeatability_clusters_report.png",
-        "repeatability_error_by_target_report.png",
+        "thesis_01_target_returns_3d.png",
+        "thesis_02_per_target_rms_bar.png",
+        "thesis_03_path_dependence_vs_total.png",
     ],
     "pretension_validation": [
         "pretension_tip_xy_path_report.png",

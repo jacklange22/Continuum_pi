@@ -52,8 +52,9 @@ def _write_run(root: Path, experiment: str, name: str, *, trust: str = "thesis_t
         (run_dir / "thesis_01_workspace_coverage_3d.png").write_bytes(b"\x89PNG\r\n\x1a\n")
         (run_dir / "thesis_02_command_and_workspace_2d.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     elif experiment == "single_segment_repeatability":
-        (run_dir / "repeatability_clusters_report.png").write_bytes(b"\x89PNG\r\n\x1a\n")
-        (run_dir / "repeatability_error_by_target_report.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        (run_dir / "thesis_01_target_returns_3d.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        (run_dir / "thesis_02_per_target_rms_bar.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        (run_dir / "thesis_03_path_dependence_vs_total.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     (run_dir / "metrics.csv").write_text("metric,value\nrmse,0.42\n", encoding="utf-8")
     return run_dir
 

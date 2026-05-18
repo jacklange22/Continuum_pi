@@ -1527,23 +1527,17 @@ class ExperimentController:
             )
 
             metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
-            report_clusters_path = bundle.paths.output_dir / "repeatability_clusters_report.png"
-            report_error_path = bundle.paths.output_dir / "repeatability_error_by_target_report.png"
-            report_group_path = bundle.paths.output_dir / "repeatability_group_summary_report.png"
-            clusters_path = bundle.paths.output_dir / "repeatability_clusters.png"
-            rmse_path = bundle.paths.output_dir / "repeatability_rmse_summary.png"
-            path_path = bundle.paths.output_dir / "repeatability_path_dependence.png"
-            summary_text_path = bundle.paths.output_dir / "repeatability_summary.txt"
+            thesis_01_path = bundle.paths.output_dir / "thesis_01_target_returns_3d.png"
+            thesis_02_path = bundle.paths.output_dir / "thesis_02_per_target_rms_bar.png"
+            thesis_03_path = bundle.paths.output_dir / "thesis_03_path_dependence_vs_total.png"
+            debug_path = bundle.paths.output_dir / "debug.json"
             pairs.extend(build_single_segment_repeatability_summary_pairs(metrics=metrics))
             pairs.extend(
                 [
-                    ("Clusters Report", str(report_clusters_path) if report_clusters_path.exists() else "not written"),
-                    ("Error Report", str(report_error_path) if report_error_path.exists() else "not written"),
-                    ("Group Report", str(report_group_path) if report_group_path.exists() else "not written"),
-                    ("Clusters Plot", str(clusters_path) if clusters_path.exists() else "not written"),
-                    ("RMSE Plot", str(rmse_path) if rmse_path.exists() else "not written"),
-                    ("Path Plot", str(path_path) if path_path.exists() else "not written"),
-                    ("Summary Note", str(summary_text_path) if summary_text_path.exists() else "not written"),
+                    ("Target Returns (3D)", str(thesis_01_path) if thesis_01_path.exists() else "not written"),
+                    ("Per-Target RMS Bar", str(thesis_02_path) if thesis_02_path.exists() else "not written"),
+                    ("Path-Dependence", str(thesis_03_path) if thesis_03_path.exists() else "not written"),
+                    ("Debug JSON", str(debug_path) if debug_path.exists() else "not written"),
                 ]
             )
             return pairs

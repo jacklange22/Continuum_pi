@@ -98,92 +98,25 @@ def test_legacy_revisit_sequence_visits_every_other_target_once_per_target() -> 
         assert all(visit.approach_target.target_index != desired_index for visit in rows)
 
 
-def test_repeatability_report_figures_use_thesis_labels_and_units(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_repeatability_thesis_02_per_target_rms_bar_writes_valid_png(tmp_path: Path) -> None:
     if importlib.util.find_spec("matplotlib") is None:
-        pytest.skip("matplotlib is required for report figure rendering")
+        pytest.skip("matplotlib is required for thesis figure rendering")
     metrics = {
-        "target_count": 3,
-        "valid_repeat_sample_count": 6,
-        "overall_repeatability_rms_mm": 0.42,
-        "overall_max_deviation_mm": 0.91,
         "thesis_goal_rms_mm": 1.0,
+        "overall_repeatability_rms_mm": 0.45,
+        "thesis_goal_pass": True,
         "per_target_metrics": {
-            "0": {
-                "target_index": 0,
-                "label": "Center",
-                "ring": "center",
-                "centroid_mm": [0.0, 0.0, 10.0],
-                "spread_rms_mm": 0.20,
-                "max_deviation_mm": 0.35,
-            },
-            "1": {
-                "target_index": 1,
-                "label": "Inner 0",
-                "ring": "inner",
-                "centroid_mm": [4.0, 0.1, 10.0],
-                "spread_rms_mm": 0.45,
-                "max_deviation_mm": 0.70,
-            },
-            "9": {
-                "target_index": 9,
-                "label": "Outer 0",
-                "ring": "outer",
-                "centroid_mm": [8.0, -0.2, 10.0],
-                "spread_rms_mm": 0.62,
-                "max_deviation_mm": 0.91,
-            },
-        },
-        "group_metrics": {
-            "ring": {
-                "center": {"mean_target_rms_mm": 0.20},
-                "inner": {"mean_target_rms_mm": 0.45},
-                "outer": {"mean_target_rms_mm": 0.62},
-            }
+            "0": {"target_index": 0, "label": "Center", "ring": "center", "spread_rms_mm": 0.20},
+            "1": {"target_index": 1, "label": "Inner 0", "ring": "inner", "spread_rms_mm": 0.45},
+            "9": {"target_index": 9, "label": "Outer 0", "ring": "outer", "spread_rms_mm": 0.62},
         },
     }
-    captured: dict[str, list[tuple[str, str, str]]] = {}
+    output = tmp_path / "thesis_02_per_target_rms_bar.png"
 
-    def _capture_save(fig, path: Path, *, quality: str | None = None) -> Path:
-        _ = quality
-        captured[Path(path).name] = [
-            (ax.get_title(loc="left") or ax.get_title(), ax.get_xlabel(), ax.get_ylabel())
-            for ax in fig.axes
-        ]
-        Path(path).write_bytes(b"png")
-        import_matplotlib().close(fig)
-        return Path(path)
+    repeatability_outputs._write_repeatability_thesis_02_per_target_rms_bar(path=output, metrics=metrics)
 
-    monkeypatch.setattr(repeatability_outputs, "save_figure", _capture_save)
-
-    repeatability_outputs._write_cluster_report_figure(
-        clusters_path=tmp_path / "repeatability_clusters_report.png",
-        samples=[],
-        metrics=metrics,
-    )
-    repeatability_outputs._write_error_by_target_report_figure(
-        path=tmp_path / "repeatability_error_by_target_report.png",
-        metrics=metrics,
-    )
-    repeatability_outputs._write_group_summary_report_figure(
-        path=tmp_path / "repeatability_group_summary_report.png",
-        metrics=metrics,
-    )
-
-    assert captured["repeatability_clusters_report.png"][0] == (
-        "Single-Segment Repeatability",
-        "Robot-frame X position (mm)",
-        "Robot-frame Y position (mm)",
-    )
-    assert captured["repeatability_error_by_target_report.png"][0] == (
-        "Repeatability Error by Target",
-        "Target",
-        "Repeatability error (mm)",
-    )
-    assert captured["repeatability_group_summary_report.png"][0] == (
-        "Repeatability by Target Group",
-        "Target group",
-        "Mean repeatability error (mm)",
-    )
+    assert output.exists()
+    assert output.read_bytes().startswith(b"\x89PNG")
 
 
 def test_repeatability_metrics_use_repeat_captures_and_robot_frame() -> None:
@@ -798,20 +731,27 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     assert result.success
     assert result.sample_count == LEGACY_CAPTURE_COUNT
     assert result.paths.output_dir.parent.name == "single_segment_repeatability"
-    assert (result.paths.output_dir / "repeatability_summary.txt").exists()
-    assert (result.paths.output_dir / "repeatability_clusters_report.png").exists()
-    assert (result.paths.output_dir / "repeatability_error_by_target_report.png").exists()
-    assert (result.paths.output_dir / "repeatability_group_summary_report.png").exists()
-    assert (result.paths.output_dir / "repeatability_clusters.png").exists()
-    assert (result.paths.output_dir / "tip_pos_clusters.png").exists()
-    assert (result.paths.output_dir / "repeatability_legacy_style_comparison.csv").exists()
-    assert (result.paths.output_dir / "repeatability_rmse_summary.png").exists()
-    assert (result.paths.output_dir / "repeatability_path_dependence.png").exists()
-    assert (result.paths.output_dir / "repeatability_debug_samples.csv").exists()
-    assert (result.paths.output_dir / "repeatability_commanded_vs_measured_tip.png").exists()
-    assert (result.paths.output_dir / "repeatability_acceptance_timeline.png").exists()
-    assert (result.paths.output_dir / "repeatability_servo_goal_ticks_vs_tip.png").exists()
-    assert (result.paths.output_dir / "repeatability_provenance_summary.png").exists()
+    assert (result.paths.output_dir / "debug.json").exists()
+    assert (result.paths.output_dir / "thesis_01_target_returns_3d.png").exists()
+    assert (result.paths.output_dir / "thesis_02_per_target_rms_bar.png").exists()
+    assert (result.paths.output_dir / "thesis_03_path_dependence_vs_total.png").exists()
+    for removed in [
+        "repeatability_summary.txt",
+        "repeatability_clusters_report.png",
+        "repeatability_error_by_target_report.png",
+        "repeatability_group_summary_report.png",
+        "repeatability_clusters.png",
+        "tip_pos_clusters.png",
+        "repeatability_legacy_style_comparison.csv",
+        "repeatability_rmse_summary.png",
+        "repeatability_path_dependence.png",
+        "repeatability_debug_samples.csv",
+        "repeatability_commanded_vs_measured_tip.png",
+        "repeatability_acceptance_timeline.png",
+        "repeatability_servo_goal_ticks_vs_tip.png",
+        "repeatability_provenance_summary.png",
+    ]:
+        assert not (result.paths.output_dir / removed).exists(), f"deprecated repeatability artifact should be gone: {removed}"
     assert result.summary.experiment_metrics["valid_repeat_sample_count"] == LEGACY_VISIT_COUNT
     assert result.summary.status == "success"
     assert result.summary.experiment_metrics["run_validity"]["thesis_valid_run"] is True
@@ -850,10 +790,14 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     assert accepted_capture["extra"]["raw_tracker_tool_pose"]["translation_mm"] == [1.0, 2.0, 3.0]
     assert accepted_capture["extra"]["robot_frame_tip_pose_used"]["translation_mm"] == [1.0, 2.0, 3.0]
     assert accepted_capture["extra"]["accept_reject_reason"] == "ok"
-    csv_text = (result.paths.output_dir / "repeatability_legacy_style_comparison.csv").read_text(encoding="utf-8")
-    assert "legacy_style" in csv_text
-    assert "thesis_strict" in csv_text
-    assert "XY_RMSE_mm" in csv_text
+    # legacy_style_comparison content moved from CSV into debug.json.
+    debug_payload = json.loads((result.paths.output_dir / "debug.json").read_text(encoding="utf-8"))
+    assert debug_payload["experiment_name"] == "single_segment_repeatability"
+    assert debug_payload["legacy_style_comparison"]["analysis_mode"] == "legacy_style"
+    assert "per_target" in debug_payload["legacy_style_comparison"]
+    assert "thesis_goal_pass" in debug_payload
+    assert "per_target_metrics" in debug_payload
+    assert "path_dependence_by_approach" in debug_payload
 
 
 def test_coil_as_tip_repeatability_run_is_labeled_thesis_trusted(tmp_path: Path) -> None:

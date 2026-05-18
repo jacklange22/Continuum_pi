@@ -48,8 +48,9 @@ def _write_run(root: Path, *, review_status: str | None = None, mock: bool = Fal
     }
     (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
-    (run_dir / "repeatability_clusters_report.png").write_bytes(b"\x89PNG\r\n\x1a\n")
-    (run_dir / "repeatability_error_by_target_report.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (run_dir / "thesis_01_target_returns_3d.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (run_dir / "thesis_02_per_target_rms_bar.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (run_dir / "thesis_03_path_dependence_vs_total.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     if review_status:
         (run_dir / "run_review.json").write_text(
             json.dumps({"review_status": review_status, "include_in_evidence_index": review_status == "thesis_candidate"}),
