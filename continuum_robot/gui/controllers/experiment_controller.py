@@ -1551,21 +1551,21 @@ class ExperimentController:
             return pairs
         if bundle_experiment_name == "workspace_repeatability_map":
             from continuum_robot.experiments.workspace_repeatability_map_outputs import (
-                AXIS_STDDEV_PNG,
                 PER_TARGET_CSV,
-                SCATTER_3D_PNG,
                 SUMMARY_JSON,
+                THESIS_01_PNG,
+                THESIS_02_PNG,
+                THESIS_03_PNG,
                 VISITS_JSONL,
-                XY_HEATMAP_PNG,
             )
 
             metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
             summary_block = metrics.get("workspace_summary") if isinstance(metrics, dict) else {}
             captured = int(metrics.get("captured_visit_count") or 0)
             rejected = int(metrics.get("rejected_visit_count") or 0)
-            scatter_path = bundle.paths.output_dir / SCATTER_3D_PNG
-            xy_path = bundle.paths.output_dir / XY_HEATMAP_PNG
-            stddev_path = bundle.paths.output_dir / AXIS_STDDEV_PNG
+            thesis_01_path = bundle.paths.output_dir / THESIS_01_PNG
+            thesis_02_path = bundle.paths.output_dir / THESIS_02_PNG
+            thesis_03_path = bundle.paths.output_dir / THESIS_03_PNG
             per_target_path = bundle.paths.output_dir / PER_TARGET_CSV
             visits_path = bundle.paths.output_dir / VISITS_JSONL
             summary_path = bundle.paths.output_dir / SUMMARY_JSON
@@ -1578,6 +1578,7 @@ class ExperimentController:
             if isinstance(summary_block, dict):
                 for label_key, metric_key in (
                     ("Workspace RMS mean", "workspace_rms_mean_mm"),
+                    ("Workspace RMS median", "workspace_rms_median_mm"),
                     ("Workspace RMS p95", "workspace_rms_p95_mm"),
                     ("Workspace RMS max", "workspace_rms_max_mm"),
                 ):
@@ -1587,11 +1588,25 @@ class ExperimentController:
                             pairs.append((label_key, f"{float(value):.3f} mm"))
                         except (TypeError, ValueError):
                             pass
+                worst = summary_block.get("worst_targets") if isinstance(summary_block, dict) else None
+                if isinstance(worst, list) and worst:
+                    worst_top = worst[0]
+                    if isinstance(worst_top, dict) and worst_top.get("rms_spread_mm") is not None:
+                        try:
+                            pairs.append(
+                                (
+                                    "Worst Target",
+                                    f"{worst_top.get('target_label', '?')} "
+                                    f"({float(worst_top['rms_spread_mm']):.3f} mm)",
+                                )
+                            )
+                        except (TypeError, ValueError):
+                            pass
             pairs.extend(
                 [
-                    ("3D Repeatability Map", str(scatter_path) if scatter_path.exists() else "not written"),
-                    ("XY Heatmap", str(xy_path) if xy_path.exists() else "not written"),
-                    ("Per-Axis Stddev Bars", str(stddev_path) if stddev_path.exists() else "not written"),
+                    ("Workspace RMS 3D", str(thesis_01_path) if thesis_01_path.exists() else "not written"),
+                    ("Workspace RMS Map (top-down)", str(thesis_02_path) if thesis_02_path.exists() else "not written"),
+                    ("RMS vs Amplitude", str(thesis_03_path) if thesis_03_path.exists() else "not written"),
                     ("Per-Target CSV", str(per_target_path) if per_target_path.exists() else "not written"),
                     ("Per-Visit JSONL", str(visits_path) if visits_path.exists() else "not written"),
                     ("Workspace Summary", str(summary_path) if summary_path.exists() else "not written"),

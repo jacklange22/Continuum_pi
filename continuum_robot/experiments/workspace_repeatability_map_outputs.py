@@ -2,22 +2,29 @@
 
 Consumes the per-visit timeseries samples emitted by
 :class:`continuum_robot.experiments.workspace_repeatability_map.WorkspaceRepeatabilityMapExperiment`
-and produces the analysis artifacts the operator wants:
+and produces three thesis-style figures that match the existing
+``thesis_NN_*.png`` naming and visual style used by
+``modeling_dataset_outputs.py`` and ``single_segment_repeatability_outputs.py``:
 
-* ``workspace_map_per_target.csv``    -- one row per target: centroid xyz,
-  RMS spread, per-axis stddev, max-of-15 deviation, visit count.
-* ``workspace_map_visits.jsonl``      -- one row per visit: target index,
-  cycle, visit-in-cycle, raw position, accepted/rejected.
-* ``workspace_map_summary.json``      -- workspace-wide metrics: mean RMS,
-  max RMS, p95 RMS, plus the worst-N target list.
-* ``workspace_map_3d_report.png``     -- 3D scatter, color = RMS spread.
-* ``workspace_map_xy_heatmap_report.png`` -- top-down XY view, same colormap.
-* ``workspace_map_axis_stddev_report.png`` -- per-target stacked bars of
-  the X/Y/Z standard deviations sorted by RMS spread.
+* ``thesis_01_workspace_rms_3d.png`` -- 3D centroid scatter, color = per-target
+  RMS spread (mm). Cubic XYZ bounding box so the disk reads as a disk and Z-axis
+  noise does not get auto-stretched.
+* ``thesis_02_workspace_rms_map.png`` -- top-down 2D map with Delaunay
+  ``tricontourf`` smooth fill clipped to the 12 mm disk + centroid dots on top,
+  shared colormap with figure 1.
+* ``thesis_03_rms_vs_amplitude.png`` -- per-target RMS as a function of
+  commanded deflection amplitude. Scatter colored by ``z_stddev`` plus a
+  binned median with the p25-p75 band drawn underneath, so the reader sees
+  the individual targets AND the workspace-wide radial trend.
 
-The plotting helpers use matplotlib's Agg backend (no GUI dependency) so the
-artifacts can be regenerated from a saved run on any machine. The 3D scatter
-is the centerpiece figure -- it's what the operator asked for.
+Plus the non-figure artifacts:
+
+* ``workspace_map_per_target.csv``   per-target dispersion table
+* ``workspace_map_visits.jsonl``     per-visit raw record
+* ``workspace_map_summary.json``     workspace-wide stats + worst-5 list
+
+No pass/fail visual coloring: the figures stay neutral and let the operator
+read the actual numbers from the footer caption.
 """
 from __future__ import annotations
 
@@ -32,24 +39,31 @@ import numpy as np
 
 from continuum_robot.experiments.plotting import (
     SEMANTIC_COLORS,
+    color,
+    create_3d_figure,
     create_figure,
-    figure_dpi,
     import_matplotlib,
     report_style,
     save_figure,
+    set_equal_xyz,
+    style_3d_axes,
     style_axes,
 )
 
 
-# Bundle filenames mirror the rest of the experiment package's report-naming
-# convention so a fresh operator can find them by pattern. Anything that gets
-# embedded in a thesis figure gets a ``_report.png`` suffix.
+# Bundle filenames. Match the ``thesis_NN_<name>.png`` convention used by
+# the rest of the experiment package's thesis figures.
 PER_TARGET_CSV = "workspace_map_per_target.csv"
 VISITS_JSONL = "workspace_map_visits.jsonl"
 SUMMARY_JSON = "workspace_map_summary.json"
-SCATTER_3D_PNG = "workspace_map_3d_report.png"
-XY_HEATMAP_PNG = "workspace_map_xy_heatmap_report.png"
-AXIS_STDDEV_PNG = "workspace_map_axis_stddev_report.png"
+THESIS_01_PNG = "thesis_01_workspace_rms_3d.png"
+THESIS_02_PNG = "thesis_02_workspace_rms_map.png"
+THESIS_03_PNG = "thesis_03_rms_vs_amplitude.png"
+
+
+# ---------------------------------------------------------------------------
+# Per-target metric computation
+# ---------------------------------------------------------------------------
 
 
 def compute_workspace_repeatability_metrics(
@@ -214,10 +228,6 @@ def group_visits_by_target(
     """Bucket per-visit sample-extras (already in ``sample.extra`` form) by target_index."""
     grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for sample in samples:
-        # ``sample`` here is the ``extra`` dict already projected -- callers pass
-        # ``[sample.extra for sample in session.samples]``. That decouples this
-        # module from the timeseries-sample dataclass and makes it easy to feed
-        # synthetic dicts in tests.
         target_index = sample.get("target_index")
         if target_index is None:
             continue
@@ -228,20 +238,28 @@ def group_visits_by_target(
     return dict(grouped)
 
 
+# ---------------------------------------------------------------------------
+# Bundle entry-point
+# ---------------------------------------------------------------------------
+
+
 def write_workspace_repeatability_map_outputs(
     *,
     output_dir: Path,
     target_catalog: Sequence[Mapping[str, Any]],
     samples: Sequence[Mapping[str, Any]],
+    max_amplitude_mm: float | None = None,
     thesis_goal_rms_mm: float | None = None,
     quality: str | None = None,
 ) -> dict[str, Path]:
-    """Write CSV / JSONL / summary.json / PNG bundle into ``output_dir``.
+    """Write CSV / JSONL / summary.json + three thesis figures into ``output_dir``.
 
-    Returns a dict of artifact-name → path. Missing inputs are handled
-    silently (e.g. a run that captured zero visits still gets a summary.json
-    and the empty CSVs / JSONL); the figures are skipped only when there is
-    no data at all to plot.
+    Returns a dict of artifact-name -> path. Missing inputs are handled
+    quietly (zero-visit runs still write summary.json + empty CSV/JSONL);
+    the figures are skipped only when no per-target data exists.
+
+    ``max_amplitude_mm`` lets the figures draw the configured workspace
+    boundary as a reference circle / disk -- pass ``WorkspaceRepeatabilityMapConfig.max_amplitude_mm``.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -267,18 +285,35 @@ def write_workspace_repeatability_map_outputs(
         per_target_rows=per_target_rows,
     )
 
-    rows_with_data = [
-        row for row in per_target_rows if row.get("rms_spread_mm") is not None
-    ]
+    rows_with_data = [row for row in per_target_rows if row.get("rms_spread_mm") is not None]
     if rows_with_data:
-        paths["scatter_3d"] = _plot_3d_scatter(
-            output_dir / SCATTER_3D_PNG, rows_with_data, quality=quality
+        # Resolve disk radius for the workspace boundary if the caller didn't
+        # pass it; fall back to the largest commanded amplitude.
+        resolved_max_amplitude = (
+            float(max_amplitude_mm)
+            if max_amplitude_mm is not None and float(max_amplitude_mm) > 0.0
+            else float(max(float(row.get("target_amplitude_mm") or 0.0) for row in rows_with_data) or 1.0)
         )
-        paths["xy_heatmap"] = _plot_xy_heatmap(
-            output_dir / XY_HEATMAP_PNG, rows_with_data, quality=quality
+        paths["thesis_01"] = _write_workspace_thesis_01_rms_3d(
+            output_dir / THESIS_01_PNG,
+            rows_with_data,
+            summary=summary,
+            max_amplitude_mm=resolved_max_amplitude,
+            quality=quality,
         )
-        paths["axis_stddev"] = _plot_axis_stddev_bars(
-            output_dir / AXIS_STDDEV_PNG, rows_with_data, quality=quality
+        paths["thesis_02"] = _write_workspace_thesis_02_rms_map(
+            output_dir / THESIS_02_PNG,
+            rows_with_data,
+            summary=summary,
+            max_amplitude_mm=resolved_max_amplitude,
+            quality=quality,
+        )
+        paths["thesis_03"] = _write_workspace_thesis_03_rms_vs_amplitude(
+            output_dir / THESIS_03_PNG,
+            rows_with_data,
+            summary=summary,
+            max_amplitude_mm=resolved_max_amplitude,
+            quality=quality,
         )
     return paths
 
@@ -352,131 +387,402 @@ def _json_safe(value: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Plotting
+# Plotting helpers
 # ---------------------------------------------------------------------------
 
 
-def _vmin_vmax(values: Sequence[float]) -> tuple[float, float]:
-    if not values:
-        return 0.0, 1.0
-    vmin = float(min(values))
-    vmax = float(max(values))
-    if math.isclose(vmin, vmax):
-        # Avoid all-one-color renders when every target has identical spread.
-        vmax = vmin + max(0.05, abs(vmin) * 0.05 + 0.05)
-    return vmin, vmax
+def _color_vmax(values: Sequence[float]) -> float:
+    """Pick a color-scale maximum that doesn't let one outlier wash the figure out.
+
+    Returns the actual max when no significant outlier exists, otherwise the
+    95th percentile. The threshold ``max <= p95 * 1.25`` is the "no outlier"
+    band; above that, the figure switches to p95-clamped to keep most of the
+    workspace visible. The colormap norm is configured to clip values above
+    this maximum so they appear as the brightest viridis but don't break the
+    scale.
+    """
+    arr = np.asarray([v for v in values if v is not None], dtype=float)
+    if arr.size == 0:
+        return 1.0
+    p95 = float(np.percentile(arr, 95))
+    p_max = float(arr.max())
+    if p_max <= p95 * 1.25 or p95 <= 0:
+        return max(p_max, 1e-9)
+    return max(p95, 1e-9)
 
 
-def _plot_3d_scatter(path: Path, rows: Sequence[Mapping[str, Any]], *, quality: str | None) -> Path:
-    plt = import_matplotlib()
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 -- registers the 3d projection
+def _format_mm(value: float | None, *, decimals: int = 3) -> str:
+    if value is None:
+        return "n/a"
+    if not math.isfinite(float(value)):
+        return "n/a"
+    return f"{float(value):.{decimals}f} mm"
 
+
+def _footer_caption_lines(
+    *,
+    summary: Mapping[str, Any],
+    rows_with_data: Sequence[Mapping[str, Any]],
+    max_amplitude_mm: float,
+) -> list[str]:
+    """Workspace-wide RMS numbers + worst target. These are the headline stats."""
+    total_visits_kept = sum(int(row.get("n_visits_kept") or 0) for row in rows_with_data)
+    visits_per_target = max(
+        (int(row.get("n_visits_total") or 0) for row in rows_with_data), default=0
+    )
+    parts = [
+        f"Targets: {summary.get('target_count', 0)}  ({summary.get('targets_with_data', 0)} with data)",
+        f"Visits/target: up to {visits_per_target}  (kept {total_visits_kept} captures)",
+        f"Workspace R: {max_amplitude_mm:.1f} mm",
+        f"RMS mean: {_format_mm(summary.get('workspace_rms_mean_mm'))}",
+        f"median: {_format_mm(summary.get('workspace_rms_median_mm'))}",
+        f"p95: {_format_mm(summary.get('workspace_rms_p95_mm'))}",
+        f"max: {_format_mm(summary.get('workspace_rms_max_mm'))}",
+    ]
+    worst = list(summary.get("worst_targets") or [])
+    if worst:
+        worst_top = worst[0]
+        parts.append(
+            f"worst: {worst_top['target_label']} ({_format_mm(worst_top.get('rms_spread_mm'))})"
+        )
+    return parts
+
+
+def _draw_footer(fig, lines: Sequence[str]) -> None:
+    fig.text(
+        0.015,
+        0.02,
+        "  •  ".join(lines),
+        fontsize=9,
+        color=color("text"),
+        ha="left",
+        va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white", "edgecolor": color("grid"), "alpha": 0.94},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Thesis figure 1 -- 3D centroid scatter
+# ---------------------------------------------------------------------------
+
+
+def _write_workspace_thesis_01_rms_3d(
+    path: Path,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    summary: Mapping[str, Any],
+    max_amplitude_mm: float,
+    quality: str | None,
+) -> Path:
+    """Thesis figure 1: 3D scatter of per-target centroids colored by RMS spread.
+
+    One dot per target at its measured centroid, colored by the per-target
+    3D RMS distance from that centroid. Cubic XYZ bounding box (via
+    ``set_equal_xyz``) prevents Z-axis auto-stretching, so an essentially
+    planar workspace reads as planar instead of looking like the robot is
+    drifting wildly out of plane.
+    """
     centroids = np.asarray(
-        [[float(row["centroid_x_mm"]), float(row["centroid_y_mm"]), float(row["centroid_z_mm"])] for row in rows],
+        [
+            [float(row["centroid_x_mm"]), float(row["centroid_y_mm"]), float(row["centroid_z_mm"])]
+            for row in rows
+        ],
         dtype=float,
     )
-    rms_values = [float(row["rms_spread_mm"]) for row in rows]
-    vmin, vmax = _vmin_vmax(rms_values)
-    with report_style() as plt:
-        fig = plt.figure(figsize=(8.4, 6.6))
-        ax = fig.add_subplot(111, projection="3d")
-        scatter = ax.scatter(
-            centroids[:, 0],
-            centroids[:, 1],
-            centroids[:, 2],
-            c=rms_values,
-            cmap="viridis",
-            vmin=vmin,
-            vmax=vmax,
-            s=44,
-            edgecolors="white",
-            linewidths=0.5,
-        )
-        ax.set_xlabel("X centroid (mm)")
-        ax.set_ylabel("Y centroid (mm)")
-        ax.set_zlabel("Z centroid (mm)")
-        ax.set_title("Workspace repeatability map — per-target 3D RMS spread (mm)", loc="left", pad=14, fontweight="bold")
-        cbar = fig.colorbar(scatter, ax=ax, shrink=0.7, pad=0.08)
-        cbar.set_label("RMS spread (mm)")
-        # Annotate the five worst points so the operator sees them at a glance.
-        worst = sorted(rows, key=lambda row: float(row["rms_spread_mm"]), reverse=True)[:5]
-        for row in worst:
-            ax.text(
-                float(row["centroid_x_mm"]),
-                float(row["centroid_y_mm"]),
-                float(row["centroid_z_mm"]),
-                f" {row['target_label']} ({float(row['rms_spread_mm']):.2f} mm)",
-                fontsize=8,
-                color=SEMANTIC_COLORS["text"],
-            )
+    rms_values = np.asarray([float(row["rms_spread_mm"]) for row in rows], dtype=float)
+    vmax = _color_vmax(rms_values.tolist())
+
+    fig, ax = create_3d_figure(size="thesis_3d")
+    scatter = ax.scatter(
+        centroids[:, 0],
+        centroids[:, 1],
+        centroids[:, 2],
+        c=rms_values,
+        cmap="viridis",
+        vmin=0.0,
+        vmax=vmax,
+        s=46,
+        edgecolors="white",
+        linewidths=0.5,
+        depthshade=True,
+        alpha=0.92,
+    )
+    # Cube around BOTH the centroids and the configured disk radius so the
+    # figure never trims the workspace boundary off the corners.
+    span_xs = list(centroids[:, 0]) + [-max_amplitude_mm, max_amplitude_mm]
+    span_ys = list(centroids[:, 1]) + [-max_amplitude_mm, max_amplitude_mm]
+    span_zs = list(centroids[:, 2])
+    set_equal_xyz(
+        ax,
+        x_values=span_xs,
+        y_values=span_ys,
+        z_values=span_zs,
+        minimum_span=max(2.0 * max_amplitude_mm, 4.0),
+        pad_fraction=0.10,
+    )
+    style_3d_axes(ax, xlabel="Robot X (mm)", ylabel="Robot Y (mm)", zlabel="Robot Z (mm)")
+
+    cbar = fig.colorbar(scatter, ax=ax, shrink=0.55, pad=0.12)
+    cbar.set_label("Per-target RMS spread (mm)")
+    cbar.outline.set_edgecolor(color("grid"))
+
+    fig.suptitle(
+        "Workspace Repeatability Map  —  per-target 3D RMS spread",
+        fontsize=13,
+        fontweight="bold",
+        x=0.04,
+        ha="left",
+    )
+    _draw_footer(
+        fig,
+        _footer_caption_lines(summary=summary, rows_with_data=rows, max_amplitude_mm=max_amplitude_mm),
+    )
     return save_figure(fig, Path(path), quality=quality)
 
 
-def _plot_xy_heatmap(path: Path, rows: Sequence[Mapping[str, Any]], *, quality: str | None) -> Path:
-    rms_values = [float(row["rms_spread_mm"]) for row in rows]
-    vmin, vmax = _vmin_vmax(rms_values)
-    with report_style() as plt:
-        fig, ax = plt.subplots(figsize=(7.6, 6.4), constrained_layout=True)
-        xs = [float(row["centroid_x_mm"]) for row in rows]
-        ys = [float(row["centroid_y_mm"]) for row in rows]
-        scatter = ax.scatter(
-            xs,
-            ys,
-            c=rms_values,
-            cmap="viridis",
-            vmin=vmin,
-            vmax=vmax,
-            s=110,
-            edgecolors="white",
-            linewidths=0.5,
-        )
-        ax.set_aspect("equal", adjustable="box")
-        style_axes(
-            ax,
-            title="Workspace repeatability map — top-down (color = RMS spread)",
-            xlabel="X centroid (mm)",
-            ylabel="Y centroid (mm)",
-        )
-        cbar = fig.colorbar(scatter, ax=ax, shrink=0.85, pad=0.02)
-        cbar.set_label("RMS spread (mm)")
-        # Mark the five worst points; subtle text so the dots stay readable.
-        worst = sorted(rows, key=lambda row: float(row["rms_spread_mm"]), reverse=True)[:5]
-        for row in worst:
-            ax.annotate(
-                f"{row['target_label']}\n{float(row['rms_spread_mm']):.2f} mm",
-                xy=(float(row["centroid_x_mm"]), float(row["centroid_y_mm"])),
-                xytext=(6, 6),
-                textcoords="offset points",
-                fontsize=8,
-                color=SEMANTIC_COLORS["text"],
+# ---------------------------------------------------------------------------
+# Thesis figure 2 -- top-down tricontourf map
+# ---------------------------------------------------------------------------
+
+
+def _write_workspace_thesis_02_rms_map(
+    path: Path,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    summary: Mapping[str, Any],
+    max_amplitude_mm: float,
+    quality: str | None,
+) -> Path:
+    """Thesis figure 2: top-down ``tricontourf`` heatmap clipped to the disk.
+
+    Delaunay-triangulates the 100 (or N) centroid XY positions and contour-fills
+    the per-target RMS spread continuously across the disk. The fill is clipped
+    to the configured workspace boundary so the figure shows the actual
+    operational region. Centroid dots are drawn on top with the same colormap
+    so the reader sees both the smooth field and the individual data points.
+    """
+    plt = import_matplotlib()
+    from matplotlib import tri as _mtri
+    from matplotlib.patches import Circle
+
+    xs = np.asarray([float(row["centroid_x_mm"]) for row in rows], dtype=float)
+    ys = np.asarray([float(row["centroid_y_mm"]) for row in rows], dtype=float)
+    rms_values = np.asarray([float(row["rms_spread_mm"]) for row in rows], dtype=float)
+    vmax = _color_vmax(rms_values.tolist())
+
+    with report_style() as plt_styled:
+        fig, ax = plt_styled.subplots(figsize=(7.6, 6.8), constrained_layout=False)
+    fig.subplots_adjust(left=0.10, right=0.92, top=0.90, bottom=0.16)
+
+    # Triangulate and contour-fill. tricontourf needs at least 3 non-collinear
+    # points; the Vogel-disk-fill has 100 by construction, but guard anyway.
+    contour = None
+    if len(xs) >= 3:
+        try:
+            triang = _mtri.Triangulation(xs, ys)
+            contour = ax.tricontourf(
+                triang,
+                rms_values,
+                levels=22,
+                cmap="viridis",
+                vmin=0.0,
+                vmax=vmax,
+                extend="max",
+                zorder=1,
             )
+        except RuntimeError:
+            contour = None
+
+    # Disk reference circle + clip the contour to the disk so contour-fill
+    # doesn't bulge past the workspace edge along Delaunay scallops.
+    disk_outline = Circle(
+        (0.0, 0.0),
+        max_amplitude_mm,
+        fill=False,
+        edgecolor=color("reference"),
+        linestyle="--",
+        linewidth=1.4,
+        zorder=4,
+    )
+    ax.add_patch(disk_outline)
+    if contour is not None:
+        disk_clip = Circle((0.0, 0.0), max_amplitude_mm, transform=ax.transData)
+        ax.add_patch(disk_clip)
+        disk_clip.set_visible(False)
+        # matplotlib >=3.8 deprecated .collections in favour of an iterable; both still work.
+        try:
+            for coll in contour.collections:
+                coll.set_clip_path(disk_clip)
+        except AttributeError:
+            # On newer matplotlib, the contour set is itself clippable.
+            try:
+                contour.set_clip_path(disk_clip)
+            except Exception:
+                pass
+
+    centroids = ax.scatter(
+        xs,
+        ys,
+        c=rms_values,
+        cmap="viridis",
+        vmin=0.0,
+        vmax=vmax,
+        s=42,
+        edgecolors="white",
+        linewidths=0.6,
+        zorder=5,
+    )
+
+    pad = max_amplitude_mm * 0.10
+    ax.set_xlim(-max_amplitude_mm - pad, max_amplitude_mm + pad)
+    ax.set_ylim(-max_amplitude_mm - pad, max_amplitude_mm + pad)
+    ax.set_aspect("equal", adjustable="box")
+    style_axes(ax, xlabel="Robot X (mm)", ylabel="Robot Y (mm)")
+
+    color_source = contour if contour is not None else centroids
+    cbar = fig.colorbar(color_source, ax=ax, shrink=0.85, pad=0.025)
+    cbar.set_label("Per-target RMS spread (mm)")
+    cbar.outline.set_edgecolor(color("grid"))
+
+    fig.suptitle(
+        "Workspace Repeatability Map  —  top-down RMS field",
+        fontsize=13,
+        fontweight="bold",
+        x=0.04,
+        ha="left",
+    )
+    _draw_footer(
+        fig,
+        _footer_caption_lines(summary=summary, rows_with_data=rows, max_amplitude_mm=max_amplitude_mm),
+    )
     return save_figure(fig, Path(path), quality=quality)
 
 
-def _plot_axis_stddev_bars(path: Path, rows: Sequence[Mapping[str, Any]], *, quality: str | None) -> Path:
-    sorted_rows = sorted(rows, key=lambda row: float(row["rms_spread_mm"]), reverse=True)
-    labels = [str(row["target_label"]) for row in sorted_rows]
-    x_std = [float(row["x_stddev_mm"]) for row in sorted_rows]
-    y_std = [float(row["y_stddev_mm"]) for row in sorted_rows]
-    z_std = [float(row["z_stddev_mm"]) for row in sorted_rows]
-    indices = np.arange(len(labels), dtype=float)
-    with report_style() as plt:
-        fig, ax = plt.subplots(figsize=(max(8.4, len(labels) * 0.1), 4.6), constrained_layout=True)
-        ax.bar(indices, x_std, color=SEMANTIC_COLORS["segment_a"], label="X stddev")
-        ax.bar(indices, y_std, bottom=x_std, color=SEMANTIC_COLORS["segment_b"], label="Y stddev")
-        bottom_xy = [a + b for a, b in zip(x_std, y_std)]
-        ax.bar(indices, z_std, bottom=bottom_xy, color=SEMANTIC_COLORS["model"], label="Z stddev")
-        # Only label every Nth tick so the axis stays readable for 100 targets.
-        step = max(1, len(labels) // 20)
-        tick_positions = indices[::step]
-        tick_labels = [labels[int(i)] for i in tick_positions]
-        ax.set_xticks(tick_positions)
-        ax.set_xticklabels(tick_labels, rotation=45, ha="right", fontsize=7)
-        style_axes(
-            ax,
-            title="Per-target standard deviation by axis (sorted by RMS spread, descending)",
-            xlabel="Target (sorted by RMS spread)",
-            ylabel="standard deviation (mm)",
+# ---------------------------------------------------------------------------
+# Thesis figure 3 -- RMS vs commanded amplitude
+# ---------------------------------------------------------------------------
+
+
+def _write_workspace_thesis_03_rms_vs_amplitude(
+    path: Path,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    summary: Mapping[str, Any],
+    max_amplitude_mm: float,
+    quality: str | None,
+) -> Path:
+    """Thesis figure 3: per-target RMS spread as a function of commanded amplitude.
+
+    Scatter colored by ``z_stddev`` (so the reader sees whether bad targets are
+    out-of-plane) plus a binned median with a p25-p75 shaded band drawn behind
+    the scatter. The trend line answers the central physical question for a
+    cable-driven robot: does repeatability worsen near the rim, or is it
+    uniform across the workspace?
+    """
+    amplitudes = np.asarray([float(row["target_amplitude_mm"]) for row in rows], dtype=float)
+    rms_values = np.asarray([float(row["rms_spread_mm"]) for row in rows], dtype=float)
+    z_std = np.asarray([float(row["z_stddev_mm"] or 0.0) for row in rows], dtype=float)
+
+    with report_style() as plt_styled:
+        fig, ax = plt_styled.subplots(figsize=(7.6, 4.6), constrained_layout=False)
+    fig.subplots_adjust(left=0.095, right=0.93, top=0.88, bottom=0.20)
+
+    # Binned median + p25/p75 band drawn underneath the scatter so the
+    # individual targets stay readable on top.
+    n_bins = max(3, min(8, len(rows) // 12))
+    if amplitudes.size > 1 and float(amplitudes.max()) > float(amplitudes.min()):
+        bin_edges = np.linspace(amplitudes.min(), amplitudes.max(), n_bins + 1)
+        bin_centers: list[float] = []
+        medians: list[float] = []
+        p25s: list[float] = []
+        p75s: list[float] = []
+        counts: list[int] = []
+        for i in range(n_bins):
+            lower = bin_edges[i]
+            upper = bin_edges[i + 1]
+            if i == n_bins - 1:
+                mask = (amplitudes >= lower) & (amplitudes <= upper)
+            else:
+                mask = (amplitudes >= lower) & (amplitudes < upper)
+            if not mask.any():
+                continue
+            bin_centers.append(0.5 * (lower + upper))
+            medians.append(float(np.median(rms_values[mask])))
+            p25s.append(float(np.percentile(rms_values[mask], 25)))
+            p75s.append(float(np.percentile(rms_values[mask], 75)))
+            counts.append(int(mask.sum()))
+        if bin_centers:
+            ax.fill_between(
+                bin_centers,
+                p25s,
+                p75s,
+                color=color("model"),
+                alpha=0.18,
+                linewidth=0,
+                label="p25-p75 band",
+                zorder=1,
+            )
+            ax.plot(
+                bin_centers,
+                medians,
+                color=color("model"),
+                linewidth=2.0,
+                marker="o",
+                markersize=6,
+                label="binned median",
+                zorder=2,
+            )
+
+    scatter = ax.scatter(
+        amplitudes,
+        rms_values,
+        c=z_std,
+        cmap="viridis",
+        s=30,
+        alpha=0.82,
+        linewidths=0,
+        zorder=3,
+        label="per-target RMS",
+    )
+
+    style_axes(
+        ax,
+        xlabel="Commanded amplitude (mm from neutral)",
+        ylabel="Per-target RMS spread (mm)",
+    )
+
+    cbar = fig.colorbar(scatter, ax=ax, shrink=0.85, pad=0.025)
+    cbar.set_label("Z stddev (mm)")
+    cbar.outline.set_edgecolor(color("grid"))
+
+    # X axis extends slightly past the largest amplitude so the rim dots aren't on the edge.
+    if amplitudes.size > 0:
+        ax.set_xlim(-0.5, max(float(amplitudes.max()), float(max_amplitude_mm)) * 1.05 + 0.5)
+    # Y axis floor at 0; force a minimum positive ceiling so all-zero RMS
+    # data (synthetic edge cases) doesn't trigger matplotlib's "identical
+    # ylims" singular-transform warning.
+    y_max_raw = float(np.max(rms_values)) if rms_values.size > 0 else 1.0
+    ax.set_ylim(0.0, max(y_max_raw * 1.15, 0.05))
+
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(
+            loc="upper left",
+            frameon=True,
+            facecolor="white",
+            edgecolor="#cbd5e1",
+            framealpha=0.95,
         )
-        ax.legend(loc="upper right", frameon=True, facecolor="white", edgecolor="#cbd5e1", framealpha=0.95)
+
+    fig.suptitle(
+        "Repeatability vs commanded deflection",
+        fontsize=13,
+        fontweight="bold",
+        x=0.04,
+        ha="left",
+    )
+    _draw_footer(
+        fig,
+        _footer_caption_lines(summary=summary, rows_with_data=rows, max_amplitude_mm=max_amplitude_mm),
+    )
     return save_figure(fig, Path(path), quality=quality)

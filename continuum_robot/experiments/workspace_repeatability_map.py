@@ -649,6 +649,7 @@ class WorkspaceRepeatabilityMapExperiment(BaseExperiment):
             output_dir=paths.output_dir,
             target_catalog=target_catalog,
             samples=samples_extra,
+            max_amplitude_mm=float(self.config.max_amplitude_mm),
             thesis_goal_rms_mm=float(self.config.thesis_goal_rms_mm),
         )
         # Mirror the headline summary into session metrics so the GUI summary

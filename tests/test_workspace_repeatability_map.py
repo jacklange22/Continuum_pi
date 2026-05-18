@@ -39,12 +39,12 @@ from continuum_robot.experiments.workspace_repeatability_map import (
     workspace_target_tick_profile,
 )
 from continuum_robot.experiments.workspace_repeatability_map_outputs import (
-    AXIS_STDDEV_PNG,
     PER_TARGET_CSV,
-    SCATTER_3D_PNG,
     SUMMARY_JSON,
+    THESIS_01_PNG,
+    THESIS_02_PNG,
+    THESIS_03_PNG,
     VISITS_JSONL,
-    XY_HEATMAP_PNG,
     compute_workspace_repeatability_metrics,
     group_visits_by_target,
     summarize_workspace_repeatability,
@@ -306,7 +306,7 @@ def _png_is_valid(path: Path) -> bool:
 
 class TestOutputBundle:
     def test_write_bundle_produces_every_artifact(self, tmp_path: Path) -> None:
-        targets = build_workspace_repeatability_targets(target_count=12, max_amplitude_mm=10.0)
+        targets = build_workspace_repeatability_targets(target_count=20, max_amplitude_mm=10.0)
         rng = np.random.default_rng(0)
         samples: list[dict] = []
         for target in targets:
@@ -327,18 +327,19 @@ class TestOutputBundle:
             output_dir=tmp_path,
             target_catalog=[t.to_dict() for t in targets],
             samples=samples,
+            max_amplitude_mm=10.0,
             thesis_goal_rms_mm=1.0,
         )
-        for key in ("per_target_csv", "visits_jsonl", "summary_json", "scatter_3d", "xy_heatmap", "axis_stddev"):
+        for key in ("per_target_csv", "visits_jsonl", "summary_json", "thesis_01", "thesis_02", "thesis_03"):
             assert key in paths
             assert paths[key].exists(), f"missing {key}: {paths[key]}"
-        assert _png_is_valid(tmp_path / SCATTER_3D_PNG)
-        assert _png_is_valid(tmp_path / XY_HEATMAP_PNG)
-        assert _png_is_valid(tmp_path / AXIS_STDDEV_PNG)
+        assert _png_is_valid(tmp_path / THESIS_01_PNG)
+        assert _png_is_valid(tmp_path / THESIS_02_PNG)
+        assert _png_is_valid(tmp_path / THESIS_03_PNG)
         # Summary JSON is structured.
         summary_payload = json.loads((tmp_path / SUMMARY_JSON).read_text(encoding="utf-8"))
         assert summary_payload["schema_version"] == "workspace_repeatability_map_v1"
-        assert summary_payload["summary"]["target_count"] == 12
+        assert summary_payload["summary"]["target_count"] == 20
         # CSV has the expected columns.
         csv_text = (tmp_path / PER_TARGET_CSV).read_text(encoding="utf-8")
         header_columns = csv_text.splitlines()[0].split(",")
@@ -351,13 +352,75 @@ class TestOutputBundle:
             output_dir=tmp_path,
             target_catalog=[t.to_dict() for t in targets],
             samples=[],
+            max_amplitude_mm=5.0,
             thesis_goal_rms_mm=1.0,
         )
         # Figures are skipped when there is no data; summary still exists.
         assert (tmp_path / SUMMARY_JSON).exists()
         assert (tmp_path / PER_TARGET_CSV).exists()
-        assert "scatter_3d" not in paths
-        assert "xy_heatmap" not in paths
+        assert "thesis_01" not in paths
+        assert "thesis_02" not in paths
+        assert "thesis_03" not in paths
+
+    def test_thesis_figures_render_at_full_scale(self, tmp_path: Path) -> None:
+        """Smoke-test at the actual 100 targets x 15 visits scale the operator runs.
+
+        Verifies the figures complete without raising (tricontourf at N=100,
+        binned median band at full scale, cubic XYZ aspect on 3D, and the
+        footer caption population), and the saved PNGs are >50 KB each so a
+        regression to a blank/error figure would fail loudly.
+        """
+        targets = build_workspace_repeatability_targets(target_count=100, max_amplitude_mm=12.0)
+        rng = np.random.default_rng(42)
+        samples: list[dict] = []
+        for target in targets:
+            # Realistic per-target shape: small bias + visit noise. Outer-ring
+            # targets get slightly worse spread so the radial trend figure
+            # has something to show.
+            bias = rng.normal(scale=0.05, size=3)
+            spread_scale = 0.10 + 0.02 * (target.amplitude_mm / 12.0)
+            for visit in range(15):
+                noise = rng.normal(scale=spread_scale, size=3)
+                samples.append(
+                    {
+                        "target_index": target.target_index,
+                        "target_label": target.label,
+                        "cycle_index": visit,
+                        "visit_in_cycle": 0,
+                        "visit_position": len(samples),
+                        "position_mm": [
+                            target.x_mm + bias[0] + noise[0],
+                            target.y_mm + bias[1] + noise[1],
+                            bias[2] + noise[2],
+                        ],
+                        "rejected": False,
+                    }
+                )
+        paths = write_workspace_repeatability_map_outputs(
+            output_dir=tmp_path,
+            target_catalog=[t.to_dict() for t in targets],
+            samples=samples,
+            max_amplitude_mm=12.0,
+            thesis_goal_rms_mm=1.0,
+        )
+        # All three thesis figures present, non-trivial size (> 50 KB rules out blank renders).
+        for key, name in (("thesis_01", THESIS_01_PNG), ("thesis_02", THESIS_02_PNG), ("thesis_03", THESIS_03_PNG)):
+            png_path = tmp_path / name
+            assert png_path.exists(), f"missing thesis figure: {key}"
+            assert png_path.stat().st_size > 50_000, (
+                f"{name} is suspiciously small ({png_path.stat().st_size} bytes); "
+                "a blank-render regression would land here"
+            )
+            assert _png_is_valid(png_path)
+        summary_payload = json.loads((tmp_path / SUMMARY_JSON).read_text(encoding="utf-8"))
+        summary_block = summary_payload["summary"]
+        # Mean RMS should be in the same ballpark as the synthetic spread scale.
+        assert 0.05 < float(summary_block["workspace_rms_mean_mm"]) < 0.6
+        # Worst target list is descending.
+        worst = summary_block["worst_targets"]
+        assert len(worst) >= 1
+        for index in range(1, len(worst)):
+            assert worst[index - 1]["rms_spread_mm"] >= worst[index]["rms_spread_mm"]
 
     def test_visits_jsonl_skips_rows_missing_target_index(self, tmp_path: Path) -> None:
         targets = build_workspace_repeatability_targets(target_count=3, max_amplitude_mm=5.0)
