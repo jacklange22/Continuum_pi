@@ -49,8 +49,8 @@ def _write_run(root: Path, experiment: str, name: str, *, trust: str = "thesis_t
     (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
     if experiment == "collect_pose_command_dataset":
-        (run_dir / "modeling_workspace_coverage_report.png").write_bytes(b"\x89PNG\r\n\x1a\n")
-        (run_dir / "commanded_tendon_space_report.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        (run_dir / "thesis_01_workspace_coverage_3d.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        (run_dir / "thesis_02_command_and_workspace_2d.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     elif experiment == "single_segment_repeatability":
         (run_dir / "repeatability_clusters_report.png").write_bytes(b"\x89PNG\r\n\x1a\n")
         (run_dir / "repeatability_error_by_target_report.png").write_bytes(b"\x89PNG\r\n\x1a\n")
@@ -70,7 +70,7 @@ def test_discover_and_summarize_runs_with_trust_and_segment(tmp_path: Path) -> N
     assert summary.valid_for_model_training is True
     assert summary.operating_mode == "single_segment"
     assert "segment_a" in summary.active_segment
-    assert "modeling_workspace_coverage_report.png" in summary.report_figures
+    assert "thesis_01_workspace_coverage_3d.png" in summary.report_figures
 
 
 def test_write_run_review_marks_candidate_sidecar(tmp_path: Path) -> None:

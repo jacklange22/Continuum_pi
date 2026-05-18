@@ -1637,12 +1637,24 @@ def test_collect_pose_command_dataset_records_full_pose_when_registration_exists
     assert accepted_samples[0].pose_in_robot_frame["tip"]["quaternion_wxyz"] == [1.0, 0.0, 0.0, 0.0]
     assert accepted_samples[0].extra["motion_profile"]["operating_mode_label"] == "Position Control"
     assert accepted_samples[0].extra["motion_profile"]["goal_current_ma"] is None
-    assert bundle.paths.output_dir.joinpath("modeling_dataset_summary.txt").exists()
     assert bundle.paths.output_dir.joinpath("modeling_dataset_export.jsonl").exists()
-    assert bundle.paths.output_dir.joinpath("modeling_workspace_coverage.png").exists()
-    assert bundle.paths.output_dir.joinpath("modeling_workspace_coverage_report.png").exists()
-    assert bundle.paths.output_dir.joinpath("commanded_tendon_space_report.png").exists()
-    assert bundle.paths.output_dir.joinpath("modeling_command_distribution.png").exists()
+    assert bundle.paths.output_dir.joinpath("thesis_01_workspace_coverage_3d.png").exists()
+    assert bundle.paths.output_dir.joinpath("thesis_02_command_and_workspace_2d.png").exists()
+    assert bundle.paths.output_dir.joinpath("debug.json").exists()
+    for removed in [
+        "modeling_dataset_summary.txt",
+        "modeling_workspace_coverage.png",
+        "modeling_workspace_coverage_report.png",
+        "commanded_tendon_space_report.png",
+        "modeling_command_distribution.png",
+    ]:
+        assert not bundle.paths.output_dir.joinpath(removed).exists(), f"deprecated collect_pose artifact should be gone: {removed}"
+    import json as _json
+    debug_payload = _json.loads(bundle.paths.output_dir.joinpath("debug.json").read_text(encoding="utf-8"))
+    assert debug_payload["experiment_name"] == "collect_pose_command_dataset"
+    assert "acceptance" in debug_payload
+    assert "trainability" in debug_payload
+    assert "workspace_extent_mm" in debug_payload
     run_provenance = dict(result.summary.experiment_metrics.get("run_provenance", {}) or {})
     preflight = dict(run_provenance.get("run_start_preflight", {}) or {})
     assert preflight.get("operating_mode") == "single_segment"

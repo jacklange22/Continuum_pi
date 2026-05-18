@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from continuum_robot.experiments.modeling_dataset_outputs import _write_workspace_report_plot
+from continuum_robot.experiments.modeling_dataset_outputs import (
+    _write_collect_pose_thesis_01_workspace_coverage_3d,
+)
 from continuum_robot.experiments.plotting import (
     FIGURE_QUALITY_DPI,
     create_figure,
@@ -35,20 +37,20 @@ def test_plotting_helper_saves_png_and_labels_axes(tmp_path) -> None:
     assert ax.get_ylabel() == "Y position (mm)"
 
 
-def test_modeling_workspace_report_plot_uses_expected_output_path(tmp_path) -> None:
+def test_collect_pose_thesis_01_writes_valid_png(tmp_path) -> None:
     rows = [
-        {"accepted": True, "tip_position_xyz_mm": [0.0, 0.0, 10.0]},
-        {"accepted": True, "tip_position_xyz_mm": [1.0, 2.0, 11.0]},
-        {"accepted": False, "tip_position_xyz_mm": [3.0, -1.0, 12.0]},
+        {"tip_position_xyz_mm": [0.0, 0.0, 10.0]},
+        {"tip_position_xyz_mm": [1.0, 2.0, 11.0]},
+        {"tip_position_xyz_mm": [-1.0, 1.5, 9.0]},
     ]
     metrics = {
-        "accepted_sample_count": 2,
-        "rejected_sample_count": 1,
+        "accepted_sample_count": 3,
+        "rejected_sample_count": 0,
         "dataset_mode": "workspace_coverage",
     }
-    output = tmp_path / "modeling_workspace_coverage_report.png"
+    output = tmp_path / "thesis_01_workspace_coverage_3d.png"
 
-    _write_workspace_report_plot(workspace_plot_path=output, export_rows=rows, metrics=metrics)
+    _write_collect_pose_thesis_01_workspace_coverage_3d(path=output, export_rows=rows, metrics=metrics)
 
     assert output.exists()
     assert output.read_bytes().startswith(b"\x89PNG")

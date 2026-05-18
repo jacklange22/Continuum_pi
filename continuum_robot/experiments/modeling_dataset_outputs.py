@@ -12,36 +12,19 @@ from typing import Any
 import numpy as np
 
 from continuum_robot.experiments.dat_writer import DatRunWriter
-from continuum_robot.experiments.plotting import add_metric_box, color, create_figure, legend, save_figure, set_equal_xy, style_axes
-from continuum_robot.experiments.tracker_timing_outputs import (
-    _draw_bar_chart,
-    _draw_panel,
-    _draw_summary_pairs,
-    _draw_title,
-    _ensure_plot_qt_app,
-    _fmt,
-    _new_image,
+from continuum_robot.experiments.plotting import (
+    color,
+    create_3d_figure,
+    create_figure,
+    legend,
+    report_style,
+    save_figure,
+    set_equal_xyz,
+    style_3d_axes,
+    style_axes,
 )
+from continuum_robot.experiments.tracker_timing_outputs import _fmt
 from continuum_robot.data.model_training_validity import NON_TRAINING_PHASES, sample_has_complete_command_servo_tip
-try:
-    from continuum_robot.gui.theme import COLORS
-except Exception:
-    class _FallbackColors:
-        scene_measurement = "#0f766e"
-        scene_residual = "#dc2626"
-        text_muted = "#64748b"
-        surface_border = "#dbe4ee"
-        chart_grid = "#e2e8f0"
-
-    COLORS = _FallbackColors()
-try:
-    from PySide6.QtCore import QPointF, QRectF, Qt
-    from PySide6.QtGui import QColor, QPainter, QPen
-    from PySide6.QtWidgets import QApplication
-
-    _QT_AVAILABLE = True
-except ModuleNotFoundError:
-    _QT_AVAILABLE = False
 
 
 LOG = logging.getLogger(__name__)
@@ -101,109 +84,40 @@ def build_modeling_dataset_summary_pairs(*, metrics: dict[str, Any]) -> list[tup
     ]
 
 
-def build_modeling_dataset_summary_lines(*, metadata, summary, metrics: dict[str, Any]) -> list[str]:
-    provenance = dict(metrics.get("run_provenance", {}) or {})
-    runtime_tip = dict(provenance.get("runtime_tip_calibration", {}) or {})
-    registration = dict(provenance.get("base_registration", {}) or {})
-    pretension = dict(provenance.get("pretension_artifact", {}) or {})
-    lines = [
-        "Motor Babble Modeling Dataset Summary",
-        "This run collected ordered single-segment command/pose samples for offline forward-model training and later state-aware model comparison.",
-        "",
-        f"Run ID: {metadata.run_id}",
-        f"Timestamp: {metadata.timestamp_utc}",
-        f"Status: {summary.status}",
-    ]
-    for label, value in build_modeling_dataset_summary_pairs(metrics=metrics):
-        lines.append(f"{label}: {value}")
-    validity_status = str(metrics.get("model_training_validity_status", "not_applicable") or "not_applicable")
-    validity_reason = str(metrics.get("model_training_validity_reason", "") or "")
-    hard_invalid_reasons = [str(value) for value in list(metrics.get("model_training_hard_invalidation_reasons", []) or []) if str(value)]
-    validity_warnings = [str(value) for value in list(metrics.get("model_training_warnings", []) or []) if str(value)]
-    lines.extend(
-        [
-            "",
-            "Trainability:",
-            f"- Status: {validity_status}",
-            f"- Reason: {validity_reason or 'n/a'}",
-            (
-                "- Row counts: "
-                f"export={int(metrics.get('modeling_export_row_count', 0) or 0)}, "
-                f"legacy={int(metrics.get('modeling_legacy_row_count', 0) or 0)}, "
-                f"accepted={int(metrics.get('accepted_training_row_count', 0) or 0)}"
-            ),
-            f"- Accepted rows complete: {bool(metrics.get('accepted_rows_complete'))}",
-            f"- Dropped rows excluded: {bool(metrics.get('dropped_samples_excluded_from_training'))}",
-        ]
-    )
-    if hard_invalid_reasons:
-        lines.append("- Hard invalidation reasons:")
-        for reason in hard_invalid_reasons:
-            lines.append(f"  - {reason}")
-    if validity_warnings:
-        lines.append("- Warnings:")
-        for warning in validity_warnings:
-            lines.append(f"  - {warning}")
-    lines.extend(
-        [
-            "",
-            "Provenance:",
-            f"- Registration: {registration.get('path', 'n/a')} @ {registration.get('stored_timestamp_utc', registration.get('modified_at_utc', 'n/a'))}",
-            (
-                f"- Runtime tip: {runtime_tip.get('path', 'n/a')} "
-                f"(mode={runtime_tip.get('mode', 'unknown')}, trust={runtime_tip.get('trust_level', 'unknown')}, "
-                f"timestamp={runtime_tip.get('stored_timestamp_utc', runtime_tip.get('modified_at_utc', 'n/a'))})"
-            ),
-            (
-                f"- Pretension: {pretension.get('path', 'n/a')} "
-                f"(source={pretension.get('active_source_type', 'unknown')}, "
-                f"updated={pretension.get('active_source_updated_at_utc', pretension.get('modified_at_utc', 'n/a'))})"
-            ),
-        ]
-    )
-    if runtime_tip.get("mode_message"):
-        lines.append(f"- Runtime tip detail: {runtime_tip.get('mode_message')}")
-    if pretension.get("active_source_message"):
-        lines.append(f"- Pretension detail: {pretension.get('active_source_message')}")
-    rejection_reasons = dict(metrics.get("rejection_reasons", {}) or {})
-    if rejection_reasons:
-        lines.extend(["", "Rejected captures:"])
-        for reason, count in sorted(rejection_reasons.items()):
-            lines.append(f"- {reason}: {int(count)}")
-    lines.extend(
-        [
-            "",
-            "Offline handoff:",
-            "- `samples.jsonl` preserves canonical full-fidelity ordered samples.",
-            "- `modeling_dataset_export.jsonl` preserves ordered export rows with an explicit accepted flag for offline filtering or sequential multi-input modeling.",
-            "- `modeling_dataset_legacy_compat.dat` contains accepted rows only for quick legacy ANN/comparison-stack conversion.",
-        ]
-    )
-    return lines
-
-
 def write_modeling_dataset_outputs(*, output_dir: Path, metadata, summary, samples) -> dict[str, Path]:
+    """Write canonical artifacts for one Motor Babble collect_pose run.
+
+    Figure contract: 2 thesis-quality PNGs.
+      - thesis_01_workspace_coverage_3d.png: 3D scatter of accepted tip
+        positions in robot frame, colored by sample index (time order).
+        Shows workspace coverage and the order the babble walked through it.
+      - thesis_02_command_and_workspace_2d.png: stacked-panel 2D scatters.
+        Top = pair_13 vs pair_24 (command space). Bottom = tip XY (workspace
+        projection). Both colored by sample index with a shared colorbar.
+
+    Other artifacts:
+      - debug.json: acceptance / rejection breakdown, workspace + command
+        extents, trainability flags, provenance (registration / runtime_tip /
+        pretension), run_review fold-in.
+      - modeling_dataset_export.jsonl: ordered export rows with explicit
+        accepted flag (consumed by ANN training pipeline). UNCHANGED.
+      - modeling_dataset_legacy_compat.dat: accepted rows only in legacy DAT
+        format (consumed by legacy ANN). UNCHANGED.
+
+    Dropped (no real consumers / duplicated by debug.json):
+      - modeling_dataset_summary.txt (only path-captured by ann_training as
+        an optional reference, never parsed)
+      - modeling_workspace_coverage.png + modeling_workspace_coverage_report.png
+      - modeling_command_distribution.png + commanded_tendon_space_report.png
+    """
     output_dir = Path(output_dir)
     metrics = summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else {}
-    summary_text_path = output_dir / "modeling_dataset_summary.txt"
     export_jsonl_path = output_dir / "modeling_dataset_export.jsonl"
     legacy_dat_path = output_dir / "modeling_dataset_legacy_compat.dat"
-    workspace_plot_path = output_dir / "modeling_workspace_coverage.png"
-    command_plot_path = output_dir / "modeling_command_distribution.png"
-    workspace_report_path = output_dir / "modeling_workspace_coverage_report.png"
-    commanded_tendon_report_path = output_dir / "commanded_tendon_space_report.png"
+    debug_json_path = output_dir / "debug.json"
+    thesis_01_path = output_dir / "thesis_01_workspace_coverage_3d.png"
+    thesis_02_path = output_dir / "thesis_02_command_and_workspace_2d.png"
 
-    summary_text_path.write_text(
-        "\n".join(
-            build_modeling_dataset_summary_lines(
-                metadata=metadata,
-                summary=summary,
-                metrics=metrics,
-            )
-        ).strip()
-        + "\n",
-        encoding="utf-8",
-    )
     export_rows = _build_export_rows(samples=samples)
     with export_jsonl_path.open("w", encoding="utf-8") as handle:
         for row in export_rows:
@@ -218,36 +132,35 @@ def write_modeling_dataset_outputs(*, output_dir: Path, metadata, summary, sampl
                 rows=rows,
                 filename_stem="modeling_dataset_legacy_compat",
             )
-    try:
-        _write_workspace_plot(workspace_plot_path=workspace_plot_path, export_rows=export_rows, metrics=metrics)
-        _write_workspace_report_plot(
-            workspace_plot_path=workspace_report_path,
-            export_rows=export_rows,
-            metrics=metrics,
-        )
-        _write_commanded_tendon_space_report(
-            plot_path=commanded_tendon_report_path,
-            export_rows=export_rows,
-            metrics=metrics,
-        )
-    except Exception:
-        LOG.exception("Matplotlib workspace plot failed; writing placeholder %s", workspace_plot_path)
-        _write_plot_placeholder(workspace_plot_path)
-        _write_plot_placeholder(workspace_report_path)
-        _write_plot_placeholder(commanded_tendon_report_path)
-    if _qt_plotting_is_safe():
-        _ensure_plot_qt_app()
-        _write_command_plot(command_plot_path=command_plot_path, export_rows=export_rows, metrics=metrics)
-    else:
-        _write_plot_placeholder(command_plot_path)
-        LOG.warning("Qt plotting backend unavailable; wrote placeholder modeling plots under %s", output_dir)
+
+    _write_collect_pose_debug_json(
+        path=debug_json_path,
+        output_dir=output_dir,
+        metadata=metadata,
+        summary=summary,
+        metrics=metrics,
+        export_rows=export_rows,
+        samples=samples,
+    )
+    for path, writer in [
+        (thesis_01_path, lambda: _write_collect_pose_thesis_01_workspace_coverage_3d(
+            path=thesis_01_path, export_rows=export_rows, metrics=metrics,
+        )),
+        (thesis_02_path, lambda: _write_collect_pose_thesis_02_command_and_workspace_2d(
+            path=thesis_02_path, export_rows=export_rows, metrics=metrics,
+        )),
+    ]:
+        try:
+            writer()
+        except Exception:
+            LOG.exception("Failed to render %s; writing placeholder", path)
+            _write_plot_placeholder(path)
+
     outputs: dict[str, Path] = {
-        "summary_text_path": summary_text_path,
         "export_jsonl_path": export_jsonl_path,
-        "workspace_plot_path": workspace_plot_path,
-        "command_plot_path": command_plot_path,
-        "workspace_report_path": workspace_report_path,
-        "commanded_tendon_space_report_path": commanded_tendon_report_path,
+        "debug_json_path": debug_json_path,
+        "thesis_01_path": thesis_01_path,
+        "thesis_02_path": thesis_02_path,
     }
     if legacy_written_path is not None:
         outputs["legacy_dat_path"] = legacy_written_path
@@ -330,22 +243,6 @@ def _write_plot_placeholder(path: Path) -> None:
             )
         )
     )
-
-
-def _qt_plotting_is_safe() -> bool:
-    """Return whether creating a Qt plotting application is safe in this process."""
-    if not _QT_AVAILABLE:
-        return False
-    if QApplication.instance() is not None:
-        return True
-    if os.environ.get("QT_QPA_PLATFORM"):
-        return True
-    if sys.platform.startswith("linux") and not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
-        return False
-    if sys.platform == "darwin" and not os.environ.get("DISPLAY"):
-        # Headless macOS pytest sessions can abort at QApplication construction.
-        return False
-    return True
 
 
 def _build_export_rows(*, samples) -> list[dict[str, Any]]:
@@ -434,236 +331,6 @@ def _build_legacy_dat_rows(*, export_rows: list[dict[str, Any]]) -> list[dict[st
     return rows
 
 
-def _write_workspace_plot(*, workspace_plot_path: Path, export_rows: list[dict[str, Any]], metrics: dict[str, Any]) -> None:
-    accepted_rows = [row for row in export_rows if row.get("accepted") and len(row.get("tip_position_xyz_mm", [])) == 3]
-    rejected_rows = [row for row in export_rows if not row.get("accepted") and len(row.get("tip_position_xyz_mm", [])) == 3]
-    accepted_points = [(float(row["tip_position_xyz_mm"][0]), float(row["tip_position_xyz_mm"][1])) for row in accepted_rows]
-    rejected_points = [(float(row["tip_position_xyz_mm"][0]), float(row["tip_position_xyz_mm"][1])) for row in rejected_rows]
-    fig, ax = create_figure(size="square")
-    if rejected_points:
-        ax.scatter(
-            [point[0] for point in rejected_points],
-            [point[1] for point in rejected_points],
-            s=18,
-            c=color("rejected"),
-            alpha=0.35,
-            linewidths=0,
-            label="Rejected",
-        )
-    if accepted_points:
-        alpha = 0.65 if len(accepted_points) < 500 else 0.35
-        ax.scatter(
-            [point[0] for point in accepted_points],
-            [point[1] for point in accepted_points],
-            s=16,
-            c=color("measured"),
-            alpha=alpha,
-            linewidths=0,
-            label="Accepted",
-        )
-    if accepted_points or rejected_points:
-        all_points = accepted_points + rejected_points
-        set_equal_xy(ax, x_values=[point[0] for point in all_points], y_values=[point[1] for point in all_points], minimum_span=5.0)
-    else:
-        ax.text(0.5, 0.5, "No robot-frame tip samples available", transform=ax.transAxes, ha="center", va="center")
-    style_axes(
-        ax,
-        title="Motor Babble Workspace Coverage",
-        xlabel="Robot-frame X position (mm)",
-        ylabel="Robot-frame Y position (mm)",
-    )
-    add_metric_box(
-        ax,
-        [
-            f"Accepted: {int(metrics.get('accepted_sample_count', len(accepted_points)) or 0)}",
-            f"Rejected: {int(metrics.get('rejected_sample_count', len(rejected_points)) or 0)}",
-            f"Mode: {str(metrics.get('dataset_mode', 'unknown')).replace('_', ' ')}",
-        ],
-        loc="upper right",
-    )
-    legend(ax, loc="lower right")
-    save_figure(fig, workspace_plot_path)
-
-
-def _write_workspace_report_plot(*, workspace_plot_path: Path, export_rows: list[dict[str, Any]], metrics: dict[str, Any]) -> None:
-    accepted_rows = [row for row in export_rows if row.get("accepted") and len(row.get("tip_position_xyz_mm", [])) == 3]
-    rejected_rows = [row for row in export_rows if not row.get("accepted") and len(row.get("tip_position_xyz_mm", [])) == 3]
-    accepted_points = [(float(row["tip_position_xyz_mm"][0]), float(row["tip_position_xyz_mm"][1])) for row in accepted_rows]
-    rejected_points = [(float(row["tip_position_xyz_mm"][0]), float(row["tip_position_xyz_mm"][1])) for row in rejected_rows]
-    trust_info = (
-        dict(metrics.get("run_trust"))
-        if isinstance(metrics.get("run_trust"), dict)
-        else (dict(metrics.get("run_trust_info")) if isinstance(metrics.get("run_trust_info"), dict) else {})
-    )
-    trust_mode = str(
-        metrics.get("run_trust_mode")
-        or trust_info.get("run_trust_mode")
-        or metrics.get("dataset_mode")
-        or "unknown"
-    )
-    valid_for_training = bool(
-        metrics.get("valid_for_model_training")
-        if metrics.get("valid_for_model_training") is not None
-        else trust_info.get("valid_for_model_training", bool(accepted_points))
-    )
-    fig, ax = create_figure(size="square")
-    if rejected_points:
-        ax.scatter(
-            [point[0] for point in rejected_points],
-            [point[1] for point in rejected_points],
-            s=18,
-            c=color("rejected"),
-            alpha=0.30,
-            linewidths=0,
-            label="Rejected",
-        )
-    if accepted_points:
-        alpha = 0.70 if len(accepted_points) < 500 else 0.40
-        ax.scatter(
-            [point[0] for point in accepted_points],
-            [point[1] for point in accepted_points],
-            s=16,
-            c=color("measured"),
-            alpha=alpha,
-            linewidths=0,
-            label="Accepted",
-        )
-    if accepted_points or rejected_points:
-        all_points = accepted_points + rejected_points
-        set_equal_xy(ax, x_values=[point[0] for point in all_points], y_values=[point[1] for point in all_points], minimum_span=5.0)
-    else:
-        ax.text(
-            0.5,
-            0.5,
-            "Servo-only run: no robot-frame tip labels\nnot valid for model training",
-            transform=ax.transAxes,
-            ha="center",
-            va="center",
-        )
-        set_equal_xy(ax, x_values=[-1.0, 1.0], y_values=[-1.0, 1.0], minimum_span=5.0)
-    metric_lines = [
-        f"Accepted: {int(metrics.get('accepted_sample_count', len(accepted_points)) or 0)}",
-        f"Rejected: {int(metrics.get('rejected_sample_count', len(rejected_points)) or 0)}",
-        f"Trust: {trust_mode.replace('_', ' ')}",
-        f"Training valid: {'yes' if valid_for_training else 'no'}",
-    ]
-    add_metric_box(ax, metric_lines, loc="upper right")
-    style_axes(
-        ax,
-        title="Modeling Workspace Coverage",
-        xlabel="Robot-frame X position (mm)",
-        ylabel="Robot-frame Y position (mm)",
-    )
-    legend(ax, loc="lower right")
-    save_figure(fig, workspace_plot_path)
-
-
-def _write_commanded_tendon_space_report(*, plot_path: Path, export_rows: list[dict[str, Any]], metrics: dict[str, Any]) -> None:
-    accepted_points = [
-        (float(row["resolved_pair_command_cm"][0]), float(row["resolved_pair_command_cm"][1]))
-        for row in export_rows
-        if row.get("accepted") and len(row.get("resolved_pair_command_cm", [])) == 2
-    ]
-    rejected_points = [
-        (float(row["resolved_pair_command_cm"][0]), float(row["resolved_pair_command_cm"][1]))
-        for row in export_rows
-        if not row.get("accepted") and len(row.get("resolved_pair_command_cm", [])) == 2
-    ]
-    fig, ax = create_figure(size="square")
-    if rejected_points:
-        ax.scatter(
-            [point[0] for point in rejected_points],
-            [point[1] for point in rejected_points],
-            s=18,
-            color=color("rejected"),
-            alpha=0.30,
-            linewidths=0,
-            label="Rejected",
-        )
-    if accepted_points:
-        ax.scatter(
-            [point[0] for point in accepted_points],
-            [point[1] for point in accepted_points],
-            s=18,
-            color=color("measured"),
-            alpha=0.60,
-            linewidths=0,
-            label="Accepted",
-        )
-    if accepted_points or rejected_points:
-        all_points = accepted_points + rejected_points
-        set_equal_xy(ax, x_values=[point[0] for point in all_points], y_values=[point[1] for point in all_points], minimum_span=0.2)
-    else:
-        ax.text(0.5, 0.5, "No pair-command rows available", transform=ax.transAxes, ha="center", va="center")
-    add_metric_box(
-        ax,
-        [
-            f"Commands: {int(metrics.get('command_step_count', 0) or 0)}",
-            f"Mode: {str(metrics.get('dataset_mode', 'unknown')).replace('_', ' ')}",
-        ],
-        loc="upper right",
-    )
-    style_axes(
-        ax,
-        title="Commanded Tendon Space",
-        xlabel="Axis A pair command (cm)",
-        ylabel="Axis B pair command (cm)",
-    )
-    legend(ax, loc="best")
-    save_figure(fig, plot_path)
-
-
-def _write_command_plot(*, command_plot_path: Path, export_rows: list[dict[str, Any]], metrics: dict[str, Any]) -> None:
-    image = _new_image(1280, 820)
-    painter = QPainter(image)
-    painter.setRenderHint(QPainter.Antialiasing, True)
-    _draw_title(
-        painter,
-        QRectF(34.0, 24.0, 1212.0, 58.0),
-        "MODELING DATASET COMMAND DISTRIBUTION",
-        "Resolved antagonistic pair commands and capture acceptance summary.",
-    )
-    scatter_rect = QRectF(36.0, 108.0, 820.0, 660.0)
-    summary_rect = QRectF(888.0, 108.0, 356.0, 660.0)
-    _draw_panel(painter, scatter_rect, "Pair Command Space")
-    _draw_panel(painter, summary_rect, "Acceptance Summary")
-    accepted_rows = [row for row in export_rows if row.get("accepted") and len(row.get("resolved_pair_command_cm", [])) == 2]
-    rejected_rows = [row for row in export_rows if not row.get("accepted") and len(row.get("resolved_pair_command_cm", [])) == 2]
-    _draw_xy_scatter(
-        painter,
-        scatter_rect.adjusted(22.0, 42.0, -22.0, -28.0),
-        accepted_points=[(float(row["resolved_pair_command_cm"][0]), float(row["resolved_pair_command_cm"][1])) for row in accepted_rows],
-        rejected_points=[(float(row["resolved_pair_command_cm"][0]), float(row["resolved_pair_command_cm"][1])) for row in rejected_rows],
-        x_label="Pair 1/3 command (cm)",
-        y_label="Pair 2/4 command (cm)",
-        empty_text="No pair-command rows were available.",
-    )
-    _draw_bar_chart(
-        painter,
-        summary_rect.adjusted(16.0, 38.0, -16.0, -320.0),
-        labels=["Accepted", "Rejected"],
-        values=[
-            float(metrics.get("accepted_sample_count", 0) or 0),
-            float(metrics.get("rejected_sample_count", 0) or 0),
-        ],
-        color=QColor(COLORS.scene_measurement),
-        y_label="Samples",
-        empty_text="No capture rows were available.",
-    )
-    phase_counts = dict(metrics.get("phase_counts", {}) or {})
-    _draw_bar_chart(
-        painter,
-        summary_rect.adjusted(16.0, 370.0, -16.0, -16.0),
-        labels=[str(key) for key in phase_counts],
-        values=[float(value) for value in phase_counts.values()],
-        color=QColor(COLORS.scene_residual),
-        y_label="Samples",
-        empty_text="No phase counts were recorded.",
-    )
-    painter.end()
-    image.save(str(command_plot_path))
-
-
 def _draw_xy_scatter(
     painter: QPainter,
     rect: QRectF,
@@ -737,3 +404,293 @@ def _map_point_xy(
     x = rect.left() + (rect.width() * x_ratio)
     y = rect.bottom() - (rect.height() * y_ratio)
     return QPointF(float(x), float(y))
+
+
+def _write_collect_pose_thesis_01_workspace_coverage_3d(
+    *,
+    path: Path,
+    export_rows: list[dict[str, Any]],
+    metrics: dict[str, Any],
+) -> None:
+    """Thesis figure 1: 3D scatter of accepted tip positions colored by time order.
+
+    Each point is one accepted training sample at its tip position in the
+    robot frame; color encodes its index in the collection sequence
+    (viridis from first to last). Reader sees the workspace extent AND the
+    order the babble walked through it. Mode-agnostic — works for
+    workspace_coverage, angular_test_mesh, hysteresis, or repeatability.
+    """
+    points: list[tuple[float, float, float]] = []
+    for row in export_rows:
+        tip = row.get("tip_position_xyz_mm")
+        if not (isinstance(tip, list) and len(tip) >= 3):
+            continue
+        try:
+            points.append((float(tip[0]), float(tip[1]), float(tip[2])))
+        except (TypeError, ValueError):
+            continue
+
+    fig, ax = create_3d_figure(size="thesis_3d")
+    if not points:
+        ax.text2D(0.5, 0.5, "No accepted tip positions available",
+                  transform=ax.transAxes, ha="center", va="center")
+        style_3d_axes(ax, title="")
+        fig.suptitle("Workspace Coverage During Babble Collection",
+                     fontsize=13, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+
+    xs = [point[0] for point in points]
+    ys = [point[1] for point in points]
+    zs = [point[2] for point in points]
+    indices = np.arange(len(points), dtype=float)
+
+    scatter = ax.scatter(
+        xs, ys, zs,
+        c=indices, cmap="viridis",
+        s=14, depthshade=True, alpha=0.85, linewidths=0,
+    )
+
+    set_equal_xyz(ax, x_values=xs, y_values=ys, z_values=zs, minimum_span=5.0, pad_fraction=0.08)
+    style_3d_axes(ax, xlabel="Robot X (mm)", ylabel="Robot Y (mm)", zlabel="Robot Z (mm)")
+
+    cbar = fig.colorbar(scatter, ax=ax, shrink=0.55, pad=0.12)
+    cbar.set_label("Sample index (time order)")
+    cbar.outline.set_edgecolor(color("grid"))
+
+    mode = str(metrics.get("dataset_mode", "unknown") or "unknown").replace("_", " ")
+    fig.suptitle(f"Workspace Coverage During Babble Collection  ({mode})",
+                 fontsize=13, fontweight="bold", x=0.04, ha="left")
+
+    workspace_span = dict(metrics.get("workspace_span_mm", {}) or {})
+    x_span = workspace_span.get("x_span_mm") or (max(xs) - min(xs))
+    y_span = workspace_span.get("y_span_mm") or (max(ys) - min(ys))
+    z_span = workspace_span.get("z_span_mm") or (max(zs) - min(zs))
+    accepted = int(metrics.get("accepted_sample_count", len(points)) or len(points))
+    rejected = int(metrics.get("rejected_sample_count", 0) or 0)
+    total = accepted + rejected
+    accept_rate = (accepted / total * 100.0) if total > 0 else 100.0
+    fig.text(
+        0.015, 0.02,
+        "  •  ".join(_compact_strip([
+            f"Mode: {mode}",
+            f"Accepted: {accepted}/{total}  ({accept_rate:.1f}%)",
+            f"Workspace span: X={x_span:.1f} mm  Y={y_span:.1f} mm  Z={z_span:.1f} mm",
+        ])),
+        fontsize=9, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white", "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
+def _write_collect_pose_thesis_02_command_and_workspace_2d(
+    *,
+    path: Path,
+    export_rows: list[dict[str, Any]],
+    metrics: dict[str, Any],
+) -> None:
+    """Thesis figure 2: stacked 2D scatters of command space (top) and tip XY (bottom).
+
+    Both colored by sample index so the reader can visually correlate a
+    command sample with its corresponding tip outcome — the same dot color
+    in the top and bottom panels is the same sample in time. Single shared
+    colorbar on the right.
+    """
+    commands: list[tuple[float, float]] = []
+    tip_xy: list[tuple[float, float]] = []
+    indices: list[int] = []
+    for index, row in enumerate(export_rows):
+        pair = row.get("requested_pair_command_cm")
+        tip = row.get("tip_position_xyz_mm")
+        if not (isinstance(pair, list) and len(pair) >= 2):
+            continue
+        if not (isinstance(tip, list) and len(tip) >= 2):
+            continue
+        try:
+            commands.append((float(pair[0]), float(pair[1])))
+            tip_xy.append((float(tip[0]), float(tip[1])))
+        except (TypeError, ValueError):
+            continue
+        indices.append(index)
+
+    with report_style() as plt:
+        fig, (ax_top, ax_bottom) = plt.subplots(
+            2, 1, figsize=(7.6, 7.6), constrained_layout=False,
+        )
+    fig.subplots_adjust(left=0.10, right=0.86, top=0.92, bottom=0.13, hspace=0.30)
+
+    if not commands or not tip_xy:
+        for ax in (ax_top, ax_bottom):
+            ax.text(0.5, 0.5, "No accepted samples available",
+                    transform=ax.transAxes, ha="center", va="center")
+        fig.suptitle("Command Space (top) and Tip Workspace XY (bottom)",
+                     fontsize=13, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+
+    color_values = np.asarray(indices, dtype=float)
+
+    cmd_x = [point[0] for point in commands]
+    cmd_y = [point[1] for point in commands]
+    sc_top = ax_top.scatter(cmd_x, cmd_y, c=color_values, cmap="viridis",
+                            s=14, alpha=0.85, linewidths=0)
+    style_axes(ax_top, xlabel="Pair 1/3 command (cm)", ylabel="Pair 2/4 command (cm)")
+    ax_top.set_title("Command space", loc="left", pad=8, fontsize=11, fontweight="bold")
+    ax_top.set_aspect("equal", adjustable="datalim")
+
+    tip_x = [point[0] for point in tip_xy]
+    tip_y = [point[1] for point in tip_xy]
+    ax_bottom.scatter(tip_x, tip_y, c=color_values, cmap="viridis",
+                      s=14, alpha=0.85, linewidths=0)
+    style_axes(ax_bottom, xlabel="Robot X (mm)", ylabel="Robot Y (mm)")
+    ax_bottom.set_title("Tip workspace (top-down XY)", loc="left", pad=8, fontsize=11, fontweight="bold")
+    ax_bottom.set_aspect("equal", adjustable="datalim")
+
+    cbar = fig.colorbar(sc_top, ax=(ax_top, ax_bottom), shrink=0.85, pad=0.025)
+    cbar.set_label("Sample index (time order)")
+    cbar.outline.set_edgecolor(color("grid"))
+
+    mode = str(metrics.get("dataset_mode", "unknown") or "unknown").replace("_", " ")
+    fig.suptitle(f"Command Space (top) and Tip Workspace XY (bottom)  —  {mode}",
+                 fontsize=13, fontweight="bold", x=0.04, ha="left")
+
+    cmd_range_x = max(cmd_x) - min(cmd_x)
+    cmd_range_y = max(cmd_y) - min(cmd_y)
+    tip_range_x = max(tip_x) - min(tip_x)
+    tip_range_y = max(tip_y) - min(tip_y)
+    fig.text(
+        0.015, 0.02,
+        "  •  ".join(_compact_strip([
+            f"Samples: {len(commands)}",
+            f"Command extent: pair_13 {cmd_range_x:.2f} cm, pair_24 {cmd_range_y:.2f} cm",
+            f"Tip XY extent: X {tip_range_x:.1f} mm, Y {tip_range_y:.1f} mm",
+        ])),
+        fontsize=9, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white", "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
+def _write_collect_pose_debug_json(
+    *,
+    path: Path,
+    output_dir: Path,
+    metadata,
+    summary,
+    metrics: dict[str, Any],
+    export_rows: list[dict[str, Any]],
+    samples,
+) -> None:
+    """Consolidate every diagnostic that doesn't make it onto the thesis figures."""
+    accepted = int(metrics.get("accepted_sample_count", 0) or 0)
+    rejected = int(metrics.get("rejected_sample_count", 0) or 0)
+    rejection_reasons = dict(metrics.get("rejection_reasons", {}) or {})
+    phase_counts: dict[str, int] = {}
+    for sample in samples:
+        phase = str(getattr(sample, "phase", "") or "")
+        phase_counts[phase] = phase_counts.get(phase, 0) + 1
+
+    # Compute workspace + command extents from export rows so this file is
+    # self-contained even when summary.json doesn't carry the precomputed stats.
+    tip_xyz = np.asarray(
+        [row.get("tip_position_xyz_mm") for row in export_rows
+         if isinstance(row.get("tip_position_xyz_mm"), list) and len(row.get("tip_position_xyz_mm")) >= 3],
+        dtype=float,
+    )
+    cmd_pair = np.asarray(
+        [row.get("requested_pair_command_cm") for row in export_rows
+         if isinstance(row.get("requested_pair_command_cm"), list) and len(row.get("requested_pair_command_cm")) >= 2],
+        dtype=float,
+    )
+    workspace_extent_mm = None
+    if tip_xyz.size:
+        workspace_extent_mm = {
+            "x_min": float(tip_xyz[:, 0].min()), "x_max": float(tip_xyz[:, 0].max()), "x_span": float(np.ptp(tip_xyz[:, 0])),
+            "y_min": float(tip_xyz[:, 1].min()), "y_max": float(tip_xyz[:, 1].max()), "y_span": float(np.ptp(tip_xyz[:, 1])),
+            "z_min": float(tip_xyz[:, 2].min()), "z_max": float(tip_xyz[:, 2].max()), "z_span": float(np.ptp(tip_xyz[:, 2])),
+        }
+    command_extent_cm = None
+    if cmd_pair.size:
+        command_extent_cm = {
+            "pair_13_min": float(cmd_pair[:, 0].min()), "pair_13_max": float(cmd_pair[:, 0].max()),
+            "pair_24_min": float(cmd_pair[:, 1].min()), "pair_24_max": float(cmd_pair[:, 1].max()),
+        }
+
+    provenance = dict(metrics.get("run_provenance", {}) or {})
+    trainability = {
+        "model_training_validity_status": metrics.get("model_training_validity_status"),
+        "model_training_validity_reason": metrics.get("model_training_validity_reason"),
+        "model_training_hard_invalidation_reasons": list(metrics.get("model_training_hard_invalidation_reasons", []) or []),
+        "model_training_warnings": list(metrics.get("model_training_warnings", []) or []),
+        "modeling_export_row_count": int(metrics.get("modeling_export_row_count", 0) or 0),
+        "modeling_legacy_row_count": int(metrics.get("modeling_legacy_row_count", 0) or 0),
+        "accepted_training_row_count": int(metrics.get("accepted_training_row_count", 0) or 0),
+        "accepted_rows_complete": bool(metrics.get("accepted_rows_complete")),
+        "dropped_samples_excluded_from_training": bool(metrics.get("dropped_samples_excluded_from_training")),
+        "valid_for_model_training": bool(metrics.get("valid_for_model_training")),
+        "valid_for_thesis_repeatability": bool(metrics.get("valid_for_thesis_repeatability")),
+        "lower_trust_active": bool(metrics.get("lower_trust_active")),
+    }
+    long_run_health = {
+        "recovered_packet_error_count": int(metrics.get("recovered_packet_error_count", 0) or 0),
+        "unrecovered_packet_error_count": int(metrics.get("unrecovered_packet_error_count", 0) or 0),
+        "servo_telemetry_retry_count": int(metrics.get("servo_telemetry_retry_count", 0) or 0),
+        "dropped_post_motion_telemetry_samples": int(metrics.get("dropped_post_motion_telemetry_samples", 0) or 0),
+        "dropped_pre_motion_telemetry_samples": int(metrics.get("dropped_pre_motion_telemetry_samples", 0) or 0),
+        "consecutive_post_motion_packet_failures": int(metrics.get("consecutive_post_motion_packet_failures", 0) or 0),
+        "total_post_motion_packet_failure_events": int(metrics.get("total_post_motion_packet_failure_events", 0) or 0),
+        "write_goal_packet_error_count": int(metrics.get("write_goal_packet_error_count", 0) or 0),
+    }
+    review_payload: dict[str, Any] | None = None
+    review_path = output_dir / "run_review.json"
+    if review_path.exists():
+        try:
+            review_payload = json.loads(review_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            review_payload = {"parse_error": True}
+
+    payload = {
+        "schema_version": "1.0",
+        "run_id": getattr(metadata, "run_id", None),
+        "experiment_name": getattr(metadata, "experiment_name", "collect_pose_command_dataset"),
+        "status": getattr(summary, "status", None),
+        "dataset_mode": metrics.get("dataset_mode"),
+        "run_label": metrics.get("run_label"),
+        "dataset_tag": metrics.get("dataset_tag"),
+        "acceptance": {
+            "accepted_sample_count": accepted,
+            "rejected_sample_count": rejected,
+            "acceptance_rate": (accepted / (accepted + rejected)) if (accepted + rejected) > 0 else None,
+            "rejection_reasons": rejection_reasons,
+        },
+        "phase_counts": phase_counts,
+        "workspace_extent_mm": workspace_extent_mm,
+        "command_extent_cm": command_extent_cm,
+        "trainability": trainability,
+        "provenance": provenance,
+        "long_run_health": long_run_health,
+        "run_review": review_payload,
+        "note": (
+            "Per-pair time alignment between tracker frames and servo telemetry "
+            "is characterized by servo_tracker_sync_validation. The same pairing "
+            "mechanism is used during this experiment; see docs/timing_audit.md."
+        ),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, default=_collect_pose_json_default), encoding="utf-8")
+
+
+def _compact_strip(items: list[str | None]) -> list[str]:
+    return [str(item) for item in items if item]
+
+
+def _collect_pose_json_default(value: Any) -> Any:
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, Path):
+        return str(value)
+    raise TypeError(f"Unserialisable type: {type(value).__name__}")

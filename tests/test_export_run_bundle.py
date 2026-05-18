@@ -68,7 +68,7 @@ def _write_run(root: Path, experiment: str, name: str, *, sample_bytes: int = 0)
         json.dumps({"review_status": "debug", "include_in_evidence_index": False}),
         encoding="utf-8",
     )
-    (run_dir / "modeling_workspace_coverage_report.png").write_bytes(b"\x89PNG\r\n\x1a\nreport")
+    (run_dir / "thesis_01_workspace_coverage_3d.png").write_bytes(b"\x89PNG\r\n\x1a\nreport")
     (run_dir / "dashboard.png").write_bytes(b"\x89PNG\r\n\x1a\ndashboard")
     debug_dir = run_dir / "debug"
     debug_dir.mkdir()
@@ -98,7 +98,7 @@ def test_export_run_bundle_writes_manifest_report_figures_and_trust_block(tmp_pa
     assert (result.bundle_dir / "failure_context.json").exists()
     assert (result.bundle_dir / "dataset_quality_summary.json").exists()
     assert (result.bundle_dir / "dataset_quality_summary.txt").exists()
-    assert (result.bundle_dir / "modeling_workspace_coverage_report.png").exists()
+    assert (result.bundle_dir / "thesis_01_workspace_coverage_3d.png").exists()
     assert not (result.bundle_dir / "dashboard.png").exists()
     manifest = json.loads((result.bundle_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["experiment_name"] == "collect_pose_command_dataset"

@@ -1653,19 +1653,19 @@ class ExperimentController:
             from continuum_robot.experiments.modeling_dataset_outputs import build_modeling_dataset_summary_pairs
 
             metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
-            workspace_plot_path = bundle.paths.output_dir / "modeling_workspace_coverage.png"
-            command_plot_path = bundle.paths.output_dir / "modeling_command_distribution.png"
+            thesis_01_path = bundle.paths.output_dir / "thesis_01_workspace_coverage_3d.png"
+            thesis_02_path = bundle.paths.output_dir / "thesis_02_command_and_workspace_2d.png"
+            debug_path = bundle.paths.output_dir / "debug.json"
             export_jsonl_path = bundle.paths.output_dir / "modeling_dataset_export.jsonl"
-            summary_text_path = bundle.paths.output_dir / "modeling_dataset_summary.txt"
             legacy_dat_path = bundle.paths.output_dir / "modeling_dataset_legacy_compat.dat"
             pairs.extend(build_modeling_dataset_summary_pairs(metrics=metrics))
             pairs.extend(
                 [
-                    ("Workspace Plot", str(workspace_plot_path) if workspace_plot_path.exists() else "not written"),
-                    ("Command Plot", str(command_plot_path) if command_plot_path.exists() else "not written"),
+                    ("Workspace Coverage (3D)", str(thesis_01_path) if thesis_01_path.exists() else "not written"),
+                    ("Command + Workspace (2D)", str(thesis_02_path) if thesis_02_path.exists() else "not written"),
+                    ("Debug JSON", str(debug_path) if debug_path.exists() else "not written"),
                     ("Export JSONL", str(export_jsonl_path) if export_jsonl_path.exists() else "not written"),
                     ("Legacy DAT", str(legacy_dat_path) if legacy_dat_path.exists() else "not written"),
-                    ("Summary Note", str(summary_text_path) if summary_text_path.exists() else "not written"),
                 ]
             )
             return pairs

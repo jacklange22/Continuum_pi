@@ -332,7 +332,7 @@ def _classify_file(path: Path) -> str:
     name = path.name.lower()
     if any(marker in name for marker in DEBUG_NAME_MARKERS) or "debug" in lower:
         return "debug"
-    if name.endswith("_report.png") or "report" in name:
+    if name.endswith("_report.png") or "report" in name or name.startswith("thesis_"):
         return "report_figure"
     if name.endswith(".png"):
         return "figure"

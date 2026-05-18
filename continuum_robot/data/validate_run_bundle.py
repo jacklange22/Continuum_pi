@@ -34,8 +34,8 @@ EXPECTED_REPORT_FIGURES = {
         "pretension_final_state_report.png",
     ],
     "collect_pose_command_dataset": [
-        "modeling_workspace_coverage_report.png",
-        "commanded_tendon_space_report.png",
+        "thesis_01_workspace_coverage_3d.png",
+        "thesis_02_command_and_workspace_2d.png",
     ],
     "two_segment_startup_validation": [
         "two_segment_startup_positions_report.png",

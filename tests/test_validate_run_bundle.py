@@ -46,8 +46,8 @@ def _write_valid_collect_pose_run(root: Path) -> Path:
     }
     (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
     (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
-    (run_dir / "modeling_workspace_coverage_report.png").write_bytes(b"\x89PNG\r\n\x1a\n")
-    (run_dir / "commanded_tendon_space_report.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (run_dir / "thesis_01_workspace_coverage_3d.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (run_dir / "thesis_02_command_and_workspace_2d.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     return run_dir
 
 

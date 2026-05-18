@@ -316,7 +316,11 @@ def summarize_run(run_dir: Path) -> ManagedRunSummary:
         runtime_tip_trust_status=str(_first_value(runtime_tip.get("trust_status"), runtime_tip.get("trust"), "")),
         registration_summary=_format_registration(registration),
         pretension_startup_summary=_format_startup_summary(metrics, metadata_provenance, run_provenance),
-        report_figures=_relative_files(run_dir, lambda path: path.suffix.lower() == ".png" and "_report" in path.name),
+        report_figures=_relative_files(
+            run_dir,
+            lambda path: path.suffix.lower() == ".png"
+            and ("_report" in path.name or path.name.startswith("thesis_")),
+        ),
         metrics_files=_relative_files(run_dir, lambda path: path.suffix.lower() == ".csv"),
         samples_present=samples_path.exists(),
         samples_size_bytes=samples_path.stat().st_size if samples_path.exists() else 0,

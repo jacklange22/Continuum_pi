@@ -237,8 +237,8 @@ def _write_fixture_collect_pose_run(root: Path) -> Path:
     (run_dir / "config_snapshot.yaml").write_text("dry_run: true\n", encoding="utf-8")
     (run_dir / "metrics.csv").write_text("metric,value\naccepted,0\n", encoding="utf-8")
     (run_dir / "samples.jsonl").write_text('{"fixture":true}\n', encoding="utf-8")
-    (run_dir / "modeling_workspace_coverage_report.png").write_bytes(b"\x89PNG\r\n\x1a\nworkspace")
-    (run_dir / "commanded_tendon_space_report.png").write_bytes(b"\x89PNG\r\n\x1a\ncommand")
+    (run_dir / "thesis_01_workspace_coverage_3d.png").write_bytes(b"\x89PNG\r\n\x1a\nworkspace")
+    (run_dir / "thesis_02_command_and_workspace_2d.png").write_bytes(b"\x89PNG\r\n\x1a\ncommand")
     return run_dir
 
 
