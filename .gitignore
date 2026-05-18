@@ -18,8 +18,12 @@ data/logs/**
 data/tmp/**
 data/cache/**
 
-# Huge raw experiment files are synced Pi<->Mac with scripts/sync_pi_dataset.py,
-# not through GitHub. Keep summaries/manifests/plots in Git instead.
+# Generated experiment runs are synced Pi<->Mac with scripts/sync_pi_dataset.py,
+# not through GitHub. This keeps git status usable while the Pi generates data.
+data/experiments/**
+!data/experiments/.gitkeep
+
+# Historical safety net for already-tracked raw dataset files.
 data/experiments/**/samples.jsonl
 data/experiments/**/modeling_dataset_export.jsonl
 data/experiments/**/modeling_dataset_legacy_compat.dat

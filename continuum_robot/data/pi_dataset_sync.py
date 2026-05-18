@@ -125,6 +125,29 @@ def build_rsync_pull_plan(
     )
 
 
+def build_experiments_tree_pull_plan(
+    *,
+    ssh_target: str,
+    remote_project_root: str | PurePosixPath,
+    local_mirror_root: Path,
+    dry_run: bool = False,
+    compress: bool = False,
+    delete: bool = False,
+) -> RsyncPlan:
+    """Return the rsync command used to pull the full ``data/experiments`` tree."""
+
+    remote_experiments_path = PurePosixPath(str(remote_project_root)) / "data" / "experiments"
+    local_experiments_dir = Path(local_mirror_root).expanduser().resolve() / "data" / "experiments"
+    return build_rsync_pull_plan(
+        ssh_target=ssh_target,
+        remote_run_path=remote_experiments_path,
+        local_run_dir=local_experiments_dir,
+        dry_run=dry_run,
+        compress=compress,
+        delete=delete,
+    )
+
+
 def run_rsync_plan(plan: RsyncPlan) -> None:
     """Execute a prepared rsync plan."""
 
@@ -272,6 +295,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "pull":
             return _cmd_pull(args)
+        if args.command == "pull-all":
+            return _cmd_pull_all(args)
         if args.command == "manifest":
             return _cmd_manifest(args)
         if args.command == "git-clean":
@@ -336,6 +361,31 @@ def _cmd_pull(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_pull_all(args: argparse.Namespace) -> int:
+    ssh_target = str(args.pi or "").strip()
+    if not ssh_target:
+        raise ValueError("--pi is required, e.g. --pi continuum-pi@10.28.63.49")
+    plan = build_experiments_tree_pull_plan(
+        ssh_target=ssh_target,
+        remote_project_root=PurePosixPath(str(args.remote_project_root or DEFAULT_REMOTE_PROJECT_ROOT)),
+        local_mirror_root=Path(args.local_mirror_root),
+        dry_run=bool(args.dry_run),
+        compress=bool(args.compress),
+        delete=bool(args.delete),
+    )
+    print("Rsync command:")
+    print(plan.shell_command)
+    if bool(args.print_only):
+        return 0
+    run_rsync_plan(plan)
+    if bool(args.dry_run):
+        return 0
+    print(f"Synced experiment tree: {plan.destination}")
+    print("Training/modeling data is under:")
+    print(plan.destination)
+    return 0
+
+
 def _cmd_manifest(args: argparse.Namespace) -> int:
     manifest = write_dataset_sync_manifest(
         run_dir=Path(args.run_dir),
@@ -390,6 +440,19 @@ def _build_parser() -> argparse.ArgumentParser:
     pull.add_argument("--delete", action="store_true", help="Mirror deletes from Pi into local copy. Off by default for safety.")
     pull.add_argument("--dry-run", action="store_true", help="Show what rsync would transfer without copying.")
     pull.add_argument("--print-only", action="store_true", help="Print the rsync command without executing it.")
+
+    pull_all = subparsers.add_parser("pull-all", help="Pull the full data/experiments tree from the Pi.")
+    pull_all.add_argument(
+        "--pi",
+        default=DEFAULT_PI_SSH_TARGET,
+        help=f"SSH target. Defaults to {DEFAULT_PI_SSH_TARGET}.",
+    )
+    pull_all.add_argument("--remote-project-root", default=str(DEFAULT_REMOTE_PROJECT_ROOT), help="Project root path on the Pi.")
+    pull_all.add_argument("--local-mirror-root", default=str(DEFAULT_LOCAL_MIRROR_ROOT), help="Local repo root/mirror root.")
+    pull_all.add_argument("--compress", action="store_true", help="Pass -z to rsync. Useful on slow networks; slower on weak CPUs.")
+    pull_all.add_argument("--delete", action="store_true", help="Mirror deletes from Pi into local copy. Off by default for safety.")
+    pull_all.add_argument("--dry-run", action="store_true", help="Show what rsync would transfer without copying.")
+    pull_all.add_argument("--print-only", action="store_true", help="Print the rsync command without executing it.")
 
     manifest = subparsers.add_parser("manifest", help="Write dataset_sync_manifest.json for a local run folder.")
     manifest.add_argument("--run-dir", required=True, help="Local run directory.")

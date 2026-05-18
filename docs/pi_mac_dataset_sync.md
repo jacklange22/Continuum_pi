@@ -10,6 +10,30 @@ The Pi writes runs there. The Mac sync tool copies runs into the same folder
 structure in this repo, so the GUI Modeling/ANN tabs can discover them normally.
 Raw JSONL files stay local and are ignored by Git.
 
+## Pull Everything From The Pi
+
+From the Mac:
+
+```bash
+scripts/pull_pi_data.sh all
+```
+
+This pulls the full Pi experiment tree:
+
+```text
+continuum-pi@10.28.63.49:/home/continuum-pi/Continuum_pi/data/experiments/
+```
+
+into the Mac repo at:
+
+```text
+data/experiments/
+```
+
+This is the normal "make my Mac have the Pi datasets" command. It is resumable:
+if the transfer stops, run it again and `rsync` continues from what is already
+present. It does not delete local Mac files by default.
+
 ## Pull Latest Dataset
 
 From the Mac:
@@ -67,20 +91,10 @@ python3 scripts/ann_model_sweep.py \
 
 ## What Not To Commit
 
-Do not commit raw datapoint files:
-
-```text
-samples.jsonl
-modeling_dataset_export.jsonl
-modeling_dataset_legacy_compat.dat
-workspace_map_visits.jsonl
-raw_point_samples.jsonl
-rejected_samples.jsonl
-sample_failure_events.jsonl
-```
-
-They are ignored in `.gitignore`. Keep summaries/configs/plots in the run folder
-if you want, but check staged files before pushing.
+Do not commit generated experiment runs. They are ignored in `.gitignore` and
+move through `rsync`, not GitHub. If you intentionally want one small summary or
+plot in Git for thesis documentation, copy it into `docs/` or force-add that
+specific file after checking its size.
 
 ## If Git Push Fails Because Of JSONL Files
 

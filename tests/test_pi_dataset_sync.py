@@ -4,6 +4,7 @@ import json
 from pathlib import Path, PurePosixPath
 
 from continuum_robot.data.pi_dataset_sync import (
+    build_experiments_tree_pull_plan,
     build_rsync_pull_plan,
     list_tracked_raw_data_files,
     local_run_dir_for_relative_path,
@@ -44,6 +45,19 @@ def test_build_rsync_pull_plan_uses_resume_flags(tmp_path: Path) -> None:
     assert plan.source == "pi@continuum-pi.local:/home/continuum-pi/Continuum_pi/data/experiments/demo/run/"
     assert plan.destination == destination.resolve()
     assert not destination.exists()
+
+
+def test_build_experiments_tree_pull_plan_targets_data_experiments(tmp_path: Path) -> None:
+    plan = build_experiments_tree_pull_plan(
+        ssh_target="pi@continuum-pi.local",
+        remote_project_root=PurePosixPath("/home/continuum-pi/Continuum_pi"),
+        local_mirror_root=tmp_path / "mirror",
+        dry_run=True,
+    )
+
+    assert plan.source == "pi@continuum-pi.local:/home/continuum-pi/Continuum_pi/data/experiments/"
+    assert plan.destination == tmp_path / "mirror" / "data" / "experiments"
+    assert "--dry-run" in plan.args
 
 
 def test_local_run_dir_preserves_data_experiments_layout(tmp_path: Path) -> None:
