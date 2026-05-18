@@ -21,6 +21,7 @@ class XyJoystickWidget(QWidget):
     """
 
     position_changed = Signal(float, float)
+    drag_released = Signal(float, float)
 
     def __init__(self, *, radius_cm: float = 1.0, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -156,7 +157,9 @@ class XyJoystickWidget(QWidget):
             return
         self._dragging = False
         self.setCursor(Qt.OpenHandCursor if self._enabled_for_motion else Qt.ForbiddenCursor)
-        # Puck stays where placed; no auto-center.
+        # Puck stays where placed. Emit a release-commit so the parent can flush
+        # the final position even if the throttle timer skipped the last move.
+        self.drag_released.emit(*self._target_xy_cm)
 
     # ----- helpers ---------------------------------------------------------
 
