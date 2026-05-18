@@ -49,6 +49,7 @@ exercised in tests and as a preview before committing to a 2-hour real run.
 """
 from __future__ import annotations
 
+import logging
 import math
 import random
 from dataclasses import dataclass, field
@@ -69,6 +70,15 @@ from continuum_robot.experiments.validation import (
     STATUS_PARTIAL_SUCCESS,
     STATUS_SUCCESS,
 )
+from continuum_robot.tracking.runtime_tip_policy import evaluate_runtime_tip_trust
+
+
+LOG = logging.getLogger(__name__)
+
+# Resolved canonical workflow for runtime tip policy lookups. The string is
+# accepted by ``_WORKFLOW_ALIASES`` in ``runtime_tip_policy`` and maps to
+# ``WORKFLOW_REPEATABILITY``, the same trust bucket as the 17-point experiment.
+RUNTIME_TIP_POLICY_WORKFLOW = "workspace_repeatability_map"
 
 
 # Vogel-spiral defaults for a single-segment cable robot. The defaults were
@@ -367,6 +377,137 @@ def _load_neutral_ticks(session: ExperimentSession, servo_ids: list[int]) -> lis
 
 
 # ---------------------------------------------------------------------------
+# Tracker-gate helpers (mirror single_segment_repeatability so the workspace
+# map honors the same runtime tip policy + freshness + tool-presence rules).
+# ---------------------------------------------------------------------------
+
+
+def _workspace_tracker_gate_status(
+    *,
+    snapshot,
+    tool_id: str,
+    max_tracker_age_s: float,
+    require_robot_frame_tip: bool,
+    allow_debug_coil_as_tip: bool,
+) -> dict[str, Any]:
+    """Evaluate one snapshot against the workspace-map capture gate.
+
+    The gate accepts the snapshot iff:
+      * tracker is streaming healthy / degraded, not stale, not over the age cap
+      * the configured tool is present, valid, and not in an invalid state
+      * if ``require_robot_frame_tip``, the runtime tip policy permits the
+        ``workspace_repeatability_map`` workflow and ``T_robot_tip`` exists.
+
+    ``allow_debug_coil_as_tip`` toggles ``allow_lower_trust`` for the policy
+    check. With coil-as-tip mode active the policy is already thesis-trusted,
+    so this flag is only needed for the lower-trust modes (latest_accepted /
+    quick_4_point) the operator may want to bench-test against.
+    """
+    tool_key = str(tool_id or "0A").upper()
+    tool = snapshot.tools.get(tool_key)
+    reasons: list[str] = []
+    age = snapshot.tracker_data_age_s
+    if snapshot.canonical_state not in {"streaming_healthy", "streaming_degraded"}:
+        reasons.append(f"tracker_state={snapshot.canonical_state}")
+    if snapshot.tracker_data_stale:
+        reasons.append("tracker_data_stale")
+    if age is None:
+        reasons.append("missing_tracker_age")
+    elif float(age) > float(max_tracker_age_s):
+        reasons.append(f"tracker_age_{float(age):.3f}s_exceeds_{float(max_tracker_age_s):.3f}s")
+    if tool is None:
+        reasons.append(f"missing_tool_{tool_key}")
+    else:
+        if not tool.present:
+            reasons.append(f"tool_{tool_key}_not_present")
+        if tool.valid is False:
+            reasons.append(f"tool_{tool_key}_invalid")
+        if tool.translation_mm is None:
+            reasons.append(f"tool_{tool_key}_missing_translation")
+        if str(tool.tracking_state).lower() in {"invalid", "missing", "out_of_volume"}:
+            reasons.append(f"tool_{tool_key}_state_{tool.tracking_state}")
+    if require_robot_frame_tip:
+        policy = evaluate_runtime_tip_trust(
+            snapshot=snapshot,
+            workflow=RUNTIME_TIP_POLICY_WORKFLOW,
+            allow_lower_trust=bool(allow_debug_coil_as_tip),
+        )
+        if not policy.allowed_for_workflow:
+            reasons.extend(policy.reasons or ["runtime_tip_policy_not_allowed"])
+        if policy.allowed_for_workflow and not policy.thesis_trusted:
+            reasons.append(f"runtime_tip_trust_{policy.trust_label}")
+        if snapshot.T_robot_tip is None:
+            reasons.append("missing_T_robot_tip")
+    return {
+        "accepted": not reasons,
+        "reason": "ok" if not reasons else "; ".join(reasons),
+        "tracker_age_s": None if age is None else float(age),
+        "tracker_frame_id": snapshot.last_frame_number,
+        "tip_pose_status": snapshot.tip_pose_status,
+        "runtime_tip_calibration_state": snapshot.runtime_tip_calibration_state,
+        "runtime_tip_mode": getattr(snapshot, "runtime_tip_mode", None),
+        "runtime_tip_trust_level": (
+            evaluate_runtime_tip_trust(
+                snapshot=snapshot,
+                workflow=RUNTIME_TIP_POLICY_WORKFLOW,
+                allow_lower_trust=bool(allow_debug_coil_as_tip),
+            ).trust_label
+        ),
+        "tool_id": tool_key,
+        "tool_present": bool(tool.present) if tool is not None else False,
+        "tool_valid": tool.valid if tool is not None else None,
+        "tool_tracking_state": tool.tracking_state if tool is not None else "missing",
+    }
+
+
+def _wait_for_valid_workspace_capture(
+    *,
+    session: ExperimentSession,
+    tool_id: str,
+    max_tracker_age_s: float,
+    timeout_s: float,
+    poll_interval_s: float,
+    require_robot_frame_tip: bool,
+    allow_debug_coil_as_tip: bool,
+) -> tuple[Any, dict[str, Any]]:
+    """Poll the tracker until the workspace gate accepts a snapshot or we time out."""
+    deadline = session.context.monotonic_fn() + float(timeout_s)
+    snapshot = session.context.tracking_service.get_snapshot()
+    gate = _workspace_tracker_gate_status(
+        snapshot=snapshot,
+        tool_id=tool_id,
+        max_tracker_age_s=max_tracker_age_s,
+        require_robot_frame_tip=require_robot_frame_tip,
+        allow_debug_coil_as_tip=allow_debug_coil_as_tip,
+    )
+    if gate["accepted"]:
+        return snapshot, gate
+    while session.context.monotonic_fn() < deadline:
+        session.raise_if_stop_requested()
+        session.context.sleep_fn(float(poll_interval_s))
+        snapshot = session.context.tracking_service.get_snapshot()
+        gate = _workspace_tracker_gate_status(
+            snapshot=snapshot,
+            tool_id=tool_id,
+            max_tracker_age_s=max_tracker_age_s,
+            require_robot_frame_tip=require_robot_frame_tip,
+            allow_debug_coil_as_tip=allow_debug_coil_as_tip,
+        )
+        if gate["accepted"]:
+            return snapshot, gate
+    return snapshot, gate
+
+
+def _matrix_translation_mm(matrix: Any) -> list[float] | None:
+    if matrix is None:
+        return None
+    arr = np.asarray(matrix, dtype=float)
+    if arr.shape != (4, 4):
+        return None
+    return [float(arr[0][3]), float(arr[1][3]), float(arr[2][3])]
+
+
+# ---------------------------------------------------------------------------
 # Experiment class
 # ---------------------------------------------------------------------------
 
@@ -515,6 +656,48 @@ class WorkspaceRepeatabilityMapExperiment(BaseExperiment):
         if snapshot is None:
             raise RuntimeError(
                 "Tracker snapshot is unavailable; start the tracker before launching the workspace map."
+            )
+        # Runtime tip policy gate. Coil-as-tip is thesis-trusted by policy and
+        # passes here without needing ``allow_debug_coil_as_tip``; the flag is
+        # only relevant for the lower-trust modes (latest_accepted / quick_4_pt).
+        if bool(self.config.require_robot_frame_tip):
+            policy = evaluate_runtime_tip_trust(
+                snapshot=snapshot,
+                workflow=RUNTIME_TIP_POLICY_WORKFLOW,
+                allow_lower_trust=bool(self.config.allow_debug_coil_as_tip),
+            )
+            if not policy.allowed_for_workflow:
+                raise RuntimeError(
+                    "Workspace repeatability map requires a thesis_trusted runtime tip policy outcome; "
+                    f"requested workflow={policy.requested_workflow}, "
+                    f"resolved canonical workflow={policy.workflow}, "
+                    f"mode={policy.mode}, trust={policy.trust_label}, "
+                    f"state={snapshot.runtime_tip_calibration_state}, tip pose={snapshot.tip_pose_status}, "
+                    f"reasons={policy.reasons or ['policy_not_allowed']}."
+                )
+            if not policy.thesis_trusted and not bool(self.config.allow_debug_coil_as_tip):
+                raise RuntimeError(
+                    "Workspace repeatability map is blocked because the active runtime tip path is not "
+                    f"thesis_trusted; mode={policy.mode}, trust={policy.trust_label}. Switch tracking to "
+                    "coil_as_tip in the Registration tab, or set allow_debug_coil_as_tip=true to accept the "
+                    "lower-trust path for a bench-only run."
+                )
+            if snapshot.T_robot_tip is None:
+                raise RuntimeError(
+                    f"Live robot-frame tip pose must be active; tip pose status is {snapshot.tip_pose_status}."
+                )
+        # Tracker-gate dry-fire so we surface freshness / tool issues before
+        # the run starts rather than at visit 1.
+        gate = _workspace_tracker_gate_status(
+            snapshot=snapshot,
+            tool_id=self.config.tool_id,
+            max_tracker_age_s=float(self.config.max_tracker_age_s),
+            require_robot_frame_tip=bool(self.config.require_robot_frame_tip),
+            allow_debug_coil_as_tip=bool(self.config.allow_debug_coil_as_tip),
+        )
+        if not gate["accepted"]:
+            raise RuntimeError(
+                f"Tracker capture gate is blocked before run start: {gate['reason']}."
             )
 
     # --- execute -----------------------------------------------------------
@@ -682,8 +865,15 @@ class WorkspaceRepeatabilityMapExperiment(BaseExperiment):
         visit_in_cycle: int,
         target: WorkspaceMapTarget,
     ) -> dict[str, Any] | None:
+        """Run one full neutral → target → capture cycle on real hardware.
+
+        Mirrors ``single_segment_repeatability._capture_after_move``: the
+        tracker gate (freshness, runtime tip policy, tool presence) decides
+        whether the capture is accepted, the rejection reason is recorded into
+        the sample's ``extra`` payload, and ``sample_from_tracking_snapshot``
+        is called with the canonical kwargs the downstream bundle expects.
+        """
         servo_service = session.context.servo_service
-        tracking_service = session.context.tracking_service
 
         # 1) Return to neutral first.
         servo_service.command_displacement(
@@ -695,40 +885,111 @@ class WorkspaceRepeatabilityMapExperiment(BaseExperiment):
         self._sleep(self.config.neutral_settle_s)
 
         # 2) Command the target.
-        servo_service.command_displacement(
-            tendon_displacements_cm=list(target.cable_deltas_cm),
+        requested_cm = [float(value) for value in target.cable_deltas_cm]
+        command = servo_service.command_displacement(
+            tendon_displacements_cm=list(requested_cm),
             neutral_ticks=list(self._neutral_ticks),
             servo_ids=list(self._servo_ids),
             motion_workflow="experiment_motion",
         )
+        commanded_motor_values = {
+            str(servo_id): int(goal) for servo_id, goal in command.positions_by_id.items()
+        }
         self._sleep(self.config.target_settle_s)
 
-        # 3) Capture one tracker sample at the target.
-        snapshot = tracking_service.get_snapshot() if tracking_service is not None else None
-        sample = sample_from_tracking_snapshot(
+        # 3) Wait for a snapshot that passes the runtime gate.
+        snapshot, gate = _wait_for_valid_workspace_capture(
             session=session,
+            tool_id=self.config.tool_id,
+            max_tracker_age_s=float(self.config.max_tracker_age_s),
+            timeout_s=float(self.config.capture_timeout_s),
+            poll_interval_s=float(self.config.capture_poll_interval_s),
+            require_robot_frame_tip=bool(self.config.require_robot_frame_tip),
+            allow_debug_coil_as_tip=bool(self.config.allow_debug_coil_as_tip),
+        )
+        runtime_tip_policy = evaluate_runtime_tip_trust(
+            snapshot=snapshot,
+            workflow=RUNTIME_TIP_POLICY_WORKFLOW,
+            allow_lower_trust=bool(self.config.allow_debug_coil_as_tip),
+        )
+        robot_tip_translation = _matrix_translation_mm(getattr(snapshot, "T_robot_tip", None))
+
+        flags = [] if gate["accepted"] else ["capture_rejected", str(gate["reason"])]
+        if getattr(snapshot, "registration_state", "") != "loaded":
+            flags.append("registration_missing")
+        if (
+            getattr(snapshot, "T_robot_tip", None) is not None
+            and getattr(snapshot, "tip_pose_status", "") in {"ok", "coil_as_tip"}
+        ):
+            flags.append("full_pose_available")
+        if not gate["accepted"]:
+            LOG.warning(
+                "workspace_repeatability_map capture rejected | visit=%s target_index=%s reason=%s",
+                int(visit_position),
+                int(target.target_index),
+                gate["reason"],
+            )
+
+        extra = {
+            "protocol": "workspace_repeatability_map_vogel_from_neutral",
+            "capture_role": "workspace_map_visit",
+            "capture_accepted": bool(gate["accepted"]),
+            "capture_reject_reason": None if gate["accepted"] else str(gate["reason"]),
+            "tracker_gate": gate,
+            "visit_position": int(visit_position),
+            "cycle_index": int(cycle_index),
+            "visit_in_cycle": int(visit_in_cycle),
+            "target_index": int(target.target_index),
+            "target_label": str(target.label),
+            "target_amplitude_mm": float(target.amplitude_mm),
+            "target_angle_deg": float(target.angle_deg),
+            "target_x_mm": float(target.x_mm),
+            "target_y_mm": float(target.y_mm),
+            "cable_deltas_cm": list(target.cable_deltas_cm),
+            "commanded_cable_displacement_mm": [float(value) for value in target.cable_deltas_mm],
+            "commanded_cable_displacement_cm": list(requested_cm),
+            "resolved_servo_goal_ticks": dict(commanded_motor_values),
+            "robot_frame_tip_pose_used": {
+                "translation_mm": robot_tip_translation,
+                "status": getattr(snapshot, "tip_pose_status", None),
+            },
+            "tracker_stale_age_s": getattr(snapshot, "tracker_data_age_s", None),
+            "tracker_frame_number": getattr(snapshot, "last_frame_number", None),
+            "runtime_tip_mode": str(
+                getattr(snapshot, "runtime_tip_mode", "latest_accepted") or "latest_accepted"
+            ),
+            "runtime_tip_trust_level": runtime_tip_policy.trust_label,
+            "runtime_tip_policy": runtime_tip_policy.to_dict(),
+            "runtime_tip_identity_fallback": bool(
+                getattr(snapshot, "runtime_tip_identity_fallback", False)
+            ),
+            "rejected": not bool(gate["accepted"]),
+            # Downstream analysis expects ``position_mm`` in the per-sample
+            # extra payload. Robot-frame tip translation is the canonical
+            # source; under coil-as-tip mode this is the 0A coil origin in
+            # the robot frame, which is exactly what the policy permits.
+            "position_mm": (
+                list(robot_tip_translation)
+                if robot_tip_translation is not None and gate["accepted"]
+                else None
+            ),
+        }
+        sample = sample_from_tracking_snapshot(
+            session,
             snapshot=snapshot,
             phase="workspace_map_visit",
-            step_index=visit_position,
-            sample_index=sample_index,
-            payload={
-                "visit_position": int(visit_position),
-                "cycle_index": int(cycle_index),
-                "visit_in_cycle": int(visit_in_cycle),
-                "target_index": int(target.target_index),
-                "target_label": str(target.label),
-                "target_amplitude_mm": float(target.amplitude_mm),
-                "target_angle_deg": float(target.angle_deg),
-                "target_x_mm": float(target.x_mm),
-                "target_y_mm": float(target.y_mm),
-                "cable_deltas_cm": list(target.cable_deltas_cm),
-            },
+            step_index=int(sample_index),
+            sample_index=int(sample_index),
+            commanded_cable_deltas_cm=list(requested_cm),
+            commanded_motor_values=commanded_motor_values,
+            status_flags=flags,
+            extra=extra,
+            cycle_index=int(cycle_index),
+            target_index=int(target.target_index),
+            revisit_index=int(visit_in_cycle),
+            tracker_tool_id=str(self.config.tool_id),
         )
-        position_mm = sample.extra.get("position_mm") if sample is not None else None
-        rejected = position_mm is None or any(value is None for value in (position_mm or []))
-        if sample is not None:
-            sample.extra["rejected"] = bool(rejected)
-        return {"sample": sample, "rejected": bool(rejected)}
+        return {"sample": sample, "rejected": bool(not gate["accepted"])}
 
     def _build_synthetic_sample(
         self,

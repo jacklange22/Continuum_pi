@@ -1,8 +1,8 @@
 """Simple Pi-to-Mac dataset sync helpers.
 
-This module intentionally stays small: raw experiment folders move directly with
-``rsync`` while Git only carries lightweight summaries/manifests.  It is meant
-for 10-100GB run folders where GitHub/Git LFS would add more friction than value.
+This module intentionally stays small: raw experiment folders move directly into
+``data/experiments/...`` with ``rsync``.  Git ignores the raw JSONL files, while
+the GUI/modeling code sees the normal local run-folder layout.
 """
 
 from __future__ import annotations
@@ -14,17 +14,16 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 import shlex
-import shutil
 import subprocess
 import sys
-from typing import Any, Sequence
+from typing import Sequence
 
 from continuum_robot.experiments.dataset_io import sanitize_output_name
 
 
 DEFAULT_REMOTE_PROJECT_ROOT = PurePosixPath("/home/continuum-pi/Continuum_pi")
-DEFAULT_LOCAL_MIRROR_ROOT = Path("~/ContinuumData/pi_runs")
-DEFAULT_INDEX_ROOT = Path("data/synced_run_index")
+DEFAULT_LOCAL_MIRROR_ROOT = Path(".")
+DEFAULT_PI_SSH_TARGET = "continuum-pi@10.28.63.49"
 
 RAW_DATA_FILENAMES = {
     "samples.jsonl",
@@ -36,36 +35,15 @@ RAW_DATA_FILENAMES = {
     "sample_failure_events.jsonl",
 }
 
-LIGHTWEIGHT_EXACT_FILENAMES = {
-    "summary.json",
-    "metadata.json",
-    "run_review.json",
-    "config_snapshot.yaml",
-    "dataset_quality_summary.json",
-    "dataset_quality_summary.txt",
-    "modeling_dataset_summary.txt",
-    "workspace_map_summary.json",
-    "workspace_map_per_target.csv",
-    "registration_validation_summary.txt",
-    "pivot_validation_summary.txt",
-    "repeatability_summary.txt",
-    "two_segment_dataset_summary.txt",
-    "two_segment_repeatability_summary.txt",
-    "two_segment_modeling_summary.txt",
-    "training_summary.txt",
-    "training_metadata.json",
-    "training_config.json",
-    "evaluation_metadata.json",
-    "dataset_sync_manifest.json",
-}
-
-LIGHTWEIGHT_SUFFIXES = (
-    "_report.png",
-    "_summary.txt",
-    "_summary.json",
-    "_per_target.csv",
+RAW_DATA_GIT_PATTERNS = (
+    "data/**/samples.jsonl",
+    "data/**/modeling_dataset_export.jsonl",
+    "data/**/modeling_dataset_legacy_compat.dat",
+    "data/**/workspace_map_visits.jsonl",
+    "data/**/raw_point_samples.jsonl",
+    "data/**/rejected_samples.jsonl",
+    "data/**/sample_failure_events.jsonl",
 )
-
 
 @dataclass(frozen=True)
 class RsyncPlan:
@@ -101,15 +79,6 @@ class DatasetSyncManifest:
     file_count: int
     total_size_bytes: int
     files: list[FileManifestEntry] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class LightweightIndexResult:
-    """Result of copying GitHub-safe metadata into ``data/synced_run_index``."""
-
-    index_dir: Path
-    copied_files: list[Path] = field(default_factory=list)
-    skipped_files: list[str] = field(default_factory=list)
 
 
 def build_rsync_pull_plan(
@@ -262,50 +231,39 @@ def write_dataset_sync_manifest(
     )
 
 
-def publish_lightweight_index(
-    *,
-    run_dir: Path,
-    project_root: Path,
-    index_root: Path = DEFAULT_INDEX_ROOT,
-    max_file_bytes: int = 10 * 1024 * 1024,
-) -> LightweightIndexResult:
-    """Copy only GitHub-safe run metadata/plots into a small index folder."""
+def list_tracked_raw_data_files(*, project_root: Path) -> list[str]:
+    """Return tracked raw dataset paths that should not be pushed to GitHub."""
 
-    run_dir = Path(run_dir).expanduser().resolve()
-    project_root = Path(project_root).expanduser().resolve()
-    experiment_name = _experiment_name_for_run(run_dir)
-    run_name = run_dir.name
-    index_dir = project_root / index_root / experiment_name / run_name
-    index_dir.mkdir(parents=True, exist_ok=True)
+    root = Path(project_root).expanduser().resolve()
+    tracked: set[str] = set()
+    for pattern in RAW_DATA_GIT_PATTERNS:
+        result = subprocess.run(
+            ["git", "ls-files", pattern],
+            cwd=root,
+            text=True,
+            check=False,
+            capture_output=True,
+        )
+        if result.returncode not in {0, 1}:
+            continue
+        for line in result.stdout.splitlines():
+            clean = str(line).strip()
+            if clean:
+                tracked.add(clean)
+    return sorted(tracked)
 
-    copied: list[Path] = []
-    skipped: list[str] = []
-    for source in sorted(p for p in run_dir.iterdir() if p.is_file()):
-        if source.name in RAW_DATA_FILENAMES or source.suffix == ".jsonl":
-            skipped.append(f"{source.name}: raw dataset file")
-            continue
-        if source.stat().st_size > int(max_file_bytes):
-            skipped.append(f"{source.name}: exceeds {int(max_file_bytes)} bytes")
-            continue
-        if not _is_lightweight_index_file(source.name):
-            skipped.append(f"{source.name}: not a lightweight index artifact")
-            continue
-        destination = index_dir / source.name
-        shutil.copy2(source, destination)
-        copied.append(destination)
 
-    readme = index_dir / "README.md"
-    readme.write_text(
-        _render_index_readme(
-            run_dir=run_dir,
-            experiment_name=experiment_name,
-            copied_files=[path.name for path in copied],
-            skipped_files=skipped,
-        ),
-        encoding="utf-8",
+def untrack_raw_data_files(*, project_root: Path, files: Sequence[str]) -> None:
+    """Remove raw data files from the Git index without deleting local files."""
+
+    paths = [str(path) for path in files if str(path).strip()]
+    if not paths:
+        return
+    subprocess.run(
+        ["git", "rm", "--cached", "--", *paths],
+        cwd=Path(project_root).expanduser().resolve(),
+        check=True,
     )
-    copied.append(readme)
-    return LightweightIndexResult(index_dir=index_dir, copied_files=copied, skipped_files=skipped)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -316,8 +274,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_pull(args)
         if args.command == "manifest":
             return _cmd_manifest(args)
-        if args.command == "index":
-            return _cmd_index(args)
+        if args.command == "git-clean":
+            return _cmd_git_clean(args)
     except subprocess.CalledProcessError as exc:
         print(f"Command failed with exit code {exc.returncode}: {exc.cmd}", file=sys.stderr)
         return int(exc.returncode or 1)
@@ -331,7 +289,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _cmd_pull(args: argparse.Namespace) -> int:
     ssh_target = str(args.pi or "").strip()
     if not ssh_target:
-        raise ValueError("--pi is required, e.g. --pi pi@continuum-pi.local")
+        raise ValueError("--pi is required, e.g. --pi continuum-pi@10.28.63.49")
     remote_root = PurePosixPath(str(args.remote_project_root or DEFAULT_REMOTE_PROJECT_ROOT))
     run_value = str(args.run or "latest")
     if run_value == "latest":
@@ -373,15 +331,6 @@ def _cmd_pull(args: argparse.Namespace) -> int:
     print(f"Synced run: {local_run_dir}")
     print(f"Manifest: {manifest.manifest_path}")
     print(f"Files: {manifest.file_count} | Size: {_format_bytes(manifest.total_size_bytes)}")
-    if not bool(args.no_index):
-        index = publish_lightweight_index(
-            run_dir=local_run_dir,
-            project_root=Path(args.project_root),
-            index_root=Path(args.index_root),
-            max_file_bytes=int(args.index_max_mb * 1024 * 1024),
-        )
-        print(f"Lightweight index: {index.index_dir}")
-        print(f"Indexed files: {len(index.copied_files)}")
     print("Training path:")
     print(local_run_dir)
     return 0
@@ -397,17 +346,25 @@ def _cmd_manifest(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_index(args: argparse.Namespace) -> int:
-    index = publish_lightweight_index(
-        run_dir=Path(args.run_dir),
-        project_root=Path(args.project_root),
-        index_root=Path(args.index_root),
-        max_file_bytes=int(args.index_max_mb * 1024 * 1024),
-    )
-    print(f"Lightweight index: {index.index_dir}")
-    print(f"Copied files: {len(index.copied_files)}")
-    if index.skipped_files:
-        print(f"Skipped files: {len(index.skipped_files)}")
+def _cmd_git_clean(args: argparse.Namespace) -> int:
+    project_root = Path(args.project_root)
+    tracked = list_tracked_raw_data_files(project_root=project_root)
+    if not tracked:
+        print("No tracked raw dataset files found.")
+        return 0
+    print(f"Tracked raw dataset files: {len(tracked)}")
+    for path in tracked[:80]:
+        print(path)
+    if len(tracked) > 80:
+        print(f"... {len(tracked) - 80} more")
+    if not bool(args.apply):
+        print("")
+        print("Dry run only. Re-run with --apply to untrack these files without deleting them.")
+        return 0
+    untrack_raw_data_files(project_root=project_root, files=tracked)
+    print("")
+    print("Removed raw dataset files from the Git index. Local files were not deleted.")
+    print("Next: commit this index cleanup and push again.")
     return 0
 
 
@@ -418,16 +375,16 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     pull = subparsers.add_parser("pull", help="Pull one run folder from the Pi to a local mirror.")
-    pull.add_argument("--pi", help="SSH target, e.g. pi@continuum-pi.local. Required for pull.")
+    pull.add_argument(
+        "--pi",
+        default=DEFAULT_PI_SSH_TARGET,
+        help=f"SSH target. Defaults to {DEFAULT_PI_SSH_TARGET}.",
+    )
     pull.add_argument("--experiment", default="collect_pose_command_dataset", help="Experiment name for --run latest or run IDs.")
     pull.add_argument("--run", default="latest", help="'latest', a run folder name, or a data/experiments/... relative path.")
     pull.add_argument("--remote-project-root", default=str(DEFAULT_REMOTE_PROJECT_ROOT), help="Project root path on the Pi.")
-    pull.add_argument("--local-mirror-root", default=str(DEFAULT_LOCAL_MIRROR_ROOT), help="Local raw-data mirror root.")
+    pull.add_argument("--local-mirror-root", default=str(DEFAULT_LOCAL_MIRROR_ROOT), help="Local repo root/mirror root.")
     pull.add_argument("--local-run-dir", help="Override local destination directory for the run.")
-    pull.add_argument("--project-root", default=".", help="This repo root for lightweight index output.")
-    pull.add_argument("--index-root", default=str(DEFAULT_INDEX_ROOT), help="Repo-relative lightweight index root.")
-    pull.add_argument("--index-max-mb", type=float, default=10.0, help="Max single file size copied into the index.")
-    pull.add_argument("--no-index", action="store_true", help="Do not publish the lightweight GitHub-safe index.")
     pull.add_argument("--sha256", action="store_true", help="Hash every file after sync. Slow for 100GB runs.")
     pull.add_argument("--compress", action="store_true", help="Pass -z to rsync. Useful on slow networks; slower on weak CPUs.")
     pull.add_argument("--delete", action="store_true", help="Mirror deletes from Pi into local copy. Off by default for safety.")
@@ -438,60 +395,17 @@ def _build_parser() -> argparse.ArgumentParser:
     manifest.add_argument("--run-dir", required=True, help="Local run directory.")
     manifest.add_argument("--sha256", action="store_true", help="Hash every file. Slow for 100GB runs.")
 
-    index = subparsers.add_parser("index", help="Publish a GitHub-safe summary/index for a local run folder.")
-    index.add_argument("--run-dir", required=True, help="Local run directory.")
-    index.add_argument("--project-root", default=".", help="This repo root.")
-    index.add_argument("--index-root", default=str(DEFAULT_INDEX_ROOT), help="Repo-relative lightweight index root.")
-    index.add_argument("--index-max-mb", type=float, default=10.0, help="Max single file size copied into the index.")
+    git_clean = subparsers.add_parser(
+        "git-clean",
+        help="Untrack raw dataset files so GitHub push does not include huge JSONL blobs.",
+    )
+    git_clean.add_argument("--project-root", default=".", help="Repo root. Defaults to current directory.")
+    git_clean.add_argument(
+        "--apply",
+        action="store_true",
+        help="Run git rm --cached on tracked raw dataset files. Local files are preserved.",
+    )
     return parser
-
-
-def _experiment_name_for_run(run_dir: Path) -> str:
-    summary_path = Path(run_dir) / "summary.json"
-    if summary_path.exists():
-        try:
-            payload = json.loads(summary_path.read_text(encoding="utf-8"))
-            experiment = str(payload.get("experiment_name") or "").strip()
-            if experiment:
-                return sanitize_output_name(experiment, default="experiment")
-        except Exception:
-            pass
-    parent = Path(run_dir).parent.name
-    if parent:
-        return sanitize_output_name(parent, default="experiment")
-    return "experiment"
-
-
-def _is_lightweight_index_file(name: str) -> bool:
-    if name in LIGHTWEIGHT_EXACT_FILENAMES:
-        return True
-    return any(name.endswith(suffix) for suffix in LIGHTWEIGHT_SUFFIXES)
-
-
-def _render_index_readme(
-    *,
-    run_dir: Path,
-    experiment_name: str,
-    copied_files: Sequence[str],
-    skipped_files: Sequence[str],
-) -> str:
-    lines = [
-        f"# Synced Run Index: {Path(run_dir).name}",
-        "",
-        f"- Experiment: `{experiment_name}`",
-        f"- Raw data location on this machine: `{Path(run_dir)}`",
-        "- Raw JSONL files are intentionally not copied here.",
-        "- Use `scripts/sync_pi_dataset.py pull` to recreate/update the raw local mirror.",
-        "",
-        "## Included",
-    ]
-    lines.extend(f"- `{name}`" for name in sorted(copied_files))
-    if skipped_files:
-        lines.extend(["", "## Skipped"])
-        lines.extend(f"- {item}" for item in skipped_files[:50])
-        if len(skipped_files) > 50:
-            lines.append(f"- ... {len(skipped_files) - 50} more")
-    return "\n".join(lines).strip() + "\n"
 
 
 def _sha256_file(path: Path, *, chunk_size: int = 8 * 1024 * 1024) -> str:

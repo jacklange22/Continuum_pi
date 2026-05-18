@@ -41,9 +41,13 @@ run_label: ""
 # the per-cable tick allowance recorded at neutral.
 max_target_tick_delta_from_startup: 1200
 
-# Use the robot-frame tip (registered) by default. allow_debug_coil_as_tip
-# permits running against a coil-as-tip pose for early bench tests but the
-# numbers should NOT be used as thesis evidence in that mode.
+# Use the robot-frame tip (registered) by default. The shared runtime tip
+# policy treats coil_as_tip as the thesis-trusted runtime position path for
+# this workflow; just set runtime_tip_mode=coil_as_tip in the Registration
+# tab before launching. allow_debug_coil_as_tip remains for cross-experiment
+# compatibility with single_segment_repeatability but has no effect here
+# because the policy never permits latest_accepted / quick_4_point for
+# workspace_repeatability_map regardless of the flag.
 require_robot_frame_tip: true
 allow_debug_coil_as_tip: false
 return_to_center_on_finalize: true

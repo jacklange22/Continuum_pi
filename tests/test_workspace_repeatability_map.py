@@ -735,3 +735,248 @@ class TestGuiIntegration:
             metrics={"captured_visit_count": 1500, "rejected_visit_count": 3},
         )
         assert history_label == "visits=1500 rejected=3"
+
+
+# ---------------------------------------------------------------------------
+# Coil-as-tip runtime-gate coverage
+# ---------------------------------------------------------------------------
+
+
+def _build_tracking_snapshot(
+    *,
+    runtime_tip_mode: str = "coil_as_tip",
+    runtime_tip_state: str = "coil_as_tip",
+    tip_pose_status: str = "coil_as_tip",
+    age_s: float = 0.01,
+    canonical_state: str = "streaming_healthy",
+    position_mm: tuple[float, float, float] = (0.0, 0.0, 50.0),
+):
+    """Build a TrackingSnapshot with a present 0A tool and the requested tip mode."""
+    from continuum_robot.services.models import (
+        ServiceHealthSnapshot,
+        ToolTrackingSnapshot,
+        TrackingSnapshot,
+    )
+
+    matrix = [
+        [1.0, 0.0, 0.0, float(position_mm[0])],
+        [0.0, 1.0, 0.0, float(position_mm[1])],
+        [0.0, 0.0, 1.0, float(position_mm[2])],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+    tool = ToolTrackingSnapshot(
+        tool_id="0A",
+        present=True,
+        valid=True,
+        validity_known=True,
+        tracking_state="tracked",
+        status="tracked",
+        frame_number=10,
+        quaternion_wxyz=(1.0, 0.0, 0.0, 0.0),
+        translation_mm=tuple(position_mm),
+        T_aurora_tool=matrix,
+    )
+    return TrackingSnapshot(
+        health=ServiceHealthSnapshot(
+            name="tracking", health="healthy", state="connected", status="ok"
+        ),
+        connection_state="connected",
+        canonical_state=canonical_state,
+        backend_identity="ndi",
+        configured_backend_name="ndi",
+        selected_backend_name="ndi",
+        tracker_data_age_s=float(age_s),
+        tracker_data_stale=False,
+        normalized_live_tool_ids=["0A"],
+        raw_live_tool_ids=["0A"],
+        last_frame_number=10,
+        tools={"0A": tool},
+        registration_state="loaded",
+        T_robot_aurora=[
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+        runtime_tip_calibration_state=runtime_tip_state,
+        runtime_tip_mode=runtime_tip_mode,
+        runtime_tip_identity_fallback=(runtime_tip_mode == "coil_as_tip"),
+        tip_pose_status=tip_pose_status,
+        T_robot_tip=None if tip_pose_status not in {"ok", "coil_as_tip"} else matrix,
+    )
+
+
+class TestCoilAsTipGate:
+    """Verify the workspace map honors coil-as-tip the same way the 17-point
+    experiment does: thesis-trusted by policy, no override flag required."""
+
+    def test_gate_accepts_snapshot_in_coil_as_tip_mode(self) -> None:
+        from continuum_robot.experiments.workspace_repeatability_map import (
+            _workspace_tracker_gate_status,
+        )
+
+        snapshot = _build_tracking_snapshot(
+            runtime_tip_mode="coil_as_tip",
+            runtime_tip_state="coil_as_tip",
+            tip_pose_status="coil_as_tip",
+        )
+        gate = _workspace_tracker_gate_status(
+            snapshot=snapshot,
+            tool_id="0A",
+            max_tracker_age_s=0.25,
+            require_robot_frame_tip=True,
+            allow_debug_coil_as_tip=False,
+        )
+        assert gate["accepted"] is True, gate["reason"]
+        assert gate["runtime_tip_mode"] == "coil_as_tip"
+        assert gate["runtime_tip_trust_level"] == "thesis_trusted"
+
+    def test_gate_blocks_latest_accepted_without_override(self) -> None:
+        from continuum_robot.experiments.workspace_repeatability_map import (
+            _workspace_tracker_gate_status,
+        )
+
+        snapshot = _build_tracking_snapshot(
+            runtime_tip_mode="latest_accepted",
+            runtime_tip_state="loaded",
+            tip_pose_status="ok",
+        )
+        gate = _workspace_tracker_gate_status(
+            snapshot=snapshot,
+            tool_id="0A",
+            max_tracker_age_s=0.25,
+            require_robot_frame_tip=True,
+            allow_debug_coil_as_tip=False,
+        )
+        assert gate["accepted"] is False
+        # The reason should reference the policy not allowing this workflow.
+        assert "policy" in gate["reason"].lower() or "trust" in gate["reason"].lower()
+
+    def test_gate_still_blocks_latest_accepted_even_with_override(self) -> None:
+        """Repeatability is gated by policy at workflow level, not just trust.
+        ``latest_accepted`` is not permitted for WORKFLOW_REPEATABILITY at all,
+        so even with ``allow_debug_coil_as_tip=True`` the gate must still block
+        --- coil-as-tip is the only path. The override flag exists for cross-
+        compatibility with single_segment but never enables a non-coil mode
+        here."""
+        from continuum_robot.experiments.workspace_repeatability_map import (
+            _workspace_tracker_gate_status,
+        )
+
+        snapshot = _build_tracking_snapshot(
+            runtime_tip_mode="latest_accepted",
+            runtime_tip_state="loaded",
+            tip_pose_status="ok",
+        )
+        gate = _workspace_tracker_gate_status(
+            snapshot=snapshot,
+            tool_id="0A",
+            max_tracker_age_s=0.25,
+            require_robot_frame_tip=True,
+            allow_debug_coil_as_tip=True,
+        )
+        assert gate["accepted"] is False
+        assert "policy" in gate["reason"].lower() or "not_allowed" in gate["reason"].lower()
+
+    def test_gate_rejects_stale_snapshot(self) -> None:
+        from continuum_robot.experiments.workspace_repeatability_map import (
+            _workspace_tracker_gate_status,
+        )
+
+        snapshot = _build_tracking_snapshot(age_s=1.0)
+        gate = _workspace_tracker_gate_status(
+            snapshot=snapshot,
+            tool_id="0A",
+            max_tracker_age_s=0.25,
+            require_robot_frame_tip=True,
+            allow_debug_coil_as_tip=False,
+        )
+        assert gate["accepted"] is False
+        assert "exceeds" in gate["reason"]
+
+    def test_precheck_passes_in_coil_as_tip_mode(self) -> None:
+        """Full ``precheck()`` honors coil-as-tip without the override flag."""
+        import types
+
+        snapshot = _build_tracking_snapshot()
+
+        class _Mapper:
+            def displacement_cm_to_ticks(self, value: float) -> int:
+                # 100 ticks per cm; matches the workspace target tick profile
+                # threshold for max_amplitude_mm=12 (1.2 cm * 100 = 120 ticks).
+                return int(round(float(value) * 100.0))
+
+        class _ServoService:
+            def __init__(self) -> None:
+                self.mapper = _Mapper()
+
+        class _Tracking:
+            def get_snapshot(self):
+                return snapshot
+
+        class _StubSession:
+            def __init__(self) -> None:
+                self.context = types.SimpleNamespace(
+                    servo_service=_ServoService(),
+                    tracking_service=_Tracking(),
+                )
+
+        config = WorkspaceRepeatabilityMapConfig.from_dict(
+            {
+                "target_count": 10,
+                "visits_per_target": 2,
+                "max_amplitude_mm": 5.0,
+                "max_target_tick_delta_from_startup": 1200,
+                "dry_run": False,
+                "require_robot_frame_tip": True,
+                "allow_debug_coil_as_tip": False,
+            }
+        )
+        experiment = WorkspaceRepeatabilityMapExperiment(config=config)
+        # Bypass setup (it touches settings paths); the precheck only relies
+        # on the tracker snapshot + servo mapper.
+        experiment.precheck(_StubSession())
+
+    def test_precheck_blocks_latest_accepted_without_override(self) -> None:
+        import types
+
+        snapshot = _build_tracking_snapshot(
+            runtime_tip_mode="latest_accepted",
+            runtime_tip_state="loaded",
+            tip_pose_status="ok",
+        )
+
+        class _Mapper:
+            def displacement_cm_to_ticks(self, value: float) -> int:
+                return int(round(float(value) * 100.0))
+
+        class _ServoService:
+            def __init__(self) -> None:
+                self.mapper = _Mapper()
+
+        class _Tracking:
+            def get_snapshot(self):
+                return snapshot
+
+        class _StubSession:
+            def __init__(self) -> None:
+                self.context = types.SimpleNamespace(
+                    servo_service=_ServoService(),
+                    tracking_service=_Tracking(),
+                )
+
+        config = WorkspaceRepeatabilityMapConfig.from_dict(
+            {
+                "target_count": 10,
+                "visits_per_target": 2,
+                "max_amplitude_mm": 5.0,
+                "max_target_tick_delta_from_startup": 1200,
+                "dry_run": False,
+                "require_robot_frame_tip": True,
+                "allow_debug_coil_as_tip": False,
+            }
+        )
+        experiment = WorkspaceRepeatabilityMapExperiment(config=config)
+        with pytest.raises(RuntimeError) as excinfo:
+            experiment.precheck(_StubSession())
+        assert "thesis_trusted" in str(excinfo.value) or "trust" in str(excinfo.value).lower()

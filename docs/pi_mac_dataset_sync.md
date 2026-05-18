@@ -1,111 +1,103 @@
 # Pi/Mac Dataset Sync
 
-Use GitHub for code, configs, summaries, plots, and lightweight run indexes.
-Use `rsync` for raw experiment folders.
+Use one data layout everywhere:
 
-This avoids pushing 10-100GB `samples.jsonl` / `modeling_dataset_export.jsonl`
-files through GitHub while still keeping enough metadata in the repo to know
-what datasets exist and where they came from.
-
-## Pull The Latest Run
-
-Run this on the Mac:
-
-```bash
-python3 scripts/sync_pi_dataset.py pull \
-  --pi pi@continuum-pi.local \
-  --experiment collect_pose_command_dataset
+```text
+data/experiments/<experiment>/<run_id>/
 ```
 
-What it does:
+The Pi writes runs there. The Mac sync tool copies runs into the same folder
+structure in this repo, so the GUI Modeling/ANN tabs can discover them normally.
+Raw JSONL files stay local and are ignored by Git.
 
-- finds the latest Pi run under
-  `/home/continuum-pi/Continuum_pi/data/experiments/collect_pose_command_dataset/`
-- copies the full run folder to `~/ContinuumData/pi_runs/data/experiments/...`
-- uses resumable `rsync -avP --partial --inplace`
-- writes `dataset_sync_manifest.json` in the local mirrored run
-- writes a small GitHub-safe index under `data/synced_run_index/`
-- prints the local training path
+## Pull Latest Dataset
+
+From the Mac:
+
+```bash
+scripts/pull_pi_data.sh
+```
+
+This pulls the latest `collect_pose_command_dataset` from:
+
+```text
+continuum-pi@10.28.63.49:/home/continuum-pi/Continuum_pi
+```
+
+into:
+
+```text
+data/experiments/collect_pose_command_dataset/<run_id>/
+```
+
+## Pull A Different Experiment
+
+```bash
+scripts/pull_pi_data.sh workspace_repeatability_map
+```
 
 ## Pull A Specific Run
 
 ```bash
-python3 scripts/sync_pi_dataset.py pull \
-  --pi pi@continuum-pi.local \
-  --experiment collect_pose_command_dataset \
-  --run 20260518_220000_collect_pose_command_dataset
+scripts/pull_pi_data.sh collect_pose_command_dataset 20260518_164344_collect_pose_command_dataset
 ```
 
-You can also pass a repo-relative path:
+## Preview Without Copying
 
 ```bash
-python3 scripts/sync_pi_dataset.py pull \
-  --pi pi@continuum-pi.local \
-  --run data/experiments/collect_pose_command_dataset/20260518_220000_collect_pose_command_dataset
+scripts/pull_pi_data.sh collect_pose_command_dataset 20260518_164344_collect_pose_command_dataset --print-only
 ```
 
-## Preview The Transfer
+## After Sync
 
-```bash
-python3 scripts/sync_pi_dataset.py pull \
-  --pi pi@continuum-pi.local \
-  --experiment collect_pose_command_dataset \
-  --dry-run
+The run should exist under:
+
+```text
+data/experiments/collect_pose_command_dataset/<run_id>/
 ```
 
-Use `--print-only` if you only want the generated `rsync` command.
+Then refresh/restart the GUI. The Modeling/ANN tabs scan `data/experiments/...`.
 
-## Train On The Mac
-
-After pull, use the printed local run path:
+CLI training uses the same path:
 
 ```bash
 python3 scripts/ann_model_sweep.py \
-  --dataset-path ~/ContinuumData/pi_runs/data/experiments/collect_pose_command_dataset/<run_id>
+  --dataset-path data/experiments/collect_pose_command_dataset/<run_id>
 ```
 
-## Publish A Lightweight Index Only
+## What Not To Commit
 
-If a run is already copied locally:
+Do not commit raw datapoint files:
+
+```text
+samples.jsonl
+modeling_dataset_export.jsonl
+modeling_dataset_legacy_compat.dat
+workspace_map_visits.jsonl
+raw_point_samples.jsonl
+rejected_samples.jsonl
+sample_failure_events.jsonl
+```
+
+They are ignored in `.gitignore`. Keep summaries/configs/plots in the run folder
+if you want, but check staged files before pushing.
+
+## If Git Push Fails Because Of JSONL Files
+
+On the Pi:
 
 ```bash
-python3 scripts/sync_pi_dataset.py index \
-  --run-dir ~/ContinuumData/pi_runs/data/experiments/collect_pose_command_dataset/<run_id>
+git status --short
+git ls-files 'data/**/*.jsonl'
+python3 scripts/check_data_for_git.py
 ```
 
-The index intentionally excludes raw JSONL files. It copies small files like:
-
-- `summary.json`
-- `metadata.json`
-- `dataset_quality_summary.json`
-- `modeling_dataset_summary.txt`
-- `workspace_map_summary.json`
-- report PNGs
-- `dataset_sync_manifest.json`
-
-Commit `data/synced_run_index/...` if you want dataset visibility from GitHub.
-
-## Large-Run Rules
-
-- Do not commit raw `samples.jsonl`.
-- Do not commit raw `modeling_dataset_export.jsonl` when it is large.
-- Do not zip 100GB runs just to move them.
-- Prefer repeated `rsync` pulls; it resumes interrupted transfers.
-- Use `--sha256` only when you need full byte-level verification. It will read
-  the entire 100GB run after transfer.
-
-## If The Pi Hostname Is Different
-
-Use the actual SSH target:
+If raw files are tracked, untrack them without deleting local files:
 
 ```bash
-python3 scripts/sync_pi_dataset.py pull \
-  --pi jack@192.168.1.44 \
-  --experiment workspace_repeatability_map
+python3 scripts/sync_pi_dataset.py git-clean
+python3 scripts/sync_pi_dataset.py git-clean --apply
 ```
 
-If the Pi repo is not at `/home/continuum-pi/Continuum_pi`, pass:
-
-```bash
---remote-project-root /path/to/Continuum_pi
-```
+If GitHub still rejects the push, the large files are already inside an unpushed
+commit. Reset/rewrite that local commit before pushing.

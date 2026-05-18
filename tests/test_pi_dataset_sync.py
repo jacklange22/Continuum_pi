@@ -5,10 +5,11 @@ from pathlib import Path, PurePosixPath
 
 from continuum_robot.data.pi_dataset_sync import (
     build_rsync_pull_plan,
+    list_tracked_raw_data_files,
     local_run_dir_for_relative_path,
     resolve_latest_remote_run_relative_path,
-    publish_lightweight_index,
     resolve_run_relative_path,
+    untrack_raw_data_files,
     write_dataset_sync_manifest,
 )
 
@@ -89,25 +90,26 @@ def test_manifest_records_file_sizes_without_hashing_by_default(tmp_path: Path) 
     assert all(item["sha256"] is None for item in payload["files"])
 
 
-def test_publish_lightweight_index_excludes_raw_jsonl(tmp_path: Path) -> None:
-    project = tmp_path / "project"
-    run = tmp_path / "mirror" / "data" / "experiments" / "collect_pose_command_dataset" / "run-a"
+def test_git_clean_lists_and_untracks_raw_data_without_deleting(tmp_path: Path) -> None:
+    import subprocess
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+    run = repo / "data" / "experiments" / "collect_pose_command_dataset" / "run-a"
     run.mkdir(parents=True)
-    (run / "summary.json").write_text(
-        json.dumps({"experiment_name": "collect_pose_command_dataset"}),
-        encoding="utf-8",
-    )
-    (run / "metadata.json").write_text("{}", encoding="utf-8")
-    (run / "samples.jsonl").write_text('{"too": "large"}\n', encoding="utf-8")
-    (run / "modeling_dataset_export.jsonl").write_text('{"raw": true}\n', encoding="utf-8")
-    (run / "workspace_map_3d_report.png").write_bytes(b"png")
+    raw = run / "samples.jsonl"
+    summary = run / "summary.json"
+    raw.write_text('{"raw": true}\n', encoding="utf-8")
+    summary.write_text("{}", encoding="utf-8")
+    subprocess.run(["git", "add", "data"], cwd=repo, check=True)
 
-    result = publish_lightweight_index(run_dir=run, project_root=project)
+    tracked = list_tracked_raw_data_files(project_root=repo)
+    assert tracked == ["data/experiments/collect_pose_command_dataset/run-a/samples.jsonl"]
 
-    copied_names = {path.name for path in result.copied_files}
-    assert "summary.json" in copied_names
-    assert "metadata.json" in copied_names
-    assert "workspace_map_3d_report.png" in copied_names
-    assert "README.md" in copied_names
-    assert not (result.index_dir / "samples.jsonl").exists()
-    assert not (result.index_dir / "modeling_dataset_export.jsonl").exists()
+    untrack_raw_data_files(project_root=repo, files=tracked)
+
+    assert raw.exists()
+    remaining = subprocess.check_output(["git", "ls-files"], cwd=repo, text=True).splitlines()
+    assert "data/experiments/collect_pose_command_dataset/run-a/samples.jsonl" not in remaining
+    assert "data/experiments/collect_pose_command_dataset/run-a/summary.json" in remaining
