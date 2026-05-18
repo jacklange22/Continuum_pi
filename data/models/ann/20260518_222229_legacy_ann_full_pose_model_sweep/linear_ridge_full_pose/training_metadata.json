@@ -1,0 +1,153 @@
+{
+  "schema_version": "1.0",
+  "artifact_kind": "linear_ridge_xyz_v1",
+  "created_at_utc": "2026-05-18T22:22:31.143672+00:00",
+  "status": "completed",
+  "dataset": {
+    "path": "/Users/jacklange/Continuum/pi_code/data/experiments/collect_pose_command_dataset/20260518_164344_collect_pose_command_dataset",
+    "run_id": "05065806c370",
+    "run_name": "20260518_164344_collect_pose_command_dataset",
+    "timestamp_utc": "2026-05-18T16:43:54.874817+00:00",
+    "dataset_mode": "workspace_coverage",
+    "dataset_mode_summary": "Bounded workspace-coverage collection for first-pass forward-model training.",
+    "sample_count": 4094,
+    "accepted_count": 4094,
+    "rejected_count": 0,
+    "full_pose_available": true,
+    "sequential_context_available": true,
+    "run_label": "upgraded_robot_modeling",
+    "dataset_tag": "baseline_v1",
+    "trust_summary": "runtime tip thesis_trusted, pretension ready",
+    "runtime_tip_summary": "coil_as_tip (thesis_trusted)",
+    "pretension_summary": "manual (ready)",
+    "filtered_reason_counts": {},
+    "prepared_sample_count": 4092,
+    "source_run_valid_for_model_training": true,
+    "source_run_model_training_validity_status": "warning_valid",
+    "source_run_model_training_validity_reason": "warnings_present_but_training_ready",
+    "source_run_model_training_hard_invalidation_reasons": [],
+    "source_run_model_training_warnings": [
+      "2 accepted non-training phase rows were excluded from modeling export."
+    ],
+    "ann_training_category": "Trainable with warnings",
+    "ann_training_blocking_reasons": [],
+    "ann_training_warnings": [
+      "2 accepted non-training phase rows were excluded from modeling export."
+    ],
+    "target_valid_sample_count": 4092,
+    "complete_training_row_count": 4092,
+    "modeling_export_row_count": 4092,
+    "modeling_legacy_row_count": 4092,
+    "incomplete_rows_excluded_from_training": 0,
+    "parallel_single_demo": false,
+    "run_trust_mode": "thesis_trusted",
+    "mock_mode_flag": false
+  },
+  "model": {
+    "family": "linear_ridge_full_pose",
+    "variant": "xyz",
+    "output_target": "xyz",
+    "input_dim": 4,
+    "output_dim": 3,
+    "hidden_layers": [],
+    "ridge_alpha": 1e-06,
+    "dtype": "float32"
+  },
+  "loss": {
+    "kind": "pose",
+    "pose_orientation_scale": 10.0
+  },
+  "backend": {
+    "selected_backend": "mps",
+    "recommended_backend": "mps",
+    "torch_version": "2.11.0",
+    "python_version": "3.13.5",
+    "platform_summary": "Darwin 24.5.0 | arm64"
+  },
+  "training": {
+    "epochs_requested": 1,
+    "epochs_completed": 1,
+    "best_epoch": 1,
+    "best_validation_loss": 10.889586257934571,
+    "test_loss": 11.257625770568847,
+    "training_wall_time_s": 0.5917409998364747,
+    "checkpointing": false,
+    "learning_rate": 0.001,
+    "batch_size": 64,
+    "random_seed": 0
+  },
+  "split": {
+    "strategy": "random_grouped_step",
+    "train_ratio": 0.7,
+    "validation_ratio": 0.15,
+    "test_ratio": 0.15,
+    "train_count": 2864,
+    "validation_count": 614,
+    "test_count": 614
+  },
+  "estimate": null,
+  "evaluation": {
+    "single_dataset_split_note": "All models were trained and compared on one grouped train/validation/test split from this dataset only. Metrics do not assess cross-session or cross-run generalization.",
+    "validation": {
+      "loss_mean": 10.889586257934571,
+      "position_rmse_xyz_mm": 5.739918578327005,
+      "position_rmse_xy_mm": 3.199548636629036,
+      "position_rmse_z_mm": 4.765454207908077,
+      "position_error_l2_mm": {
+        "mean": 5.309971509140525,
+        "median": 5.194276279857641,
+        "p95": 8.539266288948824,
+        "max": 13.820960738994996
+      }
+    },
+    "test": {
+      "loss_mean": 11.257625770568847,
+      "position_rmse_xyz_mm": 5.784673217780912,
+      "position_rmse_xy_mm": 3.1522337984749145,
+      "position_rmse_z_mm": 4.850347030498352,
+      "position_error_l2_mm": {
+        "mean": 5.353957860709415,
+        "median": 5.1508426304568795,
+        "p95": 9.035261555464361,
+        "max": 13.614047917774219
+      }
+    }
+  },
+  "files": {
+    "model_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260518_222229_legacy_ann_full_pose_model_sweep/linear_ridge_full_pose/model.pt",
+    "loss_history_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260518_222229_legacy_ann_full_pose_model_sweep/linear_ridge_full_pose/loss_history.csv",
+    "loss_plot_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260518_222229_legacy_ann_full_pose_model_sweep/linear_ridge_full_pose/loss_curve.png",
+    "loss_report_plot_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260518_222229_legacy_ann_full_pose_model_sweep/linear_ridge_full_pose/ann_loss_curve_report.png",
+    "split_manifest_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260518_222229_legacy_ann_full_pose_model_sweep/linear_ridge_full_pose/split_manifest.json",
+    "summary_text_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260518_222229_legacy_ann_full_pose_model_sweep/linear_ridge_full_pose/training_summary.txt",
+    "row_filter_report_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260518_222229_legacy_ann_full_pose_model_sweep/linear_ridge_full_pose/row_filter_report.json"
+  },
+  "training_provenance": {
+    "exploratory_training_override": false,
+    "source_run_valid_for_model_training": true,
+    "source_run_model_training_validity_status": "warning_valid",
+    "source_validity_reason": "warnings_present_but_training_ready",
+    "source_validity_warnings": [
+      "2 accepted non-training phase rows were excluded from modeling export."
+    ],
+    "source_validity_hard_invalidation_reasons": [],
+    "ann_training_category": "Trainable with warnings",
+    "complete_training_row_count": 4092,
+    "target_valid_sample_count": 4092,
+    "modeling_export_row_count": 4092,
+    "modeling_legacy_row_count": 4092,
+    "excluded_incomplete_rows_count": 0,
+    "source_run_id": "05065806c370",
+    "source_run_path": "/Users/jacklange/Continuum/pi_code/data/experiments/collect_pose_command_dataset/20260518_164344_collect_pose_command_dataset",
+    "source_run_trust_mode": "thesis_trusted",
+    "source_run_mock_mode_flag": false
+  },
+  "training_input_policy": "complete_rows_only",
+  "row_filter_report": {
+    "complete_row_count": 4092,
+    "excluded_row_count": 0,
+    "excluded_by_reason": {},
+    "target_complete_row_count": 4092,
+    "report_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260518_222229_legacy_ann_full_pose_model_sweep/linear_ridge_full_pose/row_filter_report.json"
+  }
+}

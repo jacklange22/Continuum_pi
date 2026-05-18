@@ -1,0 +1,31 @@
+Collect-Pose Dataset Quality Summary
+Accepted samples: 4094
+Rejected samples: 0
+Failures: 0
+Dropped post-motion samples: 0
+Dropped pre-motion samples: 0
+Next command index to resume: 4092
+Recovered packet errors: 0
+Unrecovered packet errors: 0
+Transport bursts: 0
+Telemetry retries: 164
+Write-goal packet errors: 0
+Tracker stale count: 0
+Max abs current (mA): 841
+Max abs current by servo (mA): 1:782, 2:841, 3:748, 4:425
+P95 abs current by servo (mA): 1:451.0, 2:484.0, 3:235.0, 4:263.0
+Input voltage minimum by servo (mV): 1:4300, 2:4100, 3:4500, 4:4500
+Transient current spikes by servo: {}
+Sustained current exceedances by servo: {}
+Transient current spike dropped samples: 0
+Model training validity status: warning_valid
+Model training validity reason: warnings_present_but_training_ready
+Dropped rows excluded from training: True
+Accepted rows complete: True
+Training row counts: accepted_workspace=4092, export=4092, legacy=4092, accepted_training=4092, complete_training=4092, target_complete_training=4092, remaining_complete_training=0
+Accepted non-training rows: 2
+Incomplete accepted workspace rows: 0
+Dropped/quarantined sample count: 0
+Recommendation: good_for_training
+Model training warnings:
+- 2 accepted non-training phase rows were excluded from modeling export.

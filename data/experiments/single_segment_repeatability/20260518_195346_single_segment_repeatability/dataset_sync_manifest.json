@@ -1,0 +1,70 @@
+{
+  "schema_version": "dataset_sync_manifest_v1",
+  "created_at_utc": "2026-05-18T22:21:12.574454+00:00",
+  "run_dir": "/Users/jacklange/Continuum/pi_code/data/experiments/single_segment_repeatability/20260518_195346_single_segment_repeatability",
+  "include_sha256": false,
+  "file_count": 10,
+  "total_size_bytes": 6636766,
+  "files": [
+    {
+      "path": "config_snapshot.yaml",
+      "size_bytes": 553,
+      "mtime_ns": 1779137538000000000,
+      "sha256": null
+    },
+    {
+      "path": "debug.json",
+      "size_bytes": 93877,
+      "mtime_ns": 1779137538000000000,
+      "sha256": null
+    },
+    {
+      "path": "metadata.json",
+      "size_bytes": 63471,
+      "mtime_ns": 1779137537000000000,
+      "sha256": null
+    },
+    {
+      "path": "run_review.json",
+      "size_bytes": 228,
+      "mtime_ns": 1779137538000000000,
+      "sha256": null
+    },
+    {
+      "path": "samples.jsonl",
+      "size_bytes": 5408107,
+      "mtime_ns": 1779137538000000000,
+      "sha256": null
+    },
+    {
+      "path": "summary.json",
+      "size_bytes": 150598,
+      "mtime_ns": 1779137538000000000,
+      "sha256": null
+    },
+    {
+      "path": "thesis_01_target_returns_3d.png",
+      "size_bytes": 605445,
+      "mtime_ns": 1779137539000000000,
+      "sha256": null
+    },
+    {
+      "path": "thesis_02_per_target_rms_bar.png",
+      "size_bytes": 145499,
+      "mtime_ns": 1779137540000000000,
+      "sha256": null
+    },
+    {
+      "path": "thesis_03_path_dependence_vs_total.png",
+      "size_bytes": 165170,
+      "mtime_ns": 1779137540000000000,
+      "sha256": null
+    },
+    {
+      "path": "transform_chain_summary.json",
+      "size_bytes": 3818,
+      "mtime_ns": 1779137540000000000,
+      "sha256": null
+    }
+  ]
+}

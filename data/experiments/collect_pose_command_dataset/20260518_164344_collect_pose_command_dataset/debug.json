@@ -1,0 +1,247 @@
+{
+  "schema_version": "1.0",
+  "run_id": "05065806c370",
+  "experiment_name": "collect_pose_command_dataset",
+  "status": "success",
+  "dataset_mode": "workspace_coverage",
+  "run_label": "upgraded_robot_modeling",
+  "dataset_tag": "baseline_v1",
+  "acceptance": {
+    "accepted_sample_count": 4094,
+    "rejected_sample_count": 0,
+    "acceptance_rate": 1.0,
+    "rejection_reasons": {}
+  },
+  "phase_counts": {
+    "initial_neutral": 1,
+    "workspace_capture": 4092,
+    "final_neutral": 1
+  },
+  "workspace_extent_mm": {
+    "x_min": -34.34666755293053,
+    "x_max": 33.99576190003157,
+    "x_span": 68.34242945296211,
+    "y_min": -33.3204202247849,
+    "y_max": 34.74575464856022,
+    "y_span": 68.06617487334512,
+    "z_min": 45.11248937156554,
+    "z_max": 66.33875859370231,
+    "z_span": 21.22626922213677
+  },
+  "command_extent_cm": {
+    "pair_13_min": -0.7496337890625,
+    "pair_13_max": 0.749267578125,
+    "pair_24_min": -0.7497713763145862,
+    "pair_24_max": 0.7493141289437586
+  },
+  "trainability": {
+    "model_training_validity_status": "warning_valid",
+    "model_training_validity_reason": "warnings_present_but_training_ready",
+    "model_training_hard_invalidation_reasons": [],
+    "model_training_warnings": [
+      "2 accepted non-training phase rows were excluded from modeling export."
+    ],
+    "modeling_export_row_count": 4092,
+    "modeling_legacy_row_count": 4092,
+    "accepted_training_row_count": 4092,
+    "accepted_rows_complete": true,
+    "dropped_samples_excluded_from_training": true,
+    "valid_for_model_training": true,
+    "valid_for_thesis_repeatability": true,
+    "lower_trust_active": false
+  },
+  "provenance": {
+    "dataset_mode": "workspace_coverage",
+    "run_label": "upgraded_robot_modeling",
+    "dataset_tag": "baseline_v1",
+    "run_trust_mode": "thesis_trusted",
+    "valid_for_model_training": true,
+    "valid_for_thesis_repeatability": true,
+    "parallel_single_demo": false,
+    "true_two_segment_control": false,
+    "tracker_connected": true,
+    "backend_identity": "ndi_tracker_python",
+    "selected_backend_name": "ndi",
+    "configured_backend_name": "ndi",
+    "tool_id": "0A",
+    "require_robot_frame_tip": true,
+    "max_tracker_age_s": 0.15,
+    "dry_run": false,
+    "pair_limits": {
+      "available": true,
+      "mode": "hardware_characterized",
+      "pair_bounds_cm": [
+        [
+          -0.75,
+          0.75
+        ],
+        [
+          -0.75,
+          0.75
+        ]
+      ],
+      "envelope_utilization": 0.75,
+      "message": "pair 1/3: +3.17 cm / -2.81 cm | pair 2/4: +2.51 cm / -1.93 cm",
+      "characterization": {
+        "1/3": {
+          "positive_ticks": 2067,
+          "negative_ticks": 1830,
+          "positive_cm": 3.1707382885596203,
+          "negative_cm": 2.8071848418307233,
+          "first_servo_neutral_tick": 1894,
+          "second_servo_neutral_tick": 2131
+        },
+        "2/4": {
+          "positive_ticks": 1639,
+          "negative_ticks": 1256,
+          "positive_cm": 2.514194511344566,
+          "negative_cm": 1.926679869584365,
+          "first_servo_neutral_tick": 2392,
+          "second_servo_neutral_tick": 2775
+        }
+      }
+    },
+    "startup_reference_source": "manual",
+    "startup_reference_ticks_by_servo": {
+      "1": 1894,
+      "2": 2392,
+      "3": 2131,
+      "4": 2775
+    },
+    "startup_reference_error": null,
+    "neutral_ticks_by_servo": {
+      "1": 1894,
+      "2": 2392,
+      "3": 2131,
+      "4": 2775
+    },
+    "base_registration": {
+      "path": "/home/continuum-pi/Continuum_pi/data/registrations/latest_registration.json",
+      "exists": true,
+      "size_bytes": 53557,
+      "modified_at_utc": "2026-05-18T02:06:23.520558+00:00",
+      "sha256": "f4dc337246aa74ca0549f0d66f5f115690d34f8eaf6f29df3ae8b2a16ff4426b",
+      "state": "loaded",
+      "stored_timestamp_utc": "2026-05-18T02:05:59.760Z",
+      "stored_fre_mm": 0.6533003782859423
+    },
+    "runtime_tip_calibration": {
+      "path": null,
+      "exists": false,
+      "state": "coil_as_tip",
+      "mode": "coil_as_tip",
+      "trust_level": "thesis_trusted",
+      "policy": {
+        "mode": "coil_as_tip",
+        "calibration_state": "coil_as_tip",
+        "tip_pose_status": "coil_as_tip",
+        "trust_label": "thesis_trusted",
+        "trust_level": "thesis_trusted",
+        "thesis_trusted": true,
+        "requested_workflow": "modeling_dataset",
+        "workflow": "modeling_dataset",
+        "canonical_workflow": "modeling_dataset",
+        "allowed_for_workflow": true,
+        "requires_lower_trust_override": false,
+        "uses_coil_as_tip": true,
+        "uses_calibrated_tip_transform": false,
+        "uses_identity_transform": true,
+        "intended_use": "Current trusted runtime position path for robot-frame tip repeatability, pretension centering, modeling datasets, and demos when coil-origin-as-tip is the declared measurement.",
+        "status_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.",
+        "reasons": [],
+        "warnings": [
+          "Coil-as-tip uses identity T_coil_tip and reports the 0A coil origin as the tip; do not interpret it as a validated calibrated tip transform or true tip orientation."
+        ],
+        "allowed_workflows": {
+          "repeatability": true,
+          "pretension_validation": true,
+          "penprobe_chasing": true,
+          "modeling_dataset": true,
+          "transform_chain_validation": true
+        }
+      },
+      "thesis_trusted": true,
+      "mode_message": "Coil-as-tip is active: identity T_coil_tip, the 0A coil origin/position path is shown directly. This does not apply an additional calibrated physical tip offset.",
+      "selected_artifact_kind": "coil_as_tip",
+      "selected_artifact_path": null,
+      "stored_timestamp_utc": null,
+      "identity_fallback": true,
+      "tip_pose_status": "coil_as_tip"
+    },
+    "pretension_artifact": {
+      "path": "/home/continuum-pi/Continuum_pi/config/neutral_setpoints.json",
+      "exists": true,
+      "size_bytes": 30757,
+      "modified_at_utc": "2026-05-18T15:05:38.731035+00:00",
+      "sha256": "d1c327123c8ac038344dfc4d50e8e945df2e65a5297e2597002a25a00b566b64",
+      "status": "ready",
+      "compatible": true,
+      "updated_at_utc": "2026-05-18T15:05:38Z",
+      "schema_version": 2,
+      "active_source_type": "manual",
+      "accepted": true,
+      "usable": true,
+      "active_source_message": "Accepted manual pretension/startup state is recorded for servo(s): 1, 2, 3, 4",
+      "active_source_updated_at_utc": "2026-05-18T15:05:38Z",
+      "active_source_note": null,
+      "active_source_by_servo": {
+        "1": "manual",
+        "2": "manual",
+        "3": "manual",
+        "4": "manual"
+      }
+    },
+    "run_start_preflight": {
+      "overall_status": "ready",
+      "tracker_gate": {
+        "accepted": true,
+        "reason": "ok",
+        "tracker_age_s": 0.0,
+        "tracker_frame_id": 16936152,
+        "tool_id": "0A",
+        "tool_present": true,
+        "tool_valid": null,
+        "tip_pose_status": "coil_as_tip",
+        "registration_state": "loaded",
+        "runtime_tip_mode": "coil_as_tip",
+        "runtime_tip_trust_level": "thesis_trusted"
+      },
+      "tracking_state": "streaming_healthy",
+      "runtime_tip_mode": "coil_as_tip",
+      "runtime_tip_trust_level": "thesis_trusted",
+      "pretension_source_type": "manual",
+      "pretension_message": "Accepted manual pretension/startup state is recorded for servo(s): 1, 2, 3, 4",
+      "operating_mode": "single_segment",
+      "active_segment": "segment_a",
+      "commanded_servo_ids": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "baud": 1000000,
+      "parallel_single_demo": false
+    }
+  },
+  "long_run_health": {
+    "recovered_packet_error_count": 0,
+    "unrecovered_packet_error_count": 0,
+    "servo_telemetry_retry_count": 164,
+    "dropped_post_motion_telemetry_samples": 0,
+    "dropped_pre_motion_telemetry_samples": 0,
+    "consecutive_post_motion_packet_failures": 0,
+    "total_post_motion_packet_failure_events": 0,
+    "write_goal_packet_error_count": 0
+  },
+  "run_review": {
+    "schema_version": "1.0",
+    "review_status": "debug",
+    "notes": "",
+    "created_at": "2026-05-18T19:27:22.958013+00:00",
+    "reviewed_at": "",
+    "reviewer": "",
+    "include_in_evidence_index": false,
+    "intended_use": "debug"
+  },
+  "note": "Per-pair time alignment between tracker frames and servo telemetry is characterized by servo_tracker_sync_validation. The same pairing mechanism is used during this experiment; see docs/timing_audit.md."
+}

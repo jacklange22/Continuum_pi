@@ -10,15 +10,19 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXPERIMENT="${1:-collect_pose_command_dataset}"
 RUN_ID="${2:-latest}"
-EXTRA_ARGS=()
-if [[ "$#" -gt 2 ]]; then
-  EXTRA_ARGS=("${@:3}")
-fi
 
-exec python3 "$ROOT/scripts/sync_pi_dataset.py" pull \
-  --pi "continuum-pi@10.28.63.49" \
-  --remote-project-root "/home/continuum-pi/Continuum_pi" \
-  --local-mirror-root "$ROOT" \
-  --experiment "$EXPERIMENT" \
-  --run "$RUN_ID" \
-  "${EXTRA_ARGS[@]}"
+pull_dataset() {
+  python3 "$ROOT/scripts/sync_pi_dataset.py" pull \
+    --pi "continuum-pi@10.28.63.49" \
+    --remote-project-root "/home/continuum-pi/Continuum_pi" \
+    --local-mirror-root "$ROOT" \
+    --experiment "$EXPERIMENT" \
+    --run "$RUN_ID" \
+    "$@"
+}
+
+if [[ "$#" -gt 2 ]]; then
+  pull_dataset "${@:3}"
+else
+  pull_dataset
+fi

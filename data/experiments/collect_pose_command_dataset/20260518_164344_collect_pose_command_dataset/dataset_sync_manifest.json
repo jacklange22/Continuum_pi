@@ -1,0 +1,106 @@
+{
+  "schema_version": "dataset_sync_manifest_v1",
+  "created_at_utc": "2026-05-18T22:21:09.813707+00:00",
+  "run_dir": "/Users/jacklange/Continuum/pi_code/data/experiments/collect_pose_command_dataset/20260518_164344_collect_pose_command_dataset",
+  "include_sha256": false,
+  "file_count": 16,
+  "total_size_bytes": 94286155,
+  "files": [
+    {
+      "path": "collect_pose_checkpoint.json",
+      "size_bytes": 247,
+      "mtime_ns": 1779132211000000000,
+      "sha256": null
+    },
+    {
+      "path": "config_snapshot.yaml",
+      "size_bytes": 2646,
+      "mtime_ns": 1779132442000000000,
+      "sha256": null
+    },
+    {
+      "path": "dataset_quality_summary.json",
+      "size_bytes": 6736,
+      "mtime_ns": 1779132448000000000,
+      "sha256": null
+    },
+    {
+      "path": "dataset_quality_summary.txt",
+      "size_bytes": 1282,
+      "mtime_ns": 1779132448000000000,
+      "sha256": null
+    },
+    {
+      "path": "debug.json",
+      "size_bytes": 8698,
+      "mtime_ns": 1779132445000000000,
+      "sha256": null
+    },
+    {
+      "path": "long_run_health.json",
+      "size_bytes": 1032,
+      "mtime_ns": 1779132448000000000,
+      "sha256": null
+    },
+    {
+      "path": "metadata.json",
+      "size_bytes": 46852,
+      "mtime_ns": 1779132438000000000,
+      "sha256": null
+    },
+    {
+      "path": "modeling_dataset_export.jsonl",
+      "size_bytes": 21799213,
+      "mtime_ns": 1779132444000000000,
+      "sha256": null
+    },
+    {
+      "path": "modeling_dataset_legacy_compat.dat",
+      "size_bytes": 1195576,
+      "mtime_ns": 1779132445000000000,
+      "sha256": null
+    },
+    {
+      "path": "run_review.json",
+      "size_bytes": 228,
+      "mtime_ns": 1779132442000000000,
+      "sha256": null
+    },
+    {
+      "path": "sample_failure_events.jsonl",
+      "size_bytes": 753638,
+      "mtime_ns": 1779132364000000000,
+      "sha256": null
+    },
+    {
+      "path": "samples.jsonl",
+      "size_bytes": 66862379,
+      "mtime_ns": 1779132442000000000,
+      "sha256": null
+    },
+    {
+      "path": "summary.json",
+      "size_bytes": 644946,
+      "mtime_ns": 1779132442000000000,
+      "sha256": null
+    },
+    {
+      "path": "thesis_01_workspace_coverage_3d.png",
+      "size_bytes": 1105647,
+      "mtime_ns": 1779132446000000000,
+      "sha256": null
+    },
+    {
+      "path": "thesis_02_command_and_workspace_2d.png",
+      "size_bytes": 1853208,
+      "mtime_ns": 1779132448000000000,
+      "sha256": null
+    },
+    {
+      "path": "transform_chain_summary.json",
+      "size_bytes": 3827,
+      "mtime_ns": 1779132448000000000,
+      "sha256": null
+    }
+  ]
+}

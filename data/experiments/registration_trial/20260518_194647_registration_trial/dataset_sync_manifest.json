@@ -1,0 +1,82 @@
+{
+  "schema_version": "dataset_sync_manifest_v1",
+  "created_at_utc": "2026-05-18T22:21:14.697749+00:00",
+  "run_dir": "/Users/jacklange/Continuum/pi_code/data/experiments/registration_trial/20260518_194647_registration_trial",
+  "include_sha256": false,
+  "file_count": 12,
+  "total_size_bytes": 875188,
+  "files": [
+    {
+      "path": "config_snapshot.yaml",
+      "size_bytes": 466,
+      "mtime_ns": 1779133609000000000,
+      "sha256": null
+    },
+    {
+      "path": "metadata.json",
+      "size_bytes": 39199,
+      "mtime_ns": 1779133609000000000,
+      "sha256": null
+    },
+    {
+      "path": "registration_trial_method_comparison_report.png",
+      "size_bytes": 131879,
+      "mtime_ns": 1779133612000000000,
+      "sha256": null
+    },
+    {
+      "path": "registration_trial_point_spread_report.png",
+      "size_bytes": 114919,
+      "mtime_ns": 1779133610000000000,
+      "sha256": null
+    },
+    {
+      "path": "registration_trial_samples_per_point_report.png",
+      "size_bytes": 156348,
+      "mtime_ns": 1779133611000000000,
+      "sha256": null
+    },
+    {
+      "path": "registration_trial_subset_rms_report.png",
+      "size_bytes": 139375,
+      "mtime_ns": 1779133611000000000,
+      "sha256": null
+    },
+    {
+      "path": "run_review.json",
+      "size_bytes": 228,
+      "mtime_ns": 1779133609000000000,
+      "sha256": null
+    },
+    {
+      "path": "samples.jsonl",
+      "size_bytes": 0,
+      "mtime_ns": 1779133609000000000,
+      "sha256": null
+    },
+    {
+      "path": "summary.json",
+      "size_bytes": 190032,
+      "mtime_ns": 1779133609000000000,
+      "sha256": null
+    },
+    {
+      "path": "transform_chain_summary.json",
+      "size_bytes": 3691,
+      "mtime_ns": 1779133612000000000,
+      "sha256": null
+    },
+    {
+      "path": "trial_report.json",
+      "size_bytes": 95911,
+      "mtime_ns": 1779133609000000000,
+      "sha256": null
+    },
+    {
+      "path": "trial_report.md",
+      "size_bytes": 3140,
+      "mtime_ns": 1779133609000000000,
+      "sha256": null
+    }
+  ]
+}

@@ -1,0 +1,240 @@
+{
+  "accepted_rows_complete": true,
+  "accepted_sample_count": 4094,
+  "accepted_training_row_count": 4092,
+  "accepted_workspace_sample_count": 4092,
+  "command_range_per_tendon_cm": {
+    "tendon_1": {
+      "max": 0.749267578125,
+      "min": -0.7496337890625,
+      "span": 1.4989013671875
+    },
+    "tendon_2": {
+      "max": 0.7493141289437586,
+      "min": -0.7497713763145862,
+      "span": 1.499085505258345
+    },
+    "tendon_3": {
+      "max": 0.7496337890625,
+      "min": -0.749267578125,
+      "span": 1.4989013671875
+    },
+    "tendon_4": {
+      "max": 0.7497713763145862,
+      "min": -0.7493141289437586,
+      "span": 1.499085505258345
+    }
+  },
+  "complete_training_row_count": 4092,
+  "consecutive_transport_burst_failures": 0,
+  "current_voltage_correlation_notes_by_servo": {
+    "1": "voltage droop likely under high load (mean_high=4743 mV, mean_low=4928 mV)",
+    "2": "voltage droop likely under high load (mean_high=4585 mV, mean_low=4873 mV)",
+    "3": "no clear voltage droop trend (mean_high=4900 mV, mean_low=4867 mV)"
+  },
+  "dropped_post_motion_telemetry_samples": 0,
+  "dropped_pre_motion_telemetry_samples": 0,
+  "dropped_quarantined_sample_count": 0,
+  "dropped_samples_excluded_from_training": true,
+  "failure_count": 0,
+  "high_current_warning": true,
+  "incomplete_accepted_workspace_row_count": 0,
+  "input_voltage_min_mv_by_servo": {
+    "1": 4300,
+    "2": 4100,
+    "3": 4500,
+    "4": 4500
+  },
+  "max_abs_current_ma": 841,
+  "max_abs_current_ma_by_servo": {
+    "1": 782,
+    "2": 841,
+    "3": 748,
+    "4": 425
+  },
+  "max_current_warning_ma": 800,
+  "mean_abs_current_ma_by_servo": {
+    "1": 204.6314118221788,
+    "2": 176.59245236932097,
+    "3": 99.1527845627748,
+    "4": 81.18588177821202
+  },
+  "measured_xyz_range_mm": {
+    "x": {
+      "max": 33.99576190003157,
+      "min": -34.34666755293053,
+      "span": 68.34242945296211
+    },
+    "y": {
+      "max": 34.74575464856022,
+      "min": -33.3204202247849,
+      "span": 68.06617487334512
+    },
+    "z": {
+      "max": 66.33875859370231,
+      "min": 45.11248937156554,
+      "span": 21.22626922213677
+    }
+  },
+  "model_training_hard_invalidation_reasons": [],
+  "model_training_validity_checks": {
+    "accepted_count_meets_target": true,
+    "accepted_rows_complete": true,
+    "dropped_rows_excluded": true,
+    "no_invalid_transforms_in_accepted_rows": true,
+    "not_mock": true,
+    "not_parallel_demo": true,
+    "not_servo_only": true,
+    "pose_labels_available": true,
+    "real_hardware": true,
+    "registration_or_coil_tip_policy_present": true,
+    "run_success": true,
+    "startup_provenance_present": true,
+    "tracker_connected": true,
+    "trusted_run_mode": true
+  },
+  "model_training_validity_reason": "warnings_present_but_training_ready",
+  "model_training_validity_status": "warning_valid",
+  "model_training_warnings": [
+    "2 accepted non-training phase rows were excluded from modeling export."
+  ],
+  "modeling_export_row_count": 4092,
+  "modeling_legacy_row_count": 4092,
+  "next_command_index_to_resume": 4092,
+  "non_training_accepted_row_count": 2,
+  "p95_abs_current_ma_by_servo": {
+    "1": 451.0,
+    "2": 484.0,
+    "3": 235.0,
+    "4": 263.0
+  },
+  "peak_current_sample_by_servo": {
+    "1": {
+      "abs_current_ma": 782,
+      "command_at_peak_current_cm": [
+        -0.2255859375,
+        0.43106995884773625,
+        0.2255859375,
+        -0.43106995884773625
+      ],
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        -0.2255859375,
+        0.43106995884773625,
+        0.2255859375,
+        -0.43106995884773625
+      ],
+      "resolved_pair_command_cm": [
+        -0.2255859375,
+        0.43106995884773625
+      ],
+      "sample_index": 0,
+      "sequence_index": 411,
+      "source": "servo_feedback_at_command",
+      "step_index": 410,
+      "voltage_at_peak_mv": 4400
+    },
+    "2": {
+      "abs_current_ma": 841,
+      "command_at_peak_current_cm": [
+        -0.7445068359375,
+        -0.3842021033379059,
+        0.7445068359375,
+        0.3842021033379059
+      ],
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        -0.7445068359375,
+        -0.3842021033379059,
+        0.7445068359375,
+        0.3842021033379059
+      ],
+      "resolved_pair_command_cm": [
+        -0.7445068359375,
+        -0.3842021033379059
+      ],
+      "sample_index": 0,
+      "sequence_index": 3841,
+      "source": "servo_feedback_at_command",
+      "step_index": 3840,
+      "voltage_at_peak_mv": 4800
+    },
+    "3": {
+      "abs_current_ma": 748,
+      "command_at_peak_current_cm": [
+        -0.302490234375,
+        0.38717421124828544,
+        0.302490234375,
+        -0.38717421124828544
+      ],
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        -0.302490234375,
+        0.38717421124828544,
+        0.302490234375,
+        -0.38717421124828544
+      ],
+      "resolved_pair_command_cm": [
+        -0.302490234375,
+        0.38717421124828544
+      ],
+      "sample_index": 0,
+      "sequence_index": 1587,
+      "source": "servo_feedback_at_command",
+      "step_index": 1586,
+      "voltage_at_peak_mv": 4900
+    },
+    "4": {
+      "abs_current_ma": 425,
+      "command_at_peak_current_cm": [
+        -0.234375,
+        0.6944444444444444,
+        0.234375,
+        -0.6944444444444444
+      ],
+      "phase": "workspace_capture",
+      "resolved_cable_command_cm": [
+        -0.234375,
+        0.6944444444444444,
+        0.234375,
+        -0.6944444444444444
+      ],
+      "resolved_pair_command_cm": [
+        -0.234375,
+        0.6944444444444444
+      ],
+      "sample_index": 0,
+      "sequence_index": 27,
+      "source": "servo_feedback_at_command",
+      "step_index": 26,
+      "voltage_at_peak_mv": 4800
+    }
+  },
+  "recommendation": "good_for_training",
+  "recovered_packet_error_count": 0,
+  "rejected_sample_count": 0,
+  "remaining_complete_training_rows": 0,
+  "sample_rate_stats": {
+    "max_dt_s": 2.8289685549680144,
+    "mean_dt_s": 2.3948920652931864,
+    "mean_hz": 0.41755535228163965,
+    "min_dt_s": 0.460228520038072,
+    "sample_count": 4094
+  },
+  "schema_version": "collect_pose_dataset_quality_v1",
+  "servo_telemetry_retry_count": 164,
+  "sustained_current_exceedance_count_by_servo": {},
+  "target_valid_sample_count": 4092,
+  "total_post_motion_packet_failure_events": 0,
+  "tracker_stale_count": 0,
+  "trainability_status": {
+    "not_model_training_ready": false,
+    "run_trust_mode": "thesis_trusted",
+    "valid_for_model_training": true
+  },
+  "transient_current_spike_count_by_servo": {},
+  "transient_current_spike_drop_count": 0,
+  "transport_burst_count": 0,
+  "unrecovered_packet_error_count": 0,
+  "write_goal_packet_error_count": 0
+}

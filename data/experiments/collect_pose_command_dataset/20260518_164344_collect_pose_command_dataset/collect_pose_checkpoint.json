@@ -1,0 +1,8 @@
+{
+  "accepted_sample_count": 4001,
+  "dropped_post_motion_telemetry_samples": 0,
+  "last_completed_command_index": 3999,
+  "next_command_index_to_resume": 4000,
+  "schema_version": "collect_pose_checkpoint_v1",
+  "total_packet_failure_events": 0
+}
