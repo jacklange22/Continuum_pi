@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 
 from continuum_robot.gui.controllers.tracker_mvp_controller import TrackerMvpViewState
 from continuum_robot.gui.controllers.tracking_controller import TrackingViewState
-from continuum_robot.gui.theme import grouped_workspace_stylesheet
+from continuum_robot.gui.theme import COLORS, grouped_workspace_stylesheet
 from continuum_robot.gui.view_utils import set_text_document
 from continuum_robot.gui.widgets.tool_plot_widget import ToolPlotWidget
 
@@ -212,6 +212,7 @@ class TrackingTab(QWidget):
         self.plot_widget.set_tracking_state(live_state)
 
         self.pivot_status_label.setText(self._format_pivot_status(workflow_state))
+        self.pivot_status_label.setStyleSheet(self._pivot_status_stylesheet(workflow_state))
         self.pivot_motion_label.setText(self._format_pivot_motion(workflow_state))
         self.pivot_last_run_label.setText(self._format_pivot_last_run(workflow_state))
         self.pivot_tip_path_label.setText(self._format_tip_in_use(workflow_state))
@@ -271,15 +272,28 @@ class TrackingTab(QWidget):
     def _format_pivot_status(ws: TrackerMvpViewState) -> str:
         if ws.pivot_collection_active:
             return f"Collecting · {ws.pivot_live_sample_count} samples"
-        if ws.pivot_pending_accept:
-            return "Review ready · Accept Tip File to save"
+        rmse = ws.pivot_rmse_mm
+        rmse_text = f" · RMSE {rmse:.3f} mm" if rmse is not None else ""
         if ws.pivot_status == "solve_failed":
-            return "Solve failed"
+            return f"Solve failed{rmse_text} — see Details"
+        if ws.pivot_pending_accept:
+            return f"Solved{rmse_text} · Accept Tip File to save"
         if ws.pivot_status == "accepted":
-            return "Accepted"
+            return f"Accepted{rmse_text}"
         if ws.pivot_live_sample_count > 0:
-            return f"Collection stopped · {ws.pivot_live_sample_count} samples"
+            return f"Collection stopped · {ws.pivot_live_sample_count} samples · Click Solve"
         return "Idle"
+
+    @staticmethod
+    def _pivot_status_stylesheet(ws: TrackerMvpViewState) -> str:
+        base = "padding: 6px 10px; border-radius: 8px; font-weight: 700;"
+        if ws.pivot_collection_active:
+            return f"{base} background: {COLORS.info_bg}; color: {COLORS.info_fg};"
+        if ws.pivot_status == "solve_failed":
+            return f"{base} background: {COLORS.error_bg}; color: {COLORS.error_fg};"
+        if ws.pivot_pending_accept or ws.pivot_status == "accepted":
+            return f"{base} background: {COLORS.success_bg}; color: {COLORS.success_fg};"
+        return f"{base} background: {COLORS.status_bg}; color: {COLORS.status_fg};"
 
     @staticmethod
     def _format_pivot_motion(ws: TrackerMvpViewState) -> str:
