@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from typing import Callable
 
@@ -178,20 +179,31 @@ class ServosTab(QWidget):
         jog_row_layout.addWidget(jog_box, 1)
         jog_row_layout.addWidget(joystick_box, 1)
 
-        # Throttled command dispatch: coalesce drag motion to ~20 Hz so the bus
-        # is never asked to deliver writes faster than command_displacement can
-        # complete a round-trip. The puck still tracks the cursor at full rate.
+        # Tight-loop dispatch state. We bypass controller.apply_displacement
+        # (which calls a heavy refresh() in finally) and talk to servo_service
+        # directly with chase_tight_loop_writes + skip_post_command_telemetry +
+        # prevalidated telemetry — the same pattern the penprobe chasing demo
+        # uses for live control. Cache neutral_ticks and minimal telemetry so
+        # most sends are a single bus write.
         self._joystick_pending_xy_cm: tuple[float, float] | None = None
         self._joystick_last_sent_xy_cm: tuple[float, float] | None = None
         self._joystick_send_in_flight = False
+        self._joystick_neutral_ticks_cache: list[int] | None = None
+        self._joystick_telemetry_cache: dict = {}
+        self._joystick_cache_at = 0.0
+        self._joystick_cache_key: tuple | None = None
+        self._joystick_cache_ttl_s = 3.0
+        # Backstop timer in case position_changed somehow doesn't fire the
+        # post-send chain (lost wakeup, exception path); fires only as a
+        # safety net at low frequency.
         self._joystick_send_timer = QTimer(self)
-        self._joystick_send_timer.setInterval(50)
+        self._joystick_send_timer.setInterval(150)
         self._joystick_send_timer.timeout.connect(self._maybe_send_joystick_command)
         self._joystick_send_timer.start()
         self.joystick_widget.position_changed.connect(self._on_joystick_position_changed)
         # On mouse release, flush the final position immediately — a fast drag
-        # that ends between throttle ticks should still leave the servos at the
-        # operator's last puck position rather than wherever the throttle paused.
+        # that ends right after a send completes shouldn't have to wait for the
+        # backstop timer to push the final pixel.
         self.joystick_widget.drag_released.connect(self._on_joystick_drag_released)
 
         self.manual_pretension_summary_label = QLabel("No accepted pretension source.")
@@ -394,20 +406,24 @@ class ServosTab(QWidget):
         self._joystick_pending_xy_cm = (float(x_cm), float(y_cm))
         self.joystick_center_button.setEnabled(x_cm != 0.0 or y_cm != 0.0)
         self._refresh_joystick_readout(self.controller.state)
+        # Fire immediately — don't wait for the backstop timer. The in-flight
+        # guard inside _maybe_send_joystick_command coalesces fast bursts.
+        self._maybe_send_joystick_command()
 
     def _on_joystick_drag_released(self, x_cm: float, y_cm: float) -> None:
-        # Make sure the final puck position commits even if it landed between
-        # throttle ticks; the throttle would otherwise leave a stale request in
-        # the queue forever once the user stopped moving the mouse.
         self._joystick_pending_xy_cm = (float(x_cm), float(y_cm))
         self._maybe_send_joystick_command()
 
     def _center_joystick(self) -> None:
         self.joystick_widget.center()
-        # Belt-and-braces: bypass the throttle so Center always takes effect
-        # immediately even if a send is mid-flight.
         self._joystick_pending_xy_cm = (0.0, 0.0)
         self._maybe_send_joystick_command()
+
+    def _invalidate_joystick_caches(self) -> None:
+        self._joystick_neutral_ticks_cache = None
+        self._joystick_telemetry_cache = {}
+        self._joystick_cache_at = 0.0
+        self._joystick_cache_key = None
 
     def _refresh_joystick_readout(self, state: ServosViewState) -> None:
         x_cm, y_cm = self.joystick_widget.position_cm()
@@ -439,24 +455,85 @@ class ServosTab(QWidget):
                 "XY drive: could not build displacement vector — check operating mode."
             )
             return
+
         self._joystick_send_in_flight = True
         timestamp = datetime.now().strftime("%H:%M:%S")
         try:
-            self.controller.set_tendon_displacements(displacements)
-            self.controller.apply_displacement()
+            neutral_ticks, prevalidated = self._ensure_joystick_caches(state, servo_ids)
+            # Direct fast-path call: chase_tight_loop_writes + prevalidated
+            # telemetry + skip post-command telemetry. Same pattern the
+            # penprobe chasing demo uses for live control. Bypasses the
+            # controller's heavy refresh() in apply_displacement's finally.
+            self.controller.servo_service.command_displacement(
+                tendon_displacements_cm=displacements,
+                neutral_ticks=neutral_ticks,
+                servo_ids=servo_ids,
+                motion_workflow="experiment_motion",
+                chase_tight_loop_writes=True,
+                prevalidated_telemetry_by_id=dict(prevalidated),
+                skip_post_command_telemetry=True,
+            )
             self._joystick_last_sent_xy_cm = pending
+            # Keep the controller's state.tendon_displacements_cm in sync for
+            # debug consistency, but skip the refresh() it normally chases.
+            self.controller.state.tendon_displacements_cm = list(displacements)
             self.joystick_last_action_label.setText(
                 f"Sent X={pending[0]:+.3f} cm  Y={pending[1]:+.3f} cm  at {timestamp}"
             )
-            # Refresh telemetry view so the table reflects the new position
-            # without waiting for the next app-window refresh tick.
-            self.update(self.controller.state)
         except Exception as exc:  # noqa: BLE001 — surface but never crash the GUI
-            self.controller.state.last_error = str(exc)
-            self.controller.state.status_message = f"XY drive command rejected: {exc}"
+            self._invalidate_joystick_caches()
             self.joystick_last_action_label.setText(f"XY drive error at {timestamp}: {exc}")
         finally:
             self._joystick_send_in_flight = False
+            # If new pending arrived during the send, schedule another send
+            # ASAP. QTimer.singleShot(0) yields one Qt event-loop tick so the
+            # GUI stays responsive between writes.
+            if (
+                self._joystick_pending_xy_cm is not None
+                and self._joystick_pending_xy_cm != self._joystick_last_sent_xy_cm
+            ):
+                QTimer.singleShot(0, self._maybe_send_joystick_command)
+
+    def _ensure_joystick_caches(
+        self,
+        state: ServosViewState,
+        servo_ids: list[int],
+    ) -> tuple[list[int], dict]:
+        """Return cached neutral ticks and prevalidated telemetry for fast writes.
+
+        Invalidated when: pretension source changes, active servo set changes,
+        or `_joystick_cache_ttl_s` has elapsed since the last refresh. Most
+        joystick sends hit the cached path.
+        """
+        now = time.monotonic()
+        cache_key = (
+            state.pretension_source_type,
+            state.pretension_source_updated_at_utc,
+            tuple(servo_ids),
+        )
+        cache_stale = (now - self._joystick_cache_at) > self._joystick_cache_ttl_s
+        if (
+            self._joystick_neutral_ticks_cache is None
+            or self._joystick_cache_key != cache_key
+            or cache_stale
+            or not self._joystick_telemetry_cache
+        ):
+            reference = self.controller.servo_service.resolve_startup_reference_ticks(list(servo_ids))
+            missing = [sid for sid in servo_ids if sid not in reference.ticks_by_servo]
+            if missing:
+                raise RuntimeError(
+                    f"Startup reference ticks missing for servo IDs: {missing}. "
+                    "Accept pretension or recapture neutral first."
+                )
+            self._joystick_neutral_ticks_cache = [
+                int(reference.ticks_by_servo[sid]) for sid in servo_ids
+            ]
+            self._joystick_telemetry_cache = self.controller.servo_service.read_minimal_telemetry(
+                list(servo_ids)
+            )
+            self._joystick_cache_at = now
+            self._joystick_cache_key = cache_key
+        return self._joystick_neutral_ticks_cache, self._joystick_telemetry_cache
 
     @staticmethod
     def _joystick_motion_allowed(state: ServosViewState) -> bool:
