@@ -18,7 +18,7 @@ from continuum_robot.experiments.builtins import (
     _collect_pose_dataset_quality_summary,
     _render_collect_pose_dataset_quality_summary,
 )
-from continuum_robot.experiments.modeling_dataset_outputs import build_modeling_dataset_summary_lines
+from continuum_robot.experiments.modeling_dataset_outputs import build_modeling_dataset_summary_pairs
 from continuum_robot.experiments.modeling_dataset_outputs import _build_export_rows, _build_legacy_dat_rows
 from continuum_robot.experiments.schemas import ExperimentTimeseriesSample
 from continuum_robot.experiments.dat_writer import DatRunWriter
@@ -232,13 +232,25 @@ def _recompute_one_run(run_dir: Path, *, apply: bool) -> dict[str, Any]:
         metadata_path.write_text(json.dumps(metadata_payload, indent=2, sort_keys=True), encoding="utf-8")
         quality_path.write_text(json.dumps(quality_payload, indent=2, sort_keys=True), encoding="utf-8")
         quality_txt_path.write_text(_render_collect_pose_dataset_quality_summary(quality_payload), encoding="utf-8")
-        summary_lines = build_modeling_dataset_summary_lines(
-            metadata=SimpleNamespace(
-                run_id=str(summary_payload.get("run_id", run_dir.name)),
-                timestamp_utc=str(summary_payload.get("timestamp_utc", metadata_payload.get("timestamp_utc", ""))),
-            ),
-            summary=SimpleNamespace(status=str(summary_payload.get("status", "unknown"))),
-            metrics=metrics,
+        summary_pairs = build_modeling_dataset_summary_pairs(metrics=metrics)
+        header_lines = [
+            "Motor Babble Modeling Dataset Summary",
+            "This run collected ordered single-segment command/pose samples for offline forward-model training and later state-aware model comparison.",
+            "",
+            f"Run ID: {summary_payload.get('run_id', run_dir.name)}",
+            f"Timestamp: {summary_payload.get('timestamp_utc', metadata_payload.get('timestamp_utc', ''))}",
+            f"Status: {summary_payload.get('status', 'unknown')}",
+        ]
+        trainability_status = str(metrics.get("model_training_validity_status", "unknown") or "unknown")
+        trainability_reason = str(metrics.get("model_training_validity_reason", "") or "")
+        trainability_line = (
+            f"Trainability: {trainability_status}"
+            + (f" ({trainability_reason})" if trainability_reason else "")
+        )
+        summary_lines = (
+            header_lines
+            + [f"{label}: {value}" for label, value in summary_pairs]
+            + [trainability_line]
         )
         modeling_summary_path.write_text("\n".join(summary_lines).strip() + "\n", encoding="utf-8")
 

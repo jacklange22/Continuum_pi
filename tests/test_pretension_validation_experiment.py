@@ -1050,3 +1050,92 @@ def test_smoke_example_yaml_carries_phase2_variant_knobs() -> None:
     assert payload["pretension_start_mode"] == "full_release_4095"
     # Default variant is the conservative one, not Jacobian.
     assert payload["tip_centering_variant"] == "paired_then_tip"
+
+
+# --- Engagement-scan take-up tests (operator-spec'd 2026-05-18) ----------
+
+
+def test_engagement_scan_step_ticks_default_is_50() -> None:
+    cfg = PretensionValidationExperimentConfig.from_dict({})
+    assert cfg.engagement_scan_step_ticks == 50
+    assert cfg.engagement_rise_threshold_ma == pytest.approx(5.0)
+    assert cfg.engagement_back_off_ticks == 50
+
+
+def test_engagement_scan_step_ticks_clamps_to_min_1() -> None:
+    cfg = PretensionValidationExperimentConfig.from_dict(
+        {"engagement_scan_step_ticks": 0, "engagement_back_off_ticks": -5}
+    )
+    assert cfg.engagement_scan_step_ticks == 1
+    assert cfg.engagement_back_off_ticks == 0  # back-off can be 0 = "no back off"
+
+
+def test_engagement_rise_threshold_floors_to_0_5_ma() -> None:
+    cfg = PretensionValidationExperimentConfig.from_dict({"engagement_rise_threshold_ma": -2.0})
+    assert cfg.engagement_rise_threshold_ma == pytest.approx(0.5)
+
+
+def test_engagement_scan_phase_emits_engagement_scan_traces(tmp_path: Path) -> None:
+    """Run the full pretension experiment in single_segment_staged mode and
+    verify the new engagement_scan + engagement_back_off + fine_take_up stages
+    appear in the trace."""
+    service = _servo_service(tmp_path)
+    runner = _runner(tmp_path, service, tracking_service=_StaticCoilTipTrackingService())
+    config = _advanced_config()
+    config.update(
+        {
+            "mode": "single_segment_staged",
+            "staged_strategy": "conservative_startup",
+            "tip_centering_variant": "current_only",
+            "include_tracker_displacement": True,
+            "enable_tip_centering": False,
+            "repeat_runs": 1,
+            "engagement_scan_step_ticks": 4,  # small so the mock bus engages quickly
+            "engagement_rise_threshold_ma": 1.0,  # very low so we engage in 1-2 iterations
+            "engagement_back_off_ticks": 2,
+        }
+    )
+    result = runner.run_experiment("pretension_validation", config=config)
+
+    metrics = result.summary.experiment_metrics
+    trace_rows = metrics["trace_rows"]
+    stages = [row.get("stage") for row in trace_rows]
+    # The new pipeline must emit these stage labels at least once.
+    assert "engagement_scan" in stages, f"engagement_scan stage missing; saw stages: {stages}"
+
+
+def test_shipped_system_yaml_carries_slowdown_profile() -> None:
+    """The shipped config/system.yaml carries non-null default_profile_velocity
+    and default_profile_acceleration so every goal-position write applies a
+    slowdown. dxl_bus.write_goal_positions writes these BEFORE the goal
+    position, so the slowdown applies to jog, pretension, registration capture
+    — everything that writes goal positions."""
+    import yaml
+    payload = yaml.safe_load(Path("config/system.yaml").read_text(encoding="utf-8"))
+    dxl = payload.get("dynamixel_settings", {}) or {}
+    assert dxl.get("default_profile_velocity") not in (None, 0), (
+        "default_profile_velocity must be non-null/non-zero for the slowdown to apply"
+    )
+    assert dxl.get("default_profile_acceleration") not in (None, 0), (
+        "default_profile_acceleration must be non-null/non-zero for the slowdown to apply"
+    )
+    # Sanity bounds: not so fast it doesn't slow anything, not so slow it
+    # makes the rig feel broken.
+    assert 5 <= int(dxl["default_profile_velocity"]) <= 200
+    assert 1 <= int(dxl["default_profile_acceleration"]) <= 100
+
+
+def test_shipped_pretension_yaml_carries_engagement_scan_knobs() -> None:
+    """Example pretension YAML must expose the new engagement-scan knobs so
+    they are tunable on the Experiments tab."""
+    import yaml
+    payload = yaml.safe_load(
+        Path("config/experiment_pretension_validation.example.yaml").read_text(encoding="utf-8")
+    )
+    assert "engagement_scan_step_ticks" in payload
+    assert "engagement_rise_threshold_ma" in payload
+    assert "engagement_back_off_ticks" in payload
+    # Defaults must match the operator's spec.
+    assert int(payload["engagement_scan_step_ticks"]) == 50
+    assert int(payload["engagement_back_off_ticks"]) == 50
+    assert float(payload["engagement_rise_threshold_ma"]) >= 2.0

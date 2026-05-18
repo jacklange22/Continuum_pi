@@ -1,0 +1,52 @@
+# Registration sampling study — example operator config.
+#
+# This experiment captures N samples per body-frame landmark with the
+# pen-probe (default 0B) and runs an offline analysis to recommend how many
+# points and how many samples per point a thesis-grade registration
+# protocol needs.
+#
+# The experiment NEVER writes data/registrations/latest_registration.json.
+# It writes a registration_candidate.json into its own run directory; promote
+# explicitly with `continuum_robot.data.promote_registration_study` after
+# review.
+#
+# Capture order follows the labels declared under `candidate_landmarks` in
+# config/registration.yaml. Operator should reach all configured labels
+# (L1–L12 by default) and rest the pen-probe at each point for at least
+# `samples_per_point` samples.
+
+pen_probe_tool_id: "0B"
+samples_per_point: 20
+settle_time_s: 0.05
+capture_poll_interval_s: 0.05
+
+# Leave empty to use all enabled candidate_landmarks from config/registration.yaml.
+# Set explicit labels here to restrict capture to a subset.
+landmark_labels: []
+
+# Subset sizes evaluated by the bootstrap study. Sizes greater than the
+# number of captured landmarks are silently dropped at precheck.
+subset_sizes: [4, 6, 8, 10, 12]
+
+# Averaging methods evaluated for the per-point center computation.
+averaging_methods: ["mean", "median", "trimmed_mean"]
+trimmed_mean_proportion: 0.1
+
+bootstrap_iterations: 200
+random_seed: 7
+
+# Set true to run end-to-end with synthetic captures (for unit tests and
+# headless CI). Real bench runs MUST set this to false.
+dry_run: false
+synthetic_noise_std_mm: 0.5
+
+# Outliers are flagged in the summary but never deleted.
+outlier_flag_z_threshold: 3.5
+
+# Operator-tuned optimization criterion. Allowed values:
+#   - "fre_mm"                (default): minimize bootstrap mean registration FRE
+#   - "leave_one_out_mm"      minimize mean leave-one-out residual
+#   - "within_point_spread_mm"  pick the configuration with the most consistent point centroids
+optimize_for: "fre_mm"
+
+operator_notes: ""

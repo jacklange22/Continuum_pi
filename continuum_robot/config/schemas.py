@@ -501,6 +501,7 @@ class SafetyConfig:
     current_warning_ma: int | None = 500
     transient_current_spike_ma: int = 850
     sustained_jam_current_ma: int = 850
+    simple_experiment_motion_settle_s: float = 0.075
     sustained_jam_cycles: int = 3
     transient_spike_policy: str = "warn_drop_sample_continue"
     sustained_jam_policy: str = "stop_safely"

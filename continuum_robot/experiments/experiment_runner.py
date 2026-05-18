@@ -261,8 +261,16 @@ class ExperimentRunner:
             session.add_warning(f"Transform-chain summary outputs failed: {exc}")
         if final_success:
             message = message or f"Completed experiment {experiment.name}."
-        elif not message:
-            message = f"Experiment {experiment.name} failed."
+        else:
+            failure_detail = None
+            if session.error_messages:
+                failure_detail = session.error_messages[-1]
+            if not message or message.startswith(f"Completed experiment {experiment.name}"):
+                message = (
+                    f"Experiment {experiment.name} failed: {failure_detail}"
+                    if failure_detail
+                    else f"Experiment {experiment.name} failed."
+                )
         LOG.info(
             "Experiment run finish | name=%s | run_id=%s | success=%s | sample_count=%s | output_dir=%s | message=%s",
             experiment.name,

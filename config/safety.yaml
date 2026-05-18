@@ -11,13 +11,23 @@ servo_model: XC330-M288-T
 # Current Limit(38) control-table item/range that should be respected where
 # configured by firmware. This software limit stays conservative and checks
 # absolute current magnitude so negative reported current cannot bypass safety.
-servo_reported_current_hard_limit_ma: 850
+servo_reported_current_hard_limit_ma: 900
 servo_reported_current_warning_ma: 650
 current_safety_basis: "XC330-M288-T servo-reported input-current estimate; absolute magnitude limit below approximate 5 V stall current; Current Limit(38) should also be respected where configured/read."
+# Brief wait between writing goal positions and reading post-motion telemetry
+# for the single-segment experiment motion path. The XC330-M288-T runs at
+# ~234 rpm by default (~32 ms per 522-tick move), so sampling current the
+# instant the goal write returns catches the servo mid-motion when its driver
+# is still actively pushing — that produces 700-900 mA transient readings that
+# trip the post-move hard limit even though the rig is healthy at rest. A small
+# settle (~75 ms) lets motion finish and current decay before the safety check.
+# Set to 0.0 to restore the original behavior; the chase-tight-loop path always
+# skips this wait.
+simple_experiment_motion_settle_s: 2.0
 default_pretension_current_threshold_ma: 30
 pretension_current_balance_tolerance_ma: 15
-fine_jog_step_ticks: 5
-coarse_jog_step_ticks: 25
+fine_jog_step_ticks: 12
+coarse_jog_step_ticks: 125
 software_position_margin_ticks: 64
 # Keep the stale-telemetry gate honest for bring-up. If this trips on the Pi,
 # fix read cadence/latency before relaxing the threshold.

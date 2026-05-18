@@ -21,6 +21,7 @@ class SafetyGuard:
         transient_current_spike_ma: int | None = None,
         sustained_jam_current_ma: int | None = None,
         sustained_jam_cycles: int = 3,
+        simple_experiment_motion_settle_s: float = 0.075,
         transient_spike_policy: str = "warn_drop_sample_continue",
         sustained_jam_policy: str = "stop_safely",
         current_spike_resync_enabled: bool = True,
@@ -83,6 +84,7 @@ class SafetyGuard:
             else sustained_jam_current_ma
         )
         self.sustained_jam_cycles = max(1, int(sustained_jam_cycles))
+        self.simple_experiment_motion_settle_s = max(0.0, float(simple_experiment_motion_settle_s))
         self.transient_spike_policy = str(transient_spike_policy or "warn_drop_sample_continue").strip().lower()
         self.sustained_jam_policy = str(sustained_jam_policy or "stop_safely").strip().lower()
         self.current_spike_resync_enabled = bool(current_spike_resync_enabled)

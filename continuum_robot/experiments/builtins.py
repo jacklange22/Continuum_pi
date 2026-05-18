@@ -540,6 +540,21 @@ class PretensionValidationExperimentConfig:
     hard_current_stop_ma: int | None = None
     max_travel_ticks: int | None = None
     timeout_s: float | None = None
+    # --- Engagement-scan take-up knobs --------------------------------------
+    # The take-up phase now uses a 3-step pattern (engagement scan + back-off
+    # + fine take-up). See _run_symmetric_paired_takeup for the algorithm.
+    engagement_scan_step_ticks: int = 50
+    """Coarse inward step (ticks) during the engagement scan. All four servos
+    step inward together by this amount each iteration until each engages."""
+    engagement_rise_threshold_ma: float = 5.0
+    """A servo is declared ENGAGED when its filtered current rises above its
+    baseline by this many mA. The effective threshold is
+    max(this, min_meaningful_current_delta_ma) so it never sits inside the
+    measured noise floor."""
+    engagement_back_off_ticks: int = 50
+    """After every servo engages, back each one off by this many ticks before
+    the fine phase. A small slack margin keeps the fine phase from immediately
+    overshooting on the very next inward step."""
     # --- Tip-centering variant + Jacobian-learning knobs --------------------
     tip_centering_variant: str = PRETENSION_TIP_VARIANT_PAIRED_THEN_TIP
     """Which post-takeup tip-centering routine to run.
@@ -719,6 +734,9 @@ class PretensionValidationExperimentConfig:
             manual_baseline_capture_count=max(0, int(payload.get("manual_baseline_capture_count", 0))),
             manual_baseline_pause_s=max(0.0, float(payload.get("manual_baseline_pause_s", 15.0))),
             manual_baseline_record_path=str(payload.get("manual_baseline_record_path") or ""),
+            engagement_scan_step_ticks=max(1, int(payload.get("engagement_scan_step_ticks", 50))),
+            engagement_rise_threshold_ma=max(0.5, float(payload.get("engagement_rise_threshold_ma", 5.0))),
+            engagement_back_off_ticks=max(0, int(payload.get("engagement_back_off_ticks", 50))),
         )
 
 
@@ -4365,14 +4383,232 @@ class PretensionValidationExperiment(BaseExperiment):
         trace_rows: list[dict[str, Any]],
         deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
-        result = {"move_count": 0, "travel_ticks": 0, "clipped_move_count": 0, "stop_reason": "takeup_complete", "packet_retry_count": 0, "telemetry_event_counts": {}}
+        """Find each servo's engagement edge, then fine-tune to the target band.
+
+        Algorithm (per operator request 2026-05-18):
+
+        1. Engagement scan. All four servos step inward together by
+           ``engagement_scan_step_ticks`` per iteration (default 50). After
+           each step, read each servo's filtered current. When a servo's
+           ``current - baseline`` rises above ``engagement_rise_threshold_ma``
+           (default 5 mA), mark that servo as ENGAGED, record the engagement
+           tick, and stop stepping it inward. Continue with the remaining
+           servos until they all engage OR the travel budget is exhausted.
+        2. Back-off. Command each engaged servo back to
+           ``engagement_tick + engagement_back_off_ticks`` (default 50). This
+           gives a small slack margin so the fine phase has room to add tension
+           without immediately overshooting.
+        3. Fine. Step inward in ``conservative_step_ticks`` (default 8)
+           increments. Stop when every servo's load proxy is in the target
+           band [takeup_target_load_proxy_ma, high_load_proxy_ma] OR a servo
+           overshoots the high edge (transition to trim).
+
+        The engagement-scan approach replaces the prior "monotonic step +
+        slack-vs-refine" heuristic which relied on absolute load thresholds
+        and lost the engagement signal in baseline noise. The new code looks
+        for the TRANSITION away from baseline, which is what makes a tendon
+        physically taut.
+        """
+        result: dict[str, Any] = {
+            "move_count": 0,
+            "travel_ticks": 0,
+            "clipped_move_count": 0,
+            "stop_reason": "takeup_complete",
+            "packet_retry_count": 0,
+            "telemetry_event_counts": {},
+            "engagement_scan": {
+                "engagement_tick_by_servo": {},
+                "iterations": 0,
+                "iterations_to_engage_by_servo": {},
+                "rise_threshold_ma": 0.0,
+                "back_off_targets_by_servo": {},
+            },
+        }
+        coarse_step = max(1, int(getattr(self.config, "engagement_scan_step_ticks", 50)))
+        back_off_ticks = max(0, int(getattr(self.config, "engagement_back_off_ticks", 50)))
+        rise_threshold_ma = max(
+            float(self.config.min_meaningful_current_delta_ma),
+            float(getattr(self.config, "engagement_rise_threshold_ma", 5.0)),
+        )
+        result["engagement_scan"]["rise_threshold_ma"] = float(rise_threshold_ma)
         refine_step = max(1, int(self.config.conservative_step_ticks))
-        coarse_step = max(refine_step, int(getattr(self.config, "coarse_slack_step_ticks", 50)))
         target_load = max(float(self.config.takeup_target_load_proxy_ma), float(effective_load_tolerance_ma) * 0.5)
         high_load = max(target_load, float(getattr(self.config, "high_load_proxy_ma", 40.0)))
-        slack_threshold = max(float(self.config.min_meaningful_current_delta_ma), target_load * 0.25)
         max_travel = max(0, int(self.config.conservative_max_cumulative_travel_ticks))
-        for iteration in range(max(0, int(self.config.takeup_max_iterations))):
+        max_iterations = max(1, int(self.config.takeup_max_iterations))
+
+        engagement_tick_by_servo: dict[int, int] = {}
+        iterations_to_engage_by_servo: dict[int, int] = {}
+
+        # --- Phase 1: engagement scan ----------------------------------
+        for iteration in range(max_iterations):
+            session.raise_if_stop_requested()
+            if deadline_monotonic is not None and float(session.context.monotonic_fn()) > float(deadline_monotonic):
+                result["stop_reason"] = "runtime_budget_exhausted"
+                return result
+            measurement = self._advanced_measurement(
+                servo_service=servo_service,
+                tracker_service=tracker_service,
+                servo_ids=servo_ids,
+                baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                target_xy_mm=target_xy_mm,
+                startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+                trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
+            )
+            self._merge_event_counts(result["telemetry_event_counts"], measurement.get("telemetry_event_counts"))
+            result["packet_retry_count"] += int(measurement.get("packet_retry_count", 0) or 0)
+            if measurement.get("telemetry_fail_closed_reason"):
+                result["stop_reason"] = str(measurement["telemetry_fail_closed_reason"])
+                return result
+            positions = dict(measurement.get("measured_positions_ticks") or {})
+            loads = dict(measurement.get("load_proxy_current_ma") or measurement.get("current_above_baseline_ma") or {})
+
+            # Mark newly-engaged servos based on this step's measurement.
+            for servo_id in servo_ids:
+                sid = int(servo_id)
+                if sid in engagement_tick_by_servo:
+                    continue
+                load = loads.get(sid)
+                if load is None or positions.get(sid) is None:
+                    continue
+                if float(load) >= float(rise_threshold_ma):
+                    engagement_tick_by_servo[sid] = int(positions[sid])
+                    iterations_to_engage_by_servo[sid] = int(iteration + 1)
+
+            still_unengaged = [sid for sid in (int(s) for s in servo_ids) if sid not in engagement_tick_by_servo]
+            if not still_unengaged:
+                result["stop_reason"] = "all_servos_engaged"
+                result["engagement_scan"]["iterations"] = int(iteration + 1)
+                break
+            if max_travel > 0 and int(result["travel_ticks"]) >= max_travel:
+                result["stop_reason"] = "travel_budget_exhausted_during_engagement_scan"
+                result["engagement_scan"]["iterations"] = int(iteration + 1)
+                return result
+
+            telemetry, policy = self._read_live_telemetry_with_policy(servo_service, servo_ids)
+            self._merge_event_counts(result["telemetry_event_counts"], policy.get("event_counts"))
+            result["packet_retry_count"] += int(policy.get("packet_retry_count", 0) or 0)
+            if policy.get("telemetry_fail_closed_reason"):
+                result["stop_reason"] = str(policy["telemetry_fail_closed_reason"])
+                return result
+
+            # Step inward ONLY the servos that have not yet engaged.
+            targets: dict[int, int] = {}
+            for servo_id in still_unengaged:
+                entry = telemetry.get(int(servo_id))
+                if entry is None or entry.present_position is None:
+                    result["stop_reason"] = "missing_position"
+                    return result
+                targets[int(servo_id)] = int(entry.present_position) - int(coarse_step)
+            move = self._apply_group_command(
+                servo_service=servo_service,
+                telemetry=telemetry,
+                targets_by_servo=targets,
+                reason="pretension_engagement_scan",
+            )
+            result["move_count"] += int(move.get("move_count", 0))
+            result["travel_ticks"] += int(move.get("travel_ticks", 0))
+            if not bool(move.get("success")):
+                result["stop_reason"] = str(move.get("stop_reason") or "engagement_scan_move_failed")
+                return result
+            after = self._advanced_measurement(
+                servo_service=servo_service,
+                tracker_service=tracker_service,
+                servo_ids=servo_ids,
+                baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                target_xy_mm=target_xy_mm,
+                commanded_positions_ticks=targets,
+                startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+                trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
+            )
+            row = self._advanced_stage_row(
+                mode_kind="conservative_startup",
+                run_index=run_index,
+                stage="engagement_scan",
+                target_xy_mm=target_xy_mm,
+                measurement=after,
+                extra={
+                    "iteration": int(iteration + 1),
+                    "engagement_scan_step_ticks": int(coarse_step),
+                    "engagement_rise_threshold_ma": float(rise_threshold_ma),
+                    "engaged_servo_ids": sorted(int(sid) for sid in engagement_tick_by_servo),
+                    "unengaged_servo_ids": sorted(int(sid) for sid in still_unengaged if int(sid) not in engagement_tick_by_servo),
+                    "engagement_tick_by_servo": {str(k): int(v) for k, v in engagement_tick_by_servo.items()},
+                    "move": move,
+                },
+            )
+            trace_rows.append(row)
+            self._add_staged_sample(session, phase="pretension_engagement_scan", run_index=run_index, step_index=len(trace_rows) - 1, payload=row)
+            result["engagement_scan"]["iterations"] = int(iteration + 1)
+        else:
+            # Loop exhausted without all-engaged.
+            still_unengaged = [sid for sid in (int(s) for s in servo_ids) if sid not in engagement_tick_by_servo]
+            if still_unengaged:
+                result["stop_reason"] = "engagement_scan_iteration_limit"
+                return result
+
+        result["engagement_scan"]["engagement_tick_by_servo"] = {
+            str(k): int(v) for k, v in engagement_tick_by_servo.items()
+        }
+        result["engagement_scan"]["iterations_to_engage_by_servo"] = {
+            str(k): int(v) for k, v in iterations_to_engage_by_servo.items()
+        }
+
+        # --- Phase 2: back off to engagement_tick + back_off_ticks -------
+        if back_off_ticks > 0 and engagement_tick_by_servo:
+            telemetry, policy = self._read_live_telemetry_with_policy(servo_service, servo_ids)
+            self._merge_event_counts(result["telemetry_event_counts"], policy.get("event_counts"))
+            result["packet_retry_count"] += int(policy.get("packet_retry_count", 0) or 0)
+            if policy.get("telemetry_fail_closed_reason"):
+                result["stop_reason"] = str(policy["telemetry_fail_closed_reason"])
+                return result
+            back_off_targets: dict[int, int] = {
+                int(sid): int(engagement_tick_by_servo[int(sid)]) + int(back_off_ticks)
+                for sid in servo_ids
+                if int(sid) in engagement_tick_by_servo
+            }
+            result["engagement_scan"]["back_off_targets_by_servo"] = {
+                str(k): int(v) for k, v in back_off_targets.items()
+            }
+            move = self._apply_group_command(
+                servo_service=servo_service,
+                telemetry=telemetry,
+                targets_by_servo=back_off_targets,
+                reason="pretension_engagement_back_off",
+            )
+            result["move_count"] += int(move.get("move_count", 0))
+            result["travel_ticks"] += int(move.get("travel_ticks", 0))
+            if not bool(move.get("success")):
+                result["stop_reason"] = str(move.get("stop_reason") or "engagement_back_off_failed")
+                return result
+            after = self._advanced_measurement(
+                servo_service=servo_service,
+                tracker_service=tracker_service,
+                servo_ids=servo_ids,
+                baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                target_xy_mm=target_xy_mm,
+                commanded_positions_ticks=back_off_targets,
+                startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+                trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
+            )
+            row = self._advanced_stage_row(
+                mode_kind="conservative_startup",
+                run_index=run_index,
+                stage="engagement_back_off",
+                target_xy_mm=target_xy_mm,
+                measurement=after,
+                extra={
+                    "back_off_ticks": int(back_off_ticks),
+                    "back_off_targets_by_servo": {str(k): int(v) for k, v in back_off_targets.items()},
+                    "engagement_tick_by_servo": {str(k): int(v) for k, v in engagement_tick_by_servo.items()},
+                    "move": move,
+                },
+            )
+            trace_rows.append(row)
+            self._add_staged_sample(session, phase="pretension_engagement_back_off", run_index=run_index, step_index=len(trace_rows) - 1, payload=row)
+
+        # --- Phase 3: fine take-up to target band -----------------------
+        for iteration in range(max_iterations):
             session.raise_if_stop_requested()
             if deadline_monotonic is not None and float(session.context.monotonic_fn()) > float(deadline_monotonic):
                 result["stop_reason"] = "runtime_budget_exhausted"
@@ -4392,7 +4628,7 @@ class PretensionValidationExperiment(BaseExperiment):
                 result["stop_reason"] = str(measurement["telemetry_fail_closed_reason"])
                 return result
             loads = dict(measurement.get("load_proxy_current_ma") or measurement.get("current_above_baseline_ma") or {})
-            valid_loads = [float(loads.get(int(servo_id))) for servo_id in servo_ids if loads.get(int(servo_id)) is not None]
+            valid_loads = [float(loads.get(int(sid))) for sid in servo_ids if loads.get(int(sid)) is not None]
             if len(valid_loads) == len(servo_ids) and min(valid_loads) >= target_load:
                 result["stop_reason"] = "within_load_target"
                 return result
@@ -4402,31 +4638,37 @@ class PretensionValidationExperiment(BaseExperiment):
             if max_travel > 0 and int(result["travel_ticks"]) >= max_travel:
                 result["stop_reason"] = "travel_budget_exhausted"
                 return result
-            step = coarse_step if (valid_loads and max(valid_loads) <= slack_threshold) else refine_step
             telemetry, policy = self._read_live_telemetry_with_policy(servo_service, servo_ids)
             self._merge_event_counts(result["telemetry_event_counts"], policy.get("event_counts"))
             result["packet_retry_count"] += int(policy.get("packet_retry_count", 0) or 0)
             if policy.get("telemetry_fail_closed_reason"):
                 result["stop_reason"] = str(policy["telemetry_fail_closed_reason"])
                 return result
-            targets = {
-                int(servo_id): int(telemetry[int(servo_id)].present_position) - step
-                for servo_id in servo_ids
-                if telemetry.get(int(servo_id)) is not None and telemetry[int(servo_id)].present_position is not None
-            }
-            if len(targets) != len(servo_ids):
-                result["stop_reason"] = "missing_position"
+            # Step inward only servos that are still below the target band.
+            targets = {}
+            for servo_id in servo_ids:
+                sid = int(servo_id)
+                load = loads.get(sid)
+                entry = telemetry.get(sid)
+                if entry is None or entry.present_position is None:
+                    result["stop_reason"] = "missing_position"
+                    return result
+                if load is None or float(load) < float(target_load):
+                    targets[sid] = int(entry.present_position) - int(refine_step)
+            if not targets:
+                # Every servo already at or above target_load — convergence.
+                result["stop_reason"] = "within_load_target"
                 return result
             move = self._apply_group_command(
                 servo_service=servo_service,
                 telemetry=telemetry,
                 targets_by_servo=targets,
-                reason="pretension_symmetric_paired_takeup",
+                reason="pretension_fine_take_up",
             )
             result["move_count"] += int(move.get("move_count", 0))
             result["travel_ticks"] += int(move.get("travel_ticks", 0))
             if not bool(move.get("success")):
-                result["stop_reason"] = str(move.get("stop_reason") or "partial_pair_failure")
+                result["stop_reason"] = str(move.get("stop_reason") or "fine_take_up_move_failed")
                 return result
             after = self._advanced_measurement(
                 servo_service=servo_service,
@@ -4441,21 +4683,21 @@ class PretensionValidationExperiment(BaseExperiment):
             row = self._advanced_stage_row(
                 mode_kind="conservative_startup",
                 run_index=run_index,
-                stage="symmetric_paired_takeup",
+                stage="fine_take_up",
                 target_xy_mm=target_xy_mm,
                 measurement=after,
                 extra={
                     "iteration": int(iteration + 1),
                     "takeup_target_load_proxy_ma": float(target_load),
                     "high_load_proxy_ma": float(high_load),
-                    "slack_threshold_load_proxy_ma": float(slack_threshold),
-                    "step_ticks": int(step),
+                    "fine_step_ticks": int(refine_step),
+                    "stepped_servo_ids": sorted(int(sid) for sid in targets),
                     "move": move,
                 },
             )
             trace_rows.append(row)
-            self._add_staged_sample(session, phase="pretension_symmetric_takeup", run_index=run_index, step_index=len(trace_rows) - 1, payload=row)
-        result["stop_reason"] = "takeup_iteration_limit"
+            self._add_staged_sample(session, phase="pretension_fine_take_up", run_index=run_index, step_index=len(trace_rows) - 1, payload=row)
+        result["stop_reason"] = "fine_take_up_iteration_limit"
         return result
 
     def _reliable_pretension_mode(self) -> str:

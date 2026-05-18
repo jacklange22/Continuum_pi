@@ -4502,6 +4502,14 @@ class ServoService:
             fn=lambda: self._write_goal_positions(payload),
             attempts=write_attempts,
         )
+        settle_s = (
+            0.0
+            if (chase_tight_loop_writes or skip_post_command_telemetry)
+            else float(getattr(self.safety_guard, "simple_experiment_motion_settle_s", 0.0))
+        )
+        if settle_s > 0.0:
+            self._sleep_fn(settle_s)
+            command_metadata["post_write_settle_s"] = float(settle_s)
         if skip_post_command_telemetry:
             telemetry = dict(telemetry_by_id)
             telemetry_retry_metadata = {

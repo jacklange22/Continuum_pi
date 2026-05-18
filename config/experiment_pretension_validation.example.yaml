@@ -36,6 +36,25 @@ coarse_slack_step_ticks: 50
 soft_release_step_ticks: 50
 soft_release_max_travel_ticks: 1500
 soft_release_current_target_ma: 8.0
+
+# --- Engagement-scan take-up (operator-spec'd 2026-05-18) -----------------
+# The take-up phase runs in three steps:
+#   1. Engagement scan: every iteration, step every still-unengaged servo
+#      inward by engagement_scan_step_ticks. A servo is ENGAGED the moment
+#      its filtered current rises above its baseline by
+#      engagement_rise_threshold_ma. Record the engagement tick.
+#   2. Back-off: command each engaged servo back to
+#      engagement_tick + engagement_back_off_ticks. A small slack margin so
+#      step 3 has room to add tension without immediately overshooting.
+#   3. Fine take-up: step inward in conservative_step_ticks until every
+#      servo's load proxy reaches takeup_target_load_proxy_ma.
+#
+# Operator's scale (2026-05-18): 15 mA = light, 30 mA = tight, 50 mA = a lot.
+# rise_threshold = 5 sits above the typical 3-4 mA noise floor and well below
+# "light" so engagement is detected on the very first tick of real tension.
+engagement_scan_step_ticks: 50
+engagement_rise_threshold_ma: 5.0
+engagement_back_off_ticks: 50
 # Operator's tendon-tension scale (from the live rig): 15 mA = light, 30 mA =
 # tight, 50 mA = a lot. The take-up loop keeps stepping inward until every
 # servo's current passes through the LOWER band edge (light), then transitions

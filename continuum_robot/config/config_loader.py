@@ -148,6 +148,10 @@ class ConfigLoader:
                 )
             ),
             sustained_jam_cycles=max(1, int(safety_data.get("sustained_jam_cycles", 3))),
+            simple_experiment_motion_settle_s=max(
+                0.0,
+                float(safety_data.get("simple_experiment_motion_settle_s", 0.075)),
+            ),
             transient_spike_policy=str(
                 safety_data.get("transient_spike_policy", "warn_drop_sample_continue")
             ).strip().lower(),
@@ -401,6 +405,11 @@ class ConfigLoader:
         """Merge and save machine-local runtime overrides."""
         path = self.base_dir / "system.local.yaml"
         existing = self._read_yaml(path)
+        for stale_key in ("servo_ids", "tendon_to_servo"):
+            existing.pop(stale_key, None)
+            existing_overrides = existing.get("robot_overrides")
+            if isinstance(existing_overrides, dict):
+                existing_overrides.pop(stale_key, None)
         merged = self._deep_merge(existing, overrides)
         with path.open("w", encoding="utf-8") as handle:
             yaml.safe_dump(merged, handle, sort_keys=False)

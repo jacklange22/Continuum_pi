@@ -71,6 +71,7 @@ _WORKFLOW_ALIASES: dict[str, str] = {
     "transform_chain": WORKFLOW_TRANSFORM_CHAIN_VALIDATION,
     "transform_chain_platform": WORKFLOW_TRANSFORM_CHAIN_VALIDATION,
     "registration_validation": WORKFLOW_GENERIC,
+    "registration_trial": WORKFLOW_GENERIC,
     "pivot_validation": WORKFLOW_GENERIC,
     "aurora_grid_accuracy": WORKFLOW_GENERIC,
     "pivot_calibration": WORKFLOW_GENERIC,

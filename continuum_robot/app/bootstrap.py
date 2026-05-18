@@ -219,6 +219,7 @@ def build_app_context(*, session_log_path: Path | None = None) -> AppContext:
         transient_current_spike_ma=settings.safety.transient_current_spike_ma,
         sustained_jam_current_ma=settings.safety.sustained_jam_current_ma,
         sustained_jam_cycles=settings.safety.sustained_jam_cycles,
+        simple_experiment_motion_settle_s=settings.safety.simple_experiment_motion_settle_s,
         transient_spike_policy=settings.safety.transient_spike_policy,
         sustained_jam_policy=settings.safety.sustained_jam_policy,
         current_spike_resync_enabled=settings.safety.current_spike_resync_enabled,

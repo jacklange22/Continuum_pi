@@ -17,7 +17,7 @@ tracker_type: "aurora"
 #   flashed baud. Confirm with:
 #     .venv/bin/python -m continuum_robot.diagnostics.servo_transport_diagnostic \
 #         --servo-ids 1,2,3,4,5,6,7,8 --baud 1000000 --duration 10 --fields minimal
-baudrate: 57600
+baudrate: 1000000
 mock_mode: true
 visualization_mode: "auto"
 figure_output_quality: "production"
@@ -80,8 +80,19 @@ dynamixel_settings:
   require_voltage_for_motion: true
   require_temperature_for_motion: true
   require_fresh_telemetry_for_motion: true
-  default_profile_velocity: null
-  default_profile_acceleration: null
+  # Global slow-down for ALL goal-position writes (jog, pretension, etc.).
+  # dxl_bus.write_goal_positions writes these registers before every
+  # goal-position command, so setting them once here applies to every motion
+  # path until power cycle. Keeping the rotor speed and (especially)
+  # acceleration low reduces peak motor current spikes on take-up against
+  # tendon load and makes manual jog feel deliberate rather than jumpy.
+  #
+  # Units (XC330-M288-T):
+  #   profile_velocity:     N * 0.229 rev/min  (30 -> ~6.9 rev/min ≈ 41 deg/sec)
+  #   profile_acceleration: N * 214.577 rev/min²  (8 -> ~28.6 rev/sec²)
+  # Firmware default = 0 = unlimited; bumping these in adds a real ramp.
+  default_profile_velocity: 30
+  default_profile_acceleration: 8
   single_segment_auto_configure_motion_defaults: true
   single_segment_experiment_preferred_operating_mode: 3
   single_segment_experiment_allowed_operating_modes: [3]
