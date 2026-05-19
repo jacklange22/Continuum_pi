@@ -552,7 +552,13 @@ class PretensionValidationExperimentConfig:
     equalization_max_iterations: int = 24
     conservative_max_iterations: int = 24
     conservative_step_ticks: int = 10
-    conservative_max_cumulative_travel_ticks: int = 80
+    # Budgets both the engagement scan AND the conservative tip-centering trim
+    # (see _run_symmetric_paired_takeup). With full_release_4095 starts the
+    # engagement scan needs ~1500-2200 ticks of inward travel per servo before
+    # the tendon engages. 2500 covers that with margin; the historical default
+    # of 80 was sized for tiny trim-only nudges and silently killed every
+    # full-release run with ``travel_budget_exhausted_during_engagement_scan``.
+    conservative_max_cumulative_travel_ticks: int = 2500
     coarse_slack_step_ticks: int = 50
     soft_release_step_ticks: int = 50
     soft_release_max_travel_ticks: int = 40
@@ -566,6 +572,22 @@ class PretensionValidationExperimentConfig:
     current_characterization_sample_count: int = 20
     current_noise_multiplier: float = 3.0
     min_meaningful_current_delta_ma: float = 2.0
+    # Hard upper bound on the noise-derived "useful delta" tolerance. The
+    # characterization phase derives ``max_useful_current_delta_ma`` from the
+    # measured noise std and peak-to-peak; when a servo sits at the raw-tick
+    # wrap edge the PID can hunt and produce 50-70 mA peak-to-peak, which
+    # would otherwise inflate every downstream balance tolerance and disable
+    # convergence. Cap it to operator's "tight" reference (30 mA) so a noisy
+    # baseline is treated as a quality warning rather than silently widening
+    # the entire control loop. Set to 0 to disable the cap.
+    max_useful_current_delta_cap_ma: float = 15.0
+    # After a ``full_release_4095`` start, the servos sit at the safe-max raw
+    # tick (~3200-4094) which is at or near the position wrap boundary. The
+    # PID hunts there against the spool/tendon endpoint resistance and emits
+    # a very noisy current signal. Before sampling baseline current we step
+    # every servo inward by this many ticks so characterization happens at a
+    # stable, slack-but-off-edge position. 0 disables the off-edge step.
+    baseline_offset_from_full_release_ticks: int = 200
     load_balance_tolerance_ma: float = 10.0
     pair_balance_tolerance_ma: float = 10.0
     settle_verify_time_s: float = 0.2
@@ -696,7 +718,7 @@ class PretensionValidationExperimentConfig:
             conservative_step_ticks=max(1, int(payload.get("conservative_step_ticks", payload.get("tip_center_step_ticks", 10)))),
             conservative_max_cumulative_travel_ticks=max(
                 0,
-                int(payload.get("conservative_max_cumulative_travel_ticks", 80)),
+                int(payload.get("conservative_max_cumulative_travel_ticks", 2500)),
             ),
             coarse_slack_step_ticks=max(1, int(payload.get("coarse_slack_step_ticks", 50))),
             soft_release_step_ticks=max(1, int(payload.get("soft_release_step_ticks", payload.get("coarse_slack_step_ticks", 50)))),
@@ -714,6 +736,8 @@ class PretensionValidationExperimentConfig:
             current_characterization_sample_count=max(2, int(payload.get("current_characterization_sample_count", 20))),
             current_noise_multiplier=max(1.0, float(payload.get("current_noise_multiplier", 3.0))),
             min_meaningful_current_delta_ma=max(0.0, float(payload.get("min_meaningful_current_delta_ma", 2.0))),
+            max_useful_current_delta_cap_ma=max(0.0, float(payload.get("max_useful_current_delta_cap_ma", 15.0))),
+            baseline_offset_from_full_release_ticks=max(0, int(payload.get("baseline_offset_from_full_release_ticks", 200))),
             load_balance_tolerance_ma=max(0.0, float(payload.get("load_balance_tolerance_ma", 10.0))),
             pair_balance_tolerance_ma=max(0.0, float(payload.get("pair_balance_tolerance_ma", 10.0))),
             settle_verify_time_s=max(0.0, float(payload.get("settle_verify_time_s", 0.2))),
@@ -2025,6 +2049,11 @@ class PretensionValidationExperiment(BaseExperiment):
     def __init__(self, config: PretensionValidationExperimentConfig) -> None:
         super().__init__(config=config)
         self._tracking_started_here = False
+        # Source labels recorded by ``_staged_servo_ids`` so the run metadata
+        # can show whether the IDs came from an explicit experiment override
+        # or fell back to the robot config's active segment.
+        self._last_servo_id_source: str = ""
+        self._last_servo_id_active_segment_label: str = ""
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None = None) -> "PretensionValidationExperiment":
@@ -2552,6 +2581,40 @@ class PretensionValidationExperiment(BaseExperiment):
                 progress += 1
                 session.update_progress(progress, total_progress, {"phase": "low_load_start", "run_index": run_index})
 
+                # After a full-release start the servos sit at the raw-tick
+                # wrap edge where the PID hunts against the endpoint
+                # resistance, polluting baseline current characterization with
+                # 50-70 mA peak-to-peak noise. Step inward by a configurable
+                # offset so characterization happens at a stable equilibrium.
+                # Only applied for full_release_4095 starts; soft-release
+                # already steps inward iteratively so it doesn't sit on the
+                # edge.
+                if start_mode_used == "full_release_4095":
+                    off_edge_result = self._run_baseline_off_edge_step(
+                        session=session,
+                        servo_service=servo_service,
+                        tracker_service=tracker_service if include_tracker else None,
+                        servo_ids=servo_ids,
+                        run_index=run_index,
+                        target_xy_mm=target_xy,
+                        startup_reference_ticks_by_servo=startup_reference_ticks,
+                        mode_kind=mode_kind,
+                        trace_rows=trace_rows,
+                    )
+                    clipped_move_count += int(off_edge_result.get("clipped_move_count", 0))
+                    correction_move_count += int(off_edge_result.get("move_count", 0))
+                    correction_travel_ticks += int(off_edge_result.get("travel_ticks", 0))
+                    self._merge_event_counts(telemetry_event_counts, off_edge_result.get("telemetry_event_counts"))
+                    packet_retry_count += int(off_edge_result.get("packet_retry_count", 0) or 0)
+                    if off_edge_result.get("stop_reason") not in (
+                        None,
+                        "",
+                        "baseline_off_edge_complete",
+                        "baseline_off_edge_disabled",
+                    ):
+                        fail_closed_stop_reason = str(off_edge_result["stop_reason"])
+                        reject_reasons.append(fail_closed_stop_reason)
+
                 current_characterization = self._characterize_current_noise(
                     session=session,
                     servo_service=servo_service,
@@ -2813,6 +2876,8 @@ class PretensionValidationExperiment(BaseExperiment):
                     "stop_reason": stop_reason or ("characterization_complete" if mode_kind == "characterization" else "converged"),
                     "converged": bool(converged),
                     "servo_ids": list(servo_ids),
+                    "servo_ids_source": str(self._last_servo_id_source or ""),
+                    "active_segment_label": str(self._last_servo_id_active_segment_label or ""),
                     "target_xy_mm": list(target_xy),
                     "current_characterization": current_characterization,
                     "effective_load_tolerance_ma": float(effective_load_tolerance_ma),
@@ -3801,13 +3866,17 @@ class PretensionValidationExperiment(BaseExperiment):
         )
 
     def _staged_servo_ids(self, session: ExperimentSession) -> list[int]:
-        configured_ids = [int(value) for value in (self.config.servo_ids or []) if int(value) > 0]
-        if not configured_ids:
+        explicit_ids = [int(value) for value in (self.config.servo_ids or []) if int(value) > 0]
+        if explicit_ids:
+            configured_ids = explicit_ids
+            self._last_servo_id_source = "experiment_config_explicit"
+        else:
             configured_ids = [
                 int(value)
                 for value in session.context.settings.robot.active_segment_servo_ids()
                 if int(value) > 0
             ]
+            self._last_servo_id_source = "robot_config_active_segment"
         deduped: list[int] = []
         for servo_id in configured_ids:
             if servo_id not in deduped:
@@ -3818,6 +3887,7 @@ class PretensionValidationExperiment(BaseExperiment):
                 "Staged pretension validation requires exactly 4 servo IDs for the active single-segment tendon set "
                 f"({active_label}); found {deduped}."
             )
+        self._last_servo_id_active_segment_label = session.context.settings.robot.active_segment_label()
         return deduped
 
     def _staged_parameters_for_servo(self, session: ExperimentSession, servo_id: int) -> PretensionParameters:
@@ -4097,6 +4167,52 @@ class PretensionValidationExperiment(BaseExperiment):
     # `partial_pair_failure`, which was the historical operational blocker.
     POSITION_REACHED_TOLERANCE_TICKS = 8
 
+    # Settle-poll window for the post-write read-back. The bus runs servos at a
+    # reduced ``default_profile_velocity`` (see ``config/system.yaml``) so even a
+    # 50-tick move takes ~210 ms of actual motion at the current setting, and a
+    # 2000-tick full-release move takes ~9 s. Reading present_position
+    # immediately after the goal write therefore returned a position still tens
+    # of ticks from the goal, which made ``_reached()`` return False with
+    # tolerance=8 and falsely reported ``partial_pair_failure`` on every step.
+    #
+    # We now poll for a dynamically-sized window that scales with the largest
+    # commanded delta and the configured profile velocity, with a safe floor
+    # and hard ceiling. See ``_estimate_reach_timeout_s``.
+    POSITION_REACH_POLL_FLOOR_S = 0.4
+    POSITION_REACH_POLL_CEIL_S = 15.0
+    POSITION_REACH_POLL_INTERVAL_S = 0.02
+    # XC330-M288-T profile_velocity register unit conversion:
+    # one register unit = 0.229 rev/min; one revolution = 4096 ticks; therefore
+    # ticks/sec = profile_velocity_reg * 0.229 * 4096 / 60 = profile_velocity_reg
+    # * 15.6245... A profile_velocity_reg of 0 (firmware default) means
+    # unlimited; we conservatively assume ~4000 ticks/sec in that case.
+    PROFILE_VELOCITY_REG_TO_TICKS_PER_S = 15.6245
+    UNLIMITED_PROFILE_VELOCITY_ASSUMED_TICKS_PER_S = 4000.0
+
+    @classmethod
+    def _estimate_reach_timeout_s(cls, servo_service, max_delta_ticks: int) -> float:
+        """Estimate how long the largest commanded move will take to settle.
+
+        Uses ``dxl_bus.config.default_profile_velocity`` to convert the
+        commanded delta into a motion duration, then adds a 0.3 s margin for
+        the acceleration ramp and the read round-trip. The returned value is
+        clamped to ``[POSITION_REACH_POLL_FLOOR_S, POSITION_REACH_POLL_CEIL_S]``.
+        """
+        profile_velocity_reg: int | None
+        try:
+            profile_velocity_reg = getattr(servo_service.dxl_bus.config, "default_profile_velocity", None)
+        except Exception:
+            profile_velocity_reg = None
+        if profile_velocity_reg is None or int(profile_velocity_reg) <= 0:
+            ticks_per_second = cls.UNLIMITED_PROFILE_VELOCITY_ASSUMED_TICKS_PER_S
+        else:
+            ticks_per_second = float(int(profile_velocity_reg)) * cls.PROFILE_VELOCITY_REG_TO_TICKS_PER_S
+        ticks_per_second = max(ticks_per_second, 1.0)
+        motion_time_s = float(abs(int(max_delta_ticks))) / ticks_per_second
+        # 0.3 s margin: acceleration ramp + read round-trip + minor PID settling
+        estimated_s = motion_time_s + 0.3
+        return float(min(cls.POSITION_REACH_POLL_CEIL_S, max(cls.POSITION_REACH_POLL_FLOOR_S, estimated_s)))
+
     def _apply_group_command(
         self,
         *,
@@ -4181,6 +4297,21 @@ class PretensionValidationExperiment(BaseExperiment):
                 "travel_ticks": sum(abs(int(targets[sid]) - int(start_positions[sid])) for sid in targets if reached.get(sid)),
                 "commanded_positions_ticks": targets,
             }
+        # Poll for the post-write reach. With a reduced profile velocity a
+        # multi-tick move takes longer than a single read round-trip, so the
+        # first read is almost always still in-flight. Size the poll budget
+        # from the largest commanded delta and the configured profile velocity
+        # so a small engagement-scan step doesn't pay the cost of a worst-case
+        # full-release move, and a multi-thousand-tick release isn't aborted
+        # early. We exit as soon as every commanded servo is within
+        # ``POSITION_REACHED_TOLERANCE_TICKS`` of its goal.
+        max_commanded_delta = max(
+            (abs(int(targets[sid]) - int(start_positions[sid])) for sid in targets),
+            default=0,
+        )
+        poll_timeout_s = self._estimate_reach_timeout_s(servo_service, max_commanded_delta)
+        poll_interval_s = float(self.POSITION_REACH_POLL_INTERVAL_S)
+        deadline = time.monotonic() + max(0.0, poll_timeout_s)
         after = servo_service.read_live_telemetry(list(targets))
         reached = {
             int(servo_id): _reached(
@@ -4191,6 +4322,20 @@ class PretensionValidationExperiment(BaseExperiment):
             )
             for servo_id, target_tick in targets.items()
         }
+        poll_iterations = 0
+        while not all(reached.values()) and time.monotonic() < deadline:
+            time.sleep(max(0.001, poll_interval_s))
+            poll_iterations += 1
+            after = servo_service.read_live_telemetry(list(targets))
+            reached = {
+                int(servo_id): _reached(
+                    after.get(int(servo_id)).present_position
+                    if after.get(int(servo_id)) is not None
+                    else None,
+                    int(target_tick),
+                )
+                for servo_id, target_tick in targets.items()
+            }
         move_count = sum(1 for reached_target in reached.values() if reached_target)
         success = move_count == len(targets)
         return {
@@ -4204,6 +4349,9 @@ class PretensionValidationExperiment(BaseExperiment):
             "commanded_positions_ticks": targets,
             "delta_ticks": {str(sid): int(targets[sid]) - int(start_positions[sid]) for sid in targets},
             "move_status": {str(sid): ("moved" if reached[sid] else "not_reached") for sid in targets},
+            "post_write_poll_iterations": int(poll_iterations),
+            "post_write_poll_timeout_s": float(poll_timeout_s),
+            "post_write_max_commanded_delta_ticks": int(max_commanded_delta),
         }
 
     def _target_xy(self) -> list[float]:
@@ -4342,6 +4490,98 @@ class PretensionValidationExperiment(BaseExperiment):
                 result["low_load_reached_by_servo"][str(int(servo_id))] = bool(
                     result["low_load_reached_by_servo"][str(int(servo_id))]
                 )
+        return result
+
+    def _run_baseline_off_edge_step(
+        self,
+        *,
+        session: ExperimentSession,
+        servo_service,
+        tracker_service,
+        servo_ids: list[int],
+        run_index: int,
+        target_xy_mm: list[float],
+        startup_reference_ticks_by_servo: dict[int, int | None],
+        mode_kind: str,
+        trace_rows: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Step every servo inward by ``baseline_offset_from_full_release_ticks``
+        so baseline-current sampling does not happen at the raw-tick wrap edge.
+
+        Run 20260519_200616 measured 70 mA peak-to-peak on servo 1 because the
+        PID was hunting against the spool/tendon endpoint at tick 4094 while
+        the current characterization phase ran. That noise propagated into
+        every downstream tolerance. This helper moves every servo a small
+        configurable distance inward before characterization so the PID has a
+        stable equilibrium to sample.
+        """
+        offset_ticks = max(0, int(getattr(self.config, "baseline_offset_from_full_release_ticks", 0)))
+        result = {
+            "stop_reason": "baseline_off_edge_complete",
+            "move_count": 0,
+            "travel_ticks": 0,
+            "clipped_move_count": 0,
+            "telemetry_event_counts": {},
+            "packet_retry_count": 0,
+            "baseline_offset_ticks_requested": int(offset_ticks),
+            "baseline_offset_ticks_applied_by_servo": {str(int(sid)): 0 for sid in servo_ids},
+        }
+        if offset_ticks <= 0:
+            result["stop_reason"] = "baseline_off_edge_disabled"
+            return result
+        telemetry, policy = self._read_live_telemetry_with_policy(servo_service, servo_ids)
+        self._merge_event_counts(result["telemetry_event_counts"], policy.get("event_counts"))
+        result["packet_retry_count"] += int(policy.get("packet_retry_count", 0) or 0)
+        if policy.get("telemetry_fail_closed_reason"):
+            result["stop_reason"] = str(policy["telemetry_fail_closed_reason"])
+            return result
+        targets: dict[int, int] = {}
+        for servo_id in servo_ids:
+            sid = int(servo_id)
+            entry = telemetry.get(sid)
+            if entry is None or entry.present_position is None:
+                result["stop_reason"] = "missing_position"
+                return result
+            # Step inward (lower tick) by the configured offset. Preflight will
+            # clamp to safe bounds if the offset would carry past safe_min_tick.
+            targets[sid] = int(entry.present_position) - int(offset_ticks)
+        move = self._apply_group_command(
+            servo_service=servo_service,
+            telemetry=telemetry,
+            targets_by_servo=targets,
+            reason="pretension_baseline_off_edge_step",
+        )
+        result["move_count"] += int(move.get("move_count", 0))
+        result["travel_ticks"] += int(move.get("travel_ticks", 0))
+        if not bool(move.get("success")):
+            result["stop_reason"] = str(move.get("stop_reason") or "baseline_off_edge_failed")
+        for sid_str, delta in (move.get("delta_ticks") or {}).items():
+            try:
+                result["baseline_offset_ticks_applied_by_servo"][str(int(sid_str))] = abs(int(delta))
+            except Exception:
+                continue
+        measurement = self._advanced_measurement(
+            servo_service=servo_service,
+            tracker_service=tracker_service,
+            servo_ids=servo_ids,
+            baseline_current_ma_by_servo={},
+            target_xy_mm=target_xy_mm,
+            commanded_positions_ticks=targets,
+            startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+            trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
+        )
+        self._merge_event_counts(result["telemetry_event_counts"], measurement.get("telemetry_event_counts"))
+        result["packet_retry_count"] += int(measurement.get("packet_retry_count", 0) or 0)
+        row = self._advanced_stage_row(
+            mode_kind=mode_kind,
+            run_index=run_index,
+            stage="baseline_off_edge",
+            target_xy_mm=target_xy_mm,
+            measurement=measurement,
+            extra={"move": move, **result},
+        )
+        trace_rows.append(row)
+        self._add_staged_sample(session, phase="pretension_baseline_off_edge", run_index=run_index, step_index=len(trace_rows) - 1, payload=row)
         return result
 
     def _run_explicit_full_release_start(
@@ -5015,11 +5255,22 @@ class PretensionValidationExperiment(BaseExperiment):
             ]
             or [0.0]
         )
-        useful_delta = max(
+        raw_useful_delta = max(
             float(self.config.min_meaningful_current_delta_ma),
             peak_to_peak,
             noise_floor * float(self.config.current_noise_multiplier),
         )
+        # Cap the useful-delta tolerance so a noisy baseline (e.g. PID hunting at
+        # the raw-tick wrap edge) doesn't silently widen every downstream
+        # balance / convergence check. A cap of 0 disables the limiter for
+        # development / characterization runs.
+        useful_delta_cap = float(getattr(self.config, "max_useful_current_delta_cap_ma", 0.0) or 0.0)
+        useful_delta = (
+            min(raw_useful_delta, useful_delta_cap)
+            if useful_delta_cap > 0.0
+            else raw_useful_delta
+        )
+        noise_capped = useful_delta_cap > 0.0 and raw_useful_delta > useful_delta_cap
         summary = {
             "sample_count": int(sample_count),
             "by_servo": {str(k): v for k, v in by_servo.items()},
@@ -5027,6 +5278,9 @@ class PretensionValidationExperiment(BaseExperiment):
             "max_peak_to_peak_ma": float(peak_to_peak),
             "noise_multiplier": float(self.config.current_noise_multiplier),
             "max_useful_current_delta_ma": float(useful_delta),
+            "max_useful_current_delta_uncapped_ma": float(raw_useful_delta),
+            "max_useful_current_delta_cap_ma": float(useful_delta_cap),
+            "noise_capped": bool(noise_capped),
             "telemetry_event_counts": dict(sorted(telemetry_event_counts.items())),
             "packet_retry_count": int(packet_retry_count),
             "telemetry_fail_closed_reason": telemetry_fail_closed_reason,

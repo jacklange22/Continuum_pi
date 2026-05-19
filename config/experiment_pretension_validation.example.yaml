@@ -20,10 +20,16 @@ equalization_step_ticks: 4
 equalization_max_iterations: 24
 conservative_step_ticks: 8
 conservative_max_iterations: 24
-# Cumulative travel during the conservative tip-centering trim phase. This is on
-# top of the take-up phase travel and limits how far the algorithm can chase tip
-# centering before bailing out.
-conservative_max_cumulative_travel_ticks: 400
+# Cumulative travel budget for BOTH the engagement scan and the conservative
+# tip-centering trim phase (see _run_symmetric_paired_takeup). From a
+# pretension_start_mode of full_release_4095, the engagement scan must walk
+# every servo from ~tick 4094 back to its engagement tick (typically
+# ~1900-2700), which is ~1500-2200 ticks of inward travel per servo. The trim
+# phase then adds a few hundred ticks on top. 2500 gives a comfortable margin
+# on full-release starts; a too-small value (1000 or below) causes the engagement
+# scan to bail out with travel_budget_exhausted_during_engagement_scan before
+# the tendons ever engage.
+conservative_max_cumulative_travel_ticks: 2500
 # Pretension workflow thresholds use servo-reported current estimates only as a
 # load proxy. They are not calibrated tendon force and are separate from hard
 # current safety limits in config/safety.yaml.
@@ -68,6 +74,21 @@ characterization_pair_cycles: 1
 current_characterization_sample_count: 30  # more samples = tighter noise floor
 current_noise_multiplier: 3.0
 min_meaningful_current_delta_ma: 2.0
+# Hard cap on the noise-derived ``max_useful_current_delta_ma`` reported by the
+# characterization phase. Without this cap, a noisy baseline (e.g. PID hunting
+# at the raw-tick wrap edge) can produce ``useful_delta`` values of 50-70 mA
+# which then propagate into the load-balance tolerance and silently widen the
+# entire control loop. 15 mA aligns with operator's "light" tendon-tension
+# reference and keeps the loop responsive. Set to 0 to disable the cap.
+max_useful_current_delta_cap_ma: 15.0
+# After a ``full_release_4095`` start the servos sit at the safe-max raw tick
+# (~3200-4094) which is at or near the position-wrap boundary. The PID hunts
+# against the spool/tendon endpoint resistance there and emits a very noisy
+# current signal — run 20260519_200616_pretension_validation measured 70 mA
+# peak-to-peak from this. We step every servo inward by this many ticks
+# BEFORE sampling baseline current so characterization happens at a stable,
+# slack-but-off-edge position. 0 disables the off-edge step.
+baseline_offset_from_full_release_ticks: 200
 load_balance_tolerance_ma: 8.0
 pair_balance_tolerance_ma: 8.0
 settle_verify_time_s: 0.4

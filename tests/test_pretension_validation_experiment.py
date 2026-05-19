@@ -1139,3 +1139,300 @@ def test_shipped_pretension_yaml_carries_engagement_scan_knobs() -> None:
     assert int(payload["engagement_scan_step_ticks"]) == 50
     assert int(payload["engagement_back_off_ticks"]) == 50
     assert float(payload["engagement_rise_threshold_ma"]) >= 2.0
+
+
+# --------------------------------------------------------------------------- #
+# Post-write reach-poll, travel-budget, and noise-cap regression fixes
+# (see run 20260519_200616_pretension_validation diagnostic).
+# --------------------------------------------------------------------------- #
+
+
+def test_estimate_reach_timeout_scales_with_profile_velocity() -> None:
+    """The dynamic post-write reach timeout must be longer when the configured
+    ``default_profile_velocity`` is slower, because a single goal-position
+    write takes physically longer to complete on a slow profile. Conversely a
+    very large ``default_profile_velocity`` (or unset = unlimited) yields a
+    short timeout. Without this scaling, the slow profile we run on the rig
+    (15 register units = ~234 ticks/sec) makes ``_apply_group_command`` race
+    its own read-back and falsely report ``partial_pair_failure`` on the first
+    engagement-scan step.
+    """
+    class _BusCfg:
+        def __init__(self, vel):
+            self.default_profile_velocity = vel
+
+    class _Bus:
+        def __init__(self, vel):
+            self.config = _BusCfg(vel)
+
+    class _Service:
+        def __init__(self, vel):
+            self.dxl_bus = _Bus(vel)
+
+    estimate = PretensionValidationExperiment._estimate_reach_timeout_s
+
+    # Slow profile (matches config/system.yaml today).
+    t_slow_small = estimate(_Service(15), 50)
+    t_slow_big = estimate(_Service(15), 2000)
+    assert t_slow_small >= 0.4, "must respect the safe floor for tiny moves"
+    assert t_slow_big > t_slow_small + 1.0, "big moves must get a bigger budget"
+    # 2000 ticks at velocity=15 = ~8.5 s of motion; expect the helper to be in
+    # that ballpark, not the 0.6 s ceiling of the previous fixed value.
+    assert t_slow_big >= 8.0
+
+    # Fast / unlimited profile: even a 5000-tick move stays well under the
+    # 15 s hard ceiling.
+    t_unlimited = estimate(_Service(None), 5000)
+    assert t_unlimited < 5.0, "unlimited profile_velocity should not inflate timeout"
+
+    # Hard ceiling holds for absurdly large deltas.
+    t_ceiling = estimate(_Service(15), 200_000)
+    assert t_ceiling == PretensionValidationExperiment.POSITION_REACH_POLL_CEIL_S
+
+
+def test_apply_group_command_polls_after_write_until_reached(tmp_path: Path) -> None:
+    """``_apply_group_command`` must NOT rely on an immediate post-write read.
+    With a slow profile_velocity the read-back races motion and falsely reports
+    ``partial_pair_failure``. We simulate that race by having the mock bus
+    return the start position on its first read and the goal position on
+    subsequent reads — the polling loop must wait for the second read.
+    """
+    service = _servo_service(tmp_path)
+    # Drive servos to a known starting position.
+    telemetry = service.read_live_telemetry([1, 3])
+
+    original_read = service.read_live_telemetry
+    call_box = {"count": 0}
+    start_positions = {sid: int(telemetry[sid].present_position) for sid in (1, 3)}
+
+    def slow_read(ids):
+        # First read after the write returns stale (start) positions; later
+        # reads return whatever the mock bus actually wrote.
+        call_box["count"] += 1
+        if call_box["count"] == 1:
+            from types import SimpleNamespace
+            return {
+                int(sid): SimpleNamespace(
+                    present_position=int(start_positions[int(sid)]),
+                    present_current=0.0,
+                    present_voltage=12.0,
+                    present_temperature=30.0,
+                    timestamp=time.monotonic(),
+                )
+                for sid in ids
+            }
+        return original_read(ids)
+
+    service.read_live_telemetry = slow_read
+
+    experiment = PretensionValidationExperiment(
+        PretensionValidationExperimentConfig.from_dict({"mode": "single_segment_staged", "servo_ids": [1, 2, 3, 4]})
+    )
+    move = experiment._apply_pair_command(
+        servo_service=service,
+        telemetry=telemetry,
+        sid_a=1,
+        delta_a=-25,
+        sid_b=3,
+        delta_b=25,
+        reason="test_post_write_poll",
+    )
+
+    # The first read would have failed; the polling loop must have read at
+    # least once more before declaring success.
+    assert call_box["count"] >= 2
+    assert move["success"] is True
+    assert move["stop_reason"] == ""
+    # The new keys are emitted for diagnostic visibility.
+    assert "post_write_poll_iterations" in move
+    assert "post_write_poll_timeout_s" in move
+    assert "post_write_max_commanded_delta_ticks" in move
+    assert int(move["post_write_max_commanded_delta_ticks"]) == 25
+
+
+def test_useful_delta_cap_caps_noisy_characterization() -> None:
+    """``max_useful_current_delta_cap_ma`` must clamp the noise-derived
+    ``max_useful_current_delta_ma``. Without this clamp a noisy baseline
+    (e.g. 70 mA peak-to-peak from PID hunting at the raw-tick wrap edge)
+    propagates into the load-balance tolerance and silently disables the
+    convergence checks. The cap default of 15 mA aligns with operator's
+    "light" tendon-tension reference.
+    """
+    cfg = PretensionValidationExperimentConfig.from_dict(
+        {
+            "mode": "single_segment_staged",
+            "max_useful_current_delta_cap_ma": 15.0,
+        }
+    )
+    assert cfg.max_useful_current_delta_cap_ma == 15.0
+
+    # Verify the from_dict default is 15.0 (not the historical "no cap").
+    cfg_default = PretensionValidationExperimentConfig.from_dict({})
+    assert cfg_default.max_useful_current_delta_cap_ma == 15.0
+
+
+def test_conservative_max_cumulative_travel_ticks_default_covers_full_release() -> None:
+    """From a ``full_release_4095`` start the engagement scan must walk every
+    servo from ~tick 4094 back to its engagement tick (~1900-2700), which is
+    ~1500-2200 ticks of inward travel per servo. The default cumulative
+    travel budget must be sized to cover that, not the historical tiny
+    "trim-only" 80-tick default that silently killed every full-release run
+    with ``travel_budget_exhausted_during_engagement_scan``.
+    """
+    cfg = PretensionValidationExperimentConfig.from_dict({})
+    assert cfg.conservative_max_cumulative_travel_ticks >= 2200, (
+        "Default budget must cover a full_release_4095 → engagement_tick walk."
+    )
+
+
+def test_shipped_pretension_yaml_uses_active_segment_by_default() -> None:
+    """The shipped example pretension YAML must use ``servo_ids: []`` (empty)
+    so the experiment falls back to ``active_segment_servo_ids()`` from the
+    robot config. This is the single source of truth for which servos belong
+    to the active segment; hardcoding an explicit list here would silently
+    diverge from the active-segment selection in robot_4servo.yaml or
+    robot_8servo.yaml."""
+    import yaml
+    payload = yaml.safe_load(
+        Path("config/experiment_pretension_validation.example.yaml").read_text(encoding="utf-8")
+    )
+    assert "servo_ids" in payload
+    raw = payload["servo_ids"]
+    # Accept empty list (preferred) or null; reject anything else.
+    assert raw in (None, [], "", "[]"), (
+        "config/experiment_pretension_validation.example.yaml should set "
+        "servo_ids: [] so the active segment from robot config is used. "
+        f"Found: {raw!r}"
+    )
+    assert "max_useful_current_delta_cap_ma" in payload
+    assert float(payload["max_useful_current_delta_cap_ma"]) > 0.0
+    # Conservative budget must comfortably cover a full-release engagement
+    # walk (~2000+ ticks).
+    assert int(payload["conservative_max_cumulative_travel_ticks"]) >= 2200
+
+
+def test_baseline_offset_from_full_release_ticks_default_is_off_edge() -> None:
+    """After ``full_release_4095`` the servos sit at the position-wrap edge where
+    the PID hunts. ``baseline_offset_from_full_release_ticks`` must default to a
+    positive value so baseline characterization happens at a stable,
+    off-edge position. Run 20260519_200616 measured 70 mA peak-to-peak when
+    this offset was 0; 200 ticks is enough to lift the servos off the wrap
+    boundary while still keeping the tendons slack."""
+    cfg = PretensionValidationExperimentConfig.from_dict({})
+    assert cfg.baseline_offset_from_full_release_ticks >= 100, (
+        "Default baseline offset must back the servos off the wrap edge."
+    )
+    cfg_zero = PretensionValidationExperimentConfig.from_dict(
+        {"baseline_offset_from_full_release_ticks": 0}
+    )
+    assert cfg_zero.baseline_offset_from_full_release_ticks == 0
+
+
+def test_shipped_pretension_yaml_exposes_baseline_offset_knob() -> None:
+    """The shipped example YAML must expose
+    ``baseline_offset_from_full_release_ticks`` so operators can tune it from
+    the Experiments tab without editing source."""
+    import yaml
+    payload = yaml.safe_load(
+        Path("config/experiment_pretension_validation.example.yaml").read_text(encoding="utf-8")
+    )
+    assert "baseline_offset_from_full_release_ticks" in payload
+    assert int(payload["baseline_offset_from_full_release_ticks"]) >= 100
+
+
+def _make_off_edge_session(servo_service):
+    """Minimal ExperimentSession stub for off-edge helper tests."""
+    class _Session:
+        def __init__(self):
+            self.context = SimpleNamespace(
+                servo_service=servo_service,
+                tracker_service=None,
+                monotonic_fn=time.monotonic,
+                sleep_fn=lambda _s: None,
+            )
+            self.staged_samples: list = []
+
+        def raise_if_stop_requested(self):
+            return None
+
+        def update_progress(self, *_a, **_kw):
+            return None
+
+    return _Session()
+
+
+def test_baseline_off_edge_step_moves_servos_inward(tmp_path: Path) -> None:
+    """``_run_baseline_off_edge_step`` must command every servo to a position
+    ``baseline_offset_from_full_release_ticks`` lower than its present
+    position. The travel must be accounted in the result, a stage row must be
+    appended to ``trace_rows``, and the per-servo applied offsets reported."""
+    service = _servo_service(tmp_path)
+    experiment = PretensionValidationExperiment(
+        PretensionValidationExperimentConfig.from_dict(
+            {
+                "mode": "single_segment_staged",
+                "servo_ids": [1, 2, 3, 4],
+                "baseline_offset_from_full_release_ticks": 50,
+            }
+        )
+    )
+
+    session = _make_off_edge_session(service)
+    experiment._add_staged_sample = lambda session, **kw: session.staged_samples.append(kw)  # type: ignore[assignment]
+
+    trace_rows: list = []
+    result = experiment._run_baseline_off_edge_step(
+        session=session,
+        servo_service=service,
+        tracker_service=None,
+        servo_ids=[1, 2, 3, 4],
+        run_index=0,
+        target_xy_mm=[0.0, 0.0],
+        startup_reference_ticks_by_servo={sid: None for sid in (1, 2, 3, 4)},
+        mode_kind="conservative_startup",
+        trace_rows=trace_rows,
+    )
+
+    assert result["stop_reason"] == "baseline_off_edge_complete"
+    assert result["move_count"] == 4
+    assert result["baseline_offset_ticks_requested"] == 50
+    applied = result["baseline_offset_ticks_applied_by_servo"]
+    for sid in (1, 2, 3, 4):
+        assert applied[str(sid)] >= 40, applied
+    assert any(row.get("stage") == "baseline_off_edge" for row in trace_rows)
+
+
+def test_baseline_off_edge_step_disabled_when_offset_zero(tmp_path: Path) -> None:
+    """With ``baseline_offset_from_full_release_ticks: 0`` the helper must be a
+    no-op (no move, no stage row) and report ``baseline_off_edge_disabled``.
+    This preserves the historical behavior for runs that explicitly want to
+    characterize at the full-release endpoint."""
+    service = _servo_service(tmp_path)
+    experiment = PretensionValidationExperiment(
+        PretensionValidationExperimentConfig.from_dict(
+            {
+                "mode": "single_segment_staged",
+                "servo_ids": [1, 2, 3, 4],
+                "baseline_offset_from_full_release_ticks": 0,
+            }
+        )
+    )
+
+    session = _make_off_edge_session(service)
+    trace_rows: list = []
+    result = experiment._run_baseline_off_edge_step(
+        session=session,
+        servo_service=service,
+        tracker_service=None,
+        servo_ids=[1, 2, 3, 4],
+        run_index=0,
+        target_xy_mm=[0.0, 0.0],
+        startup_reference_ticks_by_servo={sid: None for sid in (1, 2, 3, 4)},
+        mode_kind="conservative_startup",
+        trace_rows=trace_rows,
+    )
+
+    assert result["stop_reason"] == "baseline_off_edge_disabled"
+    assert result["move_count"] == 0
+    assert result["travel_ticks"] == 0
+    assert trace_rows == []
