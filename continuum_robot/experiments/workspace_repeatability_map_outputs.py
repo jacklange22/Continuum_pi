@@ -498,6 +498,10 @@ def _apply_suptitle(fig, *, figure_number: int, headline: str, subtitle: str) ->
     The bold line stays scannable for a thesis table-of-figures; the italic
     subtitle teaches a reader who has never seen the project what they are
     looking at without having to dig into the surrounding text.
+
+    ``subtitle`` may contain ``\\n`` to break into multiple short lines; keep
+    each line under ~85 characters so ``bbox_inches='tight'`` does not blow
+    out the saved figure's horizontal aspect ratio.
     """
     fig.suptitle(
         f"Figure {figure_number} of 4  —  {headline}",
@@ -509,17 +513,18 @@ def _apply_suptitle(fig, *, figure_number: int, headline: str, subtitle: str) ->
     )
     fig.text(
         0.04,
-        0.922,
+        0.918,
         subtitle,
         fontsize=9.5,
         color=color("text"),
         ha="left",
         va="top",
         style="italic",
+        linespacing=1.35,
     )
 
 
-_COLORBAR_LABEL_RMS = "Per-target RMS spread (mm)  —  lower = more repeatable"
+_COLORBAR_LABEL_RMS = "Per-target RMS spread (mm) — lower is better"
 
 
 # ---------------------------------------------------------------------------
@@ -596,9 +601,8 @@ def _write_workspace_thesis_01_rms_3d(
         figure_number=1,
         headline="Per-target tip-pose RMS across the 3D workspace",
         subtitle=(
-            "Each dot is one commanded target the robot was driven to repeatedly. "
-            "Color encodes how tightly the measured tip returned to that target across visits — "
-            "the dome shape is the actual reachable tip surface (Z is height above the base)."
+            "Each dot = one commanded target. Color = how tightly the tip returned across visits.\n"
+            "The dome is the actual reachable tip surface (Z is height above the base)."
         ),
     )
     _draw_footer(
@@ -689,24 +693,6 @@ def _write_workspace_thesis_02_rms_map(
     ax.set_aspect("equal", adjustable="box")
     style_axes(ax, xlabel="Robot X (mm)", ylabel="Robot Y (mm)")
 
-    # Small dashed reference circle at the commanded cable-amplitude radius
-    # ONLY if it fits clearly inside the tip workspace, so the reader has a
-    # sense of cable-space scale without the disk being read as a workspace
-    # boundary.
-    if 0 < max_amplitude_mm < xy_extent * 0.85:
-        ax.add_patch(
-            Circle(
-                (0.0, 0.0),
-                max_amplitude_mm,
-                fill=False,
-                edgecolor=color("reference"),
-                linestyle="--",
-                linewidth=1.0,
-                alpha=0.7,
-                zorder=4,
-            )
-        )
-
     color_source = contour if contour is not None else centroids
     cbar = fig.colorbar(color_source, ax=ax, shrink=0.85, pad=0.025)
     cbar.set_label(_COLORBAR_LABEL_RMS)
@@ -717,9 +703,9 @@ def _write_workspace_thesis_02_rms_map(
         figure_number=2,
         headline="Smoothed RMS field across the tip workspace",
         subtitle=(
-            "Same per-target data as Figure 4, Delaunay-interpolated to a continuous field. "
-            "Reveals local trends — yellow patches mark regions where the tip is consistently "
-            "less repeatable. White-rimmed dots show the actual measured targets."
+            "Same data as Figure 4, Delaunay-interpolated into a continuous field.\n"
+            "Yellow patches mark regions where the tip is consistently less repeatable; "
+            "white-rimmed dots are the actual targets."
         ),
     )
     _draw_footer(
@@ -822,8 +808,8 @@ def _write_workspace_thesis_03_rms_vs_amplitude(
         ylabel="Per-target RMS spread (mm)",
     )
 
-    cbar = fig.colorbar(scatter, ax=ax, shrink=0.85, pad=0.025)
-    cbar.set_label("Z-axis spread per target (mm)  —  brighter = more out-of-plane drift")
+    cbar = fig.colorbar(scatter, ax=ax, shrink=0.75, pad=0.02, fraction=0.035)
+    cbar.set_label("Z drift per target (mm)")
     cbar.outline.set_edgecolor(color("grid"))
 
     # X axis extends slightly past the largest amplitude so the rim dots aren't on the edge.
@@ -850,9 +836,8 @@ def _write_workspace_thesis_03_rms_vs_amplitude(
         figure_number=3,
         headline="How repeatability scales with commanded cable deflection",
         subtitle=(
-            "Each purple dot is one target's RMS spread (Y) plotted against how far that target asked the cables to move (X). "
-            "The green line is the binned median; the shaded band is p25–p75. "
-            "Brighter dot color flags targets that drifted more in Z (out-of-plane)."
+            "Each dot = one target's RMS spread (Y) vs how far the cables moved (X).\n"
+            "Green line = binned median; shaded band = p25–p75. Dot brightness = out-of-plane Z drift."
         ),
     )
     _draw_footer(
@@ -920,40 +905,6 @@ def _write_workspace_thesis_04_rms_map_scatter(
     ax.set_ylim(-xy_extent - pad, xy_extent + pad)
     ax.set_aspect("equal", adjustable="box")
 
-    # Small dashed reference circle at the commanded cable-amplitude radius
-    # ONLY if it sits clearly inside the tip workspace (otherwise it implies
-    # a workspace boundary that does not exist in robot frame). Labelled to
-    # avoid the "is that the workspace?" misread.
-    if 0 < max_amplitude_mm < xy_extent * 0.85:
-        ax.add_patch(
-            Circle(
-                (0.0, 0.0),
-                max_amplitude_mm,
-                fill=False,
-                edgecolor=color("reference"),
-                linestyle="--",
-                linewidth=1.0,
-                alpha=0.7,
-                zorder=2,
-            )
-        )
-        ax.annotate(
-            f"commanded cable input\n({max_amplitude_mm:.0f} mm)",
-            xy=(max_amplitude_mm * 0.707, max_amplitude_mm * 0.707),
-            xytext=(max_amplitude_mm * 1.10, max_amplitude_mm * 1.10),
-            fontsize=8,
-            color=color("axis"),
-            ha="left",
-            va="bottom",
-            alpha=0.85,
-            arrowprops={
-                "arrowstyle": "-",
-                "color": color("axis"),
-                "alpha": 0.55,
-                "lw": 0.8,
-            },
-        )
-
     scatter = ax.scatter(
         xs,
         ys,
@@ -968,6 +919,45 @@ def _write_workspace_thesis_04_rms_map_scatter(
         zorder=3,
     )
 
+    # Call out the single worst target so the reader can locate the
+    # workspace's worst spot directly rather than scanning for the brightest
+    # yellow dot among 100. Only annotate when the worst is meaningfully
+    # worse than the median (i.e. there's actually a worst worth pointing at).
+    # Label is placed INWARD toward the origin (along the radial vector) so it
+    # stays inside the plot area rather than getting clipped at the rim.
+    worst = list(summary.get("worst_targets") or [])
+    median_rms = float(summary.get("workspace_rms_median_mm") or 0.0)
+    if worst and rms_values.size > 0:
+        worst_top = worst[0]
+        worst_rms = float(worst_top.get("rms_spread_mm") or 0.0)
+        if worst_rms > median_rms * 1.4 and worst_rms > 0.0:
+            worst_idx = int(np.argmax(rms_values))
+            wx = float(xs[worst_idx])
+            wy = float(ys[worst_idx])
+            r = float(np.hypot(wx, wy)) or 1.0
+            offset = min(13.0, r * 0.45)
+            label_x = wx * (1.0 - offset / r)
+            label_y = wy * (1.0 - offset / r)
+            ax.annotate(
+                f"worst target: {worst_top.get('target_label', 'T?')}\n({worst_rms:.2f} mm RMS)",
+                xy=(wx, wy),
+                xytext=(label_x, label_y),
+                fontsize=8,
+                color=color("text"),
+                ha="center",
+                va="center",
+                zorder=7,
+                bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "edgecolor": color("grid"), "alpha": 0.95},
+                arrowprops={
+                    "arrowstyle": "->",
+                    "color": color("axis"),
+                    "alpha": 0.75,
+                    "lw": 0.9,
+                    "shrinkA": 4,
+                    "shrinkB": 6,
+                },
+            )
+
     style_axes(ax, xlabel="Robot X (mm)", ylabel="Robot Y (mm)")
 
     cbar = fig.colorbar(scatter, ax=ax, shrink=0.85, pad=0.025)
@@ -979,9 +969,8 @@ def _write_workspace_thesis_04_rms_map_scatter(
         figure_number=4,
         headline="Per-target tip repeatability across the workspace (top-down)",
         subtitle=(
-            "Each dot is one of the commanded targets, plotted at the average position "
-            "the tip actually reached. Color = how tightly the tip returned to that target "
-            "across visits. Nothing is interpolated — every measured target is visible."
+            "Each dot = one target, drawn where the tip actually landed on average.\n"
+            "Color = RMS spread across visits. No interpolation — every measured target is visible."
         ),
     )
     _draw_footer(
