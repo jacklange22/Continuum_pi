@@ -214,14 +214,50 @@ def write_modeling_dataset_outputs(
         export_rows=export_rows,
         samples=samples,
     )
-    for path, writer in [
+    plot_jobs: list[tuple[Path, Any]] = [
         (thesis_01_path, lambda: _write_collect_pose_thesis_01_workspace_coverage_3d(
             path=thesis_01_path, export_rows=export_rows, metrics=metrics,
         )),
         (thesis_02_path, lambda: _write_collect_pose_thesis_02_command_and_workspace_2d(
             path=thesis_02_path, export_rows=export_rows, metrics=metrics,
         )),
-    ]:
+    ]
+
+    # Multi-frame averaging variability figures appear only when averaging
+    # actually ran and we have at least one averaged sample to plot.
+    variability_paths: dict[str, Path] = {}
+    if averaging_active and averaged_label_enabled and averaged_samples:
+        records = _tracker_variability_records(averaged_samples)
+        raw_rows = list(raw_tracker_frame_rows or [])
+        if records:
+            variability_paths = {
+                "tracker_variability_workspace_xy_path": output_dir / "tracker_variability_workspace_xy.png",
+                "tracker_variability_std_histogram_path": output_dir / "tracker_variability_std_histogram.png",
+                "tracker_variability_first_vs_mean_path": output_dir / "tracker_variability_first_vs_mean.png",
+                "tracker_variability_sample_spread_path": output_dir / "tracker_variability_sample_spread.png",
+                "tracker_variability_std_vs_command_index_path": output_dir / "tracker_variability_std_vs_command_index.png",
+            }
+            plot_jobs.extend([
+                (variability_paths["tracker_variability_workspace_xy_path"], lambda: _write_tracker_variability_workspace_xy(
+                    path=variability_paths["tracker_variability_workspace_xy_path"], records=records,
+                )),
+                (variability_paths["tracker_variability_std_histogram_path"], lambda: _write_tracker_variability_std_histogram(
+                    path=variability_paths["tracker_variability_std_histogram_path"], records=records,
+                )),
+                (variability_paths["tracker_variability_first_vs_mean_path"], lambda: _write_tracker_variability_first_vs_mean(
+                    path=variability_paths["tracker_variability_first_vs_mean_path"], records=records,
+                )),
+                (variability_paths["tracker_variability_sample_spread_path"], lambda: _write_tracker_variability_sample_spread(
+                    path=variability_paths["tracker_variability_sample_spread_path"],
+                    records=records,
+                    raw_rows=raw_rows,
+                )),
+                (variability_paths["tracker_variability_std_vs_command_index_path"], lambda: _write_tracker_variability_std_vs_command_index(
+                    path=variability_paths["tracker_variability_std_vs_command_index_path"], records=records,
+                )),
+            ])
+
+    for path, writer in plot_jobs:
         try:
             writer()
         except Exception:
@@ -248,6 +284,8 @@ def write_modeling_dataset_outputs(
         outputs["export_first_path"] = export_first_path
     if export_averaged_path is not None:
         outputs["export_averaged_path"] = export_averaged_path
+    for key, path in variability_paths.items():
+        outputs[key] = path
     return outputs
 
 
@@ -833,3 +871,354 @@ def _collect_pose_json_default(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     raise TypeError(f"Unserialisable type: {type(value).__name__}")
+
+
+# =========================================================================== #
+# Tracker-variability figures (multi-frame post-settle averaging diagnostics)  #
+# =========================================================================== #
+
+
+def _tracker_variability_records(averaged_samples: list) -> list[dict[str, Any]]:
+    """Pull per-command (averaged-row) stats into plot-friendly dicts.
+
+    Reads `extra.tracker_averaging` produced by the multi-frame averaging
+    path and pulls the averaged tip XY position from the averaged-sample's
+    robot-frame pose. Returns one dict per averaged command. Empty rows
+    (no T_robot_tip) are skipped so plots stay clean.
+    """
+    rows: list[dict[str, Any]] = []
+    for sample in averaged_samples:
+        extra = dict(getattr(sample, "extra", {}) or {})
+        stats = dict(extra.get("tracker_averaging", {}) or {})
+        tip_payload = dict((getattr(sample, "pose_in_robot_frame", {}) or {}).get("tip", {}) or {})
+        translation = list(tip_payload.get("translation_mm", []) or [])
+        if len(translation) < 2:
+            continue
+        rows.append(
+            {
+                "command_index": int(getattr(sample, "step_index", 0) or 0),
+                "averaged_x_mm": float(translation[0]),
+                "averaged_y_mm": float(translation[1]),
+                "averaged_z_mm": float(translation[2]) if len(translation) >= 3 else 0.0,
+                "position_std_rms_mm": _safe_float(stats.get("position_std_rms_mm")),
+                "position_max_deviation_mm": _safe_float(stats.get("position_max_deviation_mm")),
+                "first_vs_mean_position_diff_mm": _safe_float(stats.get("first_vs_mean_position_diff_mm")),
+                "orientation_max_spread_deg": _safe_float(stats.get("orientation_max_spread_deg")),
+                "valid_sample_count": int(stats.get("valid_sample_count", 0) or 0),
+                "sample_window_s": _safe_float(stats.get("sample_window_s")),
+            }
+        )
+    return rows
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _write_tracker_variability_workspace_xy(
+    *,
+    path: Path,
+    records: list[dict[str, Any]],
+) -> None:
+    """Tip XY scatter colored by per-command position std RMS.
+
+    Each marker is one averaged command point at its averaged tip XY in the
+    robot frame; color encodes the per-command frame-to-frame position
+    std RMS (random measurement noise around the averaged label). Reader
+    sees whether tracker noise is uniform across the workspace or clusters
+    in specific regions (e.g. edges of the NDI tracking volume).
+
+    Skeptical: color reflects random frame-to-frame variability only. It
+    says nothing about systematic registration bias, settling, or drift.
+    """
+    fig, ax = create_figure(size="square")
+    valid = [(r["averaged_x_mm"], r["averaged_y_mm"], r["position_std_rms_mm"])
+             for r in records if r["position_std_rms_mm"] is not None]
+    if not valid:
+        ax.text(0.5, 0.5, "No averaged samples with position std data",
+                transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, xlabel="Robot X (mm)", ylabel="Robot Y (mm)")
+        fig.suptitle("Tracker Frame-to-Frame Variability vs Workspace Location",
+                     fontsize=12, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+    xs = [v[0] for v in valid]
+    ys = [v[1] for v in valid]
+    stds = [v[2] for v in valid]
+    scatter = ax.scatter(
+        xs, ys, c=stds, cmap="plasma", s=42,
+        edgecolors="white", linewidths=0.5, alpha=0.95,
+    )
+    ax.set_aspect("equal", adjustable="datalim")
+    style_axes(ax, xlabel="Robot X (mm)", ylabel="Robot Y (mm)")
+    cbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("Position std RMS per command (mm)")
+    cbar.outline.set_edgecolor(color("grid"))
+    fig.suptitle("Per-Command Tracker Variability vs Workspace Location",
+                 fontsize=12, fontweight="bold", x=0.04, ha="left")
+    median_std = float(np.median(stds))
+    max_std = float(np.max(stds))
+    fig.text(
+        0.015, 0.02,
+        f"Commands: {len(valid)}   •   median std RMS: {median_std:.3f} mm   "
+        f"•   max: {max_std:.3f} mm   •   color = random frame noise only "
+        "(not systematic bias / hysteresis / drift)",
+        fontsize=8, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
+def _write_tracker_variability_std_histogram(
+    *,
+    path: Path,
+    records: list[dict[str, Any]],
+) -> None:
+    """Distribution of per-command position std RMS across the run.
+
+    Answers: typically how noisy is one command point worth of frames?
+    Long tail indicates a few commands where the tracker briefly degraded
+    (occlusion, marker edge, or transient noise). Median + mean overlaid
+    so the operator can see how skewed the distribution is.
+    """
+    fig, ax = create_figure(size="wide")
+    stds = [r["position_std_rms_mm"] for r in records if r["position_std_rms_mm"] is not None]
+    if not stds:
+        ax.text(0.5, 0.5, "No averaged samples with position std data",
+                transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, xlabel="Position std RMS (mm)", ylabel="Command count")
+        fig.suptitle("Distribution of Per-Command Tracker Frame-to-Frame Std RMS",
+                     fontsize=12, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+    arr = np.asarray(stds, dtype=float)
+    bins = min(30, max(10, len(arr) // 4))
+    ax.hist(arr, bins=bins, color=color("measured"), edgecolor="white", alpha=0.92)
+    median = float(np.median(arr))
+    mean = float(np.mean(arr))
+    p95 = float(np.percentile(arr, 95))
+    ax.axvline(median, color=color("reference"), linestyle="--",
+               linewidth=1.4, label=f"Median {median:.3f} mm")
+    ax.axvline(mean, color=color("fit"), linestyle=":",
+               linewidth=1.4, label=f"Mean {mean:.3f} mm")
+    ax.axvline(p95, color=color("rejected"), linestyle="-.",
+               linewidth=1.2, label=f"p95 {p95:.3f} mm")
+    style_axes(ax, xlabel="Position std RMS (mm)", ylabel="Command count")
+    fig.suptitle("Distribution of Per-Command Tracker Frame-to-Frame Std RMS",
+                 fontsize=12, fontweight="bold", x=0.04, ha="left")
+    legend(ax, loc="upper right", ncol=1)
+    fig.text(
+        0.015, 0.02,
+        f"Commands: {len(arr)}   •   "
+        "captures random frame-to-frame label noise only "
+        "(systematic bias / hysteresis / drift not visible here)",
+        fontsize=8, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
+def _write_tracker_variability_first_vs_mean(
+    *,
+    path: Path,
+    records: list[dict[str, Any]],
+) -> None:
+    """Distance between the first-frame label and the averaged-frame label.
+
+    For each command point, this is `‖first_position - averaged_position‖`.
+    Larger values say "the first valid post-settle frame was further from
+    the average than usual" — useful for arguing why averaging matters
+    when comparing ANN models trained on the two label sets.
+    """
+    fig, ax = create_figure(size="wide")
+    diffs = [r["first_vs_mean_position_diff_mm"] for r in records
+             if r["first_vs_mean_position_diff_mm"] is not None]
+    if not diffs:
+        ax.text(0.5, 0.5, "No first-vs-mean diff data available",
+                transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, xlabel="First-frame vs averaged-frame distance (mm)",
+                   ylabel="Command count")
+        fig.suptitle("Label Difference: First Valid Post-Settle Frame vs Averaged Frames",
+                     fontsize=12, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+    arr = np.asarray(diffs, dtype=float)
+    bins = min(30, max(10, len(arr) // 4))
+    ax.hist(arr, bins=bins, color=color("fit"), edgecolor="white", alpha=0.92)
+    median = float(np.median(arr))
+    mean = float(np.mean(arr))
+    ax.axvline(median, color=color("reference"), linestyle="--",
+               linewidth=1.4, label=f"Median {median:.3f} mm")
+    ax.axvline(mean, color=color("rejected"), linestyle=":",
+               linewidth=1.4, label=f"Mean {mean:.3f} mm")
+    style_axes(ax, xlabel="First-frame vs averaged-frame distance (mm)",
+               ylabel="Command count")
+    fig.suptitle("Label Difference: First Valid Post-Settle Frame vs Averaged Frames",
+                 fontsize=12, fontweight="bold", x=0.04, ha="left")
+    legend(ax, loc="upper right", ncol=1)
+    fig.text(
+        0.015, 0.02,
+        f"Commands: {len(arr)}   •   "
+        "distance between the legacy label (first valid frame) and the "
+        "averaged label at the same command point",
+        fontsize=8, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
+def _write_tracker_variability_sample_spread(
+    *,
+    path: Path,
+    records: list[dict[str, Any]],
+    raw_rows: list[dict[str, Any]],
+) -> None:
+    """Raw per-frame XY clusters at three representative commands.
+
+    Shows the actual per-frame XY positions (centered on each command's
+    mean) for: the command with the tightest cluster (min std RMS), the
+    command nearest the median, and the command with the loosest cluster
+    (max std RMS). If the loose cluster shows a directional drift instead
+    of an isotropic blob, averaging is hiding settling/drift rather than
+    just smoothing noise.
+    """
+    with report_style() as plt:
+        fig, axes = plt.subplots(1, 3, figsize=(11.0, 4.3), constrained_layout=False)
+    fig.subplots_adjust(left=0.08, right=0.97, top=0.85, bottom=0.20, wspace=0.32)
+
+    valid = [(r["command_index"], r["position_std_rms_mm"])
+             for r in records if r["position_std_rms_mm"] is not None]
+    if not valid or not raw_rows:
+        for ax in np.atleast_1d(axes):
+            ax.text(0.5, 0.5, "No raw frames", transform=ax.transAxes,
+                    ha="center", va="center")
+            style_axes(ax, xlabel="ΔX (mm)", ylabel="ΔY (mm)")
+        fig.suptitle("Raw Per-Frame Spread at Representative Commands",
+                     fontsize=12, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+
+    valid_sorted = sorted(valid, key=lambda item: item[1])
+    pick_min = valid_sorted[0]
+    pick_med = valid_sorted[len(valid_sorted) // 2]
+    pick_max = valid_sorted[-1]
+    picks = [
+        (int(pick_min[0]), float(pick_min[1]), "min std RMS"),
+        (int(pick_med[0]), float(pick_med[1]), "median std RMS"),
+        (int(pick_max[0]), float(pick_max[1]), "max std RMS"),
+    ]
+    raw_by_cmd: dict[int, list[dict[str, Any]]] = {}
+    for row in raw_rows:
+        cmd_idx = int(row.get("command_index", -1) or -1)
+        raw_by_cmd.setdefault(cmd_idx, []).append(row)
+
+    for ax, (cmd_idx, std_rms, name) in zip(np.atleast_1d(axes), picks):
+        frames = raw_by_cmd.get(cmd_idx, [])
+        xs: list[float] = []
+        ys: list[float] = []
+        for frame in frames:
+            robot_pose = dict(frame.get("pose_in_robot_frame", {}) or {})
+            translation = list(robot_pose.get("translation_mm", []) or [])
+            if len(translation) < 2:
+                continue
+            xs.append(float(translation[0]))
+            ys.append(float(translation[1]))
+        if len(xs) < 1:
+            ax.text(0.5, 0.5, f"No raw frames\nfor cmd {cmd_idx}",
+                    transform=ax.transAxes, ha="center", va="center")
+            style_axes(ax, xlabel="ΔX (mm)", ylabel="ΔY (mm)")
+            ax.set_title(f"cmd {cmd_idx}  ({name})\nstd RMS = {std_rms:.3f} mm",
+                         fontsize=10, color=color("text"))
+            continue
+        cx = float(np.mean(xs))
+        cy = float(np.mean(ys))
+        rel_xs = [x - cx for x in xs]
+        rel_ys = [y - cy for y in ys]
+        ax.scatter(rel_xs, rel_ys, color=color("measured"), s=32,
+                   edgecolors="white", linewidths=0.4)
+        ax.axhline(0, color=color("grid"), linewidth=0.6)
+        ax.axvline(0, color=color("grid"), linewidth=0.6)
+        ax.set_aspect("equal", adjustable="datalim")
+        style_axes(ax, xlabel="ΔX from cmd mean (mm)", ylabel="ΔY from cmd mean (mm)")
+        ax.set_title(f"cmd {cmd_idx}  ({name})\nstd RMS = {std_rms:.3f} mm  ·  N = {len(xs)} frames",
+                     fontsize=10, color=color("text"))
+
+    fig.suptitle("Raw Per-Frame Spread at Representative Commands",
+                 fontsize=12, fontweight="bold", x=0.04, ha="left")
+    fig.text(
+        0.015, 0.02,
+        "Directional clusters at the right-hand panel suggest settling drift "
+        "during the sample window; isotropic clusters suggest random tracker noise.",
+        fontsize=8, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
+def _write_tracker_variability_std_vs_command_index(
+    *,
+    path: Path,
+    records: list[dict[str, Any]],
+) -> None:
+    """std RMS over collection order — does tracker noise grow over time?
+
+    Plots per-command std RMS against command_index (the order in which
+    they were collected). A flat trend says noise is stationary over the
+    session; a rising trend says the tracker drifted, the rig warmed up,
+    a coil came loose, or some other time-correlated effect kicked in
+    that the averaging path can't compensate for.
+    """
+    fig, ax = create_figure(size="wide")
+    rows_sorted = sorted(
+        (r for r in records if r["position_std_rms_mm"] is not None),
+        key=lambda r: int(r["command_index"]),
+    )
+    if not rows_sorted:
+        ax.text(0.5, 0.5, "No averaged samples with position std data",
+                transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, xlabel="Command index (collection order)",
+                   ylabel="Position std RMS (mm)")
+        fig.suptitle("Per-Command Tracker Variability Over Collection Time",
+                     fontsize=12, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+    xs = [int(r["command_index"]) for r in rows_sorted]
+    ys = [float(r["position_std_rms_mm"]) for r in rows_sorted]
+    ax.plot(xs, ys, color=color("measured"), linewidth=0.9,
+            marker="o", markersize=3.5, markerfacecolor=color("measured"),
+            markeredgecolor="white", markeredgewidth=0.3, alpha=0.85,
+            label="Per-command std RMS")
+    # Running-median trend line (window = max(5, len/20)) so the operator
+    # can see the underlying drift without scrolling through every point.
+    window = max(5, len(ys) // 20)
+    if len(ys) >= window:
+        kernel = np.ones(window) / float(window)
+        smoothed = np.convolve(ys, kernel, mode="valid")
+        smooth_x = xs[(window - 1) // 2 : (window - 1) // 2 + len(smoothed)]
+        if len(smooth_x) == len(smoothed):
+            ax.plot(smooth_x, smoothed, color=color("rejected"),
+                    linewidth=1.6, label=f"Rolling mean (window={window})")
+    style_axes(ax, xlabel="Command index (collection order)",
+               ylabel="Position std RMS (mm)")
+    fig.suptitle("Per-Command Tracker Variability Over Collection Time",
+                 fontsize=12, fontweight="bold", x=0.04, ha="left")
+    legend(ax, loc="upper right", ncol=1)
+    overall_median = float(np.median(ys))
+    fig.text(
+        0.015, 0.02,
+        f"Commands: {len(ys)}   •   overall median std RMS: {overall_median:.3f} mm   "
+        "•   rising trend suggests time-correlated tracker drift that averaging cannot remove",
+        fontsize=8, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
