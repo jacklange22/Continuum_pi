@@ -1,0 +1,53 @@
+{
+  "dataset_run_name": "20260518_164344_collect_pose_command_dataset",
+  "dataset_mode": "workspace_coverage",
+  "selected_sample_count": 614,
+  "evaluation_scope_used": "artifact_test_split",
+  "models": {
+    "mike": {
+      "model_key": "mike",
+      "label": "Mike",
+      "status": "completed",
+      "reason": "",
+      "sample_count": 614,
+      "position_rmse_mm": 22.507032926804808,
+      "mean_position_error_mm": 21.295196795587643,
+      "max_position_error_mm": 35.05678603771467,
+      "tangent_mean_error_deg": 36.13750166180991,
+      "tangent_rmse_deg": 38.308675268107294,
+      "tangent_max_error_deg": 60.58977627237156,
+      "axis_position_rmse_mm": "[15.13231398559892, 14.869704498372647, 7.514751675245132]",
+      "axis_tangent_rmse": "[0.3958249317486887, 0.3870876356728148, 0.34436546937717055]"
+    },
+    "camarillo": {
+      "model_key": "camarillo",
+      "label": "Camarillo",
+      "status": "completed",
+      "reason": "",
+      "sample_count": 614,
+      "position_rmse_mm": 22.547726721610882,
+      "mean_position_error_mm": 21.33337818729341,
+      "max_position_error_mm": 35.123664920578086,
+      "tangent_mean_error_deg": 36.20730507602729,
+      "tangent_rmse_deg": 38.3832935071773,
+      "tangent_max_error_deg": 60.715977985187585,
+      "axis_position_rmse_mm": "[15.161893419180775, 14.898660105455734, 7.519766972450009]",
+      "axis_tangent_rmse": "[0.39673186952787587, 0.38797976022922753, 0.34459997149044796]"
+    },
+    "ann": {
+      "model_key": "ann",
+      "label": "ANN",
+      "status": "completed",
+      "reason": "",
+      "sample_count": 614,
+      "position_rmse_mm": 0.6463028655400302,
+      "mean_position_error_mm": 0.5185783983077478,
+      "max_position_error_mm": 2.520884890908182,
+      "tangent_mean_error_deg": null,
+      "tangent_rmse_deg": null,
+      "tangent_max_error_deg": null,
+      "axis_position_rmse_mm": "[0.5046571788174226, 0.38390393982773985, 0.12508513444064298]",
+      "axis_tangent_rmse": "[]"
+    }
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "dataset_run_name": "20260518_013957_collect_pose_command_dataset",
+  "dataset_mode": "workspace_coverage",
+  "selected_sample_count": 500,
+  "evaluation_scope_used": "full_dataset",
+  "models": {
+    "mike": {
+      "model_key": "mike",
+      "label": "Mike",
+      "status": "completed",
+      "reason": "",
+      "sample_count": 500,
+      "position_rmse_mm": 24.34325815568273,
+      "mean_position_error_mm": 23.224926478600924,
+      "max_position_error_mm": 36.79670084066268,
+      "tangent_mean_error_deg": 39.32177946616904,
+      "tangent_rmse_deg": 41.2620703999938,
+      "tangent_max_error_deg": 62.3313008176889,
+      "axis_position_rmse_mm": "[15.919910634580813, 16.40020929811782, 8.37757709598094]",
+      "axis_tangent_rmse": "[0.4124597840281928, 0.4185533149152881, 0.38101504188173296]"
+    },
+    "camarillo": {
+      "model_key": "camarillo",
+      "label": "Camarillo",
+      "status": "completed",
+      "reason": "",
+      "sample_count": 500,
+      "position_rmse_mm": 24.38399080100468,
+      "mean_position_error_mm": 23.26339099910294,
+      "max_position_error_mm": 36.86051070350662,
+      "tangent_mean_error_deg": 39.39258408055629,
+      "tangent_rmse_deg": 41.337376766193856,
+      "tangent_max_error_deg": 62.456672721023835,
+      "axis_position_rmse_mm": "[15.949368399392236, 16.42950696595412, 8.382598397848609]",
+      "axis_tangent_rmse": "[0.41336226626757294, 0.41946536810432894, 0.38124931533855183]"
+    },
+    "ann": {
+      "model_key": "ann",
+      "label": "ANN",
+      "status": "completed",
+      "reason": "",
+      "sample_count": 500,
+      "position_rmse_mm": 2.6526758317912678,
+      "mean_position_error_mm": 2.347635043130097,
+      "max_position_error_mm": 5.194462369357851,
+      "tangent_mean_error_deg": null,
+      "tangent_rmse_deg": null,
+      "tangent_max_error_deg": null,
+      "axis_position_rmse_mm": "[1.356941128587969, 2.001048400642011, 1.0914234468820754]",
+      "axis_tangent_rmse": "[]"
+    }
+  }
+}
