@@ -163,29 +163,34 @@ class RegistrationTab(QWidget):
         required_count = int(self.controller.REQUIRED_SELECTION_COUNT)
         minimum_count = int(self.controller.MINIMUM_SELECTION_COUNT)
         self.selection_hint = QLabel(
-            f"Select up to {required_count} unique model points in capture order "
-            f"(minimum {minimum_count})."
+            f"Tap the map or a row to toggle a landmark. Capture order = selection order. "
+            f"Min {minimum_count}, up to {required_count}."
         )
         self.selection_hint.setProperty("role", "hint")
         self.selection_hint.setWordWrap(True)
-        self.selection_help_label = QLabel("Click the top-view map or a row in the point list to add or remove a point.")
-        self.selection_help_label.setProperty("role", "hint")
-        self.selection_help_label.setWordWrap(True)
-        self.selection_summary_label = QLabel("No model points selected.")
-        self.selection_summary_label.setProperty("role", "status")
+
+        # Selection summary chip: compact count badge + condensed label list.
+        self.selection_count_chip = QLabel("0 / 0")
+        self.selection_count_chip.setAlignment(Qt.AlignCenter)
+        self.selection_count_chip.setMinimumWidth(70)
+        self.selection_summary_label = QLabel("No landmarks selected.")
+        self.selection_summary_label.setProperty("role", "hint")
+        self.selection_summary_label.setWordWrap(True)
+        selection_summary_row = QHBoxLayout()
+        selection_summary_row.setContentsMargins(0, 0, 0, 0)
+        selection_summary_row.setSpacing(10)
+        selection_summary_row.addWidget(self.selection_count_chip, 0)
+        selection_summary_row.addWidget(self.selection_summary_label, 1)
+
+        # Capture-order strip: compact numbered dots (works at any N, replaces
+        # the old 4-slot chip row which broke past 4 selections).
+        self.capture_order_strip = QLabel("")
+        self.capture_order_strip.setWordWrap(True)
+        self.capture_order_strip.setTextFormat(Qt.RichText)
+        self.capture_order_strip.setProperty("role", "hint")
 
         self.landmark_map = RegistrationLandmarkMapWidget()
         self.landmark_map.pointToggled.connect(lambda label: self._safe_call(lambda: self.controller.toggle_selected_model_point(label)))
-
-        slot_row = QHBoxLayout()
-        slot_row.setContentsMargins(0, 0, 0, 0)
-        slot_row.setSpacing(8)
-        for index in range(self.controller.REQUIRED_SELECTION_COUNT):
-            label = QLabel(f"{index + 1}. Unselected")
-            label.setProperty("role", "status")
-            label.setMinimumWidth(118)
-            self._selected_slot_labels.append(label)
-            slot_row.addWidget(label, 1)
 
         self.available_points_table = QTableWidget(0, 5)
         self.available_points_table.setHorizontalHeaderLabels(
@@ -205,11 +210,11 @@ class RegistrationTab(QWidget):
 
         selection_box = QGroupBox("Model Point Selection")
         selection_layout = QVBoxLayout(selection_box)
+        selection_layout.setSpacing(8)
         selection_layout.addWidget(self.selection_hint)
-        selection_layout.addWidget(self.selection_help_label)
         selection_layout.addWidget(self.landmark_map)
-        selection_layout.addLayout(slot_row)
-        selection_layout.addWidget(self.selection_summary_label)
+        selection_layout.addLayout(selection_summary_row)
+        selection_layout.addWidget(self.capture_order_strip)
         selection_layout.addWidget(self.available_points_table)
 
         self.session_status_label = QLabel("Idle")
@@ -242,15 +247,35 @@ class RegistrationTab(QWidget):
         summary_layout.addRow("RMSE / FRE", self.fre_label)
         summary_layout.addRow("Max residual", self.max_residual_label)
 
-        button_row_primary = QHBoxLayout()
-        button_row_primary.setSpacing(10)
-        button_row_primary.addWidget(self.begin_button)
-        button_row_primary.addWidget(self.capture_button)
-        button_row_primary.addWidget(self.capture_batch_button)
-        button_row_primary.addWidget(self.complete_button)
-        button_row_primary.addWidget(self.solve_button)
-        button_row_primary.addWidget(self.save_button)
+        # Group buttons by workflow phase so 6+ actions don't read as one wall.
+        def _phase_group(*buttons: QPushButton) -> QWidget:
+            wrapper = QWidget()
+            wrap_layout = QHBoxLayout(wrapper)
+            wrap_layout.setContentsMargins(0, 0, 0, 0)
+            wrap_layout.setSpacing(6)
+            for btn in buttons:
+                wrap_layout.addWidget(btn)
+            return wrapper
 
+        def _phase_separator() -> QFrame:
+            sep = QFrame()
+            sep.setFrameShape(QFrame.VLine)
+            sep.setFrameShadow(QFrame.Plain)
+            sep.setStyleSheet(f"color: {COLORS.surface_border}; background: {COLORS.surface_border}; max-width: 1px;")
+            sep.setFixedWidth(1)
+            return sep
+
+        button_row_primary = QHBoxLayout()
+        button_row_primary.setSpacing(14)
+        button_row_primary.addWidget(_phase_group(self.begin_button))
+        button_row_primary.addWidget(_phase_separator())
+        button_row_primary.addWidget(_phase_group(self.capture_button, self.capture_batch_button))
+        button_row_primary.addWidget(_phase_separator())
+        button_row_primary.addWidget(_phase_group(self.complete_button, self.solve_button, self.save_button))
+        button_row_primary.addStretch(1)
+
+        # trial_mode_button stays role=primary (operators couldn't find it
+        # under ghost styling — see test_trial_mode_button_uses_primary_style).
         button_row_secondary = QHBoxLayout()
         button_row_secondary.setSpacing(10)
         button_row_secondary.addWidget(self.retry_button)
@@ -421,15 +446,23 @@ class RegistrationTab(QWidget):
         self._update_dependencies(state, workflow_state)
         self._update_status_chip(state, workflow_state)
         required_count = int(self.controller.REQUIRED_SELECTION_COUNT)
-        if state.selected_model_labels:
-            self.selection_summary_label.setText(
-                f"{len(state.selected_model_labels)} / {required_count} selected: "
-                f"{', '.join(state.selected_model_labels)}"
-            )
+        selected = list(state.selected_model_labels)
+        selected_count = len(selected)
+        # Count chip styling reflects whether selection is ready to solve.
+        chip_kind = "ok" if selected_count >= int(self.controller.MINIMUM_SELECTION_COUNT) else "warning"
+        chip_bg, chip_fg = semantic_chip_colors(chip_kind)
+        self.selection_count_chip.setText(f"{selected_count} / {required_count}")
+        self.selection_count_chip.setStyleSheet(chip_stylesheet(background=chip_bg, foreground=chip_fg))
+        if selected:
+            preview = ", ".join(selected[:6])
+            if selected_count > 6:
+                preview = f"{preview}, … ({selected_count - 6} more)"
+            self.selection_summary_label.setText(preview)
         else:
             self.selection_summary_label.setText(
-                f"Choose up to {required_count} model points."
+                f"Choose at least {int(self.controller.MINIMUM_SELECTION_COUNT)} model points."
             )
+        self.capture_order_strip.setText(self._render_capture_order_strip(state))
         self.selected_points_label.setText(", ".join(state.selected_model_labels) or "None")
         self.tool_label.setText(state.capture_tool_id)
         self.coil_tool_label.setText(state.coil_tool_id)
@@ -438,7 +471,17 @@ class RegistrationTab(QWidget):
         self.live_point_label.setText(
             _format_xyz(state.current_tracked_xyz_mm, state.current_tracking_status, state.current_tracked_frame_id)
         )
-        self.samples_used_label.setText(str(self.controller.total_samples_captured()))
+        target_per_point = int(state.captures_per_landmark)
+        total_done = int(self.controller.total_samples_captured())
+        points_complete = sum(
+            1
+            for label in state.selected_model_labels
+            if int(state.captured_counts.get(label, 0)) >= target_per_point
+        )
+        total_target = target_per_point * len(state.selected_model_labels)
+        self.samples_used_label.setText(
+            f"{total_done} / {total_target}  ·  {points_complete} / {len(state.selected_model_labels)} points done"
+        )
         if state.fre_mm is not None:
             fre_text = f"FRE={state.fre_mm:.3f} mm"
             max_residual = state.validation_metrics.get("max_residual_mm")
@@ -630,26 +673,45 @@ class RegistrationTab(QWidget):
         dependency_lines.extend(list(getattr(workflow_state, "transform_summary_lines", [])))
         set_text_document(self.dependency_text, "\n".join(dependency_lines), stick_to_bottom_if_at_bottom=True)
 
-    def _update_selection_slots(self, state: RegistrationViewState) -> None:
-        for index, label_widget in enumerate(self._selected_slot_labels):
-            if index < len(state.selected_model_labels):
-                label = state.selected_model_labels[index]
-                label_widget.setText(f"{index + 1}. {_display_name(label, state)}")
+    def _render_capture_order_strip(self, state: RegistrationViewState) -> str:
+        """Compact HTML dot-strip showing capture-order progress.
+
+        Each dot is the ordinal number, color-coded by phase:
+          done    — full sample count reached         (success)
+          current — actively being captured            (accent)
+          pending — selected, waiting in line          (neutral)
+        """
+        selected = list(state.selected_model_labels)
+        if not selected:
+            return ""
+        target = max(1, int(state.captures_per_landmark))
+        current = state.current_label
+        chips: list[str] = []
+        for index, label in enumerate(selected):
+            count = int(state.captured_counts.get(label, 0))
+            if count >= target:
+                bg, fg = semantic_chip_colors("ok")
+            elif label == current and state.active:
                 bg, fg = semantic_chip_colors("accent")
-                label_widget.setStyleSheet(
-                    chip_stylesheet(background=bg, foreground=fg)
-                )
             else:
-                label_widget.setText(f"{index + 1}. Unselected")
                 bg, fg = semantic_chip_colors("neutral")
-                label_widget.setStyleSheet(
-                    chip_stylesheet(background=bg, foreground=fg)
-                )
+            chips.append(
+                f'<span style="'
+                f'display: inline-block; padding: 2px 8px; margin: 2px 4px 2px 0;'
+                f' border-radius: 999px; background: {bg}; color: {fg};'
+                f' font-weight: 700; font-size: 11px;">'
+                f"{index + 1}&nbsp;{_display_name(label, state)}"
+                f"</span>"
+            )
+        return "".join(chips)
+
+    def _update_selection_slots(self, state: RegistrationViewState) -> None:
+        """Kept as a no-op for back-compat; the dot strip handles selection viz now."""
         required_count = int(self.controller.REQUIRED_SELECTION_COUNT)
         minimum_count = int(self.controller.MINIMUM_SELECTION_COUNT)
         hint = (
-            f"Choose up to {required_count} unique enabled model points in capture order "
-            f"(minimum {minimum_count})."
+            f"Tap the map or a row to toggle a landmark. Capture order = selection order. "
+            f"Min {minimum_count}, up to {required_count}."
             if state.selection_editable
             else "This registration mode uses a fixed point set."
         )
