@@ -139,10 +139,34 @@ def write_modeling_dataset_outputs(
 
     averaging_active = bool(tracker_samples_per_command > 1)
 
+    # Canonical training-export file: always reflects the first-frame label
+    # set (matches today's behaviour exactly so existing ANN training and
+    # validate_legacy_ann_rows keep working unchanged).
     export_rows = _build_export_rows(samples=samples)
     with export_jsonl_path.open("w", encoding="utf-8") as handle:
         for row in export_rows:
             handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+    # Two label-variant export files appear ONLY when averaging is active.
+    # Their schema is byte-identical to modeling_dataset_export.jsonl so the
+    # downstream ANN loader can swap them transparently — only the row
+    # contents (first frame vs averaged frame) differ.
+    export_first_path: Path | None = None
+    export_averaged_path: Path | None = None
+    if averaging_active and export_first_sample_label:
+        export_first_path = output_dir / "modeling_dataset_export_first.jsonl"
+        # Same rows as canonical export; written as a separate file so the
+        # operator and the ANN popout's variant selector can identify "first"
+        # explicitly without parsing extra.label_kind.
+        with export_first_path.open("w", encoding="utf-8") as handle:
+            for row in export_rows:
+                handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+    if averaging_active and averaged_label_enabled and export_averaged_sample_label and averaged_samples:
+        averaged_export_rows = _build_export_rows(samples=averaged_samples)
+        export_averaged_path = output_dir / "modeling_dataset_export_averaged.jsonl"
+        with export_averaged_path.open("w", encoding="utf-8") as handle:
+            for row in averaged_export_rows:
+                handle.write(json.dumps(row, separators=(",", ":")) + "\n")
 
     # Multi-frame averaging extras: only emit the new files when actually
     # averaging. When tracker_samples_per_command == 1, samples.jsonl is the
@@ -220,6 +244,10 @@ def write_modeling_dataset_outputs(
         outputs["samples_averaged_path"] = samples_averaged_path
     if raw_tracker_samples_path is not None:
         outputs["raw_tracker_samples_path"] = raw_tracker_samples_path
+    if export_first_path is not None:
+        outputs["export_first_path"] = export_first_path
+    if export_averaged_path is not None:
+        outputs["export_averaged_path"] = export_averaged_path
     return outputs
 
 

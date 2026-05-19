@@ -35,6 +35,9 @@ from continuum_robot.modeling.ann_training import (
     estimate_runtime,
     format_hidden_layers_for_ann_ui,
     load_loss_history,
+    LABEL_VARIANT_AVERAGED,
+    LABEL_VARIANT_FIRST,
+    LABEL_VARIANT_VALID,
     load_modeling_dataset_summary,
     load_training_metadata,
     prepare_legacy_ann_dataset,
@@ -65,6 +68,14 @@ class AnnTrainingViewState:
     row_filter_report: "RowFilterReport | None" = None
     row_filter_status_text: str = ""
     selected_dataset_path: str = ""
+    # Label-variant selector. "first" matches today's behavior on every run
+    # (training on the first valid post-settle frame per command). "averaged"
+    # is available only on runs produced with tracker_samples_per_command > 1
+    # (the multi-frame averaging path). available_label_variants reflects what
+    # the *selected* run actually has on disk; the popout shows the radio only
+    # when both are present.
+    selected_label_variant: str = LABEL_VARIANT_FIRST
+    available_label_variants: tuple[str, ...] = (LABEL_VARIANT_FIRST,)
     dataset_summary_pairs: list[tuple[str, str]] = field(default_factory=list)
     ann_training_category: str = ANN_TRAINING_CATEGORY_BLOCKED
     ann_training_blocking_reasons: list[str] = field(default_factory=list)
@@ -251,12 +262,29 @@ class AnnTrainingController:
         can_run_sweep = can_train
         visualization_model = self._visualization_model(selected_artifact_metadata)
 
+        # Reconcile the label-variant selection against what the chosen
+        # dataset actually has on disk. If the operator's previously selected
+        # variant disappeared (e.g. they switched to a run without averaging),
+        # snap back to "first" rather than silently feed a bogus path to
+        # prepare_legacy_ann_dataset.
+        if selected_dataset_summary is not None:
+            available_variants = tuple(selected_dataset_summary.label_variants or (LABEL_VARIANT_FIRST,))
+        else:
+            available_variants = (LABEL_VARIANT_FIRST,)
+        current_variant = str(self.state.selected_label_variant or LABEL_VARIANT_FIRST).strip().lower()
+        if current_variant not in available_variants:
+            current_variant = LABEL_VARIANT_FIRST if LABEL_VARIANT_FIRST in available_variants else (
+                available_variants[0] if available_variants else LABEL_VARIANT_FIRST
+            )
+
         with self._lock:
             self._catalog_dirty = False
             self._selected_dataset_summary = selected_dataset_summary
             self._selected_artifact_metadata = selected_artifact_metadata
             self.state.datasets = datasets
             self.state.selected_dataset_path = selected_dataset_path
+            self.state.available_label_variants = available_variants
+            self.state.selected_label_variant = current_variant
             self.state.dataset_summary_pairs = dataset_pairs
             self.state.backend_report = backend_report
             self.state.system_summary_pairs = system_pairs
@@ -330,10 +358,11 @@ class AnnTrainingController:
         """
         with self._lock:
             dataset_path = self.state.selected_dataset_path
+            label_variant = self.state.selected_label_variant
         if not dataset_path:
             return None
         try:
-            report = validate_legacy_ann_rows(Path(dataset_path))
+            report = validate_legacy_ann_rows(Path(dataset_path), label_variant=label_variant)
         except Exception as exc:
             with self._lock:
                 self.state.status_message = f"Row validation failed: {exc}"
@@ -370,6 +399,25 @@ class AnnTrainingController:
         with self._lock:
             self.state.selected_dataset_path = str(path)
             self._selected_dataset_summary = None
+            self._invalidate_estimate_locked()
+            # Reset to "first" so a stale "averaged" selection on a previous
+            # dataset doesn't leak into a new dataset that doesn't have it.
+            # refresh() will reconcile against the new dataset's variants.
+            self.state.selected_label_variant = LABEL_VARIANT_FIRST
+
+    def select_label_variant(self, variant: str) -> None:
+        """Pick the label set for the next ANN training / validation / sweep.
+
+        Quietly clamps to a valid value the next time refresh() runs.
+        Invalidates the estimate so the warmup re-fires for the new variant.
+        """
+        normalized = str(variant or LABEL_VARIANT_FIRST).strip().lower()
+        if normalized not in LABEL_VARIANT_VALID:
+            raise ValueError(
+                f"label_variant must be one of {LABEL_VARIANT_VALID}; got {variant!r}"
+            )
+        with self._lock:
+            self.state.selected_label_variant = normalized
             self._invalidate_estimate_locked()
 
     def select_artifact(self, path: str) -> None:
@@ -477,6 +525,7 @@ class AnnTrainingController:
             self.state.status_message = "Starting model sweep (shared split)."
             self._cancel_event.clear()
             dataset_path = self.state.selected_dataset_path
+            label_variant = self.state.selected_label_variant
             config = AnnTrainingConfig(**self.config.to_dict())
             selected_backend = self._selected_backend_name_or_report()
             selected_summary = self._selected_dataset_summary
@@ -505,6 +554,7 @@ class AnnTrainingController:
                     seeds_per_architecture=int(
                         getattr(config, "model_sweep_seeds_per_architecture", 1) or 1
                     ),
+                    label_variant=label_variant,
                 )
                 best = result.best_model
                 best_text = ""
@@ -554,12 +604,13 @@ class AnnTrainingController:
             self.state.benchmark_active = True
             self.state.status_message = "Benchmarking current ANN configuration."
             dataset_path = self.state.selected_dataset_path
+            label_variant = self.state.selected_label_variant
             config = AnnTrainingConfig(**self.config.to_dict())
             selected_backend = self._selected_backend_name_or_report()
 
         def _worker() -> None:
             try:
-                prepared = prepare_legacy_ann_dataset(Path(dataset_path))
+                prepared = prepare_legacy_ann_dataset(Path(dataset_path), label_variant=label_variant)
                 split = build_grouped_split(prepared, config)
                 estimate = estimate_runtime(
                     prepared=prepared,
@@ -607,6 +658,7 @@ class AnnTrainingController:
             self._training_status = "running"
             self._cancel_event.clear()
             dataset_path = self.state.selected_dataset_path
+            label_variant = self.state.selected_label_variant
             config = AnnTrainingConfig(**self.config.to_dict())
             selected_backend = self._selected_backend_name_or_report()
             estimate_signature = self._estimate_signature
@@ -619,7 +671,7 @@ class AnnTrainingController:
         def _worker() -> None:
             try:
                 if self._estimate_is_stale(estimate_signature, selected_dataset_summary, config, detect_training_backends(preferred_backend=selected_backend)):
-                    prepared = prepare_legacy_ann_dataset(Path(dataset_path))
+                    prepared = prepare_legacy_ann_dataset(Path(dataset_path), label_variant=label_variant)
                     split = build_grouped_split(prepared, config)
                     estimate = estimate_runtime(
                         prepared=prepared,
@@ -645,6 +697,7 @@ class AnnTrainingController:
                     progress_callback=self._on_training_progress,
                     stop_requested=self._cancel_event.is_set,
                     training_provenance=training_provenance,
+                    label_variant=label_variant,
                 )
                 metadata = load_training_metadata(result.metadata_path)
                 with self._lock:

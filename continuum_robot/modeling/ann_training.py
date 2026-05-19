@@ -240,6 +240,11 @@ class ModelingDatasetSummary:
     ann_training_warnings: tuple[str, ...] = ()
     metadata_payload: dict[str, Any] = field(default_factory=dict)
     summary_payload: dict[str, Any] = field(default_factory=dict)
+    # Available label variants in this run dir. ("first",) on every run; the
+    # tuple also includes "averaged" when modeling_dataset_export_averaged.jsonl
+    # was produced (multi-frame post-settle averaging path). Empty if no export
+    # file exists at all (incomplete run).
+    label_variants: tuple[str, ...] = ("first",)
 
 
 @dataclass(frozen=True)
@@ -271,6 +276,12 @@ OUTPUT_TARGET_FULL_POSE = "full_pose"
 OUTPUT_TARGET_CABLE_FROM_XYZ = "cable_from_xyz"
 SPLIT_STRATEGY_ORDERED = "ordered_step_group"
 SPLIT_STRATEGY_RANDOM = "random_grouped_step"
+
+# Label-variant selectors for ANN training. Single source of truth for the
+# strings — controller, popout, training prep, and validation all import these.
+LABEL_VARIANT_FIRST = "first"
+LABEL_VARIANT_AVERAGED = "averaged"
+LABEL_VARIANT_VALID = (LABEL_VARIANT_FIRST, LABEL_VARIANT_AVERAGED)
 
 
 def _resolve_output_target(value: str | None) -> str:
@@ -772,6 +783,18 @@ def _compile_modeling_dataset_summary(
         if isinstance(summary_payload.get("experiment_metrics"), dict)
         else {}
     )
+    # Detect label variants by file presence. The canonical
+    # modeling_dataset_export.jsonl is the "first" variant alias for runs
+    # without averaging; runs with averaging additionally produce
+    # modeling_dataset_export_averaged.jsonl. The trainability/preview logic
+    # below continues to read the canonical file so existing summaries don't
+    # shift; the variants tuple just tells the popout what's available.
+    detected_variants: list[str] = []
+    if (run_dir / "modeling_dataset_export.jsonl").is_file() or (run_dir / "modeling_dataset_export_first.jsonl").is_file():
+        detected_variants.append("first")
+    if (run_dir / "modeling_dataset_export_averaged.jsonl").is_file():
+        detected_variants.append("averaged")
+    label_variants = tuple(detected_variants)
     export_rows: list[dict[str, Any]] = []
     if export_path.is_file():
         try:
@@ -932,6 +955,7 @@ def _compile_modeling_dataset_summary(
         ann_training_warnings=ann_warnings,
         metadata_payload=metadata_payload,
         summary_payload=summary_payload,
+        label_variants=label_variants,
     )
 
 
@@ -1048,6 +1072,7 @@ def prepare_legacy_ann_dataset(
     path: Path,
     *,
     output_target: str = OUTPUT_TARGET_FULL_POSE,
+    label_variant: str = LABEL_VARIANT_FIRST,
 ) -> PreparedLegacyAnnDataset:
     """Adapt a canonical modeling dataset into a tensor pair for ANN training.
 
@@ -1058,11 +1083,28 @@ def prepare_legacy_ann_dataset(
       - ``cable_from_xyz``: xyz (3) → cable (4). Inverse model for "given a target, what
         cable command produces it." Note this mapping is underdetermined — see
         :func:`train_inverse_xyz_to_cable` for caveats.
+
+    ``label_variant`` selects which label set to train against:
+
+      - ``"first"`` (default): the first valid post-settle tracker frame at each
+        command point. Matches the legacy single-snapshot behaviour for runs
+        with tracker_samples_per_command=1; equivalent to the legacy file.
+      - ``"averaged"``: the mean-position + sign-aligned mean-quaternion of N
+        post-settle frames at each command point. Only available on runs that
+        ran with tracker_samples_per_command > 1; raises if the run didn't
+        produce modeling_dataset_export_averaged.jsonl.
     """
     target = _resolve_output_target(output_target)
     input_dim, output_dim = _model_io_dims(target)
     summary = load_modeling_dataset_summary(path)
-    export_rows = _load_export_rows(path)
+    if str(label_variant or LABEL_VARIANT_FIRST).strip().lower() not in summary.label_variants:
+        raise ValueError(
+            f"label_variant={label_variant!r} not available for this run; "
+            f"available variants: {summary.label_variants}. "
+            "Run the experiment with tracker_samples_per_command > 1 to get "
+            "an averaged-label variant."
+        )
+    export_rows = _load_export_rows(path, label_variant=label_variant)
     filtered_counts: dict[str, int] = {}
     inputs: list[np.ndarray] = []
     outputs: list[np.ndarray] = []
@@ -1626,18 +1668,23 @@ def train_legacy_ann(
     split: DatasetSplit | None = None,
     artifact_dir: Path | None = None,
     training_provenance: dict[str, Any] | None = None,
+    label_variant: str = LABEL_VARIANT_FIRST,
 ) -> TrainingResult:
     """Train the legacy full-pose ANN and save an artifact bundle.
 
     When ``split`` is provided (e.g. model sweep), that split is used instead of rebuilding.
     When ``artifact_dir`` is provided, artifacts are written there (directory must not exist or must be empty);
     otherwise a timestamped folder is allocated under the configured artifact root.
+    ``label_variant`` chooses ``first`` (default; today's behavior) or
+    ``averaged`` (multi-frame post-settle averaged labels).
     """
     validate_training_config(config)
     torch = _require_torch()
     output_target = _resolve_output_target(getattr(config, "output_target", OUTPUT_TARGET_XYZ))
     input_dim, output_dim = _model_io_dims(output_target)
-    prepared = prepare_legacy_ann_dataset(dataset_path, output_target=output_target)
+    prepared = prepare_legacy_ann_dataset(
+        dataset_path, output_target=output_target, label_variant=label_variant,
+    )
     if prepared.inputs.shape[0] == 0:
         raise ValueError("Dataset has no accepted full-pose samples after filtering.")
     split_used = split if split is not None else build_grouped_split(prepared, config)
@@ -1989,6 +2036,7 @@ def train_inverse_xyz_to_cable(
     split: DatasetSplit | None = None,
     artifact_dir: Path | None = None,
     training_provenance: dict[str, Any] | None = None,
+    label_variant: str = LABEL_VARIANT_FIRST,
 ) -> TrainingResult:
     """Train an inverse model: xyz (3D, mm) → cable command (4D, cm).
 
@@ -2016,6 +2064,7 @@ def train_inverse_xyz_to_cable(
         split=split,
         artifact_dir=artifact_dir,
         training_provenance=training_provenance,
+        label_variant=label_variant,
     )
 
 
@@ -2449,6 +2498,7 @@ def run_model_sweep(
     time_fn: Callable[[], float] = time.perf_counter,
     training_provenance: dict[str, Any] | None = None,
     seeds_per_architecture: int = 1,
+    label_variant: str = LABEL_VARIANT_FIRST,
 ) -> ModelSweepResult:
     """Train linear ridge (optional) and several ANNs sharing one split; write sweep summaries.
 
@@ -2461,7 +2511,9 @@ def run_model_sweep(
     selection runs across the full (architecture × seed) matrix."""
     _require_torch()
     output_target = _resolve_output_target(getattr(base_config, "output_target", OUTPUT_TARGET_XYZ))
-    prepared = prepare_legacy_ann_dataset(dataset_path, output_target=output_target)
+    prepared = prepare_legacy_ann_dataset(
+        dataset_path, output_target=output_target, label_variant=label_variant,
+    )
     if prepared.inputs.shape[0] == 0:
         raise ValueError("Dataset has no accepted full-pose samples after filtering.")
     validate_training_config(base_config)
@@ -2575,6 +2627,7 @@ def run_model_sweep(
                 stop_requested=stop_requested,
                 time_fn=time_fn,
                 training_provenance=training_provenance,
+                label_variant=label_variant,
             )
             meta = json.loads((sweep_root / sub / "training_metadata.json").read_text(encoding="utf-8"))
             model_label = (
@@ -2835,8 +2888,31 @@ def estimate_memory_bytes(*, sample_count: int, batch_size: int, hidden_layers: 
     return int((dataset_values + parameter_count + (3 * batch_values)) * bytes_per_value)
 
 
-def _load_export_rows(path: Path) -> list[dict[str, Any]]:
-    export_path = Path(path) / "modeling_dataset_export.jsonl"
+def _resolve_export_path_for_variant(path: Path, label_variant: str) -> Path:
+    """Pick the export JSONL for a label variant with sensible fallbacks.
+
+    - "first": prefer modeling_dataset_export_first.jsonl when present (only
+      written by multi-frame averaging runs); otherwise fall back to the
+      canonical modeling_dataset_export.jsonl (every run has this).
+    - "averaged": modeling_dataset_export_averaged.jsonl only — no fallback,
+      because asking for "averaged" labels on a run that didn't average them
+      would silently train on the wrong data.
+    """
+    variant = str(label_variant or LABEL_VARIANT_FIRST).strip().lower()
+    if variant not in LABEL_VARIANT_VALID:
+        raise ValueError(
+            f"Unsupported label_variant {label_variant!r}; expected one of {LABEL_VARIANT_VALID}"
+        )
+    if variant == LABEL_VARIANT_FIRST:
+        explicit = Path(path) / "modeling_dataset_export_first.jsonl"
+        if explicit.exists():
+            return explicit
+        return Path(path) / "modeling_dataset_export.jsonl"
+    return Path(path) / "modeling_dataset_export_averaged.jsonl"
+
+
+def _load_export_rows(path: Path, *, label_variant: str = LABEL_VARIANT_FIRST) -> list[dict[str, Any]]:
+    export_path = _resolve_export_path_for_variant(Path(path), label_variant)
     rows: list[dict[str, Any]] = []
     if not export_path.exists():
         return rows
@@ -2874,15 +2950,19 @@ def validate_legacy_ann_rows(
     run_dir: Path,
     *,
     min_complete_rows: int = MIN_COMPLETE_ROWS_FOR_TRAINING,
+    label_variant: str = LABEL_VARIANT_FIRST,
 ) -> RowFilterReport:
     """Apply the ``complete_rows_only`` policy to one run and return a structured report.
 
     Operators use this from the "Validate rows for ANN" button and from the CLI to confirm
     how many rows will be trained on, why incomplete rows were dropped, and whether the
     row count meets the recommended training minimum.
+
+    ``label_variant`` matches :func:`prepare_legacy_ann_dataset`: defaults to
+    the first-frame label set, "averaged" reads the averaged-frame export.
     """
     run_dir = Path(run_dir)
-    export_path = run_dir / "modeling_dataset_export.jsonl"
+    export_path = _resolve_export_path_for_variant(run_dir, label_variant)
     if not export_path.exists():
         return RowFilterReport(
             export_path=None,
@@ -2893,9 +2973,9 @@ def validate_legacy_ann_rows(
             excluded_by_reason={},
             target_complete_row_count=None,
             can_train=False,
-            block_reason="No modeling_dataset_export.jsonl in run folder.",
+            block_reason=f"No {export_path.name} in run folder.",
         )
-    rows = _load_export_rows(run_dir)
+    rows = _load_export_rows(run_dir, label_variant=label_variant)
     accepted_rows = [row for row in rows if bool(row.get("accepted"))]
     complete = 0
     excluded_by_reason: dict[str, int] = {}

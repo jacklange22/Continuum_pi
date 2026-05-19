@@ -7,6 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QProgressBar,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSpinBox,
     QVBoxLayout,
@@ -27,7 +29,11 @@ from PySide6.QtWidgets import (
 )
 
 from continuum_robot.gui.controllers.ann_training_controller import AnnTrainingController, AnnTrainingViewState
-from continuum_robot.modeling.ann_training import format_hidden_layers_for_ann_ui
+from continuum_robot.modeling.ann_training import (
+    LABEL_VARIANT_AVERAGED,
+    LABEL_VARIANT_FIRST,
+    format_hidden_layers_for_ann_ui,
+)
 from continuum_robot.gui.theme import COLORS
 from continuum_robot.gui.view_utils import editable_update_blocked, set_line_edit_text, set_spinbox_value
 from continuum_robot.gui.widgets.experiment_results_widget import ExperimentResultsWidget
@@ -178,6 +184,42 @@ class AnnTrainingWindow(QWidget):
         self.dataset_list.currentItemChanged.connect(self._on_dataset_selected)
         self.dataset_list.setMinimumHeight(220)
         dataset_card.body_layout.addWidget(self.dataset_list)
+
+        # Label-variant radio row. Visible only when the selected run has both
+        # `samples_first` and `samples_averaged` exports on disk (multi-frame
+        # post-settle averaging runs). On runs with only `first`, the row is
+        # hidden so the popout looks identical to today's GUI.
+        self.label_variant_container = QWidget()
+        label_variant_row = QHBoxLayout(self.label_variant_container)
+        label_variant_row.setContentsMargins(0, 4, 0, 4)
+        label_variant_row.setSpacing(10)
+        label_variant_caption = QLabel("Label variant:")
+        label_variant_caption.setStyleSheet(f"color: {COLORS.text_secondary};")
+        self.label_variant_first_radio = QRadioButton("First frame")
+        self.label_variant_first_radio.setToolTip(
+            "Train on the first valid tracker frame captured after settle "
+            "(matches legacy behavior for runs with tracker_samples_per_command=1)."
+        )
+        self.label_variant_averaged_radio = QRadioButton("Averaged frames")
+        self.label_variant_averaged_radio.setToolTip(
+            "Train on the per-command averaged pose (mean position + sign-aligned "
+            "quaternion mean of N post-settle frames). Available only on runs "
+            "produced with tracker_samples_per_command > 1."
+        )
+        self.label_variant_group = QButtonGroup(self.label_variant_container)
+        self.label_variant_group.setExclusive(True)
+        self.label_variant_group.addButton(self.label_variant_first_radio, 0)
+        self.label_variant_group.addButton(self.label_variant_averaged_radio, 1)
+        self.label_variant_first_radio.setChecked(True)
+        self.label_variant_first_radio.toggled.connect(self._on_label_variant_toggled)
+        self.label_variant_averaged_radio.toggled.connect(self._on_label_variant_toggled)
+        label_variant_row.addWidget(label_variant_caption)
+        label_variant_row.addWidget(self.label_variant_first_radio)
+        label_variant_row.addWidget(self.label_variant_averaged_radio)
+        label_variant_row.addStretch(1)
+        self.label_variant_container.setVisible(False)
+        dataset_card.body_layout.addWidget(self.label_variant_container)
+
         self.dataset_pairs = _PairsWidget()
         dataset_card.body_layout.addWidget(self.dataset_pairs)
         left_column.addWidget(dataset_card)
@@ -402,6 +444,7 @@ class AnnTrainingWindow(QWidget):
         self._sync_artifact_list(state)
         self._sync_backend_combo(state)
         self._sync_parameters(state)
+        self._sync_label_variant(state)
         self.dataset_pairs.set_pairs(state.dataset_summary_pairs)
         self.system_pairs.set_pairs(state.system_summary_pairs)
         self.artifact_pairs.set_pairs(state.artifact_summary_pairs)
@@ -495,6 +538,41 @@ class AnnTrainingWindow(QWidget):
                 if self.artifact_list.item(index).data(Qt.UserRole) == state.selected_artifact_path:
                     self.artifact_list.setCurrentRow(index)
                     break
+
+    def _sync_label_variant(self, state: AnnTrainingViewState) -> None:
+        """Show/hide the label-variant radio and keep its selection in sync.
+
+        Visible only when the chosen dataset has more than one variant on
+        disk; otherwise hidden so the popout looks identical to the legacy
+        single-variant layout.
+        """
+        variants = tuple(state.available_label_variants or (LABEL_VARIANT_FIRST,))
+        has_choice = len(variants) > 1 and LABEL_VARIANT_AVERAGED in variants
+        self.label_variant_container.setVisible(bool(has_choice))
+        # The "Averaged" radio enables only when its variant exists in the
+        # selected run. We block signals so the programmatic check during
+        # state sync doesn't ping the controller back.
+        with QSignalBlocker(self.label_variant_first_radio), QSignalBlocker(self.label_variant_averaged_radio):
+            if state.selected_label_variant == LABEL_VARIANT_AVERAGED and LABEL_VARIANT_AVERAGED in variants:
+                self.label_variant_averaged_radio.setChecked(True)
+            else:
+                self.label_variant_first_radio.setChecked(True)
+        self.label_variant_first_radio.setEnabled(LABEL_VARIANT_FIRST in variants)
+        self.label_variant_averaged_radio.setEnabled(LABEL_VARIANT_AVERAGED in variants)
+
+    def _on_label_variant_toggled(self, checked: bool) -> None:
+        if not checked:
+            return  # only react to the radio that just became checked
+        variant = (
+            LABEL_VARIANT_AVERAGED
+            if self.label_variant_averaged_radio.isChecked()
+            else LABEL_VARIANT_FIRST
+        )
+        try:
+            self.controller.select_label_variant(variant)
+        except ValueError:
+            return
+        self._refresh_state()
 
     def _sync_backend_combo(self, state: AnnTrainingViewState) -> None:
         report = state.backend_report
