@@ -369,19 +369,37 @@ def _configured_single_segment_servo_ids(session: ExperimentSession) -> list[int
 
 
 def _load_neutral_ticks(session: ExperimentSession, servo_ids: list[int]) -> list[int]:
-    """Return the per-servo neutral position ticks (servo-order), failing loud."""
+    """Return the per-servo neutral reference ticks (servo-order), failing loud.
+
+    Uses ``resolve_startup_reference_ticks(prefer_pretension=True)``, the same
+    canonical helper single_segment_repeatability uses. That helper prefers
+    the *accepted pretension/startup positions* (the per-cable positions
+    captured right after pretension settled) over the long-term calibrated
+    neutral_setpoints.json. They are usually offset by tens of ticks because
+    pretension biases the cables off the persisted neutral; commanding
+    ``calibrated_neutral + delta`` instead of ``pretension_neutral + delta``
+    sends every visit's tip to the wrong physical point and over time pushes
+    one cable past its safe envelope on perimeter targets.
+    """
     servo_service = session.context.servo_service
     if servo_service is None:
         raise RuntimeError("workspace_repeatability_map requires a servo service.")
-    neutral_lookup = servo_service.load_neutral_setpoints() or {}
-    missing = [sid for sid in servo_ids if int(sid) not in neutral_lookup]
+    reference = servo_service.resolve_startup_reference_ticks(list(servo_ids))
+    ticks_by_servo = dict(reference.ticks_by_servo or {})
+    missing = [sid for sid in servo_ids if int(sid) not in ticks_by_servo]
     if missing:
         raise RuntimeError(
-            "Neutral setpoints missing for servo(s) "
+            "Startup reference (pretension/neutral) ticks missing for servo(s) "
             + ", ".join(str(value) for value in missing)
             + ". Run startup pretension before launching this experiment."
         )
-    return [int(neutral_lookup[int(sid)]) for sid in servo_ids]
+    ticks = [int(ticks_by_servo[int(sid)]) for sid in servo_ids]
+    # Stash the resolved source on the session so setup() can surface it in
+    # the run provenance metric. Avoids changing the function signature for a
+    # purely diagnostic field.
+    session.metrics["_startup_reference_source"] = str(reference.source or "neutral")
+    session.metrics["_startup_reference_message"] = str(reference.message or "")
+    return ticks
 
 
 # ---------------------------------------------------------------------------
@@ -615,6 +633,24 @@ class WorkspaceRepeatabilityMapExperiment(BaseExperiment):
         session.set_metric("planned_capture_count", planned_visits)
         session.set_metric("protocol", "workspace_repeatability_map_vogel_from_neutral")
         session.set_metric("run_label", str(self.config.run_label or ""))
+        # Surface the startup reference source + ticks so the run summary
+        # records whether the experiment ran against post-pretension positions
+        # or fell back to calibrated neutral.
+        startup_reference_source = str(
+            session.metrics.pop("_startup_reference_source", "neutral")
+        )
+        startup_reference_message = str(session.metrics.pop("_startup_reference_message", ""))
+        session.set_metric(
+            "startup_reference",
+            {
+                "source": startup_reference_source,
+                "message": startup_reference_message,
+                "ticks_by_servo": {
+                    str(servo_id): int(tick)
+                    for servo_id, tick in zip(self._servo_ids, self._neutral_ticks)
+                },
+            },
+        )
         session.set_metric(
             "active_segment",
             {

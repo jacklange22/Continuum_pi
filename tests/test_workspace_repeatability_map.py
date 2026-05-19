@@ -1176,3 +1176,158 @@ class TestRealHardwareCapturePath:
         assert sample.extra["position_mm"] is None
         # The flag list includes the rejection markers.
         assert "capture_rejected" in sample.status_flags
+
+
+# ---------------------------------------------------------------------------
+# Neutral reference source — regression for the bench bug where the workspace
+# map was returning to the calibrated neutral instead of the post-pretension
+# startup reference, which biased every visit and eventually pushed one cable
+# out of bounds.
+# ---------------------------------------------------------------------------
+
+
+class TestNeutralReferenceSource:
+    """The workspace map must use ``resolve_startup_reference_ticks``, not
+    ``load_neutral_setpoints``, so post-pretension cable bias is respected
+    just like single_segment_repeatability does."""
+
+    def _stub_session(self, *, reference_source: str, ticks_by_servo: dict[int, int]):
+        import types
+
+        class _StartupReference:
+            source = reference_source
+            message = f"using {reference_source} reference"
+
+            def __init__(self) -> None:
+                self.ticks_by_servo = dict(ticks_by_servo)
+
+        class _ServoService:
+            def __init__(self) -> None:
+                self._calls: list[tuple[str, tuple]] = []
+
+            def resolve_startup_reference_ticks(self, servo_ids, *, prefer_pretension=True):
+                self._calls.append(("resolve_startup_reference_ticks", tuple(servo_ids)))
+                return _StartupReference()
+
+            def load_neutral_setpoints(self):
+                # If this gets called instead of resolve_startup_reference_ticks
+                # we'd silently regress to the calibrated path. Make it crash
+                # the test loud so the regression is impossible to miss.
+                raise AssertionError(
+                    "workspace_repeatability_map._load_neutral_ticks must use "
+                    "resolve_startup_reference_ticks; load_neutral_setpoints was called."
+                )
+
+        class _StubSession:
+            def __init__(self) -> None:
+                self.metrics: dict = {}
+                self.context = types.SimpleNamespace(servo_service=_ServoService())
+
+            def set_metric(self, key, value) -> None:
+                self.metrics[key] = value
+
+        return _StubSession()
+
+    def test_load_neutral_ticks_uses_startup_reference_not_calibrated_neutral(self) -> None:
+        from continuum_robot.experiments.workspace_repeatability_map import _load_neutral_ticks
+
+        session = self._stub_session(
+            reference_source="pretension",
+            ticks_by_servo={1: 2100, 2: 2050, 3: 1980, 4: 2030},
+        )
+        ticks = _load_neutral_ticks(session, [1, 2, 3, 4])
+        # Returned in servo-order — these are the *pretension* reference ticks,
+        # not the calibrated 2048 mid-range default that load_neutral_setpoints
+        # would have returned.
+        assert ticks == [2100, 2050, 1980, 2030]
+        # The stash the helper writes into session.metrics so setup() can
+        # surface it in the run provenance.
+        assert session.metrics["_startup_reference_source"] == "pretension"
+
+    def test_load_neutral_ticks_fails_loud_when_reference_missing(self) -> None:
+        from continuum_robot.experiments.workspace_repeatability_map import _load_neutral_ticks
+
+        session = self._stub_session(
+            reference_source="pretension",
+            ticks_by_servo={1: 2100, 2: 2050},  # servos 3 and 4 missing
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            _load_neutral_ticks(session, [1, 2, 3, 4])
+        msg = str(excinfo.value)
+        assert "missing" in msg.lower()
+        assert "3" in msg and "4" in msg
+
+    def test_setup_surfaces_startup_reference_in_run_metric(self) -> None:
+        """The bundle's summary.json should record which reference path
+        the run actually used (pretension vs calibrated fallback) for
+        post-hoc forensic clarity."""
+        import types
+
+        class _StartupReference:
+            source = "pretension"
+            message = "Using accepted pretension positions"
+
+            def __init__(self) -> None:
+                self.ticks_by_servo = {1: 2100, 2: 2050, 3: 1980, 4: 2030}
+
+        class _Mapper:
+            def displacement_cm_to_ticks(self, value: float) -> int:
+                return int(round(float(value) * 100.0))
+
+        class _ServoService:
+            def __init__(self) -> None:
+                self.mapper = _Mapper()
+
+            def resolve_startup_reference_ticks(self, servo_ids, *, prefer_pretension=True):
+                return _StartupReference()
+
+        class _Settings:
+            class _Robot:
+                spool_diameter_cm = 2.0
+
+                def active_segment_servo_ids(self) -> list[int]:
+                    return [1, 2, 3, 4]
+
+                def active_segment_key(self) -> str:
+                    return "single_segment"
+
+                def active_segment_label(self) -> str:
+                    return "Single Segment"
+
+                mode = "4_servo"
+
+            robot = _Robot()
+
+        class _StubSession:
+            def __init__(self) -> None:
+                self.metrics: dict = {}
+                self.context = types.SimpleNamespace(
+                    servo_service=_ServoService(),
+                    settings=_Settings(),
+                )
+
+            def set_metric(self, key, value) -> None:
+                self.metrics[key] = value
+
+        config = WorkspaceRepeatabilityMapConfig.from_dict(
+            {
+                "target_count": 10,
+                "visits_per_target": 2,
+                "max_amplitude_mm": 5.0,
+                "max_target_tick_delta_from_startup": 1000,
+                "dry_run": False,
+            }
+        )
+        experiment = WorkspaceRepeatabilityMapExperiment(config=config)
+        session = _StubSession()
+        experiment.setup(session)
+
+        startup_reference = session.metrics["startup_reference"]
+        assert startup_reference["source"] == "pretension"
+        assert startup_reference["ticks_by_servo"] == {
+            "1": 2100, "2": 2050, "3": 1980, "4": 2030,
+        }
+        # The leaky-bookkeeping fields should have been popped, not left in
+        # the public metrics surface.
+        assert "_startup_reference_source" not in session.metrics
+        assert "_startup_reference_message" not in session.metrics
