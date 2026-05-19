@@ -1536,3 +1536,250 @@ def test_modeling_refresh_caches_trainability_jsonl_parse(
         "10 steady-state ticks (expected ≤1)."
     )
     controller.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# External Model Comparison card (Upload .pt + side-by-side 3D error plot)
+# ---------------------------------------------------------------------------
+
+
+def _write_xyz_artifact(tmp_path: Path, *, name: str, hidden_layers: list[int]) -> Path:
+    """Build a legal XYZ-target artifact with a real-shape state_dict.
+
+    Distinct from _write_artifact above (which uses fake bytes for model.pt) —
+    here we need PyTorch to actually load+run the model, so we save a real
+    state_dict matching the declared architecture.
+    """
+    torch = pytest.importorskip("torch")
+    from continuum_robot.modeling import ann_training as training_module
+
+    artifact_dir = tmp_path / "data" / "models" / "ann" / name
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    model = training_module._build_legacy_ann_model(
+        torch=torch,
+        input_dim=4,
+        output_dim=3,
+        hidden_layers=hidden_layers,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+    torch.save(model.state_dict(), artifact_dir / "model.pt")
+    (artifact_dir / "training_metadata.json").write_text(
+        json.dumps(
+            {
+                "artifact_kind": "legacy_ann_xyz_v1",
+                "created_at_utc": "2026-05-18T00:00:00+00:00",
+                "status": "completed",
+                "model": {
+                    "input_dim": 4,
+                    "output_dim": 3,
+                    "hidden_layers": hidden_layers,
+                    "dtype": "float32",
+                    "output_target": "xyz",
+                },
+                "training": {"epochs_completed": 1, "best_validation_loss": 0.1},
+                "dataset": {"run_name": "fake", "path": str(tmp_path)},
+                "backend": {"selected_backend": "cpu"},
+                "files": {"model_path": str(artifact_dir / "model.pt")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifact_dir / "training_config.json").write_text("{}", encoding="utf-8")
+    (artifact_dir / "split_manifest.json").write_text("{}", encoding="utf-8")
+    (artifact_dir / "loss_history.csv").write_text("epoch,train_loss,validation_loss,elapsed_s\n", encoding="utf-8")
+    return artifact_dir
+
+
+def _write_workspace_dataset(tmp_path: Path, *, run_name: str, n: int = 64) -> Path:
+    """Build a dataset run with enough samples for the comparison's 10-sample floor."""
+    import numpy as _np
+
+    run_dir = tmp_path / "data" / "experiments" / "collect_pose_command_dataset" / run_name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "experiment_name": "collect_pose_command_dataset",
+                "run_id": run_name,
+                "timestamp_utc": "2026-05-18T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (run_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "experiment_name": "collect_pose_command_dataset",
+                "run_id": run_name,
+                "success": True,
+                "sample_counts": {"total": n},
+                "status": "success",
+                "experiment_metrics": {
+                    "dataset_mode": "angular_test_mesh",
+                    "accepted_sample_count": n,
+                    "rejected_sample_count": 0,
+                    "run_trust_mode": "thesis_trusted",
+                    "valid_for_model_training": True,
+                    "target_valid_sample_count": n,
+                    "complete_training_row_count": n,
+                    "mock_mode": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    with (run_dir / "modeling_dataset_export.jsonl").open("w", encoding="utf-8") as handle:
+        for i in range(n):
+            angle = (i / max(n - 1, 1)) * 2.0 * _np.pi
+            handle.write(
+                json.dumps(
+                    {
+                        "sequence_index": i,
+                        "step_index": i // 4,
+                        "sample_index": i,
+                        "accepted": True,
+                        "resolved_cable_command_cm": [0.5 * _np.cos(angle), 0.5 * _np.sin(angle), 0.4, 0.3],
+                        "tip_position_xyz_mm": [10.0 * _np.cos(angle), 10.0 * _np.sin(angle), 5.0 + 0.1 * i],
+                        "tip_tangent_xyz": [0.0, 0.0, 1.0],
+                    }
+                )
+                + "\n"
+            )
+    return run_dir
+
+
+def test_comparison_card_renders_without_uploaded_model(tmp_path: Path) -> None:
+    """Tab loads cleanly with the new comparison card; the Generate button stays
+    disabled until all three inputs (dataset + artifact + .pt) are present."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        assert tab.comparison_generate_button is not None
+        assert tab.comparison_generate_button.isEnabled() is False  # no Model B yet
+        assert tab.comparison_save_button.isEnabled() is False
+        # Status hint should mention picking a Model B.
+        assert "Model B" in tab.comparison_status_label.text() or "pt" in tab.comparison_status_label.text().lower()
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_comparison_card_generate_enables_after_all_inputs_set(tmp_path: Path) -> None:
+    """Once a dataset, an ANN artifact, AND an uploaded .pt are all selected, the
+    Generate button becomes enabled."""
+    pytest.importorskip("torch")
+    _app()
+    run_dir = _write_workspace_dataset(tmp_path, run_name="compdata_a", n=24)
+    artifact_a = _write_xyz_artifact(tmp_path, name="a_artifact", hidden_layers=[8, 8])
+    bare_b = tmp_path / "uploads" / "b_model.pt"
+    bare_b.parent.mkdir(parents=True, exist_ok=True)
+    # Reuse the a-artifact's model.pt as a stand-in for the bare upload — same shape.
+    shutil.copy(artifact_a / "model.pt", bare_b)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    controller.select_artifact(str(artifact_a))
+    controller.set_comparison_external_model_path(str(bare_b))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        assert tab.comparison_generate_button.isEnabled() is True
+        # Status reflects the chosen Model B name.
+        assert bare_b.name in tab.comparison_model_b_label.text()
+        assert "a_artifact" in tab.comparison_model_a_label.text()
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_comparison_card_runs_and_renders_canvas(tmp_path: Path) -> None:
+    """End-to-end synchronous run: drive the controller through dataset →
+    artifact → upload → run, wait for the worker, and assert the canvas
+    re-rendered (comparison_result_id incremented from 0)."""
+    pytest.importorskip("torch")
+    _app()
+    run_dir = _write_workspace_dataset(tmp_path, run_name="compdata_b", n=32)
+    artifact_a = _write_xyz_artifact(tmp_path, name="cmp_a", hidden_layers=[8, 8])
+    artifact_b_dir = _write_xyz_artifact(tmp_path, name="cmp_b", hidden_layers=[16, 16])
+    bare_b = artifact_b_dir / "model.pt"
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    controller.select_artifact(str(artifact_a))
+    controller.set_comparison_external_model_path(str(bare_b))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        starting_id = controller.refresh().comparison_result_id
+        controller.run_external_comparison()
+        # Worker is a thread; wait for it to finish.
+        thread = getattr(controller, "_worker_thread", None)
+        if thread is not None:
+            thread.join(timeout=30.0)
+        final_state = controller.refresh()
+        assert final_state.comparison_active is False
+        assert final_state.comparison_result_id > starting_id
+        assert final_state.comparison_error_message == ""
+        # Update the tab so the canvas swaps to the new figure.
+        tab.update(final_state)
+        # Save button should now be enabled.
+        assert tab.comparison_save_button.isEnabled() is True
+        # The controller's last comparison result is fetchable.
+        result = controller.get_last_comparison_result()
+        assert result is not None
+        assert result.a_errors_mm.shape == (32,)
+        assert result.b_errors_mm.shape == (32,)
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_comparison_card_surfaces_error_for_bad_inputs(tmp_path: Path) -> None:
+    """Clicking Generate without a Model B should populate
+    comparison_error_message — not crash."""
+    _app()
+    run_dir = _write_modeling_run(tmp_path)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        # No Model B chosen; calling run anyway should surface a useful error.
+        controller.run_external_comparison()
+        state = controller.refresh()
+        assert state.comparison_active is False
+        assert state.comparison_error_message  # non-empty
+        tab.update(state)
+        assert tab.comparison_error_label.isVisible() is True
+    finally:
+        tab.close()
+        controller.shutdown()

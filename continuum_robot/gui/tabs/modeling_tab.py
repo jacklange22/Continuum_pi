@@ -9,6 +9,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -401,6 +403,121 @@ class ModelingTab(QWidget):
         plots_card.body_layout.addWidget(self.results_widget)
         right.addWidget(plots_card, 1)
 
+        # ── External Model Comparison card ─────────────────────────────────
+        # Operator picks Model A from the artifact dropdown above; clicks
+        # "Upload .pt" to pick Model B from disk (a bare state_dict or full
+        # artifact directory). On Generate, both models predict on the
+        # selected dataset's cable commands and we plot two 3D scatters side
+        # by side colored by ||predicted − recorded|| on a shared viridis bar.
+        # See continuum_robot.modeling.model_comparison for the backend.
+        comparison_card = _Card(
+            "External Model Comparison (Side-by-Side 3D Error)",
+            "Pick an ANN artifact above (Model A), upload a .pt for Model B, "
+            "and compare both on the selected dataset. Both panels share a "
+            "viridis colorbar so the same color = the same mm of error on each.",
+        )
+        # Row: model A label + model B file picker.
+        comparison_models_row = QHBoxLayout()
+        comparison_models_row.setContentsMargins(0, 0, 0, 0)
+        comparison_models_row.setSpacing(10)
+        self.comparison_model_a_label = QLabel("Model A: (no ANN artifact selected)")
+        self.comparison_model_a_label.setStyleSheet(
+            f"color: {COLORS.text_secondary};"
+        )
+        self.comparison_model_a_label.setWordWrap(True)
+        comparison_models_row.addWidget(self.comparison_model_a_label, 1)
+        self.comparison_upload_button = QPushButton("Upload .pt for Model B…")
+        self.comparison_upload_button.setProperty("variant", "ghost")
+        self.comparison_upload_button.setToolTip(
+            "Pick a saved ANN state_dict (.pt) or a full artifact directory. "
+            "Bare .pt files work too — the loader infers the architecture from "
+            "the saved weight shapes."
+        )
+        self.comparison_upload_button.clicked.connect(self._on_comparison_upload_clicked)
+        comparison_models_row.addWidget(self.comparison_upload_button)
+        comparison_card.body_layout.addLayout(comparison_models_row)
+        # Row: model B chosen path label.
+        self.comparison_model_b_label = QLabel("Model B: not chosen")
+        self.comparison_model_b_label.setStyleSheet(
+            f"color: {COLORS.text_secondary};"
+        )
+        self.comparison_model_b_label.setWordWrap(True)
+        comparison_card.body_layout.addWidget(self.comparison_model_b_label)
+        # Row: Generate + Save buttons.
+        comparison_actions_row = QHBoxLayout()
+        comparison_actions_row.setContentsMargins(0, 0, 0, 0)
+        comparison_actions_row.setSpacing(10)
+        self.comparison_generate_button = QPushButton("Generate Side-by-Side Plot")
+        self.comparison_generate_button.setProperty("role", "primary")
+        self.comparison_generate_button.clicked.connect(
+            self.controller.run_external_comparison
+        )
+        self.comparison_save_button = QPushButton("Save PNG…")
+        self.comparison_save_button.setProperty("variant", "ghost")
+        self.comparison_save_button.setToolTip(
+            "Write the side-by-side figure to disk at 300 DPI (publication quality)."
+        )
+        self.comparison_save_button.clicked.connect(self._on_comparison_save_clicked)
+        self.comparison_save_button.setEnabled(False)
+        comparison_actions_row.addWidget(self.comparison_generate_button)
+        comparison_actions_row.addWidget(self.comparison_save_button)
+        comparison_actions_row.addStretch(1)
+        comparison_card.body_layout.addLayout(comparison_actions_row)
+        # Status + error.
+        self.comparison_status_label = QLabel("")
+        self.comparison_status_label.setWordWrap(True)
+        self.comparison_status_label.setStyleSheet(f"color: {COLORS.text_secondary};")
+        comparison_card.body_layout.addWidget(self.comparison_status_label)
+        self.comparison_error_label = QLabel("")
+        self.comparison_error_label.setWordWrap(True)
+        self.comparison_error_label.setStyleSheet(
+            "color: #dc2626; font-weight: 600;"
+        )
+        self.comparison_error_label.setVisible(False)
+        comparison_card.body_layout.addWidget(self.comparison_error_label)
+        # Matplotlib canvas — local import so the class loads even on torch-less
+        # machines (the canvas itself doesn't need torch, but matplotlib's
+        # Qt-Agg backend is heavy enough to keep out of the import path until
+        # the tab is actually constructed).
+        from matplotlib.backends.backend_qtagg import (
+            FigureCanvasQTAgg,
+            NavigationToolbar2QT,
+        )
+        from matplotlib.figure import Figure
+
+        self._mpl_FigureCanvas = FigureCanvasQTAgg
+        self._mpl_NavToolbar = NavigationToolbar2QT
+        self._mpl_Figure = Figure
+        # Start with a placeholder figure so the canvas has fixed sizing.
+        placeholder = Figure(figsize=(10, 4.5))
+        ax = placeholder.add_subplot(111)
+        ax.text(
+            0.5,
+            0.5,
+            "Run a comparison to see two side-by-side 3D error plots.",
+            ha="center",
+            va="center",
+            fontsize=10,
+            color="#888",
+        )
+        ax.set_axis_off()
+        self.comparison_canvas = FigureCanvasQTAgg(placeholder)
+        self.comparison_canvas.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Expanding
+        )
+        self.comparison_canvas.setMinimumHeight(380)
+        comparison_card.body_layout.addWidget(self.comparison_canvas)
+        # Toolbar gives mouse-wheel zoom + drag-rotate on the 3D axes.
+        self.comparison_nav_toolbar = NavigationToolbar2QT(
+            self.comparison_canvas, self
+        )
+        comparison_card.body_layout.addWidget(self.comparison_nav_toolbar)
+        # Internal: track the most recent comparison_result_id we've rendered so
+        # we re-render the canvas only when a new result lands (cheap idempotent
+        # update() that won't repaint on every refresh tick).
+        self._last_comparison_rendered_id = 0
+        right.addWidget(comparison_card, 1)
+
     def update(self, state: ModelingViewState) -> None:
         self._sync_dataset_list(state)
         self._sync_artifact_list(state)
@@ -446,6 +563,44 @@ class ModelingTab(QWidget):
         self._set_checkbox(self.camarillo_check, state.include_camarillo)
         self._set_checkbox(self.ann_check, state.include_ann)
         self._set_combo(self.scope_combo, state.evaluation_scope)
+        # ── External Model Comparison card ────────────────────────────────
+        # Model A label: name of the currently-selected ANN artifact.
+        if state.artifact_details is not None:
+            a_name = state.artifact_details.summary.artifact_name
+            self.comparison_model_a_label.setText(f"Model A: {a_name}")
+        else:
+            self.comparison_model_a_label.setText(
+                "Model A: (no ANN artifact selected — pick one in the Artifact list above)"
+            )
+        # Model B label: uploaded path or "not chosen".
+        if state.comparison_external_model_path:
+            b_path = Path(state.comparison_external_model_path)
+            self.comparison_model_b_label.setText(f"Model B: {b_path.name}")
+        else:
+            self.comparison_model_b_label.setText("Model B: not chosen")
+        # Status + error messages.
+        self.comparison_status_label.setText(state.comparison_status_message)
+        if state.comparison_error_message:
+            self.comparison_error_label.setText(state.comparison_error_message)
+            self.comparison_error_label.setVisible(True)
+        else:
+            self.comparison_error_label.setVisible(False)
+        # Generate button: enabled only when all three inputs are present and no
+        # comparison is currently running.
+        ready_to_generate = (
+            bool(state.selected_dataset_path)
+            and state.artifact_details is not None
+            and bool(state.comparison_external_model_path)
+            and not state.comparison_active
+        )
+        self.comparison_generate_button.setEnabled(ready_to_generate)
+        self.comparison_generate_button.setText(
+            "Generating…" if state.comparison_active else "Generate Side-by-Side Plot"
+        )
+        # Re-render the canvas only when a new comparison result lands.
+        if state.comparison_result_id != self._last_comparison_rendered_id:
+            self._last_comparison_rendered_id = state.comparison_result_id
+            self._render_comparison_canvas()
 
     def _refresh_catalogs(self) -> None:
         self.controller.set_dataset_output_root(self.controller.dataset_output_root)
@@ -667,6 +822,68 @@ class ModelingTab(QWidget):
             self.status_label.setText("Select a modeling dataset before opening ANN training.")
             return
         self._ann_training_opener(state.selected_dataset_path)
+
+    # ── External Model Comparison handlers ────────────────────────────────
+    def _on_comparison_upload_clicked(self) -> None:
+        """Open a file picker for the Model B .pt/artifact."""
+        # Allow both .pt files and directories. Qt's QFileDialog can only do one
+        # type at a time, so default to ``.pt`` and let the operator type a path
+        # for a directory if they have one.
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose Model B (.pt file)",
+            "",
+            "PyTorch model (*.pt);;All files (*)",
+        )
+        if not path:
+            return
+        self.controller.set_comparison_external_model_path(path)
+        self.update(self.controller.refresh())
+
+    def _on_comparison_save_clicked(self) -> None:
+        """Save the rendered comparison to a PNG via a save-as dialog."""
+        result = self.controller.get_last_comparison_result()
+        if result is None:
+            self.comparison_error_label.setText(
+                "Run a comparison first — nothing to save yet."
+            )
+            self.comparison_error_label.setVisible(True)
+            return
+        default_name = (
+            f"{result.dataset_run_name}_side_by_side_comparison.png"
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Side-by-Side Comparison",
+            default_name,
+            "PNG image (*.png);;All files (*)",
+        )
+        if not path:
+            return
+        saved = self.controller.save_last_comparison_png(Path(path))
+        if saved is not None:
+            self.comparison_error_label.setVisible(False)
+        self.update(self.controller.refresh())
+
+    def _render_comparison_canvas(self) -> None:
+        """Rebuild the embedded matplotlib figure from the latest comparison result.
+
+        Called only when ``state.comparison_result_id`` increments (a fresh
+        result landed). Avoids redrawing on every 5 Hz refresh tick.
+        """
+        result = self.controller.get_last_comparison_result()
+        if result is None:
+            return
+        # Lazy-import the figure builder so the tab loads without torch present.
+        from continuum_robot.modeling.model_comparison import build_comparison_figure
+
+        figure = build_comparison_figure(result)
+        # Swap the canvas's figure in place. matplotlib's Qt-Agg canvas supports
+        # ``.figure = new_figure`` then ``draw_idle()`` for live updates.
+        self.comparison_canvas.figure = figure
+        figure.set_canvas(self.comparison_canvas)
+        self.comparison_canvas.draw_idle()
+        self.comparison_save_button.setEnabled(True)
 
     @staticmethod
     def _set_checkbox(widget: QCheckBox, value: bool) -> None:

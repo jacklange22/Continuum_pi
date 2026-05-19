@@ -139,6 +139,21 @@ class ModelingViewState:
     two_segment_can_open_output: bool = False
     two_segment_can_export_output: bool = False
     two_segment_export_path: str | None = None
+    # ── External Model Comparison card ───────────────────────────────────────
+    # The operator picks Model A from the artifact dropdown (above) and uploads
+    # a .pt for Model B via a file dialog. The comparison runs on the currently
+    # selected dataset and produces two side-by-side 3D scatter plots colored
+    # by per-sample tip-position error. State below tracks the upload path,
+    # async status, error/status messages, and the most recent result object
+    # which the tab passes to build_comparison_figure() for rendering.
+    comparison_external_model_path: str = ""
+    comparison_active: bool = False
+    comparison_status_message: str = (
+        "Pick a dataset, select an ANN artifact above for Model A, "
+        "upload a .pt for Model B, then click Generate."
+    )
+    comparison_error_message: str = ""
+    comparison_result_id: int = 0  # bump-each-render counter the tab can watch
 
 
 class ModelingController:
@@ -527,6 +542,162 @@ class ModelingController:
             daemon=True,
         )
         self._worker_thread.start()
+
+    # ── External Model Comparison ──────────────────────────────────────────
+    def set_comparison_external_model_path(self, path: str) -> None:
+        """Operator picked a .pt file via the Upload dialog. Just store the path.
+
+        We don't validate or load the model here — that happens lazily when the
+        operator clicks Generate, so a stale path doesn't block the rest of
+        refresh() and a bad file produces an inline error rather than a startup
+        crash.
+        """
+        with self._lock:
+            self.comparison_external_model_path = str(path or "").strip()
+            self.state.comparison_external_model_path = self.comparison_external_model_path
+            # Clear stale status when the operator picks something new.
+            self.state.comparison_error_message = ""
+            if self.comparison_external_model_path:
+                self.state.comparison_status_message = (
+                    f"Ready: Model B = {Path(self.comparison_external_model_path).name}. "
+                    "Click Generate to compute the side-by-side plot."
+                )
+            else:
+                self.state.comparison_status_message = (
+                    "Pick a dataset, select an ANN artifact above for Model A, "
+                    "upload a .pt for Model B, then click Generate."
+                )
+
+    def run_external_comparison(self) -> None:
+        """Kick off the side-by-side comparison on a background thread.
+
+        Validates that Model A (current ANN selection), Model B (uploaded .pt),
+        and a dataset are all selected. The worker fills ``self._last_comparison``
+        and bumps ``comparison_result_id`` so the tab notices and re-renders.
+        """
+        with self._lock:
+            if self.state.comparison_active:
+                return
+            dataset_path = (
+                Path(self.state.selected_dataset_path)
+                if self.state.selected_dataset_path
+                else None
+            )
+            artifact_a = self._selected_artifact_details
+            external_b = (
+                Path(self.state.comparison_external_model_path)
+                if self.state.comparison_external_model_path
+                else None
+            )
+        if dataset_path is None:
+            with self._lock:
+                self.state.comparison_error_message = "Select a dataset first."
+            return
+        if artifact_a is None:
+            with self._lock:
+                self.state.comparison_error_message = (
+                    "Select an ANN artifact (Model A) from the dropdown above first."
+                )
+            return
+        if external_b is None:
+            with self._lock:
+                self.state.comparison_error_message = (
+                    "Upload a .pt file for Model B first."
+                )
+            return
+        with self._lock:
+            self.state.comparison_active = True
+            self.state.comparison_error_message = ""
+            self.state.comparison_status_message = "Running side-by-side comparison…"
+        self._worker_thread = threading.Thread(
+            target=self._comparison_worker,
+            kwargs={
+                "model_a_path": Path(artifact_a.summary.path),
+                "model_b_path": external_b,
+                "dataset_path": dataset_path,
+            },
+            daemon=True,
+        )
+        self._worker_thread.start()
+
+    def _comparison_worker(
+        self,
+        *,
+        model_a_path: Path,
+        model_b_path: Path,
+        dataset_path: Path,
+    ) -> None:
+        """Background worker — loads both models, runs inference, builds result.
+
+        Lazy-imports model_comparison so the controller stays importable even on
+        machines without PyTorch (the lazy import keeps test surfaces small).
+        """
+        try:
+            from continuum_robot.modeling.model_comparison import (
+                run_side_by_side_comparison,
+            )
+
+            result = run_side_by_side_comparison(
+                model_a_path=model_a_path,
+                model_b_path=model_b_path,
+                dataset_path=dataset_path,
+            )
+        except Exception as exc:  # noqa: BLE001 — surface anything in the UI rather than crash
+            with self._lock:
+                self.state.comparison_active = False
+                self.state.comparison_error_message = (
+                    f"Side-by-side comparison failed: {exc}"
+                )
+                self.state.comparison_status_message = (
+                    "Comparison failed — see error above."
+                )
+            return
+        with self._lock:
+            self._last_comparison = result
+            self.state.comparison_active = False
+            self.state.comparison_status_message = (
+                f"Comparison complete: {result.dataset_run_name} ({result.a_stats.sample_count} samples). "
+                f"Model A mean={result.a_stats.mean_mm:.2f} mm, "
+                f"Model B mean={result.b_stats.mean_mm:.2f} mm."
+            )
+            self.state.comparison_result_id += 1
+
+    def get_last_comparison_result(self):
+        """Return the most recent comparison result, or None if not run yet.
+
+        Kept as a method (not a state field) because matplotlib Figure / numpy
+        arrays inside a dataclass-typed state would force the entire state
+        snapshot pattern to copy these heavy objects every refresh. Tab code
+        pulls this on demand when ``comparison_result_id`` changes.
+        """
+        with self._lock:
+            return getattr(self, "_last_comparison", None)
+
+    def save_last_comparison_png(self, target_path: Path, *, dpi: int = 300) -> Path | None:
+        """Save the most recent comparison as a PNG at the requested path.
+
+        Returns the actual saved path, or None if there's nothing to save. Errors
+        are surfaced into ``comparison_error_message`` so the tab can echo them
+        without a tracebacks-in-dialogs situation.
+        """
+        result = self.get_last_comparison_result()
+        if result is None:
+            with self._lock:
+                self.state.comparison_error_message = (
+                    "Run a comparison first — nothing to save yet."
+                )
+            return None
+        try:
+            from continuum_robot.modeling.model_comparison import save_comparison_png
+
+            saved = save_comparison_png(result, Path(target_path), dpi=int(dpi))
+        except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                self.state.comparison_error_message = f"Save failed: {exc}"
+            return None
+        with self._lock:
+            self.state.comparison_status_message = f"Saved comparison PNG to {saved}."
+        return saved
 
     def shutdown(self) -> None:
         thread = self._worker_thread
