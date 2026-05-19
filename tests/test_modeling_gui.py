@@ -2042,7 +2042,13 @@ def test_comparison_warnings_appear_in_status_not_on_figure(tmp_path: Path) -> N
 
 def test_comparison_canvas_links_3d_axis_rotation(tmp_path: Path) -> None:
     """Linked rotation: dragging on one 3D panel updates the other's view_init.
-    Verifies the motion-notify hook the tab installs on its FigureCanvas."""
+
+    Verifies the motion-notify hook the tab installs on its FigureCanvas.
+    The hook keys off ``ax.button_pressed`` (matplotlib's own drag flag) rather
+    than ``event.button``, because motion_notify_event always reports
+    ``button=None`` while a drag is in progress — the button-press event has
+    already fired separately. Simulate that by setting ``button_pressed``
+    directly before synthesizing the motion event."""
     pytest.importorskip("torch")
     _app()
     run_dir = _write_workspace_dataset(tmp_path, run_name="rot_ds", n=32)
@@ -2057,7 +2063,7 @@ def test_comparison_canvas_links_3d_axis_rotation(tmp_path: Path) -> None:
     controller.select_dataset(str(run_dir))
     controller.select_artifact(str(artifact_a))
     controller.set_comparison_external_model_path(str(artifact_b / "model.pt"))
-    controller.refresh()  # resolve _selected_artifact_details before kicking off the worker
+    controller.refresh()
     controller.run_external_comparison()
     thread = getattr(controller, "_worker_thread", None)
     if thread is not None:
@@ -2066,29 +2072,157 @@ def test_comparison_canvas_links_3d_axis_rotation(tmp_path: Path) -> None:
     try:
         tab.show()
         tab.update(controller.refresh())
-        # Pull the two 3D axes back out the same way the tab does.
         three_d = [ax for ax in tab.comparison_canvas.figure.axes if ax.name == "3d"]
         assert len(three_d) == 2
         ax_a, ax_b = three_d
-        # Force a deliberate mismatch, then simulate the user dragging on ax_a.
+        # Set up a mismatch + flag ax_a as the one being dragged (matches what
+        # matplotlib does in real interaction after a button_press_event).
         ax_a.view_init(elev=45.0, azim=130.0)
         ax_b.view_init(elev=10.0, azim=20.0)
-        # Synthesize a motion_notify event over ax_a with button=1 (drag).
+        ax_a.button_pressed = 1  # noqa: SLF001 — matches matplotlib's own attribute
+        ax_b.button_pressed = None
+
         from matplotlib.backend_bases import MouseEvent
 
         bbox = ax_a.bbox
-        x = (bbox.x0 + bbox.x1) / 2.0
-        y = (bbox.y0 + bbox.y1) / 2.0
         event = MouseEvent(
-            "motion_notify_event", tab.comparison_canvas, x, y, button=1
+            "motion_notify_event",
+            tab.comparison_canvas,
+            (bbox.x0 + bbox.x1) / 2.0,
+            (bbox.y0 + bbox.y1) / 2.0,
+            button=None,  # real motion events report button=None during drag
         )
-        # The hook reads event.inaxes; matplotlib usually resolves this from xy
-        # via the canvas but for our synthesized event we set it directly.
         event.inaxes = ax_a
         tab.comparison_canvas.callbacks.process("motion_notify_event", event)
-        # ax_b should have followed ax_a's view.
         assert ax_b.elev == pytest.approx(ax_a.elev)
         assert ax_b.azim == pytest.approx(ax_a.azim)
+
+        # Now drag the OTHER panel — ax_b → ax_a should mirror.
+        ax_a.button_pressed = None
+        ax_b.button_pressed = 1
+        ax_b.view_init(elev=-20.0, azim=200.0)
+        event2 = MouseEvent(
+            "motion_notify_event",
+            tab.comparison_canvas,
+            (bbox.x0 + bbox.x1) / 2.0,
+            (bbox.y0 + bbox.y1) / 2.0,
+            button=None,
+        )
+        event2.inaxes = ax_b
+        tab.comparison_canvas.callbacks.process("motion_notify_event", event2)
+        assert ax_a.elev == pytest.approx(ax_b.elev)
+        assert ax_a.azim == pytest.approx(ax_b.azim)
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_comparison_canvas_links_3d_axis_zoom(tmp_path: Path) -> None:
+    """Scroll-wheel zoom on one panel mirrors xlim/ylim/zlim to the other."""
+    pytest.importorskip("torch")
+    _app()
+    run_dir = _write_workspace_dataset(tmp_path, run_name="zoom_ds", n=32)
+    artifact_a = _write_xyz_artifact(tmp_path, name="zoom_a", hidden_layers=[8, 8])
+    artifact_b = _write_xyz_artifact(tmp_path, name="zoom_b", hidden_layers=[8, 8])
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    controller.select_artifact(str(artifact_a))
+    controller.set_comparison_external_model_path(str(artifact_b / "model.pt"))
+    controller.refresh()
+    controller.run_external_comparison()
+    thread = getattr(controller, "_worker_thread", None)
+    if thread is not None:
+        thread.join(timeout=30.0)
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        three_d = [ax for ax in tab.comparison_canvas.figure.axes if ax.name == "3d"]
+        ax_a, ax_b = three_d
+        # Simulate scroll-zoom changing ax_a's limits, then fire scroll_event.
+        ax_a.set_xlim(-5.0, 5.0)
+        ax_a.set_ylim(-5.0, 5.0)
+        ax_a.set_zlim(-5.0, 5.0)
+        ax_b.set_xlim(-100.0, 100.0)
+        ax_b.set_ylim(-100.0, 100.0)
+        ax_b.set_zlim(-100.0, 100.0)
+
+        from matplotlib.backend_bases import MouseEvent
+
+        bbox = ax_a.bbox
+        event = MouseEvent(
+            "scroll_event",
+            tab.comparison_canvas,
+            (bbox.x0 + bbox.x1) / 2.0,
+            (bbox.y0 + bbox.y1) / 2.0,
+            button="up",
+        )
+        event.inaxes = ax_a
+        tab.comparison_canvas.callbacks.process("scroll_event", event)
+        assert ax_b.get_xlim() == pytest.approx(ax_a.get_xlim())
+        assert ax_b.get_ylim() == pytest.approx(ax_a.get_ylim())
+        assert ax_b.get_zlim() == pytest.approx(ax_a.get_zlim())
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_comparison_canvas_does_not_sync_on_idle_hover(tmp_path: Path) -> None:
+    """Defensive: when no panel is being dragged (button_pressed is None on both),
+    mouse motion across either panel must NOT clobber the other's view. This
+    guards against the original bug where ``event.button`` was the key — that
+    check fired on idle hover too once we removed the strict button==1 filter."""
+    pytest.importorskip("torch")
+    _app()
+    run_dir = _write_workspace_dataset(tmp_path, run_name="hover_ds", n=32)
+    artifact_a = _write_xyz_artifact(tmp_path, name="hov_a", hidden_layers=[8, 8])
+    artifact_b = _write_xyz_artifact(tmp_path, name="hov_b", hidden_layers=[8, 8])
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    controller.select_artifact(str(artifact_a))
+    controller.set_comparison_external_model_path(str(artifact_b / "model.pt"))
+    controller.refresh()
+    controller.run_external_comparison()
+    thread = getattr(controller, "_worker_thread", None)
+    if thread is not None:
+        thread.join(timeout=30.0)
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        three_d = [ax for ax in tab.comparison_canvas.figure.axes if ax.name == "3d"]
+        ax_a, ax_b = three_d
+        # Deliberate mismatch. Neither axis is being dragged.
+        ax_a.view_init(elev=15.0, azim=45.0)
+        ax_b.view_init(elev=85.0, azim=-100.0)
+        ax_a.button_pressed = None
+        ax_b.button_pressed = None
+        before_b = (ax_b.elev, ax_b.azim)
+
+        from matplotlib.backend_bases import MouseEvent
+
+        bbox = ax_a.bbox
+        event = MouseEvent(
+            "motion_notify_event",
+            tab.comparison_canvas,
+            (bbox.x0 + bbox.x1) / 2.0,
+            (bbox.y0 + bbox.y1) / 2.0,
+            button=None,
+        )
+        event.inaxes = ax_a
+        tab.comparison_canvas.callbacks.process("motion_notify_event", event)
+        # ax_b must NOT have changed.
+        assert (ax_b.elev, ax_b.azim) == before_b
     finally:
         tab.close()
         controller.shutdown()

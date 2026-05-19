@@ -898,23 +898,75 @@ class ModelingTab(QWidget):
         three_d_axes = [ax for ax in figure.axes if ax.name == "3d"]
         if len(three_d_axes) == 2:
             ax_a, ax_b = three_d_axes
-            # Clear any prior sync hook so we don't accumulate handlers across
-            # renders (the old canvas would have its own cid we'd otherwise leak).
-            prior_cid = getattr(self, "_comparison_sync_cid", None)
-            if prior_cid is not None:
-                try:
-                    self.comparison_canvas.mpl_disconnect(prior_cid)
-                except Exception:
-                    pass
+            # Clear any prior sync hooks so we don't accumulate handlers across
+            # renders (the old canvas would have its own cids we'd otherwise leak).
+            for attr in ("_comparison_sync_cid", "_comparison_zoom_cid"):
+                prior_cid = getattr(self, attr, None)
+                if prior_cid is not None:
+                    try:
+                        self.comparison_canvas.mpl_disconnect(prior_cid)
+                    except Exception:
+                        pass
+                setattr(self, attr, None)
             sync_state = {"in_progress": False}
 
+            def _copy_view(src, dst):
+                """Mirror src's full 3D view (elev, azim, roll, x/y/zlim) to dst."""
+                roll = getattr(src, "roll", None)
+                if roll is not None:
+                    try:
+                        dst.view_init(elev=src.elev, azim=src.azim, roll=roll)
+                    except TypeError:
+                        # Older matplotlib without ``roll`` kwarg.
+                        dst.view_init(elev=src.elev, azim=src.azim)
+                else:
+                    dst.view_init(elev=src.elev, azim=src.azim)
+                # Also mirror zoom (axis limits) so scroll-wheel zoom syncs too.
+                try:
+                    dst.set_xlim(src.get_xlim())
+                    dst.set_ylim(src.get_ylim())
+                    dst.set_zlim(src.get_zlim())
+                except Exception:
+                    pass
+
             def _on_motion(event, ax_a=ax_a, ax_b=ax_b, state=sync_state, canvas=self.comparison_canvas):
-                # Only sync while the user is actively dragging (button 1 pressed)
-                # over one of the two 3D axes. Avoids cross-axis chatter during
-                # idle hover.
+                """Mirror rotation while one of the 3D axes is being dragged.
+
+                matplotlib's own Axes3D._on_move uses ``self.button_pressed`` to
+                detect an active drag — ``event.button`` is None during
+                motion_notify because the press happened in a separate event.
+                Reading the axis attribute matches matplotlib's contract so the
+                sync fires on every real drag (button 1 OR button 3 — orbit OR
+                pan-rotate).
+                """
                 if state["in_progress"]:
                     return
-                if event.button != 1:
+                a_dragging = getattr(ax_a, "button_pressed", None) is not None
+                b_dragging = getattr(ax_b, "button_pressed", None) is not None
+                if a_dragging and not b_dragging:
+                    src, dst = ax_a, ax_b
+                elif b_dragging and not a_dragging:
+                    src, dst = ax_b, ax_a
+                else:
+                    return
+                # Cheap short-circuit when angles already match.
+                same_view = (
+                    dst.elev == src.elev
+                    and dst.azim == src.azim
+                    and getattr(dst, "roll", 0.0) == getattr(src, "roll", 0.0)
+                )
+                if same_view:
+                    return
+                state["in_progress"] = True
+                try:
+                    _copy_view(src, dst)
+                    canvas.draw_idle()
+                finally:
+                    state["in_progress"] = False
+
+            def _on_scroll(event, ax_a=ax_a, ax_b=ax_b, state=sync_state, canvas=self.comparison_canvas):
+                """Mirror zoom (axis limits) when the scroll wheel changes one panel."""
+                if state["in_progress"]:
                     return
                 if event.inaxes is ax_a:
                     src, dst = ax_a, ax_b
@@ -922,11 +974,13 @@ class ModelingTab(QWidget):
                     src, dst = ax_b, ax_a
                 else:
                     return
-                if dst.elev == src.elev and dst.azim == src.azim:
-                    return
                 state["in_progress"] = True
                 try:
-                    dst.view_init(elev=src.elev, azim=src.azim)
+                    # Scroll-zoom updates lims; mirror them. (View angles are
+                    # untouched by scroll, so this is purely an xlim/ylim/zlim copy.)
+                    dst.set_xlim(src.get_xlim())
+                    dst.set_ylim(src.get_ylim())
+                    dst.set_zlim(src.get_zlim())
                     canvas.draw_idle()
                 finally:
                     state["in_progress"] = False
@@ -934,6 +988,12 @@ class ModelingTab(QWidget):
             self._comparison_sync_cid = self.comparison_canvas.mpl_connect(
                 "motion_notify_event", _on_motion
             )
+            self._comparison_zoom_cid = self.comparison_canvas.mpl_connect(
+                "scroll_event", _on_scroll
+            )
+            # Force an initial alignment so both panels share the same view
+            # before the operator touches anything.
+            _copy_view(ax_a, ax_b)
         self.comparison_canvas.draw_idle()
         self.comparison_save_button.setEnabled(True)
 
