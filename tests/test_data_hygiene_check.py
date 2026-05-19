@@ -123,13 +123,28 @@ def test_data_hygiene_detects_mock_calibration_artifact(tmp_path: Path) -> None:
     assert any("mock_calibration" in finding.path and "Mock calibration" in finding.message for finding in report.findings)
 
 
-def test_gitignore_does_not_hide_experiment_or_archive_runs() -> None:
-    gitignore = (Path(__file__).resolve().parents[1] / ".gitignore").read_text(encoding="utf-8")
+def test_gitignore_reflects_pi_dataset_sync_policy() -> None:
+    """Generated experiment runs flow Pi<->Mac via scripts/sync_pi_dataset.py,
+    not GitHub; archived/curated runs still live in git so dataset history is
+    discoverable from the repo."""
+    repo_root = Path(__file__).resolve().parents[1]
+    gitignore = (repo_root / ".gitignore").read_text(encoding="utf-8")
 
-    assert "data/experiments/**" not in gitignore
+    # Generated Pi-side runs are intentionally not tracked.
+    assert "data/experiments/**" in gitignore, (
+        "data/experiments/** must stay in .gitignore — Pi-generated runs are "
+        "synced via scripts/sync_pi_dataset.py, not committed."
+    )
+    # Curated/archived runs DO stay in git so dataset history is discoverable.
     assert "data/experiments_archived/**" not in gitignore
+
+    # Other always-ignored runtime / generated areas.
     assert "data/trash/**" in gitignore
     assert "data/exports/**" in gitignore
     assert "data/mock_experiments/**" in gitignore
     assert "data/mock_calibration/**" in gitignore
     assert "data/diagnostics/**" in gitignore
+
+    # The sync script the comment promises must actually exist.
+    assert (repo_root / "scripts" / "sync_pi_dataset.py").exists()
+    assert (repo_root / "continuum_robot" / "data" / "pi_dataset_sync.py").exists()
