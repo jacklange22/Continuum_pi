@@ -73,9 +73,23 @@ class RegistrationActionResult:
 
 
 class RegistrationController:
-    """Owns guided 4-point capture, solve, and save actions."""
+    """Owns guided N-point capture, solve, and save actions.
 
-    REQUIRED_SELECTION_COUNT = 4
+    The active selection count is driven by the configured landmark_labels
+    list (so a YAML with 12 entries gives a 12-point workflow). Minimum is 3
+    — the smallest set that uniquely determines a rigid 3D transform.
+    """
+
+    # Smallest landmark count that uniquely determines a rigid 3D transform.
+    MINIMUM_SELECTION_COUNT = 3
+
+    @property
+    def REQUIRED_SELECTION_COUNT(self) -> int:  # noqa: N802 — preserve historic name
+        """Configured landmark count, capped at the number of enabled candidates."""
+        labels = list(self.config.landmark_labels or [])
+        enabled = {entry.id for entry in self.config.candidate_landmarks if entry.enabled}
+        usable = [label for label in labels if not enabled or label in enabled]
+        return max(self.MINIMUM_SELECTION_COUNT, len(usable) or len(labels) or self.MINIMUM_SELECTION_COUNT)
 
     def __init__(
         self,
@@ -196,10 +210,18 @@ class RegistrationController:
             self.state.available_model_labels,
         )
         if label in selected:
+            if len(selected) - 1 < self.MINIMUM_SELECTION_COUNT:
+                raise RuntimeError(
+                    f"Registration needs at least {self.MINIMUM_SELECTION_COUNT} model points; "
+                    "select another point before removing this one."
+                )
             selected = [item for item in selected if item != label]
         else:
             if len(selected) >= self.REQUIRED_SELECTION_COUNT:
-                raise RuntimeError("Only four model points can be selected. Deselect one point before adding another.")
+                raise RuntimeError(
+                    f"At most {self.REQUIRED_SELECTION_COUNT} model points can be selected "
+                    "(matches the configured landmark_labels). Deselect one before adding another."
+                )
             selected.append(label)
 
         self._selected_model_labels = list(selected)
@@ -208,7 +230,9 @@ class RegistrationController:
         if self.state.selected_model_labels:
             self.state.status_message = f"Selected model points: {', '.join(self.state.selected_model_labels)}."
         else:
-            self.state.status_message = "Choose four model points before starting registration."
+            self.state.status_message = (
+                f"Choose {self.REQUIRED_SELECTION_COUNT} model points before starting registration."
+            )
 
     def begin_session(self, capture_tool_id: str | None = None) -> None:
         try:
@@ -248,6 +272,44 @@ class RegistrationController:
         if self.state.current_label is None:
             raise RuntimeError("No current registration point is selected")
         return self.capture_label_sample(self.state.current_label)
+
+    def capture_current_label_batch(self, target_count: int | None = None) -> int:
+        """Capture up to `captures_per_landmark` samples for the current point.
+
+        Useful when the operator wants to settle the probe on a fixture and let
+        the GUI collect N samples in one click instead of pressing Capture N
+        times. Returns the number of samples actually added in this call.
+        """
+        if self.state.current_label is None:
+            raise RuntimeError("No current registration point is selected")
+        label = self.state.current_label
+        configured_target = int(target_count) if target_count is not None else int(self.state.captures_per_landmark)
+        if configured_target <= 0:
+            return 0
+        already = int(self.state.captured_counts.get(label, 0))
+        remaining = max(0, configured_target - already)
+        if remaining == 0:
+            self.state.status_message = (
+                f"{label} already has {already} sample(s); nothing to capture."
+            )
+            return 0
+        captured = 0
+        try:
+            for _ in range(remaining):
+                self.capture_label_sample(label)
+                captured += 1
+        except Exception as exc:
+            self.state.last_error = str(exc)
+            self.state.status_message = (
+                f"Batch capture stopped after {captured} of {remaining} samples: {exc}"
+            )
+            raise
+        self.state.last_error = None
+        self.state.status_message = (
+            f"Captured {captured} sample(s) for {label} "
+            f"({already + captured} total). Mark the point complete when ready."
+        )
+        return captured
 
     def capture_label_sample(self, label: str) -> list[float]:
         try:
@@ -372,8 +434,8 @@ class RegistrationController:
             return bool(self.state.landmark_labels)
         labels = list(self.state.selected_model_labels)
         return (
-            len(labels) == self.REQUIRED_SELECTION_COUNT
-            and len(set(labels)) == self.REQUIRED_SELECTION_COUNT
+            len(labels) >= self.MINIMUM_SELECTION_COUNT
+            and len(set(labels)) == len(labels)
             and all(label in self.state.selectable_model_labels for label in labels)
         )
 

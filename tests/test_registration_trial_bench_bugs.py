@@ -73,16 +73,26 @@ def test_toggle_deselect_persists_across_refresh_with_saved_registration_loaded(
 
 
 def test_toggle_add_new_label_persists_across_refresh() -> None:
-    """Bug 1: adding L5 after deselecting L1 must hold across refresh."""
+    """Bug 1: a balanced remove + add must persist across refresh.
+
+    Default selection seeds from the full configured landmark list (so
+    "add L5" today means "ensure L5 is selected after a balancing remove").
+    This test still proves the underlying invariant: toggle ops survive
+    _apply_snapshot.
+    """
     ctrl = _bootstrap_registration_controller()
     ctrl.refresh()
+    initial_count = len(ctrl.state.selected_model_labels)
     ctrl.toggle_selected_model_point("L1")
     ctrl.refresh()
-    ctrl.toggle_selected_model_point("L5")
+    if "L5" in ctrl.state.selected_model_labels:
+        ctrl.toggle_selected_model_point("L5")  # remove
+        ctrl.refresh()
+    ctrl.toggle_selected_model_point("L5")  # add back
     state = ctrl.refresh()
     assert "L5" in state.selected_model_labels
     assert "L1" not in state.selected_model_labels
-    assert len(state.selected_model_labels) == 4
+    assert len(state.selected_model_labels) == initial_count - 1
 
 
 def test_active_session_still_locks_selection() -> None:
@@ -212,6 +222,7 @@ class _StubRegistrationController:
     """Minimal stub matching the controller surface RegistrationTab consumes."""
 
     REQUIRED_SELECTION_COUNT = 4
+    MINIMUM_SELECTION_COUNT = 3
 
     def __init__(self) -> None:
         @dataclass

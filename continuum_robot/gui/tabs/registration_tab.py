@@ -115,6 +115,15 @@ class RegistrationTab(QWidget):
         self.begin_button = QPushButton("Begin Session")
         self.begin_button.setProperty("role", "primary")
         self.capture_button = QPushButton("Capture Sample")
+        captures_per_landmark = int(getattr(self.controller.state, "captures_per_landmark", 0) or 0)
+        self.capture_batch_button = QPushButton(
+            f"Capture Batch (×{captures_per_landmark})" if captures_per_landmark > 0 else "Capture Batch"
+        )
+        self.capture_batch_button.setToolTip(
+            "Capture captures_per_landmark samples for the current point in one click. "
+            "Useful when the probe is settled on a fixture and you want the full sample "
+            "count without pressing Capture repeatedly."
+        )
         self.complete_button = QPushButton("Mark Point Complete")
         self.solve_button = QPushButton("Solve Registration")
         self.save_button = QPushButton("Save Registration")
@@ -138,6 +147,7 @@ class RegistrationTab(QWidget):
 
         self.begin_button.clicked.connect(lambda: self._safe_call(self.controller.begin_session))
         self.capture_button.clicked.connect(lambda: self._safe_call(self.controller.capture_current_label_sample))
+        self.capture_batch_button.clicked.connect(lambda: self._safe_call(self.controller.capture_current_label_batch))
         self.complete_button.clicked.connect(lambda: self._safe_call(self.controller.complete_current_label))
         self.solve_button.clicked.connect(lambda: self._safe_call(self.controller.solve_session))
         self.save_button.clicked.connect(self._save_registration)
@@ -150,7 +160,12 @@ class RegistrationTab(QWidget):
         # button discoverable even if the host app shell forgets to wire it.
         self.trial_mode_button.setVisible(True)
 
-        self.selection_hint = QLabel("Select exactly four unique model points in capture order.")
+        required_count = int(self.controller.REQUIRED_SELECTION_COUNT)
+        minimum_count = int(self.controller.MINIMUM_SELECTION_COUNT)
+        self.selection_hint = QLabel(
+            f"Select up to {required_count} unique model points in capture order "
+            f"(minimum {minimum_count})."
+        )
         self.selection_hint.setProperty("role", "hint")
         self.selection_hint.setWordWrap(True)
         self.selection_help_label = QLabel("Click the top-view map or a row in the point list to add or remove a point.")
@@ -231,6 +246,7 @@ class RegistrationTab(QWidget):
         button_row_primary.setSpacing(10)
         button_row_primary.addWidget(self.begin_button)
         button_row_primary.addWidget(self.capture_button)
+        button_row_primary.addWidget(self.capture_batch_button)
         button_row_primary.addWidget(self.complete_button)
         button_row_primary.addWidget(self.solve_button)
         button_row_primary.addWidget(self.save_button)
@@ -404,12 +420,16 @@ class RegistrationTab(QWidget):
         self.session_status_label.setText(session_status)
         self._update_dependencies(state, workflow_state)
         self._update_status_chip(state, workflow_state)
+        required_count = int(self.controller.REQUIRED_SELECTION_COUNT)
         if state.selected_model_labels:
             self.selection_summary_label.setText(
-                f"{len(state.selected_model_labels)} / 4 selected: {', '.join(state.selected_model_labels)}"
+                f"{len(state.selected_model_labels)} / {required_count} selected: "
+                f"{', '.join(state.selected_model_labels)}"
             )
         else:
-            self.selection_summary_label.setText("Choose four model points.")
+            self.selection_summary_label.setText(
+                f"Choose up to {required_count} model points."
+            )
         self.selected_points_label.setText(", ".join(state.selected_model_labels) or "None")
         self.tool_label.setText(state.capture_tool_id)
         self.coil_tool_label.setText(state.coil_tool_id)
@@ -442,6 +462,19 @@ class RegistrationTab(QWidget):
             begin_enabled = begin_enabled and bool(getattr(workflow_state, "registration_ready", False))
         self.begin_button.setEnabled(begin_enabled)
         self.capture_button.setEnabled(state.active and state.current_label is not None)
+        # Batch button: live whenever single Capture is live AND the current
+        # point still needs more samples to hit captures_per_landmark.
+        batch_remaining = (
+            int(state.captures_per_landmark) - int(state.captured_counts.get(state.current_label, 0))
+            if state.current_label is not None
+            else 0
+        )
+        self.capture_batch_button.setEnabled(
+            state.active and state.current_label is not None and batch_remaining > 0
+        )
+        self.capture_batch_button.setText(
+            f"Capture Batch (×{batch_remaining})" if batch_remaining > 0 else "Capture Batch"
+        )
         self.complete_button.setEnabled(state.active and self.controller.is_ready_to_complete_current())
         self.solve_button.setEnabled(state.active and self.controller.is_ready_to_solve())
         self.save_button.setEnabled(state.pending_accept)
@@ -612,8 +645,11 @@ class RegistrationTab(QWidget):
                 label_widget.setStyleSheet(
                     chip_stylesheet(background=bg, foreground=fg)
                 )
+        required_count = int(self.controller.REQUIRED_SELECTION_COUNT)
+        minimum_count = int(self.controller.MINIMUM_SELECTION_COUNT)
         hint = (
-            "Choose four unique enabled model points in capture order."
+            f"Choose up to {required_count} unique enabled model points in capture order "
+            f"(minimum {minimum_count})."
             if state.selection_editable
             else "This registration mode uses a fixed point set."
         )

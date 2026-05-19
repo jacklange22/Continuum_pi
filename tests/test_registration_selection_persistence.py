@@ -61,16 +61,27 @@ def test_toggle_deselect_persists_across_refresh_with_saved_registration_loaded(
 
 
 def test_toggle_add_new_label_persists_across_refresh() -> None:
-    """Bug 1: adding L5 after deselecting L1 must hold across refresh."""
+    """Bug 1: a balanced remove + add must persist across refresh.
+
+    Default selection now seeds from the full configured landmark list, so
+    "add L5" means "deselect then re-select L5". This test still proves
+    the underlying invariant: toggle ops survive _apply_snapshot.
+    """
     ctrl = _bootstrap_registration_controller()
     ctrl.refresh()
+    initial_count = len(ctrl.state.selected_model_labels)
+    # Deselect L1 (count -1), then toggle L5 off-then-on so L5 is selected at
+    # the end. Net change: L1 removed, L5 still in, total = initial - 1.
     ctrl.toggle_selected_model_point("L1")
     ctrl.refresh()
-    ctrl.toggle_selected_model_point("L5")
+    if "L5" in ctrl.state.selected_model_labels:
+        ctrl.toggle_selected_model_point("L5")  # remove
+        ctrl.refresh()
+    ctrl.toggle_selected_model_point("L5")  # add (back)
     state = ctrl.refresh()
     assert "L5" in state.selected_model_labels
     assert "L1" not in state.selected_model_labels
-    assert len(state.selected_model_labels) == 4
+    assert len(state.selected_model_labels) == initial_count - 1
 
 
 def test_active_session_still_locks_selection() -> None:
