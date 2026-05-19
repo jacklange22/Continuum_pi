@@ -81,11 +81,16 @@ LOG = logging.getLogger(__name__)
 RUNTIME_TIP_POLICY_WORKFLOW = "workspace_repeatability_map"
 
 
-# Vogel-spiral defaults for a single-segment cable robot. The defaults were
-# chosen to match the operator's 12 mm workspace request; you can tune via
-# config without code changes.
+# Vogel-spiral defaults for a single-segment cable robot.
+#
+# Amplitude is standardized at 1.0 cm = 10 mm to match the babble dataset
+# (``collect_pose_command_dataset.workspace_amplitude_cm``) and the servos-
+# tab XY joystick default. At the 2.0 cm spool diameter and 4096 ticks/rev,
+# 10 mm of tendon travel = ~652 ticks per cable. The tick cap is set at
+# DEFAULT_MAX_TARGET_TICK_DELTA_FROM_STARTUP below with ~50% headroom so
+# small config bumps still pass preflight without editing two knobs.
 DEFAULT_TARGET_COUNT = 100
-DEFAULT_MAX_AMPLITUDE_MM = 12.0
+DEFAULT_MAX_AMPLITUDE_MM = 10.0
 DEFAULT_VISITS_PER_TARGET = 15
 
 # Settle defaults tuned so a 1500-visit run completes in ~2 hours while still
@@ -98,10 +103,13 @@ DEFAULT_CAPTURE_TIMEOUT_S = 1.0
 DEFAULT_CAPTURE_POLL_INTERVAL_S = 0.02
 DEFAULT_MAX_TRACKER_AGE_S = 0.25
 
-# Safety cap on absolute tendon tick excursion. Mirrors the legacy single-
-# segment value so an operator that already passed pretension/startup for the
-# 17-point experiment can run this one without re-tuning servo limits.
-DEFAULT_MAX_TARGET_TICK_DELTA_FROM_STARTUP = 1200
+# Safety cap on absolute tendon tick excursion: the preflight refuses to
+# issue any per-cable command exceeding this many ticks from neutral. Sized
+# with ~50% headroom over DEFAULT_MAX_AMPLITUDE_MM (10 mm = 652 ticks at the
+# 2 cm spool) so the operator can nudge amplitude a little without hitting
+# the cap. Override per-experiment in the config if you intentionally need a
+# larger envelope; the preflight will surface the exact tick excursion vs cap.
+DEFAULT_MAX_TARGET_TICK_DELTA_FROM_STARTUP = 1000
 
 
 @dataclass(frozen=True)

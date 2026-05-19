@@ -1,6 +1,6 @@
 # Workspace repeatability map.
 #
-# Visits 100 Vogel-spiral targets that uniformly fill a 12 mm-radius single-
+# Visits 100 Vogel-spiral targets that uniformly fill a 10 mm-radius single-
 # segment disk, returning to neutral before every visit, with 15 visits per
 # target = 1500 total visits. Each visit captures one tracker sample at the
 # settled target pose. Output is a per-target dispersion table plus a
@@ -13,9 +13,16 @@
 # the same pretension and registration state. The thesis-grade comparison is:
 # does the workspace map show RMS spread <= the 17-point goal across every
 # Vogel target, or are there hotspots near the perimeter / specific angles?
+#
+# Amplitude convention: 10 mm of tendon travel matches the babble dataset
+# (collect_pose_command_dataset.workspace_amplitude_cm: 1.0) and the servos
+# tab XY joystick default. At the 2 cm spool diameter + 4096 ticks/rev the
+# per-cable tick load is ~652 ticks. Bumping this past ~15 mm also requires
+# raising max_target_tick_delta_from_startup below or the preflight will
+# refuse the run.
 
 target_count: 100
-max_amplitude_mm: 12.0
+max_amplitude_mm: 10.0
 visits_per_target: 15
 
 # Per-visit settling. Shorter neutral settle is fine because the cables
@@ -36,10 +43,11 @@ tool_id: "0A"
 random_seed: 0
 run_label: ""
 
-# Experiment-scoped guardrail; mirrors the 17-point experiment cap so the
-# same pretension/startup envelope applies. Increase if 12 mm pushes past
-# the per-cable tick allowance recorded at neutral.
-max_target_tick_delta_from_startup: 1200
+# Experiment-scoped safety guard: the preflight refuses to issue any per-
+# cable command exceeding this many ticks from neutral. Sized at ~50%
+# headroom over the 10 mm default amplitude (= ~652 ticks). Raise this only
+# if you intentionally increase max_amplitude_mm above ~15 mm.
+max_target_tick_delta_from_startup: 1000
 
 # Use the robot-frame tip (registered) by default. The shared runtime tip
 # policy treats coil_as_tip as the thesis-trusted runtime position path for

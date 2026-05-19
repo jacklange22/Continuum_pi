@@ -579,7 +579,7 @@ def test_default_example_yaml_loads_cleanly() -> None:
     config = WorkspaceRepeatabilityMapConfig.from_dict(payload)
     assert config.target_count == 100
     assert config.visits_per_target == 15
-    assert math.isclose(config.max_amplitude_mm, 12.0, abs_tol=1e-9)
+    assert math.isclose(config.max_amplitude_mm, 10.0, abs_tol=1e-9)
 
 
 # ---------------------------------------------------------------------------
