@@ -30,6 +30,9 @@ from continuum_robot.registration.legacy_compat import average_quaternions
 from continuum_robot.tracking.transforms import quat_wxyz_to_rotmat, rotmat_to_quat_wxyz
 from continuum_robot.experiments.pretension_validation_outputs import write_pretension_validation_outputs
 from continuum_robot.experiments.penprobe_chasing_demo import PenprobeChasingDemoExperiment
+from continuum_robot.experiments.registration_sampling_study import (
+    RegistrationSamplingStudyExperiment,
+)
 from continuum_robot.experiments.servo_tracker_sync_outputs import write_servo_tracker_sync_outputs
 from continuum_robot.experiments.single_segment_repeatability import register_single_segment_repeatability
 from continuum_robot.experiments.workspace_repeatability_map import register_workspace_repeatability_map
@@ -7027,6 +7030,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 "consecutive_transport_burst_failures",
                 int(session.metrics.get("consecutive_transport_burst_failures", 0) or 0) + 1,
             )
+<<<<<<< Updated upstream
             session.set_metric(
                 "consecutive_post_motion_packet_failures",
                 int(session.metrics.get("consecutive_transport_burst_failures", 0) or 0),
@@ -7140,13 +7144,31 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             session,
             event="bus_resynced_after_drop",
             payload={
+=======
+            raise RuntimeError("collect-pose long-run resync telemetry failed after post-motion packet error.") from resync_exc
+        _append_collect_pose_jsonl_event(
+            _collect_pose_output_root(session),
+            "sample_failure_events.jsonl",
+            {
+                # NOTE: 2026-05-14 renamed from "post_motion_telemetry_resync_success".
+                # The bus was resynced after a post-motion packet error, but the original
+                # sample was already dropped (synthetic_drop=True / modeling_export_exclude=True).
+                # This event means the bus is healthy again; it does NOT mean the sample
+                # was recovered. See recovered_packet_error_count for true recoveries.
+                "event": "bus_resynced_after_drop",
+>>>>>>> Stashed changes
                 "step_index": int(step_index_for_event),
                 "failed_servo_id": ctx.get("failed_servo_id"),
                 "retry_count": retry_count,
                 "resync_read_attempts": int(self.config.resync_read_attempts),
                 "resync_delay_s": float(self.config.resync_delay_s),
+<<<<<<< Updated upstream
                 "consecutive_post_motion_packet_failures": 0,
                 "total_post_motion_packet_failure_events": int(total_ev),
+=======
+                "consecutive_post_motion_packet_failures": consecutive,
+                "total_post_motion_packet_failure_events": total_ev,
+>>>>>>> Stashed changes
                 "sample_recovered": False,
             },
         )
@@ -7238,7 +7260,10 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                     "ramp_include_telemetry_checks": bool(self.config.ramp_include_telemetry_checks),
                 }
                 session.set_metric("consecutive_post_motion_packet_failures", 0)
+<<<<<<< Updated upstream
                 session.set_metric("consecutive_transport_burst_failures", 0)
+=======
+>>>>>>> Stashed changes
                 if command_retries_attempted > 0:
                     # A previously-failing command produced a usable sample after retry/resync; this is a real recovery.
                     session.set_metric(
@@ -7495,6 +7520,9 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                             _collect_pose_output_root(session),
                             "sample_failure_events.jsonl",
                             {
+                                # Pre-motion path: bus is resynced and immediately followed by a
+                                # command retry. If the retry succeeds, recovered_packet_error_count
+                                # is bumped at the success return and the sample is included.
                                 "event": "pre_motion_telemetry_resync_success",
                                 "step_index": int(step_index_for_event),
                                 "command_vector_cm": list(requested),
@@ -7513,6 +7541,11 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                             record_failure_context_on_error=False,
                         )
                         session.set_metric("consecutive_post_motion_packet_failures", 0)
+                        # Pre-motion bus resync + final command retry succeeded; count this as a real recovery.
+                        session.set_metric(
+                            "recovered_packet_error_count",
+                            int(session.metrics.get("recovered_packet_error_count", 0) or 0) + 1,
+                        )
                         return result
                     except Exception as retry_after_resync_exc:
                         # Continue below as unrecovered only for the same recoverable pre-motion pattern.
@@ -11327,6 +11360,15 @@ def register_builtin_experiments(registry) -> None:
         tags=["Random Data Collection", "Modeling", "Tracking", "Servo"],
         default_config_path="config/experiment_collect_pose_command_dataset.example.yaml",
         factory=CollectPoseCommandDatasetExperiment.from_dict,
+    )
+    registry.register(
+        name=RegistrationSamplingStudyExperiment.name,
+        title="Registration Sampling Study",
+        description=RegistrationSamplingStudyExperiment.description,
+        category="validation",
+        tags=["Registration", "Tracking", "Validation"],
+        default_config_path="config/experiment_registration_sampling_study.example.yaml",
+        factory=RegistrationSamplingStudyExperiment.from_dict,
     )
     register_calibration_validation_experiments(registry)
     register_critical_experiments(registry)

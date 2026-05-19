@@ -83,6 +83,7 @@ def test_validate_run_folder_fails_without_summary(tmp_path: Path) -> None:
     assert report.status == "FAIL"
 
 
+<<<<<<< Updated upstream
 def test_validation_report_to_dict_emits_machine_readable_view(tmp_path: Path) -> None:
     """The JSON view exposes status, issue counts, and per-issue details."""
     run_dir = _write_valid_collect_pose_run(tmp_path)
@@ -126,3 +127,109 @@ def test_validate_main_returns_nonzero_on_failure_even_in_json_mode(tmp_path: Pa
     payload = json.loads(captured.out)
     assert rc == 1
     assert payload["status"] == "FAIL"
+=======
+def _write_registration_sampling_study_run(
+    root: Path,
+    *,
+    name: str = "20260514_220000_registration_sampling_study",
+    valid_for_model_training: bool = False,
+    valid_for_thesis_repeatability: bool = False,
+    valid_for_registration_protocol_recommendation: bool = True,
+    include_all_artifacts: bool = True,
+) -> Path:
+    run_dir = root / "data" / "experiments" / "registration_sampling_study" / name
+    run_dir.mkdir(parents=True)
+    metadata = {
+        "experiment_name": "registration_sampling_study",
+        "trust_info": {
+            "run_trust_mode": "thesis_trusted",
+            "valid_for_model_training": valid_for_model_training,
+            "valid_for_thesis_repeatability": valid_for_thesis_repeatability,
+        },
+        "provenance_info": {
+            "operating_mode": "single_segment",
+            "hardware_profile": "robot_8servo.yaml",
+        },
+    }
+    summary = {
+        "experiment_name": "registration_sampling_study",
+        "success": True,
+        "status": "success",
+        "experiment_metrics": {
+            "run_trust_mode": "thesis_trusted",
+            "valid_for_model_training": valid_for_model_training,
+            "valid_for_thesis_repeatability": valid_for_thesis_repeatability,
+            "valid_for_registration_protocol_recommendation": valid_for_registration_protocol_recommendation,
+            "recommended_protocol": {
+                "recommended_subset_size": 12,
+                "recommended_samples_per_point": 20,
+                "recommended_averaging_method": "mean",
+                "rationale": "test",
+            },
+            "candidate_registration_fre_mm": 0.42,
+            "captured_label_count": 12,
+            "captured_sample_count_total": 240,
+            "run_provenance": {
+                "operating_mode": "single_segment",
+                "hardware_profile": "robot_8servo.yaml",
+            },
+        },
+    }
+    (run_dir / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    if include_all_artifacts:
+        for filename in (
+            "registration_candidate.json",
+            "registration_sampling_study_summary.txt",
+            "metrics.csv",
+            "point_centers.csv",
+            "subset_results.csv",
+            "leave_one_out_results.csv",
+            "samples_per_point_results.csv",
+            "raw_point_samples.jsonl",
+        ):
+            (run_dir / filename).write_text("placeholder", encoding="utf-8")
+        for filename in (
+            "registration_point_spread_report.png",
+            "registration_subset_rms_report.png",
+            "registration_samples_per_point_report.png",
+            "registration_transform_consistency_report.png",
+        ):
+            (run_dir / filename).write_bytes(b"\x89PNG\r\n\x1a\n")
+    return run_dir
+
+
+def test_validate_run_folder_passes_registration_sampling_study(tmp_path: Path) -> None:
+    run_dir = _write_registration_sampling_study_run(tmp_path)
+
+    report = validate_run_folder(run_dir)
+
+    assert report.status == "PASS", render_validation_report(report)
+    assert report.experiment_name == "registration_sampling_study"
+
+
+def test_validate_run_folder_warns_when_registration_sampling_study_artifacts_missing(tmp_path: Path) -> None:
+    run_dir = _write_registration_sampling_study_run(tmp_path, include_all_artifacts=False)
+
+    report = validate_run_folder(run_dir)
+    text = render_validation_report(report)
+
+    assert report.status == "WARN"
+    assert "registration_candidate.json" in text
+    assert "registration_point_spread_report.png" in text
+
+
+def test_validate_run_folder_warns_when_registration_sampling_study_overclaims(tmp_path: Path) -> None:
+    run_dir = _write_registration_sampling_study_run(
+        tmp_path,
+        valid_for_model_training=True,
+        valid_for_thesis_repeatability=True,
+    )
+
+    report = validate_run_folder(run_dir)
+    text = render_validation_report(report)
+
+    assert report.status == "WARN"
+    assert "must not set valid_for_model_training=true" in text
+    assert "must not set valid_for_thesis_repeatability=true" in text
+>>>>>>> Stashed changes

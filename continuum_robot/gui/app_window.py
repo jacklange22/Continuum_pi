@@ -245,7 +245,11 @@ class AppWindow(QMainWindow):
             self.registration_controller,
             workflow_controller=self.tracker_mvp_controller,
             open_runtime_tip_calibration=self._open_runtime_tip_calibration,
+<<<<<<< Updated upstream
             open_registration_trial=self._open_registration_trial,
+=======
+            open_registration_sampling_study=self._open_registration_sampling_study,
+>>>>>>> Stashed changes
         )
         self.servos_tab = ServosTab(
             self.servos_controller,
@@ -408,6 +412,7 @@ class AppWindow(QMainWindow):
         dialog.activateWindow()
         dialog.refresh()
 
+<<<<<<< Updated upstream
     def _open_registration_trial(self) -> None:
         from continuum_robot.gui.widgets.registration_trial_dialog import (
             RegistrationTrialDialog,
@@ -456,3 +461,27 @@ class AppWindow(QMainWindow):
             parent=self,
         )
         dialog.exec()
+=======
+    def _open_registration_sampling_study(self) -> None:
+        """Switch to the Experiment tab and preselect the registration sampling study.
+
+        The actual capture loop runs inside the registered experiment via the
+        existing experiment runner — this handler is only navigation glue.
+        """
+        tab_widget = getattr(self, "tab_widget", None)
+        experiment_tab = getattr(self, "experiment_tab", None)
+        experiment_controller = getattr(self, "experiment_controller", None)
+        if tab_widget is None or experiment_tab is None:
+            return
+        for index in range(tab_widget.count()):
+            if tab_widget.widget(index) is experiment_tab:
+                tab_widget.setCurrentIndex(index)
+                break
+        if experiment_controller is not None:
+            try:
+                experiment_controller.select_experiment("registration_sampling_study")
+            except Exception:
+                # Selection failures fall back to the Experiment tab's combo;
+                # operator can still pick the experiment by hand.
+                pass
+>>>>>>> Stashed changes
