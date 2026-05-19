@@ -476,10 +476,57 @@ class ModelingTab(QWidget):
         )
         slot_b_row.addWidget(self.comparison_upload_b_button)
         comparison_card.body_layout.addLayout(slot_b_row)
-        # Internal: remember the last paths we synced into the combos so we
-        # can skip redundant repopulations and avoid triggering
-        # currentIndexChanged in a loop.
-        self._comparison_combo_signature: tuple[str, ...] = ()
+        # ── Per-slot test-data rows ────────────────────────────────────────
+        # Each model can be evaluated against its OWN test data — pick a
+        # discovered modeling_dataset run OR browse to a legacy .dat. Empty
+        # = "use the main dataset above" (back-compat with the original UX
+        # where both panels share the dataset combo at the top of the tab).
+        for slot in ("a", "b"):
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(8)
+            label = QLabel(f"Test {slot.upper()}")
+            label.setMinimumWidth(60)
+            label.setStyleSheet(
+                f"color: {COLORS.text_secondary}; font-style: italic;"
+            )
+            row.addWidget(label)
+            combo = QComboBox()
+            combo.setToolTip(
+                f"Test data for Model {slot.upper()}. Pick a discovered "
+                "modeling_dataset run, or use the Browse button on the right "
+                "for a legacy continuum_jack kinematic_*.dat file. Leave on "
+                "\"(use main dataset)\" to evaluate against the dataset "
+                "selected at the top of the Modeling tab."
+            )
+            combo.currentIndexChanged.connect(
+                lambda _i, s=slot: self._on_comparison_test_combo_changed(s)
+            )
+            row.addWidget(combo, 1)
+            browse_button = QPushButton("Browse .dat…")
+            browse_button.setProperty("variant", "ghost")
+            browse_button.setToolTip(
+                "Pick a legacy continuum_jack kinematic_*.dat file as test "
+                "data for this slot. The loader normalises cable values "
+                "from mm to cm so the model's input-scale auto-detect still "
+                "works."
+            )
+            browse_button.clicked.connect(
+                lambda _checked=False, s=slot: self._on_comparison_test_browse_clicked(s)
+            )
+            row.addWidget(browse_button)
+            comparison_card.body_layout.addLayout(row)
+            if slot == "a":
+                self.comparison_test_a_combo = combo
+                self.comparison_test_a_browse_button = browse_button
+            else:
+                self.comparison_test_b_combo = combo
+                self.comparison_test_b_browse_button = browse_button
+        # Internal: remember the last signatures we synced so we can skip
+        # redundant repopulations and avoid triggering currentIndexChanged
+        # in a loop. Separate signatures for model combos and test combos.
+        self._comparison_combo_signature: tuple = ()
+        self._comparison_test_combo_signature: tuple = ()
         # Row: Generate + Save buttons.
         comparison_actions_row = QHBoxLayout()
         comparison_actions_row.setContentsMargins(0, 0, 0, 0)
@@ -605,6 +652,7 @@ class ModelingTab(QWidget):
         # signature compare to skip the work when nothing has changed, which
         # also keeps the 5 Hz refresh cheap.
         self._sync_comparison_combos(state)
+        self._sync_comparison_test_combos(state)
         # Status + error messages.
         self.comparison_status_label.setText(state.comparison_status_message)
         if state.comparison_error_message:
@@ -654,6 +702,49 @@ class ModelingTab(QWidget):
                 if self.dataset_list.item(index).data(Qt.UserRole) == state.selected_dataset_path:
                     self.dataset_list.setCurrentRow(index)
                     break
+
+    def _sync_comparison_test_combos(self, state: ModelingViewState) -> None:
+        """Repopulate the per-slot test-data combos with discovered dataset runs.
+
+        Each combo has:
+          - ``"(use main dataset)"`` — empty path, falls back to the top-of-tab
+            dataset selection (back-compat default).
+          - One entry per discovered modeling_dataset run.
+          - When a slot's currently-stored path is a ``.dat`` file (or any
+            path not in the catalog), an extra entry is appended so the
+            chosen file stays selectable across refresh ticks.
+
+        Signature compare keeps this cheap at 5 Hz.
+        """
+        signature = (
+            tuple((d.run_name, str(d.path)) for d in state.datasets),
+            state.comparison_test_a_path,
+            state.comparison_test_b_path,
+        )
+        if signature == self._comparison_test_combo_signature:
+            return
+        self._comparison_test_combo_signature = signature
+        for combo, target_path in (
+            (self.comparison_test_a_combo, state.comparison_test_a_path),
+            (self.comparison_test_b_combo, state.comparison_test_b_path),
+        ):
+            with QSignalBlocker(combo):
+                combo.clear()
+                # Default: empty path = use the main dataset.
+                combo.addItem("(use main dataset)", "")
+                selected_index = 0 if not target_path else -1
+                for i, dataset in enumerate(state.datasets, start=1):
+                    combo.addItem(dataset.run_name, str(dataset.path))
+                    if str(dataset.path) == target_path:
+                        selected_index = i
+                # If the operator picked a .dat (not in the catalog) — surface
+                # it as an extra entry tagged with the file's basename so
+                # they can see what's selected.
+                if target_path and selected_index < 0:
+                    display = Path(target_path).name
+                    combo.addItem(f"(file) {display}", target_path)
+                    selected_index = combo.count() - 1
+                combo.setCurrentIndex(max(0, selected_index))
 
     def _sync_comparison_combos(self, state: ModelingViewState) -> None:
         """Repopulate the Slot A / Slot B combos with every discovered artifact.
@@ -932,6 +1023,40 @@ class ModelingTab(QWidget):
             self.controller.set_comparison_model_a_path(path)
         else:
             self.controller.set_comparison_model_b_path(path)
+        self.update(self.controller.refresh())
+
+    def _on_comparison_test_combo_changed(self, slot: str) -> None:
+        """Test-data combo changed for the given slot. Forwards the picked path
+        to the controller; empty path = back-compat fallback to the main
+        dataset combo at the top of the Modeling tab."""
+        combo = (
+            self.comparison_test_a_combo
+            if slot == "a"
+            else self.comparison_test_b_combo
+        )
+        index = combo.currentIndex()
+        path = combo.itemData(index, Qt.UserRole) if index >= 0 else ""
+        path = str(path or "")
+        if slot == "a":
+            self.controller.set_comparison_test_a_path(path)
+        else:
+            self.controller.set_comparison_test_b_path(path)
+        self.update(self.controller.refresh())
+
+    def _on_comparison_test_browse_clicked(self, slot: str) -> None:
+        """Open a file picker for a legacy .dat test file for the given slot."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            f"Choose test data for Model {slot.upper()} (.dat file)",
+            "",
+            "Legacy continuum_jack data (*.dat);;All files (*)",
+        )
+        if not path:
+            return
+        if slot == "a":
+            self.controller.set_comparison_test_a_path(path)
+        else:
+            self.controller.set_comparison_test_b_path(path)
         self.update(self.controller.refresh())
 
     def _on_comparison_save_clicked(self) -> None:

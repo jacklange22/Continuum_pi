@@ -545,3 +545,227 @@ def test_loaded_handle_applies_multiplier_in_inference(tmp_path: Path) -> None:
         f"predictions still collapsed (spread={spread:.2f} mm) even though "
         f"handle.input_scale_multiplier=×{handle.input_scale_multiplier}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Legacy continuum_jack kinematic_*.dat loader + per-slot test data
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_dat_loader_unit_conversion_and_filtering(tmp_path: Path) -> None:
+    """Audit the math: cable_mm → cable_cm is exactly ÷10; xyz unchanged;
+    rows whose XYZ are all (near-)zero are dropped as sentinels."""
+    from continuum_robot.modeling.model_comparison import _load_legacy_kinematic_dat
+
+    # Synthesize a small .dat with three live rows + one zero-xyz sentinel.
+    dat = tmp_path / "kinematic_2024_07_16_21_33_12.dat"
+    dat.write_text(
+        "DATE: 2024-7-16\n"
+        "TIME: 21-33-12\n"
+        "NUM_CABLES: 4\n"
+        "num_coils: 1\n"
+        "NUM_MEASUREMENTS: 4\n"
+        "---\n"
+        # idx, c0, c1, c2, c3,    px,    py,    pz, tx, ty, tz
+        "0, 10.0,  0.0,  0.0,  0.0,  1.0,  2.0,  3.0, 0.0, 0.0, 1.0\n"
+        # zero-xyz sentinel — should be dropped:
+        "1,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0,  0.0, 0.0, 0.0, 1.0\n"
+        "2,-12.5,  6.25, -3.0, 0.5, -10.0, 5.0, 30.0, 0.0, 0.0, 1.0\n"
+        "3,  1.5, -2.5,  0.0, 0.75,  0.5, -1.0, 50.0, 0.0, 0.0, 1.0\n",
+        encoding="utf-8",
+    )
+    cable_cm, xyz_mm, name = _load_legacy_kinematic_dat(dat)
+    assert name == "kinematic_2024_07_16_21_33_12"
+    # Sentinel dropped: 4 raw rows → 3 valid.
+    assert cable_cm.shape == (3, 4)
+    assert xyz_mm.shape == (3, 3)
+    # Cable mm → cm: exactly ÷10.
+    np.testing.assert_allclose(cable_cm[0], np.array([10.0, 0.0, 0.0, 0.0]) / 10.0)
+    np.testing.assert_allclose(cable_cm[1], np.array([-12.5, 6.25, -3.0, 0.5]) / 10.0)
+    np.testing.assert_allclose(cable_cm[2], np.array([1.5, -2.5, 0.0, 0.75]) / 10.0)
+    # XYZ unchanged.
+    np.testing.assert_allclose(xyz_mm[0], [1.0, 2.0, 3.0])
+    np.testing.assert_allclose(xyz_mm[1], [-10.0, 5.0, 30.0])
+    np.testing.assert_allclose(xyz_mm[2], [0.5, -1.0, 50.0])
+
+
+def test_legacy_dat_loader_rejects_no_separator(tmp_path: Path) -> None:
+    """Without the ``---`` header separator we can't tell where data starts."""
+    from continuum_robot.modeling.model_comparison import _load_legacy_kinematic_dat
+
+    bad = tmp_path / "bad.dat"
+    bad.write_text("DATE: x\n0,0,0,0,0,1,2,3,0,0,1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="separator"):
+        _load_legacy_kinematic_dat(bad)
+
+
+def test_legacy_dat_loader_rejects_all_zero_xyz(tmp_path: Path) -> None:
+    """If every row has zero XYZ (failed measurements), we should raise rather
+    than return an empty array."""
+    from continuum_robot.modeling.model_comparison import _load_legacy_kinematic_dat
+
+    dat = tmp_path / "all_zero.dat"
+    dat.write_text(
+        "DATE: x\nTIME: x\nNUM_CABLES: 4\nnum_coils: 1\nNUM_MEASUREMENTS: 2\n---\n"
+        "0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0\n"
+        "1, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="no valid rows"):
+        _load_legacy_kinematic_dat(dat)
+
+
+def test_load_comparison_test_data_dispatch_by_extension(tmp_path: Path) -> None:
+    """The dispatcher routes ``.dat`` to the legacy loader and other paths
+    through ``prepare_legacy_ann_dataset``. Synthesize both and confirm."""
+    from continuum_robot.modeling.model_comparison import _load_comparison_test_data
+
+    # Legacy .dat
+    dat = tmp_path / "leg.dat"
+    dat.write_text(
+        "DATE:x\nTIME:x\nNUM_CABLES:4\nnum_coils:1\nNUM_MEASUREMENTS:1\n---\n"
+        "0, 5.0, -5.0, 2.5, -2.5, 1.0, 2.0, 3.0, 0.0, 0.0, 1.0\n",
+        encoding="utf-8",
+    )
+    a_cable, a_xyz, a_name = _load_comparison_test_data(dat)
+    assert a_cable.shape == (1, 4)
+    np.testing.assert_allclose(a_cable[0], [0.5, -0.5, 0.25, -0.25])  # mm → cm
+    assert "leg" in a_name
+
+
+def test_run_side_by_side_uses_per_slot_test_datasets(tmp_path: Path) -> None:
+    """Slot A points at a synthetic dataset_A, Slot B at dataset_B with a
+    DIFFERENT workspace. Each panel's actuals must match its own dataset; the
+    warning must mention the split; the suptitle must say "each model on its
+    own test data"; per-panel axis limits must not be globally pooled."""
+    from continuum_robot.modeling.model_comparison import (
+        run_side_by_side_comparison,
+        build_comparison_figure,
+    )
+
+    # Build two distinct .dat files: A has tip XYZ near origin, B has it far
+    # away. This catches the "shared axis limit" bug: with per-panel limits
+    # each panel's bounding box is local; with global pooling, panel A would
+    # squash to a corner of a giant box.
+    def _write_dat(p: Path, xyz_offset: list[float]) -> None:
+        rows = [
+            "DATE:x\nTIME:x\nNUM_CABLES:4\nnum_coils:1\nNUM_MEASUREMENTS:20\n---\n"
+        ]
+        for i in range(20):
+            cx = 1.0 + 0.1 * i
+            rows.append(
+                f"{i},{cx:.3f},{(-cx):.3f},{(cx/2):.3f},{(-cx/2):.3f},"
+                f"{xyz_offset[0] + 0.5 * i:.3f},{xyz_offset[1]:.3f},{xyz_offset[2]:.3f},0,0,1\n"
+            )
+        p.write_text("".join(rows), encoding="utf-8")
+
+    dat_a = tmp_path / "ds_a.dat"
+    dat_b = tmp_path / "ds_b.dat"
+    _write_dat(dat_a, xyz_offset=[0.0, 0.0, 30.0])
+    _write_dat(dat_b, xyz_offset=[1000.0, 1000.0, 1000.0])  # very far away
+
+    # Two distinct models (so the labels differ).
+    model_a = _save_bare_state_dict(tmp_path, name="md_a", hidden_layers=[8, 8])
+    model_b = _save_bare_state_dict(tmp_path, name="md_b", hidden_layers=[16, 16])
+
+    result = run_side_by_side_comparison(
+        model_a_path=model_a,
+        model_b_path=model_b,
+        dataset_path=dat_a,  # fallback (unused since both test_*_path set)
+        test_a_path=dat_a,
+        test_b_path=dat_b,
+    )
+    # Per-slot dataset names recorded.
+    assert "ds_a" in result.a_dataset_run_name
+    assert "ds_b" in result.b_dataset_run_name
+    # Per-panel actuals are NOT the same array.
+    assert not np.array_equal(result.a_actuals_xyz_mm, result.b_actuals_xyz_mm)
+    # B's actuals are at the far offset; A's are near origin.
+    assert result.a_actuals_xyz_mm[:, 0].max() < 100.0
+    assert result.b_actuals_xyz_mm[:, 0].min() > 500.0
+    # Warning mentions the split.
+    assert any("DIFFERENT test data" in w for w in result.warnings)
+    # Figure: per-panel axis limits — A's xmax should be << B's xmin.
+    fig = build_comparison_figure(result)
+    try:
+        three_d_axes = [ax for ax in fig.axes if ax.name == "3d"]
+        ax_a, ax_b = three_d_axes
+        a_xmax = ax_a.get_xlim()[1]
+        b_xmax = ax_b.get_xlim()[1]
+        # Panel B's actuals span x ∈ [1000, 1010], so b_xmax must reach ≥1000.
+        assert b_xmax >= 1000.0, f"Panel B's xmax should ≥1000; got {b_xmax}"
+        # Panel A's actuals are <50 mm. Per-panel limits keep A.xmax local.
+        # Globally pooled limits would make a_xmax == b_xmax (both ≥1000).
+        assert a_xmax < 100.0, (
+            f"Panel A's xmax should be local to its own actuals (<100); "
+            f"got {a_xmax}. Globally pooled limits would make this fail."
+        )
+        assert b_xmax - a_xmax > 800.0, (
+            f"Per-panel axis limits should be distinct (≥800 mm apart): "
+            f"a_xmax={a_xmax}, b_xmax={b_xmax}"
+        )
+        # Suptitle calls out the split.
+        suptitle_text = fig._suptitle.get_text() if fig._suptitle is not None else ""  # noqa: SLF001
+        assert "each model on its own test data" in suptitle_text
+    finally:
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+
+def test_run_side_by_side_back_compat_shared_dataset(tmp_path: Path) -> None:
+    """When neither test_a_path nor test_b_path is set, both panels read from
+    ``dataset_path`` (old behavior preserved). No split warning, no per-panel
+    "test data: …" subtitle."""
+    from continuum_robot.modeling.model_comparison import (
+        run_side_by_side_comparison,
+        build_comparison_figure,
+    )
+
+    dat = tmp_path / "shared.dat"
+    rows = ["DATE:x\nTIME:x\nNUM_CABLES:4\nnum_coils:1\nNUM_MEASUREMENTS:20\n---\n"]
+    for i in range(20):
+        rows.append(f"{i},1,2,3,4,{0.5*i:.2f},{0.3*i:.2f},{50-i:.2f},0,0,1\n")
+    dat.write_text("".join(rows), encoding="utf-8")
+
+    model_a = _save_bare_state_dict(tmp_path, name="bc_a", hidden_layers=[8, 8])
+    model_b = _save_bare_state_dict(tmp_path, name="bc_b", hidden_layers=[8, 8])
+
+    result = run_side_by_side_comparison(
+        model_a_path=model_a,
+        model_b_path=model_b,
+        dataset_path=dat,
+    )
+    assert result.a_dataset_run_name == result.b_dataset_run_name
+    # No split warning (only the bare-.pt warnings from auto-detect).
+    assert not any("DIFFERENT test data" in w for w in result.warnings)
+    # The back-compat ``actuals_xyz_mm`` property works because both panels share data.
+    np.testing.assert_array_equal(result.actuals_xyz_mm, result.a_actuals_xyz_mm)
+    np.testing.assert_array_equal(result.a_actuals_xyz_mm, result.b_actuals_xyz_mm)
+
+
+def test_actuals_xyz_property_raises_when_panels_diverge(tmp_path: Path) -> None:
+    """The legacy ``result.actuals_xyz_mm`` property must explicitly raise
+    when the two panels use different test datasets — otherwise back-compat
+    callers would silently get Slot A's array as if it represented both."""
+    from continuum_robot.modeling.model_comparison import (
+        run_side_by_side_comparison,
+    )
+
+    dat_a = tmp_path / "div_a.dat"
+    dat_b = tmp_path / "div_b.dat"
+    for p, offset in ((dat_a, 0.0), (dat_b, 100.0)):
+        rows = ["DATE:x\nTIME:x\nNUM_CABLES:4\nnum_coils:1\nNUM_MEASUREMENTS:20\n---\n"]
+        for i in range(20):
+            rows.append(f"{i},1,2,3,4,{offset+0.5*i:.2f},0,30,0,0,1\n")
+        p.write_text("".join(rows), encoding="utf-8")
+    model_a = _save_bare_state_dict(tmp_path, name="div_a_m", hidden_layers=[8, 8])
+    model_b = _save_bare_state_dict(tmp_path, name="div_b_m", hidden_layers=[8, 8])
+    result = run_side_by_side_comparison(
+        model_a_path=model_a,
+        model_b_path=model_b,
+        dataset_path=dat_a,
+        test_a_path=dat_a,
+        test_b_path=dat_b,
+    )
+    with pytest.raises(AttributeError, match="ambiguous"):
+        _ = result.actuals_xyz_mm

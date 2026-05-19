@@ -115,17 +115,46 @@ class ModelComparisonResult:
 
     model_a: LoadedModelHandle
     model_b: LoadedModelHandle
+    # ``dataset_run_name`` / ``dataset_path`` describe the primary dataset
+    # (the operator's main selection). When per-slot test datasets are
+    # specified, each panel may evaluate against a different file — see
+    # ``a_dataset_run_name``/``b_dataset_run_name`` for the panel-specific names.
     dataset_run_name: str
     dataset_path: Path
-    actuals_xyz_mm: np.ndarray  # (N, 3) recorded tip positions
-    a_predictions_xyz_mm: np.ndarray  # (N, 3) Model A predictions
-    b_predictions_xyz_mm: np.ndarray  # (N, 3) Model B predictions
-    a_errors_mm: np.ndarray  # (N,) Euclidean ||A_pred − actual||
-    b_errors_mm: np.ndarray  # (N,) Euclidean ||B_pred − actual||
+    # Per-panel actuals + cable inputs. When both slots share the same test
+    # dataset (back-compat case), these arrays are equal; when each model
+    # uses its own test data (e.g., legacy model on its kinematic_*.dat,
+    # new model on the modern modeling_dataset_export.jsonl), sample counts
+    # and workspace frames may differ between panels.
+    a_actuals_xyz_mm: np.ndarray  # (N_A, 3) recorded tip positions for panel A
+    b_actuals_xyz_mm: np.ndarray  # (N_B, 3) recorded tip positions for panel B
+    a_cable_inputs_cm: np.ndarray  # (N_A, 4) cable command in cm fed to model A
+    b_cable_inputs_cm: np.ndarray  # (N_B, 4) cable command in cm fed to model B
+    a_predictions_xyz_mm: np.ndarray  # (N_A, 3) Model A predictions
+    b_predictions_xyz_mm: np.ndarray  # (N_B, 3) Model B predictions
+    a_errors_mm: np.ndarray  # (N_A,) Euclidean ||A_pred − actual||
+    b_errors_mm: np.ndarray  # (N_B,) Euclidean ||B_pred − actual||
+    a_dataset_run_name: str  # human-readable name of Slot A's test data
+    b_dataset_run_name: str  # human-readable name of Slot B's test data
     shared_color_max_mm: float  # max over both error arrays — drives the colorbar
     a_stats: ModelStats
     b_stats: ModelStats
     warnings: tuple[str, ...] = ()
+
+    # Back-compat shim: older code reads ``result.actuals_xyz_mm`` expecting
+    # a single shared array. Return Slot A's when the two slots happen to be
+    # the same dataset, else explicitly raise (callers should migrate).
+    @property
+    def actuals_xyz_mm(self) -> np.ndarray:
+        """Legacy alias. Returns Slot A's actuals; raises if the slots use
+        different test datasets and the caller still expects a shared array."""
+        if self.a_dataset_run_name == self.b_dataset_run_name:
+            return self.a_actuals_xyz_mm
+        raise AttributeError(
+            "ModelComparisonResult.actuals_xyz_mm is ambiguous when the two "
+            "slots use different test datasets. Use a_actuals_xyz_mm / "
+            "b_actuals_xyz_mm explicitly."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -535,64 +564,183 @@ def _stats(errors: np.ndarray) -> ModelStats:
     )
 
 
+# Minimum sample count per panel before we'll render the side-by-side. Below
+# this we don't have meaningful workspace coverage to interpret the scatter.
+_COMPARISON_MIN_SAMPLES: int = 10
+
+
+def _load_legacy_kinematic_dat(path: Path) -> tuple[np.ndarray, np.ndarray, str]:
+    """Parse a continuum_jack-style ``kinematic_*.dat`` file.
+
+    File layout (ASCII):
+      Header lines (DATE, TIME, NUM_CABLES, num_coils, NUM_MEASUREMENTS)
+      A ``---`` separator line
+      Data rows: ``idx, c0, c1, c2, c3, px, py, pz, tx, ty, tz``
+
+    Returns ``(cable_cm, xyz_mm, run_name)``. Units:
+      - Source cable values are in **mm** of tendon displacement (continuum_jack
+        convention). We convert to **cm** by dividing by 10 so downstream code
+        stays consistent with the project's "cable_cm everywhere" invariant —
+        any auto-detected ``input_scale_multiplier`` on the model handle then
+        converts cm back to whatever the model was trained on.
+      - Source positions are in **mm**, left unchanged.
+
+    Rows whose XYZ are all (near-)zero are dropped — those are sentinels for
+    failed measurements in the legacy collection pipeline (``dataset.clean()``
+    behavior in the original ANN.py).
+    """
+    text = Path(path).read_text(encoding="utf-8")
+    lines = text.splitlines()
+    try:
+        sep_idx = next(i for i, line in enumerate(lines) if line.strip() == "---")
+    except StopIteration:
+        raise ValueError(
+            f"Legacy kinematic .dat missing the '---' header separator: {path}"
+        )
+    raw_rows: list[list[float]] = []
+    for raw_line in lines[sep_idx + 1:]:
+        if not raw_line.strip():
+            continue
+        parts = raw_line.split(",")
+        if len(parts) < 11:
+            continue
+        try:
+            raw_rows.append([float(x) for x in parts[:11]])
+        except ValueError:
+            # Malformed row — silently skip (legacy `.clean()` would too).
+            continue
+    if not raw_rows:
+        raise ValueError(f"Legacy kinematic .dat has no parseable data rows: {path}")
+    arr = np.asarray(raw_rows, dtype=float)
+    cable_mm = arr[:, 1:5]  # 4 tendon displacements in mm
+    xyz_mm = arr[:, 5:8]    # 3 tip positions in mm
+    cable_cm = cable_mm / 10.0
+    # Drop sentinel zero-xyz rows (legacy failed measurements).
+    valid = np.abs(xyz_mm).sum(axis=1) > 1e-6
+    cable_cm = cable_cm[valid]
+    xyz_mm = xyz_mm[valid]
+    if cable_cm.shape[0] == 0:
+        raise ValueError(
+            f"Legacy kinematic .dat had no valid rows after dropping zero-xyz "
+            f"sentinels: {path}"
+        )
+    return cable_cm, xyz_mm, Path(path).stem
+
+
+def _load_comparison_test_data(path: Path) -> tuple[np.ndarray, np.ndarray, str]:
+    """Dispatch loader for the side-by-side comparison's test datasets.
+
+    Returns ``(cable_cm, xyz_mm, run_name)`` so the comparison worker can
+    feed each model's panel from its own test data.
+
+    Supported sources:
+      - ``*.dat`` → legacy continuum_jack kinematic format (via
+        :func:`_load_legacy_kinematic_dat`).
+      - Directory or path matching the project's modeling_dataset run layout
+        → parsed via :func:`prepare_legacy_ann_dataset` with
+        ``output_target='xyz'``.
+    """
+    p = Path(path)
+    if p.suffix.lower() == ".dat":
+        return _load_legacy_kinematic_dat(p)
+    prepared = prepare_legacy_ann_dataset(p, output_target=OUTPUT_TARGET_XYZ)
+    return prepared.inputs, prepared.outputs, prepared.summary.run_name
+
+
 def run_side_by_side_comparison(
     *,
     model_a_path: Path,
     model_b_path: Path,
     dataset_path: Path,
+    test_a_path: Path | None = None,
+    test_b_path: Path | None = None,
 ) -> ModelComparisonResult:
-    """End-to-end: load both models, predict on the dataset, compute errors.
+    """End-to-end: load both models, predict on each panel's test data, compute errors.
 
     The two models must both be forward single-segment ANNs (cable → XYZ or
-    cable → full pose). The dataset is parsed via
-    :func:`prepare_legacy_ann_dataset` with ``output_target='xyz'`` so we get
-    cable inputs and recorded tip XYZ side by side. The predictions are sliced
-    to XYZ for full-pose models so both columns are directly comparable on the
-    same 3D scatter.
+    cable → full pose). Each panel can be evaluated against:
+      - A modern modeling_dataset run (default — uses ``dataset_path`` when
+        the per-slot override is None).
+      - A legacy continuum_jack ``kinematic_*.dat`` file (set via
+        ``test_a_path`` / ``test_b_path``).
+
+    Per-panel evaluation matters when comparing a legacy model (trained on its
+    own workspace acquisition) against a new model (trained on the new pose
+    pipeline). Forcing the legacy model to predict on the new dataset is an
+    apples-to-oranges comparison; this signature lets each model run on its
+    own test data. The ``||pred − actual||`` error is frame-invariant, so the
+    shared viridis colorbar still gives a meaningful "same color = same mm of
+    error" reading across panels even if the two test workspaces live in
+    different coordinate frames.
+
+    Predictions are sliced to XYZ for full-pose models so both columns are
+    directly comparable on a 3D scatter.
     """
     model_a = load_model_for_comparison(Path(model_a_path), label_prefix="A: ")
     model_b = load_model_for_comparison(Path(model_b_path), label_prefix="B: ")
 
-    # Prepare the dataset in xyz-target mode so .inputs is cable (N,4) and .outputs
-    # is recorded tip XYZ (N,3). Even if Model A or B is full-pose internally, we
-    # only need cable→XYZ for the plot.
-    prepared = prepare_legacy_ann_dataset(Path(dataset_path), output_target=OUTPUT_TARGET_XYZ)
-    if prepared.inputs.shape[0] == 0:
+    a_dataset_path = Path(test_a_path) if test_a_path is not None else Path(dataset_path)
+    b_dataset_path = Path(test_b_path) if test_b_path is not None else Path(dataset_path)
+    a_cable, a_actuals, a_run_name = _load_comparison_test_data(a_dataset_path)
+    b_cable, b_actuals, b_run_name = _load_comparison_test_data(b_dataset_path)
+
+    # Sample-count gating per panel (each must independently have meaningful
+    # workspace coverage).
+    if a_cable.shape[0] < _COMPARISON_MIN_SAMPLES:
         raise ValueError(
-            "Selected dataset has no accepted samples after the row filter — pick a "
-            "fully-collected workspace dataset."
+            f"Model A's test dataset has only {a_cable.shape[0]} samples — "
+            f"need at least {_COMPARISON_MIN_SAMPLES} for a workspace plot."
         )
-    if prepared.inputs.shape[0] < 10:
+    if b_cable.shape[0] < _COMPARISON_MIN_SAMPLES:
         raise ValueError(
-            f"Selected dataset has only {prepared.inputs.shape[0]} samples — a workspace "
-            "comparison plot needs more coverage. Pick an angular_test_mesh or a fuller "
-            "collect_pose_command_dataset run."
+            f"Model B's test dataset has only {b_cable.shape[0]} samples — "
+            f"need at least {_COMPARISON_MIN_SAMPLES} for a workspace plot."
         )
 
-    cable_inputs = prepared.inputs  # (N, 4)
-    actuals_xyz = prepared.outputs  # (N, 3) since output_target=xyz
-
-    a_preds = _predict_with_handle(model_a, inputs=cable_inputs)
-    b_preds = _predict_with_handle(model_b, inputs=cable_inputs)
-
-    a_errors = np.linalg.norm(a_preds - actuals_xyz, axis=1)
-    b_errors = np.linalg.norm(b_preds - actuals_xyz, axis=1)
-    shared_max = float(max(a_errors.max() if a_errors.size else 0.0, b_errors.max() if b_errors.size else 0.0))
+    a_preds = _predict_with_handle(model_a, inputs=a_cable)
+    b_preds = _predict_with_handle(model_b, inputs=b_cable)
+    a_errors = np.linalg.norm(a_preds - a_actuals, axis=1)
+    b_errors = np.linalg.norm(b_preds - b_actuals, axis=1)
+    shared_max = float(
+        max(
+            a_errors.max() if a_errors.size else 0.0,
+            b_errors.max() if b_errors.size else 0.0,
+        )
+    )
 
     warnings: list[str] = []
     warnings.extend(model_a.warnings)
     warnings.extend(model_b.warnings)
+    # Surface when the two panels are evaluating against different test data —
+    # the operator should know they're looking at two different workspaces.
+    if a_run_name != b_run_name:
+        warnings.append(
+            f"Panels evaluate on DIFFERENT test data: Model A on '{a_run_name}', "
+            f"Model B on '{b_run_name}'. Each panel is self-consistent (pred vs "
+            "its own actuals); the shared colorbar still reads as same color = "
+            "same mm of error since ||pred − actual|| is frame-invariant. The 3D "
+            "scatters may sit in different coordinate frames."
+        )
+
+    # Pick a "primary" dataset_run_name for back-compat: A's if both differ,
+    # else either (they're identical).
+    primary_run_name = a_run_name
 
     return ModelComparisonResult(
         model_a=model_a,
         model_b=model_b,
-        dataset_run_name=prepared.summary.run_name,
+        dataset_run_name=primary_run_name,
         dataset_path=Path(dataset_path),
-        actuals_xyz_mm=actuals_xyz,
+        a_actuals_xyz_mm=a_actuals,
+        b_actuals_xyz_mm=b_actuals,
+        a_cable_inputs_cm=a_cable,
+        b_cable_inputs_cm=b_cable,
         a_predictions_xyz_mm=a_preds,
         b_predictions_xyz_mm=b_preds,
         a_errors_mm=a_errors,
         b_errors_mm=b_errors,
+        a_dataset_run_name=a_run_name,
+        b_dataset_run_name=b_run_name,
         shared_color_max_mm=shared_max,
         a_stats=_stats(a_errors),
         b_stats=_stats(b_errors),
@@ -633,11 +781,19 @@ def build_comparison_figure(
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 — registers 3D projection
 
     figure = plt.figure(figsize=figsize, dpi=dpi)
-    figure.suptitle(
-        f"Side-by-side prediction error on {result.dataset_run_name}",
-        fontsize=12,
-        fontweight="bold",
-    )
+    # Suptitle: name a single dataset when both panels share, else flag the split.
+    if result.a_dataset_run_name == result.b_dataset_run_name:
+        figure.suptitle(
+            f"Side-by-side prediction error on {result.dataset_run_name}",
+            fontsize=12,
+            fontweight="bold",
+        )
+    else:
+        figure.suptitle(
+            "Side-by-side prediction error — each model on its own test data",
+            fontsize=12,
+            fontweight="bold",
+        )
 
     ax_a = figure.add_subplot(1, 2, 1, projection="3d")
     ax_b = figure.add_subplot(1, 2, 2, projection="3d")
@@ -668,14 +824,21 @@ def build_comparison_figure(
         depthshade=False,
     )
 
-    # Share the X/Y/Z limits across the two subplots so the geometry is comparable.
-    all_points = np.vstack(
-        [result.a_predictions_xyz_mm, result.b_predictions_xyz_mm, result.actuals_xyz_mm]
-    )
+    # Axis limits: per-panel so each workspace is shown at its natural scale.
+    # When both panels share the same test data (back-compat case), the
+    # limits naturally come out identical. When they don't share, forcing a
+    # shared bounding box would squash one panel into a corner — instead we
+    # let each panel size itself to its own predictions + actuals.
     pad_mm = 2.0
-    xmin, ymin, zmin = all_points.min(axis=0) - pad_mm
-    xmax, ymax, zmax = all_points.max(axis=0) + pad_mm
-    for ax in (ax_a, ax_b):
+    for ax, preds, actuals in (
+        (ax_a, result.a_predictions_xyz_mm, result.a_actuals_xyz_mm),
+        (ax_b, result.b_predictions_xyz_mm, result.b_actuals_xyz_mm),
+    ):
+        panel_points = np.vstack([preds, actuals])
+        if panel_points.size == 0:
+            continue
+        xmin, ymin, zmin = panel_points.min(axis=0) - pad_mm
+        xmax, ymax, zmax = panel_points.max(axis=0) + pad_mm
         ax.set_xlim(xmin, xmax)
         ax.set_ylim(ymin, ymax)
         ax.set_zlim(zmin, zmax)
@@ -684,14 +847,15 @@ def build_comparison_figure(
         ax.set_zlabel("Z (mm)")
         ax.tick_params(labelsize=8)
 
-    ax_a.set_title(
-        f"{result.model_a.label}\n{_format_stats_line(result.a_stats)}",
-        fontsize=9,
-    )
-    ax_b.set_title(
-        f"{result.model_b.label}\n{_format_stats_line(result.b_stats)}",
-        fontsize=9,
-    )
+    # Per-panel title strip: include the test-data name only when the two
+    # panels diverge (the suptitle already covers the shared case).
+    a_title = f"{result.model_a.label}\n{_format_stats_line(result.a_stats)}"
+    b_title = f"{result.model_b.label}\n{_format_stats_line(result.b_stats)}"
+    if result.a_dataset_run_name != result.b_dataset_run_name:
+        a_title += f"\ntest data: {result.a_dataset_run_name}"
+        b_title += f"\ntest data: {result.b_dataset_run_name}"
+    ax_a.set_title(a_title, fontsize=9)
+    ax_b.set_title(b_title, fontsize=9)
 
     # Shared colorbar between the two axes. Positioning: a thin vertical bar at the
     # right margin. Same vmin/vmax on both scatters guarantees the bar maps to both.

@@ -2414,6 +2414,147 @@ def test_comparison_combo_picks_archived_upload_for_either_slot(tmp_path: Path) 
         controller.shutdown()
 
 
+def test_comparison_per_slot_test_data_threads_through_worker(tmp_path: Path) -> None:
+    """End-to-end: set Slot A's test data to one .dat, Slot B's to a modern
+    modeling_dataset run, fire the worker, confirm each panel's actuals come
+    from the right source (different shapes / different workspaces).
+    """
+    pytest.importorskip("torch")
+    _app()
+    # Modern dataset (Slot B's test data).
+    run_dir = _write_workspace_dataset(tmp_path, run_name="perslot_modern", n=32)
+    # Legacy .dat (Slot A's test data).
+    legacy_dat = tmp_path / "legacy_test.dat"
+    rows = ["DATE:x\nTIME:x\nNUM_CABLES:4\nnum_coils:1\nNUM_MEASUREMENTS:64\n---\n"]
+    for i in range(64):
+        cx = 1.0 + 0.05 * i
+        rows.append(
+            f"{i},{cx:.3f},{(-cx):.3f},{(cx/2):.3f},{(-cx/2):.3f},"
+            f"{500 + 0.5*i:.3f},{500:.3f},{500:.3f},0,0,1\n"
+        )
+    legacy_dat.write_text("".join(rows), encoding="utf-8")
+    artifact_a = _write_xyz_artifact(tmp_path, name="perslot_a", hidden_layers=[8, 8])
+    artifact_b = _write_xyz_artifact(tmp_path, name="perslot_b", hidden_layers=[8, 8])
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))  # fallback only
+    controller.set_comparison_model_a_path(str(artifact_a))
+    controller.set_comparison_model_b_path(str(artifact_b))
+    controller.set_comparison_test_a_path(str(legacy_dat))
+    # Leave Slot B's test path empty → falls back to main dataset (run_dir).
+    controller.refresh()
+    controller.run_external_comparison()
+    thread = getattr(controller, "_worker_thread", None)
+    if thread is not None:
+        thread.join(timeout=30.0)
+    result = controller.get_last_comparison_result()
+    assert result is not None, "comparison didn't produce a result"
+    # Slot A used the .dat: actuals at x ≈ 500.
+    assert result.a_actuals_xyz_mm[:, 0].min() >= 499.0
+    # Slot B used the modern dataset: actuals are at a totally different scale.
+    assert result.b_actuals_xyz_mm[:, 0].max() < 100.0
+    assert result.a_dataset_run_name == "legacy_test"
+    assert result.b_dataset_run_name == "perslot_modern"
+    # Split warning surfaces in the comparison status (controller appends it).
+    state = controller.refresh()
+    assert "DIFFERENT test data" in state.comparison_status_message
+    controller.shutdown()
+
+
+def test_comparison_test_combos_populate_and_round_trip(tmp_path: Path) -> None:
+    """The per-slot test combos list every discovered modeling_dataset, default
+    to "(use main dataset)" with empty path, and round-trip the operator's
+    selection through the controller."""
+    pytest.importorskip("torch")
+    _app()
+    # Two discovered datasets.
+    ds1 = _write_workspace_dataset(tmp_path, run_name="tc_ds1", n=24)
+    ds2 = _write_workspace_dataset(tmp_path, run_name="tc_ds2", n=24)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(ds1))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        # Initial state: combo defaults to "(use main dataset)" with empty data.
+        assert tab.comparison_test_a_combo.itemData(0) == ""
+        assert "(use main dataset)" in tab.comparison_test_a_combo.itemText(0)
+        # Both datasets are listed.
+        items = [
+            tab.comparison_test_a_combo.itemText(i)
+            for i in range(tab.comparison_test_a_combo.count())
+        ]
+        assert any("tc_ds1" in t for t in items)
+        assert any("tc_ds2" in t for t in items)
+        # Pick ds2 for Slot A via the controller (simulates combo change).
+        controller.set_comparison_test_a_path(str(ds2))
+        tab.update(controller.refresh())
+        # The combo's selected item should be the one whose UserRole == ds2.
+        from PySide6.QtCore import Qt
+
+        cur = tab.comparison_test_a_combo.currentIndex()
+        assert tab.comparison_test_a_combo.itemData(cur, Qt.UserRole) == str(ds2)
+        # And the controller state reflects the selection.
+        state = controller.refresh()
+        assert state.comparison_test_a_path == str(ds2)
+        # Slot B is unchanged (still empty).
+        assert state.comparison_test_b_path == ""
+        b_cur = tab.comparison_test_b_combo.currentIndex()
+        assert tab.comparison_test_b_combo.itemData(b_cur, Qt.UserRole) == ""
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_comparison_test_combo_keeps_external_dat_selection_alive(tmp_path: Path) -> None:
+    """When the operator picks a .dat file (not in the catalog), the combo
+    must add an extra "(file) <name>" entry so the selection stays visible
+    across refresh ticks."""
+    pytest.importorskip("torch")
+    _app()
+    _write_workspace_dataset(tmp_path, run_name="ext_ds", n=24)
+    legacy_dat = tmp_path / "downloads" / "extern.dat"
+    legacy_dat.parent.mkdir(parents=True, exist_ok=True)
+    rows = ["DATE:x\nTIME:x\nNUM_CABLES:4\nnum_coils:1\nNUM_MEASUREMENTS:20\n---\n"]
+    for i in range(20):
+        rows.append(f"{i},1,2,3,4,{0.5*i:.2f},0,30,0,0,1\n")
+    legacy_dat.write_text("".join(rows), encoding="utf-8")
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.set_comparison_test_a_path(str(legacy_dat))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        # An extra "(file) extern.dat" entry must exist for the .dat.
+        items = [
+            tab.comparison_test_a_combo.itemText(i)
+            for i in range(tab.comparison_test_a_combo.count())
+        ]
+        assert any("(file)" in t and "extern.dat" in t for t in items), items
+        # And the combo's selected index points at it.
+        from PySide6.QtCore import Qt
+
+        cur = tab.comparison_test_a_combo.currentIndex()
+        assert tab.comparison_test_a_combo.itemData(cur, Qt.UserRole) == str(legacy_dat)
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
 def test_comparison_generate_gated_on_dataset_plus_both_slots(tmp_path: Path) -> None:
     """The Generate button enables when dataset + both slots are populated.
 

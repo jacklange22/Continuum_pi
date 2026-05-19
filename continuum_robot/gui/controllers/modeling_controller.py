@@ -158,6 +158,13 @@ class ModelingViewState:
     comparison_model_a_path: str = ""
     comparison_model_b_path: str = ""
     comparison_external_model_path: str = ""  # alias for model_b_path; kept for back-compat
+    # Per-slot test-data paths. Each can be a discovered modeling_dataset run
+    # directory OR a legacy continuum_jack ``kinematic_*.dat`` file. Empty
+    # string means "fall back to the main selected dataset above" — preserves
+    # the original behavior where both panels share the dataset combo at the
+    # top of the Modeling tab.
+    comparison_test_a_path: str = ""
+    comparison_test_b_path: str = ""
     comparison_active: bool = False
     comparison_status_message: str = (
         "Pick a dataset, choose two ANN artifacts (or upload .pt files) "
@@ -622,6 +629,31 @@ class ModelingController:
         single-upload API filled the "external" slot, which is now slot B."""
         self._set_comparison_slot_path("b", path)
 
+    def set_comparison_test_a_path(self, path: str) -> None:
+        """Pick the test dataset for Model A's panel.
+
+        Accepts:
+          - A modeling_dataset run directory (the new format).
+          - A legacy continuum_jack ``kinematic_*.dat`` file path.
+          - Empty string to clear → falls back to the main selected dataset.
+
+        Does NOT validate the file content here — validation runs in the
+        worker so a malformed dataset surfaces as an inline error rather than
+        a blocking failure on selection.
+        """
+        cleaned = str(path or "").strip()
+        with self._lock:
+            self.state.comparison_test_a_path = cleaned
+            self.state.comparison_error_message = ""
+
+    def set_comparison_test_b_path(self, path: str) -> None:
+        """Pick the test dataset for Model B's panel. See
+        :meth:`set_comparison_test_a_path` for accepted forms."""
+        cleaned = str(path or "").strip()
+        with self._lock:
+            self.state.comparison_test_b_path = cleaned
+            self.state.comparison_error_message = ""
+
     def _compose_comparison_ready_message(self, suffix: str = "") -> str:
         """Build the status string shown after a slot path change."""
         a_path = self.state.comparison_model_a_path
@@ -823,15 +855,23 @@ class ModelingController:
             )
             model_a_raw = self.state.comparison_model_a_path
             model_b_raw = self.state.comparison_model_b_path
+            test_a_raw = self.state.comparison_test_a_path
+            test_b_raw = self.state.comparison_test_b_path
             # Back-compat: if Slot A was never explicitly set, fall back to the
             # main artifact dropdown selection so older workflows still work.
             if not model_a_raw and self._selected_artifact_details is not None:
                 model_a_raw = str(self._selected_artifact_details.summary.path)
         model_a_path = Path(model_a_raw) if model_a_raw else None
         model_b_path = Path(model_b_raw) if model_b_raw else None
-        if dataset_path is None:
+        test_a_path = Path(test_a_raw) if test_a_raw else None
+        test_b_path = Path(test_b_raw) if test_b_raw else None
+        if dataset_path is None and (test_a_path is None or test_b_path is None):
+            # Need at least the main dataset as a fallback when one of the
+            # per-slot test datasets is unset.
             with self._lock:
-                self.state.comparison_error_message = "Select a dataset first."
+                self.state.comparison_error_message = (
+                    "Select a main dataset (or pick a test dataset for each slot)."
+                )
             return
         if model_a_path is None:
             with self._lock:
@@ -857,6 +897,8 @@ class ModelingController:
                 "model_a_path": model_a_path,
                 "model_b_path": model_b_path,
                 "dataset_path": dataset_path,
+                "test_a_path": test_a_path,
+                "test_b_path": test_b_path,
             },
             daemon=True,
         )
@@ -867,7 +909,9 @@ class ModelingController:
         *,
         model_a_path: Path,
         model_b_path: Path,
-        dataset_path: Path,
+        dataset_path: Path | None,
+        test_a_path: Path | None = None,
+        test_b_path: Path | None = None,
     ) -> None:
         """Background worker — loads both models, runs inference, builds result.
 
@@ -882,7 +926,14 @@ class ModelingController:
             result = run_side_by_side_comparison(
                 model_a_path=model_a_path,
                 model_b_path=model_b_path,
-                dataset_path=dataset_path,
+                # ``dataset_path`` is the fallback when a per-slot test_*_path
+                # isn't set. When both per-slot paths are set, dataset_path
+                # is unused inside run_side_by_side_comparison (each panel
+                # loads its own test data). We still pass it for the
+                # back-compat path.
+                dataset_path=dataset_path if dataset_path is not None else (test_a_path or test_b_path),
+                test_a_path=test_a_path,
+                test_b_path=test_b_path,
             )
         except Exception as exc:  # noqa: BLE001 — surface anything in the UI rather than crash
             with self._lock:
