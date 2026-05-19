@@ -338,6 +338,134 @@ def test_discover_trained_artifacts_and_loss_history_round_trip(tmp_path: Path) 
     assert validation_losses == [1.1, 0.9]
 
 
+def test_discover_trained_artifacts_surfaces_sweep_subarchitectures(
+    tmp_path: Path,
+) -> None:
+    """Regression: a sweep folder (e.g. ``..._legacy_ann_full_pose_model_sweep/``)
+    has no top-level training_metadata.json; instead, each architecture lives in
+    a sub-folder (``ann_128_128/``, ``ann_64_64/``, ...). The discovery must
+    recurse one level so the Modeling tab sees those sub-models. Without this
+    fix, every sweep-trained ANN is invisible to the operator.
+    """
+    artifact_root = tmp_path / "data" / "models" / "ann"
+    sweep_dir = artifact_root / "20260518_222229_legacy_ann_full_pose_model_sweep"
+    sweep_dir.mkdir(parents=True)
+    (sweep_dir / "model_sweep_summary.json").write_text(
+        json.dumps({"models": ["ann_128_128", "ann_64_64", "ann_32_32"]}),
+        encoding="utf-8",
+    )
+    for arch in ("ann_128_128", "ann_64_64", "ann_32_32"):
+        sub = sweep_dir / arch
+        sub.mkdir()
+        (sub / "training_metadata.json").write_text(
+            json.dumps(
+                {
+                    "artifact_kind": "legacy_ann_full_pose_v1",
+                    "created_at_utc": "2026-05-18T22:22:29+00:00",
+                    "status": "completed",
+                    "dataset": {"run_name": "sweep_train_run"},
+                    "backend": {"selected_backend": "cpu"},
+                    "model": {
+                        "input_dim": 4,
+                        "output_dim": 6,
+                        "hidden_layers": [int(arch.split("_")[1]), int(arch.split("_")[2])],
+                        "dtype": "float64",
+                        "output_target": "full_pose",
+                    },
+                    "training": {"epochs_completed": 50, "best_validation_loss": 0.1},
+                    "files": {"model_path": str(sub / "model.pt")},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (sub / "model.pt").write_bytes(b"fake")
+    # Throw in a regular top-level artifact too — make sure both paths are listed.
+    plain_dir = artifact_root / "20260420_005124_legacy_ann_full_pose"
+    plain_dir.mkdir()
+    (plain_dir / "training_metadata.json").write_text(
+        json.dumps(
+            {
+                "artifact_kind": "legacy_ann_full_pose_v1",
+                "created_at_utc": "2026-04-20T00:51:24+00:00",
+                "status": "completed",
+                "dataset": {"run_name": "plain_train_run"},
+                "backend": {"selected_backend": "cpu"},
+                "model": {
+                    "input_dim": 4,
+                    "output_dim": 6,
+                    "hidden_layers": [32, 32],
+                    "dtype": "float64",
+                    "output_target": "full_pose",
+                },
+                "training": {"epochs_completed": 10, "best_validation_loss": 0.2},
+                "files": {"model_path": str(plain_dir / "model.pt")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (plain_dir / "model.pt").write_bytes(b"fake")
+
+    artifacts = discover_trained_artifacts(artifact_root=artifact_root, include_inverse=False)
+    names = [a.artifact_name for a in artifacts]
+    # All three sweep sub-architectures present, named with the sweep wrapper.
+    assert any(
+        n == "20260518_222229_legacy_ann_full_pose_model_sweep/ann_128_128"
+        for n in names
+    ), names
+    assert any(
+        n == "20260518_222229_legacy_ann_full_pose_model_sweep/ann_64_64" for n in names
+    )
+    assert any(
+        n == "20260518_222229_legacy_ann_full_pose_model_sweep/ann_32_32" for n in names
+    )
+    # Plain top-level artifact still listed.
+    assert "20260420_005124_legacy_ann_full_pose" in names
+    # Sweep wrapper directory itself is NOT listed as a free-standing entry.
+    assert "20260518_222229_legacy_ann_full_pose_model_sweep" not in names
+
+
+def test_discover_trained_artifacts_recurses_via_subdir_metadata_only(
+    tmp_path: Path,
+) -> None:
+    """Old sweeps may not have a ``model_sweep_summary.json`` — recursion must
+    still kick in based on presence of a sub-directory with metadata. Otherwise
+    older runs (pre-summary-file) would stay invisible."""
+    artifact_root = tmp_path / "data" / "models" / "ann"
+    sweep_dir = artifact_root / "20260513_031221_legacy_ann_full_pose_model_sweep"
+    sweep_dir.mkdir(parents=True)
+    # No model_sweep_summary.json. Only the sub-architecture exists.
+    sub = sweep_dir / "ann_64_64"
+    sub.mkdir()
+    (sub / "training_metadata.json").write_text(
+        json.dumps(
+            {
+                "artifact_kind": "legacy_ann_full_pose_v1",
+                "created_at_utc": "2026-05-13T03:12:21+00:00",
+                "status": "completed",
+                "dataset": {"run_name": "old_sweep_run"},
+                "backend": {"selected_backend": "cpu"},
+                "model": {
+                    "input_dim": 4,
+                    "output_dim": 6,
+                    "hidden_layers": [64, 64],
+                    "dtype": "float64",
+                    "output_target": "full_pose",
+                },
+                "training": {"epochs_completed": 20, "best_validation_loss": 0.5},
+                "files": {"model_path": str(sub / "model.pt")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (sub / "model.pt").write_bytes(b"fake")
+
+    artifacts = discover_trained_artifacts(artifact_root=artifact_root)
+    names = [a.artifact_name for a in artifacts]
+    assert (
+        "20260513_031221_legacy_ann_full_pose_model_sweep/ann_64_64" in names
+    ), names
+
+
 def test_ann_training_config_default_hidden_layers() -> None:
     assert AnnTrainingConfig().hidden_layers == [32, 32]
 
