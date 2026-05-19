@@ -44,6 +44,7 @@ from continuum_robot.experiments.workspace_repeatability_map_outputs import (
     THESIS_01_PNG,
     THESIS_02_PNG,
     THESIS_03_PNG,
+    THESIS_04_PNG,
     VISITS_JSONL,
     compute_workspace_repeatability_metrics,
     group_visits_by_target,
@@ -330,12 +331,13 @@ class TestOutputBundle:
             max_amplitude_mm=10.0,
             thesis_goal_rms_mm=1.0,
         )
-        for key in ("per_target_csv", "visits_jsonl", "summary_json", "thesis_01", "thesis_02", "thesis_03"):
+        for key in ("per_target_csv", "visits_jsonl", "summary_json", "thesis_01", "thesis_02", "thesis_03", "thesis_04"):
             assert key in paths
             assert paths[key].exists(), f"missing {key}: {paths[key]}"
         assert _png_is_valid(tmp_path / THESIS_01_PNG)
         assert _png_is_valid(tmp_path / THESIS_02_PNG)
         assert _png_is_valid(tmp_path / THESIS_03_PNG)
+        assert _png_is_valid(tmp_path / THESIS_04_PNG)
         # Summary JSON is structured.
         summary_payload = json.loads((tmp_path / SUMMARY_JSON).read_text(encoding="utf-8"))
         assert summary_payload["schema_version"] == "workspace_repeatability_map_v1"
@@ -361,6 +363,7 @@ class TestOutputBundle:
         assert "thesis_01" not in paths
         assert "thesis_02" not in paths
         assert "thesis_03" not in paths
+        assert "thesis_04" not in paths
 
     def test_thesis_figures_render_at_full_scale(self, tmp_path: Path) -> None:
         """Smoke-test at the actual 100 targets x 15 visits scale the operator runs.
@@ -403,8 +406,8 @@ class TestOutputBundle:
             max_amplitude_mm=12.0,
             thesis_goal_rms_mm=1.0,
         )
-        # All three thesis figures present, non-trivial size (> 50 KB rules out blank renders).
-        for key, name in (("thesis_01", THESIS_01_PNG), ("thesis_02", THESIS_02_PNG), ("thesis_03", THESIS_03_PNG)):
+        # All four thesis figures present, non-trivial size (> 50 KB rules out blank renders).
+        for key, name in (("thesis_01", THESIS_01_PNG), ("thesis_02", THESIS_02_PNG), ("thesis_03", THESIS_03_PNG), ("thesis_04", THESIS_04_PNG)):
             png_path = tmp_path / name
             assert png_path.exists(), f"missing thesis figure: {key}"
             assert png_path.stat().st_size > 50_000, (

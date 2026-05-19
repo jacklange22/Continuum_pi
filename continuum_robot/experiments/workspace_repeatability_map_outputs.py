@@ -16,6 +16,11 @@ and produces three thesis-style figures that match the existing
   commanded deflection amplitude. Scatter colored by ``z_stddev`` plus a
   binned median with the p25-p75 band drawn underneath, so the reader sees
   the individual targets AND the workspace-wide radial trend.
+* ``thesis_04_2d_repeatability_map.png`` -- top-down 2D scatter, one dot per
+  target colored by per-target RMS spread. Same data and colormap as figure 1,
+  flattened to XY for thesis prints (no 3D rotation), and no spatial
+  interpolation (unlike figure 2's contour fill) so the reader sees each
+  measured target directly.
 
 Plus the non-figure artifacts:
 
@@ -59,6 +64,7 @@ SUMMARY_JSON = "workspace_map_summary.json"
 THESIS_01_PNG = "thesis_01_workspace_rms_3d.png"
 THESIS_02_PNG = "thesis_02_workspace_rms_map.png"
 THESIS_03_PNG = "thesis_03_rms_vs_amplitude.png"
+THESIS_04_PNG = "thesis_04_2d_repeatability_map.png"
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +321,13 @@ def write_workspace_repeatability_map_outputs(
             max_amplitude_mm=resolved_max_amplitude,
             quality=quality,
         )
+        paths["thesis_04"] = _write_workspace_thesis_04_rms_map_scatter(
+            output_dir / THESIS_04_PNG,
+            rows_with_data,
+            summary=summary,
+            max_amplitude_mm=resolved_max_amplitude,
+            quality=quality,
+        )
     return paths
 
 
@@ -451,7 +464,7 @@ def _footer_caption_lines(
 def _draw_footer(fig, lines: Sequence[str]) -> None:
     fig.text(
         0.015,
-        0.02,
+        0.012,
         "  •  ".join(lines),
         fontsize=9,
         color=color("text"),
@@ -459,6 +472,11 @@ def _draw_footer(fig, lines: Sequence[str]) -> None:
         va="bottom",
         bbox={"boxstyle": "round,pad=0.4", "facecolor": "white", "edgecolor": color("grid"), "alpha": 0.94},
     )
+
+
+def _apply_suptitle(fig, text: str) -> None:
+    """Consistent left-anchored title for the thesis-figure set."""
+    fig.suptitle(text, fontsize=13, fontweight="bold", x=0.04, ha="left", y=0.965)
 
 
 # ---------------------------------------------------------------------------
@@ -492,7 +510,10 @@ def _write_workspace_thesis_01_rms_3d(
     rms_values = np.asarray([float(row["rms_spread_mm"]) for row in rows], dtype=float)
     vmax = _color_vmax(rms_values.tolist())
 
-    fig, ax = create_3d_figure(size="thesis_3d")
+    fig, ax = create_3d_figure(size="thesis_3d", constrained_layout=False)
+    # Manual margins so the 3D axes use the full figure (constrained_layout
+    # otherwise leaves the 3D axes oddly squished to the left).
+    fig.subplots_adjust(left=0.02, right=0.92, top=0.92, bottom=0.10)
     scatter = ax.scatter(
         centroids[:, 0],
         centroids[:, 1],
@@ -522,17 +543,11 @@ def _write_workspace_thesis_01_rms_3d(
     )
     style_3d_axes(ax, xlabel="Robot X (mm)", ylabel="Robot Y (mm)", zlabel="Robot Z (mm)")
 
-    cbar = fig.colorbar(scatter, ax=ax, shrink=0.55, pad=0.12)
+    cbar = fig.colorbar(scatter, ax=ax, shrink=0.62, pad=0.04, fraction=0.04)
     cbar.set_label("Per-target RMS spread (mm)")
     cbar.outline.set_edgecolor(color("grid"))
 
-    fig.suptitle(
-        "Workspace Repeatability Map  —  per-target 3D RMS spread",
-        fontsize=13,
-        fontweight="bold",
-        x=0.04,
-        ha="left",
-    )
+    _apply_suptitle(fig, "Workspace Repeatability Map  —  per-target 3D RMS spread")
     _draw_footer(
         fig,
         _footer_caption_lines(summary=summary, rows_with_data=rows, max_amplitude_mm=max_amplitude_mm),
@@ -571,8 +586,8 @@ def _write_workspace_thesis_02_rms_map(
     vmax = _color_vmax(rms_values.tolist())
 
     with report_style() as plt_styled:
-        fig, ax = plt_styled.subplots(figsize=(7.6, 6.8), constrained_layout=False)
-    fig.subplots_adjust(left=0.10, right=0.92, top=0.90, bottom=0.16)
+        fig, ax = plt_styled.subplots(figsize=(7.6, 6.4), constrained_layout=False)
+    fig.subplots_adjust(left=0.10, right=0.92, top=0.92, bottom=0.11)
 
     # Triangulate and contour-fill. tricontourf needs at least 3 non-collinear
     # points; the Vogel-disk-fill has 100 by construction, but guard anyway.
@@ -644,13 +659,7 @@ def _write_workspace_thesis_02_rms_map(
     cbar.set_label("Per-target RMS spread (mm)")
     cbar.outline.set_edgecolor(color("grid"))
 
-    fig.suptitle(
-        "Workspace Repeatability Map  —  top-down RMS field",
-        fontsize=13,
-        fontweight="bold",
-        x=0.04,
-        ha="left",
-    )
+    _apply_suptitle(fig, "Workspace Repeatability Map  —  top-down RMS field")
     _draw_footer(
         fig,
         _footer_caption_lines(summary=summary, rows_with_data=rows, max_amplitude_mm=max_amplitude_mm),
@@ -684,8 +693,8 @@ def _write_workspace_thesis_03_rms_vs_amplitude(
     z_std = np.asarray([float(row["z_stddev_mm"] or 0.0) for row in rows], dtype=float)
 
     with report_style() as plt_styled:
-        fig, ax = plt_styled.subplots(figsize=(7.6, 4.6), constrained_layout=False)
-    fig.subplots_adjust(left=0.095, right=0.93, top=0.88, bottom=0.20)
+        fig, ax = plt_styled.subplots(figsize=(7.8, 4.3), constrained_layout=False)
+    fig.subplots_adjust(left=0.095, right=0.93, top=0.90, bottom=0.18)
 
     # Binned median + p25/p75 band drawn underneath the scatter so the
     # individual targets stay readable on top.
@@ -774,13 +783,121 @@ def _write_workspace_thesis_03_rms_vs_amplitude(
             framealpha=0.95,
         )
 
-    fig.suptitle(
-        "Repeatability vs commanded deflection",
-        fontsize=13,
-        fontweight="bold",
-        x=0.04,
-        ha="left",
+    _apply_suptitle(fig, "Repeatability vs commanded deflection")
+    _draw_footer(
+        fig,
+        _footer_caption_lines(summary=summary, rows_with_data=rows, max_amplitude_mm=max_amplitude_mm),
     )
+    return save_figure(fig, Path(path), quality=quality)
+
+
+# ---------------------------------------------------------------------------
+# Thesis figure 4 -- 2D per-target scatter (flat XY companion to figure 1)
+# ---------------------------------------------------------------------------
+
+
+def _write_workspace_thesis_04_rms_map_scatter(
+    path: Path,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    summary: Mapping[str, Any],
+    max_amplitude_mm: float,
+    quality: str | None,
+) -> Path:
+    """Thesis figure 4: top-down per-target scatter colored by RMS spread.
+
+    The 2D companion to figure 1: same one-dot-per-target visualization and
+    same colormap, but flattened to XY. Two practical differences from the
+    other figures in the set:
+
+    - vs figure 1 (3D scatter): prints flat, no rotation needed for a thesis
+      PDF, and a top-down view makes spatial structure (rim vs center,
+      directional bias) immediately readable.
+    - vs figure 2 (contour-filled field): no Delaunay smoothing -- the reader
+      sees every measured target directly, with no spatial interpolation
+      hiding which targets are actually carrying the workspace-level numbers.
+
+    Axes are autoscaled to the actual tip workspace extent, not the
+    commanded cable amplitude. ``max_amplitude_mm`` is the commanded cable
+    deflection ceiling (tendon-space input), while ``centroid_x/y_mm`` are
+    tip positions in robot frame; a curving continuum robot's tip moves
+    much further than its cable input, so the two are not the same workspace
+    and a cable-amplitude reference disk would visually misrepresent the
+    physical region.
+    """
+    plt = import_matplotlib()
+    from matplotlib.patches import Circle
+
+    xs = np.asarray([float(row["centroid_x_mm"]) for row in rows], dtype=float)
+    ys = np.asarray([float(row["centroid_y_mm"]) for row in rows], dtype=float)
+    rms_values = np.asarray([float(row["rms_spread_mm"]) for row in rows], dtype=float)
+    vmax = _color_vmax(rms_values.tolist())
+
+    with report_style() as plt_styled:
+        fig, ax = plt_styled.subplots(figsize=(7.6, 6.4), constrained_layout=False)
+    fig.subplots_adjust(left=0.10, right=0.92, top=0.92, bottom=0.11)
+
+    # Auto-scale axes to the actual tip workspace, with symmetric square
+    # bounds so X and Y read at the same scale. Pad by 8% so the rim dots
+    # don't kiss the edge.
+    if xs.size > 0:
+        xy_extent = max(float(np.max(np.abs(xs))), float(np.max(np.abs(ys))), 1.0)
+    else:
+        xy_extent = 1.0
+    pad = xy_extent * 0.08
+    ax.set_xlim(-xy_extent - pad, xy_extent + pad)
+    ax.set_ylim(-xy_extent - pad, xy_extent + pad)
+    ax.set_aspect("equal", adjustable="box")
+
+    # Small dashed reference circle at the commanded cable-amplitude radius
+    # ONLY if it sits clearly inside the tip workspace (otherwise it implies
+    # a workspace boundary that does not exist in robot frame). Labelled to
+    # avoid the "is that the workspace?" misread.
+    if 0 < max_amplitude_mm < xy_extent * 0.85:
+        ax.add_patch(
+            Circle(
+                (0.0, 0.0),
+                max_amplitude_mm,
+                fill=False,
+                edgecolor=color("reference"),
+                linestyle="--",
+                linewidth=1.0,
+                alpha=0.7,
+                zorder=2,
+            )
+        )
+        ax.annotate(
+            f"cable amplitude\n({max_amplitude_mm:.0f} mm)",
+            xy=(max_amplitude_mm * 0.707, max_amplitude_mm * 0.707),
+            xytext=(max_amplitude_mm * 0.95, max_amplitude_mm * 0.95),
+            fontsize=8,
+            color=color("axis"),
+            ha="left",
+            va="bottom",
+            alpha=0.85,
+        )
+
+    scatter = ax.scatter(
+        xs,
+        ys,
+        c=rms_values,
+        cmap="viridis",
+        vmin=0.0,
+        vmax=vmax,
+        s=72,
+        edgecolors="white",
+        linewidths=0.7,
+        alpha=0.95,
+        zorder=3,
+    )
+
+    style_axes(ax, xlabel="Robot X (mm)", ylabel="Robot Y (mm)")
+
+    cbar = fig.colorbar(scatter, ax=ax, shrink=0.85, pad=0.025)
+    cbar.set_label("Per-target RMS spread (mm)")
+    cbar.outline.set_edgecolor(color("grid"))
+
+    _apply_suptitle(fig, "Workspace Repeatability Map  —  per-target 2D RMS spread (tip frame)")
     _draw_footer(
         fig,
         _footer_caption_lines(summary=summary, rows_with_data=rows, max_amplitude_mm=max_amplitude_mm),
