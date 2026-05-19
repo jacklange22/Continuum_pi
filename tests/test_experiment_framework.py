@@ -2096,7 +2096,6 @@ def test_collect_pose_pre_motion_packet_error_retries_and_continues(tmp_path: Pa
     assert recovered >= 1
     assert recovered == int(quality.get("recovered_packet_error_count", 0) or 0)
     assert recovered == int(health.get("recovered_packet_error_count", 0) or 0)
-<<<<<<< Updated upstream
 
 
 def test_collect_pose_workspace_boundary_rejection_skips_command_and_continues(tmp_path: Path) -> None:
@@ -2159,8 +2158,6 @@ def test_collect_pose_workspace_boundary_rejection_skips_command_and_continues(t
     assert events_path.exists()
     events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert any(event.get("event") == "command_skipped_workspace_boundary" for event in events)
-=======
->>>>>>> Stashed changes
 
 
 def test_collect_pose_pre_motion_packet_error_stops_after_failure_budget(tmp_path: Path) -> None:

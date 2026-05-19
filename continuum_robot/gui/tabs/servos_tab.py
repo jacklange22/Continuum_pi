@@ -343,7 +343,6 @@ class ServosTab(QWidget):
 
         preserve_scroll_position(self.telemetry_table, _rebuild_telemetry_table)
 
-<<<<<<< Updated upstream
         motion_ready = (
             state.connected
             and bool(state.servo_ids)
@@ -638,39 +637,6 @@ class ServosTab(QWidget):
             )
         if state.blocking_reasons:
             parts.append(state.blocking_reasons[0])
-=======
-        operator_lines = [
-            f"Servo: {selected_servo_id if selected_servo_id is not None else 'none'}",
-            f"Motion ready: {'Yes' if state.selected_servo_motion_ready else 'No'}",
-            f"Torque: {self.selected_servo_torque_label.text()}",
-            f"Telemetry: {self.selected_servo_telemetry_label.text()} | age {self.selected_servo_age_label.text()} | fresh {self.selected_servo_fresh_label.text()}",
-            f"Position: {self.selected_servo_position_label.text()} | Target: {self.selected_servo_target_label.text()}",
-            f"Raw hard bounds: {self.selected_servo_bounds_label.text()}",
-            f"Last action: {self.selected_servo_action_label.text()} | Result: {self.selected_servo_result_label.text()}",
-        ]
-        if not state.single_servo_mode:
-            if state.robot_mode in {"dual_segment", "parallel_single"} and state.all_8_readiness_summary:
-                operator_lines.append(state.all_8_readiness_summary)
-            if state.segment_readiness_summary:
-                operator_lines.append(f"Segments: {state.segment_readiness_summary}")
-            if state.single_segment_readiness_summary:
-                operator_lines.append(state.single_segment_readiness_summary)
-            operator_lines.append(f"Active pretension source: {state.pretension_source_summary}")
-            if state.single_segment_reference_summary:
-                operator_lines.append(f"Experiment reference: {state.single_segment_reference_summary}")
-            if state.single_segment_motion_config_summary:
-                operator_lines.append(f"Single-segment motion config: {state.single_segment_motion_config_summary}")
-            if state.single_segment_enforced_bounds_summary:
-                operator_lines.append(f"Enforced experiment bounds: {state.single_segment_enforced_bounds_summary}")
-            if state.single_segment_characterization_summary:
-                operator_lines.append(f"Diagnostic pair travel: {state.single_segment_characterization_summary}")
-            if state.last_displacement_summary:
-                operator_lines.append(f"Last displacement: {state.last_displacement_summary}")
-            for line in state.last_displacement_debug_lines:
-                operator_lines.append(line)
-        if state.selected_servo_reason_label and state.selected_servo_reason_label != "none":
-            operator_lines.append(f"Reason: {state.selected_servo_reason_label}")
->>>>>>> Stashed changes
         if state.last_error:
             parts.append(f"Error: {state.last_error}")
         return "  ·  ".join(parts)

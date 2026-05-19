@@ -42,22 +42,16 @@ class RegistrationTab(QWidget):
         controller,
         workflow_controller=None,
         open_runtime_tip_calibration=None,
-<<<<<<< Updated upstream
         open_registration_trial=None,
-=======
         open_registration_sampling_study=None,
->>>>>>> Stashed changes
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.controller = controller
         self.workflow_controller = workflow_controller
         self.open_runtime_tip_calibration = open_runtime_tip_calibration
-<<<<<<< Updated upstream
         self.open_registration_trial = open_registration_trial
-=======
         self.open_registration_sampling_study = open_registration_sampling_study
->>>>>>> Stashed changes
         self._selected_slot_labels: list[QLabel] = []
         self.setObjectName("registrationWorkspace")
         self.setStyleSheet(
@@ -144,7 +138,6 @@ class RegistrationTab(QWidget):
         self.load_button.setProperty("variant", "ghost")
         self.runtime_tip_button = QPushButton("Open Runtime Tip Calibration")
         self.runtime_tip_button.setProperty("variant", "ghost")
-<<<<<<< Updated upstream
         # Promoted to a primary-styled button so the operator can find it on the
         # secondary row at a glance. The previous variant="ghost" sat next to the
         # other ghost buttons and was reported as invisible on a real bench.
@@ -155,7 +148,6 @@ class RegistrationTab(QWidget):
             "experiment to compare averaging methods and find the best 4-of-N subset. "
             "Does not affect the production registration session."
         )
-=======
         # Promoted to a primary button on the top header bar so the operator can
         # always find it (previous "ghost" variant on the buried secondary row was
         # easy to miss). Always shown; clicking with no opener wired is a no-op.
@@ -171,7 +163,6 @@ class RegistrationTab(QWidget):
         # the click handler is a no-op (no exception raised). This keeps the button
         # discoverable even if the host app forgets to wire the navigation hook.
         self.sampling_study_button.setVisible(True)
->>>>>>> Stashed changes
 
         self.begin_button.clicked.connect(lambda: self._safe_call(self.controller.begin_session))
         self.capture_button.clicked.connect(lambda: self._safe_call(self.controller.capture_current_label_sample))
@@ -182,15 +173,12 @@ class RegistrationTab(QWidget):
         self.retry_button.clicked.connect(lambda: self._safe_call(self.controller.retry_session))
         self.load_button.clicked.connect(lambda: self._safe_call(self.controller.load_latest_result))
         self.runtime_tip_button.clicked.connect(self._open_runtime_tip_calibration)
-<<<<<<< Updated upstream
         self.trial_mode_button.clicked.connect(self._open_registration_trial)
         # Always visible. The opener callback may be None in standalone tests; in that
         # case the click handler is a no-op (no exception raised). This keeps the
         # button discoverable even if the host app shell forgets to wire it.
         self.trial_mode_button.setVisible(True)
-=======
         self.sampling_study_button.clicked.connect(self._open_registration_sampling_study)
->>>>>>> Stashed changes
 
         required_count = int(self.controller.REQUIRED_SELECTION_COUNT)
         minimum_count = int(self.controller.MINIMUM_SELECTION_COUNT)
@@ -353,11 +341,8 @@ class RegistrationTab(QWidget):
         button_row_secondary.addWidget(self.retry_button)
         button_row_secondary.addWidget(self.load_button)
         button_row_secondary.addWidget(self.runtime_tip_button)
-<<<<<<< Updated upstream
         button_row_secondary.addWidget(self.trial_mode_button)
-=======
         button_row_secondary.addWidget(self.sampling_study_button)
->>>>>>> Stashed changes
         button_row_secondary.addStretch(1)
 
         self.points_table = QTableWidget(0, 6)
@@ -853,7 +838,6 @@ class RegistrationTab(QWidget):
         if callable(self.open_runtime_tip_calibration):
             self.open_runtime_tip_calibration()
 
-<<<<<<< Updated upstream
     def _on_details_toggled(self, checked: bool) -> None:
         self._details_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
         self._details_body.setVisible(bool(checked))
@@ -878,11 +862,10 @@ class RegistrationTab(QWidget):
     def _open_registration_trial(self) -> None:
         if callable(self.open_registration_trial):
             self.open_registration_trial()
-=======
+
     def _open_registration_sampling_study(self) -> None:
         if callable(self.open_registration_sampling_study):
             self.open_registration_sampling_study()
->>>>>>> Stashed changes
 
     def _on_runtime_tip_mode_changed(self, _index: int) -> None:
         mode = self.runtime_tip_mode_combo.currentData()

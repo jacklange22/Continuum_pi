@@ -56,17 +56,15 @@ EXPECTED_REPORT_FIGURES = {
         "two_segment_axis_error_report.png",
         "two_segment_two_coil_error_report.png",
     ],
-<<<<<<< Updated upstream
     "two_segment_repeatability": [
         "two_segment_repeatability_distal_scatter.png",
         "two_segment_repeatability_per_target_rms.png",
-=======
+    ],
     "registration_sampling_study": [
         "registration_point_spread_report.png",
         "registration_subset_rms_report.png",
         "registration_samples_per_point_report.png",
         "registration_transform_consistency_report.png",
->>>>>>> Stashed changes
     ],
 }
 
@@ -158,13 +156,10 @@ def validate_run_folder(run_dir: Path) -> RunValidationReport:
         _check_physical_assembly_metadata(issues, metrics)
     if experiment_name == "two_segment_modeling":
         _check_two_segment_modeling(issues, run_dir=run_dir, metrics=metrics)
-<<<<<<< Updated upstream
     if experiment_name == "two_segment_repeatability":
         _check_physical_assembly_metadata(issues, metrics)
-=======
     if experiment_name == "registration_sampling_study":
         _check_registration_sampling_study(issues, run_dir=run_dir, metrics=metrics)
->>>>>>> Stashed changes
     _check_any_field(
         issues,
         "valid_for_model_training",
@@ -315,7 +310,6 @@ def _nested(payload: dict[str, Any], *keys: str) -> Any:
     return current
 
 
-<<<<<<< Updated upstream
 def _check_physical_assembly_metadata(issues: list[RunValidationIssue], metrics: dict[str, Any]) -> None:
     """Two-segment runs must record the bottom/top physical-role assignment."""
     assembly = metrics.get("physical_assembly") if isinstance(metrics.get("physical_assembly"), dict) else {}
@@ -326,7 +320,8 @@ def _check_physical_assembly_metadata(issues: list[RunValidationIssue], metrics:
         return
     if bottom_key == top_key:
         issues.append(RunValidationIssue("WARN", f"Two-segment bottom/top assembly is invalid: bottom={bottom_key} top={top_key}."))
-=======
+
+
 def _check_registration_sampling_study(
     issues: list[RunValidationIssue],
     *,
@@ -365,7 +360,6 @@ def _check_registration_sampling_study(
         issues.append(
             RunValidationIssue("WARN", "registration_sampling_study summary is missing recommended_protocol metrics.")
         )
->>>>>>> Stashed changes
 
 
 def _check_two_segment_startup_validation(
