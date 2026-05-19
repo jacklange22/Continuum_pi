@@ -4439,6 +4439,16 @@ class WorkspaceRepeatabilityMapPage(ExperimentPageBase):
         self.return_to_center_check.toggled.connect(
             lambda value: self.controller.set_config_value("return_to_center_on_finalize", bool(value))
         )
+        self.debug_coil_as_tip_check = QCheckBox("Allow lower-trust runtime tip override")
+        self.debug_coil_as_tip_check.setToolTip(
+            "Cross-experiment compatibility flag. Coil-as-tip itself is governed by the shared "
+            "runtime tip policy and is thesis-trusted for workspace_repeatability_map; this flag "
+            "never enables latest_accepted / quick_4_point because the policy disallows them for "
+            "this workflow regardless. Leave unchecked for thesis-grade runs."
+        )
+        self.debug_coil_as_tip_check.toggled.connect(
+            lambda value: self.controller.set_config_value("allow_debug_coil_as_tip", bool(value))
+        )
         self.dry_run_check = QCheckBox("Dry-run (synthesize positions instead of capturing)")
         self.dry_run_check.toggled.connect(
             lambda value: self.controller.set_config_value("dry_run", bool(value))
@@ -4447,6 +4457,7 @@ class WorkspaceRepeatabilityMapPage(ExperimentPageBase):
         run_form.addRow("Tool ID", self.tool_id_edit)
         run_form.addRow("Thesis Goal", self.thesis_goal_spin)
         run_form.addRow("Finalize", self.return_to_center_check)
+        run_form.addRow("Runtime Tip", self.debug_coil_as_tip_check)
         run_form.addRow("Dry-Run", self.dry_run_check)
         run_card.body_layout.addLayout(run_form)
         self.parameter_layout.addWidget(run_card)
@@ -4496,6 +4507,10 @@ class WorkspaceRepeatabilityMapPage(ExperimentPageBase):
         self._set_checkbox(
             self.return_to_center_check,
             bool(self.controller.get_config_value("return_to_center_on_finalize", True)),
+        )
+        self._set_checkbox(
+            self.debug_coil_as_tip_check,
+            bool(self.controller.get_config_value("allow_debug_coil_as_tip", False)),
         )
         self._set_checkbox(
             self.dry_run_check, bool(self.controller.get_config_value("dry_run", False))

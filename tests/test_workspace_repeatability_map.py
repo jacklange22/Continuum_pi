@@ -641,6 +641,7 @@ class TestGuiIntegration:
             assert hasattr(page, "seed_spin")
             assert hasattr(page, "run_label_edit")
             assert hasattr(page, "dry_run_check")
+            assert hasattr(page, "debug_coil_as_tip_check")
             assert hasattr(page, "estimate_label")
             # The controller has no config loaded yet, so triggering sync should
             # pull the defaults from the experiment config class. This mirrors
@@ -980,3 +981,198 @@ class TestCoilAsTipGate:
         with pytest.raises(RuntimeError) as excinfo:
             experiment.precheck(_StubSession())
         assert "thesis_trusted" in str(excinfo.value) or "trust" in str(excinfo.value).lower()
+
+
+# ---------------------------------------------------------------------------
+# Real-hardware capture path (mocked tracker + servo)
+# ---------------------------------------------------------------------------
+
+
+class TestRealHardwareCapturePath:
+    """Verify _execute_single_visit drives the real-hardware path correctly
+    with mocked tracker + servo: it issues the neutral + target commands,
+    polls the tracker through the gate, and produces a sample whose ``extra``
+    payload carries the canonical fields downstream analysis expects.
+
+    Without this test the broken ``payload=`` kwarg regression that shipped
+    in commit e0c6684 was never caught by the suite (the dry-run path skips
+    sample_from_tracking_snapshot entirely). This pins the contract."""
+
+    def _make_session(self, snapshot):
+        """Build a stub ExperimentSession exposing only what the visit needs."""
+        import types
+
+        command_log: list[dict] = []
+        sleep_log: list[float] = []
+
+        class _CommandResult:
+            def __init__(self, displacements_cm, servo_ids):
+                self.positions_by_id = {
+                    int(sid): 2048 + i * 10 for i, sid in enumerate(servo_ids)
+                }
+                self.resolved_displacements_cm = list(displacements_cm)
+                self.clamp_reasons_by_id: dict = {}
+                self.debug_entries_by_id: dict = {}
+                self.message = ""
+
+        class _ServoService:
+            def command_displacement(self, *, tendon_displacements_cm, neutral_ticks, servo_ids, motion_workflow):
+                command_log.append(
+                    {
+                        "displacements_cm": list(tendon_displacements_cm),
+                        "servo_ids": list(servo_ids),
+                        "motion_workflow": str(motion_workflow),
+                    }
+                )
+                return _CommandResult(tendon_displacements_cm, servo_ids)
+
+        class _Tracking:
+            def get_snapshot(self):
+                return snapshot
+
+        class _StubSession:
+            def __init__(self) -> None:
+                self.samples: list = []
+                self.metrics: dict = {}
+                self._t = 0.0
+                self.started_monotonic = 0.0
+                self.context = types.SimpleNamespace(
+                    servo_service=_ServoService(),
+                    tracking_service=_Tracking(),
+                    monotonic_fn=self._monotonic,
+                    sleep_fn=lambda s: None,
+                )
+
+            def _monotonic(self) -> float:
+                self._t += 0.001
+                return self._t
+
+            def add_sample(self, sample) -> None:
+                self.samples.append(sample)
+
+            def raise_if_stop_requested(self) -> None:
+                return None
+
+            def elapsed_s(self) -> float:
+                return self._monotonic() - self.started_monotonic
+
+        session = _StubSession()
+        return session, command_log, sleep_log
+
+    def test_visit_emits_canonical_sample_under_coil_as_tip(self) -> None:
+        """The real-hardware path issues neutral → target → capture and
+        produces a sample carrying position_mm, runtime_tip_mode, and the
+        canonical tracker_gate metadata."""
+        snapshot = _build_tracking_snapshot(
+            position_mm=(3.0, -4.0, 50.0),
+            runtime_tip_mode="coil_as_tip",
+            runtime_tip_state="coil_as_tip",
+            tip_pose_status="coil_as_tip",
+        )
+        session, command_log, _ = self._make_session(snapshot)
+
+        config = WorkspaceRepeatabilityMapConfig.from_dict(
+            {
+                "target_count": 5,
+                "visits_per_target": 2,
+                "max_amplitude_mm": 5.0,
+                "max_target_tick_delta_from_startup": 1200,
+                "neutral_settle_s": 0.0,
+                "target_settle_s": 0.0,
+                "capture_timeout_s": 0.5,
+                "dry_run": False,
+                "require_robot_frame_tip": True,
+                "allow_debug_coil_as_tip": False,
+            }
+        )
+        experiment = WorkspaceRepeatabilityMapExperiment(config=config)
+        # Bypass setup: wire just the servo + neutral fields the visit reads.
+        experiment._servo_ids = [1, 2, 3, 4]
+        experiment._neutral_ticks = [2048, 2048, 2048, 2048]
+        # Skip the time.sleep calls in the visit loop.
+        experiment._sleep = lambda _s: None
+
+        target = experiment._targets[3]  # a perimeter-ish target
+        result = experiment._execute_single_visit(
+            session=session,
+            sample_index=0,
+            visit_position=0,
+            cycle_index=0,
+            visit_in_cycle=0,
+            target=target,
+        )
+
+        # Two servo commands: neutral then target.
+        assert len(command_log) == 2
+        assert command_log[0]["displacements_cm"] == [0.0, 0.0, 0.0, 0.0]
+        assert command_log[1]["displacements_cm"] == list(target.cable_deltas_cm)
+        assert command_log[0]["motion_workflow"] == "experiment_motion"
+
+        # Visit was accepted (snapshot is in coil-as-tip + tracked).
+        assert result["rejected"] is False
+        sample = result["sample"]
+        assert sample is not None
+
+        extra = sample.extra
+        # position_mm comes from the robot-frame tip translation (snapshot at 3,-4,50).
+        position = extra["position_mm"]
+        assert position == [3.0, -4.0, 50.0]
+        assert extra["capture_accepted"] is True
+        assert extra["capture_reject_reason"] is None
+        assert extra["target_index"] == int(target.target_index)
+        assert extra["target_x_mm"] == float(target.x_mm)
+        assert extra["runtime_tip_mode"] == "coil_as_tip"
+        assert extra["runtime_tip_trust_level"] == "thesis_trusted"
+        assert extra["tracker_gate"]["accepted"] is True
+        assert extra["resolved_servo_goal_ticks"] == {"1": 2048, "2": 2058, "3": 2068, "4": 2078}
+        # The canonical sample_from_tracking_snapshot fields are populated.
+        assert sample.commanded_cable_deltas_cm == list(target.cable_deltas_cm)
+        assert sample.target_index == int(target.target_index)
+        assert sample.phase == "workspace_map_visit"
+
+    def test_visit_records_rejection_when_gate_blocks(self) -> None:
+        """If the snapshot is stale, the gate rejects and the sample's extra
+        carries the rejection reason without crashing the visit loop."""
+        snapshot = _build_tracking_snapshot(
+            position_mm=(0.0, 0.0, 50.0),
+            age_s=2.0,  # exceeds default max_tracker_age_s=0.25
+        )
+        session, _, _ = self._make_session(snapshot)
+
+        config = WorkspaceRepeatabilityMapConfig.from_dict(
+            {
+                "target_count": 5,
+                "visits_per_target": 2,
+                "max_amplitude_mm": 5.0,
+                "max_target_tick_delta_from_startup": 1200,
+                "neutral_settle_s": 0.0,
+                "target_settle_s": 0.0,
+                "capture_timeout_s": 0.01,  # short so the test doesn't sit
+                "max_tracker_age_s": 0.25,
+                "dry_run": False,
+                "require_robot_frame_tip": True,
+                "allow_debug_coil_as_tip": False,
+            }
+        )
+        experiment = WorkspaceRepeatabilityMapExperiment(config=config)
+        experiment._servo_ids = [1, 2, 3, 4]
+        experiment._neutral_ticks = [2048, 2048, 2048, 2048]
+        experiment._sleep = lambda _s: None
+
+        target = experiment._targets[0]
+        result = experiment._execute_single_visit(
+            session=session,
+            sample_index=0,
+            visit_position=0,
+            cycle_index=0,
+            visit_in_cycle=0,
+            target=target,
+        )
+        # Stale snapshot → rejected, position_mm is None, reason recorded.
+        assert result["rejected"] is True
+        sample = result["sample"]
+        assert sample.extra["capture_accepted"] is False
+        assert "exceeds" in sample.extra["capture_reject_reason"]
+        assert sample.extra["position_mm"] is None
+        # The flag list includes the rejection markers.
+        assert "capture_rejected" in sample.status_flags
