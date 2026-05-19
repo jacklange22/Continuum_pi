@@ -572,10 +572,18 @@ class ModelingTab(QWidget):
             self.comparison_model_a_label.setText(
                 "Model A: (no ANN artifact selected — pick one in the Artifact list above)"
             )
-        # Model B label: uploaded path or "not chosen".
+        # Model B label: uploaded path or "not chosen". When the controller has
+        # archived the upload under data/models/ann/uploaded_*/, the path will end
+        # in `<uploaded_dir>/model.pt`. Show the parent directory name in that
+        # case — it carries the original basename + timestamp, which is far more
+        # useful than the constant string "model.pt".
         if state.comparison_external_model_path:
             b_path = Path(state.comparison_external_model_path)
-            self.comparison_model_b_label.setText(f"Model B: {b_path.name}")
+            if b_path.name == "model.pt" and b_path.parent.name.startswith("uploaded_"):
+                display = b_path.parent.name
+            else:
+                display = b_path.name
+            self.comparison_model_b_label.setText(f"Model B: {display}")
         else:
             self.comparison_model_b_label.setText("Model B: not chosen")
         # Status + error messages.

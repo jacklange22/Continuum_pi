@@ -545,15 +545,42 @@ class ModelingController:
 
     # ── External Model Comparison ──────────────────────────────────────────
     def set_comparison_external_model_path(self, path: str) -> None:
-        """Operator picked a .pt file via the Upload dialog. Just store the path.
+        """Operator picked a .pt file via the Upload dialog.
 
-        We don't validate or load the model here — that happens lazily when the
-        operator clicks Generate, so a stale path doesn't block the rest of
-        refresh() and a bad file produces an inline error rather than a startup
-        crash.
+        Beyond just remembering the path, this routes the upload through the
+        :meth:`_persist_uploaded_model` archiver: the .pt gets copied into
+        ``data/models/ann/uploaded_<YYYYMMDD_HHMMSS>_<basename>/`` with an
+        inferred ``training_metadata.json`` so the next refresh surfaces it in
+        the artifact dropdown. That way the operator doesn't have to re-browse
+        for the same .pt every time — it becomes a first-class artifact for
+        future comparisons.
+
+        Validation + actual model loading is still deferred until the operator
+        clicks Generate, so a bad file produces an inline error rather than a
+        blocking failure on selection.
         """
+        cleaned = str(path or "").strip()
+        archived_path = cleaned
+        archive_message = ""
+        if cleaned:
+            try:
+                archived_path = str(self._persist_uploaded_model(Path(cleaned)))
+                archive_message = (
+                    f" Saved as {Path(archived_path).parent.name} under data/models/ann/ "
+                    "so you can pick it from the dropdown next time without re-uploading."
+                )
+            except Exception as exc:  # noqa: BLE001
+                # Persisting is a nice-to-have; if it fails, fall back to using the
+                # operator's original path and surface a non-fatal warning.
+                archived_path = cleaned
+                archive_message = f" (Could not archive to data/models/ann/: {exc})"
+                self._catalog_dirty = True  # still refresh in case anything changed.
+            else:
+                # Successful archive — force a catalog refresh so the new artifact
+                # shows up in the dropdown.
+                self._catalog_dirty = True
         with self._lock:
-            self.comparison_external_model_path = str(path or "").strip()
+            self.comparison_external_model_path = archived_path
             self.state.comparison_external_model_path = self.comparison_external_model_path
             # Clear stale status when the operator picks something new.
             self.state.comparison_error_message = ""
@@ -561,12 +588,139 @@ class ModelingController:
                 self.state.comparison_status_message = (
                     f"Ready: Model B = {Path(self.comparison_external_model_path).name}. "
                     "Click Generate to compute the side-by-side plot."
+                    + archive_message
                 )
             else:
                 self.state.comparison_status_message = (
                     "Pick a dataset, select an ANN artifact above for Model A, "
                     "upload a .pt for Model B, then click Generate."
                 )
+
+    def _persist_uploaded_model(self, source_pt: Path) -> Path:
+        """Copy an uploaded .pt into ``data/models/ann/uploaded_*/`` with metadata.
+
+        Returns the path to the COPIED .pt (inside the new artifact directory).
+        Raises if the source isn't a readable .pt or the architecture can't be
+        inferred — callers should treat archiving as best-effort.
+
+        Behavior:
+          - Skip the copy if the source already lives under our artifact_root
+            (so re-selecting an already-archived model is idempotent).
+          - Build the destination as
+            ``<artifact_root>/uploaded_<YYYYMMDD_HHMMSS>_<basename>/``, where
+            ``<basename>`` is the source filename minus extension, sanitized.
+          - Write a minimal ``training_metadata.json`` with architecture
+            inferred from the saved state_dict (input_dim, hidden_layers,
+            output_dim), plus an ``upload_provenance`` block recording the
+            original path + timestamp so the operator can trace it back.
+        """
+        from datetime import datetime, timezone
+        import shutil
+
+        src = Path(source_pt)
+        if not src.exists() or not src.is_file():
+            raise FileNotFoundError(f"Upload source does not exist: {src}")
+        # Idempotency: if the source already lives under artifact_root, just
+        # return its path unchanged — no need to duplicate.
+        try:
+            src_resolved = src.resolve()
+            root_resolved = self.artifact_root.resolve()
+            if str(src_resolved).startswith(str(root_resolved) + "/") or src_resolved == root_resolved:
+                return src
+        except OSError:
+            pass
+
+        # Lazy-import the architecture inferrer + torch loader so the controller
+        # stays importable without PyTorch.
+        from continuum_robot.modeling.ann_training import _require_torch
+        from continuum_robot.modeling.model_comparison import (
+            _infer_architecture_from_state_dict,
+        )
+
+        torch = _require_torch()
+        state_dict = torch.load(src, map_location="cpu")
+        if not isinstance(state_dict, dict):
+            raise ValueError(
+                f"Uploaded file is not a state_dict (got {type(state_dict).__name__}); "
+                "can't archive without architecture metadata."
+            )
+        input_dim, hidden_layers, output_dim = _infer_architecture_from_state_dict(state_dict)
+
+        # Build the destination directory.
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        basename = "".join(
+            ch if (ch.isalnum() or ch in "-_") else "_" for ch in src.stem
+        ) or "model"
+        dest_dir = self.artifact_root / f"uploaded_{timestamp}_{basename}"
+        # If the operator uploads the same file repeatedly in the same second
+        # (unlikely but possible), avoid clobbering by appending an int.
+        counter = 1
+        while dest_dir.exists():
+            dest_dir = self.artifact_root / f"uploaded_{timestamp}_{basename}_{counter}"
+            counter += 1
+        dest_dir.mkdir(parents=True, exist_ok=False)
+        dest_pt = dest_dir / "model.pt"
+        shutil.copy2(src, dest_pt)
+
+        # Output target: dim 3 ⇒ XYZ; dim 6 ⇒ full pose. (Side-by-side
+        # comparison only supports forward models, so this is a safe heuristic.)
+        if output_dim == 3:
+            output_target = "xyz"
+            artifact_kind = "legacy_ann_xyz_v1"
+        elif output_dim == 6:
+            output_target = "full_pose"
+            artifact_kind = "legacy_ann_full_pose_v1"
+        else:
+            # Reject unfamiliar dims rather than guess.
+            shutil.rmtree(dest_dir, ignore_errors=True)
+            raise ValueError(
+                f"Inferred output_dim={output_dim}; only 3 (XYZ) or 6 (full pose) are "
+                "supported for archived uploads. Keep the model at its original path "
+                "for one-off comparison."
+            )
+
+        # Minimal but valid metadata. The dropdown will display this as an
+        # ordinary artifact; the upload_provenance block lets future readers
+        # know it was archived from an external file.
+        metadata = {
+            "schema_version": "1.0",
+            "artifact_kind": artifact_kind,
+            "created_at_utc": datetime.now(timezone.utc).isoformat(),
+            "status": "completed",
+            "model": {
+                "input_dim": int(input_dim),
+                "output_dim": int(output_dim),
+                "hidden_layers": [int(h) for h in hidden_layers],
+                "dtype": "float64",
+                "output_target": output_target,
+            },
+            "training": {
+                "epochs_completed": 0,
+                "best_validation_loss": None,
+            },
+            "dataset": {
+                "run_name": "uploaded",
+                "path": "",
+            },
+            "backend": {"selected_backend": "cpu"},
+            "files": {"model_path": str(dest_pt)},
+            "upload_provenance": {
+                "original_path": str(src),
+                "uploaded_at_utc": datetime.now(timezone.utc).isoformat(),
+                "note": (
+                    "Archived from an external upload via the Modeling-tab "
+                    "side-by-side comparison card. Architecture inferred from "
+                    "state_dict shapes; no I/O scalers (the original may have "
+                    "been trained on standardized I/O — bear that in mind when "
+                    "interpreting comparison errors)."
+                ),
+            },
+        }
+        (dest_dir / "training_metadata.json").write_text(
+            json.dumps(metadata, indent=2),
+            encoding="utf-8",
+        )
+        return dest_pt
 
     def run_external_comparison(self) -> None:
         """Kick off the side-by-side comparison on a background thread.

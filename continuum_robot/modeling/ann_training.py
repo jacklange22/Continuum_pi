@@ -935,14 +935,31 @@ def _compile_modeling_dataset_summary(
     )
 
 
-def _discovery_sort_key(entry: ModelingDatasetSummary) -> tuple:
+def _discovery_group_key(entry: ModelingDatasetSummary) -> tuple:
+    """Primary group key for dataset discovery (trainable first, then by root kind).
+
+    Sorted ascending: trainable runs first (0), then non-trainable (1); within each,
+    real ``experiments/`` first (0), then legacy (1), archived (2), mock (3).
+    Used by the two-pass sort in :func:`discover_modeling_datasets` so timestamps
+    can sort descending (newest first) without inverting the group order.
+    """
     kind_order = {"experiments": 0, "real": 0, "legacy": 1, "archived": 2, "mock": 3}
     return (
         0 if entry.trainable_for_legacy_ann else 1,
         kind_order.get(entry.dataset_scan_root, 4),
-        str(entry.timestamp_utc or ""),
-        str(entry.run_name or ""),
     )
+
+
+def _discovery_timestamp_key(entry: ModelingDatasetSummary) -> tuple:
+    """Secondary timestamp key (used in descending mode — newest first)."""
+    return (str(entry.timestamp_utc or ""), str(entry.run_name or ""))
+
+
+def _discovery_sort_key(entry: ModelingDatasetSummary) -> tuple:
+    """Legacy single-key sort — kept for back-compat callers. Prefer the two-pass
+    approach in :func:`discover_modeling_datasets` for newest-first ordering.
+    """
+    return _discovery_group_key(entry) + _discovery_timestamp_key(entry)
 
 
 def discover_modeling_datasets(
@@ -1008,7 +1025,14 @@ def discover_modeling_datasets(
     for run_dir, scan_kind in run_dirs:
         items.append(_compile_modeling_dataset_summary(run_dir, dataset_scan_root=scan_kind, strict=False))
 
-    items.sort(key=_discovery_sort_key)
+    # Two-pass sort so timestamps go DESC (newest first) while the
+    # trainable/root-kind grouping stays ASC. Python's sort is stable, so we
+    # sort by timestamp descending first, then re-sort by the group key — the
+    # group sort preserves the timestamp order within each group. This puts
+    # the operator's most recent run at the top of the trainable group instead
+    # of buried at position 20 of 33.
+    items.sort(key=_discovery_timestamp_key, reverse=True)
+    items.sort(key=_discovery_group_key)
     return items
 
 

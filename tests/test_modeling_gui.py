@@ -1702,8 +1702,12 @@ def test_comparison_card_generate_enables_after_all_inputs_set(tmp_path: Path) -
         tab.show()
         tab.update(controller.refresh())
         assert tab.comparison_generate_button.isEnabled() is True
-        # Status reflects the chosen Model B name.
-        assert bare_b.name in tab.comparison_model_b_label.text()
+        # The upload was archived under <artifact_root>/uploaded_*/ — the label
+        # should show the archived directory name (which carries the original
+        # basename), not the constant "model.pt" inside it.
+        b_label = tab.comparison_model_b_label.text()
+        assert "uploaded_" in b_label
+        assert "b_model" in b_label
         assert "a_artifact" in tab.comparison_model_a_label.text()
     finally:
         tab.close()
@@ -1783,3 +1787,201 @@ def test_comparison_card_surfaces_error_for_bad_inputs(tmp_path: Path) -> None:
     finally:
         tab.close()
         controller.shutdown()
+
+
+def test_uploaded_pt_is_archived_into_artifact_root(tmp_path: Path) -> None:
+    """When the operator uploads a .pt for Model B, the controller copies it
+    into ``<artifact_root>/uploaded_<timestamp>_<basename>/`` with an inferred
+    training_metadata.json so the file shows up in the artifact dropdown next
+    refresh — the operator never has to re-browse for the same .pt twice.
+    """
+    pytest.importorskip("torch")
+    _app()
+    # Save a real bare state_dict at an external location.
+    bare_pt = tmp_path / "downloads" / "old_model.pt"
+    bare_pt.parent.mkdir(parents=True, exist_ok=True)
+    import torch as _torch
+    from continuum_robot.modeling import ann_training as training_module
+
+    model = training_module._build_legacy_ann_model(
+        torch=_torch,
+        input_dim=4,
+        output_dim=3,
+        hidden_layers=[8, 8],
+        device=_torch.device("cpu"),
+        dtype=_torch.float32,
+    )
+    _torch.save(model.state_dict(), bare_pt)
+
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    # No artifacts yet, no error.
+    starting = controller.refresh()
+    assert all(not str(a.path).startswith(str(tmp_path / "downloads")) for a in starting.artifacts)
+
+    controller.set_comparison_external_model_path(str(bare_pt))
+
+    # Refresh — the new uploaded artifact should appear in the dropdown.
+    state = controller.refresh()
+    upload_artifacts = [a for a in state.artifacts if a.artifact_name.startswith("uploaded_")]
+    assert len(upload_artifacts) == 1
+    archived = upload_artifacts[0]
+    # The archived path should live under artifact_root, not under downloads.
+    assert str(archived.path).startswith(str(tmp_path / "data" / "models" / "ann"))
+    assert "old_model" in archived.artifact_name
+    # Status message tells the operator where it landed.
+    assert "uploaded_" in state.comparison_status_message
+    # The model.pt file actually got copied (not just a symlink to /downloads).
+    archived_pt = archived.path / "model.pt"
+    assert archived_pt.exists()
+    assert archived_pt.stat().st_size == bare_pt.stat().st_size
+    # The controller's stored path now points at the ARCHIVED .pt, not the original.
+    assert state.comparison_external_model_path == str(archived_pt)
+    controller.shutdown()
+
+
+def test_re_selecting_already_archived_upload_is_idempotent(tmp_path: Path) -> None:
+    """If the operator picks a .pt that already lives under artifact_root (e.g.
+    a previously-archived upload), the controller should NOT make a duplicate
+    copy — just use the existing path."""
+    pytest.importorskip("torch")
+    _app()
+    import torch as _torch
+    from continuum_robot.modeling import ann_training as training_module
+
+    artifact_root = tmp_path / "data" / "models" / "ann"
+    # Pre-existing archived upload.
+    existing_dir = artifact_root / "uploaded_20260518_010101_old_model"
+    existing_dir.mkdir(parents=True)
+    model = training_module._build_legacy_ann_model(
+        torch=_torch,
+        input_dim=4,
+        output_dim=3,
+        hidden_layers=[8, 8],
+        device=_torch.device("cpu"),
+        dtype=_torch.float32,
+    )
+    existing_pt = existing_dir / "model.pt"
+    _torch.save(model.state_dict(), existing_pt)
+    (existing_dir / "training_metadata.json").write_text(
+        json.dumps(
+            {
+                "artifact_kind": "legacy_ann_xyz_v1",
+                "created_at_utc": "2026-05-18T01:01:01+00:00",
+                "status": "completed",
+                "model": {
+                    "input_dim": 4, "output_dim": 3, "hidden_layers": [8, 8],
+                    "dtype": "float32", "output_target": "xyz",
+                },
+                "training": {"epochs_completed": 1, "best_validation_loss": 0.1},
+                "dataset": {"run_name": "uploaded", "path": ""},
+                "backend": {"selected_backend": "cpu"},
+                "files": {"model_path": str(existing_pt)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=artifact_root,
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    # Pick the already-archived .pt as if browsing back to a previous upload.
+    controller.set_comparison_external_model_path(str(existing_pt))
+    state = controller.refresh()
+    # No NEW uploaded_* directory should have been created.
+    upload_dirs = list(artifact_root.glob("uploaded_*"))
+    assert len(upload_dirs) == 1
+    # The stored path points at the same file (no duplicate).
+    assert state.comparison_external_model_path == str(existing_pt)
+    controller.shutdown()
+
+
+def test_dataset_list_is_newest_first(tmp_path: Path) -> None:
+    """Regression: the dataset picker must show newest entries at the TOP of
+    the trainable group, not at the bottom. Operators were missing their just-
+    collected runs because they were sorted to position 20+ of 30+."""
+    _app()
+    output_root = tmp_path / "data" / "experiments"
+    # Three runs with monotonic timestamps.
+    older = output_root / "collect_pose_command_dataset" / "20260101_120000_older_run"
+    middle = output_root / "collect_pose_command_dataset" / "20260301_120000_middle_run"
+    newer = output_root / "collect_pose_command_dataset" / "20260518_164344_newer_run"
+    for run_dir, stamp in [
+        (older, "2026-01-01T12:00:00+00:00"),
+        (middle, "2026-03-01T12:00:00+00:00"),
+        (newer, "2026-05-18T16:43:44+00:00"),
+    ]:
+        run_dir.mkdir(parents=True)
+        (run_dir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "experiment_name": "collect_pose_command_dataset",
+                    "run_id": run_dir.name,
+                    "timestamp_utc": stamp,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (run_dir / "summary.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": "1.0",
+                    "experiment_name": "collect_pose_command_dataset",
+                    "run_id": run_dir.name,
+                    "success": True,
+                    "sample_counts": {"total": 4000},
+                    "status": "success",
+                    "experiment_metrics": {
+                        "dataset_mode": "workspace_coverage",
+                        "accepted_sample_count": 4000,
+                        "rejected_sample_count": 0,
+                        "run_trust_mode": "thesis_trusted",
+                        "valid_for_model_training": True,
+                        "target_valid_sample_count": 4000,
+                        "complete_training_row_count": 4000,
+                        "mock_mode": False,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        # Write enough rows so the trainability check passes (MIN_COMPLETE_ROWS_FOR_TRAINING).
+        with (run_dir / "modeling_dataset_export.jsonl").open("w", encoding="utf-8") as h:
+            for i in range(200):
+                h.write(
+                    json.dumps(
+                        {
+                            "sequence_index": i,
+                            "step_index": i // 4,
+                            "sample_index": i,
+                            "accepted": True,
+                            "resolved_cable_command_cm": [0.1, 0.2, 0.3, 0.4],
+                            "tip_position_xyz_mm": [1.0 + 0.1 * i, 2.0, 3.0],
+                            "tip_tangent_xyz": [0.0, 0.0, 1.0],
+                        }
+                    )
+                    + "\n"
+                )
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=output_root,
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    state = controller.refresh()
+    names = [d.run_name for d in state.datasets]
+    # Newest run must be at index 0.
+    assert names[0] == "20260518_164344_newer_run", (
+        f"newest run should be first; got order: {names}"
+    )
+    # Older runs appear after.
+    assert names.index("20260518_164344_newer_run") < names.index("20260301_120000_middle_run")
+    assert names.index("20260301_120000_middle_run") < names.index("20260101_120000_older_run")
+    controller.shutdown()
