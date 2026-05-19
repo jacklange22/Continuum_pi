@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import hashlib
@@ -25,6 +26,8 @@ from continuum_robot.experiments.critical_experiments import register_critical_e
 from continuum_robot.experiments.calibration_validation import register_calibration_validation_experiments
 from continuum_robot.experiments.registration_trial import register_registration_trial_experiment
 from continuum_robot.experiments.modeling_dataset_outputs import write_modeling_dataset_outputs
+from continuum_robot.registration.legacy_compat import average_quaternions
+from continuum_robot.tracking.transforms import quat_wxyz_to_rotmat, rotmat_to_quat_wxyz
 from continuum_robot.experiments.pretension_validation_outputs import write_pretension_validation_outputs
 from continuum_robot.experiments.penprobe_chasing_demo import PenprobeChasingDemoExperiment
 from continuum_robot.experiments.servo_tracker_sync_outputs import write_servo_tracker_sync_outputs
@@ -150,6 +153,26 @@ class CollectPoseCommandDatasetConfig:
     dry_run: bool = False
     sample_count_target: int = 120
     samples_per_command: int = 1
+    # Multi-frame post-settle averaging knobs. When tracker_samples_per_command > 1
+    # the per-command capture changes from "take one snapshot after settle" to
+    # "after one settle, collect N deduplicated tracker frames and emit both a
+    # first-frame label row and an averaged-frame label row". Existing
+    # samples_per_command behaviour is unchanged (it still emits N separate
+    # rows from N separate cached-snapshot reads). The two knobs are mutually
+    # exclusive — setting both > 1 fails the experiment precheck.
+    tracker_samples_per_command: int = 1
+    # Per-frame patience budget. Each new fresh frame must arrive within this
+    # many seconds of the previous one; total wall time scales as N * budget.
+    # Hard-fail (per the user's spec) only if a single frame exceeds this.
+    tracker_per_frame_max_wait_s: float = 1.0
+    # Optional inner-loop poll interval used while waiting for a new frame_id;
+    # None means reuse capture_poll_interval_s.
+    tracker_sample_period_s: float | None = None
+    # When None: auto-true iff tracker_samples_per_command > 1.
+    averaged_label_enabled: bool | None = None
+    export_first_sample_label: bool = True
+    # When None: auto-true iff averaged_label_enabled is on.
+    export_averaged_sample_label: bool | None = None
     settle_time_s: float = 0.15
     max_tracker_age_s: float = 0.15
     capture_timeout_s: float = 1.0
@@ -241,6 +264,24 @@ class CollectPoseCommandDatasetConfig:
             dry_run=bool(payload.get("dry_run", False)),
             sample_count_target=max(1, int(payload.get("sample_count_target", 120))),
             samples_per_command=max(1, int(payload.get("samples_per_command", payload.get("sample_count_per_point", 1)))),
+            tracker_samples_per_command=max(1, int(payload.get("tracker_samples_per_command", 1))),
+            tracker_per_frame_max_wait_s=max(0.05, float(payload.get("tracker_per_frame_max_wait_s", 1.0))),
+            tracker_sample_period_s=(
+                None
+                if payload.get("tracker_sample_period_s") in (None, "")
+                else max(0.001, float(payload.get("tracker_sample_period_s")))
+            ),
+            averaged_label_enabled=(
+                None
+                if payload.get("averaged_label_enabled") in (None, "")
+                else bool(payload.get("averaged_label_enabled"))
+            ),
+            export_first_sample_label=bool(payload.get("export_first_sample_label", True)),
+            export_averaged_sample_label=(
+                None
+                if payload.get("export_averaged_sample_label") in (None, "")
+                else bool(payload.get("export_averaged_sample_label"))
+            ),
             settle_time_s=float(payload.get("settle_time_s", 0.15)),
             max_tracker_age_s=float(payload.get("max_tracker_age_s", 0.15)),
             capture_timeout_s=float(payload.get("capture_timeout_s", 1.0)),
@@ -6476,6 +6517,21 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         return cls(config=CollectPoseCommandDatasetConfig.from_dict(payload))
 
     def setup(self, session: ExperimentSession) -> None:
+        # Mutual-exclusion guard for the two per-command sample knobs. Both
+        # control how many samples a single command produces, but with different
+        # semantics: samples_per_command runs the gate N times (legacy),
+        # tracker_samples_per_command runs the gate once for the first frame
+        # then collects N-1 more deduped fresh frames for averaging. Letting
+        # both be > 1 would multiply samples in a way the operator probably
+        # didn't mean.
+        if int(self.config.samples_per_command) > 1 and int(self.config.tracker_samples_per_command) > 1:
+            raise RuntimeError(
+                "collect_pose_command_dataset: samples_per_command and "
+                "tracker_samples_per_command are mutually exclusive when "
+                "both > 1. Set one of them to 1. "
+                f"(got samples_per_command={int(self.config.samples_per_command)}, "
+                f"tracker_samples_per_command={int(self.config.tracker_samples_per_command)})"
+            )
         tracking_service = session.context.tracking_service
         if tracking_service is not None and getattr(tracking_service, "_thread", None) is None:
             tracking_service.start()
@@ -6485,6 +6541,22 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             self._initial_neutral_ticks = [0 for _ in self._servo_ids]
         else:
             self._initial_neutral_ticks = _load_collect_pose_neutral_ticks(session, servo_ids=self._servo_ids)
+        # Side accumulators for the multi-frame averaging path. When
+        # tracker_samples_per_command > 1, session.samples receives the first-
+        # frame row (preserves today's training pipeline) and these lists
+        # collect the parallel averaged-row stream + per-frame raw stream.
+        # Empty unless the averaging path runs.
+        self._averaged_dataset_samples: list[ExperimentTimeseriesSample] = []
+        self._raw_tracker_frame_rows: list[dict[str, Any]] = []
+        # Resolve averaged_label_enabled with the "None means auto" rule.
+        if self.config.averaged_label_enabled is None:
+            self._averaged_label_enabled = int(self.config.tracker_samples_per_command) > 1
+        else:
+            self._averaged_label_enabled = bool(self.config.averaged_label_enabled)
+        if self.config.export_averaged_sample_label is None:
+            self._export_averaged_sample_label = self._averaged_label_enabled
+        else:
+            self._export_averaged_sample_label = bool(self.config.export_averaged_sample_label)
 
     def precheck(self, session: ExperimentSession) -> None:
         _precheck_collect_pose_command_dataset(
@@ -7939,45 +8011,88 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                     )
                     if settle_time_s > 0.0:
                         session.context.sleep_fn(settle_time_s)
-                    for sample_index in range(samples_per_command):
+                    tracker_samples_n = max(1, int(self.config.tracker_samples_per_command))
+                    if tracker_samples_n > 1:
                         if _complete_target_reached():
-                            break
-                        sample = self._capture_dataset_sample(
-                            session=session,
-                            command_result=command_result,
-                            phase=str(base_step.phase),
-                            step_index=int(runtime_step_index),
-                            sample_index=int(sample_index),
-                            servo_ids=servo_ids,
-                            previous_pair_command_cm=list(previous_pair_command_cm),
-                            block_index=base_step.block_index,
-                            prior_family=base_step.prior_family,
-                            step_metadata={
-                                "label": base_step.label,
-                                **dict(base_step.metadata or {}),
-                            },
-                        )
-                        session.add_sample(sample)
-                        accepted_count += int(bool(sample.extra.get("capture_accepted")))
-                        rejected_count += int(not bool(sample.extra.get("capture_accepted")))
-                        _apply_runtime_row_counters(sample, workspace_attempt=True)
-                        _enforce_continue_mode_budgets()
-                        session.set_metric("accepted_sample_count", int(accepted_count))
-                        session.set_metric("rejected_sample_count", int(rejected_count))
-                        progress += 1
-                        session.update_progress(
-                            progress,
-                            total,
-                            {
-                                "phase": str(base_step.phase),
-                                "step_index": int(runtime_step_index),
-                                "command_label": str(base_step.label),
-                                "accepted_samples": int(accepted_count),
-                                "rejected_samples": int(rejected_count),
-                                "complete_training_row_count": int(complete_training_row_count),
-                                "remaining_complete_training_rows": int(_remaining_complete_rows()),
-                            },
-                        )
+                            pass
+                        else:
+                            self._capture_one_command_with_averaging(
+                                session=session,
+                                command_result=command_result,
+                                base_step=base_step,
+                                runtime_step_index=runtime_step_index,
+                                servo_ids=servo_ids,
+                                previous_pair_command_cm=previous_pair_command_cm,
+                                tracker_samples_n=tracker_samples_n,
+                                accepted_inc=lambda: None,
+                            )
+                            # Counter increments + progress are handled inside
+                            # _capture_one_command_with_averaging via closures
+                            # injected next; for now use post-call bookkeeping.
+                            last_sample = session.samples[-1] if session.samples else None
+                            if last_sample is not None:
+                                accepted_count += int(bool(last_sample.extra.get("capture_accepted")))
+                                rejected_count += int(not bool(last_sample.extra.get("capture_accepted")))
+                                _apply_runtime_row_counters(last_sample, workspace_attempt=True)
+                            _enforce_continue_mode_budgets()
+                            session.set_metric("accepted_sample_count", int(accepted_count))
+                            session.set_metric("rejected_sample_count", int(rejected_count))
+                            progress += 1
+                            session.update_progress(
+                                progress,
+                                total,
+                                {
+                                    "phase": str(base_step.phase),
+                                    "step_index": int(runtime_step_index),
+                                    "command_label": str(base_step.label),
+                                    "accepted_samples": int(accepted_count),
+                                    "rejected_samples": int(rejected_count),
+                                    "complete_training_row_count": int(complete_training_row_count),
+                                    "remaining_complete_training_rows": int(_remaining_complete_rows()),
+                                    "tracker_averaging_active": True,
+                                    "tracker_samples_per_command": int(tracker_samples_n),
+                                },
+                            )
+                    else:
+                        for sample_index in range(samples_per_command):
+                            if _complete_target_reached():
+                                break
+                            sample = self._capture_dataset_sample(
+                                session=session,
+                                command_result=command_result,
+                                phase=str(base_step.phase),
+                                step_index=int(runtime_step_index),
+                                sample_index=int(sample_index),
+                                servo_ids=servo_ids,
+                                previous_pair_command_cm=list(previous_pair_command_cm),
+                                block_index=base_step.block_index,
+                                prior_family=base_step.prior_family,
+                                step_metadata={
+                                    "label": base_step.label,
+                                    **dict(base_step.metadata or {}),
+                                },
+                            )
+                            session.add_sample(sample)
+                            accepted_count += int(bool(sample.extra.get("capture_accepted")))
+                            rejected_count += int(not bool(sample.extra.get("capture_accepted")))
+                            _apply_runtime_row_counters(sample, workspace_attempt=True)
+                            _enforce_continue_mode_budgets()
+                            session.set_metric("accepted_sample_count", int(accepted_count))
+                            session.set_metric("rejected_sample_count", int(rejected_count))
+                            progress += 1
+                            session.update_progress(
+                                progress,
+                                total,
+                                {
+                                    "phase": str(base_step.phase),
+                                    "step_index": int(runtime_step_index),
+                                    "command_label": str(base_step.label),
+                                    "accepted_samples": int(accepted_count),
+                                    "rejected_samples": int(rejected_count),
+                                    "complete_training_row_count": int(complete_training_row_count),
+                                    "remaining_complete_training_rows": int(_remaining_complete_rows()),
+                                },
+                            )
                     previous_pair_command_cm = list(base_step.pair_command_cm)
                     chunk_n = self.config.chunk_flush_every_n_commands
                     if chunk_n is not None and commands_completed_in_run % int(chunk_n) == 0:
@@ -8060,6 +8175,22 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         session.set_metric("registration_loaded", session.context.registration_path.exists())
 
     def finalize(self, session: ExperimentSession) -> None:
+        # Stash multi-frame averaging summary so it lands in summary.json
+        # alongside the rest of experiment_metrics. Safe no-op when averaging
+        # wasn't active (averaged_samples list will be empty).
+        averaged_samples = list(getattr(self, "_averaged_dataset_samples", []) or [])
+        raw_frame_rows = list(getattr(self, "_raw_tracker_frame_rows", []) or [])
+        if int(self.config.tracker_samples_per_command) > 1 or averaged_samples:
+            from continuum_robot.experiments.modeling_dataset_outputs import (
+                _summarize_tracker_variability,
+            )
+            variability_summary = _summarize_tracker_variability(averaged_samples)
+            variability_summary["tracker_samples_per_command"] = int(self.config.tracker_samples_per_command)
+            variability_summary["averaged_label_enabled"] = bool(
+                getattr(self, "_averaged_label_enabled", False)
+            )
+            variability_summary["raw_tracker_frame_row_count"] = int(len(raw_frame_rows))
+            session.set_metric("tracker_variability", variability_summary)
         try:
             if not self.config.dry_run and session.context.servo_service.is_connected and self._initial_neutral_ticks:
                 failure_context = dict(session.metrics.get("failure_context", {}) or {})
@@ -8418,6 +8549,8 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         block_index: int | None,
         prior_family: str | None,
         step_metadata: dict[str, Any] | None = None,
+        pre_captured: tuple[Any, dict[str, Any]] | None = None,
+        extra_overrides: dict[str, Any] | None = None,
     ) -> ExperimentTimeseriesSample:
         if _collect_pose_servo_only_test_mode(config=self.config, tracking_service=session.context.tracking_service):
             return self._capture_servo_only_dataset_sample(
@@ -8432,16 +8565,21 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 prior_family=prior_family,
                 step_metadata=step_metadata,
             )
-        snapshot, gate = _wait_for_collect_pose_capture(
-            session=session,
-            tool_id=str(self.config.tool_id or "0A"),
-            max_tracker_age_s=float(self.config.max_tracker_age_s),
-            timeout_s=float(self.config.capture_timeout_s),
-            poll_interval_s=float(self.config.capture_poll_interval_s),
-            require_robot_frame_tip=bool(self.config.require_robot_frame_tip),
-            allow_mock_state=bool(self.config.dry_run),
-            allow_lower_trust_runtime_tip=bool(self.config.allow_lower_trust_runtime_tip),
-        )
+        if pre_captured is not None:
+            # Caller already has a settled snapshot in hand (e.g. multi-frame
+            # post-settle averaging path); reuse it instead of waiting again.
+            snapshot, gate = pre_captured
+        else:
+            snapshot, gate = _wait_for_collect_pose_capture(
+                session=session,
+                tool_id=str(self.config.tool_id or "0A"),
+                max_tracker_age_s=float(self.config.max_tracker_age_s),
+                timeout_s=float(self.config.capture_timeout_s),
+                poll_interval_s=float(self.config.capture_poll_interval_s),
+                require_robot_frame_tip=bool(self.config.require_robot_frame_tip),
+                allow_mock_state=bool(self.config.dry_run),
+                allow_lower_trust_runtime_tip=bool(self.config.allow_lower_trust_runtime_tip),
+            )
         accepted = bool(gate.get("accepted"))
         synthetic_drop = bool(command_result.get("post_motion_telemetry_unrecovered"))
         if synthetic_drop:
@@ -8518,7 +8656,184 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 sample.status_flags.append("registration_missing")
         elif snapshot.T_robot_tip is not None and "full_pose_available" not in sample.status_flags:
             sample.status_flags.append("full_pose_available")
+        if extra_overrides:
+            sample.extra.update(dict(extra_overrides))
         return sample
+
+    def _capture_one_command_with_averaging(
+        self,
+        session: ExperimentSession,
+        *,
+        command_result: dict[str, Any],
+        base_step: "ModelingCommandStep",
+        runtime_step_index: int,
+        servo_ids: list[int],
+        previous_pair_command_cm: list[float] | None,
+        tracker_samples_n: int,
+        accepted_inc,
+    ) -> None:
+        """Multi-frame post-settle averaging path for one command point.
+
+        Always emits at least one row to ``session.samples`` (the first-frame
+        label, possibly marked rejected if no valid frames arrived). When
+        averaging is enabled and at least one valid frame was collected, also
+        appends an averaged-label row to ``self._averaged_dataset_samples``
+        and per-frame raw records to ``self._raw_tracker_frame_rows``.
+
+        This is the canonical "one settle, N frame collection, two label
+        variants" path. samples_per_command's old "one settle, N independent
+        captures, N rows" path is preserved on the legacy branch.
+        """
+        _ = accepted_inc  # reserved for future closure-based counter wiring
+        tool_id = str(self.config.tool_id or "0A")
+        poll_interval_s = float(
+            self.config.tracker_sample_period_s
+            if self.config.tracker_sample_period_s is not None
+            else self.config.capture_poll_interval_s
+        )
+        frames, frames_reason = _collect_post_settle_tracker_frames(
+            session=session,
+            tool_id=tool_id,
+            max_tracker_age_s=float(self.config.max_tracker_age_s),
+            per_frame_max_wait_s=float(self.config.tracker_per_frame_max_wait_s),
+            poll_interval_s=poll_interval_s,
+            require_robot_frame_tip=bool(self.config.require_robot_frame_tip),
+            allow_mock_state=bool(self.config.dry_run),
+            allow_lower_trust_runtime_tip=bool(self.config.allow_lower_trust_runtime_tip),
+            tracker_samples_per_command=tracker_samples_n,
+        )
+        step_metadata = {
+            "label": base_step.label,
+            **dict(base_step.metadata or {}),
+        }
+        averaging_meta_base = {
+            "tracker_averaging_requested_n": int(tracker_samples_n),
+            "tracker_averaging_valid_n": int(len(frames)),
+            "tracker_averaging_underflow": bool(frames_reason is not None),
+            "tracker_averaging_underflow_reason": frames_reason,
+            "tracker_averaging_window_s": (
+                float(frames[-1]["monotonic_t"] - frames[0]["monotonic_t"])
+                if len(frames) >= 2
+                else None
+            ),
+        }
+        if not frames:
+            # Zero valid frames: synthesize a rejected first-row by going
+            # through the normal capture path with no pre-captured snapshot
+            # so it polls (and likely fails the gate again, producing the
+            # standard "capture_rejected" row).
+            rejected_sample = self._capture_dataset_sample(
+                session=session,
+                command_result=command_result,
+                phase=str(base_step.phase),
+                step_index=int(runtime_step_index),
+                sample_index=0,
+                servo_ids=servo_ids,
+                previous_pair_command_cm=list(previous_pair_command_cm or []),
+                block_index=base_step.block_index,
+                prior_family=base_step.prior_family,
+                step_metadata=step_metadata,
+                extra_overrides={
+                    "label_kind": "first",
+                    **averaging_meta_base,
+                },
+            )
+            session.add_sample(rejected_sample)
+            return
+
+        first_sample = self._capture_dataset_sample(
+            session=session,
+            command_result=command_result,
+            phase=str(base_step.phase),
+            step_index=int(runtime_step_index),
+            sample_index=0,
+            servo_ids=servo_ids,
+            previous_pair_command_cm=list(previous_pair_command_cm or []),
+            block_index=base_step.block_index,
+            prior_family=base_step.prior_family,
+            step_metadata=step_metadata,
+            pre_captured=(frames[0]["snapshot"], frames[0]["gate"]),
+            extra_overrides={
+                "label_kind": "first",
+                **averaging_meta_base,
+            },
+        )
+        session.add_sample(first_sample)
+
+        if self._averaged_label_enabled:
+            averaged = _average_tracker_frames(frames=frames, tool_id=tool_id)
+            averaged_sample = self._build_averaged_dataset_sample(
+                session=session,
+                first_sample=first_sample,
+                averaged=averaged,
+                tool_id=tool_id,
+                extra_overrides=dict(averaging_meta_base),
+            )
+            self._averaged_dataset_samples.append(averaged_sample)
+
+        for frame in frames:
+            self._raw_tracker_frame_rows.append(
+                _serialize_raw_tracker_frame(
+                    session=session,
+                    command_index=int(runtime_step_index),
+                    frame=frame,
+                    tool_id=tool_id,
+                )
+            )
+
+    def _build_averaged_dataset_sample(
+        self,
+        session: ExperimentSession,
+        *,
+        first_sample: ExperimentTimeseriesSample,
+        averaged: dict[str, Any],
+        tool_id: str,
+        extra_overrides: dict[str, Any] | None = None,
+    ) -> ExperimentTimeseriesSample:
+        """Build an averaged-label row from the already-built first-frame row.
+
+        Mutates pose fields in a deep copy of ``first_sample`` so the returned
+        sample carries identical metadata (command, telemetry, status flags)
+        but with the per-axis pose replaced by the averaged values from
+        :func:`_average_tracker_frames`. Honest framing: this is *averaged
+        random tracker noise*, not corrected for systematic bias.
+        """
+        averaged_sample = copy.deepcopy(first_sample)
+        tool_key = str(tool_id or "0A").upper()
+        matrix = list(averaged["averaged_T_robot_tip"])
+        averaged_position = list(averaged["averaged_robot_position_mm"])
+        averaged_quat = list(averaged["averaged_robot_quaternion_wxyz"])
+        averaged_tangent = [float(matrix[0][2]), float(matrix[1][2]), float(matrix[2][2])]
+        if "tip" in (averaged_sample.pose_in_robot_frame or {}):
+            averaged_sample.pose_in_robot_frame["tip"] = {
+                "matrix": matrix,
+                "translation_mm": averaged_position,
+                "quaternion_wxyz": averaged_quat,
+                "tangent_xyz": averaged_tangent,
+            }
+        if tool_key in (averaged_sample.pose_in_tracker_frame or {}):
+            tracker_entry = dict(averaged_sample.pose_in_tracker_frame[tool_key])
+            if averaged.get("averaged_tracker_translation_mm") is not None:
+                tracker_entry["translation_mm"] = list(averaged["averaged_tracker_translation_mm"])
+            if averaged.get("averaged_tracker_quaternion_wxyz") is not None:
+                tracker_entry["quaternion_wxyz"] = list(averaged["averaged_tracker_quaternion_wxyz"])
+                # Recompute tangent from the averaged quaternion using the
+                # same convention the standard builder uses.
+                quat = np.asarray(tracker_entry["quaternion_wxyz"], dtype=float)
+                norm = float(np.linalg.norm(quat))
+                if norm > 1e-12:
+                    w, x, y, z = (quat / norm).tolist()
+                    tracker_entry["tangent_xyz"] = [
+                        2.0 * (x * z + y * w),
+                        2.0 * (y * z - x * w),
+                        1.0 - 2.0 * (x * x + y * y),
+                    ]
+            averaged_sample.pose_in_tracker_frame[tool_key] = tracker_entry
+        if extra_overrides:
+            averaged_sample.extra.update(dict(extra_overrides))
+        averaged_sample.extra["label_kind"] = "averaged"
+        averaged_sample.extra["tracker_averaging"] = dict(averaged.get("stats", {}))
+        return averaged_sample
 
     def _capture_servo_only_dataset_sample(
         self,
@@ -8740,6 +9055,12 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             metadata=session.metadata,
             summary=summary,
             samples=session.samples,
+            averaged_samples=list(getattr(self, "_averaged_dataset_samples", []) or []),
+            raw_tracker_frame_rows=list(getattr(self, "_raw_tracker_frame_rows", []) or []),
+            tracker_samples_per_command=int(self.config.tracker_samples_per_command),
+            averaged_label_enabled=bool(getattr(self, "_averaged_label_enabled", False)),
+            export_first_sample_label=bool(self.config.export_first_sample_label),
+            export_averaged_sample_label=bool(getattr(self, "_export_averaged_sample_label", False)),
         )
         failure_context = dict(session.metrics.get("failure_context", {}) or {})
         if failure_context:
@@ -10103,6 +10424,279 @@ def _pair_command_from_cable_deltas(cable_deltas_cm: list[float]) -> list[float]
     if len(cable_deltas_cm) == 1:
         return [float(cable_deltas_cm[0]), 0.0]
     return [0.0, 0.0]
+
+
+def _serialize_raw_tracker_frame(
+    *,
+    session: ExperimentSession,
+    command_index: int,
+    frame: dict[str, Any],
+    tool_id: str,
+) -> dict[str, Any]:
+    """Build one raw-tracker-frame JSON row for raw_tracker_samples.jsonl.
+
+    Captures the per-frame pose in both tracker (aurora) and robot frames,
+    plus timestamps and validity state, so a reader can investigate whether
+    per-command spread is random noise, drift, settling, or outliers without
+    having to reload the full snapshot stream.
+    """
+    snapshot = frame["snapshot"]
+    gate = frame["gate"]
+    tool_key = str(tool_id or "0A").upper()
+    tool = snapshot.tools.get(tool_key)
+    tracker_pose: dict[str, Any] = {
+        "tracking_state": getattr(tool, "tracking_state", None) if tool is not None else None,
+        "translation_mm": (
+            list(tool.translation_mm) if tool is not None and tool.translation_mm is not None else None
+        ),
+        "quaternion_wxyz": (
+            list(tool.quaternion_wxyz) if tool is not None and tool.quaternion_wxyz is not None else None
+        ),
+        "frame_number": getattr(tool, "frame_number", None) if tool is not None else None,
+    }
+    robot_pose: dict[str, Any] = {}
+    if getattr(snapshot, "T_robot_tip", None) is not None:
+        matrix = snapshot.T_robot_tip
+        robot_pose = {
+            "matrix": matrix,
+            "translation_mm": [
+                float(matrix[0][3]),
+                float(matrix[1][3]),
+                float(matrix[2][3]),
+            ],
+        }
+    return {
+        "command_index": int(command_index),
+        "frame_index": int(frame["frame_index"]),
+        "tool_id": tool_key,
+        "monotonic_time_s": float(frame.get("monotonic_t", 0.0)),
+        "wall_time_utc": datetime.now(timezone.utc).isoformat(),
+        "tracker_frame_id": getattr(snapshot, "last_frame_number", None),
+        "tracker_data_age_s": getattr(snapshot, "tracker_data_age_s", None),
+        "tracker_canonical_state": getattr(snapshot, "canonical_state", None),
+        "tip_pose_status": getattr(snapshot, "tip_pose_status", None),
+        "gate_accepted": bool(gate.get("accepted")),
+        "gate_reason": str(gate.get("reason", "")),
+        "pose_in_tracker_frame": tracker_pose,
+        "pose_in_robot_frame": robot_pose,
+    }
+
+
+def _collect_post_settle_tracker_frames(
+    *,
+    session: ExperimentSession,
+    tool_id: str,
+    max_tracker_age_s: float,
+    per_frame_max_wait_s: float,
+    poll_interval_s: float,
+    require_robot_frame_tip: bool,
+    allow_mock_state: bool,
+    allow_lower_trust_runtime_tip: bool,
+    tracker_samples_per_command: int,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Collect N deduplicated post-settle tracker frames.
+
+    Returns ``(frames, reason)``:
+      - ``frames``: list of dicts ``{snapshot, gate, monotonic_t, frame_index}``
+        with at most ``tracker_samples_per_command`` entries. Each entry has
+        passed the per-modeling-tracker gate and has a unique
+        ``snapshot.last_frame_number`` (the tracker cache returns the same
+        frame if polled faster than the backend produces new ones, so we
+        dedupe on frame_number).
+      - ``reason``: None on success, else a short string describing why we
+        couldn't collect N frames (e.g. "frame_wait_timeout_at_index_3").
+
+    No filtering or rejection of "high spread" samples is done here — every
+    accepted frame is kept, per the user's explicit "do not add rejection
+    thresholds" directive. This is an estimator of frame-to-frame variability,
+    not a noise filter.
+    """
+    frames: list[dict[str, Any]] = []
+    seen_frame_ids: set[int] = set()
+    target = max(1, int(tracker_samples_per_command))
+    while len(frames) < target:
+        session.raise_if_stop_requested()
+        frame_deadline = session.context.monotonic_fn() + float(per_frame_max_wait_s)
+        snapshot = session.context.tracking_service.get_snapshot()
+        gate = _modeling_tracker_gate_status(
+            snapshot=snapshot,
+            tool_id=tool_id,
+            max_tracker_age_s=max_tracker_age_s,
+            require_robot_frame_tip=require_robot_frame_tip,
+            allow_mock_state=allow_mock_state,
+            allow_lower_trust_runtime_tip=allow_lower_trust_runtime_tip,
+        )
+        frame_id = getattr(snapshot, "last_frame_number", None)
+        accepted = bool(gate.get("accepted")) and frame_id is not None and frame_id not in seen_frame_ids
+        while not accepted and session.context.monotonic_fn() < frame_deadline:
+            session.raise_if_stop_requested()
+            session.context.sleep_fn(float(poll_interval_s))
+            snapshot = session.context.tracking_service.get_snapshot()
+            gate = _modeling_tracker_gate_status(
+                snapshot=snapshot,
+                tool_id=tool_id,
+                max_tracker_age_s=max_tracker_age_s,
+                require_robot_frame_tip=require_robot_frame_tip,
+                allow_mock_state=allow_mock_state,
+                allow_lower_trust_runtime_tip=allow_lower_trust_runtime_tip,
+            )
+            frame_id = getattr(snapshot, "last_frame_number", None)
+            accepted = bool(gate.get("accepted")) and frame_id is not None and frame_id not in seen_frame_ids
+        if not accepted:
+            return frames, f"frame_wait_timeout_at_index_{len(frames)}"
+        seen_frame_ids.add(int(frame_id))
+        frames.append(
+            {
+                "snapshot": snapshot,
+                "gate": gate,
+                "monotonic_t": float(session.context.monotonic_fn()),
+                "frame_index": int(len(frames)),
+            }
+        )
+    return frames, None
+
+
+def _average_tracker_frames(
+    *,
+    frames: list[dict[str, Any]],
+    tool_id: str,
+) -> dict[str, Any]:
+    """Compute averaged pose + spread stats from a list of valid frames.
+
+    Returns a dict with:
+      - ``averaged_T_robot_tip``: 4x4 list-of-lists, mean position + sign-aligned
+        quaternion mean of per-frame robot-frame rotations.
+      - ``averaged_tracker_translation_mm``, ``averaged_tracker_quaternion_wxyz``:
+        averaged aurora-frame tool pose (the raw tracker reading averages).
+      - ``stats``: position std per-axis / RMS / max-deviation, orientation
+        spread (degrees), first-vs-mean position+orientation differences,
+        valid frame count, and orientation_average_method.
+
+    Honest framing per the user's spec: this estimates random frame-to-frame
+    variability around a single command point. It does not, and cannot,
+    distinguish that variability from systematic registration error, settling
+    drift, or mechanical hysteresis. Raw frames are preserved separately so
+    a reader can investigate.
+    """
+    if not frames:
+        raise ValueError("No frames to average")
+    missing_t_robot_tip = [
+        frame["frame_index"]
+        for frame in frames
+        if frame["snapshot"].T_robot_tip is None
+    ]
+    if missing_t_robot_tip:
+        raise ValueError(
+            "_average_tracker_frames requires snapshot.T_robot_tip on every frame "
+            f"(missing on frame_index {missing_t_robot_tip}). Enable "
+            "require_robot_frame_tip on the experiment config."
+        )
+
+    # ---- robot-frame position & orientation ---------------------------------
+    robot_positions = np.asarray(
+        [
+            [
+                float(frame["snapshot"].T_robot_tip[0][3]),
+                float(frame["snapshot"].T_robot_tip[1][3]),
+                float(frame["snapshot"].T_robot_tip[2][3]),
+            ]
+            for frame in frames
+        ],
+        dtype=float,
+    )
+    robot_quats = np.asarray(
+        [
+            list(
+                rotmat_to_quat_wxyz(
+                    np.asarray(frame["snapshot"].T_robot_tip, dtype=float)[0:3, 0:3]
+                )
+            )
+            for frame in frames
+        ],
+        dtype=float,
+    )
+    mean_robot_position = robot_positions.mean(axis=0)
+    # robot_quats is guaranteed non-empty here because we already required at
+    # least one frame and every frame must have T_robot_tip (asserted above).
+    mean_robot_quat, quat_details = average_quaternions(
+        robot_quats, method="sign_aligned_mean"
+    )
+    averaged_T_robot_tip = np.eye(4, dtype=float)
+    averaged_T_robot_tip[0:3, 0:3] = quat_wxyz_to_rotmat(tuple(mean_robot_quat))
+    averaged_T_robot_tip[0:3, 3] = mean_robot_position
+
+    # ---- aurora-frame (tracker) pose averages (raw readings) ----------------
+    tracker_translations: list[list[float]] = []
+    tracker_quats: list[list[float]] = []
+    for frame in frames:
+        tool = frame["snapshot"].tools.get(str(tool_id or "0A").upper())
+        if tool is None:
+            continue
+        if tool.translation_mm is not None:
+            tracker_translations.append([float(value) for value in tool.translation_mm])
+        if tool.quaternion_wxyz is not None:
+            tracker_quats.append([float(value) for value in tool.quaternion_wxyz])
+    averaged_tracker_translation_mm: list[float] | None = None
+    averaged_tracker_quaternion_wxyz: list[float] | None = None
+    tracker_quat_details: dict[str, Any] = {}
+    if tracker_translations:
+        averaged_tracker_translation_mm = (
+            np.asarray(tracker_translations, dtype=float).mean(axis=0).tolist()
+        )
+    if tracker_quats:
+        mean_tracker_quat, tracker_quat_details = average_quaternions(
+            np.asarray(tracker_quats, dtype=float), method="sign_aligned_mean"
+        )
+        averaged_tracker_quaternion_wxyz = [float(value) for value in mean_tracker_quat]
+
+    # ---- spread stats -------------------------------------------------------
+    deviations = robot_positions - mean_robot_position
+    per_axis_std_mm = robot_positions.std(axis=0, ddof=0)
+    rms_std_mm = float(np.sqrt(np.mean(per_axis_std_mm ** 2)))
+    deviation_norms_mm = np.linalg.norm(deviations, axis=1)
+    max_deviation_mm = float(deviation_norms_mm.max()) if deviation_norms_mm.size else 0.0
+    first_position = robot_positions[0]
+    first_vs_mean_position_diff_mm = float(np.linalg.norm(first_position - mean_robot_position))
+
+    # Per-frame angular deltas around the averaged orientation.
+    angle_diffs_rad: list[float] = []
+    for quat in robot_quats:
+        dot = abs(float(np.dot(quat, mean_robot_quat)))
+        dot = max(min(dot, 1.0), -1.0)
+        angle_diffs_rad.append(2.0 * float(np.arccos(dot)))
+    angle_diffs_deg = [float(np.degrees(value)) for value in angle_diffs_rad]
+    orientation_max_spread_deg = float(max(angle_diffs_deg)) if angle_diffs_deg else 0.0
+    orientation_std_deg = float(np.std(angle_diffs_deg, ddof=0)) if angle_diffs_deg else 0.0
+    first_vs_mean_orientation_diff_deg = float(angle_diffs_deg[0]) if angle_diffs_deg else 0.0
+
+    sample_window_s: float | None = None
+    if len(frames) >= 2:
+        sample_window_s = float(frames[-1]["monotonic_t"] - frames[0]["monotonic_t"])
+
+    stats = {
+        "valid_sample_count": int(len(frames)),
+        "sample_window_s": sample_window_s,
+        "position_std_per_axis_mm": [float(value) for value in per_axis_std_mm],
+        "position_std_rms_mm": rms_std_mm,
+        "position_max_deviation_mm": max_deviation_mm,
+        "first_vs_mean_position_diff_mm": first_vs_mean_position_diff_mm,
+        "orientation_average_available": bool(robot_quats.size),
+        "orientation_average_method": "sign_aligned_mean_of_robot_frame_quaternions",
+        "orientation_max_spread_deg": orientation_max_spread_deg,
+        "orientation_std_deg": orientation_std_deg,
+        "first_vs_mean_orientation_diff_deg": first_vs_mean_orientation_diff_deg,
+        "robot_quat_sign_flips_applied": int(quat_details.get("sign_flips_applied", 0)),
+        "tracker_quat_sign_flips_applied": int(tracker_quat_details.get("sign_flips_applied", 0)),
+        "frame_ids": [int(f["snapshot"].last_frame_number) for f in frames if f["snapshot"].last_frame_number is not None],
+    }
+    return {
+        "averaged_T_robot_tip": averaged_T_robot_tip.tolist(),
+        "averaged_tracker_translation_mm": averaged_tracker_translation_mm,
+        "averaged_tracker_quaternion_wxyz": averaged_tracker_quaternion_wxyz,
+        "averaged_robot_position_mm": [float(value) for value in mean_robot_position],
+        "averaged_robot_quaternion_wxyz": [float(value) for value in mean_robot_quat],
+        "stats": stats,
+    }
 
 
 def _wait_for_collect_pose_capture(

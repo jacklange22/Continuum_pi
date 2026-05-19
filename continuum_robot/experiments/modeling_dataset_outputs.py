@@ -84,7 +84,19 @@ def build_modeling_dataset_summary_pairs(*, metrics: dict[str, Any]) -> list[tup
     ]
 
 
-def write_modeling_dataset_outputs(*, output_dir: Path, metadata, summary, samples) -> dict[str, Path]:
+def write_modeling_dataset_outputs(
+    *,
+    output_dir: Path,
+    metadata,
+    summary,
+    samples,
+    averaged_samples: list | None = None,
+    raw_tracker_frame_rows: list | None = None,
+    tracker_samples_per_command: int = 1,
+    averaged_label_enabled: bool = False,
+    export_first_sample_label: bool = True,
+    export_averaged_sample_label: bool = False,
+) -> dict[str, Path]:
     """Write canonical artifacts for one Motor Babble collect_pose run.
 
     Figure contract: 2 thesis-quality PNGs.
@@ -104,11 +116,18 @@ def write_modeling_dataset_outputs(*, output_dir: Path, metadata, summary, sampl
       - modeling_dataset_legacy_compat.dat: accepted rows only in legacy DAT
         format (consumed by legacy ANN). UNCHANGED.
 
-    Dropped (no real consumers / duplicated by debug.json):
-      - modeling_dataset_summary.txt (only path-captured by ann_training as
-        an optional reference, never parsed)
-      - modeling_workspace_coverage.png + modeling_workspace_coverage_report.png
-      - modeling_command_distribution.png + commanded_tendon_space_report.png
+    Multi-frame post-settle averaging extras (only when
+    tracker_samples_per_command > 1):
+      - samples_first.jsonl, samples_averaged.jsonl: training-ready label
+        variants. Schema matches samples.jsonl row-for-row.
+      - raw_tracker_samples.jsonl: every per-frame snapshot captured at each
+        command, so the operator can investigate whether per-command spread
+        is random noise vs settling drift / outliers.
+
+    Skeptical framing: averaging reduces *random* frame-to-frame label noise.
+    It does NOT remove systematic registration/transform bias, mechanical
+    hysteresis, settling drift, or outliers. Raw samples are preserved so
+    these can be inspected separately.
     """
     output_dir = Path(output_dir)
     metrics = summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else {}
@@ -118,10 +137,39 @@ def write_modeling_dataset_outputs(*, output_dir: Path, metadata, summary, sampl
     thesis_01_path = output_dir / "thesis_01_workspace_coverage_3d.png"
     thesis_02_path = output_dir / "thesis_02_command_and_workspace_2d.png"
 
+    averaging_active = bool(tracker_samples_per_command > 1)
+
     export_rows = _build_export_rows(samples=samples)
     with export_jsonl_path.open("w", encoding="utf-8") as handle:
         for row in export_rows:
             handle.write(json.dumps(row, separators=(",", ":")) + "\n")
+
+    # Multi-frame averaging extras: only emit the new files when actually
+    # averaging. When tracker_samples_per_command == 1, samples.jsonl is the
+    # sole canonical samples file (preserves today's layout for existing runs).
+    samples_first_path: Path | None = None
+    samples_averaged_path: Path | None = None
+    raw_tracker_samples_path: Path | None = None
+    if averaging_active:
+        if export_first_sample_label:
+            samples_first_path = output_dir / "samples_first.jsonl"
+            # samples_first is exactly the canonical samples list when averaging
+            # is on, because session.samples accumulates only first-frame rows
+            # in that mode. We re-serialize from the live sample objects so the
+            # file is independent of samples.jsonl's writer.
+            with samples_first_path.open("w", encoding="utf-8") as handle:
+                for sample in samples:
+                    handle.write(json.dumps(sample.to_dict(), separators=(",", ":")) + "\n")
+        if averaged_label_enabled and export_averaged_sample_label and averaged_samples:
+            samples_averaged_path = output_dir / "samples_averaged.jsonl"
+            with samples_averaged_path.open("w", encoding="utf-8") as handle:
+                for sample in averaged_samples:
+                    handle.write(json.dumps(sample.to_dict(), separators=(",", ":")) + "\n")
+        if raw_tracker_frame_rows:
+            raw_tracker_samples_path = output_dir / "raw_tracker_samples.jsonl"
+            with raw_tracker_samples_path.open("w", encoding="utf-8") as handle:
+                for row in raw_tracker_frame_rows:
+                    handle.write(json.dumps(row, separators=(",", ":")) + "\n")
     legacy_written_path: Path | None = None
     if bool(metrics.get("legacy_export_enabled", True)):
         rows = _build_legacy_dat_rows(export_rows=export_rows)
@@ -166,7 +214,70 @@ def write_modeling_dataset_outputs(*, output_dir: Path, metadata, summary, sampl
         outputs["legacy_dat_path"] = legacy_written_path
     elif legacy_dat_path.exists():
         outputs["legacy_dat_path"] = legacy_dat_path
+    if samples_first_path is not None:
+        outputs["samples_first_path"] = samples_first_path
+    if samples_averaged_path is not None:
+        outputs["samples_averaged_path"] = samples_averaged_path
+    if raw_tracker_samples_path is not None:
+        outputs["raw_tracker_samples_path"] = raw_tracker_samples_path
     return outputs
+
+
+def _summarize_tracker_variability(averaged_samples: list) -> dict[str, Any]:
+    """Reduce per-command averaged-sample stats into run-level summary numbers.
+
+    Returns mean / median / max of position_std_rms_mm and
+    first_vs_mean_position_diff_mm across all averaged-row commands, plus
+    counts. Pure summary, no thresholds or pass/fail logic.
+    """
+    if not averaged_samples:
+        return {
+            "command_point_count": 0,
+            "orientation_average_available": False,
+        }
+    std_rms_values: list[float] = []
+    first_vs_mean_values: list[float] = []
+    orientation_spread_values: list[float] = []
+    underflow_count = 0
+    orientation_available_any = False
+    for sample in averaged_samples:
+        stats = dict(sample.extra.get("tracker_averaging", {}) or {})
+        std_rms = stats.get("position_std_rms_mm")
+        if isinstance(std_rms, (int, float)):
+            std_rms_values.append(float(std_rms))
+        first_vs_mean = stats.get("first_vs_mean_position_diff_mm")
+        if isinstance(first_vs_mean, (int, float)):
+            first_vs_mean_values.append(float(first_vs_mean))
+        if stats.get("orientation_average_available"):
+            orientation_available_any = True
+            spread = stats.get("orientation_max_spread_deg")
+            if isinstance(spread, (int, float)):
+                orientation_spread_values.append(float(spread))
+        if bool(sample.extra.get("tracker_averaging_underflow")):
+            underflow_count += 1
+
+    def _agg(values: list[float]) -> dict[str, float | None]:
+        if not values:
+            return {"mean": None, "median": None, "max": None}
+        return {
+            "mean": float(np.mean(values)),
+            "median": float(np.median(values)),
+            "max": float(np.max(values)),
+        }
+
+    return {
+        "command_point_count": int(len(averaged_samples)),
+        "underflow_command_count": int(underflow_count),
+        "position_std_rms_mm": _agg(std_rms_values),
+        "first_vs_mean_position_diff_mm": _agg(first_vs_mean_values),
+        "orientation_average_available": bool(orientation_available_any),
+        "orientation_max_spread_deg": _agg(orientation_spread_values),
+        "skeptical_framing": (
+            "averaging reduces random frame-to-frame label noise; "
+            "it does not remove systematic registration/transform bias, "
+            "mechanical hysteresis, settling drift, or outliers"
+        ),
+    }
 
 
 def _write_plot_placeholder(path: Path) -> None:

@@ -4,6 +4,22 @@ sample_count_target: 4092
 continue_until_valid_samples: True
 target_valid_sample_count:
 samples_per_command: 1
+# --- Multi-frame post-settle tracker averaging ------------------------------
+# When tracker_samples_per_command > 1, after the single settle_time_s the
+# experiment collects N deduplicated tracker frames (per `last_frame_number`)
+# and emits two label variants per command:
+#   - samples_first.jsonl: matches today's first-valid-post-settle behaviour
+#   - samples_averaged.jsonl: position averaged + sign-aligned quaternion mean
+# raw_tracker_samples.jsonl preserves every per-frame snapshot for audit.
+# Mutually exclusive with samples_per_command > 1.
+# Skeptical framing: this estimates random frame-to-frame noise; it does NOT
+# remove systematic registration bias, hysteresis, or settling drift.
+tracker_samples_per_command: 1
+tracker_per_frame_max_wait_s: 1.0
+tracker_sample_period_s:        # null → reuse capture_poll_interval_s
+averaged_label_enabled:         # null → auto-true iff tracker_samples_per_command > 1
+export_first_sample_label: true
+export_averaged_sample_label:   # null → auto-true iff averaged_label_enabled
 settle_time_s: 0.15
 max_tracker_age_s: 0.15
 capture_timeout_s: 1.0
