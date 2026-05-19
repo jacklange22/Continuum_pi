@@ -1591,6 +1591,57 @@ def _write_xyz_artifact(tmp_path: Path, *, name: str, hidden_layers: list[int]) 
     return artifact_dir
 
 
+def _write_xyz_artifact_at(root: Path, *, name: str, hidden_layers: list[int]) -> Path:
+    """Like :func:`_write_xyz_artifact` but writes under an arbitrary ``root``.
+
+    Used by tests that want the artifact to be loadable + functional BUT not
+    discoverable by the controller (e.g., for testing slot gating without the
+    auto-pick fallback firing). Put the artifact at ``<root>/<name>/`` instead
+    of ``<tmp_path>/data/models/ann/<name>/``.
+    """
+    torch = pytest.importorskip("torch")
+    from continuum_robot.modeling import ann_training as training_module
+
+    artifact_dir = Path(root) / name
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    model = training_module._build_legacy_ann_model(
+        torch=torch,
+        input_dim=4,
+        output_dim=3,
+        hidden_layers=hidden_layers,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+    torch.save(model.state_dict(), artifact_dir / "model.pt")
+    (artifact_dir / "training_metadata.json").write_text(
+        json.dumps(
+            {
+                "artifact_kind": "legacy_ann_xyz_v1",
+                "created_at_utc": "2026-05-18T00:00:00+00:00",
+                "status": "completed",
+                "model": {
+                    "input_dim": 4,
+                    "output_dim": 3,
+                    "hidden_layers": hidden_layers,
+                    "dtype": "float32",
+                    "output_target": "xyz",
+                },
+                "training": {"epochs_completed": 1, "best_validation_loss": 0.1},
+                "dataset": {"run_name": "fake", "path": str(root)},
+                "backend": {"selected_backend": "cpu"},
+                "files": {"model_path": str(artifact_dir / "model.pt")},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifact_dir / "training_config.json").write_text("{}", encoding="utf-8")
+    (artifact_dir / "split_manifest.json").write_text("{}", encoding="utf-8")
+    (artifact_dir / "loss_history.csv").write_text(
+        "epoch,train_loss,validation_loss,elapsed_s\n", encoding="utf-8"
+    )
+    return artifact_dir
+
+
 def _write_workspace_dataset(tmp_path: Path, *, run_name: str, n: int = 64) -> Path:
     """Build a dataset run with enough samples for the comparison's 10-sample floor."""
     import numpy as _np
@@ -1678,8 +1729,15 @@ def test_comparison_card_renders_without_uploaded_model(tmp_path: Path) -> None:
 
 
 def test_comparison_card_generate_enables_after_all_inputs_set(tmp_path: Path) -> None:
-    """Once a dataset, an ANN artifact, AND an uploaded .pt are all selected, the
-    Generate button becomes enabled."""
+    """Once a dataset, an ANN artifact for Slot A (via back-compat dropdown
+    fallback), AND an uploaded .pt for Slot B are all selected, the Generate
+    button becomes enabled.
+
+    Also asserts the new two-slot combos surface the chosen models: Model A
+    appears in the Slot A combo (from the back-compat fallback to the main
+    artifact selection), and Model B's archived upload appears in the Slot B
+    combo with the ``uploaded_*`` prefix.
+    """
     pytest.importorskip("torch")
     _app()
     run_dir = _write_workspace_dataset(tmp_path, run_name="compdata_a", n=24)
@@ -1702,13 +1760,21 @@ def test_comparison_card_generate_enables_after_all_inputs_set(tmp_path: Path) -
         tab.show()
         tab.update(controller.refresh())
         assert tab.comparison_generate_button.isEnabled() is True
-        # The upload was archived under <artifact_root>/uploaded_*/ — the label
-        # should show the archived directory name (which carries the original
-        # basename), not the constant "model.pt" inside it.
-        b_label = tab.comparison_model_b_label.text()
-        assert "uploaded_" in b_label
-        assert "b_model" in b_label
-        assert "a_artifact" in tab.comparison_model_a_label.text()
+        # Slot B's combo should carry the archived upload's display name.
+        b_combo = tab.comparison_model_b_combo
+        b_label = b_combo.itemText(b_combo.currentIndex())
+        assert "uploaded_" in b_label or "b_model" in b_label, (
+            f"Slot B combo doesn't show the archived upload; got {b_label!r}"
+        )
+        # The dropdown ANN artifact (Model A back-compat path) is still
+        # discoverable by name in the Slot A combo's items.
+        a_items = [
+            tab.comparison_model_a_combo.itemText(i)
+            for i in range(tab.comparison_model_a_combo.count())
+        ]
+        assert any("a_artifact" in t for t in a_items), (
+            f"Slot A combo missing the discovered artifact; items={a_items}"
+        )
     finally:
         tab.close()
         controller.shutdown()
@@ -2223,6 +2289,174 @@ def test_comparison_canvas_does_not_sync_on_idle_hover(tmp_path: Path) -> None:
         tab.comparison_canvas.callbacks.process("motion_notify_event", event)
         # ax_b must NOT have changed.
         assert (ax_b.elev, ax_b.azim) == before_b
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Multi-slot comparison: pick two artifacts from the catalog without uploading
+# ---------------------------------------------------------------------------
+
+
+def test_comparison_runs_with_two_dropdown_artifacts(tmp_path: Path) -> None:
+    """Operator-driven flow: pick TWO discovered artifacts (no upload) and run
+    the side-by-side comparison. The previous single-upload-required UX
+    blocked this; the multi-slot refactor must allow it.
+    """
+    pytest.importorskip("torch")
+    _app()
+    run_dir = _write_workspace_dataset(tmp_path, run_name="twoartifacts_ds", n=32)
+    artifact_a = _write_xyz_artifact(tmp_path, name="model_alpha", hidden_layers=[8, 8])
+    artifact_b = _write_xyz_artifact(tmp_path, name="model_beta", hidden_layers=[16, 16])
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    # No upload at all. Both slots filled from the discovered catalog.
+    controller.set_comparison_model_a_path(str(artifact_a))
+    controller.set_comparison_model_b_path(str(artifact_b))
+    controller.refresh()
+    controller.run_external_comparison()
+    thread = getattr(controller, "_worker_thread", None)
+    if thread is not None:
+        thread.join(timeout=30.0)
+    result = controller.get_last_comparison_result()
+    assert result is not None, "comparison didn't produce a result"
+    # Both panels rendered with the right names.
+    assert "model_alpha" in result.model_a.label
+    assert "model_beta" in result.model_b.label
+    controller.shutdown()
+
+
+def test_comparison_slot_a_accepts_upload(tmp_path: Path) -> None:
+    """The Model A slot now accepts uploads — not just Model B. Confirms
+    set_comparison_model_a_path archives the .pt under data/models/ann/uploaded_*
+    and the controller's stored path points at the archived copy."""
+    pytest.importorskip("torch")
+    _app()
+    artifact_a = _write_xyz_artifact(tmp_path, name="src_xyz", hidden_layers=[8, 8])
+    bare_for_a = tmp_path / "uploads" / "for_slot_a.pt"
+    bare_for_a.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(artifact_a / "model.pt", bare_for_a)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.set_comparison_model_a_path(str(bare_for_a))
+    state = controller.refresh()
+    # Archived under artifact_root, not at the original /uploads/ location.
+    assert state.comparison_model_a_path.startswith(
+        str(tmp_path / "data" / "models" / "ann")
+    ), state.comparison_model_a_path
+    assert "uploaded_" in state.comparison_model_a_path
+    assert "for_slot_a" in state.comparison_model_a_path
+    # The archived file actually exists on disk.
+    assert Path(state.comparison_model_a_path).exists()
+    controller.shutdown()
+
+
+def test_comparison_combo_picks_archived_upload_for_either_slot(tmp_path: Path) -> None:
+    """A previously-archived upload appears in BOTH slot combos and is
+    selectable for either one. This is the long-running benefit: pick an old
+    upload from a prior session as Model A, a brand-new training run as Model
+    B, no re-browsing needed."""
+    pytest.importorskip("torch")
+    _app()
+    artifact_a = _write_xyz_artifact(tmp_path, name="real_train", hidden_layers=[8, 8])
+    bare = tmp_path / "uploads" / "vintage.pt"
+    bare.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(artifact_a / "model.pt", bare)
+
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    # Archive the upload (any slot will do — same archiver).
+    controller.set_comparison_model_b_path(str(bare))
+    state = controller.refresh()
+    archived_path = state.comparison_model_b_path
+    archived_dir = str(Path(archived_path).parent)
+    # The archived artifact should appear in the catalog's discovered list.
+    discovered_paths = [str(a.path) for a in state.artifacts]
+    assert archived_dir in discovered_paths, (
+        f"archived upload {archived_dir} should be in artifacts list; "
+        f"discovered: {discovered_paths}"
+    )
+    # Now drive the tab and confirm both combos list it.
+    from PySide6.QtCore import Qt
+
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(state)
+        a_paths = [
+            tab.comparison_model_a_combo.itemData(i, Qt.UserRole)
+            for i in range(tab.comparison_model_a_combo.count())
+        ]
+        b_paths = [
+            tab.comparison_model_b_combo.itemData(i, Qt.UserRole)
+            for i in range(tab.comparison_model_b_combo.count())
+        ]
+        assert archived_dir in a_paths, f"Slot A combo missing archived upload; items={a_paths}"
+        assert archived_dir in b_paths or archived_path in b_paths, (
+            f"Slot B combo missing archived upload; items={b_paths}"
+        )
+    finally:
+        tab.close()
+        controller.shutdown()
+
+
+def test_comparison_generate_gated_on_dataset_plus_both_slots(tmp_path: Path) -> None:
+    """The Generate button enables when dataset + both slots are populated.
+
+    Notable subtlety: refresh() auto-selects the first discovered ANN artifact
+    as the "main" dropdown selection (used by the regular Mike/Camarillo/ANN
+    flow). The comparison gate intentionally treats that as a back-compat
+    fallback for Slot A, so once any catalog exists, Slot A is considered set.
+    This test verifies the gate's three flips by using an EMPTY artifact_root
+    (no catalog ⇒ no back-compat fallback) so we exercise the explicit-slot
+    path cleanly.
+    """
+    pytest.importorskip("torch")
+    _app()
+    run_dir = _write_workspace_dataset(tmp_path, run_name="gate_ds", n=24)
+    # Put artifacts in a NON-discovered location so the catalog stays empty
+    # and the back-compat fallback can't fire.
+    sandbox_root = tmp_path / "sandbox_artifacts"
+    artifact_a = _write_xyz_artifact_at(sandbox_root, name="art_a", hidden_layers=[8, 8])
+    artifact_b = _write_xyz_artifact_at(sandbox_root, name="art_b", hidden_layers=[8, 8])
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",  # empty
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        # Dataset selected but no slots set → disabled.
+        tab.update(controller.refresh())
+        assert tab.comparison_generate_button.isEnabled() is False, (
+            "Generate should be disabled with no slots set; artifact_details was "
+            f"{controller.state.artifact_details!r}"
+        )
+        # Only slot B → still disabled.
+        controller.set_comparison_model_b_path(str(artifact_b))
+        tab.update(controller.refresh())
+        assert tab.comparison_generate_button.isEnabled() is False
+        # Add slot A → enabled.
+        controller.set_comparison_model_a_path(str(artifact_a))
+        tab.update(controller.refresh())
+        assert tab.comparison_generate_button.isEnabled() is True
     finally:
         tab.close()
         controller.shutdown()

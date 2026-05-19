@@ -139,18 +139,29 @@ class ModelingViewState:
     two_segment_can_open_output: bool = False
     two_segment_can_export_output: bool = False
     two_segment_export_path: str | None = None
-    # ── External Model Comparison card ───────────────────────────────────────
-    # The operator picks Model A from the artifact dropdown (above) and uploads
-    # a .pt for Model B via a file dialog. The comparison runs on the currently
-    # selected dataset and produces two side-by-side 3D scatter plots colored
-    # by per-sample tip-position error. State below tracks the upload path,
-    # async status, error/status messages, and the most recent result object
-    # which the tab passes to build_comparison_figure() for rendering.
-    comparison_external_model_path: str = ""
+    # ── Side-by-Side Model Comparison card ─────────────────────────────────
+    # Two independent model slots, each of which can be filled by EITHER
+    # picking a discovered ANN artifact from a combo box OR uploading a .pt
+    # via a file dialog. The comparison runs on the currently selected
+    # dataset and produces two side-by-side 3D scatter plots colored by
+    # per-sample tip-position error.
+    #
+    # ``comparison_model_a_path`` / ``comparison_model_b_path`` each point to
+    # an artifact directory (e.g. ``data/models/ann/<run>``) OR to a .pt file
+    # (legacy upload that wasn't archived for some reason). The path's
+    # ``.parent`` is read first if a ``training_metadata.json`` sibling
+    # exists; otherwise the .pt is loaded bare with auto-detected scaling.
+    #
+    # ``comparison_external_model_path`` is the legacy alias for the Model B
+    # slot — kept for back-compat with operators / tests that wired against
+    # the original single-upload API. Setters mirror the two for now.
+    comparison_model_a_path: str = ""
+    comparison_model_b_path: str = ""
+    comparison_external_model_path: str = ""  # alias for model_b_path; kept for back-compat
     comparison_active: bool = False
     comparison_status_message: str = (
-        "Pick a dataset, select an ANN artifact above for Model A, "
-        "upload a .pt for Model B, then click Generate."
+        "Pick a dataset, choose two ANN artifacts (or upload .pt files) "
+        "for the two model slots, then click Generate."
     )
     comparison_error_message: str = ""
     comparison_result_id: int = 0  # bump-each-render counter the tab can watch
@@ -543,58 +554,98 @@ class ModelingController:
         )
         self._worker_thread.start()
 
-    # ── External Model Comparison ──────────────────────────────────────────
-    def set_comparison_external_model_path(self, path: str) -> None:
-        """Operator picked a .pt file via the Upload dialog.
+    # ── Side-by-Side Model Comparison ─────────────────────────────────────
+    def _set_comparison_slot_path(self, slot: str, path: str) -> None:
+        """Shared setter for the Model A / Model B slot paths.
 
-        Beyond just remembering the path, this routes the upload through the
-        :meth:`_persist_uploaded_model` archiver: the .pt gets copied into
-        ``data/models/ann/uploaded_<YYYYMMDD_HHMMSS>_<basename>/`` with an
-        inferred ``training_metadata.json`` so the next refresh surfaces it in
-        the artifact dropdown. That way the operator doesn't have to re-browse
-        for the same .pt every time — it becomes a first-class artifact for
-        future comparisons.
-
-        Validation + actual model loading is still deferred until the operator
-        clicks Generate, so a bad file produces an inline error rather than a
-        blocking failure on selection.
+        ``slot`` is "a" or "b". ``path`` can be an artifact directory, a .pt
+        file inside an artifact dir (we'll point at the dir's metadata), or a
+        bare .pt upload. Bare-.pt uploads get archived through
+        :meth:`_persist_uploaded_model` so they appear in the discovered
+        artifact catalog and can be re-picked from either slot's combo on
+        future sessions.
         """
+        slot = str(slot).lower()
+        if slot not in {"a", "b"}:
+            raise ValueError(f"slot must be 'a' or 'b', got {slot!r}")
         cleaned = str(path or "").strip()
-        archived_path = cleaned
-        archive_message = ""
+        resolved_path = cleaned
+        archive_blurb = ""
+        # Archive bare-.pt uploads. Skip archiving when the path is already
+        # under our artifact_root (means the operator picked something from
+        # the combo box, not a fresh upload).
         if cleaned:
             try:
-                archived_path = str(self._persist_uploaded_model(Path(cleaned)))
-                archive_message = (
-                    f" Saved as {Path(archived_path).parent.name} under data/models/ann/ "
-                    "so you can pick it from the dropdown next time without re-uploading."
-                )
-            except Exception as exc:  # noqa: BLE001
-                # Persisting is a nice-to-have; if it fails, fall back to using the
-                # operator's original path and surface a non-fatal warning.
-                archived_path = cleaned
-                archive_message = f" (Could not archive to data/models/ann/: {exc})"
-                self._catalog_dirty = True  # still refresh in case anything changed.
-            else:
-                # Successful archive — force a catalog refresh so the new artifact
-                # shows up in the dropdown.
-                self._catalog_dirty = True
+                source = Path(cleaned)
+                already_archived = False
+                try:
+                    src_resolved = source.resolve()
+                    root_resolved = self.artifact_root.resolve()
+                    if str(src_resolved).startswith(str(root_resolved) + "/") or src_resolved == root_resolved:
+                        already_archived = True
+                except OSError:
+                    pass
+                if source.is_file() and source.suffix == ".pt" and not already_archived:
+                    resolved_path = str(self._persist_uploaded_model(source))
+                    archive_blurb = (
+                        f" Archived as {Path(resolved_path).parent.name} under "
+                        "data/models/ann/ — pick it from the dropdown next time."
+                    )
+                    self._catalog_dirty = True
+                else:
+                    resolved_path = cleaned
+            except Exception as exc:  # noqa: BLE001 — keep operator path; surface non-fatal note
+                resolved_path = cleaned
+                archive_blurb = f" (Could not archive to data/models/ann/: {exc})"
         with self._lock:
-            self.comparison_external_model_path = archived_path
-            self.state.comparison_external_model_path = self.comparison_external_model_path
-            # Clear stale status when the operator picks something new.
-            self.state.comparison_error_message = ""
-            if self.comparison_external_model_path:
-                self.state.comparison_status_message = (
-                    f"Ready: Model B = {Path(self.comparison_external_model_path).name}. "
-                    "Click Generate to compute the side-by-side plot."
-                    + archive_message
-                )
+            if slot == "a":
+                self.state.comparison_model_a_path = resolved_path
             else:
-                self.state.comparison_status_message = (
-                    "Pick a dataset, select an ANN artifact above for Model A, "
-                    "upload a .pt for Model B, then click Generate."
-                )
+                self.state.comparison_model_b_path = resolved_path
+                # Back-compat alias — old call sites read this.
+                self.state.comparison_external_model_path = resolved_path
+            self.state.comparison_error_message = ""
+            self.state.comparison_status_message = self._compose_comparison_ready_message(
+                archive_blurb
+            )
+
+    def set_comparison_model_a_path(self, path: str) -> None:
+        """Pick the first model to compare. Accepts artifact dir or .pt path."""
+        self._set_comparison_slot_path("a", path)
+
+    def set_comparison_model_b_path(self, path: str) -> None:
+        """Pick the second model to compare. Accepts artifact dir or .pt path."""
+        self._set_comparison_slot_path("b", path)
+
+    def set_comparison_external_model_path(self, path: str) -> None:
+        """Back-compat alias for ``set_comparison_model_b_path``. The original
+        single-upload API filled the "external" slot, which is now slot B."""
+        self._set_comparison_slot_path("b", path)
+
+    def _compose_comparison_ready_message(self, suffix: str = "") -> str:
+        """Build the status string shown after a slot path change."""
+        a_path = self.state.comparison_model_a_path
+        b_path = self.state.comparison_model_b_path
+        if a_path and b_path:
+            return (
+                f"Ready: Model A = {Path(a_path).parent.name if Path(a_path).suffix == '.pt' else Path(a_path).name}, "
+                f"Model B = {Path(b_path).parent.name if Path(b_path).suffix == '.pt' else Path(b_path).name}. "
+                f"Click Generate to compute the side-by-side plot.{suffix}"
+            )
+        if a_path:
+            return (
+                f"Model A set — pick a Model B (from the dropdown or by upload) "
+                f"to enable Generate.{suffix}"
+            )
+        if b_path:
+            return (
+                f"Model B set — pick a Model A (from the dropdown or by upload) "
+                f"to enable Generate.{suffix}"
+            )
+        return (
+            "Pick a dataset, choose two ANN artifacts (or upload .pt files) "
+            "for the two model slots, then click Generate."
+        )
 
     def _persist_uploaded_model(self, source_pt: Path) -> Path:
         """Copy an uploaded .pt into ``data/models/ann/uploaded_*/`` with metadata.
@@ -753,9 +804,14 @@ class ModelingController:
     def run_external_comparison(self) -> None:
         """Kick off the side-by-side comparison on a background thread.
 
-        Validates that Model A (current ANN selection), Model B (uploaded .pt),
-        and a dataset are all selected. The worker fills ``self._last_comparison``
-        and bumps ``comparison_result_id`` so the tab notices and re-renders.
+        Validates that both model slots (A and B) have a path and a dataset is
+        selected. Either slot can be filled from the discovered artifact list
+        OR from a .pt upload — both are first-class. For back-compat, if Slot
+        A is empty but the main artifact dropdown has a selection, we fall
+        back to that (mirrors the original one-upload workflow).
+
+        The worker fills ``self._last_comparison`` and bumps
+        ``comparison_result_id`` so the tab notices and re-renders.
         """
         with self._lock:
             if self.state.comparison_active:
@@ -765,26 +821,30 @@ class ModelingController:
                 if self.state.selected_dataset_path
                 else None
             )
-            artifact_a = self._selected_artifact_details
-            external_b = (
-                Path(self.state.comparison_external_model_path)
-                if self.state.comparison_external_model_path
-                else None
-            )
+            model_a_raw = self.state.comparison_model_a_path
+            model_b_raw = self.state.comparison_model_b_path
+            # Back-compat: if Slot A was never explicitly set, fall back to the
+            # main artifact dropdown selection so older workflows still work.
+            if not model_a_raw and self._selected_artifact_details is not None:
+                model_a_raw = str(self._selected_artifact_details.summary.path)
+        model_a_path = Path(model_a_raw) if model_a_raw else None
+        model_b_path = Path(model_b_raw) if model_b_raw else None
         if dataset_path is None:
             with self._lock:
                 self.state.comparison_error_message = "Select a dataset first."
             return
-        if artifact_a is None:
+        if model_a_path is None:
             with self._lock:
                 self.state.comparison_error_message = (
-                    "Select an ANN artifact (Model A) from the dropdown above first."
+                    "Pick a Model A — either from the dropdown in the comparison "
+                    "card, or by clicking Upload .pt."
                 )
             return
-        if external_b is None:
+        if model_b_path is None:
             with self._lock:
                 self.state.comparison_error_message = (
-                    "Upload a .pt file for Model B first."
+                    "Pick a Model B — either from the dropdown in the comparison "
+                    "card, or by clicking Upload .pt."
                 )
             return
         with self._lock:
@@ -794,8 +854,8 @@ class ModelingController:
         self._worker_thread = threading.Thread(
             target=self._comparison_worker,
             kwargs={
-                "model_a_path": Path(artifact_a.summary.path),
-                "model_b_path": external_b,
+                "model_a_path": model_a_path,
+                "model_b_path": model_b_path,
                 "dataset_path": dataset_path,
             },
             daemon=True,

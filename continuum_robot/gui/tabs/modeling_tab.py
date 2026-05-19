@@ -403,46 +403,83 @@ class ModelingTab(QWidget):
         plots_card.body_layout.addWidget(self.results_widget)
         right.addWidget(plots_card, 1)
 
-        # ── External Model Comparison card ─────────────────────────────────
-        # Operator picks Model A from the artifact dropdown above; clicks
-        # "Upload .pt" to pick Model B from disk (a bare state_dict or full
-        # artifact directory). On Generate, both models predict on the
-        # selected dataset's cable commands and we plot two 3D scatters side
-        # by side colored by ||predicted − recorded|| on a shared viridis bar.
-        # See continuum_robot.modeling.model_comparison for the backend.
+        # ── Side-by-Side Model Comparison card ─────────────────────────────
+        # Two independent model slots. Each slot has a combo box (lists every
+        # discovered ANN artifact) and an "Upload .pt…" button. The operator
+        # can compare two saved artifacts, one saved + one uploaded, or two
+        # uploads — whatever combination they need. The combo automatically
+        # picks up new uploads on the next refresh (set_*_path archives the
+        # upload under data/models/ann/uploaded_*/).
         comparison_card = _Card(
-            "External Model Comparison (Side-by-Side 3D Error)",
-            "Pick an ANN artifact above (Model A), upload a .pt for Model B, "
-            "and compare both on the selected dataset. Both panels share a "
-            "viridis colorbar so the same color = the same mm of error on each.",
+            "Side-by-Side Model Comparison (3D Error)",
+            "Pick TWO ANN artifacts to compare on the currently-selected "
+            "dataset. Each slot can be filled from the dropdown (any "
+            "discovered artifact) or by uploading a .pt file. Both panels "
+            "share a viridis colorbar so the same color = the same mm of "
+            "error on each.",
         )
-        # Row: model A label + model B file picker.
-        comparison_models_row = QHBoxLayout()
-        comparison_models_row.setContentsMargins(0, 0, 0, 0)
-        comparison_models_row.setSpacing(10)
-        self.comparison_model_a_label = QLabel("Model A: (no ANN artifact selected)")
-        self.comparison_model_a_label.setStyleSheet(
-            f"color: {COLORS.text_secondary};"
+        # Slot A: combo + upload button.
+        slot_a_row = QHBoxLayout()
+        slot_a_row.setContentsMargins(0, 0, 0, 0)
+        slot_a_row.setSpacing(8)
+        slot_a_label = QLabel("Model A")
+        slot_a_label.setMinimumWidth(60)
+        slot_a_label.setStyleSheet(f"color: {COLORS.text_secondary}; font-weight: 600;")
+        slot_a_row.addWidget(slot_a_label)
+        self.comparison_model_a_combo = QComboBox()
+        self.comparison_model_a_combo.setToolTip(
+            "Pick any discovered ANN artifact as Model A, or use the upload "
+            "button on the right to add an external .pt."
         )
-        self.comparison_model_a_label.setWordWrap(True)
-        comparison_models_row.addWidget(self.comparison_model_a_label, 1)
-        self.comparison_upload_button = QPushButton("Upload .pt for Model B…")
-        self.comparison_upload_button.setProperty("variant", "ghost")
-        self.comparison_upload_button.setToolTip(
-            "Pick a saved ANN state_dict (.pt) or a full artifact directory. "
-            "Bare .pt files work too — the loader infers the architecture from "
-            "the saved weight shapes."
+        self.comparison_model_a_combo.currentIndexChanged.connect(
+            lambda _i: self._on_comparison_combo_changed("a")
         )
-        self.comparison_upload_button.clicked.connect(self._on_comparison_upload_clicked)
-        comparison_models_row.addWidget(self.comparison_upload_button)
-        comparison_card.body_layout.addLayout(comparison_models_row)
-        # Row: model B chosen path label.
-        self.comparison_model_b_label = QLabel("Model B: not chosen")
-        self.comparison_model_b_label.setStyleSheet(
-            f"color: {COLORS.text_secondary};"
+        slot_a_row.addWidget(self.comparison_model_a_combo, 1)
+        self.comparison_upload_a_button = QPushButton("Upload .pt…")
+        self.comparison_upload_a_button.setProperty("variant", "ghost")
+        self.comparison_upload_a_button.setToolTip(
+            "Pick a saved ANN state_dict (.pt) or a full artifact directory "
+            "to fill Model A. Bare .pt files work — the loader auto-detects "
+            "the architecture and input-unit scale."
         )
-        self.comparison_model_b_label.setWordWrap(True)
-        comparison_card.body_layout.addWidget(self.comparison_model_b_label)
+        self.comparison_upload_a_button.clicked.connect(
+            lambda: self._on_comparison_upload_clicked("a")
+        )
+        slot_a_row.addWidget(self.comparison_upload_a_button)
+        comparison_card.body_layout.addLayout(slot_a_row)
+        # Slot B: combo + upload button.
+        slot_b_row = QHBoxLayout()
+        slot_b_row.setContentsMargins(0, 0, 0, 0)
+        slot_b_row.setSpacing(8)
+        slot_b_label = QLabel("Model B")
+        slot_b_label.setMinimumWidth(60)
+        slot_b_label.setStyleSheet(f"color: {COLORS.text_secondary}; font-weight: 600;")
+        slot_b_row.addWidget(slot_b_label)
+        self.comparison_model_b_combo = QComboBox()
+        self.comparison_model_b_combo.setToolTip(
+            "Pick any discovered ANN artifact as Model B, or use the upload "
+            "button on the right to add an external .pt."
+        )
+        self.comparison_model_b_combo.currentIndexChanged.connect(
+            lambda _i: self._on_comparison_combo_changed("b")
+        )
+        slot_b_row.addWidget(self.comparison_model_b_combo, 1)
+        self.comparison_upload_b_button = QPushButton("Upload .pt…")
+        self.comparison_upload_b_button.setProperty("variant", "ghost")
+        self.comparison_upload_b_button.setToolTip(
+            "Pick a saved ANN state_dict (.pt) or a full artifact directory "
+            "to fill Model B. Bare .pt files work — the loader auto-detects "
+            "the architecture and input-unit scale."
+        )
+        self.comparison_upload_b_button.clicked.connect(
+            lambda: self._on_comparison_upload_clicked("b")
+        )
+        slot_b_row.addWidget(self.comparison_upload_b_button)
+        comparison_card.body_layout.addLayout(slot_b_row)
+        # Internal: remember the last paths we synced into the combos so we
+        # can skip redundant repopulations and avoid triggering
+        # currentIndexChanged in a loop.
+        self._comparison_combo_signature: tuple[str, ...] = ()
         # Row: Generate + Save buttons.
         comparison_actions_row = QHBoxLayout()
         comparison_actions_row.setContentsMargins(0, 0, 0, 0)
@@ -563,29 +600,11 @@ class ModelingTab(QWidget):
         self._set_checkbox(self.camarillo_check, state.include_camarillo)
         self._set_checkbox(self.ann_check, state.include_ann)
         self._set_combo(self.scope_combo, state.evaluation_scope)
-        # ── External Model Comparison card ────────────────────────────────
-        # Model A label: name of the currently-selected ANN artifact.
-        if state.artifact_details is not None:
-            a_name = state.artifact_details.summary.artifact_name
-            self.comparison_model_a_label.setText(f"Model A: {a_name}")
-        else:
-            self.comparison_model_a_label.setText(
-                "Model A: (no ANN artifact selected — pick one in the Artifact list above)"
-            )
-        # Model B label: uploaded path or "not chosen". When the controller has
-        # archived the upload under data/models/ann/uploaded_*/, the path will end
-        # in `<uploaded_dir>/model.pt`. Show the parent directory name in that
-        # case — it carries the original basename + timestamp, which is far more
-        # useful than the constant string "model.pt".
-        if state.comparison_external_model_path:
-            b_path = Path(state.comparison_external_model_path)
-            if b_path.name == "model.pt" and b_path.parent.name.startswith("uploaded_"):
-                display = b_path.parent.name
-            else:
-                display = b_path.name
-            self.comparison_model_b_label.setText(f"Model B: {display}")
-        else:
-            self.comparison_model_b_label.setText("Model B: not chosen")
+        # ── Side-by-Side Model Comparison card ────────────────────────────
+        # Repopulate the slot combos with every discovered artifact. We use a
+        # signature compare to skip the work when nothing has changed, which
+        # also keeps the 5 Hz refresh cheap.
+        self._sync_comparison_combos(state)
         # Status + error messages.
         self.comparison_status_label.setText(state.comparison_status_message)
         if state.comparison_error_message:
@@ -593,12 +612,15 @@ class ModelingTab(QWidget):
             self.comparison_error_label.setVisible(True)
         else:
             self.comparison_error_label.setVisible(False)
-        # Generate button: enabled only when all three inputs are present and no
-        # comparison is currently running.
+        # Generate enabled when dataset + both slots are set and no run active.
+        # Slot A back-compat: if comparison_model_a_path is empty but the main
+        # artifact dropdown above has a selection, that fallback path applies.
+        slot_a_set = bool(state.comparison_model_a_path) or state.artifact_details is not None
+        slot_b_set = bool(state.comparison_model_b_path)
         ready_to_generate = (
             bool(state.selected_dataset_path)
-            and state.artifact_details is not None
-            and bool(state.comparison_external_model_path)
+            and slot_a_set
+            and slot_b_set
             and not state.comparison_active
         )
         self.comparison_generate_button.setEnabled(ready_to_generate)
@@ -632,6 +654,48 @@ class ModelingTab(QWidget):
                 if self.dataset_list.item(index).data(Qt.UserRole) == state.selected_dataset_path:
                     self.dataset_list.setCurrentRow(index)
                     break
+
+    def _sync_comparison_combos(self, state: ModelingViewState) -> None:
+        """Repopulate the Slot A / Slot B combos with every discovered artifact.
+
+        Each combo has an empty first entry ("— pick model —"), followed by
+        every artifact's display name. The path is stored in the item's
+        ``Qt.UserRole`` so the change handler can pull it out. Signature
+        compare prevents redundant rebuilds on every 5 Hz refresh tick — the
+        combos only rebuild when the catalog or selected paths change.
+        """
+        signature = (
+            tuple((a.artifact_name, str(a.path)) for a in state.artifacts),
+            state.comparison_model_a_path,
+            state.comparison_model_b_path,
+        )
+        if signature == self._comparison_combo_signature:
+            return
+        self._comparison_combo_signature = signature
+        for combo, target_path in (
+            (self.comparison_model_a_combo, state.comparison_model_a_path),
+            (self.comparison_model_b_combo, state.comparison_model_b_path),
+        ):
+            with QSignalBlocker(combo):
+                combo.clear()
+                combo.addItem("— pick model —", "")
+                selected_index = 0
+                for i, artifact in enumerate(state.artifacts, start=1):
+                    combo.addItem(artifact.artifact_name, str(artifact.path))
+                    if str(artifact.path) == target_path:
+                        selected_index = i
+                # When the slot points at a freshly-archived .pt that hasn't
+                # surfaced in the catalog yet (e.g., the operator just clicked
+                # Upload but the next refresh's catalog re-scan is pending),
+                # add an extra entry so the slot's current path is still
+                # represented in the combo.
+                if target_path and selected_index == 0:
+                    display = Path(target_path).name
+                    if display == "model.pt":
+                        display = Path(target_path).parent.name
+                    combo.addItem(display, target_path)
+                    selected_index = combo.count() - 1
+                combo.setCurrentIndex(selected_index)
 
     def _sync_artifact_list(self, state: ModelingViewState) -> None:
         current_paths = [self.artifact_list.item(index).data(Qt.UserRole) for index in range(self.artifact_list.count())]
@@ -832,20 +896,42 @@ class ModelingTab(QWidget):
         self._ann_training_opener(state.selected_dataset_path)
 
     # ── External Model Comparison handlers ────────────────────────────────
-    def _on_comparison_upload_clicked(self) -> None:
-        """Open a file picker for the Model B .pt/artifact."""
-        # Allow both .pt files and directories. Qt's QFileDialog can only do one
-        # type at a time, so default to ``.pt`` and let the operator type a path
-        # for a directory if they have one.
+    def _on_comparison_upload_clicked(self, slot: str = "b") -> None:
+        """Open a file picker for the given comparison slot ('a' or 'b').
+
+        Allows both .pt files and full artifact directories. Qt's
+        QFileDialog handles one type at a time so we default to ``.pt`` —
+        operators with a folder can still type the directory path manually,
+        or pick from the slot's combo box if it's already discovered.
+        """
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Choose Model B (.pt file)",
+            f"Choose Model {slot.upper()} (.pt file)",
             "",
             "PyTorch model (*.pt);;All files (*)",
         )
         if not path:
             return
-        self.controller.set_comparison_external_model_path(path)
+        if slot == "a":
+            self.controller.set_comparison_model_a_path(path)
+        else:
+            self.controller.set_comparison_model_b_path(path)
+        self.update(self.controller.refresh())
+
+    def _on_comparison_combo_changed(self, slot: str) -> None:
+        """Combo selection changed — pull the path stored in the item's UserRole."""
+        combo = (
+            self.comparison_model_a_combo
+            if slot == "a"
+            else self.comparison_model_b_combo
+        )
+        index = combo.currentIndex()
+        path = combo.itemData(index, Qt.UserRole) if index >= 0 else ""
+        path = str(path or "")
+        if slot == "a":
+            self.controller.set_comparison_model_a_path(path)
+        else:
+            self.controller.set_comparison_model_b_path(path)
         self.update(self.controller.refresh())
 
     def _on_comparison_save_clicked(self) -> None:
