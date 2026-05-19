@@ -424,3 +424,124 @@ def test_figure_colorbar_uses_shared_color_max(tmp_path: Path) -> None:
         import matplotlib.pyplot as plt
 
         plt.close(figure)
+
+
+# ---------------------------------------------------------------------------
+# Cable-input unit auto-detection
+# ---------------------------------------------------------------------------
+
+
+def test_autodetect_picks_x10_for_mm_trained_model(tmp_path: Path) -> None:
+    """Regression for the May-2024 continuum_jack legacy .pt collapse bug.
+
+    Hand-build a model whose hidden-layer weights are large enough that
+    cm-scale (±0.5 unit) inputs all fall in the same near-bias regime — only
+    the ×10 scale produces meaningful spread. The loader must auto-detect
+    ×10 and the bare-.pt warning must surface that.
+    """
+    from continuum_robot.modeling.model_comparison import (
+        _AUTODETECT_MIN_HEALTHY_SPREAD_MM,
+        _autodetect_input_scale,
+    )
+    from continuum_robot.modeling import ann_training as training_module
+
+    model = training_module._build_legacy_ann_model(
+        torch=torch,
+        input_dim=4,
+        output_dim=3,
+        hidden_layers=[16, 16],
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+    )
+    # Hand-craft weights so the first Linear has ~unit-scale weights but a
+    # large negative bias — cm inputs (±0.5) can't overcome the bias to
+    # activate the ReLU; mm-scale inputs (×10 → ±5) can.
+    with torch.no_grad():
+        model.input.weight.fill_(1.0)
+        model.input.bias.fill_(-3.0)  # ReLU dead unless input contributes > 3
+        model.hidden1.weight.fill_(0.5)
+        model.hidden1.bias.fill_(0.0)
+        model.output.weight.fill_(2.0)
+        model.output.bias.fill_(0.0)
+    model.eval()
+    multiplier, info = _autodetect_input_scale(
+        model=model, torch=torch, dtype=torch.float64
+    )
+    assert multiplier == 10.0, f"expected ×10 (smallest healthy), got ×{multiplier}; info: {info}"
+    assert info["scale_1.0_spread_mm"] < _AUTODETECT_MIN_HEALTHY_SPREAD_MM
+    assert info["scale_10.0_spread_mm"] >= _AUTODETECT_MIN_HEALTHY_SPREAD_MM
+
+
+def test_autodetect_picks_x1_for_cm_trained_model(tmp_path: Path) -> None:
+    """When the model is already trained on cm-scale inputs (the new
+    convention), auto-detection should pick ×1 — not over-scale. Hand-build a
+    model whose biases are small enough that ±0.5 inputs activate the ReLU."""
+    from continuum_robot.modeling.model_comparison import _autodetect_input_scale
+    from continuum_robot.modeling import ann_training as training_module
+
+    model = training_module._build_legacy_ann_model(
+        torch=torch,
+        input_dim=4,
+        output_dim=3,
+        hidden_layers=[16, 16],
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+    )
+    with torch.no_grad():
+        # Larger weights but near-zero bias → cm-scale inputs trigger varied ReLU outputs.
+        model.input.weight.uniform_(-5.0, 5.0)
+        model.input.bias.fill_(0.0)
+        model.hidden1.weight.uniform_(-2.0, 2.0)
+        model.hidden1.bias.fill_(0.0)
+        model.output.weight.uniform_(-1.0, 1.0)
+        model.output.bias.fill_(0.0)
+    model.eval()
+    multiplier, info = _autodetect_input_scale(
+        model=model, torch=torch, dtype=torch.float64
+    )
+    assert multiplier == 1.0, (
+        f"expected ×1 (smallest healthy when cm already works), got ×{multiplier}; info: {info}"
+    )
+
+
+def test_loaded_handle_applies_multiplier_in_inference(tmp_path: Path) -> None:
+    """End-to-end: a model that needs ×10 scaling must produce non-collapsed
+    predictions when ``_predict_with_handle`` is fed cm-scale cable inputs."""
+    from continuum_robot.modeling.model_comparison import (
+        _predict_with_handle,
+        load_model_for_comparison,
+    )
+    from continuum_robot.modeling import ann_training as training_module
+
+    # Save a hand-crafted "mm-trained" model as a bare .pt.
+    model = training_module._build_legacy_ann_model(
+        torch=torch,
+        input_dim=4,
+        output_dim=3,
+        hidden_layers=[16, 16],
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+    )
+    with torch.no_grad():
+        model.input.weight.fill_(1.0)
+        model.input.bias.fill_(-3.0)
+        model.hidden1.weight.fill_(0.5)
+        model.hidden1.bias.fill_(0.0)
+        model.output.weight.fill_(2.0)
+        model.output.bias.fill_(0.0)
+    bare_pt = tmp_path / "uploads" / "mm_trained.pt"
+    bare_pt.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(model.state_dict(), bare_pt)
+
+    handle = load_model_for_comparison(bare_pt, label_prefix="legacy: ")
+    assert handle.input_scale_multiplier == 10.0
+    # Predictions on cm-scale inputs should now span the workspace.
+    cable_cm = np.array(
+        [[0.5, 0.0, -0.3, 0.2], [-0.5, 0.0, 0.3, -0.2], [1.5, 0.0, -1.5, 0.0]]
+    )
+    preds = _predict_with_handle(handle, inputs=cable_cm)
+    spread = float(np.sum(np.std(preds[:, :3], axis=0)))
+    assert spread >= 5.0, (
+        f"predictions still collapsed (spread={spread:.2f} mm) even though "
+        f"handle.input_scale_multiplier=×{handle.input_scale_multiplier}"
+    )

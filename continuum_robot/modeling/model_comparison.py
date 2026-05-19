@@ -40,6 +40,16 @@ from continuum_robot.modeling.analysis import (
     ArtifactDetails,
     load_trained_artifact_details,
 )
+# Public re-exports for tests / external probing of the auto-detect contract.
+__all__ = [
+    "LoadedModelHandle",
+    "ModelComparisonResult",
+    "ModelStats",
+    "build_comparison_figure",
+    "load_model_for_comparison",
+    "run_side_by_side_comparison",
+    "save_comparison_png",
+]
 from continuum_robot.modeling.ann_training import (
     IoScalers,
     LEGACY_FULL_POSE_INPUT_DIM,
@@ -74,6 +84,14 @@ class LoadedModelHandle:
     dtype_name: str  # "float32" / "float64"
     scalers: IoScalers | None  # None ⇒ raw I/O fallback
     warnings: tuple[str, ...] = ()
+    # Multiplier applied to cable inputs (in cm) before they reach the model.
+    # 1.0 = no change (model was trained on cm, matching the new project's convention).
+    # 10.0 = legacy continuum_jack convention (model was trained on mm; new datasets
+    # store cable_cm, so we multiply by 10 to get the mm scale the model expects).
+    # Detected automatically for bare-.pt uploads via :func:`_autodetect_input_scale`
+    # and persisted in the archived metadata so future re-loads honor it without
+    # re-probing.
+    input_scale_multiplier: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -113,6 +131,99 @@ class ModelComparisonResult:
 # ---------------------------------------------------------------------------
 # model loading
 # ---------------------------------------------------------------------------
+
+
+# Probe cable inputs (cm) used by ``_autodetect_input_scale`` to figure out what
+# unit a bare-.pt was actually trained on. Seven vectors spanning the four-cable
+# space: cardinal axes, two diagonals, and a stretch. Magnitudes are typical of
+# a real workspace acquisition (±1 cm = ±10 mm).
+_AUTODETECT_PROBE_CABLE_CM: np.ndarray = np.array(
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [-1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, -1.0, 0.0, 0.0],
+        [1.0, 1.0, -1.0, -1.0],
+        [-1.0, -1.0, 1.0, 1.0],
+        [1.5, 0.0, -1.5, 0.0],
+    ],
+    dtype=float,
+)
+
+
+# Candidate input-scale multipliers we try when auto-detecting the unit
+# convention of a legacy bare-.pt. Ordered preference: 1.0 first (the new
+# convention; matches scaler-trained models when scalers are absent), 10.0 next
+# (legacy continuum_jack mm-cable convention), then 100 / 0.1 / 0.01 as
+# fallbacks for stranger conventions.
+_AUTODETECT_CANDIDATE_SCALES: tuple[float, ...] = (1.0, 10.0, 100.0, 0.1, 0.01)
+
+
+# A model that produces less than this much spread (mm of std across the probe
+# set) at any scale is "collapsing to a point" and gets a strong warning.
+_AUTODETECT_MIN_HEALTHY_SPREAD_MM: float = 5.0
+
+
+def _autodetect_input_scale(*, model, torch, dtype) -> tuple[float, dict[str, float]]:
+    """Probe a freshly-loaded legacy model with cable inputs at several scales.
+
+    Returns ``(best_scale_multiplier, diagnostic_info)``. The multiplier is the
+    factor that, when applied to cable values in cm, gives the model the input
+    range it was actually trained on. ``diagnostic_info`` is a mapping of
+    ``"scale_<N>_spread_mm" → <float>`` entries the caller can fold into the
+    figure warning text.
+
+    Why this exists: legacy continuum_jack ``.pt`` files (May 2024 vintage)
+    were trained on tendon displacement in **mm**, but new Continuum-Pi
+    datasets store ``resolved_cable_command_cm``. Feeding cm values to a
+    mm-trained model puts every hidden ReLU in its near-bias region and
+    collapses every prediction to ~output.bias — visually, all points map to
+    a single workspace location.
+
+    Selection rule (refined after observing the May-2024 models): pick the
+    SMALLEST scale that produces a "healthy" spread (≥
+    ``_AUTODETECT_MIN_HEALTHY_SPREAD_MM``). This avoids over-scaling — the
+    legacy mm-trained models cleared the threshold at ×10 but kept growing
+    spread at ×100 because the inputs entered the model's extrapolation
+    region, giving fake "300 mm workspace" outputs that look impressive but
+    are unphysical. Picking the smallest healthy scale gives the most
+    in-distribution predictions. Fallback: if no scale is healthy, pick the
+    one with maximum spread anyway (best effort).
+    """
+    info: dict[str, float] = {}
+    for scale in _AUTODETECT_CANDIDATE_SCALES:
+        try:
+            with torch.inference_mode():
+                tensor = torch.tensor(
+                    _AUTODETECT_PROBE_CABLE_CM * float(scale),
+                    dtype=dtype,
+                )
+                preds = model(tensor).detach().cpu().numpy()
+        except Exception:
+            continue
+        if preds.size == 0:
+            continue
+        xyz = preds[:, :3] if preds.shape[1] >= 3 else preds
+        if not np.all(np.isfinite(xyz)):
+            continue
+        spread = float(np.sum(np.std(xyz, axis=0)))
+        info[f"scale_{scale}_spread_mm"] = round(spread, 4)
+    if not info:
+        return 1.0, info
+    # Pick the first scale in preferred order that produces a healthy spread.
+    # Preferred order = candidate order (1.0 first, then 10.0, etc.) so we bias
+    # toward the new cm convention when it works, fall to ×10 (legacy mm) next,
+    # and only consider sub-unit scales if nothing else fires. This avoids
+    # over-scaling a genuinely cm-trained model (where every scale is "healthy"
+    # because the response is approximately linear).
+    for scale in _AUTODETECT_CANDIDATE_SCALES:
+        key = f"scale_{scale}_spread_mm"
+        if info.get(key, 0.0) >= _AUTODETECT_MIN_HEALTHY_SPREAD_MM:
+            return float(scale), info
+    # Nothing healthy — pick whichever maximized spread as a best-effort.
+    best_key = max(info, key=lambda k: info[k])
+    best_scale = float(best_key.split("_")[1])
+    return best_scale, info
 
 
 def _infer_architecture_from_state_dict(state_dict: dict[str, Any]) -> tuple[int, list[int], int]:
@@ -200,6 +311,7 @@ def load_model_for_comparison(path: Path, *, label_prefix: str = "") -> LoadedMo
             artifact_dir = candidate.parent
 
     warnings: list[str] = []
+    input_scale_multiplier: float = 1.0
     if artifact_dir is not None:
         details = load_trained_artifact_details(artifact_dir)
         metadata = dict(details.metadata or {})
@@ -231,6 +343,24 @@ def load_model_for_comparison(path: Path, *, label_prefix: str = "") -> LoadedMo
             except Exception:
                 scalers = None
                 warnings.append("Saved I/O scalers could not be parsed; using raw I/O.")
+        # Honor any previously-detected input-scale multiplier from the archived
+        # upload's metadata (set by ModelingController._persist_uploaded_model).
+        # Regular trained artifacts (output_target='xyz' / 'full_pose' with scalers)
+        # leave this at 1.0 because they were trained on the same cm convention the
+        # new datasets use.
+        upload_prov = dict(metadata.get("upload_provenance", {}) or {})
+        if "input_scale_multiplier" in upload_prov:
+            try:
+                input_scale_multiplier = float(upload_prov["input_scale_multiplier"])
+            except (TypeError, ValueError):
+                input_scale_multiplier = 1.0
+            if input_scale_multiplier != 1.0:
+                warnings.append(
+                    f"Cable inputs scaled by ×{input_scale_multiplier:g} before "
+                    "inference (auto-detected when this model was uploaded — the "
+                    "model was trained on a different unit convention than the "
+                    "current dataset). See training_metadata.json upload_provenance."
+                )
         label_name = details.summary.artifact_name
     else:
         # Bare-.pt fallback path. We need PyTorch to peek at the state_dict.
@@ -259,12 +389,52 @@ def load_model_for_comparison(path: Path, *, label_prefix: str = "") -> LoadedMo
             )
         dtype_name = "float64"
         scalers = None
-        warnings.append(
-            "Loaded as bare .pt — no sidecar training_metadata.json. Architecture "
-            f"inferred (input_dim={input_dim}, hidden_layers={hidden_layers}, "
-            f"output_dim={output_dim}); no I/O scalers applied. If the original model "
-            "was trained with standardize_io=True the predictions will be biased."
+        # Auto-detect the cable-input unit convention by probing the freshly-loaded
+        # model at several scale multipliers. Legacy continuum_jack models (May
+        # 2024 vintage) were trained on tendon displacement in mm, but new
+        # datasets store cable_cm — without this probe, predictions collapse to a
+        # single point because every hidden ReLU sits in its near-bias region.
+        dtype = _torch_dtype(torch, dtype_name)
+        probe_model = _build_legacy_ann_model(
+            torch=torch,
+            input_dim=input_dim,
+            output_dim=output_dim,
+            hidden_layers=hidden_layers,
+            device=torch.device("cpu"),
+            dtype=dtype,
         )
+        probe_model.load_state_dict(state_dict)
+        probe_model.eval()
+        input_scale_multiplier, scale_info = _autodetect_input_scale(
+            model=probe_model, torch=torch, dtype=dtype
+        )
+        # Build a tight one-liner summary of what each scale produced — the figure
+        # warning text shows this so the operator can sanity-check the auto-pick.
+        info_pieces = [f"{k}={v}mm" for k, v in scale_info.items()]
+        arch_blurb = (
+            f"architecture inferred from state_dict (input_dim={input_dim}, "
+            f"hidden_layers={hidden_layers}, output_dim={output_dim})"
+        )
+        if input_scale_multiplier == 1.0 and max(scale_info.values(), default=0.0) < _AUTODETECT_MIN_HEALTHY_SPREAD_MM:
+            warnings.append(
+                f"Loaded as bare .pt — {arch_blurb}. Auto-detection could not find "
+                f"an input scale that produces healthy output spread (best="
+                f"{max(scale_info.values(), default=0.0):.2f} mm std). Predictions "
+                f"will likely collapse near the model's output bias. Probe results: "
+                f"{', '.join(info_pieces)}."
+            )
+        elif input_scale_multiplier != 1.0:
+            warnings.append(
+                f"Loaded as bare .pt — {arch_blurb}. Auto-detected cable input "
+                f"scale ×{input_scale_multiplier:g} (model was trained on a different "
+                f"unit than the new dataset's resolved_cable_command_cm). Probe "
+                f"spreads: {', '.join(info_pieces)}."
+            )
+        else:
+            warnings.append(
+                f"Loaded as bare .pt — {arch_blurb}; cable inputs kept at the new "
+                f"convention (cm, ×1.0). No I/O scalers applied."
+            )
         details = None
         label_name = candidate.name
 
@@ -280,6 +450,7 @@ def load_model_for_comparison(path: Path, *, label_prefix: str = "") -> LoadedMo
         dtype_name=str(dtype_name),
         scalers=scalers,
         warnings=tuple(warnings),
+        input_scale_multiplier=float(input_scale_multiplier),
     )
 
 
@@ -325,6 +496,14 @@ def _predict_with_handle(handle: LoadedModelHandle, *, inputs: np.ndarray) -> np
     model.eval()
 
     inputs_arr = np.asarray(inputs, dtype=float)
+    # Apply the unit-convention multiplier BEFORE the scaler — the multiplier
+    # converts cable_cm (the new dataset convention) into whatever unit this
+    # model was trained on (legacy continuum_jack mm = ×10, etc.). Then the
+    # scaler — if present — Z-scores the now-correctly-scaled values. Skipping
+    # the multiplier was why legacy mm-trained models collapsed every
+    # prediction to ~output.bias on cm inputs.
+    if handle.input_scale_multiplier != 1.0:
+        inputs_arr = inputs_arr * float(handle.input_scale_multiplier)
     if handle.scalers is not None:
         inputs_arr = handle.scalers.input_scaler.transform(inputs_arr)
     with torch.inference_mode():

@@ -679,6 +679,28 @@ class ModelingController:
                 "for one-off comparison."
             )
 
+        # Auto-detect the cable-input unit convention by probing the model at
+        # multiple scales. Legacy continuum_jack .pt files were trained on
+        # tendon displacement in mm; new datasets store cable_cm. Without the
+        # right multiplier, every prediction collapses to ~output.bias.
+        from continuum_robot.modeling.ann_training import _build_legacy_ann_model, _torch_dtype
+        from continuum_robot.modeling.model_comparison import _autodetect_input_scale
+
+        dtype_obj = _torch_dtype(torch, "float64")
+        probe_model = _build_legacy_ann_model(
+            torch=torch,
+            input_dim=int(input_dim),
+            output_dim=int(output_dim),
+            hidden_layers=[int(h) for h in hidden_layers],
+            device=torch.device("cpu"),
+            dtype=dtype_obj,
+        )
+        probe_model.load_state_dict(state_dict)
+        probe_model.eval()
+        input_scale_multiplier, scale_probe_info = _autodetect_input_scale(
+            model=probe_model, torch=torch, dtype=dtype_obj
+        )
+
         # Minimal but valid metadata. The dropdown will display this as an
         # ordinary artifact; the upload_provenance block lets future readers
         # know it was archived from an external file.
@@ -707,12 +729,18 @@ class ModelingController:
             "upload_provenance": {
                 "original_path": str(src),
                 "uploaded_at_utc": datetime.now(timezone.utc).isoformat(),
+                # Auto-detected cable-input unit multiplier (see
+                # model_comparison._autodetect_input_scale). 1.0 = the new
+                # cm convention; 10.0 = legacy continuum_jack mm convention.
+                # Future loads honor this so predictions don't collapse.
+                "input_scale_multiplier": float(input_scale_multiplier),
+                "input_scale_probe": dict(scale_probe_info),
                 "note": (
                     "Archived from an external upload via the Modeling-tab "
                     "side-by-side comparison card. Architecture inferred from "
-                    "state_dict shapes; no I/O scalers (the original may have "
-                    "been trained on standardized I/O — bear that in mind when "
-                    "interpreting comparison errors)."
+                    "state_dict shapes; cable-input unit auto-detected by "
+                    "probing the model at several scale multipliers and "
+                    "picking the one that produced healthy output spread."
                 ),
             },
         }
