@@ -2587,6 +2587,90 @@ def run_model_sweep(
     )
 
 
+def _parse_artifact_dir(
+    artifact_dir: Path,
+    *,
+    display_name: str | None = None,
+) -> TrainedArtifactSummary | None:
+    """Parse one artifact directory's training_metadata.json into a summary.
+
+    Returns None if the directory isn't a valid artifact (missing/unreadable
+    metadata). Factored out so discovery can use it both for top-level
+    artifacts AND for sub-architecture directories nested inside a sweep
+    folder (e.g. ``20260518_222229_legacy_ann_full_pose_model_sweep/ann_128_128``).
+    ``display_name`` overrides ``artifact_name`` so sweep sub-models can be
+    surfaced as ``"<sweep>/ann_128_128"`` instead of the bare leaf ``ann_128_128``.
+    """
+    metadata_path = artifact_dir / "training_metadata.json"
+    if not artifact_dir.is_dir() or not metadata_path.exists():
+        return None
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    training = dict(payload.get("training", {}) or {})
+    dataset = dict(payload.get("dataset", {}) or {})
+    backend = dict(payload.get("backend", {}) or {})
+    model_payload = dict(payload.get("model", {}) or {})
+    artifact_kind = str(payload.get("artifact_kind", "") or "")
+    output_target = str(model_payload.get("output_target") or "").strip().lower()
+    if not output_target:
+        if "xyz_to_cable" in artifact_kind or "cable_from_xyz" in artifact_kind:
+            output_target = OUTPUT_TARGET_CABLE_FROM_XYZ
+        elif "xyz" in artifact_kind and "full_pose" not in artifact_kind:
+            output_target = OUTPUT_TARGET_XYZ
+        else:
+            output_target = OUTPUT_TARGET_FULL_POSE
+    model_path_raw = dict(payload.get("files", {}) or {}).get("model_path")
+    model_path = Path(model_path_raw) if model_path_raw else None
+    return TrainedArtifactSummary(
+        path=artifact_dir,
+        artifact_name=str(display_name or artifact_dir.name),
+        created_at_utc=str(payload.get("created_at_utc", "") or ""),
+        status=str(payload.get("status", "unknown") or "unknown"),
+        dataset_name=str(dataset.get("run_name", dataset.get("dataset_mode", "unknown")) or "unknown"),
+        backend_name=str(backend.get("selected_backend", "unknown") or "unknown"),
+        epochs_completed=int(training.get("epochs_completed", 0) or 0),
+        best_validation_loss=(
+            float(training["best_validation_loss"])
+            if training.get("best_validation_loss") not in (None, "")
+            else None
+        ),
+        metadata_path=metadata_path,
+        model_path=model_path,
+        artifact_kind=artifact_kind,
+        output_target=output_target,
+    )
+
+
+def _is_sweep_directory(candidate: Path) -> bool:
+    """True when ``candidate`` looks like a model-sweep wrapper directory.
+
+    Sweep folders don't carry their own ``training_metadata.json`` — they
+    contain per-architecture sub-folders that do (e.g. ``ann_128_128/``,
+    ``linear_ridge_full_pose/``). We detect them via either:
+      - presence of ``model_sweep_summary.json`` at the top level, OR
+      - at least one child subdirectory that has ``training_metadata.json``.
+
+    Without this, sweep-trained ANNs are invisible to the Modeling tab even
+    though every sub-architecture is a complete, individually-loadable model.
+    """
+    if not candidate.is_dir():
+        return False
+    if (candidate / "training_metadata.json").exists():
+        # Has its own metadata ⇒ it's a regular artifact, not a sweep wrapper.
+        return False
+    if (candidate / "model_sweep_summary.json").exists():
+        return True
+    try:
+        for child in candidate.iterdir():
+            if child.is_dir() and (child / "training_metadata.json").exists():
+                return True
+    except OSError:
+        return False
+    return False
+
+
 def discover_trained_artifacts(
     *,
     artifact_root: Path,
@@ -2597,57 +2681,49 @@ def discover_trained_artifacts(
     ``include_inverse``: when False, hides ``cable_from_xyz`` artifacts from the result.
     The Modeling-tab comparison workflow operates on forward cable→pose models only,
     so it asks for include_inverse=False to keep its artifact picker clean.
+
+    Sweep directories (e.g. ``YYYYMMDD_HHMMSS_legacy_ann_full_pose_model_sweep``)
+    are entered automatically: each sub-architecture inside (``ann_128_128``,
+    ``ann_64_64``, ``linear_ridge_full_pose``, ...) is surfaced as its own
+    artifact entry with a display name of ``"<sweep>/<sub>"`` so the operator
+    can tell at a glance which sweep the model came from.
     """
     root = Path(artifact_root)
     if not root.exists():
         return []
     artifacts: list[TrainedArtifactSummary] = []
     for child in sorted(root.iterdir(), key=lambda value: value.name, reverse=True):
-        metadata_path = child / "training_metadata.json"
-        if not child.is_dir() or not metadata_path.exists():
+        if not child.is_dir():
+            continue
+        # 1) Regular top-level artifact (most common case).
+        summary = _parse_artifact_dir(child)
+        if summary is not None:
+            if not include_inverse and summary.output_target == OUTPUT_TARGET_CABLE_FROM_XYZ:
+                continue
+            artifacts.append(summary)
+            continue
+        # 2) Sweep wrapper directory — list its sub-architectures as siblings.
+        if not _is_sweep_directory(child):
             continue
         try:
-            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-        except Exception:
+            sub_dirs = sorted(child.iterdir(), key=lambda value: value.name)
+        except OSError:
             continue
-        training = dict(payload.get("training", {}) or {})
-        dataset = dict(payload.get("dataset", {}) or {})
-        backend = dict(payload.get("backend", {}) or {})
-        model_payload = dict(payload.get("model", {}) or {})
-        artifact_kind = str(payload.get("artifact_kind", "") or "")
-        output_target = str(model_payload.get("output_target") or "").strip().lower()
-        # Back-compat: old artifacts only carry artifact_kind. Infer the target.
-        if not output_target:
-            if "xyz_to_cable" in artifact_kind or "cable_from_xyz" in artifact_kind:
-                output_target = OUTPUT_TARGET_CABLE_FROM_XYZ
-            elif "xyz" in artifact_kind and "full_pose" not in artifact_kind:
-                output_target = OUTPUT_TARGET_XYZ
-            else:
-                output_target = OUTPUT_TARGET_FULL_POSE
-        if not include_inverse and output_target == OUTPUT_TARGET_CABLE_FROM_XYZ:
-            continue
-        model_path_raw = dict(payload.get("files", {}) or {}).get("model_path")
-        model_path = Path(model_path_raw) if model_path_raw else None
-        artifacts.append(
-            TrainedArtifactSummary(
-                path=child,
-                artifact_name=child.name,
-                created_at_utc=str(payload.get("created_at_utc", "") or ""),
-                status=str(payload.get("status", "unknown") or "unknown"),
-                dataset_name=str(dataset.get("run_name", dataset.get("dataset_mode", "unknown")) or "unknown"),
-                backend_name=str(backend.get("selected_backend", "unknown") or "unknown"),
-                epochs_completed=int(training.get("epochs_completed", 0) or 0),
-                best_validation_loss=(
-                    float(training["best_validation_loss"])
-                    if training.get("best_validation_loss") not in (None, "")
-                    else None
-                ),
-                metadata_path=metadata_path,
-                model_path=model_path,
-                artifact_kind=artifact_kind,
-                output_target=output_target,
+        for sub in sub_dirs:
+            if not sub.is_dir():
+                continue
+            sub_summary = _parse_artifact_dir(
+                sub, display_name=f"{child.name}/{sub.name}"
             )
-        )
+            if sub_summary is None:
+                continue
+            if (
+                not include_inverse
+                and sub_summary.output_target == OUTPUT_TARGET_CABLE_FROM_XYZ
+            ):
+                continue
+            artifacts.append(sub_summary)
+
     artifacts.sort(key=lambda entry: (entry.created_at_utc, entry.artifact_name), reverse=True)
     return artifacts
 
