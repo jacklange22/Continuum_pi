@@ -2,7 +2,13 @@
 # tool uses raw XC330 counts 0..4095 as its active jog range.
 position_min_offset_ticks: -600
 position_max_offset_ticks: 600
-max_current_ma: 850
+# Long-run thesis-experiment headroom: raised 2026-05-18 from 850 → 1200 mA so
+# that transient peaks on a healthy rig (typical post-motion: 700-900 mA,
+# longest observed-run max: 834 mA) don't trip the hard limit and abort a
+# 12-hour run. Stays well below XC330-M288-T approximate 1.8 A stall current.
+# Tendon force is still bounded by the conservative goal-current modes; this
+# is the catch-everything-else absolute software limit.
+max_current_ma: 1200
 servo_model: XC330-M288-T
 # Hard current safety is intentionally separate from pretension tuning
 # thresholds. DYNAMIXEL present current is a servo-reported input-current
@@ -11,7 +17,9 @@ servo_model: XC330-M288-T
 # Current Limit(38) control-table item/range that should be respected where
 # configured by firmware. This software limit stays conservative and checks
 # absolute current magnitude so negative reported current cannot bypass safety.
-servo_reported_current_hard_limit_ma: 900
+# Kept slightly above max_current_ma so the absolute-magnitude check is the
+# active gate, not this redundant ceiling.
+servo_reported_current_hard_limit_ma: 1250
 servo_reported_current_warning_ma: 650
 current_safety_basis: "XC330-M288-T servo-reported input-current estimate; absolute magnitude limit below approximate 5 V stall current; Current Limit(38) should also be respected where configured/read."
 # Brief wait between writing goal positions and reading post-motion telemetry

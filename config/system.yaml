@@ -88,11 +88,14 @@ dynamixel_settings:
   # tendon load and makes manual jog feel deliberate rather than jumpy.
   #
   # Units (XC330-M288-T):
-  #   profile_velocity:     N * 0.229 rev/min  (30 -> ~6.9 rev/min ≈ 41 deg/sec)
-  #   profile_acceleration: N * 214.577 rev/min²  (8 -> ~28.6 rev/sec²)
+  #   profile_velocity:     N * 0.229 rev/min  (15 -> ~3.4 rev/min ≈ 21 deg/sec)
+  #   profile_acceleration: N * 214.577 rev/min²  (4 -> ~14.3 rev/sec²)
   # Firmware default = 0 = unlimited; bumping these in adds a real ramp.
-  default_profile_velocity: 30
-  default_profile_acceleration: 8
+  # Lowered 2026-05-18 from 30/8 → 15/4 for 12-hour thesis runs: halves rotor
+  # speed and acceleration to reduce peak motor current spikes against tendon
+  # load on long unattended runs.
+  default_profile_velocity: 15
+  default_profile_acceleration: 4
   single_segment_auto_configure_motion_defaults: true
   single_segment_experiment_preferred_operating_mode: 3
   single_segment_experiment_allowed_operating_modes: [3]

@@ -32,8 +32,14 @@ allow_recovered_packet_errors: true
 max_recovered_packet_errors_per_run:
 max_current_warning_ma: 800
 current_warning_ma: 800
-transient_current_spike_ma: 850
-sustained_jam_current_ma: 850
+# Raised 2026-05-18 from 850 → 1200 mA for 12-hour thesis runs. Below 1200 mA,
+# transient spikes are warned + drop the sample + continue (transient_spike_policy
+# below). A SINGLE servo sustaining ≥ 1200 mA for `sustained_jam_cycles` cycles
+# still stops the run safely (sustained_jam_policy: stop_safely) — that is the
+# only current-driven termination path. Headroom stays well below the
+# XC330-M288-T approximate 1.8 A stall current.
+transient_current_spike_ma: 1200
+sustained_jam_current_ma: 1200
 sustained_jam_cycles: 3
 transient_spike_policy: warn_drop_sample_continue
 sustained_jam_policy: stop_safely
