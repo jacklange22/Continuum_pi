@@ -1,8 +1,13 @@
-landmark_labels: [L1, L2, L3, L4]
-captures_per_landmark: 5
-# Canonical GUI registration is a 4-point robot-body alignment workflow.
-# The operator chooses the best four landmarks from this configured candidate set,
-# captures repeated 0B pen-probe samples, solves, reviews FRE, then saves.
+landmark_labels: [L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12]
+captures_per_landmark: 20
+# Thesis-grade registration uses all 12 candidate landmarks at k=20 samples
+# each. Rationale: the registration_trial bench showed that the honest
+# (non-cherry-picked) FRE bottoms out at full point count, and that k=20 is
+# the smallest sample count where run-to-run FRE std drops below ~0.005 mm.
+# Smaller subsets give lower fit-residual but worse target accuracy — the
+# extra points constrain the rigid fit instead of letting it absorb noise.
+# Operator captures repeated 0B pen-probe samples at each landmark, solves,
+# reviews FRE, then saves.
 capture_tool_id: "0B"
 coil_tool_id: "0A"
 # Leave the legacy asset paths unset so the runtime stays on the simple
@@ -119,5 +124,19 @@ candidate_landmarks:
     display_label: "East-South Inner"
     xyz_mm: [25.0, -10.0, -5.0]
     enabled: true
+# Optional RANSAC outlier rejection on the live registration solve. Off by
+# default. When enabled, the solver iteratively samples 3-point candidate fits,
+# scores each by how many landmarks agree within `ransac_inlier_threshold_mm`,
+# refits on the largest consensus, and reports which landmarks were rejected.
+# Use for thesis registrations where one bad capture (tracker glitch, hand
+# slip, fixture flex) shouldn't poison the whole fit.
+#   ransac_inlier_threshold_mm     : residual cutoff for "good" point (mm)
+#   ransac_min_consensus_size      : floor on inlier count (null = max(4, N/2))
+#   ransac_seed                    : set int for run-to-run reproducibility
+ransac_outlier_rejection_enabled: false
+ransac_inlier_threshold_mm: 1.0
+ransac_min_consensus_size: null
+ransac_max_iterations: 1000
+ransac_seed: null
 validation:
   max_fre_mm: 2.0

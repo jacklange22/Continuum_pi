@@ -279,6 +279,23 @@ class ConfigLoader:
                 else None
             ),
             two_segment_tracking_roles=self._load_two_segment_tracking_roles(registration_data),
+            ransac_outlier_rejection_enabled=bool(
+                registration_data.get("ransac_outlier_rejection_enabled", False)
+            ),
+            ransac_inlier_threshold_mm=float(
+                registration_data.get("ransac_inlier_threshold_mm", 1.0)
+            ),
+            ransac_min_consensus_size=(
+                int(registration_data["ransac_min_consensus_size"])
+                if registration_data.get("ransac_min_consensus_size") not in (None, "")
+                else None
+            ),
+            ransac_max_iterations=int(registration_data.get("ransac_max_iterations", 1000)),
+            ransac_seed=(
+                int(registration_data["ransac_seed"])
+                if registration_data.get("ransac_seed") not in (None, "")
+                else None
+            ),
         )
         experiment = ExperimentConfig(
             default_settle_time_s=float(experiment_data.get("default_settle_time_s", 2.0)),

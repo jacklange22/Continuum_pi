@@ -169,6 +169,11 @@ def build_app_context(*, session_log_path: Path | None = None) -> AppContext:
         quaternion_average_method=settings.registration.quaternion_average_method,
         model_tre_reference_radius_mm=settings.registration.model_tre_reference_radius_mm,
         tip_tre_reference_radius_mm=settings.registration.tip_tre_reference_radius_mm,
+        ransac_outlier_rejection_enabled=settings.registration.ransac_outlier_rejection_enabled,
+        ransac_inlier_threshold_mm=settings.registration.ransac_inlier_threshold_mm,
+        ransac_min_consensus_size=settings.registration.ransac_min_consensus_size,
+        ransac_max_iterations=settings.registration.ransac_max_iterations,
+        ransac_seed=settings.registration.ransac_seed,
     )
     system_health_service = SystemHealthService(
         tracking_service=tracking_service,

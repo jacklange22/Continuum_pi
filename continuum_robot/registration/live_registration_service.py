@@ -24,7 +24,11 @@ from continuum_robot.registration.legacy_compat import (
     solve_registration_from_tool_samples,
 )
 from continuum_robot.registration.repository import RegistrationRecord, RegistrationRepository
-from continuum_robot.registration.rigid_solver import RigidRegistrationSolver
+from continuum_robot.registration.rigid_solver import (
+    RansacRegistrationResult,
+    RigidRegistrationFailure,
+    RigidRegistrationSolver,
+)
 from continuum_robot.registration.validation import compute_fre_mm
 from continuum_robot.tracking.transforms import compose_T_A_C, make_transform_A_B
 from continuum_robot.tracking.legacy_bridge.tracker_service_manager import TrackerServiceManager
@@ -54,6 +58,11 @@ class LiveRegistrationService:
         quaternion_average_method: str = "sign_aligned_mean",
         model_tre_reference_radius_mm: float = 5.0,
         tip_tre_reference_radius_mm: float = 3.0,
+        ransac_outlier_rejection_enabled: bool = False,
+        ransac_inlier_threshold_mm: float = 1.0,
+        ransac_min_consensus_size: int | None = None,
+        ransac_max_iterations: int = 1000,
+        ransac_seed: int | None = None,
     ) -> None:
         self.tracker_manager = tracker_manager
         self.repository = repository
@@ -66,6 +75,13 @@ class LiveRegistrationService:
         self.quaternion_average_method = quaternion_average_method
         self.model_tre_reference_radius_mm = float(model_tre_reference_radius_mm)
         self.tip_tre_reference_radius_mm = float(tip_tre_reference_radius_mm)
+        self.ransac_outlier_rejection_enabled = bool(ransac_outlier_rejection_enabled)
+        self.ransac_inlier_threshold_mm = float(ransac_inlier_threshold_mm)
+        self.ransac_min_consensus_size = (
+            int(ransac_min_consensus_size) if ransac_min_consensus_size is not None else None
+        )
+        self.ransac_max_iterations = int(ransac_max_iterations)
+        self.ransac_seed = int(ransac_seed) if ransac_seed is not None else None
         self.asset_paths = asset_paths
         self.assets = (
             load_registration_assets(asset_paths, measurement_point_transform=capture_tool_tip_transform)
@@ -307,19 +323,59 @@ class LiveRegistrationService:
         measured = np.asarray([averaged_measured_aurora[label] for label in labels], dtype=float)
         truth = np.asarray([self.nominal_landmarks_robot_xyz_mm[label] for label in labels], dtype=float)
 
-        T_robot_aurora = self.solver.solve_T_robot_aurora(measured, truth)
-        transformed = self.solver.apply_transform(T_robot_aurora, measured)
-        residuals = truth - transformed
+        ransac_diagnostics: dict | None = None
+        rejected_labels: list[str] = []
+        if self.ransac_outlier_rejection_enabled:
+            try:
+                ransac_result = self.solver.solve_T_robot_aurora_ransac(
+                    measured,
+                    truth,
+                    inlier_threshold_mm=self.ransac_inlier_threshold_mm,
+                    minimum_sample_size=3,
+                    min_consensus_size=self.ransac_min_consensus_size,
+                    max_iterations=self.ransac_max_iterations,
+                    seed=self.ransac_seed,
+                )
+            except RigidRegistrationFailure as exc:
+                raise RuntimeError(
+                    f"RANSAC registration failed to find a consensus within "
+                    f"{self.ransac_inlier_threshold_mm:.3f} mm: {exc}. "
+                    "Either raise ransac_inlier_threshold_mm or re-capture the bad landmark(s)."
+                ) from exc
+            T_robot_aurora = ransac_result.T_target_source
+            transformed = ransac_result.transformed_points
+            residuals = ransac_result.residuals_xyz_mm
+            rejected_labels = [labels[idx] for idx in ransac_result.rejected_indices]
+            ransac_diagnostics = self._summarize_ransac(
+                ransac_result=ransac_result, labels=labels,
+            )
+        else:
+            T_robot_aurora = self.solver.solve_T_robot_aurora(measured, truth)
+            transformed = self.solver.apply_transform(T_robot_aurora, measured)
+            residuals = truth - transformed
 
         residuals_by_label = {
             label: residuals[idx, :].tolist()
             for idx, label in enumerate(labels)
         }
-        fre_mm = float(compute_fre_mm(list(residuals_by_label.values())))
+        # When RANSAC is on, headline FRE is computed over inlier residuals only
+        # so the operator's reported number reflects the transform actually used.
+        # Rejected-landmark residuals stay visible in `residuals_robot_xyz_mm`
+        # for audit but don't poison the FRE.
+        fre_source_residuals = (
+            [residuals_by_label[label] for label in labels if label not in set(rejected_labels)]
+            if rejected_labels
+            else list(residuals_by_label.values())
+        )
+        fre_mm = float(compute_fre_mm(fre_source_residuals))
         if max_fre_mm is not None and fre_mm > max_fre_mm:
             raise RuntimeError(f"Registration FRE {fre_mm:.3f} mm exceeds limit {max_fre_mm:.3f} mm")
 
         T_coil_tip = self._load_existing_T_coil_tip()
+        registration_mode = "simple_ransac" if self.ransac_outlier_rejection_enabled else "simple"
+        validation_metrics: dict = {"overall_fre_mm": fre_mm, "registration_mode": registration_mode}
+        if ransac_diagnostics is not None:
+            validation_metrics["ransac"] = ransac_diagnostics
         record = RegistrationRecord(
             timestamp_utc=datetime.now(timezone.utc).isoformat(),
             landmark_labels=labels,
@@ -333,8 +389,8 @@ class LiveRegistrationService:
             coil_tool_id=self.coil_tool_id,
             raw_measurement_tool_samples_by_label=self.session.raw_measurement_tool_samples_by_label,
             raw_coil_samples_by_label=self.session.raw_coil_samples_by_label,
-            validation_metrics={"overall_fre_mm": fre_mm, "registration_mode": "simple"},
-            config_used=config_used | {"registration_mode": "simple"},
+            validation_metrics=validation_metrics,
+            config_used=config_used | {"registration_mode": registration_mode},
         )
 
         output_path = self.repository.save_record(record)
@@ -351,6 +407,37 @@ class LiveRegistrationService:
         else:
             T_aurora_point = compose_T_A_C(T_aurora_tool, self.capture_tool_tip_transform)
         return [float(v) for v in T_aurora_point[0:3, 3]]
+
+    @staticmethod
+    def _summarize_ransac(
+        *,
+        ransac_result: RansacRegistrationResult,
+        labels: list[str],
+    ) -> dict:
+        """Audit-friendly RANSAC diagnostics block for the registration record."""
+        rejected = [
+            {
+                "label": labels[idx],
+                "residual_mm": float(ransac_result.residual_norms_mm[idx]),
+            }
+            for idx in ransac_result.rejected_indices
+        ]
+        return {
+            "enabled": True,
+            "inlier_threshold_mm": float(ransac_result.inlier_threshold_mm),
+            "minimum_sample_size": int(ransac_result.minimum_sample_size),
+            "min_consensus_size": int(ransac_result.min_consensus_size),
+            "sample_count_total": int(ransac_result.sample_count_total),
+            "sample_count_used": int(ransac_result.sample_count_used),
+            "iterations_run": int(ransac_result.iterations_run),
+            "best_consensus_size": int(ransac_result.best_consensus_size),
+            "inlier_rmse_mm": float(ransac_result.inlier_rmse_mm),
+            "all_point_rmse_mm": float(ransac_result.all_point_rmse_mm),
+            "inlier_labels": [labels[i] for i in ransac_result.inlier_indices],
+            "rejected_labels": [item["label"] for item in rejected],
+            "rejected_landmarks": rejected,
+            "converged": bool(ransac_result.converged),
+        }
 
     def _load_existing_T_coil_tip(self) -> np.ndarray:
         latest = self.repository.root_dir / "latest_registration.json"

@@ -604,6 +604,14 @@ class RegistrationWorkflowConfig:
     runtime_tip_max_hat_rmse_mm: float | None = 2.0
     runtime_tip_setup_id: str | None = None
     two_segment_tracking_roles: dict[str, TwoSegmentTrackingRoleConfig] = field(default_factory=dict)
+    # Optional RANSAC outlier rejection on the live registration solve. Off by
+    # default; enable per-run or for thesis registrations where one bad capture
+    # (tracker glitch, accidental touch, fixture slip) shouldn't poison the fit.
+    ransac_outlier_rejection_enabled: bool = False
+    ransac_inlier_threshold_mm: float = 1.0
+    ransac_min_consensus_size: int | None = None
+    ransac_max_iterations: int = 1000
+    ransac_seed: int | None = None
 
 
 @dataclass
