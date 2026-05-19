@@ -706,21 +706,10 @@ def build_comparison_figure(
     cbar.set_label("Tip position error |pred − actual| (mm)", fontsize=9)
     cbar.ax.tick_params(labelsize=8)
 
-    if result.warnings:
-        # Surface non-fatal warnings (e.g., "bare .pt, no scalers") on the figure
-        # itself so the thesis-bound PNG carries the caveat with it.
-        warning_text = "\n".join(f"⚠ {w}" for w in result.warnings)
-        figure.text(
-            0.5,
-            0.02,
-            warning_text,
-            ha="center",
-            va="bottom",
-            fontsize=7,
-            color="#b45309",
-            wrap=True,
-        )
-
+    # Note: warnings are intentionally NOT drawn on the figure — the operator
+    # asked for a clean thesis-bound PNG. ``result.warnings`` is still
+    # populated and surfaced in the GUI's status label so the auto-detect
+    # diagnostics remain visible during interaction.
     return figure
 
 

@@ -890,6 +890,50 @@ class ModelingTab(QWidget):
         # ``.figure = new_figure`` then ``draw_idle()`` for live updates.
         self.comparison_canvas.figure = figure
         figure.set_canvas(self.comparison_canvas)
+        # ── Link the two 3D axes so they rotate together ────────────────────
+        # Pull the two 3D axes from the figure. matplotlib creates them in
+        # subplot-add order, so the first two ``name == '3d'`` axes are Model A
+        # (left) and Model B (right). The colorbar axis is 2D, so the filter is
+        # essential.
+        three_d_axes = [ax for ax in figure.axes if ax.name == "3d"]
+        if len(three_d_axes) == 2:
+            ax_a, ax_b = three_d_axes
+            # Clear any prior sync hook so we don't accumulate handlers across
+            # renders (the old canvas would have its own cid we'd otherwise leak).
+            prior_cid = getattr(self, "_comparison_sync_cid", None)
+            if prior_cid is not None:
+                try:
+                    self.comparison_canvas.mpl_disconnect(prior_cid)
+                except Exception:
+                    pass
+            sync_state = {"in_progress": False}
+
+            def _on_motion(event, ax_a=ax_a, ax_b=ax_b, state=sync_state, canvas=self.comparison_canvas):
+                # Only sync while the user is actively dragging (button 1 pressed)
+                # over one of the two 3D axes. Avoids cross-axis chatter during
+                # idle hover.
+                if state["in_progress"]:
+                    return
+                if event.button != 1:
+                    return
+                if event.inaxes is ax_a:
+                    src, dst = ax_a, ax_b
+                elif event.inaxes is ax_b:
+                    src, dst = ax_b, ax_a
+                else:
+                    return
+                if dst.elev == src.elev and dst.azim == src.azim:
+                    return
+                state["in_progress"] = True
+                try:
+                    dst.view_init(elev=src.elev, azim=src.azim)
+                    canvas.draw_idle()
+                finally:
+                    state["in_progress"] = False
+
+            self._comparison_sync_cid = self.comparison_canvas.mpl_connect(
+                "motion_notify_event", _on_motion
+            )
         self.comparison_canvas.draw_idle()
         self.comparison_save_button.setEnabled(True)
 

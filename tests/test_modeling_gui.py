@@ -1985,3 +1985,110 @@ def test_dataset_list_is_newest_first(tmp_path: Path) -> None:
     assert names.index("20260518_164344_newer_run") < names.index("20260301_120000_middle_run")
     assert names.index("20260301_120000_middle_run") < names.index("20260101_120000_older_run")
     controller.shutdown()
+
+
+def test_comparison_warnings_appear_in_status_not_on_figure(tmp_path: Path) -> None:
+    """Operator asked for a clean thesis-bound PNG: warnings must NOT be drawn on
+    the figure. They should still surface in the GUI status message so the
+    auto-detect diagnostics remain visible during interaction."""
+    pytest.importorskip("torch")
+    _app()
+    run_dir = _write_workspace_dataset(tmp_path, run_name="warn_ds", n=32)
+    # Model A: discovered artifact. Model B: bare .pt that triggers a warning
+    # (no sidecar metadata ⇒ bare-.pt warning fires unconditionally).
+    artifact_a = _write_xyz_artifact(tmp_path, name="cmp_a", hidden_layers=[8, 8])
+    bare_b = tmp_path / "uploads" / "bare.pt"
+    bare_b.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(artifact_a / "model.pt", bare_b)
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    controller.select_artifact(str(artifact_a))
+    controller.set_comparison_external_model_path(str(bare_b))
+    controller.refresh()  # resolve _selected_artifact_details before kicking off the worker
+    controller.run_external_comparison()
+    thread = getattr(controller, "_worker_thread", None)
+    if thread is not None:
+        thread.join(timeout=30.0)
+    state = controller.refresh()
+    # Status carries the warning prefix.
+    assert "⚠" in state.comparison_status_message
+    # And the figure doesn't have an extra free-floating text artist for warnings.
+    from continuum_robot.modeling.model_comparison import build_comparison_figure
+
+    result = controller.get_last_comparison_result()
+    assert result is not None
+    figure = build_comparison_figure(result)
+    try:
+        # Three axes total: two 3D + colorbar. Confirm no extra text artists
+        # were planted at the figure level (would indicate a footer regression).
+        figure_level_texts = [
+            t for t in figure.texts if t is not figure._suptitle  # noqa: SLF001
+        ]
+        assert figure_level_texts == [], (
+            f"figure has unexpected footer text(s): "
+            f"{[t.get_text() for t in figure_level_texts]}"
+        )
+    finally:
+        import matplotlib.pyplot as plt
+
+        plt.close(figure)
+    controller.shutdown()
+
+
+def test_comparison_canvas_links_3d_axis_rotation(tmp_path: Path) -> None:
+    """Linked rotation: dragging on one 3D panel updates the other's view_init.
+    Verifies the motion-notify hook the tab installs on its FigureCanvas."""
+    pytest.importorskip("torch")
+    _app()
+    run_dir = _write_workspace_dataset(tmp_path, run_name="rot_ds", n=32)
+    artifact_a = _write_xyz_artifact(tmp_path, name="rot_a", hidden_layers=[8, 8])
+    artifact_b = _write_xyz_artifact(tmp_path, name="rot_b", hidden_layers=[8, 8])
+    controller = ModelingController(
+        project_root=tmp_path,
+        dataset_output_root=tmp_path / "data" / "experiments",
+        artifact_root=tmp_path / "data" / "models" / "ann",
+        results_root=tmp_path / "data" / "modeling_results",
+    )
+    controller.select_dataset(str(run_dir))
+    controller.select_artifact(str(artifact_a))
+    controller.set_comparison_external_model_path(str(artifact_b / "model.pt"))
+    controller.refresh()  # resolve _selected_artifact_details before kicking off the worker
+    controller.run_external_comparison()
+    thread = getattr(controller, "_worker_thread", None)
+    if thread is not None:
+        thread.join(timeout=30.0)
+    tab = ModelingTab(controller)
+    try:
+        tab.show()
+        tab.update(controller.refresh())
+        # Pull the two 3D axes back out the same way the tab does.
+        three_d = [ax for ax in tab.comparison_canvas.figure.axes if ax.name == "3d"]
+        assert len(three_d) == 2
+        ax_a, ax_b = three_d
+        # Force a deliberate mismatch, then simulate the user dragging on ax_a.
+        ax_a.view_init(elev=45.0, azim=130.0)
+        ax_b.view_init(elev=10.0, azim=20.0)
+        # Synthesize a motion_notify event over ax_a with button=1 (drag).
+        from matplotlib.backend_bases import MouseEvent
+
+        bbox = ax_a.bbox
+        x = (bbox.x0 + bbox.x1) / 2.0
+        y = (bbox.y0 + bbox.y1) / 2.0
+        event = MouseEvent(
+            "motion_notify_event", tab.comparison_canvas, x, y, button=1
+        )
+        # The hook reads event.inaxes; matplotlib usually resolves this from xy
+        # via the canvas but for our synthesized event we set it directly.
+        event.inaxes = ax_a
+        tab.comparison_canvas.callbacks.process("motion_notify_event", event)
+        # ax_b should have followed ax_a's view.
+        assert ax_b.elev == pytest.approx(ax_a.elev)
+        assert ax_b.azim == pytest.approx(ax_a.azim)
+    finally:
+        tab.close()
+        controller.shutdown()

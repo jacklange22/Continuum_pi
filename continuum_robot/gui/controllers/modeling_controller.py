@@ -837,11 +837,20 @@ class ModelingController:
         with self._lock:
             self._last_comparison = result
             self.state.comparison_active = False
-            self.state.comparison_status_message = (
-                f"Comparison complete: {result.dataset_run_name} ({result.a_stats.sample_count} samples). "
+            base_msg = (
+                f"Comparison complete: {result.dataset_run_name} "
+                f"({result.a_stats.sample_count} samples). "
                 f"Model A mean={result.a_stats.mean_mm:.2f} mm, "
                 f"Model B mean={result.b_stats.mean_mm:.2f} mm."
             )
+            # Surface auto-detect / loader warnings here instead of on the figure
+            # (the figure stays clean for thesis export). Each warning is prefixed
+            # with ⚠ so the operator can scan multiple at a glance.
+            if result.warnings:
+                base_msg = base_msg + "\n" + "\n".join(
+                    f"⚠ {w}" for w in result.warnings
+                )
+            self.state.comparison_status_message = base_msg
             self.state.comparison_result_id += 1
 
     def get_last_comparison_result(self):
