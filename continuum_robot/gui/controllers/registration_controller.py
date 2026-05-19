@@ -62,6 +62,8 @@ class RegistrationViewState:
     averaged_points_by_label: dict[str, list[float]] = field(default_factory=dict)
     result_status: str = "Not solved"
     status_message: str = "Registration idle."
+    active_solver: str = "classical"
+    solver_choices: list[str] = field(default_factory=lambda: ["classical"])
 
 
 @dataclass
@@ -372,6 +374,32 @@ class RegistrationController:
             self.state.status_message = f"Registration solve failed: {exc}"
             raise
 
+    def set_active_solver(self, solver_name: str) -> dict:
+        """Switch the pending registration to use ``classical`` or ``ransac``.
+
+        Save persists whichever solver is currently selected; this method
+        rebuilds the pending T_robot_aurora and residual fields in place.
+        """
+        try:
+            payload = self.registration_service.set_active_solver(solver_name)
+            self._apply_snapshot(self.registration_service.get_snapshot())
+            display_name = "RANSAC" if solver_name == "ransac" else "classical SVD"
+            fre_text = (
+                f"FRE/RMSE = {self.state.fre_mm:.3f} mm"
+                if self.state.fre_mm is not None
+                else "FRE/RMSE unavailable"
+            )
+            self.state.status_message = (
+                f"Pending registration now uses {display_name}; {fre_text}. "
+                "Click Save to persist this choice."
+            )
+            self.refresh()
+            return payload
+        except Exception as exc:
+            self.state.last_error = str(exc)
+            self.state.status_message = f"Could not switch solver: {exc}"
+            raise
+
     def finish_session(self) -> RegistrationActionResult:
         """Compatibility helper for the older solve-and-save GUI tests."""
         self.solve_session()
@@ -512,6 +540,8 @@ class RegistrationController:
         self.state.max_residual_mm = float(max_residual) if max_residual is not None else None
         self.state.residuals_by_label = dict(snapshot.residuals_by_label)
         self.state.validation_metrics = dict(snapshot.validation_metrics)
+        self.state.active_solver = str(getattr(snapshot, "active_solver", "classical") or "classical")
+        self.state.solver_choices = list(getattr(snapshot, "solver_choices", ["classical"]) or ["classical"])
         self.state.latest_validation_summary = dict(snapshot.latest_validation_summary)
         self.state.T_robot_aurora = snapshot.T_robot_aurora
         self.state.pending_accept = bool(snapshot.pending_accept)

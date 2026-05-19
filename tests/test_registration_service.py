@@ -353,3 +353,173 @@ def test_registration_service_rejects_non_rigid_capture_tool_tip_transform(tmp_p
                 "  L3: [0.0, 10.0, 0.0]",
             ],
         )
+
+
+def test_registration_service_solve_records_solver_comparison_skipped_under_five_landmarks(tmp_path: Path) -> None:
+    """With only 4 landmarks, classical fills `solver_comparison.classical` but RANSAC is skipped."""
+    tracking_service, registration_service = _make_services(
+        tmp_path,
+        config_lines=[
+            "landmark_labels: [L1, L2, L3, L4]",
+            "captures_per_landmark: 1",
+            'capture_tool_id: "0B"',
+            "nominal_landmarks_robot_xyz_mm:",
+            "  L1: [0.0, 0.0, 0.0]",
+            "  L2: [10.0, 0.0, 0.0]",
+            "  L3: [0.0, 10.0, 0.0]",
+            "  L4: [0.0, 0.0, 10.0]",
+            "validation:",
+            "  max_fre_mm: 1.0",
+        ],
+    )
+    registration_service.begin_session()
+    for frame_number, label, xyz in [
+        (1, "L1", (0.0, 0.0, 0.0)),
+        (2, "L2", (10.0, 0.0, 0.0)),
+        (3, "L3", (0.0, 10.0, 0.0)),
+        (4, "L4", (0.0, 0.0, 10.0)),
+    ]:
+        _ingest_tool_0b_sample(tracking_service, frame_number, xyz)
+        registration_service.capture_sample(label)
+        registration_service.complete_landmark()
+    payload = registration_service.solve_registration()
+    comparison = payload["validation_metrics"]["solver_comparison"]
+    assert "classical" in comparison
+    assert comparison["classical"]["fre_mm"] == pytest.approx(0.0, abs=1e-6)
+    assert "ransac_skipped" in comparison
+    assert "5" in comparison["ransac_skipped"]
+
+
+def test_registration_service_solve_compares_classical_and_ransac_with_outlier(tmp_path: Path) -> None:
+    """With 6 landmarks and one mislabeled outlier, RANSAC inlier FRE beats classical FRE."""
+    tracking_service, registration_service = _make_services(
+        tmp_path,
+        config_lines=[
+            "landmark_labels: [L1, L2, L3, L4, L5, L6]",
+            "captures_per_landmark: 1",
+            'capture_tool_id: "0B"',
+            "nominal_landmarks_robot_xyz_mm:",
+            "  L1: [0.0, 0.0, 0.0]",
+            "  L2: [10.0, 0.0, 0.0]",
+            "  L3: [0.0, 10.0, 0.0]",
+            "  L4: [0.0, 0.0, 10.0]",
+            "  L5: [10.0, 10.0, 0.0]",
+            "  L6: [10.0, 0.0, 10.0]",
+            "ransac:",
+            "  inlier_threshold_mm: 1.0",
+            "  seed: 42",
+        ],
+    )
+    registration_service.begin_session()
+    # Five clean captures match truth exactly; one (L4) is offset by ~6 mm.
+    captures = [
+        (1, "L1", (0.0, 0.0, 0.0)),
+        (2, "L2", (10.0, 0.0, 0.0)),
+        (3, "L3", (0.0, 10.0, 0.0)),
+        (4, "L4", (4.0, -3.0, 12.0)),  # outlier
+        (5, "L5", (10.0, 10.0, 0.0)),
+        (6, "L6", (10.0, 0.0, 10.0)),
+    ]
+    for frame_number, label, xyz in captures:
+        _ingest_tool_0b_sample(tracking_service, frame_number, xyz)
+        registration_service.capture_sample(label)
+        registration_service.complete_landmark()
+    payload = registration_service.solve_registration()
+    comparison = payload["validation_metrics"]["solver_comparison"]
+    assert "classical" in comparison
+    assert "ransac" in comparison
+    classical_fre = comparison["classical"]["fre_mm"]
+    ransac_inlier_fre = comparison["ransac"]["fre_mm_inliers_only"]
+    assert ransac_inlier_fre < classical_fre, (
+        f"Expected RANSAC inlier FRE ({ransac_inlier_fre}) to beat classical ({classical_fre})"
+    )
+    assert "L4" in comparison["ransac"]["rejected_labels"]
+    assert comparison["ransac"]["converged"] is True
+    assert comparison["delta"]["fre_mm_classical_minus_ransac_inliers"] > 0
+
+
+def test_registration_service_set_active_solver_switches_pending_transform(tmp_path: Path) -> None:
+    """set_active_solver flips the pending T_robot_aurora and FRE to match the chosen solver."""
+    tracking_service, registration_service = _make_services(
+        tmp_path,
+        config_lines=[
+            "landmark_labels: [L1, L2, L3, L4, L5, L6]",
+            "captures_per_landmark: 1",
+            'capture_tool_id: "0B"',
+            "nominal_landmarks_robot_xyz_mm:",
+            "  L1: [0.0, 0.0, 0.0]",
+            "  L2: [10.0, 0.0, 0.0]",
+            "  L3: [0.0, 10.0, 0.0]",
+            "  L4: [0.0, 0.0, 10.0]",
+            "  L5: [10.0, 10.0, 0.0]",
+            "  L6: [10.0, 0.0, 10.0]",
+            "ransac:",
+            "  inlier_threshold_mm: 1.0",
+            "  seed: 42",
+        ],
+    )
+    registration_service.begin_session()
+    # Same outlier scenario as the comparison test: L4 is ~6 mm off truth.
+    captures = [
+        (1, "L1", (0.0, 0.0, 0.0)),
+        (2, "L2", (10.0, 0.0, 0.0)),
+        (3, "L3", (0.0, 10.0, 0.0)),
+        (4, "L4", (4.0, -3.0, 12.0)),
+        (5, "L5", (10.0, 10.0, 0.0)),
+        (6, "L6", (10.0, 0.0, 10.0)),
+    ]
+    for frame_number, label, xyz in captures:
+        _ingest_tool_0b_sample(tracking_service, frame_number, xyz)
+        registration_service.capture_sample(label)
+        registration_service.complete_landmark()
+
+    payload = registration_service.solve_registration()
+    snapshot = registration_service.get_snapshot()
+    assert snapshot.active_solver == "classical"
+    assert snapshot.solver_choices == ["classical", "ransac"]
+    classical_fre = float(payload["fre_mm"])
+
+    ransac_payload = registration_service.set_active_solver("ransac")
+    ransac_snapshot = registration_service.get_snapshot()
+    assert ransac_snapshot.active_solver == "ransac"
+    assert ransac_snapshot.fre_mm is not None
+    assert ransac_snapshot.fre_mm < classical_fre, (
+        f"RANSAC FRE ({ransac_snapshot.fre_mm}) should be lower than classical ({classical_fre}) "
+        "after dropping the outlier."
+    )
+    assert ransac_payload["T_robot_aurora"] != payload["T_robot_aurora"]
+
+    # Switching back restores the classical fit byte-for-byte.
+    classical_payload = registration_service.set_active_solver("classical")
+    assert classical_payload["T_robot_aurora"] == payload["T_robot_aurora"]
+    assert pytest.approx(classical_payload["fre_mm"], abs=1e-9) == classical_fre
+
+
+def test_registration_service_set_active_solver_rejects_unavailable_solver(tmp_path: Path) -> None:
+    """When only 4 landmarks are solved, set_active_solver('ransac') refuses."""
+    tracking_service, registration_service = _make_services(
+        tmp_path,
+        config_lines=[
+            "landmark_labels: [L1, L2, L3, L4]",
+            "captures_per_landmark: 1",
+            'capture_tool_id: "0B"',
+            "nominal_landmarks_robot_xyz_mm:",
+            "  L1: [0.0, 0.0, 0.0]",
+            "  L2: [10.0, 0.0, 0.0]",
+            "  L3: [0.0, 10.0, 0.0]",
+            "  L4: [0.0, 0.0, 10.0]",
+        ],
+    )
+    registration_service.begin_session()
+    for frame_number, label, xyz in [
+        (1, "L1", (0.0, 0.0, 0.0)),
+        (2, "L2", (10.0, 0.0, 0.0)),
+        (3, "L3", (0.0, 10.0, 0.0)),
+        (4, "L4", (0.0, 0.0, 10.0)),
+    ]:
+        _ingest_tool_0b_sample(tracking_service, frame_number, xyz)
+        registration_service.capture_sample(label)
+        registration_service.complete_landmark()
+    registration_service.solve_registration()
+    with pytest.raises(RuntimeError, match="not available"):
+        registration_service.set_active_solver("ransac")

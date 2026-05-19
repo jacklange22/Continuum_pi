@@ -119,6 +119,73 @@ def test_repeatability_thesis_02_per_target_rms_bar_writes_valid_png(tmp_path: P
     assert output.read_bytes().startswith(b"\x89PNG")
 
 
+def test_repeatability_thesis_04_2drepeatability_map_writes_valid_png(tmp_path: Path) -> None:
+    """The new 2D top-down map renders without exception and produces a valid PNG.
+
+    Includes one passing target (RMS < 1 mm goal, viridis-colored), one failing
+    target (RMS > 1 mm, hard-red-colored), and two repeat captures each, plus
+    centroids — exercising all three drawing paths (pass scatter, fail scatter,
+    centroid X markers).
+    """
+    if importlib.util.find_spec("matplotlib") is None:
+        pytest.skip("matplotlib is required for thesis figure rendering")
+    metrics = {
+        "thesis_goal_rms_mm": 1.0,
+        "thesis_goal_pass": False,
+        "overall_repeatability_rms_mm": 0.85,
+        "overall_max_deviation_mm": 1.4,
+        "per_target_metrics": {
+            "0": {
+                "target_index": 0,
+                "label": "Center",
+                "ring": "center",
+                "centroid_mm": [0.0, 0.0, 10.0],
+                "spread_rms_mm": 0.30,
+                "XY_RMSE_mm": 0.30,
+                "XYZ_RMSE_mm": 0.30,
+            },
+            "1": {
+                "target_index": 1,
+                "label": "Outer 0",
+                "ring": "outer",
+                "centroid_mm": [8.0, 0.0, 10.0],
+                "spread_rms_mm": 1.35,
+                "XY_RMSE_mm": 1.35,
+                "XYZ_RMSE_mm": 1.35,
+            },
+        },
+    }
+    samples = [
+        _sample(phase="repeat", sample_index=0, target_index=0, approach_index=0, position_mm=[0.1, 0.0, 10.0]),
+        _sample(phase="repeat", sample_index=1, target_index=0, approach_index=1, position_mm=[-0.1, 0.0, 10.0]),
+        _sample(phase="repeat", sample_index=2, target_index=1, approach_index=0, position_mm=[9.0, 0.5, 10.0]),
+        _sample(phase="repeat", sample_index=3, target_index=1, approach_index=1, position_mm=[7.5, -0.5, 10.0]),
+    ]
+    output = tmp_path / "thesis_04_2drepeatability_map.png"
+
+    repeatability_outputs._write_repeatability_thesis_04_2drepeatability_map(
+        path=output, samples=samples, metrics=metrics,
+    )
+
+    assert output.exists()
+    assert output.read_bytes().startswith(b"\x89PNG")
+
+
+def test_repeatability_thesis_04_2drepeatability_map_handles_empty_samples(tmp_path: Path) -> None:
+    """No accepted repeat captures should produce a placeholder PNG, not raise."""
+    if importlib.util.find_spec("matplotlib") is None:
+        pytest.skip("matplotlib is required for thesis figure rendering")
+    metrics: dict = {"thesis_goal_rms_mm": 1.0, "per_target_metrics": {}}
+    output = tmp_path / "thesis_04_2drepeatability_map_empty.png"
+
+    repeatability_outputs._write_repeatability_thesis_04_2drepeatability_map(
+        path=output, samples=[], metrics=metrics,
+    )
+
+    assert output.exists()
+    assert output.read_bytes().startswith(b"\x89PNG")
+
+
 def test_repeatability_metrics_use_repeat_captures_and_robot_frame() -> None:
     samples = []
     for sample_index, (target_index, position) in enumerate(
@@ -735,7 +802,8 @@ def test_live_repeatability_run_writes_canonical_outputs(tmp_path: Path) -> None
     assert (result.paths.output_dir / "thesis_01_target_returns_3d.png").exists()
     assert (result.paths.output_dir / "thesis_02_per_target_rms_bar.png").exists()
     assert (result.paths.output_dir / "thesis_03_path_dependence_vs_total.png").exists()
-    assert (result.paths.output_dir / "thesis_04_tip_position_clusters_xy.png").exists()
+    assert (result.paths.output_dir / "thesis_04_2drepeatability_map.png").exists()
+    assert (result.paths.output_dir / "thesis_05_tip_position_clusters_xy.png").exists()
     for removed in [
         "repeatability_summary.txt",
         "repeatability_clusters_report.png",

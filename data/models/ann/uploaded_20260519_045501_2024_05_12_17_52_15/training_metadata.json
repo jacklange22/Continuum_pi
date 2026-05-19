@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "artifact_kind": "legacy_ann_full_pose_v1",
+  "created_at_utc": "2026-05-19T04:55:01.566884+00:00",
+  "status": "completed",
+  "model": {
+    "input_dim": 4,
+    "output_dim": 6,
+    "hidden_layers": [
+      32,
+      32
+    ],
+    "dtype": "float64",
+    "output_target": "full_pose"
+  },
+  "training": {
+    "epochs_completed": 0,
+    "best_validation_loss": null
+  },
+  "dataset": {
+    "run_name": "uploaded",
+    "path": ""
+  },
+  "backend": {
+    "selected_backend": "cpu"
+  },
+  "files": {
+    "model_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/uploaded_20260519_045501_2024_05_12_17_52_15/model.pt"
+  },
+  "upload_provenance": {
+    "original_path": "/Users/jacklange/Continuum/Code/continuum_jack/experiments/model_learning/models/real_05_12_2024/2024_05_12_17_52_15.pt",
+    "uploaded_at_utc": "2026-05-19T04:55:01.566898+00:00",
+    "input_scale_multiplier": 10.0,
+    "input_scale_probe": {
+      "scale_1.0_spread_mm": 0.8533,
+      "scale_10.0_spread_mm": 51.6896,
+      "scale_100.0_spread_mm": 423.0023,
+      "scale_0.1_spread_mm": 0.0393,
+      "scale_0.01_spread_mm": 0.0036
+    },
+    "note": "Archived from an external upload via the Modeling-tab side-by-side comparison card. Architecture inferred from state_dict shapes; cable-input unit auto-detected by probing the model at several scale multipliers and picking the one that produced healthy output spread."
+  }
+}

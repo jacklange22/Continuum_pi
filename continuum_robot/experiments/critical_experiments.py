@@ -721,19 +721,37 @@ class PivotCalibrationExperiment(BaseExperiment):
             raise RuntimeError("Insufficient samples for pivot calibration")
         rotations = [T[0:3, 0:3] for T in transforms]
         translations = [T[0:3, 3] for T in transforms]
-        ransac_result: RansacPivotCalibrationResult | None = None
+        # Always run both solvers on the same input so the operator sees a
+        # side-by-side comparison every Solve. Which result populates the
+        # saved tip vector + output file is still driven by ``use_ransac``.
+        classical_result: PivotCalibrationResult | None = None
+        classical_error: Exception | None = None
         try:
-            if self.config.use_ransac:
-                effective_seed = (
-                    self.config.ransac_seed
-                    if self.config.ransac_seed is not None
-                    else int(self.config.seed)
-                )
-                effective_floor = (
-                    int(self.config.ransac_min_consensus_size)
-                    if self.config.ransac_min_consensus_size is not None
-                    else max(int(self.config.min_samples), math.ceil(0.5 * len(rotations)))
-                )
+            classical_result = solve_pivot_calibration(
+                rotations,
+                translations,
+                std_dev_threshold=self.config.std_dev_threshold,
+                min_samples=self.config.min_samples,
+            )
+        except ValueError as exc:
+            classical_error = exc
+
+        ransac_result: RansacPivotCalibrationResult | None = None
+        ransac_error: Exception | None = None
+        ransac_attempted = False
+        if len(rotations) >= max(int(self.config.ransac_minimum_sample_size) + 1, int(self.config.min_samples)):
+            ransac_attempted = True
+            effective_seed = (
+                self.config.ransac_seed
+                if self.config.ransac_seed is not None
+                else int(self.config.seed)
+            )
+            effective_floor = (
+                int(self.config.ransac_min_consensus_size)
+                if self.config.ransac_min_consensus_size is not None
+                else max(int(self.config.min_samples), math.ceil(0.5 * len(rotations)))
+            )
+            try:
                 ransac_result = solve_pivot_calibration_ransac(
                     rotations,
                     translations,
@@ -744,15 +762,28 @@ class PivotCalibrationExperiment(BaseExperiment):
                     confidence=self.config.ransac_confidence,
                     seed=effective_seed,
                 )
-                result = ransac_result.to_pivot_calibration_result()
-            else:
-                result = solve_pivot_calibration(
-                    rotations,
-                    translations,
-                    std_dev_threshold=self.config.std_dev_threshold,
-                    min_samples=self.config.min_samples,
-                )
-        except (ValueError, PivotRansacFailure) as exc:
+            except (ValueError, PivotRansacFailure) as exc:
+                ransac_error = exc
+
+        solver_comparison = self._build_pivot_solver_comparison(
+            classical=classical_result,
+            classical_error=classical_error,
+            ransac=ransac_result,
+            ransac_error=ransac_error,
+            ransac_attempted=ransac_attempted,
+            sample_count=len(rotations),
+        )
+
+        if self.config.use_ransac:
+            primary_solver_label = "ransac"
+            primary_result = ransac_result.to_pivot_calibration_result() if ransac_result is not None else None
+            primary_error = ransac_error or classical_error
+        else:
+            primary_solver_label = "classical_std_dev"
+            primary_result = classical_result
+            primary_error = classical_error
+
+        if primary_result is None:
             status = STATUS_INVALID_INSUFFICIENT_SAMPLES
             session.metrics.update(
                 {
@@ -762,39 +793,145 @@ class PivotCalibrationExperiment(BaseExperiment):
                     "tip_calibration_available": False,
                     "status": status,
                     "summary_requirements": {"force_status": status},
-                    "pivot_solver": "ransac" if self.config.use_ransac else "classical_std_dev",
+                    "pivot_solver": primary_solver_label,
+                    "pivot_solver_comparison": solver_comparison,
                     "ransac_failure_partial": (
-                        dict(exc.partial)
-                        if isinstance(exc, PivotRansacFailure) and exc.partial
+                        dict(ransac_error.partial)
+                        if isinstance(ransac_error, PivotRansacFailure) and ransac_error.partial
                         else None
                     ),
                 }
             )
-            raise RuntimeError(str(exc)) from exc
+            raise RuntimeError(str(primary_error or "Pivot solve produced no result")) from primary_error
+
         output_tip_path = write_tip_vector_file(
             _resolve_repo_path(session.context.project_root, self.config.output_tip_file),
-            result.tip_vector_local_mm,
+            primary_result.tip_vector_local_mm,
         )
+        # Stage one tip file per candidate solver next to the canonical output
+        # so the operator can flip the selected solver in the Tracker tab and
+        # have the controller promote the right file at accept time.
+        canonical_path = Path(_resolve_repo_path(session.context.project_root, self.config.output_tip_file))
+        classical_tip_path: Path | None = None
+        ransac_tip_path: Path | None = None
+        if classical_result is not None:
+            classical_tip_path = canonical_path.with_name(
+                f"{canonical_path.stem}__classical{canonical_path.suffix}"
+            )
+            write_tip_vector_file(classical_tip_path, classical_result.tip_vector_local_mm)
+            solver_comparison.setdefault("classical", {})
+            if isinstance(solver_comparison.get("classical"), dict):
+                solver_comparison["classical"]["tip_output_file"] = str(classical_tip_path)
+        if ransac_result is not None:
+            ransac_tip_path = canonical_path.with_name(
+                f"{canonical_path.stem}__ransac{canonical_path.suffix}"
+            )
+            write_tip_vector_file(ransac_tip_path, ransac_result.tip_vector_local_mm)
+            solver_comparison.setdefault("ransac", {})
+            if isinstance(solver_comparison.get("ransac"), dict):
+                solver_comparison["ransac"]["tip_output_file"] = str(ransac_tip_path)
+
         status = STATUS_SUCCESS
         metrics_update: dict[str, Any] = {
-            "tip_vector_local_mm": result.tip_vector_local_mm,
-            "pivot_point_tracker_mm": result.pivot_point_tracker_mm,
-            "rmse_mm": result.rmse_mm,
-            "sample_count_total": result.sample_count_total,
-            "sample_count_used": result.sample_count_used,
-            "sample_count_rejected": result.sample_count_rejected,
-            "pivot_residuals_mm": result.residuals_mm,
-            "pivot_inlier_mask": result.inlier_mask,
-            "pivot_rejected_indices": result.rejected_indices,
+            "tip_vector_local_mm": primary_result.tip_vector_local_mm,
+            "pivot_point_tracker_mm": primary_result.pivot_point_tracker_mm,
+            "rmse_mm": primary_result.rmse_mm,
+            "sample_count_total": primary_result.sample_count_total,
+            "sample_count_used": primary_result.sample_count_used,
+            "sample_count_rejected": primary_result.sample_count_rejected,
+            "pivot_residuals_mm": primary_result.residuals_mm,
+            "pivot_inlier_mask": primary_result.inlier_mask,
+            "pivot_rejected_indices": primary_result.rejected_indices,
             "tip_output_file": str(output_tip_path),
+            "tip_output_file_classical": str(classical_tip_path) if classical_tip_path is not None else None,
+            "tip_output_file_ransac": str(ransac_tip_path) if ransac_tip_path is not None else None,
             "tip_calibration_available": True,
             "status": status,
             "summary_requirements": {"force_status": status},
-            "pivot_solver": "ransac" if self.config.use_ransac else "classical_std_dev",
+            "pivot_solver": primary_solver_label,
+            "pivot_solver_comparison": solver_comparison,
         }
         if ransac_result is not None:
             metrics_update["pivot_ransac"] = ransac_result.to_dict()
         session.metrics.update(metrics_update)
+
+    @staticmethod
+    def _build_pivot_solver_comparison(
+        *,
+        classical: PivotCalibrationResult | None,
+        classical_error: Exception | None,
+        ransac: RansacPivotCalibrationResult | None,
+        ransac_error: Exception | None,
+        ransac_attempted: bool,
+        sample_count: int,
+    ) -> dict[str, Any]:
+        comparison: dict[str, Any] = {"sample_count_total": int(sample_count)}
+        if classical is not None:
+            comparison["classical"] = {
+                "tip_vector_local_mm": list(classical.tip_vector_local_mm),
+                "pivot_point_tracker_mm": list(classical.pivot_point_tracker_mm),
+                "rmse_mm": float(classical.rmse_mm),
+                "sample_count_used": int(classical.sample_count_used),
+                "sample_count_rejected": int(classical.sample_count_rejected),
+            }
+        elif classical_error is not None:
+            comparison["classical_failure"] = {
+                "message": str(classical_error),
+            }
+        if ransac is not None:
+            comparison["ransac"] = {
+                "tip_vector_local_mm": list(ransac.tip_vector_local_mm),
+                "pivot_point_tracker_mm": list(ransac.pivot_point_tracker_mm),
+                "rmse_mm": float(ransac.rmse_mm),
+                "sample_count_used": int(ransac.sample_count_used),
+                "sample_count_rejected": int(ransac.sample_count_rejected),
+                "inlier_threshold_mm": float(ransac.inlier_threshold_mm),
+                "converged": bool(ransac.converged),
+                "iterations_run": int(ransac.iterations_run),
+                "best_consensus_size": int(ransac.best_consensus_size),
+                "min_consensus_size": int(ransac.min_consensus_size),
+            }
+        elif not ransac_attempted:
+            comparison["ransac_skipped"] = (
+                f"Need at least minimum_sample_size + 1 poses to run RANSAC; "
+                f"received {sample_count}."
+            )
+        elif ransac_error is not None:
+            comparison["ransac_failure"] = {
+                "message": str(ransac_error),
+                "partial": (
+                    dict(getattr(ransac_error, "partial", {}) or {})
+                    if isinstance(ransac_error, PivotRansacFailure)
+                    else {}
+                ),
+            }
+        if classical is not None and ransac is not None:
+            comparison["delta"] = {
+                "rmse_mm_classical_minus_ransac": float(classical.rmse_mm - ransac.rmse_mm),
+                "tip_vector_mm_difference": [
+                    float(c - r)
+                    for c, r in zip(classical.tip_vector_local_mm, ransac.tip_vector_local_mm)
+                ],
+                "pivot_point_mm_difference": [
+                    float(c - r)
+                    for c, r in zip(classical.pivot_point_tracker_mm, ransac.pivot_point_tracker_mm)
+                ],
+                "tip_vector_distance_mm": float(
+                    math.sqrt(
+                        sum(
+                            (c - r) ** 2
+                            for c, r in zip(
+                                classical.tip_vector_local_mm,
+                                ransac.tip_vector_local_mm,
+                            )
+                        )
+                    )
+                ),
+                "sample_count_difference": int(
+                    classical.sample_count_used - ransac.sample_count_used
+                ),
+            }
+        return comparison
 
     def finalize(self, session: ExperimentSession) -> None:
         if self._tracking_started_here:

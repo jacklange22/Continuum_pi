@@ -159,6 +159,10 @@ class RegistrationSnapshot:
     validation_metrics: dict[str, Any] = field(default_factory=dict)
     latest_validation_summary: dict[str, Any] = field(default_factory=dict)
     pending_record: dict[str, Any] | None = None
+    active_solver: str = "classical"
+    """Which solver result the pending record uses: ``classical`` or ``ransac``."""
+    solver_choices: list[str] = field(default_factory=lambda: ["classical"])
+    """Solver options currently available for the pending record."""
 
 
 @dataclass

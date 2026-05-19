@@ -82,6 +82,12 @@ class TrackerMvpViewState:
     pivot_can_solve: bool = False
     pivot_can_accept: bool = False
     pivot_pending_accept: bool = False
+    pivot_active_solver: str = "classical"
+    """Which solver result the Accept button will promote: ``classical`` or ``ransac``."""
+    pivot_solver_choices: list[str] = field(default_factory=lambda: ["classical"])
+    """Solver options currently available for the pending pivot tip file."""
+    pivot_solver_comparison: dict = field(default_factory=dict)
+    """Latest classical-vs-RANSAC comparison block for the staged pivot result."""
     pivot_run_path: str = ""
     pivot_last_run_at_iso: str = ""
     pivot_capture_dataset_path: str = ""
@@ -158,6 +164,9 @@ class TrackerMvpController:
         self._last_pivot_run_path: Path | None = None
         self._last_pivot_metrics: dict[str, object] = {}
         self._last_pivot_completed_at_iso: str = ""
+        self._pivot_selected_solver: str = "classical"
+        self._pivot_classical_tip_path: Path | None = None
+        self._pivot_ransac_tip_path: Path | None = None
         self._pivot_collection_active = False
         self._pivot_collection_status = "not_run"
         self._pivot_live_tool_status = "not_collecting"
@@ -398,24 +407,81 @@ class TrackerMvpController:
         return result.paths.output_dir
 
     def accept_pivot_tip_file(self) -> Path:
-        pending_tip_path = self._pivot_pending_tip_path
-        if pending_tip_path is None or not pending_tip_path.exists():
-            raise RuntimeError("No staged pivot tip file is pending acceptance.")
-        vector = np.asarray(np.loadtxt(pending_tip_path, delimiter=","), dtype=float).reshape(-1)
+        with self._pivot_lock:
+            selected = self._pivot_selected_solver
+            chosen_path = (
+                self._pivot_ransac_tip_path
+                if selected == "ransac"
+                else self._pivot_classical_tip_path
+            ) or self._pivot_pending_tip_path
+        if chosen_path is None or not chosen_path.exists():
+            raise RuntimeError("No staged pivot tip file is pending acceptance for the selected solver.")
+        vector = np.asarray(np.loadtxt(chosen_path, delimiter=","), dtype=float).reshape(-1)
         if vector.shape != (3,):
-            raise RuntimeError(f"Staged tip file is invalid: {pending_tip_path}")
+            raise RuntimeError(f"Staged tip file is invalid: {chosen_path}")
         output_path = write_tip_vector_file(self._registration_tip_output_path(), vector.tolist())
         with self._pivot_lock:
             self._pivot_pending_accept = False
-            self._pivot_pending_tip_path = pending_tip_path
+            self._pivot_pending_tip_path = chosen_path
             self._pivot_collection_status = "accepted"
             self._last_pivot_metrics["status"] = "accepted"
             self._last_pivot_metrics["accepted_tip_file"] = str(output_path)
+            self._last_pivot_metrics["accepted_pivot_solver"] = selected
         self.registration_service.refresh_measurement_point_geometry()
         self.refresh()
         self.state.last_error = None
-        self.state.status_message = f"Accepted pivot tip file saved to {output_path}."
+        display_solver = "RANSAC" if selected == "ransac" else "Classical std-dev"
+        self.state.status_message = (
+            f"Accepted pivot tip file ({display_solver}) saved to {output_path}."
+        )
         return output_path
+
+    def _available_pivot_solver_choices_locked(self) -> list[str]:
+        """Return solver options the operator can pick for the staged pivot result.
+
+        ``classical`` appears whenever the classical tip file was staged.
+        ``ransac`` appears whenever the RANSAC tip file was staged (i.e. RANSAC
+        ran successfully and had enough poses). Lock-held caller.
+        """
+        choices: list[str] = []
+        if self._pivot_classical_tip_path is not None and self._pivot_classical_tip_path.exists():
+            choices.append("classical")
+        if self._pivot_ransac_tip_path is not None and self._pivot_ransac_tip_path.exists():
+            choices.append("ransac")
+        if not choices:
+            choices.append("classical")
+        return choices
+
+    def set_pivot_solver(self, solver_name: str) -> None:
+        """Switch which staged tip file the Accept button will promote.
+
+        Solver options are ``classical`` and ``ransac``; both must be present
+        in the latest run for the switch to take effect (you can't pick a
+        solver whose tip file was never written, e.g. RANSAC was skipped).
+        """
+        normalized = str(solver_name or "").strip().lower()
+        if normalized not in {"classical", "ransac"}:
+            raise ValueError(f"Unknown pivot solver selection: {solver_name!r}")
+        with self._pivot_lock:
+            if not self._pivot_pending_accept:
+                raise RuntimeError("Pivot solve is not pending; nothing to switch.")
+            target_path = (
+                self._pivot_ransac_tip_path
+                if normalized == "ransac"
+                else self._pivot_classical_tip_path
+            )
+            if target_path is None or not target_path.exists():
+                raise RuntimeError(
+                    f"Pivot solver {normalized!r} has no staged tip file (likely skipped or failed)."
+                )
+            self._pivot_selected_solver = normalized
+            self._pivot_pending_tip_path = target_path
+        self.refresh()
+        self.state.last_error = None
+        display_solver = "RANSAC" if normalized == "ransac" else "Classical std-dev"
+        self.state.status_message = (
+            f"Accept will now save the {display_solver} tip file ({target_path.name})."
+        )
 
     def reset_pivot_workflow(self) -> None:
         self._stop_pivot_collection(silent=True)
@@ -431,6 +497,9 @@ class TrackerMvpController:
             self._pivot_pending_tip_path = None
             self._last_pivot_run_path = None
             self._last_pivot_metrics = {}
+            self._pivot_selected_solver = "classical"
+            self._pivot_classical_tip_path = None
+            self._pivot_ransac_tip_path = None
         self.refresh()
         self.state.last_error = None
         self.state.status_message = "Pivot workflow reset. Start collection again when 0B is ready."
@@ -617,6 +686,12 @@ class TrackerMvpController:
             and pivot_live_sample_count > 0
         )
         self.state.pivot_can_accept = bool(pivot_pending_accept and Path(pivot_pending_tip_path).exists())
+        with self._pivot_lock:
+            self.state.pivot_active_solver = self._pivot_selected_solver
+            self.state.pivot_solver_choices = self._available_pivot_solver_choices_locked()
+            self.state.pivot_solver_comparison = dict(
+                self._last_pivot_metrics.get("pivot_solver_comparison", {}) or {}
+            )
         self.state.pivot_summary = self._pivot_summary(
             measurement_status=measurement_status,
             sample_count=pivot_live_sample_count,
@@ -927,12 +1002,17 @@ class TrackerMvpController:
                 "stop when the tool has been swept through a wide range of orientations."
             )
         if pivot_pending_accept:
-            return (
+            comparison_suffix = _format_pivot_solver_comparison(
+                self._last_pivot_metrics.get("pivot_solver_comparison")
+            )
+            base = (
                 f"Pivot solved. RMSE={self._last_pivot_metrics.get('rmse_mm')} mm, "
                 f"used={self._last_pivot_metrics.get('sample_count_used', 0)}, "
                 f"rejected={self._last_pivot_metrics.get('sample_count_rejected', 0)}.{format_text} "
-                "Accept the staged tip file to unblock registration."
             )
+            if comparison_suffix:
+                base = f"{base}{comparison_suffix} "
+            return f"{base}Accept the staged tip file to unblock registration."
         if self.state.pivot_status == "solve_failed" and self._last_pivot_metrics:
             rejected_preview = "; ".join(self.state.pivot_input_rejected_rows[:3])
             suffix = f" Rejected: {rejected_preview}" if rejected_preview else ""
@@ -941,12 +1021,18 @@ class TrackerMvpController:
                 f"Check dataset {self.state.pivot_capture_dataset_path or 'path unavailable'} and retry.{suffix}"
             )
         if self._last_pivot_metrics:
-            return (
+            comparison_suffix = _format_pivot_solver_comparison(
+                self._last_pivot_metrics.get("pivot_solver_comparison")
+            )
+            base = (
                 f"Accepted pivot result. RMSE={self._last_pivot_metrics.get('rmse_mm')} mm, "
                 f"used={self._last_pivot_metrics.get('sample_count_used', 0)}, "
                 f"rejected={self._last_pivot_metrics.get('sample_count_rejected', 0)}.{format_text} "
                 f"tip_file={measurement_status.get('path') or self.state.pivot_tip_path}"
             )
+            if comparison_suffix:
+                base = f"{base} {comparison_suffix}"
+            return base
         if sample_count > 0:
             return f"Collection stopped with {sample_count} sample(s) and {motion_text}. Solve to review the fit."
         if measurement_status.get("ready"):
@@ -1180,6 +1266,12 @@ class TrackerMvpController:
                 else ("review_ready" if pending_accept else "accepted")
             )
             self._last_pivot_metrics["accepted_tip_file"] = str(accepted_tip_path)
+            classical_path = metrics.get("tip_output_file_classical")
+            ransac_path = metrics.get("tip_output_file_ransac")
+            self._pivot_classical_tip_path = Path(classical_path) if classical_path else None
+            self._pivot_ransac_tip_path = Path(ransac_path) if ransac_path else None
+            primary_solver = str(metrics.get("pivot_solver") or "classical_std_dev")
+            self._pivot_selected_solver = "ransac" if primary_solver == "ransac" else "classical"
             persist_summary = self._pivot_collection_status in {"review_ready", "accepted"}
             if persist_summary:
                 self._last_pivot_completed_at_iso = datetime.now(timezone.utc).isoformat()
@@ -1198,3 +1290,51 @@ class TrackerMvpController:
         dot_products = np.clip(axis_matrix @ axis_matrix.T, -1.0, 1.0)
         min_dot = float(np.min(dot_products))
         return float(np.degrees(np.arccos(min_dot)))
+
+
+def _format_pivot_solver_comparison(comparison: object) -> str:
+    """Render the classical-vs-RANSAC pivot comparison for the tracker MVP summary."""
+    if not isinstance(comparison, dict) or not comparison:
+        return ""
+    classical = comparison.get("classical") if isinstance(comparison, dict) else None
+    ransac = comparison.get("ransac") if isinstance(comparison, dict) else None
+    parts: list[str] = []
+    if isinstance(classical, dict):
+        rmse = classical.get("rmse_mm")
+        used = classical.get("sample_count_used")
+        rejected = classical.get("sample_count_rejected")
+        if rmse is not None:
+            parts.append(
+                f"Classical std-dev: RMSE={float(rmse):.3f} mm, used={int(used or 0)}, rejected={int(rejected or 0)}"
+            )
+    elif isinstance(comparison.get("classical_failure"), dict):
+        parts.append(f"Classical std-dev: failed — {comparison['classical_failure'].get('message', 'unknown error')}")
+    if "ransac_skipped" in comparison:
+        parts.append(f"RANSAC: skipped — {comparison['ransac_skipped']}")
+    elif isinstance(comparison.get("ransac_failure"), dict):
+        parts.append(f"RANSAC: failed — {comparison['ransac_failure'].get('message', 'unknown error')}")
+    elif isinstance(ransac, dict):
+        rmse = ransac.get("rmse_mm")
+        used = ransac.get("sample_count_used")
+        rejected = ransac.get("sample_count_rejected")
+        threshold = ransac.get("inlier_threshold_mm")
+        line = (
+            f"RANSAC: RMSE={float(rmse):.3f} mm, used={int(used or 0)}, rejected={int(rejected or 0)}"
+            if rmse is not None
+            else "RANSAC: result present"
+        )
+        if threshold is not None:
+            line += f" @ {float(threshold):.2f} mm threshold"
+        parts.append(line)
+    delta = comparison.get("delta") if isinstance(comparison, dict) else None
+    if isinstance(delta, dict):
+        rmse_delta = delta.get("rmse_mm_classical_minus_ransac")
+        tip_distance = delta.get("tip_vector_distance_mm")
+        bits: list[str] = []
+        if rmse_delta is not None:
+            bits.append(f"ΔRMSE={float(rmse_delta):+.3f} mm")
+        if tip_distance is not None:
+            bits.append(f"|Δtip|={float(tip_distance):.3f} mm")
+        if bits:
+            parts.append(" / ".join(bits))
+    return " | ".join(parts)

@@ -206,7 +206,7 @@ def _signed_int(value: Any) -> str:
 def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, summary, samples) -> dict[str, Path]:
     """Write canonical artifacts for one repeatability run.
 
-    Figure contract: 4 thesis-quality PNGs (justified — each answers a distinct
+    Figure contract: 5 thesis-quality PNGs (justified — each answers a distinct
     thesis claim, see docstrings below). No CSVs, no .txt; everything else lives
     in debug.json.
 
@@ -221,10 +221,14 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
       - thesis_03_path_dependence_vs_total.png: paired-metric per target
         (total RMS as circle, path-dep RMS as triangle, connected by a thin
         vertical line). Answers 'is the result approach-direction independent'.
-      - thesis_04_tip_position_clusters_xy.png: top-down XY scatter of every
-        accepted repeat capture, one color per target, with the per-target
-        XY-RMSE listed in the legend. Answers 'how does the workspace layout
-        and per-target cluster tightness look at a glance'.
+      - thesis_04_2drepeatability_map.png: top-down (X-Y) projection of
+        thesis_01 — every accepted repeat capture colored by per-target RMS
+        (viridis up to the 1.0 mm goal, red for targets that exceed it), with
+        target centroids as black X markers and a pass/fail status box. Same
+        thesis claim as thesis_01 but readable as a static export.
+      - thesis_05_tip_position_clusters_xy.png: top-down XY scatter with one
+        color per target and per-target XY-RMSE in the legend. Operator-triage
+        view: 'which target maps to which numeric RMSE'.
 
     debug.json consolidates: per-target metrics, path_dependence_by_approach,
     group metrics, run_validity, legacy_style_comparison (was a separate CSV),
@@ -241,7 +245,8 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
     thesis_01_path = output_dir / "thesis_01_target_returns_3d.png"
     thesis_02_path = output_dir / "thesis_02_per_target_rms_bar.png"
     thesis_03_path = output_dir / "thesis_03_path_dependence_vs_total.png"
-    thesis_04_path = output_dir / "thesis_04_tip_position_clusters_xy.png"
+    thesis_04_path = output_dir / "thesis_04_2drepeatability_map.png"
+    thesis_05_path = output_dir / "thesis_05_tip_position_clusters_xy.png"
 
     _write_repeatability_debug_json(
         path=debug_json_path,
@@ -261,8 +266,11 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
         (thesis_03_path, lambda: _write_repeatability_thesis_03_path_dependence_vs_total(
             path=thesis_03_path, metrics=metrics,
         )),
-        (thesis_04_path, lambda: _write_repeatability_thesis_04_tip_position_clusters_xy(
+        (thesis_04_path, lambda: _write_repeatability_thesis_04_2drepeatability_map(
             path=thesis_04_path, samples=samples, metrics=metrics,
+        )),
+        (thesis_05_path, lambda: _write_repeatability_thesis_05_tip_position_clusters_xy(
+            path=thesis_05_path, samples=samples, metrics=metrics,
         )),
     ]:
         try:
@@ -276,6 +284,7 @@ def write_single_segment_repeatability_outputs(*, output_dir: Path, metadata, su
         "thesis_02_path": thesis_02_path,
         "thesis_03_path": thesis_03_path,
         "thesis_04_path": thesis_04_path,
+        "thesis_05_path": thesis_05_path,
     }
 
 
@@ -608,13 +617,140 @@ def _write_repeatability_thesis_03_path_dependence_vs_total(
     save_figure(fig, path)
 
 
-def _write_repeatability_thesis_04_tip_position_clusters_xy(
+def _write_repeatability_thesis_04_2drepeatability_map(
     *,
     path: Path,
     samples,
     metrics: dict[str, Any],
 ) -> None:
-    """Thesis figure 4: XY scatter of every repeat capture, colored per target.
+    """Thesis figure 4: 2D top-down map of repeat captures with pass/fail coloring.
+
+    Top-down (X-Y) projection of thesis_01. Every accepted repeat capture
+    appears at its position in the robot frame, colored by its target's RMS:
+    viridis for targets that meet the 1.0 mm thesis goal, hard red for any
+    target that exceeds it. Target centroids are drawn as larger black X
+    markers. Conveys the same pass/fail-by-target claim as thesis_01 but
+    flattened for static figure export and faster visual triage.
+    """
+    points_by_target = _repeat_points_by_target(samples=samples)
+    per_target = _ordered_per_target(metrics)
+    thesis_goal = float(metrics.get("thesis_goal_rms_mm", 1.0) or 1.0)
+
+    fig, ax = create_figure(size="square", constrained_layout=False)
+    fig.subplots_adjust(left=0.10, right=0.86, top=0.91, bottom=0.12)
+
+    if not points_by_target or not per_target:
+        ax.text(
+            0.5, 0.5,
+            "No accepted repeat captures available",
+            transform=ax.transAxes, ha="center", va="center",
+        )
+        style_axes(ax, xlabel="Robot X (mm)", ylabel="Robot Y (mm)")
+        ax.set_title("Target Return Repeatability — XY Map")
+        save_figure(fig, path)
+        return
+
+    rms_by_target: dict[int, float | None] = {
+        int(row.get("target_index", -1) or -1): _repeatability_error_value(row)
+        for row in per_target
+    }
+    failing_targets = [tidx for tidx, rms in rms_by_target.items() if rms is not None and rms > thesis_goal]
+
+    all_xs: list[float] = []
+    all_ys: list[float] = []
+    pass_xs, pass_ys, pass_c = [], [], []
+    fail_xs, fail_ys = [], []
+    for tidx, points in points_by_target.items():
+        rms = rms_by_target.get(int(tidx))
+        if rms is None:
+            continue
+        for point in points:
+            x, y = float(point[0]), float(point[1])
+            all_xs.append(x); all_ys.append(y)
+            if rms > thesis_goal:
+                fail_xs.append(x); fail_ys.append(y)
+            else:
+                pass_xs.append(x); pass_ys.append(y); pass_c.append(rms)
+
+    scatter = None
+    if pass_xs:
+        scatter = ax.scatter(
+            pass_xs, pass_ys,
+            c=pass_c, cmap="viridis", vmin=0.0, vmax=thesis_goal,
+            s=18, alpha=0.78, linewidths=0, zorder=2,
+        )
+    if fail_xs:
+        ax.scatter(
+            fail_xs, fail_ys,
+            color=color("rejected"),
+            s=24, alpha=0.92, linewidths=0, zorder=2,
+            label=f"Targets > {thesis_goal:.1f} mm goal ({len(failing_targets)})",
+        )
+
+    centroid_xs, centroid_ys = [], []
+    for row in per_target:
+        centroid = row.get("centroid_mm")
+        if isinstance(centroid, list) and len(centroid) >= 2:
+            centroid_xs.append(float(centroid[0]))
+            centroid_ys.append(float(centroid[1]))
+    if centroid_xs:
+        ax.scatter(
+            centroid_xs, centroid_ys,
+            s=80, marker="X", color=color("reference"),
+            edgecolors="white", linewidths=0.6, zorder=3,
+            label="Target centroids",
+        )
+        all_xs.extend(centroid_xs); all_ys.extend(centroid_ys)
+
+    if all_xs and all_ys:
+        span = max(max(all_xs) - min(all_xs), max(all_ys) - min(all_ys), 5.0)
+        pad = max(span * 0.08, 2.0)
+        x_mid = (max(all_xs) + min(all_xs)) / 2.0
+        y_mid = (max(all_ys) + min(all_ys)) / 2.0
+        half = span / 2.0 + pad
+        ax.set_xlim(x_mid - half, x_mid + half)
+        ax.set_ylim(y_mid - half, y_mid + half)
+    ax.set_aspect("equal", adjustable="box")
+
+    style_axes(ax, xlabel="Robot X (mm)", ylabel="Robot Y (mm)")
+
+    if scatter is not None:
+        cbar = fig.colorbar(scatter, ax=ax, shrink=0.7, pad=0.04)
+        cbar.set_label(f"Per-target RMS (mm) — goal ≤ {thesis_goal:.1f}")
+        cbar.outline.set_edgecolor(color("grid"))
+
+    legend(ax, loc="upper left")
+
+    overall_rms = _optional_float(metrics.get("overall_repeatability_rms_mm"))
+    overall_max = _optional_float(metrics.get("overall_max_deviation_mm"))
+    pass_label = "PASS" if metrics.get("thesis_goal_pass") else "FAIL"
+    pass_color = color("accepted") if metrics.get("thesis_goal_pass") else color("rejected")
+    fig.suptitle(
+        "Target Return Repeatability — XY Map  (17 targets × 16 revisits)",
+        fontsize=13, fontweight="bold", x=0.04, ha="left",
+    )
+    fig.text(
+        0.015, 0.02,
+        "  •  ".join(_compact_lines([
+            f"Targets: {len(per_target)}",
+            f"Repeat captures: {sum(len(p) for p in points_by_target.values())}",
+            f"Overall RMS: {_fmt(overall_rms, suffix=' mm')}  •  Max: {_fmt(overall_max, suffix=' mm')}",
+            f"Thesis goal ≤ {thesis_goal:.1f} mm: {pass_label}",
+        ])),
+        fontsize=9, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": pass_color, "alpha": 0.94, "linewidth": 1.2},
+    )
+    save_figure(fig, path)
+
+
+def _write_repeatability_thesis_05_tip_position_clusters_xy(
+    *,
+    path: Path,
+    samples,
+    metrics: dict[str, Any],
+) -> None:
+    """Thesis figure 5: XY scatter of every repeat capture, colored per target.
 
     Top-down view of the spine workspace. Each target's accepted repeat
     captures form a tight cluster at the target's nominal XY location, drawn

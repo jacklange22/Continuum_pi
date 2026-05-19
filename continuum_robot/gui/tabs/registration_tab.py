@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QComboBox,
     QFormLayout,
     QFrame,
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSplitter,
     QTableWidget,
@@ -246,6 +248,46 @@ class RegistrationTab(QWidget):
         summary_layout.addRow("Samples captured", self.samples_used_label)
         summary_layout.addRow("RMSE / FRE", self.fre_label)
         summary_layout.addRow("Max residual", self.max_residual_label)
+
+        # Side-by-side solver chooser. The selected option drives which
+        # T_robot_aurora the Save button persists. Default is classical SVD
+        # (back-compat); RANSAC is enabled only when there are enough
+        # landmarks for the comparison to be populated.
+        self.solver_box = QGroupBox("Solver (select before Save)")
+        solver_layout = QVBoxLayout(self.solver_box)
+        self.solver_radio_classical = QRadioButton("Classical SVD")
+        self.solver_radio_ransac = QRadioButton("RANSAC")
+        self.solver_radio_classical.setChecked(True)
+        self.solver_button_group = QButtonGroup(self.solver_box)
+        self.solver_button_group.addButton(self.solver_radio_classical, 0)
+        self.solver_button_group.addButton(self.solver_radio_ransac, 1)
+        self.solver_button_group.buttonClicked.connect(self._on_solver_selected)
+        self.solver_classical_metrics_label = QLabel("—")
+        self.solver_classical_metrics_label.setWordWrap(True)
+        self.solver_ransac_metrics_label = QLabel("—")
+        self.solver_ransac_metrics_label.setWordWrap(True)
+        self.solver_classical_best_badge = QLabel("")
+        self.solver_ransac_best_badge = QLabel("")
+        for badge in (self.solver_classical_best_badge, self.solver_ransac_best_badge):
+            badge.setStyleSheet(f"color: {COLORS.success_fg}; font-weight: 600;")
+            badge.setVisible(False)
+        for radio, metrics_label, badge in (
+            (self.solver_radio_classical, self.solver_classical_metrics_label, self.solver_classical_best_badge),
+            (self.solver_radio_ransac, self.solver_ransac_metrics_label, self.solver_ransac_best_badge),
+        ):
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(8)
+            row.addWidget(radio)
+            row.addWidget(badge)
+            row.addStretch(1)
+            row.addWidget(metrics_label, 0, Qt.AlignRight)
+            solver_layout.addLayout(row)
+        self.solver_status_label = QLabel("Solve the registration to enable the comparison.")
+        self.solver_status_label.setWordWrap(True)
+        self.solver_status_label.setStyleSheet(f"color: {COLORS.text_muted};")
+        solver_layout.addWidget(self.solver_status_label)
+        summary_layout.addRow(self.solver_box)
 
         # Group buttons by workflow phase so 6+ actions don't read as one wall.
         def _phase_group(*buttons: QPushButton) -> QWidget:
@@ -494,6 +536,7 @@ class RegistrationTab(QWidget):
             self.max_residual_label.setText(f"{state.max_residual_mm:.3f} mm")
         else:
             self.max_residual_label.setText("—")
+        self._update_solver_panel(state)
         self.trust_label.setText(_trust_text(state.trust_state, state.trust_message))
         self.live_chain_label.setText(_trust_text(state.live_chain_state, state.live_chain_message))
         self.comparison_label.setText(state.comparison_message)
@@ -807,6 +850,58 @@ class RegistrationTab(QWidget):
             return
         self._safe_call(lambda: self.controller.set_runtime_tip_mode(str(mode)))
 
+    def _update_solver_panel(self, state: RegistrationViewState) -> None:
+        """Refresh the classical-vs-RANSAC chooser to match the latest solve."""
+        comparison = state.validation_metrics.get("solver_comparison") if isinstance(state.validation_metrics, dict) else None
+        ransac_available = "ransac" in state.solver_choices
+        self.solver_radio_ransac.setEnabled(state.pending_accept and ransac_available)
+        self.solver_radio_classical.setEnabled(state.pending_accept and "classical" in state.solver_choices)
+        self._sync_solver_radio_state(state)
+        classical_text, ransac_text, status_text, classical_is_best, ransac_is_best = _solver_panel_lines(
+            comparison=comparison,
+            pending_accept=state.pending_accept,
+            active_solver=state.active_solver,
+            ransac_available=ransac_available,
+        )
+        self.solver_classical_metrics_label.setText(classical_text)
+        self.solver_ransac_metrics_label.setText(ransac_text)
+        self.solver_status_label.setText(status_text)
+        self.solver_classical_best_badge.setText("✓ best" if classical_is_best else "")
+        self.solver_classical_best_badge.setVisible(bool(classical_is_best))
+        self.solver_ransac_best_badge.setText("✓ best" if ransac_is_best else "")
+        self.solver_ransac_best_badge.setVisible(bool(ransac_is_best))
+
+    def _on_solver_selected(self, button) -> None:
+        solver_name = "ransac" if button is self.solver_radio_ransac else "classical"
+        # If the controller already has this selected (e.g. update() set the
+        # radio state to mirror state), avoid bouncing through set_active_solver
+        # again — that would create a redundant pending-record rebuild and
+        # status-message churn each refresh cycle.
+        if self.controller.state.active_solver == solver_name:
+            return
+        if solver_name not in self.controller.state.solver_choices:
+            # User clicked a disabled-but-still-checkable radio (e.g. RANSAC
+            # before solve). Snap it back to the active solver silently.
+            self._sync_solver_radio_state(self.controller.state)
+            return
+        self._safe_call(lambda: self.controller.set_active_solver(solver_name))
+
+    def _sync_solver_radio_state(self, state: RegistrationViewState) -> None:
+        """Update the radio toggles to match the controller's active solver without firing events."""
+        target_radio = (
+            self.solver_radio_ransac if state.active_solver == "ransac" else self.solver_radio_classical
+        )
+        if target_radio.isChecked():
+            return
+        # Temporarily block signals so we don't fire _on_solver_selected from this sync.
+        self.solver_radio_classical.blockSignals(True)
+        self.solver_radio_ransac.blockSignals(True)
+        try:
+            target_radio.setChecked(True)
+        finally:
+            self.solver_radio_classical.blockSignals(False)
+            self.solver_radio_ransac.blockSignals(False)
+
     def _safe_call(self, fn) -> None:
         try:
             fn()
@@ -870,3 +965,126 @@ def _trust_text(state: str, message: str) -> str:
         return message
     prefix = state_text.capitalize()
     return f"{prefix}: {message}"
+
+
+def _solver_panel_lines(
+    *,
+    comparison: dict | None,
+    pending_accept: bool,
+    active_solver: str,
+    ransac_available: bool,
+) -> tuple[str, str, str, bool, bool]:
+    """Compute the four-line solver-panel content.
+
+    Returns ``(classical_metrics_text, ransac_metrics_text, status_text,
+    classical_is_best, ransac_is_best)``.
+    """
+    if not pending_accept or not isinstance(comparison, dict) or not comparison:
+        return (
+            "—",
+            "—",
+            "Solve the registration to enable the comparison.",
+            False,
+            False,
+        )
+    classical = comparison.get("classical") if isinstance(comparison.get("classical"), dict) else None
+    classical_text = "—"
+    classical_fre: float | None = None
+    if isinstance(classical, dict):
+        fre = classical.get("fre_mm")
+        max_residual = classical.get("max_residual_mm")
+        if fre is not None:
+            classical_fre = float(fre)
+            classical_text = f"FRE={classical_fre:.3f} mm"
+            if max_residual is not None:
+                classical_text += f", max={float(max_residual):.3f} mm"
+    ransac_text = "—"
+    ransac_fre: float | None = None
+    if "ransac_skipped" in comparison:
+        ransac_text = f"unavailable: {comparison['ransac_skipped']}"
+    elif isinstance(comparison.get("ransac_failure"), dict):
+        ransac_text = f"failed: {comparison['ransac_failure'].get('message', 'unknown')}"
+    elif isinstance(comparison.get("ransac"), dict):
+        ransac = comparison["ransac"]
+        inliers = int(ransac.get("inlier_count", 0))
+        total = int(ransac.get("landmark_count", inliers))
+        rejected = list(ransac.get("rejected_labels", []) or [])
+        inlier_fre = ransac.get("fre_mm_inliers_only")
+        threshold = ransac.get("inlier_threshold_mm")
+        if inlier_fre is not None:
+            ransac_fre = float(inlier_fre)
+            ransac_text = f"inlier FRE={ransac_fre:.3f} mm"
+        ransac_text += f", inliers {inliers}/{total}"
+        if threshold is not None:
+            ransac_text += f" @ {float(threshold):.2f} mm"
+        if rejected:
+            ransac_text += f", rejected: {', '.join(rejected)}"
+    classical_is_best = (
+        classical_fre is not None
+        and ransac_fre is not None
+        and classical_fre < ransac_fre
+    )
+    ransac_is_best = (
+        classical_fre is not None
+        and ransac_fre is not None
+        and ransac_fre < classical_fre
+    )
+    if not ransac_available:
+        status = "RANSAC unavailable for this solve (see RANSAC row). Save will persist Classical SVD."
+    elif active_solver == "ransac":
+        status = "Save will persist the RANSAC transform (rejected landmarks excluded from the fit)."
+    else:
+        status = "Save will persist the Classical SVD transform. Switch to RANSAC if its inlier FRE is meaningfully lower."
+    return (classical_text, ransac_text, status, classical_is_best, ransac_is_best)
+
+
+def _format_solver_comparison(comparison: dict | None) -> str:
+    """Render the classical-vs-RANSAC solver comparison for the Solve summary."""
+    if not isinstance(comparison, dict) or not comparison:
+        return ""
+    classical = comparison.get("classical") if isinstance(comparison, dict) else None
+    if not isinstance(classical, dict):
+        return ""
+    parts: list[str] = []
+    classical_fre = classical.get("fre_mm")
+    classical_max = classical.get("max_residual_mm")
+    if classical_fre is not None:
+        prefix = f"Classical SVD: FRE={float(classical_fre):.3f} mm"
+        if classical_max is not None:
+            prefix += f" | max={float(classical_max):.3f} mm"
+        parts.append(prefix)
+    if "ransac_skipped" in comparison:
+        parts.append(f"RANSAC: skipped — {comparison['ransac_skipped']}")
+        return " · ".join(parts)
+    if "ransac_failure" in comparison and isinstance(comparison["ransac_failure"], dict):
+        parts.append(f"RANSAC: failed — {comparison['ransac_failure'].get('message', 'unknown error')}")
+        return " · ".join(parts)
+    ransac = comparison.get("ransac") if isinstance(comparison.get("ransac"), dict) else None
+    if not ransac:
+        return " · ".join(parts)
+    inliers = int(ransac.get("inlier_count", 0))
+    total = int(ransac.get("landmark_count", inliers))
+    rejected_labels = ransac.get("rejected_labels") or []
+    inlier_fre = ransac.get("fre_mm_inliers_only")
+    all_fre = ransac.get("fre_mm_all_points")
+    threshold = ransac.get("inlier_threshold_mm")
+    line = f"RANSAC: inliers {inliers}/{total}"
+    if threshold is not None:
+        line += f" @ {float(threshold):.2f} mm"
+    if inlier_fre is not None:
+        line += f" | inlier FRE={float(inlier_fre):.3f} mm"
+    if all_fre is not None:
+        line += f" | all-points FRE={float(all_fre):.3f} mm"
+    if rejected_labels:
+        line += f" | rejected: {', '.join(rejected_labels)}"
+    parts.append(line)
+    delta = comparison.get("delta")
+    if isinstance(delta, dict):
+        delta_inliers = delta.get("fre_mm_classical_minus_ransac_inliers")
+        if delta_inliers is not None:
+            direction = "lower" if float(delta_inliers) > 0 else "higher"
+            parts.append(
+                f"Δ FRE (classical − RANSAC inliers) = {float(delta_inliers):+.3f} mm "
+                f"({direction} with RANSAC)"
+            )
+    return " · ".join(parts)

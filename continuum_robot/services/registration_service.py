@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 import copy
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import threading
@@ -20,7 +21,11 @@ from continuum_robot.registration.legacy_compat import (
     solve_registration_from_tool_samples,
 )
 from continuum_robot.registration.repository import RegistrationRecord, RegistrationRepository
-from continuum_robot.registration.rigid_solver import RigidRegistrationSolver
+from continuum_robot.registration.rigid_solver import (
+    RansacRegistrationResult,
+    RigidRegistrationFailure,
+    RigidRegistrationSolver,
+)
 from continuum_robot.registration.validation import (
     build_registration_history_summary,
     compute_fre_mm,
@@ -59,6 +64,20 @@ class RegistrationConfig:
     model_tre_reference_radius_mm: float
     tip_tre_reference_radius_mm: float
     max_fre_mm: float | None
+    ransac_min_landmark_count: int = 5
+    """N below which the side-by-side RANSAC comparison is skipped (RANSAC needs voting room)."""
+    ransac_inlier_threshold_mm: float = 1.0
+    """Residual-norm cutoff (mm) for a landmark to count as a RANSAC inlier."""
+    ransac_min_consensus_size: int | None = None
+    """Required inlier count; None → max(minimum_sample_size + 1, ceil(0.5 * N))."""
+    ransac_minimum_sample_size: int = 3
+    """Random-sample size per RANSAC iteration. 3 is the minimum for a rigid 3D fit."""
+    ransac_max_iterations: int = 1000
+    """Hard iteration cap; adaptive shrinking will typically stop sooner."""
+    ransac_confidence: float = 0.99
+    """Target probability of sampling an all-inlier minimum set at least once."""
+    ransac_seed: int | None = None
+    """Optional seed for reproducibility. None uses fresh randomness each solve."""
 
 
 class RegistrationService:
@@ -164,6 +183,8 @@ class RegistrationService:
             self._state.validation_metrics = {}
             self._state.latest_validation_summary = {}
             self._state.pending_record = None
+            self._state.active_solver = "classical"
+            self._state.solver_choices = ["classical"]
             self._state.health.last_error = None
             self._state.health.last_successful_update_utc = utc_now_iso()
             self._state.health.state = "capturing"
@@ -488,6 +509,33 @@ class RegistrationService:
             tip_tre_reference_radius_mm=self._config.tip_tre_reference_radius_mm,
         )
         self._validate_fre_limits(result.validation_metrics)
+        ordered_labels = list(result.ordered_labels)
+        legacy_measured = np.asarray(
+            [result.averaged_points_by_label[label] for label in ordered_labels],
+            dtype=float,
+        )
+        legacy_truth = np.asarray(
+            [result.truth_points_in_sw_by_label[label] for label in ordered_labels],
+            dtype=float,
+        )
+        legacy_residuals_by_label = {
+            label: list(result.residuals_by_label.get(label, [0.0, 0.0, 0.0]))
+            for label in ordered_labels
+        }
+        legacy_residual_norms_by_label = compute_residual_norms_mm(legacy_residuals_by_label)
+        legacy_residual_summary = summarize_residual_norms_mm(legacy_residual_norms_by_label)
+        legacy_max_residual = float(legacy_residual_summary["max_residual_mm"] or 0.0)
+        legacy_fre = float(result.validation_metrics["overall_fre_mm"])
+        legacy_solver_comparison = self._compute_solver_comparison(
+            measured=legacy_measured,
+            truth=legacy_truth,
+            labels=ordered_labels,
+            classical_T=result.T_aurora_2_model,
+            classical_residuals_by_label=legacy_residuals_by_label,
+            classical_fre_mm=legacy_fre,
+            classical_max_residual_mm=legacy_max_residual,
+        )
+        result.validation_metrics["solver_comparison"] = legacy_solver_comparison
         record = self._record_from_legacy_result(result)
 
         with self._lock:
@@ -499,6 +547,8 @@ class RegistrationService:
             self._state.validation_metrics = copy.deepcopy(record.validation_metrics)
             self._state.pending_accept = True
             self._state.pending_record = asdict(record)
+            self._state.active_solver = "classical"
+            self._state.solver_choices = self._available_solver_choices_locked(legacy_solver_comparison)
             self._state.health.last_error = None
             self._state.health.last_successful_update_utc = utc_now_iso()
             self._state.health.state = "solved"
@@ -553,6 +603,15 @@ class RegistrationService:
         max_residual_mm = float(residual_summary["max_residual_mm"] or 0.0)
         measured_geometry = compute_geometry_diagnostics(measured.tolist())
         truth_geometry = compute_geometry_diagnostics(truth.tolist())
+        solver_comparison = self._compute_solver_comparison(
+            measured=measured,
+            truth=truth,
+            labels=labels,
+            classical_T=T_robot_aurora,
+            classical_residuals_by_label=residuals_by_label,
+            classical_fre_mm=fre_mm,
+            classical_max_residual_mm=max_residual_mm,
+        )
         if self._config.max_fre_mm is not None and fre_mm > self._config.max_fre_mm:
             raise RuntimeError(f"Registration FRE {fre_mm:.3f} mm exceeds limit {self._config.max_fre_mm:.3f} mm")
         T_coil_tip, live_pose_tip_transform = self._build_simple_live_pose_tip_transform()
@@ -578,6 +637,7 @@ class RegistrationService:
             "worst_landmark_label": residual_summary["worst_landmark_label"],
             "worst_landmark_residual_mm": residual_summary["worst_landmark_residual_mm"],
             "configured_max_fre_mm": self._config.max_fre_mm,
+            "solver_comparison": solver_comparison,
         }
 
         record = RegistrationRecord(
@@ -624,6 +684,8 @@ class RegistrationService:
             self._state.health.last_error = None
             self._state.health.last_successful_update_utc = utc_now_iso()
             self._state.health.state = "solved"
+            self._state.active_solver = "classical"
+            self._state.solver_choices = self._available_solver_choices_locked(solver_comparison)
             self._recompute_health_locked()
             return copy.deepcopy(self._state.pending_record)
 
@@ -778,6 +840,228 @@ class RegistrationService:
         )
         return output
 
+    @staticmethod
+    def _available_solver_choices_locked(comparison: dict | None) -> list[str]:
+        """Return the solver choices presentable to the operator for selection.
+
+        Always includes ``classical``. Includes ``ransac`` only when the
+        comparison block has a fully populated RANSAC result (not skipped, not
+        failed). Lock-held caller; pure read of the comparison dict.
+        """
+        choices = ["classical"]
+        if isinstance(comparison, dict) and isinstance(comparison.get("ransac"), dict):
+            choices.append("ransac")
+        return choices
+
+    def set_active_solver(self, solver_name: str) -> dict:
+        """Switch the pending registration record to use ``classical`` or ``ransac``.
+
+        The pending ``T_robot_aurora`` and residual fields are rebuilt from the
+        saved ``solver_comparison`` block. Acceptance then persists the chosen
+        transform. Raises if no solve is pending or the named solver is not
+        available (e.g. RANSAC was skipped because too few landmarks).
+        """
+        normalized = str(solver_name or "").strip().lower()
+        if normalized not in {"classical", "ransac"}:
+            raise ValueError(f"Unknown solver selection: {solver_name!r}")
+        with self._lock:
+            if self._pending_record is None:
+                raise RuntimeError("No solved registration is pending; nothing to switch.")
+            if normalized not in self._available_solver_choices_locked(
+                self._state.validation_metrics.get("solver_comparison")
+            ):
+                raise RuntimeError(
+                    f"Solver {normalized!r} is not available for the current solve. "
+                    "Run Solve with enough landmarks first."
+                )
+            if self._state.active_solver == normalized:
+                return copy.deepcopy(self._state.pending_record)
+            comparison = self._state.validation_metrics.get("solver_comparison", {})
+            chosen_block = comparison.get(normalized) if isinstance(comparison, dict) else None
+            if not isinstance(chosen_block, dict):
+                raise RuntimeError(
+                    f"Solver comparison block for {normalized!r} is missing or malformed."
+                )
+            T_chosen_list = chosen_block.get("T_robot_aurora")
+            if not isinstance(T_chosen_list, list):
+                raise RuntimeError(
+                    f"Solver comparison block for {normalized!r} has no T_robot_aurora."
+                )
+            T_chosen = np.asarray(T_chosen_list, dtype=float)
+            residuals_by_label = {
+                label: list(values)
+                for label, values in (chosen_block.get("residual_vectors_mm_by_label") or {}).items()
+            }
+            if normalized == "ransac":
+                # RANSAC reports inlier-only FRE alongside all-points FRE. Use
+                # inlier FRE as the headline number since the rejected points
+                # are excluded from the saved fit by construction.
+                fre_mm = float(
+                    chosen_block.get("fre_mm_inliers_only")
+                    or chosen_block.get("fre_mm_all_points")
+                    or 0.0
+                )
+            else:
+                fre_mm = float(chosen_block.get("fre_mm", 0.0))
+            max_residual_mm = float(chosen_block.get("max_residual_mm", 0.0) or 0.0)
+            residual_norms_by_label = chosen_block.get(
+                "residual_norms_mm_by_label"
+            ) or compute_residual_norms_mm(residuals_by_label)
+            residual_summary = summarize_residual_norms_mm(residual_norms_by_label)
+
+            # Rebuild the pending record so accept persists the chosen transform.
+            previous_validation_metrics = dict(self._pending_record.validation_metrics or {})
+            previous_validation_metrics.update(
+                {
+                    "overall_fre_mm": fre_mm,
+                    "overall_rmse_mm": fre_mm,
+                    "max_residual_mm": max_residual_mm,
+                    "residual_norms_mm_by_label": dict(residual_norms_by_label),
+                    "residual_vectors_mm_by_label": residuals_by_label,
+                    "residual_summary": residual_summary,
+                    "worst_landmark_label": residual_summary["worst_landmark_label"],
+                    "worst_landmark_residual_mm": residual_summary["worst_landmark_residual_mm"],
+                    "active_solver": normalized,
+                }
+            )
+            self._pending_record.validation_metrics = previous_validation_metrics
+            self._pending_record.T_robot_aurora = T_chosen.tolist()
+            self._pending_record.residuals_robot_xyz_mm = residuals_by_label
+            self._pending_record.fre_mm = fre_mm
+
+            self._state.T_robot_aurora = T_chosen.tolist()
+            self._state.residuals_by_label = residuals_by_label
+            self._state.fre_mm = fre_mm
+            self._state.validation_metrics = copy.deepcopy(previous_validation_metrics)
+            self._state.pending_record = asdict(self._pending_record)
+            self._state.active_solver = normalized
+            return copy.deepcopy(self._state.pending_record)
+
+    def _compute_solver_comparison(
+        self,
+        *,
+        measured: np.ndarray,
+        truth: np.ndarray,
+        labels: list[str],
+        classical_T: np.ndarray,
+        classical_residuals_by_label: dict[str, list[float]],
+        classical_fre_mm: float,
+        classical_max_residual_mm: float,
+    ) -> dict[str, object]:
+        """Run both classical SVD and RANSAC against the same averaged landmarks.
+
+        Always populates a ``classical`` block. Populates ``ransac`` when
+        ``len(labels)`` meets the configured minimum landmark count; otherwise
+        records ``ransac_skipped`` with the reason. This lets the GUI surface a
+        side-by-side comparison every time the operator clicks Solve, without
+        changing which transform the saved registration actually uses (still
+        the classical SVD fit).
+        """
+        classical_residual_norms_by_label = compute_residual_norms_mm(classical_residuals_by_label)
+        comparison: dict[str, object] = {
+            "classical": {
+                "fre_mm": float(classical_fre_mm),
+                "rmse_mm": float(classical_fre_mm),
+                "max_residual_mm": float(classical_max_residual_mm),
+                "residual_norms_mm_by_label": classical_residual_norms_by_label,
+                "residual_vectors_mm_by_label": classical_residuals_by_label,
+                "T_robot_aurora": classical_T.tolist(),
+                "landmark_count": len(labels),
+            },
+            "delta": None,
+        }
+        min_landmarks = max(
+            int(self._config.ransac_minimum_sample_size) + 1,
+            int(self._config.ransac_min_landmark_count),
+        )
+        if len(labels) < min_landmarks:
+            comparison["ransac_skipped"] = (
+                f"Need at least {min_landmarks} landmarks for RANSAC to vote; "
+                f"current solve uses {len(labels)}."
+            )
+            return comparison
+        try:
+            ransac_result: RansacRegistrationResult = self.solver.solve_T_robot_aurora_ransac(
+                measured,
+                truth,
+                inlier_threshold_mm=float(self._config.ransac_inlier_threshold_mm),
+                minimum_sample_size=int(self._config.ransac_minimum_sample_size),
+                min_consensus_size=self._config.ransac_min_consensus_size,
+                max_iterations=int(self._config.ransac_max_iterations),
+                confidence=float(self._config.ransac_confidence),
+                seed=self._config.ransac_seed,
+            )
+        except RigidRegistrationFailure as exc:
+            comparison["ransac_failure"] = {
+                "message": str(exc),
+                "partial": dict(getattr(exc, "partial", {}) or {}),
+                "inlier_threshold_mm": float(self._config.ransac_inlier_threshold_mm),
+            }
+            return comparison
+        except Exception as exc:
+            comparison["ransac_failure"] = {
+                "message": f"RANSAC raised an unexpected error: {exc}",
+                "partial": {},
+                "inlier_threshold_mm": float(self._config.ransac_inlier_threshold_mm),
+            }
+            return comparison
+
+        ransac_residuals_by_label = {
+            labels[idx]: [float(value) for value in ransac_result.residuals_xyz_mm[idx, :].tolist()]
+            for idx in range(len(labels))
+        }
+        ransac_residual_norms_by_label = compute_residual_norms_mm(ransac_residuals_by_label)
+        ransac_residual_summary = summarize_residual_norms_mm(ransac_residual_norms_by_label)
+        inlier_labels = [
+            labels[idx] for idx in ransac_result.inlier_indices if 0 <= idx < len(labels)
+        ]
+        rejected_labels = [
+            labels[idx] for idx in ransac_result.rejected_indices if 0 <= idx < len(labels)
+        ]
+        inlier_residual_vectors = [
+            list(ransac_residuals_by_label[label])
+            for label in inlier_labels
+            if label in ransac_residuals_by_label
+        ]
+        inlier_fre_mm = (
+            float(compute_fre_mm(inlier_residual_vectors))
+            if inlier_residual_vectors
+            else float("nan")
+        )
+        all_point_fre_mm = float(compute_fre_mm(list(ransac_residuals_by_label.values())))
+        comparison["ransac"] = {
+            "fre_mm_all_points": all_point_fre_mm,
+            "fre_mm_inliers_only": inlier_fre_mm,
+            "rmse_mm_all_points": float(ransac_result.all_point_rmse_mm),
+            "rmse_mm_inliers_only": float(ransac_result.inlier_rmse_mm),
+            "max_residual_mm": float(ransac_residual_summary["max_residual_mm"] or 0.0),
+            "residual_norms_mm_by_label": ransac_residual_norms_by_label,
+            "residual_vectors_mm_by_label": ransac_residuals_by_label,
+            "T_robot_aurora": ransac_result.T_target_source.tolist(),
+            "inlier_labels": inlier_labels,
+            "rejected_labels": rejected_labels,
+            "inlier_count": int(len(inlier_labels)),
+            "rejected_count": int(len(rejected_labels)),
+            "landmark_count": int(ransac_result.sample_count_total),
+            "converged": bool(ransac_result.converged),
+            "iterations_run": int(ransac_result.iterations_run),
+            "inlier_threshold_mm": float(ransac_result.inlier_threshold_mm),
+            "minimum_sample_size": int(ransac_result.minimum_sample_size),
+            "min_consensus_size": int(ransac_result.min_consensus_size),
+            "best_consensus_size": int(ransac_result.best_consensus_size),
+        }
+        comparison["delta"] = {
+            "fre_mm_classical_minus_ransac_inliers": float(classical_fre_mm - inlier_fre_mm)
+            if not math.isnan(inlier_fre_mm)
+            else None,
+            "fre_mm_classical_minus_ransac_all_points": float(classical_fre_mm - all_point_fre_mm),
+            "max_residual_classical_minus_ransac_mm": float(
+                classical_max_residual_mm - float(ransac_residual_summary["max_residual_mm"] or 0.0)
+            ),
+            "rejected_label_count": int(len(rejected_labels)),
+        }
+        return comparison
+
     def _validate_fre_limits(self, validation_metrics: dict[str, object]) -> None:
         if self._config.max_fre_mm is None:
             return
@@ -804,6 +1088,9 @@ class RegistrationService:
         nominal.update(dict(payload.get("nominal_landmarks_robot_xyz_mm", {})))
         validation = payload.get("validation", {})
         max_fre = validation.get("max_fre_mm")
+        ransac_payload = dict(payload.get("ransac", {}) or {})
+        raw_min_consensus = ransac_payload.get("min_consensus_size")
+        raw_seed = ransac_payload.get("seed")
         return RegistrationConfig(
             labels=labels,
             captures_per_landmark=captures,
@@ -820,6 +1107,15 @@ class RegistrationService:
             model_tre_reference_radius_mm=float(payload.get("model_tre_reference_radius_mm", 5.0)),
             tip_tre_reference_radius_mm=float(payload.get("tip_tre_reference_radius_mm", 3.0)),
             max_fre_mm=float(max_fre) if max_fre is not None else None,
+            ransac_min_landmark_count=int(ransac_payload.get("min_landmark_count", 5)),
+            ransac_inlier_threshold_mm=float(ransac_payload.get("inlier_threshold_mm", 1.0)),
+            ransac_min_consensus_size=(
+                int(raw_min_consensus) if raw_min_consensus not in (None, "") else None
+            ),
+            ransac_minimum_sample_size=int(ransac_payload.get("minimum_sample_size", 3)),
+            ransac_max_iterations=int(ransac_payload.get("max_iterations", 1000)),
+            ransac_confidence=float(ransac_payload.get("confidence", 0.99)),
+            ransac_seed=(int(raw_seed) if raw_seed not in (None, "") else None),
         )
 
     @staticmethod

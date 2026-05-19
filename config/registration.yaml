@@ -124,19 +124,39 @@ candidate_landmarks:
     display_label: "East-South Inner"
     xyz_mm: [25.0, -10.0, -5.0]
     enabled: true
-# Optional RANSAC outlier rejection on the live registration solve. Off by
-# default. When enabled, the solver iteratively samples 3-point candidate fits,
-# scores each by how many landmarks agree within `ransac_inlier_threshold_mm`,
-# refits on the largest consensus, and reports which landmarks were rejected.
-# Use for thesis registrations where one bad capture (tracker glitch, hand
-# slip, fixture flex) shouldn't poison the whole fit.
-#   ransac_inlier_threshold_mm     : residual cutoff for "good" point (mm)
-#   ransac_min_consensus_size      : floor on inlier count (null = max(4, N/2))
-#   ransac_seed                    : set int for run-to-run reproducibility
+# Legacy knobs retained for the older LiveRegistrationService entry points.
+# The production RegistrationService consumes the `ransac:` block below
+# (see _compute_solver_comparison). Leaving these defaults in place keeps any
+# external scripts that still consume LiveRegistrationService working.
 ransac_outlier_rejection_enabled: false
 ransac_inlier_threshold_mm: 1.0
 ransac_min_consensus_size: null
 ransac_max_iterations: 1000
 ransac_seed: null
+
+# Side-by-side classical-vs-RANSAC comparison emitted every time the operator
+# clicks Solve on the Registration tab. RANSAC samples 3-point candidate fits,
+# scores each by how many landmarks agree within `inlier_threshold_mm`, refits
+# on the largest consensus, and reports which landmarks were rejected.
+# Both solver results land in `validation_metrics.solver_comparison`; the saved
+# T_robot_aurora still uses the classical SVD fit so downstream consumers see
+# stable behavior. RANSAC runs only when the solve has at least
+# `min_landmark_count` landmarks (it has no voting room below that).
+#   min_landmark_count      : skip RANSAC when fewer landmarks are selected
+#   inlier_threshold_mm     : residual cutoff for "good" landmark (mm)
+#   minimum_sample_size     : random-sample size per iteration (3 is the minimum)
+#   min_consensus_size      : floor on inlier count (null = max(4, ceil(N/2)))
+#   max_iterations          : hard iteration cap; adaptive schedule usually stops sooner
+#   confidence              : target probability of seeing one all-inlier sample
+#   seed                    : set int for run-to-run reproducibility
+ransac:
+  min_landmark_count: 5
+  inlier_threshold_mm: 1.0
+  minimum_sample_size: 3
+  min_consensus_size: null
+  max_iterations: 1000
+  confidence: 0.99
+  seed: null
+
 validation:
   max_fre_mm: 2.0

@@ -484,6 +484,123 @@ def test_pivot_calibration_offline_from_recorded_file(tmp_path: Path) -> None:
     assert np.allclose(result.summary.experiment_metrics["tip_vector_local_mm"], [10.0, 20.0, 100.0], atol=5e-3)
 
 
+def test_pivot_calibration_records_solver_comparison_with_both_classical_and_ransac(tmp_path: Path) -> None:
+    """Solve always populates pivot_solver_comparison with both classical and RANSAC blocks."""
+    csv_path = _write_pivot_csv(tmp_path / "pivot_samples.csv")
+    runner = _runner(tmp_path)
+    result = runner.run_experiment(
+        "pivot_calibration",
+        config={
+            "tool_id": "0B",
+            "input_path": str(csv_path),
+            "output_tip_file": str(tmp_path / "tip.csv"),
+            "std_dev_threshold": 3.0,
+            "min_samples": 8,
+            "ransac_inlier_threshold_mm": 1.0,
+            "ransac_seed": 7,
+        },
+    )
+
+    assert result.success is True
+    metrics = result.summary.experiment_metrics
+    comparison = metrics["pivot_solver_comparison"]
+    assert "classical" in comparison
+    assert "ransac" in comparison
+    classical_rmse = comparison["classical"]["rmse_mm"]
+    ransac_rmse = comparison["ransac"]["rmse_mm"]
+    assert classical_rmse < 1e-3
+    assert ransac_rmse < 1e-3
+    # Primary solver default is classical → tip vector matches classical block.
+    assert metrics["pivot_solver"] == "classical_std_dev"
+    assert np.allclose(metrics["tip_vector_local_mm"], comparison["classical"]["tip_vector_local_mm"])
+    delta = comparison["delta"]
+    assert "rmse_mm_classical_minus_ransac" in delta
+    assert "tip_vector_distance_mm" in delta
+
+
+def test_pivot_calibration_solver_comparison_rejects_outlier_via_ransac(tmp_path: Path) -> None:
+    """With one corrupted translation, RANSAC rejects it; classical keeps it (high RMSE).
+
+    The comparison block exposes both so the operator can see how much RANSAC bought.
+    """
+    rotations, translations = _pivot_rotations_and_translations()
+    corrupted = [np.asarray(t, dtype=float) for t in translations]
+    corrupted[3] = corrupted[3] + np.asarray([20.0, -15.0, 18.0], dtype=float)
+    csv_path = tmp_path / "pivot_outlier.csv"
+    with csv_path.open("w", encoding="utf-8") as handle:
+        for rotation, translation in zip(rotations, corrupted):
+            from continuum_robot.tracking.transforms import rotmat_to_quat_wxyz
+            q = rotmat_to_quat_wxyz(rotation)
+            handle.write(
+                f"0B,{q[0]},{q[1]},{q[2]},{q[3]},{translation[0]},{translation[1]},{translation[2]}\n"
+            )
+    runner = _runner(tmp_path)
+    result = runner.run_experiment(
+        "pivot_calibration",
+        config={
+            "tool_id": "0B",
+            "input_path": str(csv_path),
+            "output_tip_file": str(tmp_path / "tip.csv"),
+            "std_dev_threshold": 3.0,
+            "min_samples": 8,
+            "ransac_inlier_threshold_mm": 0.5,
+            "ransac_seed": 13,
+            "use_ransac": False,  # classical is primary; comparison still runs both
+        },
+    )
+
+    assert result.success is True
+    metrics = result.summary.experiment_metrics
+    comparison = metrics["pivot_solver_comparison"]
+    assert "classical" in comparison
+    assert "ransac" in comparison
+    classical_rmse = comparison["classical"]["rmse_mm"]
+    ransac_rmse = comparison["ransac"]["rmse_mm"]
+    assert ransac_rmse < classical_rmse, (
+        f"Expected RANSAC RMSE ({ransac_rmse}) to beat classical ({classical_rmse}) "
+        "with one corrupted translation."
+    )
+    assert comparison["ransac"]["converged"] is True
+    assert comparison["delta"]["rmse_mm_classical_minus_ransac"] > 0
+
+
+def test_pivot_calibration_stages_both_candidate_tip_files(tmp_path: Path) -> None:
+    """The execute step writes one tip file per solver so Accept can pick later."""
+    csv_path = _write_pivot_csv(tmp_path / "pivot_samples.csv")
+    runner = _runner(tmp_path)
+    staged_tip = tmp_path / "tip.csv"
+    result = runner.run_experiment(
+        "pivot_calibration",
+        config={
+            "tool_id": "0B",
+            "input_path": str(csv_path),
+            "output_tip_file": str(staged_tip),
+            "std_dev_threshold": 3.0,
+            "min_samples": 8,
+            "ransac_inlier_threshold_mm": 1.0,
+            "ransac_seed": 7,
+        },
+    )
+
+    assert result.success is True
+    metrics = result.summary.experiment_metrics
+    assert metrics["tip_output_file_classical"] is not None
+    assert metrics["tip_output_file_ransac"] is not None
+    classical_path = Path(metrics["tip_output_file_classical"])
+    ransac_path = Path(metrics["tip_output_file_ransac"])
+    assert classical_path.exists()
+    assert ransac_path.exists()
+    assert classical_path != ransac_path
+    classical_vector = np.loadtxt(classical_path, delimiter=",").reshape(-1)
+    ransac_vector = np.loadtxt(ransac_path, delimiter=",").reshape(-1)
+    # On clean inputs the two solvers agree closely.
+    assert np.allclose(classical_vector, ransac_vector, atol=1e-3)
+    # The comparison block links to the staged paths for the GUI controller.
+    comparison = metrics["pivot_solver_comparison"]
+    assert comparison["classical"]["tip_output_file"] == str(classical_path)
+    assert comparison["ransac"]["tip_output_file"] == str(ransac_path)
+
+
 def test_pivot_calibration_offline_from_headered_recorded_file_reports_parse_metrics(tmp_path: Path) -> None:
     csv_path = _write_headered_pivot_csv(tmp_path / "pivot_headered_samples.csv")
     runner = _runner(tmp_path)

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QComboBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QRadioButton,
     QScrollArea,
     QSplitter,
     QTableWidget,
@@ -148,6 +150,44 @@ class TrackerMvpTab(QWidget):
         pivot_form.addRow("Raw capture dataset", self.pivot_capture_dataset_label)
         pivot_form.addRow("Pivot review run", self.pivot_run_path_label)
         pivot_layout.addLayout(pivot_form)
+
+        # Side-by-side solver chooser. Accept promotes whichever solver is
+        # checked. The "✓ best" badge highlights the row with the lower RMSE.
+        self.pivot_solver_box = QGroupBox("Solver (select before Accept)")
+        pivot_solver_layout = QVBoxLayout(self.pivot_solver_box)
+        self.pivot_solver_classical_radio = QRadioButton("Classical std-dev")
+        self.pivot_solver_ransac_radio = QRadioButton("RANSAC")
+        self.pivot_solver_classical_radio.setChecked(True)
+        self.pivot_solver_button_group = QButtonGroup(self.pivot_solver_box)
+        self.pivot_solver_button_group.addButton(self.pivot_solver_classical_radio, 0)
+        self.pivot_solver_button_group.addButton(self.pivot_solver_ransac_radio, 1)
+        self.pivot_solver_button_group.buttonClicked.connect(self._on_pivot_solver_selected)
+        self.pivot_solver_classical_metrics_label = QLabel("—")
+        self.pivot_solver_classical_metrics_label.setWordWrap(True)
+        self.pivot_solver_ransac_metrics_label = QLabel("—")
+        self.pivot_solver_ransac_metrics_label.setWordWrap(True)
+        self.pivot_solver_classical_best_badge = QLabel("")
+        self.pivot_solver_ransac_best_badge = QLabel("")
+        for badge in (self.pivot_solver_classical_best_badge, self.pivot_solver_ransac_best_badge):
+            badge.setStyleSheet("color: #6fcf97; font-weight: 600;")
+            badge.setVisible(False)
+        for radio, metrics_label, badge in (
+            (self.pivot_solver_classical_radio, self.pivot_solver_classical_metrics_label, self.pivot_solver_classical_best_badge),
+            (self.pivot_solver_ransac_radio, self.pivot_solver_ransac_metrics_label, self.pivot_solver_ransac_best_badge),
+        ):
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(8)
+            row.addWidget(radio)
+            row.addWidget(badge)
+            row.addStretch(1)
+            row.addWidget(metrics_label, 0, Qt.AlignRight)
+            pivot_solver_layout.addLayout(row)
+        self.pivot_solver_status_label = QLabel("Solve the pivot to enable the comparison.")
+        self.pivot_solver_status_label.setWordWrap(True)
+        pivot_solver_layout.addWidget(self.pivot_solver_status_label)
+        pivot_layout.addWidget(self.pivot_solver_box)
+
         pivot_buttons = QHBoxLayout()
         pivot_buttons.addWidget(self._pivot_start_button)
         pivot_buttons.addWidget(self._pivot_stop_button)
@@ -284,6 +324,7 @@ class TrackerMvpTab(QWidget):
         self.pivot_capture_dataset_label.setText(workflow_state.pivot_capture_dataset_path or "none")
         self.pivot_run_path_label.setText(workflow_state.pivot_run_path or "none")
         set_text_document(self.tip_preview_text, workflow_state.pivot_tip_preview)
+        self._update_pivot_solver_panel(workflow_state)
 
         self.registration_status_label.setText(workflow_state.latest_registration_status)
         if workflow_state.live_tip_position_mm is not None:
@@ -386,6 +427,55 @@ class TrackerMvpTab(QWidget):
     def _reset_pivot(self) -> None:
         self._safe_call(self.controller.reset_pivot_workflow)
 
+    def _update_pivot_solver_panel(self, state: TrackerMvpViewState) -> None:
+        comparison = state.pivot_solver_comparison if isinstance(state.pivot_solver_comparison, dict) else {}
+        classical_available = "classical" in state.pivot_solver_choices
+        ransac_available = "ransac" in state.pivot_solver_choices
+        self.pivot_solver_classical_radio.setEnabled(state.pivot_pending_accept and classical_available)
+        self.pivot_solver_ransac_radio.setEnabled(state.pivot_pending_accept and ransac_available)
+        self._sync_pivot_solver_radio_state(state)
+        classical_text, ransac_text, status_text, classical_best, ransac_best = _pivot_solver_panel_lines(
+            comparison=comparison,
+            pending_accept=state.pivot_pending_accept,
+            active_solver=state.pivot_active_solver,
+            classical_available=classical_available,
+            ransac_available=ransac_available,
+        )
+        self.pivot_solver_classical_metrics_label.setText(classical_text)
+        self.pivot_solver_ransac_metrics_label.setText(ransac_text)
+        self.pivot_solver_status_label.setText(status_text)
+        self.pivot_solver_classical_best_badge.setText("✓ best" if classical_best else "")
+        self.pivot_solver_classical_best_badge.setVisible(bool(classical_best))
+        self.pivot_solver_ransac_best_badge.setText("✓ best" if ransac_best else "")
+        self.pivot_solver_ransac_best_badge.setVisible(bool(ransac_best))
+
+    def _on_pivot_solver_selected(self, button) -> None:
+        solver_name = "ransac" if button is self.pivot_solver_ransac_radio else "classical"
+        # Same anti-bounce pattern as the registration tab: avoid re-entering
+        # set_pivot_solver when this came from a programmatic sync.
+        if self.controller.state.pivot_active_solver == solver_name:
+            return
+        if solver_name not in self.controller.state.pivot_solver_choices:
+            self._sync_pivot_solver_radio_state(self.controller.state)
+            return
+        self._safe_call(lambda: self.controller.set_pivot_solver(solver_name))
+
+    def _sync_pivot_solver_radio_state(self, state: TrackerMvpViewState) -> None:
+        target_radio = (
+            self.pivot_solver_ransac_radio
+            if state.pivot_active_solver == "ransac"
+            else self.pivot_solver_classical_radio
+        )
+        if target_radio.isChecked():
+            return
+        self.pivot_solver_classical_radio.blockSignals(True)
+        self.pivot_solver_ransac_radio.blockSignals(True)
+        try:
+            target_radio.setChecked(True)
+        finally:
+            self.pivot_solver_classical_radio.blockSignals(False)
+            self.pivot_solver_ransac_radio.blockSignals(False)
+
     def _safe_call(self, fn) -> None:
         try:
             fn()
@@ -408,3 +498,78 @@ class TrackerMvpTab(QWidget):
         if matched_index >= 0:
             return str(combo.itemData(matched_index) or current_text).strip()
         return current_text
+
+
+def _pivot_solver_panel_lines(
+    *,
+    comparison: dict,
+    pending_accept: bool,
+    active_solver: str,
+    classical_available: bool,
+    ransac_available: bool,
+) -> tuple[str, str, str, bool, bool]:
+    """Compute the metrics rows + status line for the pivot solver chooser.
+
+    Returns ``(classical_text, ransac_text, status, classical_is_best,
+    ransac_is_best)``.
+    """
+    if not pending_accept or not comparison:
+        return (
+            "—",
+            "—",
+            "Solve the pivot to enable the comparison.",
+            False,
+            False,
+        )
+    classical = comparison.get("classical") if isinstance(comparison.get("classical"), dict) else None
+    classical_text = "—"
+    classical_rmse: float | None = None
+    if classical is not None:
+        rmse = classical.get("rmse_mm")
+        used = classical.get("sample_count_used")
+        rejected = classical.get("sample_count_rejected")
+        if rmse is not None:
+            classical_rmse = float(rmse)
+            classical_text = (
+                f"RMSE={classical_rmse:.3f} mm, used={int(used or 0)}, rejected={int(rejected or 0)}"
+            )
+    elif isinstance(comparison.get("classical_failure"), dict):
+        classical_text = f"failed: {comparison['classical_failure'].get('message', 'unknown')}"
+    ransac_text = "—"
+    ransac_rmse: float | None = None
+    if "ransac_skipped" in comparison:
+        ransac_text = f"unavailable: {comparison['ransac_skipped']}"
+    elif isinstance(comparison.get("ransac_failure"), dict):
+        ransac_text = f"failed: {comparison['ransac_failure'].get('message', 'unknown')}"
+    elif isinstance(comparison.get("ransac"), dict):
+        ransac = comparison["ransac"]
+        rmse = ransac.get("rmse_mm")
+        used = ransac.get("sample_count_used")
+        rejected = ransac.get("sample_count_rejected")
+        threshold = ransac.get("inlier_threshold_mm")
+        if rmse is not None:
+            ransac_rmse = float(rmse)
+            ransac_text = (
+                f"RMSE={ransac_rmse:.3f} mm, used={int(used or 0)}, rejected={int(rejected or 0)}"
+            )
+        if threshold is not None:
+            ransac_text += f" @ {float(threshold):.2f} mm"
+    classical_is_best = (
+        classical_rmse is not None
+        and ransac_rmse is not None
+        and classical_rmse < ransac_rmse
+    )
+    ransac_is_best = (
+        classical_rmse is not None
+        and ransac_rmse is not None
+        and ransac_rmse < classical_rmse
+    )
+    if not ransac_available:
+        status = "RANSAC unavailable for this run. Accept will save the Classical tip file."
+    elif not classical_available:
+        status = "Classical solve unavailable for this run. Accept will save the RANSAC tip file."
+    elif active_solver == "ransac":
+        status = "Accept will save the RANSAC tip vector (outlier poses excluded from the fit)."
+    else:
+        status = "Accept will save the Classical std-dev tip vector. Switch to RANSAC if its RMSE is meaningfully lower."
+    return (classical_text, ransac_text, status, classical_is_best, ransac_is_best)
