@@ -597,6 +597,33 @@ class ExperimentPageBase(QWidget):
         with QSignalBlocker(widget):
             widget.setCurrentIndex(index)
 
+    def _live_run_mode_hint(self, *, servo_required: bool) -> str:
+        """Plain-language hint about whether the *next* run will be tagged
+        as thesis evidence based on the current runtime state.
+
+        Mirrors compute_thesis_eligibility's decision logic at the GUI
+        level so the operator sees red/green BEFORE clicking Run, instead
+        of finding out from the summary post-hoc. Strictly informational —
+        does not block running.
+        """
+        runtime = self.controller.settings.runtime
+        reasons: list[str] = []
+        if bool(getattr(runtime, "mock_mode", False)):
+            reasons.append("runtime mock_mode is ON")
+        servo_service = getattr(self.controller, "servo_service", None)
+        if servo_required:
+            if servo_service is None or not bool(getattr(servo_service, "is_connected", False)):
+                reasons.append("servo service is not connected")
+        if reasons:
+            return (
+                "⚠ This run will be tagged debug_or_synthetic (not thesis evidence). "
+                "Reasons: " + "; ".join(reasons) + "."
+            )
+        return (
+            "✓ Live hardware mode — this run will be tagged thesis_evidence "
+            "if it completes successfully."
+        )
+
     def _apply_responsive_layout(self) -> None:
         available_width = self.scroll_area.viewport().width() if self.scroll_area is not None else self.width()
         mode = "stacked" if int(available_width) < 1240 else "wide"
@@ -2005,13 +2032,28 @@ class TrackerTimingValidationPage(ExperimentPageBase):
         self.tool_mode_combo.addItem("0A only", "0A")
         self.tool_mode_combo.addItem("0B only", "0B")
         self.tool_mode_combo.currentIndexChanged.connect(self._on_tool_mode_changed)
+        self.tool_mode_combo.setToolTip(
+            "Which tracker tools the diagnostic considers 'requested'. "
+            "Tools listed here are used for valid_pose_rate_hz and the per-tool "
+            "validity timeline. Pick 'both' for a full Aurora benchmark; pick a "
+            "single tool when you only care about that tool's stream."
+        )
         self.enable_servo_logging_check = QCheckBox("Log servo telemetry for timestamp alignment")
         self.enable_servo_logging_check.toggled.connect(
             lambda value: self.controller.set_config_value("enable_servo_logging", bool(value))
         )
+        self.enable_servo_logging_check.setToolTip(
+            "When enabled, the run polls servo telemetry at servo_poll_interval_s "
+            "alongside the tracker stream and reports cross-stream timestamp "
+            "alignment. Leave off for a pure tracker-throughput run."
+        )
         self.run_label_edit = QLineEdit()
         self.run_label_edit.editingFinished.connect(
             lambda: self.controller.set_config_value("run_label", self.run_label_edit.text().strip())
+        )
+        self.run_label_edit.setToolTip(
+            "Free-text label saved into the run's metadata. Useful for tagging "
+            "the run condition (e.g. 'aurora_60cm', 'cold_start', 'after_recal')."
         )
         scope_form.addRow("Requested Tools", self.tool_mode_combo)
         scope_form.addRow("Servo Sync", self.enable_servo_logging_check)
@@ -2030,6 +2072,11 @@ class TrackerTimingValidationPage(ExperimentPageBase):
         self.duration_spin.valueChanged.connect(
             lambda value: self.controller.set_config_value("run_duration_s", float(value))
         )
+        self.duration_spin.setToolTip(
+            "Total backend acquisition window in seconds (includes warmup). "
+            "30–60 s is typical for a thesis-quality benchmark; 10 s is enough "
+            "for a quick sanity check."
+        )
         self.sample_target_spin = QSpinBox()
         self.sample_target_spin.setRange(0, 200000)
         self.sample_target_spin.setSpecialValueText("Disabled")
@@ -2039,10 +2086,21 @@ class TrackerTimingValidationPage(ExperimentPageBase):
                 None if int(value) <= 0 else int(value),
             )
         )
+        self.sample_target_spin.setToolTip(
+            "Optional: stop after this many analyzed (post-warmup) samples instead "
+            "of after a fixed duration. Leave at 0 / Disabled to use the duration "
+            "field. Useful when you want a reproducible sample count across runs."
+        )
         self.warmup_spin = QSpinBox()
         self.warmup_spin.setRange(0, 10000)
         self.warmup_spin.valueChanged.connect(
             lambda value: self.controller.set_config_value("warmup_samples", int(value))
+        )
+        self.warmup_spin.setToolTip(
+            "Number of leading tracker samples discarded from the analyzed window. "
+            "Lets the backend pipeline warm its caches before the headline metrics "
+            "start counting. polling_rate_hz still includes these; "
+            "effective_loop_rate_hz does not."
         )
         self.timeout_spin = QDoubleSpinBox()
         self.timeout_spin.setRange(0.2, 600.0)
@@ -2050,6 +2108,11 @@ class TrackerTimingValidationPage(ExperimentPageBase):
         self.timeout_spin.setSingleStep(0.5)
         self.timeout_spin.valueChanged.connect(
             lambda value: self.controller.set_config_value("timeout_s", float(value))
+        )
+        self.timeout_spin.setToolTip(
+            "Safety cap on total wall time. Should be at least as large as "
+            "Run Duration; the run treats reaching this as 'partial_success' "
+            "(so it won't be marked thesis-evidence)."
         )
         params_form.addRow("Run Duration (s)", self.duration_spin)
         params_form.addRow("Analyzed Sample Target", self.sample_target_spin)
@@ -2088,6 +2151,7 @@ class TrackerTimingValidationPage(ExperimentPageBase):
             if config.sample_count_target is not None
             else f"{float(config.run_duration_s):.1f} s duration"
         )
+        live_mode_hint = self._live_run_mode_hint(servo_required=False)
         self.parameter_summary_widget.set_pairs(
             [
                 ("Benchmark Truth", "Uses backend acquisition timing and device-frame freshness. GUI refresh rate is not part of the metric."),
@@ -2100,6 +2164,7 @@ class TrackerTimingValidationPage(ExperimentPageBase):
                         else "Servo sync logging is disabled for this run."
                     ),
                 ),
+                ("Live Run Mode", live_mode_hint),
             ]
         )
 
@@ -2129,18 +2194,37 @@ class ServoTrackerSyncValidationPage(ExperimentPageBase):
         self.servo_ids_edit = QLineEdit()
         self.servo_ids_edit.setPlaceholderText("1 or 1,2")
         self.servo_ids_edit.editingFinished.connect(self._on_servo_ids_changed)
+        self.servo_ids_edit.setToolTip(
+            "Comma- or space-separated servo IDs to actuate. One servo is enough "
+            "for sync validation — adding more only stresses the servo command "
+            "channel, not the alignment metric. Default '1' is recommended."
+        )
         self.tool_mode_combo = NoWheelComboBox()
         self.tool_mode_combo.addItem("0A only", "0A")
         self.tool_mode_combo.addItem("0B only", "0B")
         self.tool_mode_combo.addItem("0A and 0B", "both")
         self.tool_mode_combo.currentIndexChanged.connect(self._on_tool_mode_changed)
+        self.tool_mode_combo.setToolTip(
+            "Which tracker tools the sync metric considers 'requested'. 0A is "
+            "the canonical bottom-segment tool. The valid_pose_rate_hz is "
+            "computed only over these tools."
+        )
         self.include_tip_pose_check = QCheckBox("Include robot-frame tip pose when the live transform chain supports it")
         self.include_tip_pose_check.toggled.connect(
             lambda value: self.controller.set_config_value("include_robot_frame_tip_pose", bool(value))
         )
+        self.include_tip_pose_check.setToolTip(
+            "When on (default), the tracker-side motion metric prefers the "
+            "registered robot-frame tip pose (more meaningful displacement). "
+            "When off, the metric falls back to raw tool pose displacement."
+        )
         self.run_label_edit = QLineEdit()
         self.run_label_edit.editingFinished.connect(
             lambda: self.controller.set_config_value("run_label", self.run_label_edit.text().strip())
+        )
+        self.run_label_edit.setToolTip(
+            "Free-text label saved into the run's metadata. Useful for tagging "
+            "the experiment condition (e.g. 'baseline', 'after_pretension')."
         )
         motion_form.addRow("Servo IDs", self.servo_ids_edit)
         motion_form.addRow("Tracked Tools", self.tool_mode_combo)
@@ -2160,6 +2244,11 @@ class ServoTrackerSyncValidationPage(ExperimentPageBase):
         self.duration_spin.valueChanged.connect(
             lambda value: self.controller.set_config_value("run_duration_s", float(value))
         )
+        self.duration_spin.setToolTip(
+            "Total motion-capture window in seconds. 30 s (default) is the "
+            "thesis-recommended length — long enough for stable offset "
+            "distributions, short enough to keep operator iteration fast."
+        )
         self.warmup_spin = QDoubleSpinBox()
         self.warmup_spin.setRange(0.0, 60.0)
         self.warmup_spin.setDecimals(2)
@@ -2167,10 +2256,22 @@ class ServoTrackerSyncValidationPage(ExperimentPageBase):
         self.warmup_spin.valueChanged.connect(
             lambda value: self.controller.set_config_value("warmup_duration_s", float(value))
         )
+        self.warmup_spin.setToolTip(
+            "Seconds of pre-motion 'settling' samples discarded before the "
+            "analyzed window opens. 2 s (default) lets the servo command "
+            "channel and the tracker pipeline both reach steady state."
+        )
         self.amplitude_spin = QSpinBox()
         self.amplitude_spin.setRange(1, 512)
         self.amplitude_spin.valueChanged.connect(
             lambda value: self.controller.set_config_value("command_amplitude_ticks", int(value))
+        )
+        self.amplitude_spin.setToolTip(
+            "Step amplitude in raw motor ticks. 25 ticks (default) ≈ ±0.05 mm "
+            "of cable travel on a 4096-CPR / 20 mm spool — small enough that a "
+            "servo in the typical 1500–2500 tick range cannot trip the wrap-safety "
+            "check, large enough that the tracker sees per-step displacement. "
+            "Larger values risk hitting saved safe bounds."
         )
         self.step_period_spin = QDoubleSpinBox()
         self.step_period_spin.setRange(0.05, 30.0)
@@ -2179,6 +2280,12 @@ class ServoTrackerSyncValidationPage(ExperimentPageBase):
         self.step_period_spin.valueChanged.connect(
             lambda value: self.controller.set_config_value("step_period_s", float(value))
         )
+        self.step_period_spin.setToolTip(
+            "Time between alternating step commands. Should be longer than the "
+            "servo settling time (~0.2 s for small moves) and a multiple of the "
+            "Aurora frame interval (~25 ms). Default 0.35 s gives 2–3 tracker "
+            "frames between commands."
+        )
         self.telemetry_poll_spin = QDoubleSpinBox()
         self.telemetry_poll_spin.setRange(0.005, 5.0)
         self.telemetry_poll_spin.setDecimals(3)
@@ -2186,12 +2293,22 @@ class ServoTrackerSyncValidationPage(ExperimentPageBase):
         self.telemetry_poll_spin.valueChanged.connect(
             lambda value: self.controller.set_config_value("telemetry_poll_interval_s", float(value))
         )
+        self.telemetry_poll_spin.setToolTip(
+            "Servo telemetry read cadence. 0.02 s (default) ≈ 50 Hz — well above "
+            "the tracker rate, so telemetry rarely becomes the bottleneck. The "
+            "servo_telemetry_interval_histogram figure shows the actual gaps."
+        )
         self.timeout_spin = QDoubleSpinBox()
         self.timeout_spin.setRange(0.5, 600.0)
         self.timeout_spin.setDecimals(2)
         self.timeout_spin.setSingleStep(0.5)
         self.timeout_spin.valueChanged.connect(
             lambda value: self.controller.set_config_value("timeout_s", float(value))
+        )
+        self.timeout_spin.setToolTip(
+            "Safety cap on total wall time (must exceed warmup + run duration). "
+            "Reaching this marks the run partial_success — it will not be tagged "
+            "as thesis evidence."
         )
         params_form.addRow("Run Duration (s)", self.duration_spin)
         params_form.addRow("Warmup Duration (s)", self.warmup_spin)
@@ -2230,6 +2347,7 @@ class ServoTrackerSyncValidationPage(ExperimentPageBase):
         self._set_double(self.step_period_spin, float(config.step_period_s))
         self._set_double(self.telemetry_poll_spin, float(config.telemetry_poll_interval_s))
         self._set_double(self.timeout_spin, float(config.timeout_s))
+        live_mode_hint = self._live_run_mode_hint(servo_required=True)
         self.parameter_summary_widget.set_pairs(
             [
                 (
@@ -2251,6 +2369,7 @@ class ServoTrackerSyncValidationPage(ExperimentPageBase):
                         else "Use raw tool pose only for tracker-side motion metrics."
                     ),
                 ),
+                ("Live Run Mode", live_mode_hint),
             ]
         )
 

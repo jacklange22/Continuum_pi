@@ -55,6 +55,22 @@ def main(argv: list[str] | None = None) -> int:
     print(f"sample_count={result.sample_count}")
     print(f"stage_pass_fail={result.summary.stage_pass_fail}")
     print(f"error_messages={result.summary.error_messages}")
+
+    # Surface thesis-eligibility verdict + generated figure paths for any
+    # experiment that emits them (currently tracker_timing_validation and
+    # servo_tracker_sync_validation). Other experiments emit empty / absent
+    # blocks and these lines silently skip.
+    eligibility = _extract_thesis_eligibility(result)
+    if eligibility is not None:
+        print(f"thesis_eligibility_label={eligibility.get('label', '')}")
+        print(f"thesis_eligibility_eligible={eligibility.get('eligible', '')}")
+        reasons = eligibility.get("reasons") or []
+        for reason in reasons:
+            print(f"thesis_eligibility_reason={reason}")
+    generated_figures = _extract_generated_figures(result)
+    for figure_path in generated_figures:
+        print(f"figure={figure_path}")
+
     if args.save_result is not None:
         args.save_result.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -70,10 +86,42 @@ def main(argv: list[str] | None = None) -> int:
             "sample_count": result.sample_count,
             "stage_pass_fail": dict(result.summary.stage_pass_fail),
             "error_messages": list(result.summary.error_messages),
+            "thesis_eligibility": eligibility,
+            "generated_figures": [str(path) for path in generated_figures],
         }
         args.save_result.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         print(f"saved_result={args.save_result}")
     return 0 if result.success else 1
+
+
+def _extract_thesis_eligibility(result: Any) -> dict[str, Any] | None:
+    """Pull the thesis_eligibility verdict out of summary.experiment_metrics.
+
+    Returns ``None`` (not a placeholder) when the experiment didn't stamp
+    one — keeps the CLI output clean for experiments that don't use the
+    eligibility system yet.
+    """
+    metrics = getattr(result.summary, "experiment_metrics", None) or {}
+    eligibility = metrics.get("thesis_eligibility")
+    if isinstance(eligibility, dict) and eligibility:
+        return dict(eligibility)
+    return None
+
+
+def _extract_generated_figures(result: Any) -> list[Path]:
+    """Return the PNG figure paths the run wrote next to its output dir.
+
+    We scan the output dir on disk rather than relying on the writer's
+    return value (the writer's dict isn't carried on the result struct).
+    Sorted for deterministic CLI output.
+    """
+    output_dir = getattr(result.paths, "output_dir", None)
+    if output_dir is None:
+        return []
+    output_dir = Path(output_dir)
+    if not output_dir.exists() or not output_dir.is_dir():
+        return []
+    return sorted(output_dir.glob("*.png"))
 
 
 def _load_config(path: Path) -> dict[str, Any]:
