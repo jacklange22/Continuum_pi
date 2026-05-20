@@ -1352,28 +1352,17 @@ def evaluate_preflight(
         else:
             checks.append(_ok("operating_mode", "Operating Mode", "dual_segment all-8 manual startup validation is selected."))
         checks.append(_physical_assembly_check(operating_context))
-        assembly_confirmed = bool(
-            config.physical_assembly_confirmed_by_operator
-            or dict(getattr(operating_context, "physical_assembly", {}) or {}).get("confirmed_by_operator", False)
-        )
-        if not assembly_confirmed and not servo_only_override:
-            checks.append(
-                _blocked(
-                    "physical_assembly_confirmation",
-                    "Assembly Confirmation",
-                    "Trusted two-segment dataset collection requires operator confirmation of which physical segment is bottom/proximal and which is top/distal.",
-                )
-            )
-        elif not assembly_confirmed:
-            checks.append(
-                _warning(
-                    "physical_assembly_confirmation",
-                    "Assembly Confirmation",
-                    "Bottom/top assembly is not confirmed; this dry-run/servo-only output stays lower-trust.",
-                )
-            )
-        else:
-            checks.append(_ok("physical_assembly_confirmation", "Assembly Confirmation", "Bottom/top assembly confirmed for this run."))
+        # Pre-2026-05-20 a secondary "Assembly Confirmation" gate referenced
+        # `config.physical_assembly_confirmed_by_operator` and
+        # `servo_only_override`, but neither local was defined in the
+        # two_segment_startup_validation branch — the experiment doesn't
+        # surface a per-run config (the field belongs to the COLLECT-POSE
+        # dataclasses) and doesn't have a servo-only override knob.
+        # `_physical_assembly_check` already returns blocked/warning/ok for
+        # the bottom/top assignment using the same operating_context data,
+        # so the secondary gate was both unreferenced AND a duplicate. Drop
+        # it. The audit script (audit_thesis_data_integrity) is the place
+        # to flag unconfirmed assembly for downstream evidence review.
         checks.append(_baud_advisory_check(settings))
         if not servo_connected:
             checks.append(_blocked("servo_service", "Servo Service", "Two-segment startup validation requires a connected ServoService."))
