@@ -1208,6 +1208,21 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         self.outlier_threshold_spin.valueChanged.connect(
             lambda value: self.controller.set_config_value("outlier_threshold_mm", float(value))
         )
+        # Optional pass/fail acceptance threshold drawn on the residuals
+        # report and the thesis figures. 0 = unset (no line, no pass-fail
+        # badge); use the small range so an operator can dial a typical
+        # thesis goal of 0.5–2 mm.
+        self.acceptance_threshold_spin = QDoubleSpinBox()
+        self.acceptance_threshold_spin.setRange(0.0, 25.0)
+        self.acceptance_threshold_spin.setDecimals(3)
+        self.acceptance_threshold_spin.setSingleStep(0.1)
+        self.acceptance_threshold_spin.setSpecialValueText("Unset")
+        self.acceptance_threshold_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value(
+                "acceptance_threshold_mm",
+                None if float(value) <= 0.0 else float(value),
+            )
+        )
         self.use_tip_check = QCheckBox("Use tip calibration")
         self.use_tip_check.toggled.connect(lambda value: self.controller.set_config_value("use_tip_calibration", bool(value)))
         self.allow_fallback_check = QCheckBox("Allow coil-origin fallback")
@@ -1225,6 +1240,7 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         params_form.addRow("Spacing (mm)", self.spacing_spin)
         params_form.addRow("Samples / Point", self.samples_spin)
         params_form.addRow("Outlier Threshold (mm)", self.outlier_threshold_spin)
+        params_form.addRow("Acceptance Threshold (mm)", self.acceptance_threshold_spin)
         params_form.addRow("Tip Calibration", self.use_tip_check)
         params_card.body_layout.addLayout(params_form)
         self.capture_settings_notice = QLabel(
@@ -1273,10 +1289,34 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         self.clear_all_button = QPushButton("Restart Run")
         self.clear_all_button.setProperty("variant", "ghost")
         self.clear_all_button.clicked.connect(self.clear_all_points)
-        selection_row.addWidget(self.capture_selected_button)
-        selection_row.addWidget(self.next_incomplete_button)
-        selection_row.addWidget(self.clear_selected_button)
-        selection_row.addWidget(self.clear_all_button)
+        # Group capture controls into two phase clusters with a thin separator
+        # so the 4 buttons don't read as one undifferentiated wall at narrow
+        # widths. Pattern matches the registration tab's button row.
+        capture_group = QHBoxLayout()
+        capture_group.setContentsMargins(0, 0, 0, 0)
+        capture_group.setSpacing(6)
+        capture_group.addWidget(self.capture_selected_button)
+        capture_group.addWidget(self.next_incomplete_button)
+        capture_group_widget = QWidget()
+        capture_group_widget.setLayout(capture_group)
+        reset_group = QHBoxLayout()
+        reset_group.setContentsMargins(0, 0, 0, 0)
+        reset_group.setSpacing(6)
+        reset_group.addWidget(self.clear_selected_button)
+        reset_group.addWidget(self.clear_all_button)
+        reset_group_widget = QWidget()
+        reset_group_widget.setLayout(reset_group)
+        button_separator = QFrame()
+        button_separator.setFrameShape(QFrame.VLine)
+        button_separator.setFrameShadow(QFrame.Plain)
+        button_separator.setStyleSheet(
+            f"color: {COLORS.surface_border}; background: {COLORS.surface_border}; max-width: 1px;"
+        )
+        button_separator.setFixedWidth(1)
+        selection_row.addWidget(capture_group_widget)
+        selection_row.addWidget(button_separator)
+        selection_row.addWidget(reset_group_widget)
+        selection_row.addStretch(1)
         capture_card.body_layout.addLayout(selection_row)
 
         self.selected_point_summary_widget = KeyValueSummaryWidget()

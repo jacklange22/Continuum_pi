@@ -163,6 +163,10 @@ class GridDefinitionConfig:
     synthetic_noise_std_mm: float = 0.25
     synthetic_bias_mm: list[float] = field(default_factory=lambda: [0.2, -0.1, 0.05])
     outlier_threshold_mm: float = 1.0
+    # Optional acceptance threshold drawn as a horizontal cutoff on the
+    # per-point residuals report and the pass/fail badge in the thesis
+    # figures. None = no threshold drawn / pass-fail badge omitted.
+    acceptance_threshold_mm: float | None = None
     captured_points: list[dict[str, Any]] = field(default_factory=list)
     acceptance: dict[str, Any] = field(default_factory=dict)
 
@@ -208,6 +212,11 @@ class GridDefinitionConfig:
             synthetic_noise_std_mm=float(payload.get("synthetic_noise_std_mm", 0.25)),
             synthetic_bias_mm=[float(value) for value in payload.get("synthetic_bias_mm", [0.2, -0.1, 0.05])],
             outlier_threshold_mm=float(payload.get("outlier_threshold_mm", 1.0)),
+            acceptance_threshold_mm=(
+                float(payload["acceptance_threshold_mm"])
+                if payload.get("acceptance_threshold_mm") not in (None, "")
+                else None
+            ),
             captured_points=[
                 dict(point)
                 for point in payload.get("captured_points", []) or []
@@ -606,6 +615,14 @@ class AuroraGridAccuracyExperiment(BaseExperiment):
             completed = 0
             truth_catalog = preview.truth_catalog
             truth_to_tracker_R, truth_to_tracker_t = _synthetic_grid_alignment(effective_seed)
+            # Constant per-axis bias applied to every synthetic sample. Models
+            # a systematic offset (e.g. probe-tip calibration error) on top of
+            # the random per-frame noise so the operator can see how the
+            # alignment algorithm absorbs translation vs hands it back as
+            # residual.  Length is clamped to 3 with zero-fill for safety.
+            bias_xyz = list(self.config.synthetic_bias_mm or [])
+            bias_xyz = bias_xyz[:3] + [0.0] * max(0, 3 - len(bias_xyz))
+            bias_vector = np.asarray(bias_xyz, dtype=float)
             for point_index, truth_point in enumerate(truth_points):
                 truth_entry = truth_catalog[point_index]
                 for repetition_index in range(max(1, self.config.repetitions_per_point)):
@@ -615,6 +632,7 @@ class AuroraGridAccuracyExperiment(BaseExperiment):
                         measured_tracker = (
                             (truth_to_tracker_R @ np.asarray(truth_point, dtype=float))
                             + truth_to_tracker_t
+                            + bias_vector
                             + rng.normal(0.0, self.config.synthetic_noise_std_mm, size=3)
                         )
                         if tip_vector is None and self.config.use_tip_calibration:
@@ -1936,10 +1954,14 @@ def compute_grid_accuracy_metrics(
     return {
         "status": status,
         "per_point_metrics": per_point_metrics,
-        "pointwise_rms_error_mm": per_point_residuals,
+        # `per_point_residual_mm` is the canonical key; `pointwise_rms_error_mm`
+        # is kept as a back-compat alias for older summaries / external tools.
+        # Both point to the same dict — do not branch on them differently.
         "per_point_residual_mm": per_point_residuals,
-        "overall_rms_error_mm": overall_rms,
+        "pointwise_rms_error_mm": per_point_residuals,
+        # Same alias pattern for the overall metric.
         "overall_rms_residual_mm": overall_rms,
+        "overall_rms_error_mm": overall_rms,
         "max_residual_mm": max_residual,
         "mean_within_point_spread_mm": mean_spread,
         "max_within_point_spread_mm": max_spread,

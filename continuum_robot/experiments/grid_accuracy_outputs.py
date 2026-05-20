@@ -9,7 +9,17 @@ import shutil
 import sys
 from typing import Any
 
-from continuum_robot.experiments.plotting import add_metric_box, color, create_figure, legend, save_figure, set_equal_xy, style_axes
+import numpy as np
+
+from continuum_robot.experiments.plotting import (
+    add_metric_box,
+    color,
+    create_figure,
+    legend,
+    save_figure,
+    set_equal_xy,
+    style_axes,
+)
 
 try:
     from PySide6.QtCore import QPointF, QRectF, Qt
@@ -137,6 +147,7 @@ def write_grid_accuracy_outputs(
     alignment_report_path = output_dir / "aurora_grid_alignment_report.png"
     residuals_report_path = output_dir / "aurora_grid_residuals_report.png"
     spread_report_path = output_dir / "aurora_grid_spread_report.png"
+    drift_report_path = output_dir / "aurora_grid_residual_vs_order_report.png"
     summary_text_path = output_dir / "grid_accuracy_summary.txt"
     metrics = summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else {}
     config_used = metadata.config_used if isinstance(metadata.config_used, dict) else {}
@@ -160,6 +171,11 @@ def write_grid_accuracy_outputs(
     _write_spread_report(
         report_path=spread_report_path,
         metrics=metrics,
+    )
+    _write_residual_vs_order_report(
+        report_path=drift_report_path,
+        metrics=metrics,
+        config_used=config_used,
     )
     if _qt_plotting_is_safe():
         _ensure_plot_qt_app()
@@ -185,6 +201,7 @@ def write_grid_accuracy_outputs(
         "alignment_report_path": alignment_report_path,
         "residuals_report_path": residuals_report_path,
         "spread_report_path": spread_report_path,
+        "drift_report_path": drift_report_path,
         "summary_text_path": summary_text_path,
     }
 
@@ -361,129 +378,347 @@ def _write_alignment_plot_placeholder(*, plot_path: Path) -> None:
 
 
 def _write_alignment_report(*, report_path: Path, metrics: dict[str, Any], config_used: dict[str, Any]) -> None:
+    """Thesis figure 1: XY scatter of truth + aligned centroids colored by residual.
+
+    Each aligned centroid's marker color encodes its residual magnitude
+    (viridis low → high), with red highlighting any point above the
+    operator's acceptance threshold. Residual vectors stay visible so the
+    operator can tell whether errors point inward (radial bias), follow a
+    single direction (translation offset the fit missed), or scatter
+    isotropically (random tracker noise dominates).
+    """
     entries = _per_point_entries(metrics)
     truth_points = [entry.get("truth_point_mm") for entry in entries if _has_xy(entry.get("truth_point_mm"))]
-    aligned_points = [
-        entry.get("aligned_centroid_truth_mm")
+    aligned_entries = [
+        entry
         for entry in entries
-        if _has_xy(entry.get("aligned_centroid_truth_mm"))
+        if _has_xy(entry.get("aligned_centroid_truth_mm")) and entry.get("residual_mm") is not None
     ]
     fig, ax = create_figure(size="square")
-    if not truth_points and not aligned_points:
+    if not truth_points and not aligned_entries:
         ax.text(0.5, 0.5, "Alignment is not ready", transform=ax.transAxes, ha="center", va="center")
-    else:
-        if truth_points:
+        style_axes(ax, title="Grid Alignment vs Truth", xlabel="Grid X (mm)", ylabel="Grid Y (mm)")
+        save_figure(fig, report_path)
+        return
+
+    threshold = _as_float(
+        config_used.get("acceptance_threshold_mm")
+        or config_used.get("max_residual_mm")
+        or config_used.get("max_acceptable_residual_mm")
+    )
+
+    if truth_points:
+        ax.scatter(
+            [float(point[0]) for point in truth_points],
+            [float(point[1]) for point in truth_points],
+            marker="s",
+            s=70,
+            facecolor="white",
+            edgecolors=color("text"),
+            linewidths=1.2,
+            label="Truth grid",
+            zorder=2,
+        )
+    aligned_xs = [float(entry["aligned_centroid_truth_mm"][0]) for entry in aligned_entries]
+    aligned_ys = [float(entry["aligned_centroid_truth_mm"][1]) for entry in aligned_entries]
+    residuals_for_color = [float(entry["residual_mm"]) for entry in aligned_entries]
+    # Color-by-residual scatter. Points above the threshold get the
+    # rejection color so failures pop visually.
+    if aligned_xs:
+        passing_mask = (
+            [r <= threshold for r in residuals_for_color]
+            if threshold is not None
+            else [True] * len(residuals_for_color)
+        )
+        pass_xs = [x for x, ok in zip(aligned_xs, passing_mask) if ok]
+        pass_ys = [y for y, ok in zip(aligned_ys, passing_mask) if ok]
+        pass_rs = [r for r, ok in zip(residuals_for_color, passing_mask) if ok]
+        if pass_xs:
+            scatter = ax.scatter(
+                pass_xs, pass_ys, c=pass_rs,
+                cmap="viridis", vmin=0.0, vmax=(threshold or max(residuals_for_color, default=1.0) or 1.0),
+                s=70, edgecolors="white", linewidths=0.7, zorder=4,
+                label="Aligned centroid",
+            )
+            cbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
+            cbar.set_label("Residual (mm)")
+            cbar.outline.set_edgecolor(color("grid"))
+        fail_xs = [x for x, ok in zip(aligned_xs, passing_mask) if not ok]
+        fail_ys = [y for y, ok in zip(aligned_ys, passing_mask) if not ok]
+        if fail_xs:
             ax.scatter(
-                [float(point[0]) for point in truth_points],
-                [float(point[1]) for point in truth_points],
-                marker="s",
-                s=46,
-                color=color("target"),
-                alpha=0.9,
-                label="Truth grid",
-                zorder=3,
+                fail_xs, fail_ys, marker="X", s=110,
+                color=color("rejected"), edgecolors="white", linewidths=0.8, zorder=5,
+                label=f"> {threshold:.2f} mm" if threshold is not None else "Outlier",
             )
-        if aligned_points:
-            ax.scatter(
-                [float(point[0]) for point in aligned_points],
-                [float(point[1]) for point in aligned_points],
-                marker="o",
-                s=42,
-                color=color("measured"),
-                alpha=0.85,
-                label="Aligned measured centroid",
-                zorder=4,
-            )
-        vector_label_added = False
-        for entry in entries:
-            truth = entry.get("truth_point_mm")
-            aligned = entry.get("aligned_centroid_truth_mm")
-            if not _has_xy(truth) or not _has_xy(aligned):
-                continue
-            ax.annotate(
-                "",
-                xy=(float(aligned[0]), float(aligned[1])),
-                xytext=(float(truth[0]), float(truth[1])),
-                arrowprops={"arrowstyle": "->", "color": color("threshold"), "lw": 1.0, "alpha": 0.75},
-            )
-            if not vector_label_added:
-                ax.plot([], [], color=color("threshold"), lw=1.0, label="Residual vector")
-                vector_label_added = True
-        all_points = [
-            (float(point[0]), float(point[1]))
-            for point in truth_points + aligned_points
-            if _has_xy(point)
-        ]
+
+    # Residual vectors (truth → aligned) so the reader can see the
+    # direction of error, not just the magnitude.
+    vector_label_added = False
+    for entry in aligned_entries:
+        truth = entry.get("truth_point_mm")
+        aligned = entry.get("aligned_centroid_truth_mm")
+        if not _has_xy(truth) or not _has_xy(aligned):
+            continue
+        ax.annotate(
+            "",
+            xy=(float(aligned[0]), float(aligned[1])),
+            xytext=(float(truth[0]), float(truth[1])),
+            arrowprops={"arrowstyle": "->", "color": color("grid"), "lw": 0.9, "alpha": 0.6},
+        )
+        if not vector_label_added:
+            ax.plot([], [], color=color("grid"), lw=0.9, label="Residual vector")
+            vector_label_added = True
+
+    all_points = [(float(p[0]), float(p[1])) for p in truth_points] + list(zip(aligned_xs, aligned_ys))
+    if all_points:
         set_equal_xy(
             ax,
             x_values=[point[0] for point in all_points],
             y_values=[point[1] for point in all_points],
             minimum_span=20.0,
         )
-    style_axes(
-        ax,
-        title="Aurora Grid Alignment",
-        xlabel="Grid X position (mm)",
-        ylabel="Grid Y position (mm)",
-    )
     rows, cols = _grid_dimensions(config_used)
-    add_metric_box(
-        ax,
-        [
-            f"RMS residual: {_fmt_float(metrics.get('overall_rms_residual_mm'))} mm",
-            f"Max residual: {_fmt_float(metrics.get('max_residual_mm'))} mm",
-            f"Grid: {rows} x {cols}",
-            f"Samples/point: {int(config_used.get('samples_per_point', 0) or 0)}",
-        ],
-        loc="upper right",
-    )
+    overall_rms = _as_float(metrics.get("overall_rms_residual_mm"))
+    max_residual = _as_float(metrics.get("max_residual_mm"))
+    pass_status: str | None = None
+    if threshold is not None and max_residual is not None:
+        pass_status = "PASS" if max_residual <= threshold else "FAIL"
+    title = "Grid Alignment vs Truth"
+    if pass_status:
+        title = f"{title}  —  {pass_status}"
+    style_axes(ax, title=title, xlabel="Grid X (mm)", ylabel="Grid Y (mm)")
+    metric_lines = [
+        f"RMS residual: {_fmt_float(overall_rms)} mm",
+        f"Max residual: {_fmt_float(max_residual)} mm",
+        f"Grid: {rows} × {cols}",
+        f"Samples/point: {int(config_used.get('samples_per_point', 0) or 0)}",
+    ]
+    if threshold is not None:
+        metric_lines.append(f"Threshold: {threshold:.2f} mm")
+    add_metric_box(ax, metric_lines, loc="upper right")
     legend(ax, loc="lower right")
+    fig.text(
+        0.015, 0.02,
+        "After rigid no-scale alignment to the truth grid. Arrow length = residual magnitude; "
+        "color = same residual, redundantly. Vectors pointing in the same direction suggest "
+        "an uncaptured translation; radial scatter suggests random tracker noise.",
+        fontsize=8, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
+    )
     save_figure(fig, report_path)
 
 
 def _write_residuals_report(*, report_path: Path, metrics: dict[str, Any], config_used: dict[str, Any]) -> None:
+    """Thesis figure 2: per-point residual bars + RMS/threshold overlays + pass/fail.
+
+    Bars below the acceptance threshold are drawn in the standard measurement
+    color; bars at-or-above flip to the rejected color so failures are
+    instantly visible. The overall RMS shows as a dashed horizontal line so
+    the reader can compare each point's residual against the run aggregate.
+    """
     entries = [entry for entry in _per_point_entries(metrics) if entry.get("residual_mm") is not None]
     labels = [str(entry.get("label", f"P{index + 1:02d}")) for index, entry in enumerate(entries)]
     values = [float(entry.get("residual_mm")) for entry in entries]
     fig, ax = create_figure(size="wide")
     if not values:
-        ax.text(0.5, 0.5, "No residuals available", transform=ax.transAxes, ha="center", va="center")
-    else:
-        bars = ax.bar(labels, values, color=color("measured"), alpha=0.9)
-        if len(values) <= 16:
-            ax.bar_label(bars, labels=[f"{value:.2f}" for value in values], padding=3, fontsize=8)
-        rms = _as_float(metrics.get("overall_rms_residual_mm"))
-        if rms is not None:
-            ax.axhline(rms, color=color("fit"), lw=1.4, linestyle="--", label=f"RMS = {rms:.2f} mm")
-        threshold = _as_float(config_used.get("max_residual_mm") or config_used.get("max_acceptable_residual_mm"))
-        if threshold is not None:
-            ax.axhline(threshold, color=color("threshold"), lw=1.2, linestyle=":", label=f"Threshold = {threshold:.2f} mm")
-    style_axes(
-        ax,
-        title="Per-Point Grid Residuals",
-        xlabel="Grid point",
-        ylabel="Residual error (mm)",
+        ax.text(0.5, 0.5, "No residuals available — alignment not yet ready.",
+                transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, title="Per-Point Residuals", xlabel="Grid point", ylabel="Residual (mm)")
+        save_figure(fig, report_path)
+        return
+
+    threshold = _as_float(
+        config_used.get("acceptance_threshold_mm")
+        or config_used.get("max_residual_mm")
+        or config_used.get("max_acceptable_residual_mm")
     )
-    legend(ax, loc="best")
+    bar_colors = [
+        color("rejected") if threshold is not None and v > threshold else color("measured")
+        for v in values
+    ]
+    bars = ax.bar(labels, values, color=bar_colors, edgecolor="white", linewidth=0.6, zorder=2)
+    if len(values) <= 16:
+        ax.bar_label(bars, labels=[f"{value:.2f}" for value in values], padding=3, fontsize=8)
+
+    rms = _as_float(metrics.get("overall_rms_residual_mm"))
+    if rms is not None:
+        ax.axhline(rms, color=color("fit"), lw=1.4, linestyle="--",
+                   label=f"Overall RMS = {rms:.3f} mm", zorder=3)
+    if threshold is not None:
+        ax.axhline(threshold, color=color("rejected"), lw=1.4, linestyle=":",
+                   label=f"Threshold = {threshold:.2f} mm", zorder=3)
+
+    rows, cols = _grid_dimensions(config_used)
+    max_residual = _as_float(metrics.get("max_residual_mm"))
+    failing_count = sum(1 for v in values if threshold is not None and v > threshold)
+    pass_status: str | None = None
+    if threshold is not None:
+        pass_status = "PASS" if failing_count == 0 else "FAIL"
+    title = "Per-Point Grid Residuals"
+    if pass_status:
+        title = f"{title}  —  {pass_status}"
+    style_axes(ax, title=title, xlabel="Grid point", ylabel="Residual (mm)")
+
+    # Headroom so the threshold line + bar labels don't crowd the top.
+    y_max = max(max(values), threshold or 0.0, rms or 0.0) * 1.25
+    ax.set_ylim(0.0, y_max)
+    legend(ax, loc="upper right")
+
+    summary_parts = [f"Points: {len(values)}", f"Grid: {rows} × {cols}"]
+    if rms is not None:
+        summary_parts.append(f"RMS: {rms:.3f} mm")
+    if max_residual is not None:
+        summary_parts.append(f"Max: {max_residual:.3f} mm")
+    if threshold is not None:
+        summary_parts.append(f"Failing: {failing_count} / {len(values)}")
+    fig.text(
+        0.015, 0.02,
+        "   •   ".join(summary_parts),
+        fontsize=9, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
+    )
     save_figure(fig, report_path)
 
 
 def _write_spread_report(*, report_path: Path, metrics: dict[str, Any]) -> None:
+    """Thesis figure 3: within-point sample spread (precision) bars.
+
+    Distinct from the residual figure: spread is how repeatable consecutive
+    samples at one point are (random tracker noise + probe wobble during
+    capture), while residual is how close the centroid is to truth after
+    rigid alignment (systematic + alignment leftover). High spread but low
+    residual = noisy but unbiased; low spread but high residual = quiet
+    tracker with a real systematic bias the rigid fit couldn't absorb.
+    """
     entries = [entry for entry in _per_point_entries(metrics) if entry.get("sample_spread_rms_mm") is not None]
     labels = [str(entry.get("label", f"P{index + 1:02d}")) for index, entry in enumerate(entries)]
     values = [float(entry.get("sample_spread_rms_mm")) for entry in entries]
     fig, ax = create_figure(size="wide")
     if not values:
-        ax.text(0.5, 0.5, "No within-point spread data", transform=ax.transAxes, ha="center", va="center")
-    else:
-        bars = ax.bar(labels, values, color=color("model"), alpha=0.9)
-        if len(values) <= 16:
-            ax.bar_label(bars, labels=[f"{value:.2f}" for value in values], padding=3, fontsize=8)
-    style_axes(
-        ax,
-        title="Within-Point Measurement Spread",
-        xlabel="Grid point",
-        ylabel="Within-point RMS spread (mm)",
+        ax.text(0.5, 0.5, "No within-point spread data captured.",
+                transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, title="Within-Point Measurement Spread (Precision)",
+                   xlabel="Grid point", ylabel="Within-point RMS spread (mm)")
+        save_figure(fig, report_path)
+        return
+
+    bars = ax.bar(labels, values, color=color("model"), edgecolor="white", linewidth=0.6, zorder=2)
+    if len(values) <= 16:
+        ax.bar_label(bars, labels=[f"{value:.2f}" for value in values], padding=3, fontsize=8)
+
+    arr = np.asarray(values, dtype=float)
+    median_spread = float(np.median(arr))
+    max_spread = float(np.max(arr))
+    mean_spread = float(np.mean(arr))
+    ax.axhline(median_spread, color=color("fit"), lw=1.4, linestyle="--",
+               label=f"Median = {median_spread:.3f} mm", zorder=3)
+    ax.axhline(mean_spread, color=color("threshold"), lw=1.2, linestyle=":",
+               label=f"Mean = {mean_spread:.3f} mm", zorder=3)
+
+    style_axes(ax, title="Within-Point Measurement Spread (Precision)",
+               xlabel="Grid point", ylabel="Within-point RMS spread (mm)")
+    # Floor the top of the ylim so a degenerate run with all-zero spreads
+    # (synthetic mock data, or sub-tracker-noise) doesn't trip matplotlib's
+    # "identical low and high ylims" warning.
+    ax.set_ylim(0.0, max(max_spread * 1.25, 0.01))
+    legend(ax, loc="upper right")
+
+    fig.text(
+        0.015, 0.02,
+        f"Points: {len(values)}   •   median spread: {median_spread:.3f} mm   "
+        f"•   max: {max_spread:.3f} mm   •   measures *precision* of repeated samples "
+        "at one point; orthogonal to the post-alignment residual figure.",
+        fontsize=9, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, report_path)
+
+
+def _write_residual_vs_order_report(
+    *,
+    report_path: Path,
+    metrics: dict[str, Any],
+    config_used: dict[str, Any],
+) -> None:
+    """Thesis figure 4: residual magnitude over capture order.
+
+    Useful for spotting time-correlated drift (rig warming up, marker coming
+    loose, tracker thermal drift across the session). A flat trend says
+    residuals are stationary in time; a rising trend says the rigid fit's
+    leftover error grew during the session and the test should be repeated
+    after letting the system stabilize.
+    """
+    entries = [
+        entry
+        for entry in _per_point_entries(metrics)
+        if entry.get("residual_mm") is not None and entry.get("capture_order_index") is not None
+    ]
+    if not entries:
+        entries = [
+            dict(entry, capture_order_index=index)
+            for index, entry in enumerate(_per_point_entries(metrics))
+            if entry.get("residual_mm") is not None
+        ]
+    fig, ax = create_figure(size="wide")
+    if not entries:
+        ax.text(0.5, 0.5, "No residuals captured yet.",
+                transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, title="Residual vs Capture Order", xlabel="Capture order",
+                   ylabel="Residual (mm)")
+        save_figure(fig, report_path)
+        return
+
+    ordered = sorted(entries, key=lambda entry: int(entry.get("capture_order_index", 0) or 0))
+    xs = [int(entry.get("capture_order_index", index) or index) for index, entry in enumerate(ordered)]
+    ys = [float(entry.get("residual_mm")) for entry in ordered]
+
+    ax.plot(xs, ys, color=color("measured"), linewidth=0.9, marker="o",
+            markersize=4, markerfacecolor=color("measured"),
+            markeredgecolor="white", markeredgewidth=0.3, alpha=0.9,
+            label="Per-point residual", zorder=3)
+
+    # Rolling mean trend line so the operator can see drift without
+    # squinting through every-point noise.
+    window = max(3, len(ys) // 6)
+    if len(ys) >= window:
+        kernel = np.ones(window) / float(window)
+        smoothed = np.convolve(ys, kernel, mode="valid")
+        smooth_x = xs[(window - 1) // 2 : (window - 1) // 2 + len(smoothed)]
+        if len(smooth_x) == len(smoothed):
+            ax.plot(smooth_x, smoothed, color=color("rejected"),
+                    linewidth=1.6, label=f"Rolling mean (window={window})",
+                    zorder=4)
+
+    threshold = _as_float(
+        config_used.get("acceptance_threshold_mm")
+        or config_used.get("max_residual_mm")
+        or config_used.get("max_acceptable_residual_mm")
+    )
+    if threshold is not None:
+        ax.axhline(threshold, color=color("rejected"), lw=1.2, linestyle=":",
+                   label=f"Threshold = {threshold:.2f} mm", zorder=2)
+    rms = _as_float(metrics.get("overall_rms_residual_mm"))
+    if rms is not None:
+        ax.axhline(rms, color=color("fit"), lw=1.4, linestyle="--",
+                   label=f"Overall RMS = {rms:.3f} mm", zorder=2)
+
+    style_axes(ax, title="Residual vs Capture Order (Drift Check)",
+               xlabel="Capture order", ylabel="Residual (mm)")
+    ax.set_ylim(0.0, max(max(ys), threshold or 0.0, rms or 0.0) * 1.25)
+    legend(ax, loc="upper right")
+
+    fig.text(
+        0.015, 0.02,
+        f"Points: {len(ys)}   •   "
+        "rising trend over capture order suggests time-correlated drift "
+        "(thermal, marker, or rig); flat trend suggests stationary measurement noise.",
+        fontsize=9, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
     )
     save_figure(fig, report_path)
 
