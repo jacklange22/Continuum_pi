@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import math
 from pathlib import Path
 import random
+import secrets
 from typing import Any
 
 import numpy as np
@@ -135,6 +136,12 @@ class GridDefinitionConfig:
     dimensions: list[int] = field(default_factory=lambda: [3, 3])
     point_ordering: str = "row_major"
     repetitions_per_point: int = 3
+    """DEPRECATED — synthetic-mode-only multiplier on samples_per_point.
+
+    Never reached the GUI. For real click-by-click captures the operator
+    controls how many samples per point via the (visible) ``samples_per_point``
+    knob. Kept for YAML/test backward compatibility; new work should not set it.
+    """
     samples_per_point: int = 3
     settle_time_s: float = 0.0
     truth_points_mm: list[list[float]] = field(default_factory=list)
@@ -146,7 +153,13 @@ class GridDefinitionConfig:
     tip_file: str | None = None
     allow_coil_origin_fallback: bool = True
     dry_run: bool = True
-    seed: int = 0
+    seed: int | None = None
+    """Synthetic-mode RNG seed.
+
+    ``None`` (default) → a fresh seed is generated each run so successive
+    "Save Grid Validation Run" presses produce *different* synthetic
+    datasets. Set an explicit integer to reproduce a specific run.
+    """
     synthetic_noise_std_mm: float = 0.25
     synthetic_bias_mm: list[float] = field(default_factory=lambda: [0.2, -0.1, 0.05])
     outlier_threshold_mm: float = 1.0
@@ -191,7 +204,7 @@ class GridDefinitionConfig:
             tip_file=str(payload["tip_file"]) if payload.get("tip_file") not in (None, "") else None,
             allow_coil_origin_fallback=bool(payload.get("allow_coil_origin_fallback", True)),
             dry_run=bool(payload.get("dry_run", True)),
-            seed=int(payload.get("seed", 0)),
+            seed=(int(payload["seed"]) if payload.get("seed") not in (None, "") else None),
             synthetic_noise_std_mm=float(payload.get("synthetic_noise_std_mm", 0.25)),
             synthetic_bias_mm=[float(value) for value in payload.get("synthetic_bias_mm", [0.2, -0.1, 0.05])],
             outlier_threshold_mm=float(payload.get("outlier_threshold_mm", 1.0)),
@@ -563,7 +576,18 @@ class AuroraGridAccuracyExperiment(BaseExperiment):
         )
         truth_points = [entry["truth_point_mm"] for entry in preview.truth_catalog]
         tip_vector, tip_calibration_available = _load_tip_vector(session, self.config)
-        rng = np.random.default_rng(self.config.seed)
+        # Synthetic-mode seed: when the caller did not pin a specific seed,
+        # roll a fresh one each run so successive "Save Grid Validation Run"
+        # presses produce different synthetic datasets (operators were seeing
+        # identical results every time because the old default seed=0 made
+        # the synthetic noise deterministic).
+        effective_seed = (
+            int(self.config.seed)
+            if self.config.seed is not None
+            else int(secrets.randbits(32))
+        )
+        session.metrics["synthetic_seed_used"] = int(effective_seed)
+        rng = np.random.default_rng(effective_seed)
         if preview.samples:
             total = len(preview.samples)
             for completed, sample in enumerate(preview.samples, start=1):
@@ -581,7 +605,7 @@ class AuroraGridAccuracyExperiment(BaseExperiment):
             total = len(truth_points) * max(1, self.config.repetitions_per_point) * max(1, self.config.samples_per_point)
             completed = 0
             truth_catalog = preview.truth_catalog
-            truth_to_tracker_R, truth_to_tracker_t = _synthetic_grid_alignment(self.config.seed)
+            truth_to_tracker_R, truth_to_tracker_t = _synthetic_grid_alignment(effective_seed)
             for point_index, truth_point in enumerate(truth_points):
                 truth_entry = truth_catalog[point_index]
                 for repetition_index in range(max(1, self.config.repetitions_per_point)):

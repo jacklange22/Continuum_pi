@@ -1094,7 +1094,11 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
     show_visualization = False
     page_hint = (
         "Capture labeled 0B points on the physical mesh in any order, then fit the measured centroids "
-        "to an ideal truth grid in code. The board's tracker-frame origin does not matter."
+        "to an ideal truth grid in code. The board's tracker-frame origin does not matter. "
+        "Workflow: select a label, click Capture Selected Point to record a batch from the live tracker, "
+        "repeat across labels, then Save Grid Validation Run to write the timestamped dataset. "
+        "In Dry Run mode, no live captures are needed — the experiment generates synthetic data each save "
+        "(a fresh random seed every run unless you pin one in the YAML)."
     )
 
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
@@ -1115,10 +1119,18 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
             "Set the ideal truth-grid geometry and the per-point capture settings used for the aligned residual analysis.",
         )
         params_form = QFormLayout()
-        self.dry_run_check = QCheckBox("Dry Run")
+        self.dry_run_check = QCheckBox("Dry Run (synthetic data, no live tracker)")
+        self.dry_run_check.setToolTip(
+            "ON: skip the live tracker and generate synthetic captures for the configured truth grid.\n"
+            "    Useful for verifying the analysis pipeline without hardware. A fresh random seed is\n"
+            "    rolled every Save Grid Validation Run, so each saved run has different noise (set\n"
+            "    'seed' in the YAML if you need a reproducible synthetic run).\n"
+            "OFF: the experiment uses the points you captured via 'Capture Selected Point'."
+        )
         self.dry_run_check.toggled.connect(self._on_mode_changed)
         self.tool_id_edit = QLineEdit("0B")
         self.tool_id_edit.setReadOnly(True)
+        self.tool_id_edit.setToolTip("Aurora tool ID used for grid capture. Pinned to 0B by project convention.")
         self.rows_spin = QSpinBox()
         self.rows_spin.setRange(1, 20)
         self.rows_spin.valueChanged.connect(self._apply_grid_geometry)
@@ -1161,7 +1173,6 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         params_form.addRow("Cols", self.cols_spin)
         params_form.addRow("Spacing (mm)", self.spacing_spin)
         params_form.addRow("Samples / Point", self.samples_spin)
-        params_form.addRow("Settle Time (s)", self.settle_time_spin)
         params_form.addRow("Outlier Threshold (mm)", self.outlier_threshold_spin)
         params_form.addRow("Tip Calibration", self.use_tip_check)
         params_card.body_layout.addLayout(params_form)
@@ -1178,8 +1189,10 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         advanced_form.setSpacing(10)
         advanced_form.addRow("Fallback", self.allow_fallback_check)
         advanced_form.addRow("Tip Vector (mm)", self.tip_vector_edit)
+        advanced_form.addRow("Settle Time (s)", self.settle_time_spin)
         advanced_hint = QLabel(
-            "These options change how the 0B point position is derived. Leave them alone during a real capture session unless you intentionally restart the run."
+            "These options change how the 0B point position is derived. Leave them alone during a real capture session unless you intentionally restart the run. "
+            "Settle Time only affects synthetic capture batches (Dry Run) — manual 'Capture Selected Point' clicks ignore it."
         )
         advanced_hint.setProperty("role", "muted")
         advanced_hint.setWordWrap(True)
@@ -1480,7 +1493,12 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         if config.use_tip_calibration and not tip_available and not config.allow_coil_origin_fallback:
             raise RuntimeError("Tip calibration is required for this grid capture.")
         truth_point = np.asarray(truth_entry["truth_point_mm"], dtype=float)
-        rng = np.random.default_rng(int(config.seed) + (int(truth_entry["target_index"]) * 100) + sample_index)
+        # GridDefinitionConfig.seed is None by default (so the experiment-level
+        # synthetic run picks a fresh seed each Save); the GUI "Capture Selected
+        # Point" preview should stay deterministic per point so refreshing
+        # doesn't jitter the visible metrics. Fall back to 0 when unpinned.
+        capture_seed = int(config.seed) if config.seed is not None else 0
+        rng = np.random.default_rng(capture_seed + (int(truth_entry["target_index"]) * 100) + sample_index)
         position = truth_point + np.asarray(config.synthetic_bias_mm, dtype=float) + rng.normal(
             0.0,
             float(config.synthetic_noise_std_mm),
