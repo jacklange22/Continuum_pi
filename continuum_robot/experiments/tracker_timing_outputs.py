@@ -193,6 +193,14 @@ def write_tracker_timing_outputs(*, output_dir: Path, metadata, summary, samples
     debug_json_path = output_dir / "debug.json"
     thesis_01_path = output_dir / "thesis_01_cycle_time_distribution.png"
     thesis_02_path = output_dir / "thesis_02_stage_time_budget.png"
+    # Phase-3 supplementary figures (operator-spec request). Live alongside
+    # the headline thesis figures; each answers one question on its own.
+    iface_histogram_path = output_dir / "tracker_inter_frame_interval_histogram.png"
+    unique_rate_path = output_dir / "tracker_unique_frame_rate_over_time.png"
+    dup_invalid_path = output_dir / "tracker_duplicate_invalid_timeline.png"
+    rate_summary_path = output_dir / "tracker_polling_vs_unique_frame_rate.png"
+    valid_pose_rate_path = output_dir / "tracker_valid_pose_rate_over_time.png"
+
     metrics = summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else {}
     tracker_records = extract_tracker_timing_records(samples)
     servo_records = extract_servo_timing_records(samples)
@@ -213,6 +221,21 @@ def write_tracker_timing_outputs(*, output_dir: Path, metadata, summary, samples
         (thesis_02_path, lambda: _write_tracker_thesis_02_stage_breakdown(
             path=thesis_02_path, tracker_records=tracker_records, metrics=metrics,
         )),
+        (iface_histogram_path, lambda: _write_tracker_inter_frame_interval_histogram(
+            path=iface_histogram_path, tracker_records=tracker_records, metrics=metrics,
+        )),
+        (unique_rate_path, lambda: _write_tracker_unique_frame_rate_over_time(
+            path=unique_rate_path, tracker_records=tracker_records, metrics=metrics,
+        )),
+        (dup_invalid_path, lambda: _write_tracker_duplicate_invalid_timeline(
+            path=dup_invalid_path, tracker_records=tracker_records, metrics=metrics,
+        )),
+        (rate_summary_path, lambda: _write_tracker_polling_vs_unique_rate_summary(
+            path=rate_summary_path, metrics=metrics,
+        )),
+        (valid_pose_rate_path, lambda: _write_tracker_valid_pose_rate_over_time(
+            path=valid_pose_rate_path, tracker_records=tracker_records, metrics=metrics,
+        )),
     ]:
         try:
             writer()
@@ -222,6 +245,11 @@ def write_tracker_timing_outputs(*, output_dir: Path, metadata, summary, samples
         "debug_json_path": debug_json_path,
         "thesis_01_path": thesis_01_path,
         "thesis_02_path": thesis_02_path,
+        "inter_frame_interval_histogram_path": iface_histogram_path,
+        "unique_frame_rate_over_time_path": unique_rate_path,
+        "duplicate_invalid_timeline_path": dup_invalid_path,
+        "polling_vs_unique_rate_path": rate_summary_path,
+        "valid_pose_rate_over_time_path": valid_pose_rate_path,
     }
 
 
@@ -531,6 +559,386 @@ def _write_tracker_thesis_02_stage_breakdown(
         ),
         fontsize=9, color=color("text"), ha="left", va="bottom",
         bbox={"boxstyle": "round,pad=0.4", "facecolor": "white", "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
+# =========================================================================== #
+# Phase-3 supplementary figures (operator-spec request).                       #
+# Each answers ONE diagnostic question. Sit alongside the thesis_01/02         #
+# headline figures; not a replacement for them.                                #
+# =========================================================================== #
+
+
+def _as_float(value: Any) -> float | None:
+    """Local mirror of tracking.timing_benchmark._as_float — kept here so the
+    figure helpers don't drag in the whole benchmark module just for this."""
+    if value is None:
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    if result != result:  # NaN check
+        return None
+    return result
+
+
+def _analyzed_commit_times_ns(tracker_records: list[dict[str, Any]]) -> list[int]:
+    """Sorted commit times (ns) for non-warmup samples, used by over-time plots."""
+    times: list[int] = []
+    for record in tracker_records:
+        if record.get("warmup_discarded"):
+            continue
+        value = record.get("sample_commit_monotonic_ns")
+        if value is None:
+            continue
+        try:
+            times.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    times.sort()
+    return times
+
+
+def _inter_frame_interval_ms(tracker_records: list[dict[str, Any]]) -> list[float]:
+    """Per-pair gap (ms) between consecutive analyzed sample commits."""
+    times = _analyzed_commit_times_ns(tracker_records)
+    return [float(later - earlier) / 1_000_000.0 for earlier, later in zip(times[:-1], times[1:])]
+
+
+def _write_tracker_inter_frame_interval_histogram(
+    *,
+    path: Path,
+    tracker_records: list[dict[str, Any]],
+    metrics: dict[str, Any],
+) -> None:
+    """Phase-3 figure 1: histogram of inter-frame intervals (the jitter view).
+
+    Where thesis_01 plots the *cycle time* (start-to-commit per cycle), this
+    plots the *gap between consecutive commits* — the raw inter-arrival
+    distribution. Equivalent to "tracker jitter" and what the spec calls
+    out as the headline distribution figure.
+    """
+    intervals = _inter_frame_interval_ms(tracker_records)
+    fig, ax = create_figure(size="wide", constrained_layout=False)
+    fig.subplots_adjust(left=0.085, right=0.97, top=0.90, bottom=0.22)
+    if not intervals:
+        ax.text(0.5, 0.5, "No analyzed inter-frame intervals available",
+                transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, xlabel="Inter-frame interval (ms)", ylabel="Count")
+        fig.suptitle("Tracker Inter-Frame Interval Distribution",
+                     fontsize=13, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+    arr = np.asarray(intervals, dtype=float)
+    bin_count = max(20, min(60, int(np.sqrt(len(arr)) * 2)))
+    ax.hist(arr, bins=bin_count, color=color("measured"), edgecolor="white",
+            linewidth=0.6, alpha=0.85, zorder=2)
+    mean_ms = float(arr.mean())
+    median_ms = float(np.median(arr))
+    std_ms = float(arr.std(ddof=0))
+    p95_ms = float(np.percentile(arr, 95.0))
+    max_ms = float(arr.max())
+    ax.axvline(median_ms, color=color("fit"), linestyle="--", linewidth=1.4,
+               label=f"Median = {median_ms:.2f} ms", zorder=3)
+    ax.axvline(mean_ms, color=color("threshold"), linestyle=":", linewidth=1.4,
+               label=f"Mean = {mean_ms:.2f} ms", zorder=3)
+    ax.axvline(p95_ms, color=color("rejected"), linestyle="-.", linewidth=1.2,
+               label=f"p95 = {p95_ms:.2f} ms", zorder=3)
+    style_axes(ax, xlabel="Inter-frame interval (ms)", ylabel="Count")
+    fig.suptitle("Tracker Inter-Frame Interval Distribution",
+                 fontsize=13, fontweight="bold", x=0.04, ha="left")
+    legend(ax, loc="upper right", ncol=1)
+    fig.text(
+        0.015, 0.02,
+        f"N = {len(intervals)} intervals   •   "
+        f"std = {std_ms:.2f} ms   •   max = {max_ms:.2f} ms   •   "
+        "raw gap between consecutive sample-commit timestamps (jitter view)",
+        fontsize=9, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
+def _bin_records_into_buckets(
+    tracker_records: list[dict[str, Any]],
+    *,
+    bucket_s: float,
+    predicate,
+) -> tuple[list[float], list[float]]:
+    """Bucketize matching records into per-second rate bins.
+
+    Returns ``(bucket_centers_s, rate_hz)``: each bucket spans
+    ``bucket_s`` seconds and reports count/bucket_s as a Hz value.
+    """
+    matching_times_ns = [
+        int(record["sample_commit_monotonic_ns"])
+        for record in tracker_records
+        if not record.get("warmup_discarded")
+        and record.get("sample_commit_monotonic_ns") is not None
+        and predicate(record)
+    ]
+    all_times_ns = _analyzed_commit_times_ns(tracker_records)
+    if not all_times_ns or bucket_s <= 0.0:
+        return [], []
+    start_ns = all_times_ns[0]
+    end_ns = all_times_ns[-1]
+    if end_ns <= start_ns:
+        return [], []
+    bucket_ns = int(round(bucket_s * 1_000_000_000.0))
+    if bucket_ns <= 0:
+        return [], []
+    buckets: dict[int, int] = {}
+    for value_ns in matching_times_ns:
+        index = (int(value_ns) - start_ns) // bucket_ns
+        buckets[int(index)] = buckets.get(int(index), 0) + 1
+    last_index = (end_ns - start_ns) // bucket_ns
+    centers: list[float] = []
+    rates: list[float] = []
+    for index in range(int(last_index) + 1):
+        centers.append((index + 0.5) * bucket_s)
+        rates.append(float(buckets.get(index, 0)) / bucket_s)
+    return centers, rates
+
+
+def _write_tracker_unique_frame_rate_over_time(
+    *,
+    path: Path,
+    tracker_records: list[dict[str, Any]],
+    metrics: dict[str, Any],
+) -> None:
+    """Phase-3 figure 2: unique-frame rate over collection time.
+
+    Bucketed at 1-second resolution. Reveals dropouts (a bucket near 0 Hz)
+    and drift (a downward trend) that the per-cycle distribution figure
+    aggregates over and hides.
+    """
+    centers, rates = _bin_records_into_buckets(
+        tracker_records,
+        bucket_s=1.0,
+        predicate=lambda r: bool(r.get("is_new_frame", False)),
+    )
+    fig, ax = create_figure(size="wide", constrained_layout=False)
+    fig.subplots_adjust(left=0.085, right=0.97, top=0.90, bottom=0.22)
+    if not centers:
+        ax.text(0.5, 0.5, "No analyzed frames to plot",
+                transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, xlabel="Time since first analyzed sample (s)",
+                   ylabel="Unique frames / s")
+        fig.suptitle("Unique Tracker Frame Rate Over Time",
+                     fontsize=13, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+    ax.plot(centers, rates, color=color("measured"), linewidth=1.0,
+            marker="o", markersize=3, alpha=0.9, label="Unique frame rate (1 s bucket)")
+    headline_rate = _as_float(metrics.get("unique_frame_rate_hz"))
+    if headline_rate is not None:
+        ax.axhline(headline_rate, color=color("fit"), linestyle="--",
+                   linewidth=1.4, label=f"Overall = {headline_rate:.1f} Hz", zorder=3)
+    ax.axhline(40.0, color=color("threshold"), linestyle=":", linewidth=1.2,
+               label="Aurora hardware ceiling (40 Hz)", zorder=2)
+    ax.set_ylim(0.0, max(max(rates) * 1.2, 45.0))
+    style_axes(ax, xlabel="Time since first analyzed sample (s)",
+               ylabel="Unique frames / s")
+    fig.suptitle("Unique Tracker Frame Rate Over Time",
+                 fontsize=13, fontweight="bold", x=0.04, ha="left")
+    legend(ax, loc="upper right", ncol=1)
+    fig.text(
+        0.015, 0.02,
+        "Buckets count unique tracker frames per 1 s window. Sharp dips suggest "
+        "transient backend dropouts; sustained low rate suggests a poll-rate "
+        "or connection bottleneck.",
+        fontsize=9, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
+def _write_tracker_duplicate_invalid_timeline(
+    *,
+    path: Path,
+    tracker_records: list[dict[str, Any]],
+    metrics: dict[str, Any],
+) -> None:
+    """Phase-3 figure 3: when did duplicate / invalid frames happen?
+
+    Stacks two strip plots on a shared time axis: duplicate-frame events
+    (orange dots) on the top row, invalid-frame events (red Xs) on the
+    bottom row. Useful for telling "tracker disconnected at t=14 s" vs
+    "tracker is just generally noisy."
+    """
+    times_ns = _analyzed_commit_times_ns(tracker_records)
+    fig, ax = create_figure(size="wide", constrained_layout=False)
+    fig.subplots_adjust(left=0.085, right=0.97, top=0.90, bottom=0.22)
+    if not times_ns:
+        ax.text(0.5, 0.5, "No analyzed samples",
+                transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, xlabel="Time since first analyzed sample (s)", ylabel="")
+        fig.suptitle("Duplicate and Invalid Frame Timeline",
+                     fontsize=13, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+    t0 = times_ns[0]
+    duplicate_seconds: list[float] = []
+    invalid_seconds: list[float] = []
+    requested = [str(x).upper() for x in (metrics.get("requested_tool_ids") or [])]
+    for record in tracker_records:
+        if record.get("warmup_discarded"):
+            continue
+        commit = record.get("sample_commit_monotonic_ns")
+        if commit is None:
+            continue
+        elapsed = float(int(commit) - t0) / 1_000_000_000.0
+        if bool(record.get("is_duplicate_frame", False)):
+            duplicate_seconds.append(elapsed)
+        if requested:
+            validity = record.get("tool_validity", {}) or {}
+            if any(str(validity.get(tool_id, "missing")).strip().lower() != "tracked" for tool_id in requested):
+                invalid_seconds.append(elapsed)
+    ax.scatter(duplicate_seconds, [1.0] * len(duplicate_seconds),
+               s=22, color=color("threshold"), alpha=0.8, label="Duplicate frame")
+    ax.scatter(invalid_seconds, [0.0] * len(invalid_seconds),
+               s=28, marker="x", color=color("rejected"), alpha=0.85, label="Invalid frame")
+    ax.set_ylim(-0.6, 1.6)
+    ax.set_yticks([0.0, 1.0])
+    ax.set_yticklabels(["Invalid", "Duplicate"])
+    style_axes(ax, xlabel="Time since first analyzed sample (s)", ylabel="")
+    fig.suptitle("Duplicate and Invalid Frame Timeline",
+                 fontsize=13, fontweight="bold", x=0.04, ha="left")
+    legend(ax, loc="upper right", ncol=1)
+    fig.text(
+        0.015, 0.02,
+        f"Duplicates: {len(duplicate_seconds)}   •   Invalid: {len(invalid_seconds)}   •   "
+        "clusters in time indicate transient outages; spread-out events indicate "
+        "ongoing measurement noise.",
+        fontsize=9, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
+def _write_tracker_polling_vs_unique_rate_summary(
+    *,
+    path: Path,
+    metrics: dict[str, Any],
+) -> None:
+    """Phase-3 figure 4: side-by-side bars for polling vs unique vs valid pose rate.
+
+    Headline answer to "how fast is the tracker actually delivering useful
+    data?" — polling_rate_hz is what the software asked for; unique frame
+    rate is what the backend produced; valid pose rate is what survived
+    tool-validity filtering. The 40 Hz ceiling sits as a dashed reference.
+    """
+    fig, ax = create_figure(size="wide", constrained_layout=False)
+    fig.subplots_adjust(left=0.10, right=0.97, top=0.90, bottom=0.22)
+    rates = [
+        ("Polling", _as_float(metrics.get("polling_rate_hz"))),
+        ("Unique frames", _as_float(metrics.get("unique_frame_rate_hz"))),
+        ("Valid pose", _as_float(metrics.get("valid_pose_rate_hz"))),
+    ]
+    rates_present = [(label, value) for label, value in rates if value is not None]
+    if not rates_present:
+        ax.text(0.5, 0.5, "No rate metrics available",
+                transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, xlabel="", ylabel="Rate (Hz)")
+        fig.suptitle("Polling vs Unique Frame Rate vs Valid Pose Rate",
+                     fontsize=13, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+    labels = [label for label, _ in rates_present]
+    values = [float(value) for _, value in rates_present]
+    bar_colors = [color("measured"), color("fit"), color("accepted")][: len(rates_present)]
+    bars = ax.bar(labels, values, color=bar_colors, edgecolor="white", linewidth=0.6, zorder=2)
+    ax.bar_label(bars, labels=[f"{value:.1f} Hz" for value in values], padding=4, fontsize=10)
+    ax.axhline(40.0, color=color("threshold"), linestyle="--", linewidth=1.4,
+               label="Aurora hardware ceiling (40 Hz)", zorder=3)
+    ax.set_ylim(0.0, max(max(values) * 1.25, 45.0))
+    style_axes(ax, xlabel="", ylabel="Rate (Hz)")
+    fig.suptitle("Polling vs Unique Frame Rate vs Valid Pose Rate",
+                 fontsize=13, fontweight="bold", x=0.04, ha="left")
+    legend(ax, loc="upper right", ncol=1)
+    fig.text(
+        0.015, 0.02,
+        "Polling = software ask rate. Unique frames = backend new-frame rate. "
+        "Valid pose = unique frames that also had every requested tool tracked. "
+        "Polling > unique → some polls hit the cached frame; unique > valid → "
+        "tracker sometimes lost the tool.",
+        fontsize=8, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
+def _write_tracker_valid_pose_rate_over_time(
+    *,
+    path: Path,
+    tracker_records: list[dict[str, Any]],
+    metrics: dict[str, Any],
+) -> None:
+    """Phase-3 figure 5: valid-pose rate over time (only when applicable).
+
+    A pose is "valid" when every requested tool is in the `tracked` state.
+    This is the rate that matters for downstream experiments that consume
+    the registered robot-frame tip; if it dips, modeling labels for that
+    interval will be missing or stale.
+    """
+    requested = [str(x).upper() for x in (metrics.get("requested_tool_ids") or [])]
+    fig, ax = create_figure(size="wide", constrained_layout=False)
+    fig.subplots_adjust(left=0.085, right=0.97, top=0.90, bottom=0.22)
+    if not requested:
+        ax.text(0.5, 0.5, "No requested tools — valid pose rate is undefined here.",
+                transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, xlabel="Time since first analyzed sample (s)",
+                   ylabel="Valid poses / s")
+        fig.suptitle("Valid Pose Rate Over Time", fontsize=13, fontweight="bold",
+                     x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+    def _pose_valid(record: dict[str, Any]) -> bool:
+        validity = record.get("tool_validity", {}) or {}
+        return all(
+            str(validity.get(tool_id, "missing")).strip().lower() == "tracked"
+            for tool_id in requested
+        )
+    centers, rates = _bin_records_into_buckets(
+        tracker_records, bucket_s=1.0, predicate=_pose_valid,
+    )
+    if not centers:
+        ax.text(0.5, 0.5, "No analyzed samples", transform=ax.transAxes,
+                ha="center", va="center")
+        style_axes(ax, xlabel="Time since first analyzed sample (s)",
+                   ylabel="Valid poses / s")
+        fig.suptitle("Valid Pose Rate Over Time", fontsize=13, fontweight="bold",
+                     x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+    ax.plot(centers, rates, color=color("accepted"), linewidth=1.0,
+            marker="o", markersize=3, alpha=0.9, label="Valid pose rate (1 s bucket)")
+    headline = _as_float(metrics.get("valid_pose_rate_hz"))
+    if headline is not None:
+        ax.axhline(headline, color=color("fit"), linestyle="--",
+                   linewidth=1.4, label=f"Overall = {headline:.1f} Hz", zorder=3)
+    ax.axhline(40.0, color=color("threshold"), linestyle=":", linewidth=1.2,
+               label="Aurora hardware ceiling (40 Hz)", zorder=2)
+    ax.set_ylim(0.0, max(max(rates) * 1.2, 45.0))
+    style_axes(ax, xlabel="Time since first analyzed sample (s)",
+               ylabel="Valid poses / s")
+    fig.suptitle("Valid Pose Rate Over Time", fontsize=13, fontweight="bold",
+                 x=0.04, ha="left")
+    legend(ax, loc="upper right", ncol=1)
+    fig.text(
+        0.015, 0.02,
+        f"Requested tools: {', '.join(requested)}. "
+        "A drop here means the tool went out of view or invalid for that interval — "
+        "downstream pose-dependent metrics inherit the gap.",
+        fontsize=9, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
     )
     save_figure(fig, path)
 

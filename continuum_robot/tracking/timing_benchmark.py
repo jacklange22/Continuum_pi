@@ -51,16 +51,22 @@ def _numeric_stats(values: Iterable[Any]) -> dict[str, Any]:
             "max": None,
             "mean": None,
             "median": None,
+            "std": None,
             "p95": None,
             "p99": None,
         }
     ordered = sorted(finite_values)
+    # Population std (matches the standard "jitter" convention used for sample
+    # inter-arrival distributions). Returns 0.0 for a single-sample input
+    # rather than raising, so single-cycle runs don't crash the summary.
+    std = float(statistics.pstdev(ordered)) if len(ordered) >= 1 else 0.0
     return {
         "count": len(ordered),
         "min": float(ordered[0]),
         "max": float(ordered[-1]),
         "mean": float(statistics.fmean(ordered)),
         "median": _quantile(ordered, 0.5),
+        "std": std,
         "p95": _quantile(ordered, 0.95),
         "p99": _quantile(ordered, 0.99),
     }
@@ -439,6 +445,25 @@ def compute_tracker_timing_summary(
     if analyzed_duration_s and analyzed_duration_s > 0.0 and len(analyzed_records) >= 2:
         effective_loop_rate_hz = float(len(analyzed_records) - 1) / float(analyzed_duration_s)
 
+    # Polling rate spans the *entire* run including warmup — answers "how
+    # often did the software ask the backend for data?" Distinct from
+    # `effective_loop_rate_hz` which excludes the warmup window so its
+    # denominator matches the analysis window.
+    polling_rate_hz = None
+    all_commit_times_ns = [
+        int(value)
+        for value in (record.get("sample_commit_monotonic_ns") for record in all_records)
+        if value is not None
+    ]
+    total_polling_duration_s = None
+    if len(all_commit_times_ns) >= 2:
+        total_polling_duration_s = max(
+            0.0,
+            float(all_commit_times_ns[-1] - all_commit_times_ns[0]) / 1_000_000_000.0,
+        )
+        if total_polling_duration_s > 0.0:
+            polling_rate_hz = float(len(all_records) - 1) / float(total_polling_duration_s)
+
     comparable_records = [
         record
         for record in analyzed_records
@@ -453,6 +478,20 @@ def compute_tracker_timing_summary(
     unique_frame_rate_hz = None
     if analyzed_duration_s and analyzed_duration_s > 0.0 and new_frame_count >= 2:
         unique_frame_rate_hz = float(new_frame_count - 1) / float(analyzed_duration_s)
+
+    # Frame-number / frame-timestamp availability. A run is considered to
+    # have real frame numbers when at least one analyzed record carries a
+    # non-synthetic `frame_number_source`. Frame timestamps from the host
+    # side are always available; the flag documents the (lack of) backend
+    # hardware-tagged timestamp on the NDI Aurora.
+    tracker_frame_number_available = any(
+        record.get("frame_number") is not None
+        and str(record.get("frame_number_source", "")).strip().lower() not in {"synthetic", "unknown", ""}
+        for record in analyzed_records
+    )
+    tracker_frame_timestamp_available = any(
+        str(record.get("observed_at_utc", "") or "").strip() for record in analyzed_records
+    )
 
     error_sample_count = sum(bool(record.get("error_flag", False)) for record in analyzed_records)
     invalid_or_missing_requested_tool_count = 0
@@ -507,6 +546,14 @@ def compute_tracker_timing_summary(
             valid_transform_sample_count += 1
 
     analyzed_count = len(analyzed_records)
+    # valid_pose_rate_hz: how many tracker frames per second had every
+    # requested tool reporting a tracked (valid) transform. Different from
+    # `unique_frame_rate_hz` (counts fresh frames regardless of validity)
+    # and `valid_requested_tool_rate` (a fraction, not a rate).
+    valid_pose_rate_hz = None
+    if analyzed_duration_s and analyzed_duration_s > 0.0 and valid_transform_sample_count >= 2:
+        valid_pose_rate_hz = float(valid_transform_sample_count - 1) / float(analyzed_duration_s)
+
     summary = {
         "run_label": str(run_label or ""),
         "backend_identity": str(backend_identity or ""),
@@ -515,11 +562,19 @@ def compute_tracker_timing_summary(
         "requested_tool_ids": list(requested),
         "sample_count_total": len(all_records),
         "sample_count_analyzed": analyzed_count,
+        # polling_attempt_count is an alias of sample_count_total kept under
+        # an operator-friendly name (matches the spec's "total polling attempts").
+        "polling_attempt_count": len(all_records),
         "warmup_discarded_count": sum(bool(record.get("warmup_discarded", False)) for record in all_records),
         "configured_run_duration_s": _as_float(run_duration_s),
         "analyzed_duration_s": analyzed_duration_s,
+        "total_polling_duration_s": total_polling_duration_s,
+        "polling_rate_hz": polling_rate_hz,
         "effective_loop_rate_hz": effective_loop_rate_hz,
         "unique_frame_rate_hz": unique_frame_rate_hz,
+        "valid_pose_rate_hz": valid_pose_rate_hz,
+        "tracker_frame_number_available": bool(tracker_frame_number_available),
+        "tracker_frame_timestamp_available": bool(tracker_frame_timestamp_available),
         "comparable_frame_count": len(comparable_records),
         "unique_frame_count": new_frame_count,
         "duplicate_frame_count": duplicate_frame_count,
@@ -556,6 +611,11 @@ def compute_tracker_timing_summary(
         "parse_ms_stats": parse_stats,
         "state_commit_ms_stats": commit_stats,
         "loop_period_ms_stats": loop_period_stats,
+        # Operator-friendly alias of loop_period_ms_stats. Both surface the
+        # same distribution (gap between consecutive sample-commit times in
+        # ms) but the `inter_frame_interval_*` name matches the spec
+        # vocabulary and reads as "tracker jitter" in the GUI/summary.
+        "inter_frame_interval_ms_stats": loop_period_stats,
         "mean_total_cycle_ms": total_stats["mean"],
         "median_total_cycle_ms": total_stats["median"],
         "p95_total_cycle_ms": total_stats["p95"],
