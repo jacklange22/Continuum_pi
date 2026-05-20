@@ -2964,6 +2964,23 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
             "but get more captures per position, raise Target Samples by the same factor."
         )
         self.samples_per_command_spin.valueChanged.connect(lambda value: self.controller.set_config_value("samples_per_command", int(value)))
+        self.tracker_frames_per_position_spin = QSpinBox()
+        self.tracker_frames_per_position_spin.setRange(1, 200)
+        self.tracker_frames_per_position_spin.setToolTip(
+            "Number of TRACKER FRAMES to collect after the single settle at each capture\n"
+            "(N=1 disables; N>1 enables averaging). Does NOT change the number of distinct\n"
+            "positions visited. Used to average out random tracker frame-to-frame noise.\n\n"
+            "When N>1, the run writes BOTH:\n"
+            "  • samples_first.jsonl    — first valid post-settle frame (today's behaviour)\n"
+            "  • samples_averaged.jsonl — N-frame mean position + sign-aligned quaternion mean\n"
+            "Plus raw_tracker_samples.jsonl with every per-frame snapshot for audit.\n\n"
+            "Skeptical framing: this estimates RANDOM frame-to-frame noise. It does NOT\n"
+            "remove systematic registration bias, hysteresis, or settling drift.\n\n"
+            "Mutually exclusive with Samples per Command > 1."
+        )
+        self.tracker_frames_per_position_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("tracker_samples_per_command", int(value))
+        )
         self.settle_time_spin = QDoubleSpinBox()
         self.settle_time_spin.setRange(0.0, 60.0)
         self.settle_time_spin.setDecimals(3)
@@ -2974,6 +2991,7 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         collection_form.addRow("Target Samples", self.sample_target_spin)
         collection_form.addRow("Workspace Amplitude", self.workspace_amplitude_spin)
         collection_form.addRow("Samples per Command", self.samples_per_command_spin)
+        collection_form.addRow("Tracker Frames per Position", self.tracker_frames_per_position_spin)
         collection_form.addRow("Settle Time", self.settle_time_spin)
         collection_card.body_layout.addLayout(collection_form)
 
@@ -3174,6 +3192,10 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
             self.samples_per_command_spin,
             int(self.controller.get_config_value("samples_per_command", self.controller.get_config_value("sample_count_per_point", 1))),
         )
+        self._set_spin(
+            self.tracker_frames_per_position_spin,
+            int(self.controller.get_config_value("tracker_samples_per_command", 1)),
+        )
         self._set_double(self.settle_time_spin, float(self.controller.get_config_value("settle_time_s", 0.15)))
         self._set_double(self.capture_timeout_spin, float(self.controller.get_config_value("capture_timeout_s", 1.0)))
         self._set_double(self.tracker_age_spin, float(self.controller.get_config_value("max_tracker_age_s", 0.15)))
@@ -3232,11 +3254,22 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
             pretension_label = "unavailable"
         planned_commands, planned_captures, duration_label = self._plan_preview(mode=mode)
         samples_per_command = max(1, int(self.controller.get_config_value("samples_per_command", 1)))
-        self.collection_preview_label.setText(
-            f"→ {planned_commands} workspace positions × {samples_per_command} captures each "
-            f"= {planned_captures} total captures · {duration_label}  "
-            f"({self._mode_blurb(mode)})"
-        )
+        tracker_frames = max(1, int(self.controller.get_config_value("tracker_samples_per_command", 1)))
+        if tracker_frames > 1:
+            total_frames = planned_captures * tracker_frames
+            preview = (
+                f"→ {planned_commands} workspace positions × {samples_per_command} captures × "
+                f"{tracker_frames} tracker frames each = {total_frames} total tracker reads, "
+                f"{planned_captures} averaged samples for modeling · {duration_label}  "
+                f"({self._mode_blurb(mode)})"
+            )
+        else:
+            preview = (
+                f"→ {planned_commands} workspace positions × {samples_per_command} captures each "
+                f"= {planned_captures} total captures · {duration_label}  "
+                f"({self._mode_blurb(mode)})"
+            )
+        self.collection_preview_label.setText(preview)
         self.collection_summary_widget.set_pairs(
             [
                 ("Operating Scope", operating_scope),
@@ -3282,6 +3315,14 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
 
     def _plan_preview(self, *, mode: str) -> tuple[int, int, str]:
         samples_per_command = max(1, int(self.controller.get_config_value("samples_per_command", 1)))
+        tracker_frames = max(1, int(self.controller.get_config_value("tracker_samples_per_command", 1)))
+        tracker_sample_period_s = float(
+            self.controller.get_config_value(
+                "tracker_sample_period_s",
+                self.controller.get_config_value("capture_poll_interval_s", 0.02),
+            )
+            or 0.02
+        )
         settle_time_s = float(self.controller.get_config_value("settle_time_s", 0.15))
         capture_timeout_s = float(self.controller.get_config_value("capture_timeout_s", 1.0))
         if mode == "hysteresis_path_dependence":
@@ -3301,11 +3342,14 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         planned_captures = int(planned_commands * samples_per_command + 2)
         # Per-command time = settle the operator set + min(capture_timeout, 0.25)
         # for the actual sample wait + motion+poll overhead constant. Plus the
-        # two-neutral-bracket at start/end of run.
+        # two-neutral-bracket at start/end of run. When tracker-frame averaging
+        # is active, add (frames - 1) × per-frame period because the experiment
+        # has to wait one frame interval between deduplicated reads.
         per_command_s = (
             settle_time_s
             + min(capture_timeout_s, 0.25)
             + self._COLLECT_POSE_MOTION_OVERHEAD_S
+            + max(0, tracker_frames - 1) * max(0.01, tracker_sample_period_s)
         )
         estimated_s = float(planned_commands) * per_command_s + (2.0 * min(capture_timeout_s, 0.25))
         duration_label = _format_duration(estimated_s)
