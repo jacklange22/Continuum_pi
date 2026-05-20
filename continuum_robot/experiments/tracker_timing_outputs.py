@@ -172,7 +172,7 @@ def build_tracker_timing_summary_lines(*, metadata, summary, metrics: dict[str, 
     return lines
 
 
-AURORA_THEORETICAL_INTERVAL_MS = 25.0  # 40 Hz Aurora hardware target
+AURORA_THEORETICAL_INTERVAL_MS = 25.0  # 40 Hz Aurora hardware frame rate (ceiling, not a target)
 
 
 def write_tracker_timing_outputs(*, output_dir: Path, metadata, summary, samples) -> dict[str, Path]:
@@ -287,13 +287,15 @@ def _write_tracker_thesis_01_cycle_distribution(
     tracker_records: list[dict[str, Any]],
     metrics: dict[str, Any],
 ) -> None:
-    """Thesis figure 1: cycle-time distribution + CDF + 40 Hz reference.
+    """Thesis figure 1: cycle-time distribution + CDF vs Aurora frame interval.
 
-    Answers "how fast and how consistent is the tracker?" in one chart.
-    Histogram (count) on left axis, cumulative fraction on right axis. The
-    25 ms vertical line is Aurora's 40 Hz theoretical interval; the shaded
-    region to its left is the "made the 40 Hz budget" zone. Observed mean,
-    p95, p99 marked with vertical lines.
+    Answers "how fast and how consistent is the tracker poll loop?" in one
+    chart. Histogram (count) on left axis, cumulative fraction on right axis.
+    The 25 ms vertical line is the Aurora hardware frame interval — NOT a
+    pipeline target. Cycles shorter than 25 ms mean the loop is over-polling
+    a cached frame (duplicate frames likely); cycles longer mean the loop is
+    under-polling (Aurora frames will be missed). Observed mean, p95, p99
+    marked with vertical lines.
     """
     values = _filter_analyzed_cycle_times(tracker_records)
     fig, ax = create_figure(size="wide", constrained_layout=False)
@@ -303,7 +305,7 @@ def _write_tracker_thesis_01_cycle_distribution(
         ax.text(0.5, 0.5, "No analyzed tracker cycles available",
                 transform=ax.transAxes, ha="center", va="center")
         style_axes(ax, xlabel="Total cycle time (ms)", ylabel="Cycle count")
-        fig.suptitle("Tracker Cycle Time Distribution (40 Hz Aurora Target)",
+        fig.suptitle("Tracker Cycle Time Distribution vs Aurora Frame Interval",
                      fontsize=13, fontweight="bold", x=0.04, ha="left")
         save_figure(fig, path)
         return
@@ -332,8 +334,10 @@ def _write_tracker_thesis_01_cycle_distribution(
     x_min = max(0.0, float(arr.min()) * 0.95)
     x_max = max(float(arr.max()) * 1.05, AURORA_THEORETICAL_INTERVAL_MS * 1.2)
 
-    # Shade the "made 40 Hz budget" zone
-    ax.axvspan(0.0, AURORA_THEORETICAL_INTERVAL_MS, color=color("accepted"), alpha=0.06, zorder=0)
+    # No shaded zone: the previous green "made 40 Hz budget" shade implied
+    # short cycles are good, which is misleading — short cycles indicate the
+    # loop is over-polling a cached frame. The 25 ms line (drawn below) and
+    # the caption strip explain the duality without the false-good shade.
 
     bin_count = max(20, min(60, int(np.sqrt(len(arr)) * 2)))
     counts, bins, _patches = ax.hist(
@@ -352,9 +356,19 @@ def _write_tracker_thesis_01_cycle_distribution(
     cdf_ax.spines["top"].set_visible(False)
     cdf_ax.spines["right"].set_color(color("reference"))
 
-    # Reference lines
-    ax.axvline(AURORA_THEORETICAL_INTERVAL_MS, color=color("threshold"), linestyle="-",
-               linewidth=1.6, label=f"Aurora 40 Hz target ({AURORA_THEORETICAL_INTERVAL_MS:.0f} ms)", zorder=4)
+    # Reference lines. The 25 ms line is the Aurora hardware frame interval
+    # (the rate at which the device actually produces fresh frames). It is
+    # NOT a pipeline target — labeling it as such would suggest shorter
+    # cycles are better, which is the opposite of the truth.
+    ax.axvline(
+        AURORA_THEORETICAL_INTERVAL_MS,
+        color=color("threshold"), linestyle="-", linewidth=1.6,
+        label=(
+            f"Aurora frame interval "
+            f"({AURORA_THEORETICAL_INTERVAL_MS:.0f} ms = 40 Hz hardware rate)"
+        ),
+        zorder=4,
+    )
     ax.axvline(mean_ms, color=color("fit"), linestyle="--", linewidth=1.4,
                label=f"Mean ({mean_ms:.1f} ms)", zorder=4)
     ax.axvline(p95_ms, color=color("rejected"), linestyle=":", linewidth=1.4,
@@ -366,7 +380,7 @@ def _write_tracker_thesis_01_cycle_distribution(
     ax.set_xlim(x_min, x_max)
     legend(ax, loc="upper right", ncol=1)
 
-    fig.suptitle("Tracker Cycle Time Distribution (40 Hz Aurora Target)",
+    fig.suptitle("Tracker Cycle Time Distribution vs Aurora Frame Interval",
                  fontsize=13, fontweight="bold", x=0.04, ha="left")
 
     duplicate_ratio = _safe_ratio(metrics.get("duplicate_frame_ratio"))
@@ -382,7 +396,9 @@ def _write_tracker_thesis_01_cycle_distribution(
                 # the reader can reproduce them.
                 f"Effective loop rate: {float(effective_loop_rate_hz):.1f} Hz "
                 f"[{effective_rate_label}]   ·   1000/p95 ms: {realized_p95_hz:.1f} Hz",
-                f"Target: 40 Hz (25 ms cycle)",
+                "Aurora hardware ceiling: 40 Hz (25 ms/frame). "
+                "Cycle < 25 ms → over-poll, expect duplicate frames; "
+                "cycle > 25 ms → under-poll, expect missed frames.",
                 f"Duplicate frames: {duplicate_ratio:.1f}%" if duplicate_ratio is not None else None,
             ])
         ),
@@ -402,9 +418,10 @@ def _write_tracker_thesis_02_stage_breakdown(
 
     Horizontal stacked bars at median / mean / p95 / p99 of total_cycle_ms,
     each decomposed into backend_call / parse / state_commit. Each bar
-    labeled with total + equivalent Hz. 25 ms reference is the 40 Hz target.
-    Reads at a glance: which stage dominates and where the 40 → realized
-    rate gap actually lives.
+    labeled with total + equivalent Hz. The 25 ms reference line is the
+    Aurora hardware frame interval (NOT a pipeline target — cycles shorter
+    than 25 ms mean over-polling a cached frame; cycles longer mean missed
+    frames). Reads at a glance: which stage dominates the cycle time.
     """
     stages = _filter_analyzed_stage_arrays(tracker_records)
     table = _stage_percentile_table(stages)
@@ -464,9 +481,18 @@ def _write_tracker_thesis_02_stage_breakdown(
         ax.text(total + max(max_total * 0.012, 0.4), y_pos, label,
                 va="center", ha="left", fontsize=9, color=color("text"))
 
-    # 40 Hz target reference line
-    ax.axvline(AURORA_THEORETICAL_INTERVAL_MS, color=color("threshold"), linestyle="-",
-               linewidth=1.6, label=f"Aurora 40 Hz target ({AURORA_THEORETICAL_INTERVAL_MS:.0f} ms)", zorder=3)
+    # Aurora hardware frame interval reference (NOT a pipeline target —
+    # see the figure docstring). Same labeling convention as thesis_01 so
+    # the two figures read consistently.
+    ax.axvline(
+        AURORA_THEORETICAL_INTERVAL_MS, color=color("threshold"), linestyle="-",
+        linewidth=1.6,
+        label=(
+            f"Aurora frame interval "
+            f"({AURORA_THEORETICAL_INTERVAL_MS:.0f} ms = 40 Hz hardware rate)"
+        ),
+        zorder=3,
+    )
 
     ax.set_yticks(y_positions)
     ax.set_yticklabels([label.upper() for label in percentile_labels])
@@ -498,7 +524,8 @@ def _write_tracker_thesis_02_stage_breakdown(
                 # `effective_loop_rate_hz` reported in summary.json. The
                 # caption spells out which definition is in use.
                 f"1000/mean cycle ms: {_hz_for_ms(table['total_cycle_ms']['mean']):.1f} Hz "
-                f"(vs 40 Hz target; see summary.json for canonical effective_loop_rate_hz)"
+                f"(vs 40 Hz Aurora hardware ceiling; see summary.json for "
+                "canonical effective_loop_rate_hz)"
                 if table["total_cycle_ms"]["mean"] > 0 else None,
             ])
         ),
