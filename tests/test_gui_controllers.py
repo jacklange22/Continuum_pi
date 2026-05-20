@@ -3945,7 +3945,21 @@ def test_registration_tab_capture_button_records_sample_into_service_session(tmp
 
     assert len(snapshot.raw_points_by_label[active_label]) == 1
     assert controller.state.captured_counts[active_label] == 1
-    assert tab.samples_table.rowCount() == 1
+    # samples_table now shows one row per landmark with a median + capture
+    # count (not one row per raw capture) — the perf fix that keeps the
+    # GUI snappy at 12-pt × 20-capture configs. Find the active_label's
+    # row and confirm its capture-count cell reads "1 captures".
+    row_index = next(
+        (
+            i
+            for i in range(tab.samples_table.rowCount())
+            if tab.samples_table.item(i, 0) is not None
+            and tab.samples_table.item(i, 0).text() == active_label
+        ),
+        None,
+    )
+    assert row_index is not None
+    assert tab.samples_table.item(row_index, 1).text() == "1 captures"
 
 
 def test_registration_tab_load_latest_without_file_reports_status(tmp_path: Path) -> None:

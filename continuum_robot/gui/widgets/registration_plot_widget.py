@@ -39,6 +39,7 @@ class RegistrationPlotWidget(LightweightScene3DWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._preview = RegistrationPreviewAlignment()
+        self._last_data_fingerprint: tuple | None = None
         self.setMinimumHeight(220)
 
     def set_data(
@@ -53,11 +54,36 @@ class RegistrationPlotWidget(LightweightScene3DWidget):
         solved_transform: Sequence[Sequence[float]] | None = None,
         solved_residuals_by_label: Mapping[str, Sequence[float]] | None = None,
     ) -> None:
+        # Fingerprint-based skip: short-circuit when the input state is
+        # identical to the last call. The full scene rebuild was firing on
+        # every refresh tick even when nothing changed, which made the
+        # whole tab feel laggy during capture.
+        fingerprint = _registration_preview_fingerprint(
+            nominal=nominal,
+            captured=captured,
+            averaged_points=averaged_points,
+            completed_labels=completed_labels,
+            selected_label=selected_label,
+            current_point=current_point,
+            solved_transform=solved_transform,
+            solved_residuals_by_label=solved_residuals_by_label,
+        )
+        if fingerprint == self._last_data_fingerprint:
+            return
+        self._last_data_fingerprint = fingerprint
+
         truth_points = {
             str(label): _as_xyz(point)
             for label, point in nominal.items()
             if point is not None and len(point) >= 3
         }
+        # Reduce captured-data to one median per landmark before any further
+        # processing. The previous code stashed every raw capture (up to
+        # 12 landmarks × 20 captures = 240 points) and re-transformed each
+        # one on every refresh tick, which made the registration tab feel
+        # sluggish at the new 12-pt × 20-capture configs. The scene only
+        # needs the median for the preview overlay; raw points stay on
+        # disk for post-hoc analysis.
         raw_samples = {
             str(label): [_as_xyz(sample) for sample in samples if sample is not None and len(sample) >= 3]
             for label, samples in captured.items()
@@ -74,6 +100,11 @@ class RegistrationPlotWidget(LightweightScene3DWidget):
             if solved_transform is not None
             else median_points
         )
+        # Build a synthetic raw_samples_by_label that contains only the
+        # median, so the scene's per-sample loop renders one cloud-point
+        # per landmark instead of N. Keeps the orange median dots visible
+        # without the per-tick render cost of the full cloud.
+        scene_clouds = {label: [point] for label, point in median_points.items()}
         solved_transform_matrix = _as_transform(solved_transform)
         self._preview = compute_registration_preview_alignment(
             truth_points_by_label=truth_points,
@@ -84,7 +115,7 @@ class RegistrationPlotWidget(LightweightScene3DWidget):
         )
         scene = build_registration_preview_scene(
             truth_points_by_label=truth_points,
-            raw_samples_by_label=raw_samples,
+            raw_samples_by_label=scene_clouds,
             capture_points_by_label=capture_centers,
             preview=self._preview,
             ordered_labels=ordered_labels,
@@ -463,6 +494,76 @@ def _as_transform(transform) -> np.ndarray | None:
 
 def _as_xyz(point: Sequence[float]) -> tuple[float, float, float]:
     return (float(point[0]), float(point[1]), float(point[2]))
+
+
+def _registration_preview_fingerprint(
+    *,
+    nominal,
+    captured,
+    averaged_points,
+    completed_labels,
+    selected_label,
+    current_point,
+    solved_transform,
+    solved_residuals_by_label,
+) -> tuple:
+    """Hashable summary of all set_data inputs.
+
+    Captured samples are summarised by (count, rounded median) per label
+    rather than the full N coordinates, so adding more raw samples to an
+    existing landmark only refires the scene when the median materially
+    moves. Coordinates are rounded to 4 decimal places (sub-micron) to
+    absorb floating-point jitter in repeated reads of the same data.
+    """
+    def _r(value) -> float | None:
+        try:
+            return round(float(value), 4)
+        except (TypeError, ValueError):
+            return None
+
+    def _round_xyz(point) -> tuple | None:
+        if point is None:
+            return None
+        try:
+            return (_r(point[0]), _r(point[1]), _r(point[2]))
+        except (TypeError, IndexError):
+            return None
+
+    nominal_key = tuple(sorted((str(k), _round_xyz(v)) for k, v in (nominal or {}).items()))
+    captured_summaries: list[tuple[str, int, tuple | None]] = []
+    for label, samples in (captured or {}).items():
+        seq = list(samples or [])
+        count = len(seq)
+        median_key: tuple | None = None
+        if count and len(seq[0]) >= 3:
+            arr = np.asarray(seq, dtype=float)
+            if arr.ndim == 2 and arr.shape[1] >= 3:
+                median = np.median(arr[:, 0:3], axis=0)
+                median_key = tuple(round(float(v), 4) for v in median.tolist())
+        captured_summaries.append((str(label), int(count), median_key))
+    captured_key = tuple(sorted(captured_summaries))
+    averaged_key = tuple(sorted((str(k), _round_xyz(v)) for k, v in (averaged_points or {}).items()))
+    completed_key = tuple(str(label) for label in (completed_labels or []))
+    selected_key = str(selected_label) if selected_label is not None else None
+    current_key = _round_xyz(current_point)
+    if solved_transform is None:
+        transform_key: tuple | None = None
+    else:
+        arr = np.asarray(solved_transform, dtype=float)
+        transform_key = tuple(round(float(v), 4) for v in arr.flatten().tolist())
+    residuals_key = tuple(
+        sorted((str(k), _round_xyz(v)) for k, v in (solved_residuals_by_label or {}).items())
+    )
+    return (
+        nominal_key,
+        captured_key,
+        averaged_key,
+        completed_key,
+        selected_key,
+        current_key,
+        transform_key,
+        residuals_key,
+    )
 
 
 Vec3Like = Sequence[float]

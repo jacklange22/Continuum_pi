@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import numpy as np
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -365,7 +367,7 @@ class RegistrationTab(QWidget):
         points_layout.addWidget(self.points_table)
 
         self.samples_table = QTableWidget(0, 5)
-        self.samples_table.setHorizontalHeaderLabels(["Point", "Sample", "X (mm)", "Y (mm)", "Z (mm)"])
+        self.samples_table.setHorizontalHeaderLabels(["Point", "Captures", "Median X (mm)", "Median Y (mm)", "Median Z (mm)"])
         self.samples_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.samples_table.setSelectionMode(QAbstractItemView.NoSelection)
         self.samples_table.verticalHeader().setVisible(False)
@@ -611,20 +613,48 @@ class RegistrationTab(QWidget):
                 self.points_table.setItem(row, 5, QTableWidgetItem(status))
         preserve_scroll_position(self.points_table, _rebuild_points_table)
 
-        sample_rows = [
-            (label, index + 1, sample)
-            for label in state.landmark_labels
-            for index, sample in enumerate(state.raw_samples_by_label.get(label, []))
-        ]
-        def _rebuild_samples_table() -> None:
-            self.samples_table.setRowCount(len(sample_rows))
-            for row, (label, sample_index, sample) in enumerate(sample_rows):
-                self.samples_table.setItem(row, 0, QTableWidgetItem(label))
-                self.samples_table.setItem(row, 1, QTableWidgetItem(str(sample_index)))
-                self.samples_table.setItem(row, 2, QTableWidgetItem(_fmt_axis(sample, 0)))
-                self.samples_table.setItem(row, 3, QTableWidgetItem(_fmt_axis(sample, 1)))
-                self.samples_table.setItem(row, 4, QTableWidgetItem(_fmt_axis(sample, 2)))
-        preserve_scroll_position(self.samples_table, _rebuild_samples_table)
+        # Collapse to one row per landmark — the median XYZ + a count.
+        # The previous "show every raw capture" layout rebuilt 240 rows
+        # on every refresh tick at 12-pt × 20-capture configs, which made
+        # the whole tab feel sluggish. The medians are the only number an
+        # operator needs at a glance; the raw captures are still on disk
+        # in the run dir if anyone wants them.
+        sample_rows: list[tuple[str, int, list[float] | None]] = []
+        for label in state.landmark_labels:
+            captures = list(state.raw_samples_by_label.get(label, []) or [])
+            count = len(captures)
+            if count == 0:
+                sample_rows.append((label, 0, None))
+                continue
+            arr = np.asarray(captures, dtype=float)
+            if arr.ndim != 2 or arr.shape[1] < 3:
+                sample_rows.append((label, count, None))
+                continue
+            median = np.median(arr[:, 0:3], axis=0)
+            sample_rows.append((label, count, [float(v) for v in median.tolist()]))
+
+        # Fingerprint-based skip: rebuild only when the per-landmark
+        # (count, rounded-median) summary actually changed. Avoids the
+        # full QTableWidget churn on no-op refresh ticks.
+        fingerprint = tuple(
+            (label, count, tuple(round(v, 4) for v in (median or [])))
+            for label, count, median in sample_rows
+        )
+        if getattr(self, "_samples_table_fingerprint", None) != fingerprint:
+            def _rebuild_samples_table() -> None:
+                self.samples_table.setRowCount(len(sample_rows))
+                for row, (label, count, median) in enumerate(sample_rows):
+                    self.samples_table.setItem(row, 0, QTableWidgetItem(label))
+                    self.samples_table.setItem(row, 1, QTableWidgetItem(f"{count} captures"))
+                    if median is not None:
+                        self.samples_table.setItem(row, 2, QTableWidgetItem(f"{median[0]:+.3f}"))
+                        self.samples_table.setItem(row, 3, QTableWidgetItem(f"{median[1]:+.3f}"))
+                        self.samples_table.setItem(row, 4, QTableWidgetItem(f"{median[2]:+.3f}"))
+                    else:
+                        for col in (2, 3, 4):
+                            self.samples_table.setItem(row, col, QTableWidgetItem("—"))
+            preserve_scroll_position(self.samples_table, _rebuild_samples_table)
+            self._samples_table_fingerprint = fingerprint
 
         nominal = {
             label: tuple(
