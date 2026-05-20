@@ -83,7 +83,6 @@ def test_validate_run_folder_fails_without_summary(tmp_path: Path) -> None:
     assert report.status == "FAIL"
 
 
-<<<<<<< Updated upstream
 def test_validation_report_to_dict_emits_machine_readable_view(tmp_path: Path) -> None:
     """The JSON view exposes status, issue counts, and per-issue details."""
     run_dir = _write_valid_collect_pose_run(tmp_path)
@@ -129,8 +128,6 @@ def test_validate_main_returns_nonzero_on_failure_even_in_json_mode(tmp_path: Pa
     assert payload["status"] == "FAIL"
 
 
-=======
->>>>>>> Stashed changes
 def _write_registration_sampling_study_run(
     root: Path,
     *,

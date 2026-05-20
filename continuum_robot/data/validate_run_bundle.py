@@ -56,13 +56,10 @@ EXPECTED_REPORT_FIGURES = {
         "two_segment_axis_error_report.png",
         "two_segment_two_coil_error_report.png",
     ],
-<<<<<<< Updated upstream
     "two_segment_repeatability": [
         "two_segment_repeatability_distal_scatter.png",
         "two_segment_repeatability_per_target_rms.png",
     ],
-=======
->>>>>>> Stashed changes
     "registration_sampling_study": [
         "registration_point_spread_report.png",
         "registration_subset_rms_report.png",
@@ -159,11 +156,8 @@ def validate_run_folder(run_dir: Path) -> RunValidationReport:
         _check_physical_assembly_metadata(issues, metrics)
     if experiment_name == "two_segment_modeling":
         _check_two_segment_modeling(issues, run_dir=run_dir, metrics=metrics)
-<<<<<<< Updated upstream
     if experiment_name == "two_segment_repeatability":
         _check_physical_assembly_metadata(issues, metrics)
-=======
->>>>>>> Stashed changes
     if experiment_name == "registration_sampling_study":
         _check_registration_sampling_study(issues, run_dir=run_dir, metrics=metrics)
     _check_any_field(
@@ -316,7 +310,6 @@ def _nested(payload: dict[str, Any], *keys: str) -> Any:
     return current
 
 
-<<<<<<< Updated upstream
 def _check_physical_assembly_metadata(issues: list[RunValidationIssue], metrics: dict[str, Any]) -> None:
     """Two-segment runs must record the bottom/top physical-role assignment."""
     assembly = metrics.get("physical_assembly") if isinstance(metrics.get("physical_assembly"), dict) else {}
@@ -329,8 +322,6 @@ def _check_physical_assembly_metadata(issues: list[RunValidationIssue], metrics:
         issues.append(RunValidationIssue("WARN", f"Two-segment bottom/top assembly is invalid: bottom={bottom_key} top={top_key}."))
 
 
-=======
->>>>>>> Stashed changes
 def _check_registration_sampling_study(
     issues: list[RunValidationIssue],
     *,
