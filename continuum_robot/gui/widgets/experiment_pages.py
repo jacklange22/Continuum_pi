@@ -2649,8 +2649,9 @@ class TwoSegmentCollectPoseDatasetPage(ExperimentPageBase):
 class PretensionValidationPage(ExperimentPageBase):
     refresh_policy = "manual"
     page_hint = (
-        "Run single-servo onset traces, current characterization, or conservative 4-servo startup. "
-        "Current is treated as a relative load proxy only; tracker XY centering is the primary startup metric."
+        "Pretensions the active segment (4 servos) using the soft-release → take-up → tip-center pipeline. "
+        "For the standard one-click flow use the Servos tab buttons; this page is for TUNING the algorithm. "
+        "Lower ticks = tighter on this rig. Current is a load proxy only."
     )
 
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
@@ -2660,18 +2661,40 @@ class PretensionValidationPage(ExperimentPageBase):
     def _build_parameter_sections(self) -> None:
         setup_card = ExperimentCard(
             "Validation Setup",
-            "Use single-servo trace mode for detailed load-onset traces, or staged 4-servo mode for repeatable startup-state characterization.",
+            (
+                "Default mode: 'Conservative 4-Servo Startup' with strategy 'Conservative Startup' — this runs the "
+                "full pretension pipeline on the active segment. Single-Servo Trace is a development tool for one "
+                "tendon at a time. Servo IDs default to the active segment from the robot config "
+                "(leave the field empty to inherit them)."
+            ),
         )
         setup_form = QFormLayout()
         self.mode_combo = NoWheelComboBox()
-        self.mode_combo.addItem("Single-Servo Trace", "single_servo_trace")
+        self.mode_combo.addItem("Conservative 4-Servo Startup (default)", "single_segment_staged")
         self.mode_combo.addItem("Characterization / Identification", "single_segment_characterization")
-        self.mode_combo.addItem("Conservative 4-Servo Startup", "single_segment_staged")
+        self.mode_combo.addItem("Single-Servo Trace (dev only)", "single_servo_trace")
+        self.mode_combo.setToolTip(
+            "Picks which experiment to run.\n\n"
+            "• Conservative 4-Servo Startup — the production pretensioning pipeline "
+            "(soft-release → characterize → take-up → tip-center). Use this for "
+            "normal pretension tuning.\n"
+            "• Characterization — sweeps + records current/position response without "
+            "trying to converge to a target. For investigating servo behavior, not "
+            "for daily pretensioning.\n"
+            "• Single-Servo Trace — one tendon at a time. Development / debugging only."
+        )
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         self.strategy_combo = NoWheelComboBox()
-        self.strategy_combo.addItem("Conservative Startup", "conservative_startup")
+        self.strategy_combo.addItem("Conservative Startup (default)", "conservative_startup")
         self.strategy_combo.addItem("Characterization", "characterization")
         self.strategy_combo.addItem("Legacy Threshold Routine", "legacy")
+        self.strategy_combo.setToolTip(
+            "Sub-routine inside the 4-Servo Startup mode.\n\n"
+            "• Conservative Startup — engagement scan + paired take-up + tip-centering. "
+            "This is what you want for thesis runs.\n"
+            "• Characterization — same as the top-level Characterization mode.\n"
+            "• Legacy — old threshold-only routine. Do not use unless reproducing pre-2026 results."
+        )
         self.strategy_combo.currentIndexChanged.connect(
             lambda _index: self.controller.set_config_value("staged_strategy", str(self.strategy_combo.currentData()))
         )
@@ -2682,43 +2705,90 @@ class PretensionValidationPage(ExperimentPageBase):
                 self.servo_combo.addItem(f"Servo {int(servo_id)}", str(int(servo_id)))
         else:
             self.servo_combo.addItem("Servo 1", "1")
+        self.servo_combo.setToolTip(
+            "Which single servo to trace. ONLY used in 'Single-Servo Trace' mode — "
+            "ignored by the 4-Servo Startup and Characterization modes. Greyed out "
+            "when not applicable."
+        )
         self.servo_combo.currentIndexChanged.connect(self._on_servo_changed)
         self.include_tracker_check = QCheckBox("Include tracker-side displacement when available")
+        self.include_tracker_check.setToolTip(
+            "Record the Aurora tip XY/Z displacement alongside the servo trace so the "
+            "report figures can plot the tip path. Leave on unless the tracker is offline."
+        )
         self.include_tracker_check.toggled.connect(
             lambda value: self.controller.set_config_value("include_tracker_displacement", bool(value))
         )
         self.allow_current_only_check = QCheckBox("Allow current-only fallback when tracker tip pose is unavailable")
+        self.allow_current_only_check.setToolTip(
+            "If the tracker is connected but the tip pose is missing, run the experiment "
+            "anyway using only current as a load proxy. Marks the run as 'current_only_lower_trust' "
+            "in the report — do not use such runs for thesis-trusted repeatability claims."
+        )
         self.allow_current_only_check.toggled.connect(
             lambda value: self.controller.set_config_value("allow_current_only_when_tracker_missing", bool(value))
         )
         self.allow_no_tracker_check = QCheckBox("Allow no-tracker current-only test run")
+        self.allow_no_tracker_check.setToolTip(
+            "Bench-test mode: run without any tracker connected at all. Same caveat — "
+            "downgrades the run to current-only lower trust."
+        )
         self.allow_no_tracker_check.toggled.connect(
             lambda value: self.controller.set_config_value("allow_no_tracker_test_run", bool(value))
         )
         self.staged_servo_ids_edit = QLineEdit()
-        self.staged_servo_ids_edit.setPlaceholderText("1,2,3,4")
+        active_segment_label = ""
+        active_segment_ids: list[int] = []
+        try:
+            active_segment_label = str(self.controller.settings.robot.active_segment_label())
+            active_segment_ids = [int(v) for v in self.controller.settings.robot.active_segment_servo_ids()]
+        except Exception:
+            pass
+        if active_segment_ids:
+            self.staged_servo_ids_edit.setPlaceholderText(
+                f"Empty → active segment {active_segment_label} ({', '.join(str(v) for v in active_segment_ids)})"
+            )
+        else:
+            self.staged_servo_ids_edit.setPlaceholderText("1,2,3,4")
+        self.staged_servo_ids_edit.setToolTip(
+            "Which servos the 4-Servo Startup operates on.\n\n"
+            "Leave EMPTY (recommended) to inherit from the active segment in "
+            "config/robot_*.yaml. Override with an explicit comma-separated list "
+            "(e.g. '5,6,7,8') only if you intentionally want a different set."
+        )
         self.staged_servo_ids_edit.editingFinished.connect(self._on_staged_servo_ids_changed)
         self.repeat_runs_spin = QSpinBox()
         self.repeat_runs_spin.setRange(1, 50)
+        self.repeat_runs_spin.setToolTip(
+            "How many full pretension cycles to run back-to-back. 1 = single cycle; "
+            "5 = one-rig consistency proof (recommended for thesis claims)."
+        )
         self.repeat_runs_spin.valueChanged.connect(
             lambda value: self.controller.set_config_value("repeat_runs", int(value))
         )
         self.enable_tip_centering_check = QCheckBox("Enable staged tip XY centering (robot frame)")
+        self.enable_tip_centering_check.setToolTip(
+            "After take-up, nudge tendon pairs to center the tip on the target XY. "
+            "Requires the tracker. Turn off for current-only runs."
+        )
         self.enable_tip_centering_check.toggled.connect(
             lambda value: self.controller.set_config_value("enable_tip_centering", bool(value))
         )
-        setup_form.addRow("Servo", self.servo_combo)
         setup_form.addRow("Mode", self.mode_combo)
         setup_form.addRow("Staged Strategy", self.strategy_combo)
-        setup_form.addRow("Staged Servo IDs", self.staged_servo_ids_edit)
+        setup_form.addRow("Servo IDs (active segment if empty)", self.staged_servo_ids_edit)
         setup_form.addRow("Repeat Runs", self.repeat_runs_spin)
+        setup_form.addRow("Single-Servo (dev only)", self.servo_combo)
         setup_form.addRow("Tracker Metric", self.include_tracker_check)
         setup_form.addRow("Tracker Fallback", self.allow_current_only_check)
         setup_form.addRow("No-Tracker Test", self.allow_no_tracker_check)
         setup_form.addRow("Tip Centering", self.enable_tip_centering_check)
         setup_card.body_layout.addLayout(setup_form)
         note = QLabel(
-            "Servo convention: raw XC330 position uses 0..4095 ticks, 4095 is untensioned, and tightening lowers raw counts."
+            "Lower ticks = tighter tendon on this rig (raw XC330 position 0..4095, "
+            "4095 = fully untensioned). Recommended workflow: leave Mode + Strategy on "
+            "their defaults, leave Servo IDs empty, set Repeat Runs to 1 to dial in a single "
+            "cycle, then to 5 for the one-rig consistency proof."
         )
         note.setProperty("role", "muted")
         note.setWordWrap(True)
@@ -2730,10 +2800,23 @@ class PretensionValidationPage(ExperimentPageBase):
         )
         params_form = QFormLayout()
         self.pretension_start_mode_combo = NoWheelComboBox()
+        self.pretension_start_mode_combo.addItem(
+            "Soft Release to Zero Current (default)", "soft_release_to_zero_current"
+        )
         self.pretension_start_mode_combo.addItem("Current Position", "current_position")
         self.pretension_start_mode_combo.addItem("Manual Startup Artifact", "manual_startup_artifact")
         self.pretension_start_mode_combo.addItem("Release 200 From Current", "release_200_from_current")
-        self.pretension_start_mode_combo.addItem("Full Release 4095", "full_release_4095")
+        self.pretension_start_mode_combo.addItem("Full Release 4095 (legacy)", "full_release_4095")
+        self.pretension_start_mode_combo.setToolTip(
+            "How each pretension cycle starts before take-up.\n\n"
+            "• Soft Release to Zero Current — step outward until current is near zero "
+            "(or plateaus). Proves each tendon is genuinely slack. RECOMMENDED.\n"
+            "• Current Position — start from wherever the servo currently is. No release.\n"
+            "• Release 200 From Current — back off 200 ticks from current. Quick rough release.\n"
+            "• Manual Startup Artifact — use the saved per-servo startup state.\n"
+            "• Full Release 4095 — legacy. Walks every servo to the safe-max raw tick. "
+            "Sits at the position-wrap edge; PID can hunt. Kept only for backward compat."
+        )
         self.pretension_start_mode_combo.currentIndexChanged.connect(
             lambda _index: self.controller.set_config_value(
                 "pretension_start_mode",
@@ -2912,7 +2995,20 @@ class PretensionValidationPage(ExperimentPageBase):
         self._set_checkbox(self.enable_tip_centering_check, bool(config.enable_tip_centering))
         self._set_line_text(
             self.staged_servo_ids_edit,
-            ",".join(str(int(value)) for value in (config.servo_ids or self.controller.settings.robot.servo_ids)),
+            # When the YAML / config payload leaves servo_ids empty, fall back
+            # to the ACTIVE SEGMENT's IDs (the same source the experiment
+            # itself uses at runtime via _staged_servo_ids). The legacy
+            # behavior fell back to robot.servo_ids which is the union of
+            # every segment's IDs (e.g. [1..8] for robot_8servo.yaml) and
+            # produced the confusing "staged_servo_ids = 1,2,3,4,5,6,7,8"
+            # that operators saw on the single-segment experiment page.
+            ",".join(
+                str(int(value))
+                for value in (
+                    config.servo_ids
+                    or self.controller.settings.robot.active_segment_servo_ids()
+                )
+            ),
         )
         self._set_spin(self.repeat_runs_spin, int(config.repeat_runs))
         self._set_spin(

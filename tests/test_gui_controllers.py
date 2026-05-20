@@ -3980,6 +3980,55 @@ def test_experiment_pretension_validation_page_exposes_staged_mode_controls(tmp_
     assert page.staged_servo_ids_edit.isEnabled() is True
 
 
+def test_pretension_validation_page_staged_servo_ids_defaults_to_active_segment(tmp_path: Path) -> None:
+    """When the experiment config leaves ``servo_ids`` empty, the staged
+    servo-IDs line edit must display the ACTIVE SEGMENT's IDs, not the union
+    of every segment's IDs.
+
+    Regression: with robot_8servo.yaml as the active robot config and segment_a
+    selected, the legacy fallback used ``settings.robot.servo_ids`` (which is
+    ``[1,2,3,4,5,6,7,8]``) and displayed all 8 IDs on a page that only
+    operates on the 4-servo active segment. The fix routes the fallback
+    through ``active_segment_servo_ids()`` so the field reflects what the
+    experiment will actually use at runtime."""
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+
+    controller.select_experiment("pretension_validation")
+    tab.update(controller.refresh())
+    page = tab._page_for("pretension_validation")
+
+    # Confirm the experiment config has empty servo_ids (the YAML default).
+    payload = controller.config_payload()
+    assert not payload.get("servo_ids"), (
+        "PretensionValidation config should default to empty servo_ids so the "
+        "active segment fallback is exercised by the GUI."
+    )
+
+    # The line edit must show the active segment IDs only.
+    displayed = page.staged_servo_ids_edit.text()
+    active_ids = [int(v) for v in controller.settings.robot.active_segment_servo_ids()]
+    expected = ",".join(str(v) for v in active_ids)
+    assert displayed == expected, (
+        f"Staged servo IDs field should show the active segment {active_ids}, "
+        f"not the union of all segment IDs. Got {displayed!r}."
+    )
+
+    # The placeholder must mention the active segment label so the operator
+    # knows what an empty field will inherit.
+    placeholder = page.staged_servo_ids_edit.placeholderText()
+    assert "active segment" in placeholder.lower() or "1,2,3,4" in placeholder
+
+    # The pretension_start_mode combo must default to (or at least offer)
+    # soft_release_to_zero_current as the recommended starting condition.
+    start_mode_values = {
+        str(page.pretension_start_mode_combo.itemData(index))
+        for index in range(page.pretension_start_mode_combo.count())
+    }
+    assert "soft_release_to_zero_current" in start_mode_values
+
+
 def test_experiment_shell_routes_tracker_timing_validation_to_custom_page(tmp_path: Path) -> None:
     _app()
     controller = _experiment_controller(tmp_path)
