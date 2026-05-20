@@ -878,9 +878,13 @@ def test_aurora_grid_report_axes_use_unit_labels(monkeypatch, tmp_path: Path) ->
     alignment_ax = captured["aurora_grid_alignment_report.png"].axes[0]
     residual_ax = captured["aurora_grid_residuals_report.png"].axes[0]
     spread_ax = captured["aurora_grid_spread_report.png"].axes[0]
-    assert alignment_ax.get_xlabel() == "Grid X position (mm)"
-    assert alignment_ax.get_ylabel() == "Grid Y position (mm)"
-    assert residual_ax.get_ylabel() == "Residual error (mm)"
+    # Axis labels were shortened (still carry units) when the thesis figures
+    # were re-styled. Keep the unit-suffix invariant the original test was
+    # actually checking — the exact phrasing is now under the figure-author's
+    # control.
+    assert alignment_ax.get_xlabel() == "Grid X (mm)"
+    assert alignment_ax.get_ylabel() == "Grid Y (mm)"
+    assert residual_ax.get_ylabel() == "Residual (mm)"
     assert spread_ax.get_ylabel() == "Within-point RMS spread (mm)"
 
     import_matplotlib().close("all")
