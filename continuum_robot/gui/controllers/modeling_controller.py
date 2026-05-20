@@ -1001,6 +1001,44 @@ class ModelingController:
             self.state.comparison_status_message = f"Saved comparison PNG to {saved}."
         return saved
 
+    def save_last_ann_error_histogram_png(
+        self,
+        target_path: Path,
+        *,
+        slot: str = "auto",
+        dpi: int = 600,
+    ) -> Path | None:
+        """Save the ANN-slot error histogram from the most recent comparison.
+
+        Defaults to dpi=600 — thesis-bound high-resolution. ``slot`` defaults
+        to "auto" (picks whichever loaded model's label contains "ann"); pass
+        "a" or "b" to override. Returns the saved path, or None when there's
+        no comparison to render. Errors surface via comparison_error_message
+        like save_last_comparison_png.
+        """
+        result = self.get_last_comparison_result()
+        if result is None:
+            with self._lock:
+                self.state.comparison_error_message = (
+                    "Run a comparison first — nothing to save yet."
+                )
+            return None
+        try:
+            from continuum_robot.modeling.model_comparison import save_ann_error_histogram_png
+
+            saved = save_ann_error_histogram_png(
+                result, Path(target_path), slot=str(slot), dpi=int(dpi),
+            )
+        except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                self.state.comparison_error_message = f"Save failed: {exc}"
+            return None
+        with self._lock:
+            self.state.comparison_status_message = (
+                f"Saved ANN error histogram PNG to {saved} ({dpi} dpi)."
+            )
+        return saved
+
     def shutdown(self) -> None:
         thread = self._worker_thread
         if thread is not None and thread.is_alive():

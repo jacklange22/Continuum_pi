@@ -543,8 +543,23 @@ class ModelingTab(QWidget):
         )
         self.comparison_save_button.clicked.connect(self._on_comparison_save_clicked)
         self.comparison_save_button.setEnabled(False)
+        # Headline thesis figure: single-panel histogram of the ANN-slot's
+        # tip-position error distribution at 600 DPI. Different artifact than
+        # the side-by-side scatter (which lives on the same comparison row).
+        self.comparison_save_histogram_button = QPushButton("Save ANN Histogram (600 dpi)…")
+        self.comparison_save_histogram_button.setProperty("variant", "ghost")
+        self.comparison_save_histogram_button.setToolTip(
+            "Save a single-panel histogram of the ANN-slot's tip-position error "
+            "distribution at 600 DPI (high-resolution thesis-bound). Auto-picks "
+            "whichever loaded model is the ANN by its label."
+        )
+        self.comparison_save_histogram_button.clicked.connect(
+            self._on_comparison_save_histogram_clicked
+        )
+        self.comparison_save_histogram_button.setEnabled(False)
         comparison_actions_row.addWidget(self.comparison_generate_button)
         comparison_actions_row.addWidget(self.comparison_save_button)
+        comparison_actions_row.addWidget(self.comparison_save_histogram_button)
         comparison_actions_row.addStretch(1)
         comparison_card.body_layout.addLayout(comparison_actions_row)
         # Status + error.
@@ -1084,6 +1099,31 @@ class ModelingTab(QWidget):
             self.comparison_error_label.setVisible(False)
         self.update(self.controller.refresh())
 
+    def _on_comparison_save_histogram_clicked(self) -> None:
+        """Save the ANN-slot error histogram as a 600 DPI PNG."""
+        result = self.controller.get_last_comparison_result()
+        if result is None:
+            self.comparison_error_label.setText(
+                "Run a comparison first — nothing to save yet."
+            )
+            self.comparison_error_label.setVisible(True)
+            return
+        default_name = (
+            f"{result.dataset_run_name}_ann_error_histogram.png"
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save ANN Error Histogram",
+            default_name,
+            "PNG image (*.png);;All files (*)",
+        )
+        if not path:
+            return
+        saved = self.controller.save_last_ann_error_histogram_png(Path(path))
+        if saved is not None:
+            self.comparison_error_label.setVisible(False)
+        self.update(self.controller.refresh())
+
     def _render_comparison_canvas(self) -> None:
         """Rebuild the embedded matplotlib figure from the latest comparison result.
 
@@ -1207,6 +1247,7 @@ class ModelingTab(QWidget):
             _copy_view(ax_a, ax_b)
         self.comparison_canvas.draw_idle()
         self.comparison_save_button.setEnabled(True)
+        self.comparison_save_histogram_button.setEnabled(True)
 
     @staticmethod
     def _set_checkbox(widget: QCheckBox, value: bool) -> None:

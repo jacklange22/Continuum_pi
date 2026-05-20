@@ -45,9 +45,12 @@ __all__ = [
     "LoadedModelHandle",
     "ModelComparisonResult",
     "ModelStats",
+    "build_ann_error_histogram_figure",
     "build_comparison_figure",
     "load_model_for_comparison",
+    "resolve_ann_histogram_slot",
     "run_side_by_side_comparison",
+    "save_ann_error_histogram_png",
     "save_comparison_png",
 ]
 from continuum_robot.modeling.ann_training import (
@@ -889,6 +892,181 @@ def save_comparison_png(
     target.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(target, dpi=dpi, bbox_inches="tight")
     # Free the figure to avoid leaks in long sessions.
+    import matplotlib.pyplot as plt
+
+    plt.close(figure)
+    return target
+
+
+# ---------------------------------------------------------------------------
+# Single-model error histogram (thesis-headline figure)
+# ---------------------------------------------------------------------------
+
+
+def resolve_ann_histogram_slot(result: ModelComparisonResult, *, slot: str = "auto") -> str:
+    """Pick which of the two comparison slots is "the ANN" for histogram purposes.
+
+    ``slot="a"`` or ``"b"`` returns that slot verbatim. ``slot="auto"`` (the
+    default) prefers the slot whose model label contains ``"ann"`` (case
+    insensitive). If both labels contain "ann" — common when comparing two
+    ANN architectures — slot A wins as a stable tiebreak. If neither label
+    contains "ann", slot A wins (defensive default; the histogram is still
+    meaningful, it's just not specifically "the ANN").
+    """
+    requested = str(slot or "auto").strip().lower()
+    if requested in {"a", "b"}:
+        return requested
+    if requested != "auto":
+        raise ValueError(f"slot must be 'a', 'b', or 'auto'; got {slot!r}")
+    a_is_ann = "ann" in str(result.model_a.label or "").lower()
+    b_is_ann = "ann" in str(result.model_b.label or "").lower()
+    if a_is_ann and not b_is_ann:
+        return "a"
+    if b_is_ann and not a_is_ann:
+        return "b"
+    return "a"
+
+
+def _select_slot_arrays(
+    result: ModelComparisonResult,
+    *,
+    slot: str,
+) -> tuple[str, np.ndarray, ModelStats, str]:
+    """Pull the error array, stats, and human-readable name for one slot."""
+    if slot == "a":
+        return (
+            result.model_a.label,
+            np.asarray(result.a_errors_mm, dtype=float),
+            result.a_stats,
+            result.a_dataset_run_name,
+        )
+    if slot == "b":
+        return (
+            result.model_b.label,
+            np.asarray(result.b_errors_mm, dtype=float),
+            result.b_stats,
+            result.b_dataset_run_name,
+        )
+    raise ValueError(f"slot must be 'a' or 'b'; got {slot!r}")
+
+
+def build_ann_error_histogram_figure(
+    result: ModelComparisonResult,
+    *,
+    slot: str = "auto",
+    bins: int = 50,
+    figsize: tuple[float, float] = (8.0, 5.5),
+    dpi: int = 150,
+):
+    """Single-panel high-resolution histogram of one model's tip-position error.
+
+    Distinct from :func:`build_comparison_figure` (two 3D scatter panels) —
+    this is the headline distribution chart the operator wants for thesis
+    body text. Bars show |pred − actual| per test sample; vertical lines
+    mark median (solid), mean (dashed), and 95th percentile (dotted).
+    A stats sidebar (sample count, full ModelStats) and a skeptical caveat
+    strip make the figure self-explanatory in a thesis context.
+
+    ``slot`` defaults to auto-detecting which comparison slot is "the ANN"
+    via :func:`resolve_ann_histogram_slot`; pass ``"a"`` or ``"b"`` to force.
+    ``dpi`` defaults to a screen-friendly 150; use :func:`save_ann_error_histogram_png`
+    (default 600 DPI) for the thesis-bound PNG.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg", force=False)
+    import matplotlib.pyplot as plt
+
+    resolved_slot = resolve_ann_histogram_slot(result, slot=slot)
+    model_label, errors, stats, dataset_name = _select_slot_arrays(result, slot=resolved_slot)
+
+    figure = plt.figure(figsize=figsize, dpi=dpi)
+    ax = figure.add_subplot(1, 1, 1)
+
+    if errors.size == 0:
+        ax.text(
+            0.5, 0.5,
+            "No error samples to plot — the test set was empty.",
+            transform=ax.transAxes, ha="center", va="center",
+        )
+        ax.set_xlabel("Tip position error |pred − actual| (mm)")
+        ax.set_ylabel("Sample count")
+        figure.suptitle(
+            f"{model_label} tip-position error distribution",
+            fontsize=12, fontweight="bold",
+        )
+        return figure
+
+    # Clamp bin count to something reasonable for very small / very large N.
+    effective_bins = max(5, min(int(bins), max(5, errors.size // 2)))
+    ax.hist(
+        errors,
+        bins=effective_bins,
+        color="#2563eb",  # accent blue — matches the rest of the GUI palette
+        edgecolor="white",
+        linewidth=0.6,
+        alpha=0.93,
+        zorder=2,
+    )
+
+    median = float(stats.median_mm)
+    mean = float(stats.mean_mm)
+    p95 = float(stats.p95_mm)
+    max_value = float(stats.max_mm)
+    ax.axvline(median, color="#16a34a", linewidth=1.6, linestyle="-",
+               label=f"Median = {median:.3f} mm", zorder=3)
+    ax.axvline(mean, color="#d97706", linewidth=1.4, linestyle="--",
+               label=f"Mean = {mean:.3f} mm", zorder=3)
+    ax.axvline(p95, color="#dc2626", linewidth=1.4, linestyle=":",
+               label=f"p95 = {p95:.3f} mm", zorder=3)
+
+    ax.set_xlabel("Tip position error |pred − actual| (mm)", fontsize=10)
+    ax.set_ylabel("Sample count", fontsize=10)
+    figure.suptitle(
+        f"{model_label} tip-position error distribution",
+        fontsize=12, fontweight="bold",
+    )
+    ax.tick_params(labelsize=9)
+    ax.legend(loc="upper right", fontsize=9, framealpha=0.95)
+    ax.set_xlim(left=0.0)
+
+    # Annotation strip below the axes with sample count + dataset + max error
+    # (max is intentionally NOT a vertical line because long-tail outliers
+    # dominate the x-range and squash the histogram).
+    figure.text(
+        0.06, 0.02,
+        (
+            f"N = {int(stats.sample_count)} samples on {dataset_name}   •   "
+            f"max error = {max_value:.3f} mm   •   distribution of per-sample "
+            "Euclidean errors only — does not reveal whether errors cluster in "
+            "a specific workspace region (use the 3D scatter for that)."
+        ),
+        fontsize=8, color="#334155", ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": "#cbd5e1", "alpha": 0.94},
+    )
+    figure.subplots_adjust(left=0.10, right=0.97, top=0.90, bottom=0.18)
+    return figure
+
+
+def save_ann_error_histogram_png(
+    result: ModelComparisonResult,
+    target_path: Path,
+    *,
+    slot: str = "auto",
+    bins: int = 50,
+    dpi: int = 600,
+) -> Path:
+    """Build the ANN-error histogram and save it at publication DPI.
+
+    Default DPI=600 (high-resolution thesis-bound). Returns the saved path.
+    """
+    figure = build_ann_error_histogram_figure(
+        result, slot=slot, bins=bins, dpi=dpi,
+    )
+    target = Path(target_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(target, dpi=dpi, bbox_inches="tight")
     import matplotlib.pyplot as plt
 
     plt.close(figure)
