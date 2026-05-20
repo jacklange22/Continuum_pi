@@ -40,6 +40,7 @@ from continuum_robot.experiments.registration_sampling_study import (
     RegistrationSamplingStudyExperiment,
 )
 from continuum_robot.experiments.servo_tracker_sync_outputs import write_servo_tracker_sync_outputs
+from continuum_robot.experiments.thesis_eligibility import compute_thesis_eligibility
 from continuum_robot.experiments.single_segment_repeatability import register_single_segment_repeatability
 from continuum_robot.experiments.workspace_repeatability_map import register_workspace_repeatability_map
 from continuum_robot.experiments.tracker_timing_outputs import write_tracker_timing_outputs
@@ -1478,6 +1479,25 @@ class TrackerTimingValidationExperiment(BaseExperiment):
             run_label=str(self.config.run_label or ""),
             servo_sync_summary=servo_sync,
         )
+        servo_service_for_environment = session.context.servo_service
+        eligibility = compute_thesis_eligibility(
+            mock_mode=bool(session.context.settings.runtime.mock_mode),
+            tracker_backend_identity=str(snapshot.backend_identity or ""),
+            selected_backend_name=str(snapshot.selected_backend_name or ""),
+            configured_backend_name=str(snapshot.configured_backend_name or ""),
+            # tracker_timing_validation does not require servos to be live.
+            # It optionally logs servo telemetry but the headline metric is
+            # the tracker stream — so we don't disqualify when the servo is
+            # absent. We *do* still record the servo state for the operator.
+            servo_required=False,
+            servo_connected=bool(
+                servo_service_for_environment is not None
+                and getattr(servo_service_for_environment, "is_connected", False)
+            ),
+            servo_mock=False,
+            dry_run=False,  # this experiment has no dry_run flag
+            force_status=force_status,
+        )
         metrics.update(
             {
                 "stop_mode": "sample_count" if sample_count_target is not None else "duration",
@@ -1493,6 +1513,7 @@ class TrackerTimingValidationExperiment(BaseExperiment):
                     "total_cycle_ms": "Host monotonic time from cycle start to committed backend sample record.",
                 },
                 "summary_requirements": {"force_status": force_status},
+                "thesis_eligibility": eligibility,
             }
         )
         session.metrics.update(metrics)
@@ -1949,6 +1970,25 @@ class ServoTrackerSyncValidationExperiment(BaseExperiment):
             force_status = "invalid_due_to_insufficient_samples"
         elif timed_out:
             force_status = "partial_success"
+        sync_eligibility = compute_thesis_eligibility(
+            mock_mode=bool(session.context.settings.runtime.mock_mode),
+            tracker_backend_identity=str(snapshot.backend_identity or ""),
+            selected_backend_name=str(snapshot.selected_backend_name or ""),
+            configured_backend_name=str(snapshot.configured_backend_name or ""),
+            # The sync experiment requires a connected servo by design —
+            # its whole point is correlating real servo motion with real
+            # tracker frames. The precheck already raises if the servo
+            # isn't connected, but we still stamp the verdict so a
+            # downstream JSON-only reader can tell.
+            servo_required=True,
+            servo_connected=bool(
+                servo_service is not None
+                and getattr(servo_service, "is_connected", False)
+            ),
+            servo_mock=False,
+            dry_run=False,  # this experiment has no dry_run flag
+            force_status=force_status,
+        )
         tracker_metrics.update(
             {
                 "motion_protocol": str(self.config.motion_mode),
@@ -1968,6 +2008,7 @@ class ServoTrackerSyncValidationExperiment(BaseExperiment):
                 "servo_tracker_sync": sync_summary,
                 "tracker_motion_metric": motion_metric,
                 "summary_requirements": {"force_status": force_status},
+                "thesis_eligibility": sync_eligibility,
             }
         )
         session.metrics.update(tracker_metrics)
