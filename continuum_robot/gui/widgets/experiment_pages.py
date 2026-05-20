@@ -1004,14 +1004,17 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
         target_count = len(targets)
         visit_count = len(visits)
         planned_captures = visit_count * 2
-        total_time_min = (planned_captures * float(config.settle_time_s)) / 60.0
-        if total_time_min >= 1.0:
-            duration_text = f"~{total_time_min:.1f} min"
-        else:
-            duration_text = f"~{total_time_min * 60.0:.0f} s"
+        # Each visit goes (approach → repeat target), so 2 captures per visit.
+        # Each capture entails: motion to that target + settle + tracker poll.
+        # The previous formula was captures × settle_time only, which
+        # systematically under-estimated by ~10× because motion + poll time
+        # dominate the per-visit cost. Calibrated constant matches
+        # workspace_repeatability_map's 3.5 s motion-overhead figure.
+        per_capture_motion_overhead_s = 3.5
+        estimated_s = planned_captures * (float(config.settle_time_s) + per_capture_motion_overhead_s)
         self.protocol_preview_label.setText(
             f"→ {target_count} targets · {visit_count} visits · "
-            f"{planned_captures} captures · {duration_text}"
+            f"{planned_captures} captures · {_format_duration(estimated_s)}"
         )
 
     def _sync_comparison_summary(self, config: SingleSegmentRepeatabilityConfig) -> None:
@@ -2939,6 +2942,12 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         )
         self.sample_target_spin = QSpinBox()
         self.sample_target_spin.setRange(1, 50000)
+        self.sample_target_spin.setToolTip(
+            "Total number of CAPTURES the run will collect (across all positions).\n"
+            "Number of distinct workspace positions visited = Target Samples ÷ Samples / Command.\n"
+            "So with Target Samples=120 and Samples / Command=5, the run visits 24 positions and\n"
+            "captures 5 samples at each = 120 total."
+        )
         self.sample_target_spin.valueChanged.connect(lambda value: self.controller.set_config_value("sample_count_target", int(value)))
         self.workspace_amplitude_spin = QDoubleSpinBox()
         self.workspace_amplitude_spin.setRange(0.05, 5.0)
@@ -2948,6 +2957,12 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         self.workspace_amplitude_spin.valueChanged.connect(lambda value: self.controller.set_config_value("workspace_amplitude_cm", float(value)))
         self.samples_per_command_spin = QSpinBox()
         self.samples_per_command_spin.setRange(1, 20)
+        self.samples_per_command_spin.setToolTip(
+            "Number of captures to take at each commanded workspace position.\n"
+            "Raising this AT FIXED Target Samples REDUCES the number of distinct positions\n"
+            "visited (since positions × samples = Target Samples). To keep the same coverage\n"
+            "but get more captures per position, raise Target Samples by the same factor."
+        )
         self.samples_per_command_spin.valueChanged.connect(lambda value: self.controller.set_config_value("samples_per_command", int(value)))
         self.settle_time_spin = QDoubleSpinBox()
         self.settle_time_spin.setRange(0.0, 60.0)
@@ -3216,8 +3231,10 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         except Exception:
             pretension_label = "unavailable"
         planned_commands, planned_captures, duration_label = self._plan_preview(mode=mode)
+        samples_per_command = max(1, int(self.controller.get_config_value("samples_per_command", 1)))
         self.collection_preview_label.setText(
-            f"→ {planned_commands} commands · {planned_captures} captures · {duration_label}  "
+            f"→ {planned_commands} workspace positions × {samples_per_command} captures each "
+            f"= {planned_captures} total captures · {duration_label}  "
             f"({self._mode_blurb(mode)})"
         )
         self.collection_summary_widget.set_pairs(
@@ -3255,6 +3272,14 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         self._training_window.raise_()
         self._training_window.activateWindow()
 
+    # Per-command overhead beyond the user-set settle: covers the return-to-
+    # neutral motion + travel-to-target motion + post-motion tracker poll. The
+    # 4.0 s constant is calibrated from the 2026-05-19 workspace_repeatability
+    # run (2600 visits, observed 8.5 s per visit vs 4.0 s of pure settle =
+    # ~4.5 s residual). Conservatively rounded to 4.0 s for collect-pose where
+    # the per-command motion is typically smaller.
+    _COLLECT_POSE_MOTION_OVERHEAD_S = 4.0
+
     def _plan_preview(self, *, mode: str) -> tuple[int, int, str]:
         samples_per_command = max(1, int(self.controller.get_config_value("samples_per_command", 1)))
         settle_time_s = float(self.controller.get_config_value("settle_time_s", 0.15))
@@ -3274,13 +3299,16 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         else:
             planned_commands = max(1, int((int(self.controller.get_config_value("sample_count_target", 120)) + samples_per_command - 1) / samples_per_command))
         planned_captures = int(planned_commands * samples_per_command + 2)
-        estimated_s = float(planned_commands) * (settle_time_s + min(capture_timeout_s, 0.25)) + (2.0 * min(capture_timeout_s, 0.25))
-        if estimated_s >= 3600.0:
-            duration_label = f"~{estimated_s / 3600.0:.1f} h"
-        elif estimated_s >= 60.0:
-            duration_label = f"~{estimated_s / 60.0:.1f} min"
-        else:
-            duration_label = f"~{estimated_s:.0f} s"
+        # Per-command time = settle the operator set + min(capture_timeout, 0.25)
+        # for the actual sample wait + motion+poll overhead constant. Plus the
+        # two-neutral-bracket at start/end of run.
+        per_command_s = (
+            settle_time_s
+            + min(capture_timeout_s, 0.25)
+            + self._COLLECT_POSE_MOTION_OVERHEAD_S
+        )
+        estimated_s = float(planned_commands) * per_command_s + (2.0 * min(capture_timeout_s, 0.25))
+        duration_label = _format_duration(estimated_s)
         return planned_commands, planned_captures, duration_label
 
     @staticmethod
@@ -4583,13 +4611,21 @@ class WorkspaceRepeatabilityMapPage(ExperimentPageBase):
             self.dry_run_check, bool(self.controller.get_config_value("dry_run", False))
         )
         total_visits = int(self.target_count_spin.value()) * int(self.visits_spin.value())
-        approx_minutes = total_visits * (
+        # Per-visit overhead beyond the configured settles: motion (return to
+        # neutral + travel to target) + post-motion tracker wait. Calibrated
+        # from the 2026-05-19 run (8.5 s observed per visit vs 4.0 s of pure
+        # settle = ~4.5 s residual). Rounded to 3.5 s as a conservative
+        # constant — the previous +0.1 s was off by ~50% on the actual run.
+        per_visit_overhead_s = 3.5
+        estimated_s = total_visits * (
             float(self.neutral_settle_spin.value())
             + float(self.target_settle_spin.value())
-            + 0.1
-        ) / 60.0
+            + per_visit_overhead_s
+        )
         self.estimate_label.setText(
-            f"Estimated visits: {total_visits} (approx {approx_minutes:.0f} minutes at current settle times)"
+            f"Estimated visits: {total_visits}  ·  "
+            f"approx {_format_duration(estimated_s)} at current settle times "
+            f"(includes ~{per_visit_overhead_s:.1f} s/visit motion + tracker overhead)"
         )
 
 
@@ -4676,6 +4712,22 @@ def _widget_at_center(widget: QWidget | None) -> str:
     center = widget.rect().center()
     top = QApplication.widgetAt(widget.mapToGlobal(center))
     return _widget_debug_name(top)
+
+
+def _format_duration(seconds: float) -> str:
+    """Format an elapsed/estimated wall-clock duration for the time-estimate labels.
+
+    Uses ``h:mm`` for runs over an hour (so a 6-hour run reads as "~6h 7m"
+    instead of "~367 min"), minutes for runs over a minute, seconds otherwise.
+    """
+    seconds = max(0.0, float(seconds))
+    if seconds >= 3600.0:
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        return f"~{hours}h {minutes:02d}m"
+    if seconds >= 60.0:
+        return f"~{seconds / 60.0:.1f} min"
+    return f"~{seconds:.0f} s"
 
 
 def _render_inline_list(value) -> str:
