@@ -1108,10 +1108,58 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         self._preview_cache_key: str | None = None
         self._preview_cache: GridAccuracyPreview | None = None
         self._capture_settings_locked = False
+        self._dry_run_auto_synced = False
         super().__init__(controller, experiment_name, parent)
         self.run_button.setText("Save Grid Validation Run")
         self.refresh_button.setText("Refresh Tracker State")
         self.stop_button.hide()
+
+    def _tracker_is_live(self) -> bool:
+        """True when a live tracker is streaming healthy data right now."""
+        service = getattr(self.controller, "tracking_service", None)
+        if service is None:
+            return False
+        try:
+            snapshot = service.get_snapshot()
+        except Exception:
+            return False
+        if snapshot is None:
+            return False
+        # canonical_state is set to "streaming_healthy" once the backend is
+        # connected and producing fresh frames; "connection_state" alone can
+        # read "connected" while the tracker is still warming up or stale.
+        canonical = str(getattr(snapshot, "canonical_state", "") or "").lower()
+        if canonical == "streaming_healthy":
+            return True
+        # Fall back to connection_state for backends that don't populate
+        # canonical_state (e.g., the bare mock).
+        connection = str(getattr(snapshot, "connection_state", "") or "").lower()
+        return connection == "connected" and not bool(getattr(snapshot, "tracker_data_stale", False))
+
+    def _maybe_auto_disable_dry_run(self) -> None:
+        """One-time auto-flip: if a live tracker is connected when the page first
+        loads and the operator has not captured any points yet, default to live
+        capture mode instead of synthetic. Pinning ``dry_run: true`` in the YAML
+        still wins because that's an explicit choice rather than the dataclass
+        default."""
+        if self._dry_run_auto_synced:
+            return
+        if not self._tracker_is_live():
+            return
+        if bool(self.controller.get_config_value("captured_points", []) or []):
+            # Operator already started capturing; respect whatever mode they're in.
+            self._dry_run_auto_synced = True
+            return
+        if not bool(self.controller.get_config_value("dry_run", True)):
+            # Already in live mode; nothing to do.
+            self._dry_run_auto_synced = True
+            return
+        self.controller.set_config_value("dry_run", False)
+        self._append_capture_log(
+            "Tracker is live — switched off Dry Run so this save will use real captures. "
+            "Toggle Dry Run back on if you actually want synthetic data."
+        )
+        self._dry_run_auto_synced = True
 
     def _build_parameter_sections(self) -> None:
         params_card = ExperimentCard(
@@ -1267,6 +1315,7 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
 
     def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
         _ = state
+        self._maybe_auto_disable_dry_run()
         config = self._grid_config()
         dims = list(config.dimensions) or [3, 3]
         if len(dims) == 1:
