@@ -8,6 +8,7 @@ import json
 import logging
 import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -34,6 +35,7 @@ from continuum_robot.config.schemas import (
     RuntimeConfig,
     SafetyConfig,
     SerialConfig,
+    TwoSegmentTrackingRoleConfig,
 )
 from continuum_robot.gui.app_window import AppWindow
 from continuum_robot.gui.controllers.registration_controller import RegistrationController
@@ -1662,6 +1664,28 @@ def test_system_tab_dual_segment_mode_hides_specific_selectors_and_summarizes_al
     assert "Expected IDs: [1, 2, 3, 4, 5, 6, 7, 8]" in summary
     assert "Spine 1: [1, 2, 3, 4]" in summary
     assert "Spine 2: [5, 6, 7, 8]" in summary
+    assert tab.bottom_segment_combo.isHidden() is False
+    assert tab.top_segment_combo.isHidden() is False
+    assert tab.assembly_confirm_check.isHidden() is False
+
+
+def test_system_tab_dual_segment_bottom_top_confirmation_is_saved() -> None:
+    _app()
+    controller = _controller_with_dual_segment_options()
+    received: list[dict] = []
+    tab = SystemTab(controller, apply_runtime_parameters=lambda **kwargs: received.append(dict(kwargs)))
+
+    tab.update(controller.state)
+    tab.operating_mode_combo.setCurrentIndex(tab.operating_mode_combo.findData("dual_segment"))
+    tab.bottom_segment_combo.setCurrentIndex(tab.bottom_segment_combo.findData("segment_b"))
+    tab.top_segment_combo.setCurrentIndex(tab.top_segment_combo.findData("segment_a"))
+    tab.assembly_confirm_check.setChecked(True)
+    tab.save_parameters_button.click()
+
+    assert received
+    assert received[-1]["bottom_segment_key"] == "segment_b"
+    assert received[-1]["top_segment_key"] == "segment_a"
+    assert received[-1]["physical_assembly_confirmed_by_operator"] is True
 
 
 def test_system_tab_parallel_single_mode_hides_specific_selectors_and_summarizes_mirroring() -> None:
@@ -1678,6 +1702,108 @@ def test_system_tab_parallel_single_mode_hides_specific_selectors_and_summarizes
     assert "Expected IDs: [1, 2, 3, 4, 5, 6, 7, 8]" in summary
     assert "Mirror mapping: 1->5, 2->6, 3->7, 4->8" in summary
     assert "not full two-segment kinematics" in summary
+
+
+class _TwoSegmentDatasetPageController:
+    def __init__(self, tmp_path: Path) -> None:
+        self.project_root = tmp_path
+        self._payload = {
+            "schedule_type": "workspace_coverage",
+            "dry_run": False,
+            "allow_servo_only_test_run": False,
+            "run_trust_mode": "thesis_trusted",
+            "max_segment_displacement_cm": 0.25,
+            "requested_tool_roles": {},
+        }
+        segments = {
+            "segment_a": RobotSegmentConfig(
+                key="segment_a",
+                label="Segment A",
+                servo_ids=[1, 2, 3, 4],
+                pairs={"axis_a": [1, 3], "axis_b": [2, 4]},
+            ),
+            "segment_b": RobotSegmentConfig(
+                key="segment_b",
+                label="Segment B",
+                servo_ids=[5, 6, 7, 8],
+                pairs={"axis_a": [5, 7], "axis_b": [6, 8]},
+            ),
+        }
+        self.settings = Settings(
+            runtime=RuntimeConfig(mock_mode=True, robot_config="robot_8servo.yaml"),
+            robot=RobotConfig(
+                mode="dual_segment",
+                servo_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+                tendon_to_servo=[1, 2, 3, 4, 5, 6, 7, 8],
+                segments=segments,
+            ),
+            serial=SerialConfig(aurora_port="/dev/mock-aurora", openrb_port="/dev/mock-openrb", baudrate=1_000_000),
+            safety=SafetyConfig(),
+            experiment=ExperimentConfig(output_dir=str(tmp_path / "data" / "experiments")),
+            calibration=CalibrationConfig(neutral_setpoints_path=str(tmp_path / "neutral_setpoints.json")),
+            registration=RegistrationWorkflowConfig(
+                two_segment_tracking_roles={
+                    "distal_tip": TwoSegmentTrackingRoleConfig(
+                        role_name="distal_tip",
+                        tool_id="0A",
+                        required_for_two_segment_model_training=True,
+                        enabled=True,
+                    ),
+                    "intermediate_segment": TwoSegmentTrackingRoleConfig(
+                        role_name="intermediate_segment",
+                        tool_id="",
+                        required_for_two_segment_model_training=False,
+                        enabled=False,
+                    ),
+                }
+            ),
+        )
+        self.tracking_service = SimpleNamespace(get_snapshot=lambda: SimpleNamespace(tools={"0A": object(), "0C": object()}))
+
+    def config_payload(self) -> dict:
+        return dict(self._payload)
+
+    def set_config_value(self, key: str, value) -> None:
+        self._payload[str(key)] = value
+
+    def get_config_value(self, key: str, default=None):
+        return self._payload.get(str(key), default)
+
+    def stop(self) -> None:
+        pass
+
+    def refresh(self):
+        return None
+
+    def set_output_root(self, _value: str) -> None:
+        pass
+
+    def set_operator_notes(self, _value: str) -> None:
+        pass
+
+
+def test_two_segment_collect_pose_page_selects_tracker_roles_and_range(tmp_path: Path) -> None:
+    _app()
+    controller = _TwoSegmentDatasetPageController(tmp_path)
+    page = experiment_pages_module.TwoSegmentCollectPoseDatasetPage(
+        controller,
+        "two_segment_collect_pose_command_dataset",
+    )
+
+    page._sync_parameters_from_state(SimpleNamespace())
+    page.distal_tool_combo.setEditText("0A")
+    page.intermediate_tool_combo.setEditText("0C")
+    page.range_preset_combo.setCurrentIndex(page.range_preset_combo.findData(0.75))
+    page.continue_valid_check.setChecked(True)
+    page.target_valid_spin.setValue(5000)
+    page.assembly_confirm_check.setChecked(True)
+
+    assert controller.config_payload()["requested_tool_roles"]["0A"] == "distal_tip"
+    assert controller.config_payload()["requested_tool_roles"]["0C"] == "intermediate_segment"
+    assert controller.config_payload()["max_segment_displacement_cm"] == 0.75
+    assert controller.config_payload()["continue_until_valid_samples"] is True
+    assert controller.config_payload()["target_valid_sample_count"] == 5000
+    assert controller.config_payload()["physical_assembly_confirmed_by_operator"] is True
 
 
 def test_system_tab_warns_when_legacy_profile_cannot_support_parallel_single() -> None:

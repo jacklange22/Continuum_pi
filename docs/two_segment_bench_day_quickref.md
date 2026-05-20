@@ -15,12 +15,14 @@ openrb_port: /dev/ttyACM0       # or your bench's OpenRB device
 aurora_port: /dev/ttyUSB0       # or your bench's Aurora device
 ```
 
-Edit `config/robot_8servo.yaml`:
+Confirm the stack in the GUI System page every dual-segment session. The same
+mapping is persisted in `config/robot_8servo.yaml` / local overrides:
 
 ```yaml
 physical_assembly:
   bottom_segment: "segment_a"   # which fixed segment is at the bottom of the stack
   top_segment: "segment_b"      # the other one
+  confirmed_by_operator: true   # set by GUI when you confirm the session stack
   lower_tick_means_tension: true
   notes: ""                     # OPTIONAL free-form context (e.g., "top mount loose"); appears in every run summary
 ```
@@ -35,12 +37,12 @@ Sanity checks:
 - DYNAMIXEL Wizard reads all 8 servos at the configured baud.
 - Aurora reports 0A, 0B (and 0C if you're doing two-coil).
 - GUI launches, shows `dual_segment` mode, mode summary chip shows the bottom/top
-  assignment you set above.
+  assignment you set above and `operator_confirmed=true`.
 
 If any preflight check is yellow or red, fix it before proceeding. Yellow on
-`Bus Baud` at 57600 is informational only for single-segment but will block
-trusted two-segment work until you migrate (or you have measured the rig at
-57600 and explicitly accepted that cap).
+`Bus Baud` at 57600 is informational only for single-segment/debug work.
+Trusted all-8 two-segment collection is designed around 1 Mbps after every
+servo is reflashed and verified at that baud.
 
 ## Stage 1: Startup validation (~5 min)
 
@@ -79,7 +81,17 @@ allow_servo_only_test_run: false       # we want trusted data
 run_trust_mode: "thesis_trusted"
 long_run_recovery_enabled: true        # drop dropped samples, continue
 drop_sample_on_transport_error: true
+physical_assembly_confirmed_by_operator: true
 ```
+
+Set tracker roles in the GUI collect-pose page:
+- `distal_tip`: required for ANN training; usually 0A for the distal/top coil.
+- `intermediate_segment`: optional; use 0C if installed for two-coil labels.
+- `debug_tool`: optional, never a training requirement.
+
+Distal-only datasets are valid for ANN distal-tip mapping when `distal_tip` XYZ
+is present. They are marked `distal_only=true`; missing orientation and missing
+intermediate labels do not block distal XYZ training.
 
 What to watch:
 - The Data tab `Long-Run Health` row should show

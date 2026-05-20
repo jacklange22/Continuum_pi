@@ -136,6 +136,8 @@ class RobotConfig:
     bottom_segment_key: str = "segment_a"
     top_segment_key: str = "segment_b"
     physical_assembly_notes: str = ""
+    physical_assembly_confirmed_by_operator: bool = False
+    physical_assembly_confirmed_at_utc: str = ""
     lower_tick_means_tension: bool = True
 
     @staticmethod
@@ -331,6 +333,8 @@ class RobotConfig:
             },
             "tendon_axis_convention_per_segment": "[+X, +Y, -X, -Y]",
             "lower_tick_means_tension": bool(self.lower_tick_means_tension),
+            "confirmed_by_operator": bool(self.physical_assembly_confirmed_by_operator),
+            "confirmed_at_utc": str(self.physical_assembly_confirmed_at_utc or ""),
             "composed_frame_note": "Top segment rides on bottom; T_distal = T_bottom * T_top. Composed frame is metadata; no two-segment control is implemented.",
             "notes": str(self.physical_assembly_notes or ""),
             "issues": list(issues),

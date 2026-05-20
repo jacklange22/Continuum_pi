@@ -54,6 +54,7 @@ EXPECTED_REPORT_FIGURES = {
         "two_segment_distal_measured_vs_predicted_xy_report.png",
         "two_segment_position_error_distribution_report.png",
         "two_segment_axis_error_report.png",
+        "two_segment_train_test_workspace_coverage_report.png",
         "two_segment_two_coil_error_report.png",
     ],
     "two_segment_repeatability": [
@@ -484,6 +485,9 @@ def _check_two_segment_modeling(
         "model_status.json",
         "physics_model_parameter_report.json",
         "physics_model_parameter_report.txt",
+        "model_sweep_summary.json",
+        "model_sweep_summary.csv",
+        "model_sweep_summary.txt",
     ]:
         if not (run_dir / filename).exists():
             issues.append(RunValidationIssue("WARN", f"Expected two-segment modeling artifact is missing: {filename}"))

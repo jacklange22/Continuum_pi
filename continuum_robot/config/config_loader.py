@@ -390,6 +390,12 @@ class ConfigLoader:
             bottom_segment_key=bottom_key,
             top_segment_key=top_key,
             physical_assembly_notes=str(assembly_payload.get("notes", "") or ""),
+            physical_assembly_confirmed_by_operator=bool(
+                assembly_payload.get("confirmed_by_operator", False)
+            ),
+            physical_assembly_confirmed_at_utc=str(
+                assembly_payload.get("confirmed_at_utc", "") or ""
+            ),
             lower_tick_means_tension=bool(
                 assembly_payload.get("lower_tick_means_tension", True)
                 if "lower_tick_means_tension" in assembly_payload

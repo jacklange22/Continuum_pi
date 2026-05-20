@@ -265,11 +265,15 @@ def test_two_segment_modeling_writes_outputs_validator_export_and_data_summary(t
         "model_status.json",
         "physics_model_parameter_report.json",
         "physics_model_parameter_report.txt",
+        "model_sweep_summary.json",
+        "model_sweep_summary.csv",
+        "model_sweep_summary.txt",
         "two_segment_model_comparison_report.png",
         "two_segment_distal_measured_vs_predicted_xy_report.png",
         "two_segment_measured_vs_predicted_xy_report.png",
         "two_segment_position_error_distribution_report.png",
         "two_segment_axis_error_report.png",
+        "two_segment_train_test_workspace_coverage_report.png",
         "two_segment_two_coil_error_report.png",
     ]:
         assert (result.output_dir / filename).exists()
@@ -289,6 +293,9 @@ def test_two_segment_modeling_writes_outputs_validator_export_and_data_summary(t
     assert "models_completed: ['linear_baseline']" in summary_text
     assert "models_unavailable" in summary_text
     assert "best_model: linear_baseline" in summary_text
+    sweep_summary = json.loads((result.output_dir / "model_sweep_summary.json").read_text(encoding="utf-8"))
+    assert sweep_summary["primary_success_metric"] == "distal_xyz_rmse_mm"
+    assert sweep_summary["best_model_by_distal_xyz_rmse"]["model_key"] == "linear_baseline"
 
     validation = validate_run_folder(result.output_dir)
     assert validation.status == "PASS"
@@ -300,6 +307,7 @@ def test_two_segment_modeling_writes_outputs_validator_export_and_data_summary(t
     assert "two_segment_modeling_summary.txt" in exported
     assert "predictions.csv" in exported
     assert "model_status.json" in exported
+    assert "model_sweep_summary.json" in exported
     assert "physics_model_parameter_report.json" in exported
     assert "models/linear_baseline/linear_baseline_weights.json" in exported
 

@@ -19,6 +19,7 @@ Confirm:
 - `config/system.local.yaml` points at the intended OpenRB and Aurora ports.
 - Normal hardware profile is `robot_8servo.yaml`.
 - Operating mode matches the task: `one_servo`, `single_segment`, `dual_segment`, or `parallel_single`.
+- For thesis-trusted runs: `tracker_backend=ndi`, `tracker_fallback_enabled=false`, and `tracker_fallback_backend` empty.
 - `data/experiments/` and `data/exports/` are writable.
 - `prehardware_dry_run` passes the no-hardware export/validator/operator fixture checks.
 - `hardware_readiness_check` is PASS overall, or any WARN item has a clear hardware-day action.
@@ -153,12 +154,12 @@ Stop reasons to take seriously:
 - `parallel_single` is mirrored single-segment babble/testing only, not full two-segment kinematics.
 - For a two-segment bench day, keep [`docs/two_segment_bench_day_quickref.md`](two_segment_bench_day_quickref.md) open. It's a one-page cheat sheet for the full pipeline (startup → babble → Mike CC probe → repeatability → modeling → handoff) including what to watch for in the GUI chips at each stage.
 - `dual_segment` mode is the true two-segment foundation. Before any two-segment work:
-  1. Confirm the `physical_assembly` block in `config/robot_8servo.yaml` matches the rig — which fixed segment is at the bottom and which at the top.
-  2. The GUI experiment-tab summary will show e.g. `Bottom: Segment A [1,2,3,4], Top: Segment B [5,6,7,8]`.
+  1. Confirm the bottom/top physical assembly in the System page for this session — which fixed segment is at the bottom and which at the top.
+  2. The GUI experiment-tab summary will show e.g. `Bottom: Segment A [1,2,3,4], Top: Segment B [5,6,7,8]`, plus the confirmation flag.
   3. Run `two_segment_startup_validation` (stages: baseline → bottom_pretensioned → top_pretensioned → bottom_recheck → final_accept).
   4. Only then run `two_segment_collect_pose_command_dataset` or `two_segment_repeatability`.
 - Two-segment kinematics control, automatic two-segment pretension, and two-segment penprobe chasing are NOT implemented. The foundation is data/metadata only.
-- The 1 Mbps baud migration is optional. Default 57 600 is fine for slow collection; raise to 1 000 000 only after every servo is reflashed (see `docs/operator_workflows.md` Workflow 11).
+- Trusted all-8 two-segment collection is designed around 1 Mbps. Default 57 600 is still acceptable for debug/single-segment checks; raise to 1 000 000 only after every servo is reflashed (see `docs/operator_workflows.md` Workflow 11).
 
 1 Mbps all-8 transport diagnostic:
 

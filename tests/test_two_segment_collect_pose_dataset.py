@@ -402,10 +402,13 @@ def test_two_segment_collect_pose_dataset_allows_explicit_servo_only_mock_run_an
 
 
 def test_two_segment_collect_pose_dataset_sample_records_distal_pose_role_and_validity(tmp_path: Path) -> None:
-    service = _servo_service(tmp_path)
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    service = _servo_service(tmp_path, settings=settings)
     _save_all8_startup(service)
     runner = _runner(
         tmp_path,
+        settings=settings,
         service=service,
         tracking_service=_FakeTrackingService(_tracking_snapshot(include_distal=True, include_intermediate=False)),
     )
@@ -417,18 +420,23 @@ def test_two_segment_collect_pose_dataset_sample_records_distal_pose_role_and_va
             "allow_servo_only_test_run": False,
             "run_trust_mode": "thesis_trusted",
             "schedule_type": "zero",
+            "physical_assembly_confirmed_by_operator": True,
         },
     )
 
     assert result.success is True
     metrics = result.summary.experiment_metrics
-    assert metrics["valid_for_two_segment_model_training"] is False
+    assert metrics["valid_for_two_segment_model_training"] is True
+    assert metrics["valid_for_two_segment_ann_training"] is True
+    assert metrics["label_mode_used"] == "distal_xyz"
     assert metrics["distal_only"] is True
     assert metrics["includes_intermediate_pose"] is False
     assert metrics["pose_label_summary"]["available_roles"] == ["distal_tip"]
     sample_payload = json.loads(result.paths.samples_path.read_text(encoding="utf-8").splitlines()[0])
     assert sample_payload["extra"]["available_pose_roles"] == ["distal_tip"]
     assert sample_payload["extra"]["missing_required_pose_roles"] == []
+    assert sample_payload["extra"]["valid_for_two_segment_ann_training"] is True
+    assert sample_payload["extra"]["label_mode_used"] == "distal_xyz"
     assert sample_payload["two_segment_pose"]["distal_tip_pose"]
     assert sample_payload["pose_in_robot_frame"]["roles"]["distal_tip"]["T_robot_tip"]
 
@@ -443,6 +451,7 @@ def test_two_segment_collect_pose_dataset_requires_startup_for_trusted_live_run(
             "dry_run": False,
             "allow_servo_only_test_run": False,
             "run_trust_mode": "thesis_trusted",
+            "physical_assembly_confirmed_by_operator": True,
         },
     )
 
@@ -486,6 +495,24 @@ def test_two_segment_schedule_honors_configured_amplitude_no_silent_cap() -> Non
     # The legacy MVP capped amp_cm at 0.01. The new path honors the configured
     # 0.5 cm value (still safety-gated downstream by max_tick_delta_from_startup).
     assert first_motion.to_segment_mapping()["segment_a"] == [0.5, 0.0, -0.5, 0.0]
+
+
+def test_two_segment_dataset_config_has_range_ramp_and_current_defaults() -> None:
+    config = TwoSegmentCollectPoseDatasetConfig.from_dict(
+        {
+            "schedule_type": "workspace_coverage",
+            "max_segment_displacement_cm": 1.0,
+            "continue_until_valid_samples": True,
+            "target_valid_sample_count": 10000,
+        }
+    )
+
+    assert config.max_segment_displacement_cm == 1.0
+    assert config.max_segment_displacement_mm == 10.0
+    assert config.continue_until_valid_samples is True
+    assert config.target_valid_sample_count == 10000
+    assert config.current_warning_ma == 800
+    assert config.sustained_overcurrent_ma == 1200
 
 
 def test_two_segment_schedule_supports_bottom_only_sweep_with_role_swap() -> None:
@@ -674,6 +701,7 @@ def test_two_segment_collect_pose_dataset_rejects_sample_when_measured_position_
             "allow_servo_only_test_run": False,
             "run_trust_mode": "thesis_trusted",
             "schedule_type": "zero",
+            "physical_assembly_confirmed_by_operator": True,
         },
     )
 

@@ -109,6 +109,17 @@ class TwoSegmentCollectPoseDatasetConfig:
     # current draw / tendon shock. ``None`` disables ramping.
     command_ramp_step_cm: float | None = None
     command_ramp_settle_time_s: float = 0.05
+    # Per-run current/load policy for two-segment collection. This is warning
+    # first: transient reported-current spikes are summarized and warned, while
+    # sustained serious overcurrent is handled by the lower-level servo safety
+    # guard/configured hard-stop policy.
+    current_warning_ma: int = 800
+    sustained_overcurrent_ma: int = 1200
+    sustained_overcurrent_sample_count: int = 3
+    # Trusted dual-segment sessions should explicitly confirm which physical
+    # segment is bottom/proximal and which is top/distal before collecting data.
+    physical_assembly_confirmed_by_operator: bool = False
+    physical_assembly_confirmed_at_utc: str = ""
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "TwoSegmentCollectPoseDatasetConfig":
@@ -160,6 +171,20 @@ class TwoSegmentCollectPoseDatasetConfig:
                 else max(0.0, float(payload.get("command_ramp_step_cm")))
             ),
             command_ramp_settle_time_s=max(0.0, float(payload.get("command_ramp_settle_time_s", 0.05))),
+            current_warning_ma=max(1, int(payload.get("current_warning_ma", payload.get("max_current_warning_ma", 800)) or 800)),
+            sustained_overcurrent_ma=max(
+                1,
+                int(payload.get("sustained_overcurrent_ma", payload.get("sustained_jam_current_ma", 1200)) or 1200),
+            ),
+            sustained_overcurrent_sample_count=max(
+                1,
+                int(payload.get("sustained_overcurrent_sample_count", payload.get("sustained_jam_cycles", 3)) or 3),
+            ),
+            physical_assembly_confirmed_by_operator=bool(
+                payload.get("physical_assembly_confirmed_by_operator", False)
+                or payload.get("physical_assembly_confirmed", False)
+            ),
+            physical_assembly_confirmed_at_utc=str(payload.get("physical_assembly_confirmed_at_utc", "") or ""),
         )
 
     @property
@@ -243,6 +268,16 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
         if self.config.schedule_type not in SCHEDULE_TYPES:
             raise RuntimeError(f"Unknown two-segment schedule_type '{self.config.schedule_type}'. Expected one of {sorted(SCHEDULE_TYPES)}.")
         trusted_requested = _trusted_dataset_requested(self.config)
+        assembly = dict(getattr(context, "physical_assembly", {}) or {})
+        assembly_confirmed = bool(
+            self.config.physical_assembly_confirmed_by_operator
+            or assembly.get("confirmed_by_operator", False)
+        )
+        if trusted_requested and not assembly_confirmed:
+            raise RuntimeError(
+                "Trusted two-segment dataset collection requires operator confirmation of the bottom/top physical assembly. "
+                "Confirm Bottom/proximal and Top/distal in the GUI before collecting thesis-intended data."
+            )
         if trusted_requested and not bool(self._startup_provenance.get("accepted_all_8_startup")):
             raise RuntimeError(
                 "Trusted two-segment dataset collection requires an accepted all-8 manual startup artifact. "
@@ -435,7 +470,15 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
         session.set_metric("rejected_sample_count", int(rejected))
         session.set_metric("command_failure_count", int(command_failures))
         session.set_metric("run_trust_mode", run_trust_mode)
-        session.set_metric("valid_for_two_segment_model_training", _valid_for_two_segment_model_training(self.config, pose_summary, startup_provenance, command_failures))
+        valid_for_ann_training = _valid_for_two_segment_model_training(
+            self.config,
+            pose_summary,
+            startup_provenance,
+            command_failures,
+        )
+        session.set_metric("valid_for_two_segment_model_training", valid_for_ann_training)
+        session.set_metric("valid_for_two_segment_ann_training", valid_for_ann_training)
+        session.set_metric("label_mode_used", _dataset_label_mode_from_pose_summary(pose_summary))
         session.set_metric("valid_for_model_training", False)
         session.set_metric("valid_for_thesis_repeatability", False)
         session.set_metric("data_quality_warnings", data_quality_warnings)
@@ -446,6 +489,7 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
         session.set_metric("pose_label_summary", pose_summary)
         session.set_metric("distal_only", bool(pose_summary.get("distal_pose_sample_count", 0) and not pose_summary.get("intermediate_pose_sample_count", 0)))
         session.set_metric("includes_intermediate_pose", bool(pose_summary.get("intermediate_pose_sample_count", 0)))
+        session.set_metric("includes_orientation", bool(pose_summary.get("includes_orientation", False)))
         session.set_metric("automatic_two_segment_pretension_validated", False)
         session.set_metric("two_segment_control_validated", False)
         session.set_metric("long_run_health", dict(self._long_run_health))
@@ -453,8 +497,9 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
         session.set_metric("sample_failure_event_count", len(self._sample_failure_events))
         current_load_summary = _two_segment_current_load_summary(
             samples=session.samples,
-            warning_ma=int(getattr(getattr(session.context.settings, "safety", None), "servo_reported_current_warning_ma", None) or 800),
-            hard_ma=int(getattr(getattr(session.context.settings, "safety", None), "servo_reported_current_hard_limit_ma", None) or 850),
+            warning_ma=int(self.config.current_warning_ma or 800),
+            hard_ma=int(self.config.sustained_overcurrent_ma or 1200),
+            sustained_sample_count=int(self.config.sustained_overcurrent_sample_count or 3),
         )
         session.set_metric("current_load_summary", current_load_summary)
         for servo_id in current_load_summary.get("sustained_jam_servo_ids", []) or []:
@@ -483,7 +528,16 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
                 f"(state={registration_summary.get('registration_state')}); distal/intermediate "
                 "labels may be in tracker frame only."
             )
-        session.set_metric("physical_assembly", dict(context.metadata().get("physical_assembly") or {}))
+        assembly = dict(context.metadata().get("physical_assembly") or {})
+        if self.config.physical_assembly_confirmed_by_operator:
+            assembly["confirmed_by_operator"] = True
+            assembly["confirmed_at_utc"] = str(
+                self.config.physical_assembly_confirmed_at_utc
+                or datetime.now(timezone.utc).isoformat()
+            )
+            assembly["confirmation_source"] = "experiment_config"
+        session.set_metric("physical_assembly", assembly)
+        session.set_metric("physical_assembly_confirmed_by_operator", bool(assembly.get("confirmed_by_operator", False)))
         session.set_metric("bottom_segment_key", context.bottom_segment_key)
         session.set_metric("top_segment_key", context.top_segment_key)
         session.set_metric("bottom_servo_ids", list(context.bottom_servo_ids or []))
@@ -648,6 +702,7 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
             capture_accepted
             and _valid_for_two_segment_model_training(self.config, _pose_label_summary_from_fields(pose_fields), startup_provenance, 0)
         )
+        label_mode_used = _dataset_label_mode_from_pose_summary(_pose_label_summary_from_fields(pose_fields))
         flags = ["capture_accepted" if capture_accepted else "capture_rejected"]
         if self.config.dry_run:
             flags.append("dry_run")
@@ -705,11 +760,14 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
                 "tracker_freshness_by_role": dict(pose_fields.get("tracker_freshness_by_role", {}) or {}),
                 "distal_only": bool(pose_fields.get("distal_only")),
                 "includes_intermediate_pose": bool(pose_fields.get("includes_intermediate_pose")),
+                "includes_orientation": bool(_pose_fields_include_orientation(pose_fields)),
+                "label_mode_used": label_mode_used,
                 "capture_accepted": bool(capture_accepted),
                 "capture_rejection_reason": rejection_reason,
                 "command_success": bool(command_success),
                 "command_message": str(command_result.get("command_message", "") or ""),
                 "valid_for_two_segment_model_training": bool(valid_for_two_segment_model_training),
+                "valid_for_two_segment_ann_training": bool(valid_for_two_segment_model_training),
                 "valid_for_model_training": False,
                 "valid_for_thesis_repeatability": False,
                 "data_quality_warnings": _sample_warnings(config=self.config, missing_pose=missing_pose, startup_provenance=startup_provenance),
@@ -1403,6 +1461,7 @@ def _pose_label_summary(samples: list[ExperimentTimeseriesSample]) -> dict[str, 
     distal = 0
     intermediate = 0
     observed = 0
+    orientation = 0
     missing_required: set[str] = set()
     available_roles: set[str] = set()
     for sample in samples:
@@ -1413,6 +1472,8 @@ def _pose_label_summary(samples: list[ExperimentTimeseriesSample]) -> dict[str, 
             intermediate += 1
         if bool(sample.extra.get("pose_observations_present")):
             observed += 1
+        if bool(sample.extra.get("includes_orientation", False)):
+            orientation += 1
         missing_required.update(str(value) for value in list(sample.extra.get("missing_required_pose_roles", []) or []))
         available_roles.update(str(value) for value in list(sample.extra.get("available_pose_roles", []) or []))
     return {
@@ -1421,6 +1482,7 @@ def _pose_label_summary(samples: list[ExperimentTimeseriesSample]) -> dict[str, 
         "intermediate_pose_sample_count": int(intermediate),
         "includes_intermediate_pose": bool(intermediate),
         "distal_only": bool(distal and not intermediate),
+        "includes_orientation": bool(orientation),
         "available_roles": sorted(available_roles),
         "missing_required_roles": sorted(missing_required),
     }
@@ -1428,12 +1490,38 @@ def _pose_label_summary(samples: list[ExperimentTimeseriesSample]) -> dict[str, 
 
 def _pose_label_summary_from_fields(fields: dict[str, Any]) -> dict[str, Any]:
     available_roles = set(str(value) for value in list(fields.get("available_roles", []) or []))
+    includes_orientation = _pose_fields_include_orientation(fields)
     return {
         "pose_observation_sample_count": int(bool(fields.get("pose_observations_present"))),
         "distal_pose_sample_count": int("distal_tip" in available_roles),
         "intermediate_pose_sample_count": int("intermediate_segment" in available_roles),
         "missing_required_roles": list(fields.get("missing_required_roles", []) or []),
+        "includes_intermediate_pose": "intermediate_segment" in available_roles,
+        "distal_only": "distal_tip" in available_roles and "intermediate_segment" not in available_roles,
+        "includes_orientation": bool(includes_orientation),
     }
+
+
+def _pose_fields_include_orientation(fields: dict[str, Any]) -> bool:
+    for role_payload in dict(fields.get("role_observations", {}) or {}).values():
+        record = dict(role_payload or {})
+        pose = dict(record.get("robot_frame_pose") or record.get("pose") or {})
+        if pose.get("tangent_xyz") or pose.get("orientation_tangent_xyz"):
+            return True
+    return False
+
+
+def _dataset_label_mode_from_pose_summary(pose_summary: dict[str, Any]) -> str:
+    distal = int(pose_summary.get("distal_pose_sample_count", 0) or 0) > 0
+    intermediate = int(pose_summary.get("intermediate_pose_sample_count", 0) or 0) > 0
+    orientation = bool(pose_summary.get("includes_orientation", False))
+    if intermediate and orientation:
+        return "two_coil_pose12"
+    if intermediate:
+        return "two_coil_xyz"
+    if distal and orientation:
+        return "distal_pose6"
+    return "distal_xyz" if distal else "unavailable"
 
 
 def _valid_for_two_segment_model_training(
@@ -1446,7 +1534,7 @@ def _valid_for_two_segment_model_training(
         not _servo_only_mode(config)
         and bool(startup_provenance.get("accepted_all_8_startup"))
         and int(pose_summary.get("distal_pose_sample_count", 0) or 0) > 0
-        and not list(pose_summary.get("missing_required_roles", []) or [])
+        and "distal_tip" not in list(pose_summary.get("missing_required_roles", []) or [])
         and int(command_failures) == 0
     )
 
@@ -1459,10 +1547,11 @@ def _data_quality_warnings(*, config: TwoSegmentCollectPoseDatasetConfig, pose_s
         warnings.append("accepted_all_8_startup_artifact_not_available")
     if int(pose_summary.get("pose_observation_sample_count", 0) or 0) == 0:
         warnings.append("pose_labels_missing")
-    if list(pose_summary.get("missing_required_roles", []) or []):
+    missing_required = list(pose_summary.get("missing_required_roles", []) or [])
+    if "distal_tip" in missing_required:
         warnings.append("required_pose_roles_missing")
     if not bool(pose_summary.get("includes_intermediate_pose")):
-        warnings.append("intermediate_pose_missing")
+        warnings.append("distal_only_no_intermediate_pose")
     return sorted(set(warnings))
 
 
@@ -1488,6 +1577,8 @@ def _write_summary_text(path: Path, metrics: dict[str, Any]) -> None:
         f"schedule_type: {metrics.get('schedule_type')}",
         f"run_trust_mode: {metrics.get('run_trust_mode')}",
         f"valid_for_two_segment_model_training: {metrics.get('valid_for_two_segment_model_training')}",
+        f"valid_for_two_segment_ann_training: {metrics.get('valid_for_two_segment_ann_training')}",
+        f"label_mode_used: {metrics.get('label_mode_used')}",
         f"valid_for_model_training: {metrics.get('valid_for_model_training')}",
         f"bottom_segment_key: {metrics.get('bottom_segment_key', 'n/a')}",
         f"top_segment_key: {metrics.get('top_segment_key', 'n/a')}",
@@ -1497,6 +1588,8 @@ def _write_summary_text(path: Path, metrics: dict[str, Any]) -> None:
         f"pose_observation_sample_count: {pose.get('pose_observation_sample_count', 0)}",
         f"distal_only: {metrics.get('distal_only')}",
         f"includes_intermediate_pose: {metrics.get('includes_intermediate_pose')}",
+        f"includes_orientation: {metrics.get('includes_orientation')}",
+        f"physical_assembly_confirmed_by_operator: {metrics.get('physical_assembly_confirmed_by_operator')}",
         "automatic_two_segment_pretension_validated: false",
         "two_segment_control_validated: false",
     ]
@@ -1566,6 +1659,7 @@ def _write_metrics_csv(path: Path, samples: list[ExperimentTimeseriesSample]) ->
         "load_proxy_ma",
         "capture_accepted",
         "valid_for_two_segment_model_training",
+        "valid_for_two_segment_ann_training",
     ]
     with Path(path).open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
@@ -1600,6 +1694,7 @@ def _write_metrics_csv(path: Path, samples: list[ExperimentTimeseriesSample]) ->
                         "load_proxy_ma": data.get("load_proxy_ma"),
                         "capture_accepted": extra.get("capture_accepted"),
                         "valid_for_two_segment_model_training": extra.get("valid_for_two_segment_model_training"),
+                        "valid_for_two_segment_ann_training": extra.get("valid_for_two_segment_ann_training"),
                     }
                 )
 

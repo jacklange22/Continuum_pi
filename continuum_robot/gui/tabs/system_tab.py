@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFrame,
@@ -259,6 +260,13 @@ class SystemTab(QWidget):
         self.active_segment_combo = NoWheelComboBox()
         self.active_segment_combo.currentIndexChanged.connect(self._mark_parameter_dirty)
         self.active_segment_combo.currentIndexChanged.connect(self._sync_operating_context_summary)
+        self.bottom_segment_combo = NoWheelComboBox()
+        self.bottom_segment_combo.currentIndexChanged.connect(self._on_bottom_segment_changed)
+        self.top_segment_combo = NoWheelComboBox()
+        self.top_segment_combo.currentIndexChanged.connect(self._on_top_segment_changed)
+        self.assembly_confirm_check = QCheckBox("I confirm the physical bottom/top stack for this dual-segment session")
+        self.assembly_confirm_check.toggled.connect(self._mark_parameter_dirty)
+        self.assembly_confirm_check.toggled.connect(self._sync_operating_context_summary)
         self.mock_mode_combo = NoWheelComboBox()
         self.mock_mode_combo.addItem("Enabled", True)
         self.mock_mode_combo.addItem("Disabled", False)
@@ -313,6 +321,9 @@ class SystemTab(QWidget):
         self.parameters_form.addRow("Operating mode", self.operating_mode_combo)
         self.parameters_form.addRow("Selected servo", self.selected_servo_combo)
         self.parameters_form.addRow("Active segment", self.active_segment_combo)
+        self.parameters_form.addRow("Bottom / proximal", self.bottom_segment_combo)
+        self.parameters_form.addRow("Top / distal", self.top_segment_combo)
+        self.parameters_form.addRow("Assembly confirmation", self.assembly_confirm_check)
         self.parameters_form.addRow("Resolved scope", self.operating_context_summary_label)
         self.parameters_form.addRow("Baudrate", self.baudrate_spin)
         self.parameters_form.addRow("Fine jog (ticks)", self.fine_jog_step_spin)
@@ -554,6 +565,9 @@ class SystemTab(QWidget):
             "operating_mode": str(self.operating_mode_combo.currentData() or "single_segment"),
             "selected_servo_id": int(self.selected_servo_combo.currentData() or 1),
             "active_segment": str(self.active_segment_combo.currentData() or "").strip(),
+            "bottom_segment_key": str(self.bottom_segment_combo.currentData() or "").strip(),
+            "top_segment_key": str(self.top_segment_combo.currentData() or "").strip(),
+            "physical_assembly_confirmed_by_operator": bool(self.assembly_confirm_check.isChecked()),
             "openrb_port": self._selected_port(self.openrb_port_combo),
             "baudrate": int(self.baudrate_spin.value()),
             "poll_rate_hz": int(self.poll_rate_spin.value()),
@@ -610,6 +624,11 @@ class SystemTab(QWidget):
             return
         previous = str(self.active_segment_combo.currentData() or "")
         self._set_active_segment_options_from_robot(robot, preferred_key=previous)
+        self._set_bottom_top_segment_options_from_robot(
+            robot,
+            preferred_bottom_key=str(self.bottom_segment_combo.currentData() or ""),
+            preferred_top_key=str(self.top_segment_combo.currentData() or ""),
+        )
         self._sync_operating_mode_visibility()
         self._mark_parameter_dirty()
 
@@ -627,13 +646,77 @@ class SystemTab(QWidget):
             self.active_segment_combo.setCurrentIndex(index)
         self.active_segment_combo.blockSignals(False)
 
+    def _set_bottom_top_segment_options_from_robot(
+        self,
+        robot: RobotConfig,
+        *,
+        preferred_bottom_key: str = "",
+        preferred_top_key: str = "",
+    ) -> None:
+        bottom_current = str(preferred_bottom_key or robot.bottom_segment_key or "segment_a")
+        top_current = str(preferred_top_key or robot.top_segment_key or "segment_b")
+        for combo, preferred in (
+            (self.bottom_segment_combo, bottom_current),
+            (self.top_segment_combo, top_current),
+        ):
+            combo.blockSignals(True)
+            combo.clear()
+            for key, segment in robot.segment_map().items():
+                servo_ids = [int(value) for value in segment.servo_ids]
+                display = f"{segment.label} ({', '.join(str(value) for value in servo_ids)})"
+                combo.addItem(display, str(key))
+            index = combo.findData(str(preferred or ""))
+            if index < 0:
+                index = 0
+            if index >= 0:
+                combo.setCurrentIndex(index)
+            combo.blockSignals(False)
+
+    def _on_bottom_segment_changed(self, *_args) -> None:
+        if self._updating_parameter_widgets:
+            return
+        bottom = str(self.bottom_segment_combo.currentData() or "")
+        top = str(self.top_segment_combo.currentData() or "")
+        if bottom and bottom == top:
+            for index in range(self.top_segment_combo.count()):
+                candidate = str(self.top_segment_combo.itemData(index) or "")
+                if candidate and candidate != bottom:
+                    self.top_segment_combo.blockSignals(True)
+                    self.top_segment_combo.setCurrentIndex(index)
+                    self.top_segment_combo.blockSignals(False)
+                    break
+        self.assembly_confirm_check.setChecked(False)
+        self._mark_parameter_dirty()
+
+    def _on_top_segment_changed(self, *_args) -> None:
+        if self._updating_parameter_widgets:
+            return
+        top = str(self.top_segment_combo.currentData() or "")
+        bottom = str(self.bottom_segment_combo.currentData() or "")
+        if top and top == bottom:
+            for index in range(self.bottom_segment_combo.count()):
+                candidate = str(self.bottom_segment_combo.itemData(index) or "")
+                if candidate and candidate != top:
+                    self.bottom_segment_combo.blockSignals(True)
+                    self.bottom_segment_combo.setCurrentIndex(index)
+                    self.bottom_segment_combo.blockSignals(False)
+                    break
+        self.assembly_confirm_check.setChecked(False)
+        self._mark_parameter_dirty()
+
     def _sync_operating_mode_visibility(self, *_args) -> None:
         self._maybe_promote_full_platform_profile()
         mode = str(self.operating_mode_combo.currentData() or "single_segment")
         self._set_parameter_row_visible(self.selected_servo_combo, mode == "one_servo")
         self._set_parameter_row_visible(self.active_segment_combo, mode == "single_segment")
+        self._set_parameter_row_visible(self.bottom_segment_combo, mode == "dual_segment")
+        self._set_parameter_row_visible(self.top_segment_combo, mode == "dual_segment")
+        self._set_parameter_row_visible(self.assembly_confirm_check, mode == "dual_segment")
         self.selected_servo_combo.setEnabled(mode == "one_servo")
         self.active_segment_combo.setEnabled(mode == "single_segment")
+        self.bottom_segment_combo.setEnabled(mode == "dual_segment")
+        self.top_segment_combo.setEnabled(mode == "dual_segment")
+        self.assembly_confirm_check.setEnabled(mode == "dual_segment")
         self._sync_operating_context_summary()
 
     def _maybe_promote_full_platform_profile(self) -> None:
@@ -663,6 +746,7 @@ class SystemTab(QWidget):
         self.robot_config_combo.setCurrentIndex(full_index)
         self.robot_config_combo.blockSignals(False)
         self._set_active_segment_options_from_robot(full_robot, preferred_key=previous_segment)
+        self._set_bottom_top_segment_options_from_robot(full_robot)
         self._mark_parameter_dirty()
 
     def _sync_operating_context_summary(self, *_args) -> None:
@@ -684,6 +768,13 @@ class SystemTab(QWidget):
         active_segment = str(self.active_segment_combo.currentData() or "").strip()
         if active_segment:
             robot.active_segment = active_segment
+        bottom_segment = str(self.bottom_segment_combo.currentData() or "").strip()
+        top_segment = str(self.top_segment_combo.currentData() or "").strip()
+        if bottom_segment:
+            robot.bottom_segment_key = bottom_segment
+        if top_segment:
+            robot.top_segment_key = top_segment
+        robot.physical_assembly_confirmed_by_operator = bool(self.assembly_confirm_check.isChecked())
         return robot.operating_context()
 
     def _pending_robot_config(self) -> RobotConfig:
@@ -751,10 +842,17 @@ class SystemTab(QWidget):
             active_segment=str(getattr(state, "active_segment_key", "segment_a") or "segment_a"),
             selected_servo_id=int(getattr(state, "selected_servo_id", 1) or 1),
             segments=segments,
+            bottom_segment_key=str(getattr(state, "bottom_segment_key", "segment_a") or "segment_a"),
+            top_segment_key=str(getattr(state, "top_segment_key", "segment_b") or "segment_b"),
+            physical_assembly_confirmed_by_operator=bool(
+                getattr(state, "physical_assembly_confirmed_by_operator", False)
+            ),
+            physical_assembly_confirmed_at_utc=str(
+                getattr(state, "physical_assembly_confirmed_at_utc", "") or ""
+            ),
         )
 
-    @staticmethod
-    def _format_operating_context_summary(context) -> list[str]:
+    def _format_operating_context_summary(self, context) -> list[str]:
         mode = str(context.operating_mode)
         if mode == "one_servo":
             return [f"Expected IDs: {list(context.expected_servo_ids)}"]
@@ -767,6 +865,19 @@ class SystemTab(QWidget):
         if mode == "dual_segment":
             lines = [f"Expected IDs: {list(context.expected_servo_ids)}"]
             lines.extend(SystemTab._format_segment_lines(context.segments))
+            assembly = dict(getattr(context, "physical_assembly", {}) or {})
+            bottom_label = assembly.get("bottom_segment_label") or assembly.get("bottom_segment_key") or "?"
+            top_label = assembly.get("top_segment_label") or assembly.get("top_segment_key") or "?"
+            bottom_ids = list(assembly.get("bottom_servo_ids") or [])
+            top_ids = list(assembly.get("top_servo_ids") or [])
+            confirmed = bool(self.assembly_confirm_check.isChecked())
+            confirmed_at = str(assembly.get("confirmed_at_utc") or "")
+            lines.append(f"Bottom/proximal: {bottom_label} {bottom_ids}")
+            lines.append(f"Top/distal: {top_label} {top_ids}")
+            lines.append(
+                "Assembly confirmed: "
+                + ("yes" + (f" ({confirmed_at})" if confirmed_at else "") if confirmed else "no")
+            )
             return lines
         if mode == "parallel_single":
             mirror = ", ".join(
@@ -836,6 +947,8 @@ class SystemTab(QWidget):
             self.operating_mode_combo,
             self.selected_servo_combo,
             self.active_segment_combo,
+            self.bottom_segment_combo,
+            self.top_segment_combo,
             self.figure_quality_combo,
         )
         return any(bool(getattr(combo, "popup_open", False)) for combo in combos)
@@ -874,6 +987,15 @@ class SystemTab(QWidget):
                     self.active_segment_combo.setCurrentIndex(segment_index)
             self.active_segment_combo.blockSignals(False)
 
+            self._set_bottom_top_segment_options_from_robot(
+                self._pending_robot_config(),
+                preferred_bottom_key=str(values.get("bottom_segment_key", "")),
+                preferred_top_key=str(values.get("top_segment_key", "")),
+            )
+            self.assembly_confirm_check.blockSignals(True)
+            self.assembly_confirm_check.setChecked(bool(values.get("physical_assembly_confirmed_by_operator", False)))
+            self.assembly_confirm_check.blockSignals(False)
+
             set_combo_value(self.mock_mode_combo, bool(values["mock_mode"]), block_signals=True)
 
             set_spinbox_value(self.baudrate_spin, int(values["baudrate"]), block_signals=True)
@@ -896,6 +1018,9 @@ class SystemTab(QWidget):
             "operating_mode": str(state.operating_mode),
             "selected_servo_id": int(state.selected_servo_id),
             "active_segment": str(state.active_segment_key),
+            "bottom_segment_key": str(state.bottom_segment_key),
+            "top_segment_key": str(state.top_segment_key),
+            "physical_assembly_confirmed_by_operator": bool(state.physical_assembly_confirmed_by_operator),
             "baudrate": int(state.baudrate),
             "poll_rate_hz": int(state.poll_rate_hz),
             "figure_output_quality": str(state.figure_output_quality),
@@ -911,6 +1036,9 @@ class SystemTab(QWidget):
             "operating_mode": str(self.operating_mode_combo.currentData() or "single_segment"),
             "selected_servo_id": int(self.selected_servo_combo.currentData() or 1),
             "active_segment": str(self.active_segment_combo.currentData() or "").strip(),
+            "bottom_segment_key": str(self.bottom_segment_combo.currentData() or "").strip(),
+            "top_segment_key": str(self.top_segment_combo.currentData() or "").strip(),
+            "physical_assembly_confirmed_by_operator": bool(self.assembly_confirm_check.isChecked()),
             "baudrate": int(self.baudrate_spin.value()),
             "poll_rate_hz": int(self.poll_rate_spin.value()),
             "figure_output_quality": str(self.figure_quality_combo.currentData() or "production"),

@@ -643,6 +643,8 @@ def _format_two_segment_pose_summary(metrics: dict[str, Any]) -> str:
             f"missing_required={pose.get('missing_required_roles', required)}",
             f"distal_only={bool(metrics.get('distal_only'))}",
             f"includes_intermediate={bool(metrics.get('includes_intermediate_pose'))}",
+            f"ann_valid={metrics.get('valid_for_two_segment_ann_training')}",
+            f"label_mode={metrics.get('label_mode_used')}",
         ]
     )
 
@@ -668,6 +670,7 @@ def _format_two_segment_modeling_summary(metrics: dict[str, Any]) -> str:
             f"completed={completed}",
             f"unavailable={unavailable}",
             f"label_mode={metrics.get('label_mode')}",
+            f"ann_valid={metrics.get('valid_for_two_segment_ann_training')}",
             f"includes_intermediate_label={bool(metrics.get('includes_intermediate_label'))}",
             f"orientation_available={bool(metrics.get('orientation_available'))}",
             f"physics={metrics.get('physics_model_status', {})}",

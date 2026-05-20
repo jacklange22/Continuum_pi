@@ -1335,6 +1335,28 @@ def evaluate_preflight(
         else:
             checks.append(_ok("operating_mode", "Operating Mode", "dual_segment all-8 manual startup validation is selected."))
         checks.append(_physical_assembly_check(operating_context))
+        assembly_confirmed = bool(
+            config.physical_assembly_confirmed_by_operator
+            or dict(getattr(operating_context, "physical_assembly", {}) or {}).get("confirmed_by_operator", False)
+        )
+        if not assembly_confirmed and not servo_only_override:
+            checks.append(
+                _blocked(
+                    "physical_assembly_confirmation",
+                    "Assembly Confirmation",
+                    "Trusted two-segment dataset collection requires operator confirmation of which physical segment is bottom/proximal and which is top/distal.",
+                )
+            )
+        elif not assembly_confirmed:
+            checks.append(
+                _warning(
+                    "physical_assembly_confirmation",
+                    "Assembly Confirmation",
+                    "Bottom/top assembly is not confirmed; this dry-run/servo-only output stays lower-trust.",
+                )
+            )
+        else:
+            checks.append(_ok("physical_assembly_confirmation", "Assembly Confirmation", "Bottom/top assembly confirmed for this run."))
         checks.append(_baud_advisory_check(settings))
         if not servo_connected:
             checks.append(_blocked("servo_service", "Servo Service", "Two-segment startup validation requires a connected ServoService."))
@@ -1418,8 +1440,8 @@ def evaluate_preflight(
             checks.append(_ok("servo_service", "Servo Service", "ServoService is connected for all-8 telemetry/command checks."))
         else:
             checks.append(_warning("servo_service", "Servo Service", "Dry-run mode can resolve commands without connected hardware."))
-        if float(config.max_segment_displacement_mm) <= 0.0 and config.schedule_type != "zero":
-            checks.append(_blocked("command_limits", "Command Limits", "max_segment_displacement_mm must be greater than zero unless using schedule_type=zero."))
+        if float(config.max_segment_displacement_cm) <= 0.0 and config.schedule_type != "zero":
+            checks.append(_blocked("command_limits", "Command Limits", "max_segment_displacement_cm must be greater than zero unless using schedule_type=zero."))
         elif int(config.max_tick_delta_from_startup) <= 0:
             checks.append(_blocked("command_limits", "Command Limits", "max_tick_delta_from_startup must be greater than zero."))
         else:
@@ -1427,7 +1449,7 @@ def evaluate_preflight(
                 _ok(
                     "command_limits",
                     "Command Limits",
-                    f"Commands are bounded to <= {float(config.max_segment_displacement_mm):.3f} mm/segment and <= {int(config.max_tick_delta_from_startup)} ticks from startup.",
+                    f"Commands are bounded to <= {float(config.max_segment_displacement_cm):.2f} cm/segment and <= {int(config.max_tick_delta_from_startup)} ticks from startup.",
                 )
             )
         if servo_calibration_summary is None:
@@ -1449,7 +1471,11 @@ def evaluate_preflight(
                 role_configs=getattr(settings.registration, "two_segment_tracking_roles", {}),
                 require_model_training_roles=not servo_only_override,
             )
-            missing_required = list(role_resolution.get("missing_required_roles", []) or [])
+            missing_required = [
+                str(role)
+                for role in list(role_resolution.get("missing_required_roles", []) or [])
+                if str(role) == "distal_tip"
+            ]
             if missing_required and not servo_only_override:
                 checks.append(
                     _blocked(
@@ -1467,7 +1493,17 @@ def evaluate_preflight(
                     )
                 )
             else:
-                checks.append(_ok("tracking_roles", "Two-Segment Pose Roles", "Required two-segment pose roles are live and fresh."))
+                available_roles = set(str(role) for role in list(role_resolution.get("available_roles", []) or []))
+                if "distal_tip" in available_roles and "intermediate_segment" not in available_roles:
+                    checks.append(
+                        _warning(
+                            "tracking_roles",
+                            "Two-Segment Pose Roles",
+                            "distal_tip is live; intermediate_segment is missing/optional. Run will be distal_only and remains ANN-trainable for distal-tip mapping.",
+                        )
+                    )
+                else:
+                    checks.append(_ok("tracking_roles", "Two-Segment Pose Roles", "Required distal_tip pose role is live and fresh."))
             role_rows = two_segment_role_readiness_rows(
                 snapshot=tracking_snapshot,
                 role_configs=getattr(settings.registration, "two_segment_tracking_roles", {}),
@@ -2406,6 +2442,8 @@ def _physical_assembly_check(operating_context) -> PreflightCheck:
     top_label = assembly.get("top_segment_label") or top_key or "?"
     bottom_ids = list(assembly.get("bottom_servo_ids") or [])
     top_ids = list(assembly.get("top_servo_ids") or [])
+    confirmed = bool(assembly.get("confirmed_by_operator", False))
+    confirmed_at = str(assembly.get("confirmed_at_utc") or "")
     if issues:
         return _blocked(
             "physical_assembly",
@@ -2421,7 +2459,12 @@ def _physical_assembly_check(operating_context) -> PreflightCheck:
     return _ok(
         "physical_assembly",
         "Bottom/Top Assignment",
-        f"Bottom={bottom_label} ({bottom_ids}), Top={top_label} ({top_ids}).",
+        (
+            f"Bottom={bottom_label} ({bottom_ids}), Top={top_label} ({top_ids}); "
+            f"operator_confirmed={confirmed}"
+            + (f" at {confirmed_at}" if confirmed_at else "")
+            + "."
+        ),
     )
 
 

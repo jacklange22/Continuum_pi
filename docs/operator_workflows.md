@@ -261,8 +261,9 @@ The two fixed servo groups are hardware-identified by their servo IDs:
 - Segment B: servos `[5, 6, 7, 8]`
 
 Their *physical role* (which one sits at the bottom/proximal and which at the
-top/distal of the stacked rig) is selectable in `config/robot_8servo.yaml` under
-the `physical_assembly` block:
+top/distal of the stacked rig) is selectable in the System page for each
+dual-segment session, then persisted into the robot config override. The same
+fields live in `config/robot_8servo.yaml` under the `physical_assembly` block:
 
 ```yaml
 physical_assembly:
@@ -272,7 +273,9 @@ physical_assembly:
   notes: ""
 ```
 
-The GUI mode summary chip displays the resolved bottom/top assignment. If the
+The GUI mode summary chip displays the resolved bottom/top assignment and an
+operator confirmation flag. Trusted two-segment startup/dataset runs should not
+start until the operator confirms the physical stack for that session. If the
 assignment is invalid (same segment selected twice, or unknown key) the GUI
 preflight will block two-segment experiments with a clear error.
 
@@ -284,7 +287,7 @@ the top base. This is metadata-only; no two-segment control is implemented.
 
 1. Select `dual_segment` in System.
 2. Use Servos to confirm all 8 servos are visible (`[1..8]`).
-3. Confirm the bottom/top assignment shown in the experiment tab summary.
+3. Confirm the bottom/top assignment shown in System/Experiment.
 4. Run `two_segment_startup_validation`.
 5. Capture the staged manual workflow (stage names use bottom/top, not A/B):
    - `baseline`
@@ -337,12 +340,22 @@ shrinking the final range. Long-run features:
 
 - Servo-only/dry-run two-segment datasets are useful for software rehearsal, but
   are not model-training valid.
-- Trusted two-segment modeling data needs an accepted all-8 startup artifact
-  and a robot-frame `distal_tip` pose label.
+- Trusted two-segment modeling data needs an accepted all-8 startup artifact,
+  confirmed bottom/top assembly, and a robot-frame `distal_tip` pose label.
 - Missing orientation/tangent labels do not block XYZ position modeling.
-- Missing `distal_tip` labels block trusted model-training use.
-- Distal-only runs are allowed for lower-completeness models and are clearly
-  marked as such.
+- Missing `distal_tip` labels block trusted ANN model-training use.
+- Distal-only runs are valid for ANN distal-tip mapping when `distal_tip` XYZ is
+  present. They are clearly marked `distal_only=true`; intermediate/two-coil
+  labels are optional unless the operator explicitly chooses a two-coil label
+  mode.
+
+### Tracker role selection
+
+The two-segment collect-pose page has role selectors for `distal_tip`,
+`intermediate_segment`, and `debug_tool`. Use these to set, for example, `0A`
+as distal and `0C` as intermediate without editing YAML. The selected mapping is
+stored in the run config/provenance. If only the distal role is live, the run is
+`distal_only` and still usable for distal-tip ANN training.
 
 ### Current limitations
 
@@ -365,7 +378,9 @@ Required input data:
 - successful accepted commands
 - non-servo-only trusted samples by default
 - `distal_tip` pose role in robot frame
-- `valid_for_two_segment_model_training=true`
+- `valid_for_two_segment_ann_training=true` for ANN distal-tip or two-coil
+  training. `valid_for_two_segment_model_training` remains false for mock/lower
+  trust runs.
 
 Servo-only or dry-run data is rejected by default because it has no robot-frame distal-tip
 pose label to train against. Use lower-trust analysis only for debugging labeled data that

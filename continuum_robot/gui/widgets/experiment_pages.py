@@ -2308,22 +2308,40 @@ class TwoSegmentCollectPoseDatasetPage(ExperimentPageBase):
         form = QFormLayout()
         self.schedule_combo = NoWheelComboBox()
         for label, value in [
-            ("Single Axis Micro", "single_axis_micro"),
             ("Zero", "zero"),
+            ("Single Axis Micro", "single_axis_micro"),
             ("Segment Isolation", "segment_isolation"),
             ("Small Combined", "small_combined"),
+            ("Bottom Only Sweep", "bottom_only_sweep"),
+            ("Top Only Sweep", "top_only_sweep"),
+            ("Workspace Coverage", "workspace_coverage"),
+            ("Random Babble", "random_babble"),
+            ("Structured Grid", "structured_grid"),
+            ("Mixed Training", "mixed_training"),
         ]:
             self.schedule_combo.addItem(label, value)
         self.schedule_combo.currentIndexChanged.connect(
             lambda _index: self.controller.set_config_value("schedule_type", self.schedule_combo.currentData())
         )
         self.max_disp_spin = QDoubleSpinBox()
-        self.max_disp_spin.setRange(0.0, 5.0)
-        self.max_disp_spin.setDecimals(3)
-        self.max_disp_spin.setSingleStep(0.1)
+        self.range_preset_combo = NoWheelComboBox()
+        for label, value in [
+            ("±0.25 cm first-pass", 0.25),
+            ("±0.50 cm", 0.50),
+            ("±0.75 cm", 0.75),
+            ("±1.00 cm full planned range", 1.00),
+        ]:
+            self.range_preset_combo.addItem(label, float(value))
+        self.range_preset_combo.currentIndexChanged.connect(self._on_range_preset_changed)
+        self.max_disp_spin.setRange(0.0, 1.0)
+        self.max_disp_spin.setDecimals(2)
+        self.max_disp_spin.setSingleStep(0.25)
         self.max_disp_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("max_segment_displacement_mm", float(value))
+            lambda value: self.controller.set_config_value("max_segment_displacement_cm", float(value))
         )
+        self.range_warning_label = QLabel("High ranges still obey tick, wrap, current/load, and startup bounds.")
+        self.range_warning_label.setProperty("role", "muted")
+        self.range_warning_label.setWordWrap(True)
         self.max_tick_spin = QSpinBox()
         self.max_tick_spin.setRange(1, 200)
         self.max_tick_spin.valueChanged.connect(lambda value: self.controller.set_config_value("max_tick_delta_from_startup", int(value)))
@@ -2333,18 +2351,32 @@ class TwoSegmentCollectPoseDatasetPage(ExperimentPageBase):
         self.repeats_spin = QSpinBox()
         self.repeats_spin.setRange(1, 20)
         self.repeats_spin.valueChanged.connect(lambda value: self.controller.set_config_value("capture_repeats", int(value)))
+        self.continue_valid_check = QCheckBox("Continue until target valid samples")
+        self.continue_valid_check.toggled.connect(
+            lambda value: self.controller.set_config_value("continue_until_valid_samples", bool(value))
+        )
+        self.target_valid_spin = QSpinBox()
+        self.target_valid_spin.setRange(0, 1000000)
+        self.target_valid_spin.setSingleStep(100)
+        self.target_valid_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("target_valid_sample_count", int(value))
+        )
         self.settle_spin = QDoubleSpinBox()
         self.settle_spin.setRange(0.0, 10.0)
         self.settle_spin.setDecimals(3)
         self.settle_spin.setSingleStep(0.05)
         self.settle_spin.valueChanged.connect(lambda value: self.controller.set_config_value("settle_time_s", float(value)))
         form.addRow("Schedule Type", self.schedule_combo)
-        form.addRow("Max Displacement (mm)", self.max_disp_spin)
+        form.addRow("Range Preset", self.range_preset_combo)
+        form.addRow("Max Segment Displacement (cm)", self.max_disp_spin)
         form.addRow("Max Tick Delta", self.max_tick_spin)
         form.addRow("Samples / Pattern", self.samples_spin)
+        form.addRow("Target Valid Samples", self.target_valid_spin)
+        form.addRow("Long Run Mode", self.continue_valid_check)
         form.addRow("Repeats", self.repeats_spin)
         form.addRow("Settle Time (s)", self.settle_spin)
         schedule_card.body_layout.addLayout(form)
+        schedule_card.body_layout.addWidget(self.range_warning_label)
         self.parameter_layout.addWidget(schedule_card)
 
         trust_card = ExperimentCard("Trust", "Trusted hardware runs require startup and tracking readiness; servo-only runs remain explicitly not trainable.")
@@ -2359,16 +2391,25 @@ class TwoSegmentCollectPoseDatasetPage(ExperimentPageBase):
         self.run_trust_combo.currentIndexChanged.connect(
             lambda _index: self.controller.set_config_value("run_trust_mode", self.run_trust_combo.currentData())
         )
-        self.tool_roles_edit = QPlainTextEdit()
-        self.tool_roles_edit.setPlaceholderText("0A: distal_tip\n0C: intermediate")
-        self.tool_roles_edit.setMinimumHeight(72)
-        self.tool_roles_edit.setMaximumHeight(96)
-        self.tool_roles_edit.textChanged.connect(self._on_tool_roles_changed)
+        self.distal_tool_combo = NoWheelComboBox()
+        self.distal_tool_combo.setEditable(True)
+        self.intermediate_tool_combo = NoWheelComboBox()
+        self.intermediate_tool_combo.setEditable(True)
+        self.debug_tool_combo = NoWheelComboBox()
+        self.debug_tool_combo.setEditable(True)
+        for combo in (self.distal_tool_combo, self.intermediate_tool_combo, self.debug_tool_combo):
+            combo.currentIndexChanged.connect(self._on_role_combo_changed)
+            combo.editTextChanged.connect(lambda _text: self._on_role_combo_changed())
+        self.assembly_confirm_check = QCheckBox("Confirm bottom/top assembly for this dataset run")
+        self.assembly_confirm_check.toggled.connect(self._on_assembly_confirmation_changed)
         self.summary_widget = KeyValueSummaryWidget()
         trust_form.addRow("Mode", self.dry_run_check)
         trust_form.addRow("Servo Only", self.servo_only_check)
         trust_form.addRow("Run Trust", self.run_trust_combo)
-        trust_form.addRow("Tool Roles", self.tool_roles_edit)
+        trust_form.addRow("Distal Tip Tool", self.distal_tool_combo)
+        trust_form.addRow("Intermediate Tool", self.intermediate_tool_combo)
+        trust_form.addRow("Debug Tool", self.debug_tool_combo)
+        trust_form.addRow("Assembly", self.assembly_confirm_check)
         trust_card.body_layout.addLayout(trust_form)
         trust_card.body_layout.addWidget(self.summary_widget)
         self.parameter_layout.addWidget(trust_card)
@@ -2377,15 +2418,19 @@ class TwoSegmentCollectPoseDatasetPage(ExperimentPageBase):
         _ = state
         config = TwoSegmentCollectPoseDatasetConfig.from_dict(self.controller.config_payload())
         self._set_combo_value(self.schedule_combo, config.schedule_type)
-        self._set_double(self.max_disp_spin, float(config.max_segment_displacement_mm))
+        self._set_double(self.max_disp_spin, float(config.max_segment_displacement_cm))
+        self._sync_range_preset(float(config.max_segment_displacement_cm))
         self._set_spin(self.max_tick_spin, int(config.max_tick_delta_from_startup))
         self._set_spin(self.samples_spin, int(config.samples_per_pattern))
         self._set_spin(self.repeats_spin, int(config.capture_repeats))
+        self._set_spin(self.target_valid_spin, int(config.target_valid_sample_count))
+        self._set_checkbox(self.continue_valid_check, bool(config.continue_until_valid_samples))
         self._set_double(self.settle_spin, float(config.settle_time_s))
         self._set_checkbox(self.dry_run_check, bool(config.dry_run))
         self._set_checkbox(self.servo_only_check, bool(config.allow_servo_only_test_run))
         self._set_combo_value(self.run_trust_combo, config.run_trust_mode)
-        self._set_plain_text(self.tool_roles_edit, _yaml_block(config.requested_tool_roles or {}))
+        self._sync_role_combos(config)
+        self._set_checkbox(self.assembly_confirm_check, bool(config.physical_assembly_confirmed_by_operator))
         context = self.controller.settings.robot.operating_context()
         role_configs = getattr(self.controller.settings.registration, "two_segment_tracking_roles", {}) or {}
         role_summary = "; ".join(
@@ -2398,9 +2443,11 @@ class TwoSegmentCollectPoseDatasetPage(ExperimentPageBase):
             [
                 ("Operating Mode", str(context.operating_mode)),
                 ("Commanded IDs", str(list(context.commanded_servo_ids))),
+                ("Bottom/Top", self._bottom_top_summary(context)),
                 ("Tracking Roles", role_summary or "n/a"),
                 ("Schedule", str(config.schedule_type)),
-                ("Training Validity", "false unless accepted startup and real pose labels are present"),
+                ("Label Mode", "distal-only if only distal_tip is live; two-coil if intermediate is live"),
+                ("Training Validity", "ANN valid with accepted startup + distal_tip XYZ; orientation/intermediate optional"),
             ]
         )
 
@@ -2410,23 +2457,104 @@ class TwoSegmentCollectPoseDatasetPage(ExperimentPageBase):
         return (
             config.schedule_type,
             config.dry_run,
-            config.max_segment_displacement_mm,
+            config.max_segment_displacement_cm,
             config.max_tick_delta_from_startup,
             config.samples_per_pattern,
             config.capture_repeats,
+            config.continue_until_valid_samples,
+            config.target_valid_sample_count,
             config.settle_time_s,
             config.allow_servo_only_test_run,
             config.run_trust_mode,
+            config.physical_assembly_confirmed_by_operator,
             tuple(sorted(config.requested_tool_roles.items())),
         )
 
-    def _on_tool_roles_changed(self) -> None:
-        try:
-            parsed = yaml.safe_load(self.tool_roles_edit.toPlainText()) or {}
-        except Exception:
+    def _on_range_preset_changed(self, *_args) -> None:
+        value = self.range_preset_combo.currentData()
+        if value is None:
             return
-        if isinstance(parsed, dict):
-            self.controller.set_config_value("requested_tool_roles", {str(key): str(value) for key, value in parsed.items()})
+        self.max_disp_spin.setValue(float(value))
+
+    def _sync_range_preset(self, value_cm: float) -> None:
+        best = -1
+        for index in range(self.range_preset_combo.count()):
+            if abs(float(self.range_preset_combo.itemData(index) or 0.0) - float(value_cm)) < 1e-6:
+                best = index
+                break
+        if best >= 0 and not editable_update_blocked(self.range_preset_combo):
+            with QSignalBlocker(self.range_preset_combo):
+                self.range_preset_combo.setCurrentIndex(best)
+        self.range_warning_label.setVisible(float(value_cm) >= 0.75)
+
+    def _sync_role_combos(self, config: TwoSegmentCollectPoseDatasetConfig) -> None:
+        requested = {str(key).upper(): str(value) for key, value in dict(config.requested_tool_roles or {}).items()}
+        role_to_tool = {role: tool for tool, role in requested.items()}
+        role_configs = getattr(self.controller.settings.registration, "two_segment_tracking_roles", {}) or {}
+        for role, raw_config in dict(role_configs).items():
+            if role not in role_to_tool:
+                tool_id = str(getattr(raw_config, "tool_id", "") or "").upper()
+                if tool_id:
+                    role_to_tool[str(role)] = tool_id
+        available = self._available_tracking_tool_ids()
+        for combo, role, default in (
+            (self.distal_tool_combo, "distal_tip", "0A"),
+            (self.intermediate_tool_combo, "intermediate_segment", ""),
+            (self.debug_tool_combo, "debug_tool", ""),
+        ):
+            current = str(role_to_tool.get(role, default) or "").upper()
+            options = sorted(set(available + ([current] if current else []) + (["0A", "0B", "0C"] if role != "debug_tool" else ["0A", "0B", "0C", ""])))
+            with QSignalBlocker(combo):
+                combo.clear()
+                combo.addItem("Unconfigured", "")
+                for tool_id in options:
+                    if tool_id:
+                        combo.addItem(tool_id, tool_id)
+                index = combo.findData(current)
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+                elif current:
+                    combo.setEditText(current)
+
+    def _available_tracking_tool_ids(self) -> list[str]:
+        service = getattr(self.controller, "tracking_service", None)
+        snapshot = None
+        for method_name in ("get_snapshot", "peek_snapshot"):
+            method = getattr(service, method_name, None)
+            if callable(method):
+                try:
+                    snapshot = method()
+                    break
+                except Exception:
+                    continue
+        tools = dict(getattr(snapshot, "tools", {}) or {}) if snapshot is not None else {}
+        return sorted(str(tool_id).upper() for tool_id in tools)
+
+    def _on_role_combo_changed(self) -> None:
+        roles: dict[str, str] = {}
+        for combo, role in (
+            (self.distal_tool_combo, "distal_tip"),
+            (self.intermediate_tool_combo, "intermediate_segment"),
+            (self.debug_tool_combo, "debug_tool"),
+        ):
+            tool_id = str(combo.currentData() or combo.currentText() or "").strip().upper()
+            if tool_id and tool_id != "UNCONFIGURED":
+                roles[tool_id] = role
+        self.controller.set_config_value("requested_tool_roles", roles)
+
+    def _on_assembly_confirmation_changed(self, confirmed: bool) -> None:
+        self.controller.set_config_value("physical_assembly_confirmed_by_operator", bool(confirmed))
+        self.controller.set_config_value(
+            "physical_assembly_confirmed_at_utc",
+            datetime.now(timezone.utc).isoformat() if confirmed else "",
+        )
+
+    @staticmethod
+    def _bottom_top_summary(context) -> str:
+        assembly = dict(getattr(context, "physical_assembly", {}) or {})
+        bottom = assembly.get("bottom_segment_label") or assembly.get("bottom_segment_key") or "?"
+        top = assembly.get("top_segment_label") or assembly.get("top_segment_key") or "?"
+        return f"bottom={bottom} {list(assembly.get('bottom_servo_ids') or [])}; top={top} {list(assembly.get('top_servo_ids') or [])}"
 
 
 class PretensionValidationPage(ExperimentPageBase):

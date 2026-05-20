@@ -12,6 +12,8 @@ aurora_port: "/dev/ttyUSB0"
 openrb_port: "/dev/ttyACM0"
 tracker_backend: "ndi"
 # Keep legacy bridge fallback off unless you are explicitly validating it.
+# Thesis-trusted runs should keep fallback disabled so backend selection stays
+# deterministic.
 tracker_fallback_backend:
 tracker_fallback_enabled: false
 tracker_type: "aurora"

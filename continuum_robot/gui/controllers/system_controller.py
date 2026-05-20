@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
 import time
@@ -69,6 +70,10 @@ class SystemViewState:
     available_segments: list[dict[str, object]] = field(default_factory=list)
     active_segment_servo_ids: list[int] = field(default_factory=list)
     active_segment_pairs: dict[str, list[int]] = field(default_factory=dict)
+    bottom_segment_key: str = "segment_a"
+    top_segment_key: str = "segment_b"
+    physical_assembly_confirmed_by_operator: bool = False
+    physical_assembly_confirmed_at_utc: str = ""
     expected_servo_ids: list[int] = field(default_factory=list)
     detected_servo_ids: list[int] = field(default_factory=list)
     telemetry_ready_count: int = 0
@@ -129,6 +134,14 @@ class SystemController:
             available_segments=self._segment_options(settings.robot),
             active_segment_servo_ids=settings.robot.active_segment_servo_ids(),
             active_segment_pairs=settings.robot.active_segment_pairs(),
+            bottom_segment_key=str(settings.robot.bottom_segment_key or "segment_a"),
+            top_segment_key=str(settings.robot.top_segment_key or "segment_b"),
+            physical_assembly_confirmed_by_operator=bool(
+                settings.robot.physical_assembly_confirmed_by_operator
+            ),
+            physical_assembly_confirmed_at_utc=str(
+                settings.robot.physical_assembly_confirmed_at_utc or ""
+            ),
             expected_servo_ids=list(settings.robot.expected_servo_ids()),
             poll_rate_hz=settings.runtime.poll_rate_hz,
             servo_telemetry_cadence_summary="",
@@ -640,6 +653,14 @@ class SystemController:
         self.state.available_segments = self._segment_options(self.settings.robot)
         self.state.active_segment_servo_ids = self.settings.robot.active_segment_servo_ids()
         self.state.active_segment_pairs = self.settings.robot.active_segment_pairs()
+        self.state.bottom_segment_key = str(self.settings.robot.bottom_segment_key or "segment_a")
+        self.state.top_segment_key = str(self.settings.robot.top_segment_key or "segment_b")
+        self.state.physical_assembly_confirmed_by_operator = bool(
+            self.settings.robot.physical_assembly_confirmed_by_operator
+        )
+        self.state.physical_assembly_confirmed_at_utc = str(
+            self.settings.robot.physical_assembly_confirmed_at_utc or ""
+        )
         if not self.state.dynamixel_connected:
             self.state.bus_reachable = False
             self.state.motion_ready = False
@@ -1033,6 +1054,9 @@ class SystemController:
         figure_output_quality: str | None = None,
         pretension_threshold_ma: int | None = None,
         tightening_direction: str | None = None,
+        bottom_segment_key: str | None = None,
+        top_segment_key: str | None = None,
+        physical_assembly_confirmed_by_operator: bool | None = None,
     ) -> str:
         try:
             if self.config_loader is None:
@@ -1102,6 +1126,45 @@ class SystemController:
             if resolved_active_segment not in robot.segment_map():
                 raise ValueError(f"Active segment {resolved_active_segment!r} is not available in {robot_config}.")
             robot.active_segment = resolved_active_segment
+            segment_keys = set(robot.segment_map())
+            resolved_bottom_segment = str(robot.bottom_segment_key or "segment_a")
+            resolved_top_segment = str(robot.top_segment_key or "segment_b")
+            if resolved_operating_mode == "dual_segment":
+                resolved_bottom_segment = (
+                    str(bottom_segment_key).strip()
+                    if bottom_segment_key not in (None, "")
+                    else resolved_bottom_segment
+                )
+                resolved_top_segment = (
+                    str(top_segment_key).strip()
+                    if top_segment_key not in (None, "")
+                    else resolved_top_segment
+                )
+                if resolved_bottom_segment not in segment_keys:
+                    raise ValueError(f"Bottom segment {resolved_bottom_segment!r} is not available in {robot_config}.")
+                if resolved_top_segment not in segment_keys:
+                    raise ValueError(f"Top segment {resolved_top_segment!r} is not available in {robot_config}.")
+                if resolved_bottom_segment == resolved_top_segment:
+                    raise ValueError("Bottom/proximal and top/distal segments must be different.")
+                assembly_changed = (
+                    str(robot.bottom_segment_key or "") != resolved_bottom_segment
+                    or str(robot.top_segment_key or "") != resolved_top_segment
+                )
+                robot.bottom_segment_key = resolved_bottom_segment
+                robot.top_segment_key = resolved_top_segment
+                confirmed = (
+                    bool(physical_assembly_confirmed_by_operator)
+                    if physical_assembly_confirmed_by_operator is not None
+                    else bool(robot.physical_assembly_confirmed_by_operator)
+                )
+                if assembly_changed and physical_assembly_confirmed_by_operator is None:
+                    confirmed = False
+                robot.physical_assembly_confirmed_by_operator = bool(confirmed)
+                robot.physical_assembly_confirmed_at_utc = (
+                    datetime.now(timezone.utc).isoformat()
+                    if confirmed
+                    else ""
+                )
             context = robot.operating_context()
             if context.operating_mode == "one_servo" and int(robot.selected_servo_id) not in context.all_configured_servo_ids:
                 raise ValueError(
@@ -1115,6 +1178,23 @@ class SystemController:
                 raise ValueError(
                     f"parallel_single requires four mirror pairs; resolved {context.mirror_pairs}."
                 )
+            robot_overrides = {
+                "mode": context.operating_mode,
+                "selected_servo_id": int(robot.selected_servo_id),
+                "active_segment": resolved_active_segment,
+                "tightening_rotation_by_servo": {
+                    str(servo_id): str(resolved_direction).strip().lower()
+                    for servo_id in robot.servo_ids
+                },
+            }
+            if context.operating_mode == "dual_segment":
+                robot_overrides["physical_assembly"] = {
+                    "bottom_segment_key": resolved_bottom_segment,
+                    "top_segment_key": resolved_top_segment,
+                    "confirmed_by_operator": bool(robot.physical_assembly_confirmed_by_operator),
+                    "confirmed_at_utc": str(robot.physical_assembly_confirmed_at_utc or ""),
+                    "lower_tick_means_tension": bool(robot.lower_tick_means_tension),
+                }
             overrides = {
                 "mock_mode": bool(mock_mode),
                 "robot_config": str(robot_config),
@@ -1131,15 +1211,7 @@ class SystemController:
                     "telemetry_stale_after_s": float(telemetry_freshness_timeout_s),
                     "default_pretension_current_threshold_ma": int(resolved_threshold),
                 },
-                "robot_overrides": {
-                    "mode": context.operating_mode,
-                    "selected_servo_id": int(robot.selected_servo_id),
-                    "active_segment": resolved_active_segment,
-                    "tightening_rotation_by_servo": {
-                        str(servo_id): str(resolved_direction).strip().lower()
-                        for servo_id in robot.servo_ids
-                    },
-                },
+                "robot_overrides": robot_overrides,
             }
             path = self.config_loader.save_system_local_overrides(overrides)
             self.state.mock_mode = bool(mock_mode)
@@ -1152,6 +1224,14 @@ class SystemController:
             self.state.available_segments = self._segment_options(robot)
             self.state.active_segment_servo_ids = robot.active_segment_servo_ids()
             self.state.active_segment_pairs = robot.active_segment_pairs()
+            self.state.bottom_segment_key = str(robot.bottom_segment_key or "")
+            self.state.top_segment_key = str(robot.top_segment_key or "")
+            self.state.physical_assembly_confirmed_by_operator = bool(
+                robot.physical_assembly_confirmed_by_operator
+            )
+            self.state.physical_assembly_confirmed_at_utc = str(
+                robot.physical_assembly_confirmed_at_utc or ""
+            )
             self.state.openrb_port = str(openrb_port).strip()
             self.state.baudrate = int(baudrate)
             self.state.expected_servo_ids = list(context.expected_servo_ids)

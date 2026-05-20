@@ -88,6 +88,7 @@ def run_hardware_readiness_check(
         )
     if settings is not None:
         checks.append(_serial_readiness_check(settings=settings))
+        checks.append(_dual_segment_baud_readiness_check(settings=settings))
         checks.append(_tracker_backend_fallback_check(settings=settings))
         checks.append(_selected_segment_calibration_check(project_root=project_root, settings=settings))
         checks.append(_tracking_role_check(settings=settings))
@@ -192,23 +193,68 @@ def _tracker_backend_fallback_check(*, settings) -> HardwareReadinessCheck:
     fallback_enabled = bool(getattr(settings.serial, "tracker_fallback_enabled", False))
     fallback_backend = str(getattr(settings.serial, "tracker_fallback_backend", "") or "")
     configured_backend = str(getattr(settings.serial, "tracker_backend", "") or "")
+    trusted_run_intent = not bool(getattr(settings.runtime, "mock_mode", True))
     if fallback_enabled:
+        status = "FAIL" if trusted_run_intent else "WARN"
         return HardwareReadinessCheck(
             subsystem="tracker_backend",
-            status="WARN",
+            status=status,
             message=(
                 f"Tracker fallback is enabled (configured={configured_backend}, fallback={fallback_backend}). "
-                "This is not appropriate for thesis-intended hardware runs unless explicitly documented."
+                "Trusted hardware runs should use a single explicit backend path to avoid silent backend swaps."
             ),
-            next_action="Disable tracker bridge fallback for thesis-intended data; use the Python NDI backend path.",
-            details={"tracker_backend": configured_backend, "tracker_fallback_backend": fallback_backend},
+            next_action=(
+                "Set tracker_backend=ndi, tracker_fallback_enabled=false, and tracker_fallback_backend empty "
+                "before thesis-trusted runs."
+            ),
+            details={
+                "tracker_backend": configured_backend,
+                "tracker_fallback_backend": fallback_backend,
+                "trusted_run_intent": trusted_run_intent,
+                "trusted_backend_ready": False,
+            },
         )
     return HardwareReadinessCheck(
         subsystem="tracker_backend",
         status="PASS",
         message=f"Tracker fallback is disabled; configured backend is {configured_backend or 'default'}.",
         next_action="Confirm live tracking uses the Python NDI backend before thesis-intended runs.",
-        details={"tracker_backend": configured_backend, "tracker_fallback_backend": fallback_backend},
+        details={
+            "tracker_backend": configured_backend,
+            "tracker_fallback_backend": fallback_backend,
+            "trusted_run_intent": trusted_run_intent,
+            "trusted_backend_ready": configured_backend in {"", "ndi"},
+        },
+    )
+
+
+def _dual_segment_baud_readiness_check(*, settings) -> HardwareReadinessCheck:
+    context = settings.robot.operating_context()
+    mode = str(context.operating_mode)
+    expected_ids = [int(value) for value in list(context.expected_servo_ids or [])]
+    baud = int(getattr(settings.serial, "baudrate", 57600) or 57600)
+    all8_mode = mode in {"dual_segment", "parallel_single"} or len(expected_ids) >= 8
+    if all8_mode and baud < 1_000_000:
+        return HardwareReadinessCheck(
+            subsystem="dynamixel_baud",
+            status="WARN",
+            message=(
+                f"Configured DYNAMIXEL baud is {baud} bps for {mode}. "
+                "Dual-segment/all-8 trusted operation is designed around 1 000 000 bps; "
+                "57 600 is debug/legacy/single-segment acceptable but can bottleneck all-8 telemetry."
+            ),
+            next_action=(
+                "Do not change baud blindly. Reflash every servo with DYNAMIXEL Wizard, update config, "
+                "then run servo_transport_diagnostic for IDs 1-8 at --baud 1000000."
+            ),
+            details={"operating_mode": mode, "expected_servo_ids": expected_ids, "baudrate": baud},
+        )
+    return HardwareReadinessCheck(
+        subsystem="dynamixel_baud",
+        status="PASS",
+        message=f"Configured DYNAMIXEL baud is {baud} bps for {mode}.",
+        next_action="For trusted dual-segment work, confirm all eight servos respond at the configured baud.",
+        details={"operating_mode": mode, "expected_servo_ids": expected_ids, "baudrate": baud},
     )
 
 
@@ -240,6 +286,64 @@ def _selected_segment_calibration_check(*, project_root: Path, settings) -> Hard
     )
     neutral = readiness.neutral_safe_calibration
     startup = readiness.startup_pretension
+    artifact_robot = dict(summary.robot_metadata or {})
+    artifact_mode = str(artifact_robot.get("operating_mode") or artifact_robot.get("robot_mode") or "unknown")
+    artifact_active_segment = str(artifact_robot.get("active_segment_key") or "none")
+    artifact_expected_ids = [
+        int(value)
+        for value in list(artifact_robot.get("expected_servo_ids") or [])
+        if value is not None
+    ]
+    runtime_mode = str(context.operating_mode)
+    runtime_segment = str(context.active_segment_key or "none")
+    runtime_expected_ids = [int(value) for value in context.expected_servo_ids]
+    segment_mismatch = bool(neutral.mismatch_reasons)
+    safe_to_use = bool(neutral.ready and startup.ready and not segment_mismatch)
+
+    if context.operating_mode == "dual_segment":
+        if not safe_to_use:
+            return HardwareReadinessCheck(
+                subsystem="selected_segment_calibration",
+                status="FAIL",
+                message=(
+                    "Calibration/startup artifact is not dual-segment-safe for current runtime. "
+                    f"runtime(mode={runtime_mode}, segment={runtime_segment}, expected_ids={runtime_expected_ids}) "
+                    f"artifact(mode={artifact_mode}, segment={artifact_active_segment}, expected_ids={artifact_expected_ids})."
+                ),
+                next_action=(
+                    "Run two_segment_startup_validation (baseline -> segment_a_pretensioned -> "
+                    "segment_b_pretensioned -> segment_a_recheck -> final_accept) to capture a compatible all-8 startup."
+                ),
+                details={
+                    "runtime_mode": runtime_mode,
+                    "runtime_segment": runtime_segment,
+                    "runtime_expected_servo_ids": runtime_expected_ids,
+                    "artifact_mode": artifact_mode,
+                    "artifact_segment": artifact_active_segment,
+                    "artifact_expected_servo_ids": artifact_expected_ids,
+                    "safe_to_use": safe_to_use,
+                    "readiness": readiness.to_dict(),
+                },
+            )
+        return HardwareReadinessCheck(
+            subsystem="selected_segment_calibration",
+            status="PASS",
+            message=(
+                "Calibration/startup artifact matches dual-segment runtime and is safe to use "
+                f"(runtime expected IDs={runtime_expected_ids})."
+            ),
+            next_action="Proceed with two_segment_startup_validation checkpointing, then dataset collection.",
+            details={
+                "runtime_mode": runtime_mode,
+                "runtime_segment": runtime_segment,
+                "runtime_expected_servo_ids": runtime_expected_ids,
+                "artifact_mode": artifact_mode,
+                "artifact_segment": artifact_active_segment,
+                "artifact_expected_servo_ids": artifact_expected_ids,
+                "safe_to_use": safe_to_use,
+                "readiness": readiness.to_dict(),
+            },
+        )
     if context.operating_mode != "single_segment":
         return HardwareReadinessCheck(
             subsystem="selected_segment_calibration",
@@ -253,25 +357,40 @@ def _selected_segment_calibration_check(*, project_root: Path, settings) -> Hard
         )
     if not neutral.ready:
         status = "WARN" if settings.runtime.mock_mode and neutral.is_mock else "FAIL"
-        next_action = (
-            "Set mock_mode=false in system.local.yaml or System tab before hardware data."
-            if settings.runtime.mock_mode
-            else "Capture valid neutral/safe calibration before repeatability."
-        )
-        startup_note = (
-            " Startup reference exists, but calibrated neutral/safe bounds are missing or incompatible."
-            if startup.accepted
-            else ""
-        )
+        if segment_mismatch:
+            next_action = (
+                "Current runtime segment does not match artifact segment. Recapture startup/calibration for the "
+                f"current single_segment target ({context.active_segment_label} / {context.active_segment_key}, "
+                f"IDs {runtime_expected_ids})."
+            )
+        else:
+            next_action = (
+                "Set mock_mode=false in system.local.yaml or System tab before hardware data."
+                if settings.runtime.mock_mode
+                else "Capture valid neutral/safe calibration before repeatability."
+            )
+        startup_note = " Startup reference exists but is not safe to use for the current runtime context." if startup.accepted else ""
         return HardwareReadinessCheck(
             subsystem="selected_segment_calibration",
             status=status,
             message=(
-                f"{context.active_segment_label} ({context.active_segment_key}) expected IDs "
-                f"{context.expected_servo_ids}: {neutral.message}{startup_note}"
+                f"{context.active_segment_label} ({context.active_segment_key}) expected IDs {context.expected_servo_ids}: "
+                f"{neutral.message}{startup_note} "
+                f"runtime(mode={runtime_mode}, segment={runtime_segment}, expected_ids={runtime_expected_ids}) "
+                f"artifact(mode={artifact_mode}, segment={artifact_active_segment}, expected_ids={artifact_expected_ids}) "
+                f"safe_to_use={safe_to_use}"
             ),
             next_action=next_action,
-            details=readiness.to_dict(),
+            details={
+                "runtime_mode": runtime_mode,
+                "runtime_segment": runtime_segment,
+                "runtime_expected_servo_ids": runtime_expected_ids,
+                "artifact_mode": artifact_mode,
+                "artifact_segment": artifact_active_segment,
+                "artifact_expected_servo_ids": artifact_expected_ids,
+                "safe_to_use": safe_to_use,
+                "readiness": readiness.to_dict(),
+            },
         )
     if not startup.ready:
         return HardwareReadinessCheck(
@@ -408,7 +527,7 @@ def _gui_construction_check() -> HardwareReadinessCheck:
             message=f"Full GUI construction skipped/failed in this environment: {exc}",
             next_action="Run scripts/run_tests.sh gui or launch scripts/run_gui.sh on the operator machine.",
         )
-    expected = ["System", "Tracking", "Registration", "Servos", "Pretension", "Experiment", "Modeling", "Data"]
+    expected = ["System", "Tracking", "Registration", "Servos", "Experiment", "Modeling", "Data"]
     missing = [label for label in expected if label not in labels]
     if missing:
         return HardwareReadinessCheck(
@@ -421,7 +540,10 @@ def _gui_construction_check() -> HardwareReadinessCheck:
     return HardwareReadinessCheck(
         subsystem="gui_pages",
         status="PASS",
-        message="System, Tracking, Registration, Servos, Pretension, Experiment, Modeling, and Data pages construct offscreen.",
+        message=(
+            "System, Tracking, Registration, Servos, Experiment, Modeling, and Data pages construct offscreen. "
+            "Pretension workflow is integrated in Servos."
+        ),
         next_action="On hardware day, use the System page first to select mode and connect tracker/OpenRB.",
         details={"labels": labels},
     )

@@ -359,7 +359,13 @@ def _rejection_reason(sample: dict[str, Any], *, metrics: dict[str, Any], allow_
         return "command_failed"
     if not bool(extra.get("capture_accepted", False)):
         return "capture_not_accepted"
-    if not allow_lower_trust and not bool(extra.get("valid_for_two_segment_model_training", False)):
+    ann_valid = bool(
+        extra.get(
+            "valid_for_two_segment_ann_training",
+            extra.get("valid_for_two_segment_model_training", False),
+        )
+    )
+    if not allow_lower_trust and not ann_valid:
         return "sample_not_two_segment_model_training_valid"
     if not allow_lower_trust and str(extra.get("run_trust_mode") or "").lower() in {"servo_only", "dry_run", "debug", "lower_trust"}:
         return "servo_only_or_lower_trust"

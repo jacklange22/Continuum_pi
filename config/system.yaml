@@ -5,6 +5,8 @@ openrb_port: ""
 tracker_backend: "ndi"
 # Leave bridge fallback disabled unless you are explicitly debugging the legacy
 # compatibility path. The Python NDI backend is the active runtime path.
+# Thesis-trusted runs should keep fallback disabled so backend selection cannot
+# silently switch at runtime.
 tracker_fallback_backend:
 tracker_fallback_enabled: false
 tracker_type: "aurora"

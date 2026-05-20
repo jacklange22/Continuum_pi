@@ -230,7 +230,9 @@ def _extract_key_metrics(run_dir: Path) -> dict[str, Any]:
         "includes_intermediate_pose",
         "includes_intermediate_label",
         "label_mode",
+        "label_mode_used",
         "physics_model_status",
+        "valid_for_two_segment_ann_training",
         # registration_sampling_study
         "captured_label_count",
         "captured_sample_count_total",
@@ -252,6 +254,7 @@ def _extract_key_metrics(run_dir: Path) -> dict[str, Any]:
             "best_xyz_rmse_mm": best.get("xyz_rmse_mm"),
             "best_orientation_mean_error_deg": best.get("orientation_mean_error_deg"),
             "label_mode": metrics.get("label_mode"),
+            "label_mode_used": metrics.get("label_mode_used"),
             "includes_intermediate_label": metrics.get("includes_intermediate_label"),
             "physics_model_status": metrics.get("physics_model_status", {}),
             "lower_trust_warning": "allow_lower_trust_used_outputs_not_thesis_trusted"
@@ -272,6 +275,10 @@ def _extract_key_metrics(run_dir: Path) -> dict[str, Any]:
             "continue_until_valid_samples": long_run.get("continue_until_valid_samples"),
             "target_valid_sample_count": long_run.get("target_valid_sample_count"),
             "valid_for_two_segment_model_training": metrics.get("valid_for_two_segment_model_training"),
+            "valid_for_two_segment_ann_training": metrics.get("valid_for_two_segment_ann_training"),
+            "label_mode_used": metrics.get("label_mode_used"),
+            "distal_only": metrics.get("distal_only"),
+            "includes_orientation": metrics.get("includes_orientation"),
             "run_trust_mode": metrics.get("run_trust_mode"),
             "current_load_any_warning_observed": current_load.get("any_warning_observed"),
             "current_load_any_hard_observed": current_load.get("any_hard_observed"),

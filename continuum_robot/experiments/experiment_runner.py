@@ -593,6 +593,7 @@ class ExperimentRunner:
             "valid_for_model_training": bool(valid_for_model_training),
             "valid_for_thesis_repeatability": bool(valid_for_thesis_repeatability),
             "valid_for_two_segment_model_training": False if mock_mode else bool(config_used.get("valid_for_two_segment_model_training", False)),
+            "valid_for_two_segment_ann_training": False if mock_mode else bool(config_used.get("valid_for_two_segment_ann_training", False)),
             "include_in_evidence_index": False,
             "data_quality_warnings": sorted(set(data_quality_warnings)),
             "runtime_tip_policy": runtime_tip_policy,
@@ -648,6 +649,10 @@ class ExperimentRunner:
             bool((session.metadata.trust_info or {}).get("valid_for_two_segment_model_training", False)),
         )
         metrics.setdefault(
+            "valid_for_two_segment_ann_training",
+            bool((session.metadata.trust_info or {}).get("valid_for_two_segment_ann_training", False)),
+        )
+        metrics.setdefault(
             "mock_mode",
             bool((session.metadata.provenance_info or {}).get("mock_mode", False)),
         )
@@ -668,6 +673,7 @@ class ExperimentRunner:
             metrics["valid_for_model_training"] = False
             metrics["valid_for_thesis_repeatability"] = False
             metrics["valid_for_two_segment_model_training"] = False
+            metrics["valid_for_two_segment_ann_training"] = False
             metrics["mock_mode"] = True
             metrics["include_in_evidence_index"] = False
             metrics["data_quality_warnings"] = sorted(warnings)

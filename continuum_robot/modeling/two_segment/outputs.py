@@ -85,6 +85,9 @@ def write_output_bundle(
         "model_status": output_dir / "model_status.json",
         "physics_parameter_report": output_dir / "physics_model_parameter_report.json",
         "physics_parameter_report_text": output_dir / "physics_model_parameter_report.txt",
+        "model_sweep_summary_json": output_dir / "model_sweep_summary.json",
+        "model_sweep_summary_csv": output_dir / "model_sweep_summary.csv",
+        "model_sweep_summary_txt": output_dir / "model_sweep_summary.txt",
     }
     metrics_rows = _metrics_rows(model_results)
     summary = _summary_payload(config=config, dataset=dataset, bundle=bundle, split=split, model_results=model_results)
@@ -100,6 +103,10 @@ def write_output_bundle(
     paths["model_status"].write_text(json.dumps(model_status, indent=2), encoding="utf-8")
     paths["physics_parameter_report"].write_text(json.dumps(physics_report, indent=2), encoding="utf-8")
     paths["physics_parameter_report_text"].write_text(_physics_parameter_report_text(physics_report), encoding="utf-8")
+    sweep_summary = _model_sweep_summary_payload(model_results)
+    paths["model_sweep_summary_json"].write_text(json.dumps(sweep_summary, indent=2), encoding="utf-8")
+    _write_metrics_csv(paths["model_sweep_summary_csv"], list(sweep_summary["rows"]))
+    paths["model_sweep_summary_txt"].write_text(_model_sweep_summary_text(sweep_summary), encoding="utf-8")
     paths["model_config"].write_text(yaml.safe_dump(_config_payload(config), sort_keys=False), encoding="utf-8")
     paths["config_snapshot"].write_text(yaml.safe_dump({"two_segment_modeling_config": _config_payload(config)}, sort_keys=False), encoding="utf-8")
     _write_metrics_csv(paths["metrics"], metrics_rows)
@@ -159,6 +166,12 @@ def write_report_figures(
         quality=quality,
     )
     figures["axis_error"] = _plot_axis_error(output_dir / "two_segment_axis_error_report.png", model_results, quality=quality)
+    figures["train_test_workspace_coverage"] = _plot_train_test_workspace_coverage(
+        output_dir / "two_segment_train_test_workspace_coverage_report.png",
+        bundle=bundle,
+        split=split,
+        quality=quality,
+    )
     figures["two_coil_error"] = _plot_two_coil_error(output_dir / "two_segment_two_coil_error_report.png", model_results, quality=quality)
     if bool(bundle.label_metadata.get("orientation_available")):
         figures["orientation_error"] = _plot_orientation_error(output_dir / "two_segment_orientation_error_report.png", model_results, quality=quality)
@@ -275,6 +288,7 @@ def _summary_payload(*, config: Any, dataset: Any, bundle: Any, split: dict[str,
         "run_trust_mode": "lower_trust" if dataset.allow_lower_trust else "offline_modeling_analysis",
         "valid_for_model_training": bool(not dataset.allow_lower_trust and dataset.accepted_count > 0),
         "valid_for_two_segment_model_training": bool(not dataset.allow_lower_trust and dataset.accepted_count > 0),
+        "valid_for_two_segment_ann_training": bool(not dataset.allow_lower_trust and dataset.accepted_count > 0),
         "valid_for_thesis_repeatability": False,
         "accepted_sample_count": int(dataset.accepted_count),
         "rejected_sample_count": int(dataset.rejected_count),
@@ -299,7 +313,9 @@ def _summary_payload(*, config: Any, dataset: Any, bundle: Any, split: dict[str,
         "distal_only": bool(dataset.distal_only),
         "includes_intermediate_pose": bool(dataset.includes_intermediate_pose),
         "orientation_available": bool(dataset.orientation_available),
+        "includes_orientation": bool(dataset.orientation_available),
         "label_mode": bundle.label_metadata.get("label_mode"),
+        "label_mode_used": bundle.label_metadata.get("label_mode"),
         "direct_global_model": bool(bundle.label_metadata.get("direct_global_model", True)),
         "includes_intermediate_label": bool(bundle.label_metadata.get("includes_intermediate_label", False)),
         "structured_composition_model": bool(bundle.label_metadata.get("structured_composition_model", False)),
@@ -333,6 +349,7 @@ def _metadata_payload(*, config: Any, dataset: Any, bundle: Any, split: dict[str
             "run_trust_mode": "lower_trust" if dataset.allow_lower_trust else "offline_modeling_analysis",
             "valid_for_model_training": bool(not dataset.allow_lower_trust and dataset.accepted_count > 0),
             "valid_for_two_segment_model_training": bool(not dataset.allow_lower_trust and dataset.accepted_count > 0),
+            "valid_for_two_segment_ann_training": bool(not dataset.allow_lower_trust and dataset.accepted_count > 0),
             "valid_for_thesis_repeatability": False,
             "data_quality_warnings": _data_quality_warnings(dataset=dataset, split=split),
         },
@@ -378,6 +395,62 @@ def _metrics_rows(model_results: list[Any]) -> list[dict[str, Any]]:
         row.update(dict(result.metrics or {}))
         rows.append(row)
     return rows
+
+
+def _model_sweep_summary_payload(model_results: list[Any]) -> dict[str, Any]:
+    """Compact ANN-first model comparison summary for operator review."""
+    rows: list[dict[str, Any]] = []
+    completed = [result for result in model_results if result.status == "completed"]
+    best = _best_completed_model(model_results)
+    for result in model_results:
+        metrics = dict(result.metrics or {})
+        details = dict(result.status_details or {})
+        rows.append(
+            {
+                "model_key": result.model_key,
+                "label": result.label,
+                "status": result.status,
+                "reason": result.reason,
+                "distal_xyz_rmse_mm": metrics.get("distal_xyz_rmse_mm", metrics.get("xyz_rmse_mm")),
+                "xyz_rmse_mm": metrics.get("xyz_rmse_mm"),
+                "intermediate_xyz_rmse_mm": metrics.get("intermediate_xyz_rmse_mm"),
+                "orientation_mean_error_deg": metrics.get("orientation_mean_error_deg"),
+                "ann_sweep_candidate_count": metrics.get("ann_sweep_candidate_count"),
+                "best_epoch": metrics.get("best_epoch"),
+                "predictions_generated": details.get("predictions_generated", result.status == "completed"),
+            }
+        )
+    return {
+        "schema_version": "two_segment_model_sweep_summary_v1",
+        "primary_success_metric": "distal_xyz_rmse_mm",
+        "completed_model_count": len(completed),
+        "best_model_by_distal_xyz_rmse": (
+            {
+                "model_key": best.model_key,
+                "distal_xyz_rmse_mm": dict(best.metrics or {}).get("distal_xyz_rmse_mm", dict(best.metrics or {}).get("xyz_rmse_mm")),
+            }
+            if best is not None
+            else None
+        ),
+        "rows": rows,
+    }
+
+
+def _model_sweep_summary_text(summary: dict[str, Any]) -> str:
+    lines = [
+        "Two-Segment Model Sweep Summary",
+        f"primary_success_metric: {summary.get('primary_success_metric')}",
+        f"completed_model_count: {summary.get('completed_model_count')}",
+        f"best_model_by_distal_xyz_rmse: {summary.get('best_model_by_distal_xyz_rmse')}",
+        "",
+        "Rows:",
+    ]
+    for row in list(summary.get("rows") or []):
+        lines.append(
+            f"- {row.get('model_key')}: status={row.get('status')}, "
+            f"distal_xyz_rmse_mm={row.get('distal_xyz_rmse_mm')}, reason={row.get('reason') or ''}"
+        )
+    return "\n".join(lines).strip() + "\n"
 
 
 def _write_metrics_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -509,6 +582,26 @@ def _plot_axis_error(path: Path, model_results: list[Any], *, quality: str) -> P
     else:
         ax.text(0.5, 0.5, "No completed model axis metrics", ha="center", va="center", transform=ax.transAxes)
     style_axes(ax, title="Axis RMSE by Model", xlabel="Model", ylabel="RMSE (mm)")
+    return save_figure(fig, path, quality=quality)
+
+
+def _plot_train_test_workspace_coverage(path: Path, *, bundle: Any, split: dict[str, Any], quality: str) -> Path:
+    fig, ax = create_figure(size="wide")
+    y_position = np.asarray(getattr(bundle, "y_position", np.zeros((0, 3))), dtype=float)
+    if y_position.size and y_position.shape[1] >= 2:
+        folds = [
+            ("train", list(split.get("train_indices", []) or []), color("measured")),
+            ("validation", list(split.get("val_indices", []) or []), color("reference")),
+            ("test", list(split.get("test_indices", []) or []), color("prediction")),
+        ]
+        for label, indices, c in folds:
+            valid = [int(index) for index in indices if 0 <= int(index) < y_position.shape[0]]
+            if valid:
+                ax.scatter(y_position[valid, 0], y_position[valid, 1], s=18, alpha=0.8, color=c, label=label)
+        ax.legend(loc="best")
+    else:
+        ax.text(0.5, 0.5, "No distal labels available", ha="center", va="center", transform=ax.transAxes)
+    style_axes(ax, title="Train / Validation / Test Distal Workspace Coverage", xlabel="Distal X (mm)", ylabel="Distal Y (mm)")
     return save_figure(fig, path, quality=quality)
 
 
