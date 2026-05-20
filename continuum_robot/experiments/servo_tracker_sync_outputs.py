@@ -143,7 +143,18 @@ def write_servo_tracker_sync_outputs(*, output_dir: Path, metadata, summary, sam
     debug_json_path = output_dir / "debug.json"
     thesis_01_path = output_dir / "thesis_01_pair_time_alignment.png"
     thesis_02_path = output_dir / "thesis_02_motion_correspondence.png"
+    # Phase-4 supplementary figures (operator-spec request).
+    events_on_timeline_path = output_dir / "sync_command_events_on_tracker_timeline.png"
+    command_offset_hist_path = output_dir / "sync_command_offset_histogram.png"
+    telemetry_offset_hist_path = output_dir / "sync_telemetry_offset_histogram.png"
+    frame_age_over_time_path = output_dir / "sync_tracker_frame_age_at_servo_events.png"
+    telemetry_interval_path = output_dir / "sync_servo_telemetry_interval_histogram.png"
+    combined_summary_path = output_dir / "sync_combined_timing_summary.png"
+
     metrics = summary.experiment_metrics if isinstance(summary.experiment_metrics, dict) else {}
+    tracker_records = extract_tracker_timing_records(samples)
+    servo_telemetry_records = extract_servo_timing_records(samples)
+    servo_command_records = extract_servo_command_records(samples)
 
     _write_servo_debug_json(
         path=debug_json_path,
@@ -158,6 +169,34 @@ def write_servo_tracker_sync_outputs(*, output_dir: Path, metadata, summary, sam
         (thesis_02_path, lambda: _write_servo_thesis_02_motion_correspondence(
             path=thesis_02_path, samples=samples, metrics=metrics,
         )),
+        (events_on_timeline_path, lambda: _write_sync_command_events_on_tracker_timeline(
+            path=events_on_timeline_path,
+            tracker_records=tracker_records,
+            servo_command_records=servo_command_records,
+        )),
+        (command_offset_hist_path, lambda: _write_sync_command_offset_histogram(
+            path=command_offset_hist_path, metrics=metrics,
+        )),
+        (telemetry_offset_hist_path, lambda: _write_sync_telemetry_offset_histogram(
+            path=telemetry_offset_hist_path, metrics=metrics,
+        )),
+        (frame_age_over_time_path, lambda: _write_sync_tracker_frame_age_at_servo_events(
+            path=frame_age_over_time_path,
+            tracker_records=tracker_records,
+            servo_command_records=servo_command_records,
+            servo_telemetry_records=servo_telemetry_records,
+        )),
+        (telemetry_interval_path, lambda: _write_sync_servo_telemetry_interval_histogram(
+            path=telemetry_interval_path,
+            servo_telemetry_records=servo_telemetry_records,
+        )),
+        (combined_summary_path, lambda: _write_sync_combined_timing_summary(
+            path=combined_summary_path,
+            metrics=metrics,
+            tracker_records=tracker_records,
+            servo_command_records=servo_command_records,
+            servo_telemetry_records=servo_telemetry_records,
+        )),
     ]:
         try:
             writer()
@@ -167,6 +206,12 @@ def write_servo_tracker_sync_outputs(*, output_dir: Path, metadata, summary, sam
         "debug_json_path": debug_json_path,
         "thesis_01_path": thesis_01_path,
         "thesis_02_path": thesis_02_path,
+        "command_events_on_tracker_timeline_path": events_on_timeline_path,
+        "command_offset_histogram_path": command_offset_hist_path,
+        "telemetry_offset_histogram_path": telemetry_offset_hist_path,
+        "tracker_frame_age_at_servo_events_path": frame_age_over_time_path,
+        "servo_telemetry_interval_histogram_path": telemetry_interval_path,
+        "combined_timing_summary_path": combined_summary_path,
     }
 
 
@@ -428,3 +473,376 @@ def _servo_debug_json_default(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     raise TypeError(f"Unserialisable type: {type(value).__name__}")
+
+
+# =========================================================================== #
+# Phase-4 supplementary figures (operator-spec request).                       #
+# Each answers one question about how well servo events line up with the      #
+# tracker stream. Sit alongside thesis_01/02 headlines.                       #
+# =========================================================================== #
+
+
+def _analyzed_tracker_commit_times_ns(tracker_records: list[dict[str, Any]]) -> list[int]:
+    return sorted(
+        int(record["sample_commit_monotonic_ns"])
+        for record in tracker_records
+        if not record.get("warmup_discarded")
+        and record.get("sample_commit_monotonic_ns") is not None
+    )
+
+
+def _analyzed_servo_command_times_ns(records: list[dict[str, Any]]) -> list[int]:
+    return sorted(
+        int(record["command_monotonic_ns"])
+        for record in records
+        if not record.get("warmup_discarded")
+        and record.get("command_monotonic_ns") is not None
+    )
+
+
+def _analyzed_servo_telemetry_times_ns(records: list[dict[str, Any]]) -> list[int]:
+    return sorted(
+        int(record["sample_monotonic_ns"])
+        for record in records
+        if not record.get("warmup_discarded")
+        and record.get("sample_monotonic_ns") is not None
+    )
+
+
+def _nearest_preceding_offset_ms(event_ns: int, sorted_targets_ns: list[int]) -> float | None:
+    """Time since the most recent preceding target. None if no preceding target."""
+    from bisect import bisect_right
+    index = bisect_right(sorted_targets_ns, int(event_ns))
+    if index == 0:
+        return None
+    return float(int(event_ns) - int(sorted_targets_ns[index - 1])) / 1_000_000.0
+
+
+def _write_sync_command_events_on_tracker_timeline(
+    *,
+    path: Path,
+    tracker_records: list[dict[str, Any]],
+    servo_command_records: list[dict[str, Any]],
+) -> None:
+    """Phase-4 figure 1: servo command events plotted on the tracker timeline.
+
+    Tiny dots = tracker frame commits; vertical lines = servo command
+    dispatches. Operator can eyeball at a glance whether commands tend to
+    land near a fresh frame or in between.
+    """
+    tracker_ns = _analyzed_tracker_commit_times_ns(tracker_records)
+    command_ns = _analyzed_servo_command_times_ns(servo_command_records)
+    fig, ax = create_figure(size="wide", constrained_layout=False)
+    fig.subplots_adjust(left=0.085, right=0.97, top=0.90, bottom=0.22)
+    if not tracker_ns:
+        ax.text(0.5, 0.5, "No analyzed tracker frames", transform=ax.transAxes,
+                ha="center", va="center")
+        style_axes(ax, xlabel="Time since first analyzed sample (s)", ylabel="")
+        fig.suptitle("Servo Command Events on Tracker Frame Timeline",
+                     fontsize=13, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+    t0 = tracker_ns[0]
+    tracker_seconds = [float(value - t0) / 1_000_000_000.0 for value in tracker_ns]
+    command_seconds = [float(value - t0) / 1_000_000_000.0 for value in command_ns]
+    ax.scatter(tracker_seconds, [0.5] * len(tracker_seconds), s=4,
+               color=color("measured"), alpha=0.5, label="Tracker frame commit")
+    for t_sec in command_seconds:
+        ax.axvline(t_sec, color=color("rejected"), linewidth=1.0, alpha=0.6)
+    ax.plot([], [], color=color("rejected"), linewidth=1.0,
+            label=f"Servo command ({len(command_seconds)} events)")
+    ax.set_yticks([])
+    ax.set_ylim(0.0, 1.0)
+    style_axes(ax, xlabel="Time since first analyzed sample (s)", ylabel="")
+    fig.suptitle("Servo Command Events on Tracker Frame Timeline",
+                 fontsize=13, fontweight="bold", x=0.04, ha="left")
+    legend(ax, loc="upper right", ncol=1)
+    fig.text(
+        0.015, 0.02,
+        f"Tracker frames: {len(tracker_seconds)}   •   "
+        f"Servo commands: {len(command_seconds)}   •   "
+        "Each red line is one command dispatch; the small blue dots are "
+        "tracker frame commits. Use sync_command_offset_histogram.png for "
+        "the per-event quantification.",
+        fontsize=9, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
+def _write_offset_histogram(
+    *,
+    path: Path,
+    offsets_ms: list[float],
+    title: str,
+    xlabel: str,
+    caption: str,
+) -> None:
+    """Shared template for the command/telemetry offset histograms."""
+    fig, ax = create_figure(size="wide", constrained_layout=False)
+    fig.subplots_adjust(left=0.085, right=0.97, top=0.90, bottom=0.22)
+    if not offsets_ms:
+        ax.text(0.5, 0.5, "No nearest-tracker offsets available",
+                transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, xlabel=xlabel, ylabel="Event count")
+        fig.suptitle(title, fontsize=13, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+    arr = np.asarray([float(value) for value in offsets_ms], dtype=float)
+    bin_count = max(20, min(60, int(np.sqrt(len(arr)) * 2)))
+    ax.hist(arr, bins=bin_count, color=color("measured"), edgecolor="white",
+            linewidth=0.6, alpha=0.85, zorder=2)
+    median_ms = float(np.median(arr))
+    mean_ms = float(arr.mean())
+    p95_ms = float(np.percentile(arr, 95.0))
+    max_ms = float(arr.max())
+    ax.axvline(median_ms, color=color("fit"), linestyle="--", linewidth=1.4,
+               label=f"Median = {median_ms:.2f} ms", zorder=3)
+    ax.axvline(mean_ms, color=color("threshold"), linestyle=":", linewidth=1.4,
+               label=f"Mean = {mean_ms:.2f} ms", zorder=3)
+    ax.axvline(p95_ms, color=color("rejected"), linestyle="-.", linewidth=1.2,
+               label=f"p95 = {p95_ms:.2f} ms", zorder=3)
+    style_axes(ax, xlabel=xlabel, ylabel="Event count")
+    fig.suptitle(title, fontsize=13, fontweight="bold", x=0.04, ha="left")
+    legend(ax, loc="upper right", ncol=1)
+    fig.text(
+        0.015, 0.02,
+        f"N = {len(arr)} events   •   max = {max_ms:.2f} ms   •   {caption}",
+        fontsize=9, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
+def _write_sync_command_offset_histogram(
+    *,
+    path: Path,
+    metrics: dict[str, Any],
+) -> None:
+    """Phase-4 figure 2: histogram of command-to-nearest-tracker-frame offsets."""
+    sync = dict(metrics.get("servo_tracker_sync", {}) or {})
+    offsets = list(sync.get("tracker_to_servo_command_offsets_ms") or [])
+    _write_offset_histogram(
+        path=path,
+        offsets_ms=offsets,
+        title="Servo Command → Nearest Tracker Frame Offset",
+        xlabel="|command time − nearest tracker frame| (ms)",
+        caption=(
+            "Distance in host time between each servo command dispatch and "
+            "the closest tracker frame commit. Lower = better sync."
+        ),
+    )
+
+
+def _write_sync_telemetry_offset_histogram(
+    *,
+    path: Path,
+    metrics: dict[str, Any],
+) -> None:
+    """Phase-4 figure 3: histogram of telemetry-to-nearest-tracker-frame offsets."""
+    sync = dict(metrics.get("servo_tracker_sync", {}) or {})
+    offsets = list(sync.get("tracker_to_servo_telemetry_offsets_ms") or [])
+    _write_offset_histogram(
+        path=path,
+        offsets_ms=offsets,
+        title="Servo Telemetry → Nearest Tracker Frame Offset",
+        xlabel="|telemetry time − nearest tracker frame| (ms)",
+        caption=(
+            "Distance in host time between each servo telemetry read and the "
+            "closest tracker frame commit. Lower = better sync."
+        ),
+    )
+
+
+def _write_sync_tracker_frame_age_at_servo_events(
+    *,
+    path: Path,
+    tracker_records: list[dict[str, Any]],
+    servo_command_records: list[dict[str, Any]],
+    servo_telemetry_records: list[dict[str, Any]],
+) -> None:
+    """Phase-4 figure 4: tracker frame age at servo events vs experiment time.
+
+    For each servo event, plots the elapsed time since the most recent
+    preceding tracker frame (so positive = stale tracker at the moment of
+    the servo event). Reveals whether sync degrades during the run.
+    """
+    tracker_ns = _analyzed_tracker_commit_times_ns(tracker_records)
+    command_ns = _analyzed_servo_command_times_ns(servo_command_records)
+    telemetry_ns = _analyzed_servo_telemetry_times_ns(servo_telemetry_records)
+    fig, ax = create_figure(size="wide", constrained_layout=False)
+    fig.subplots_adjust(left=0.085, right=0.97, top=0.90, bottom=0.22)
+    if not tracker_ns or not (command_ns or telemetry_ns):
+        ax.text(0.5, 0.5, "Need both tracker frames and servo events",
+                transform=ax.transAxes, ha="center", va="center")
+        style_axes(ax, xlabel="Time since first analyzed sample (s)",
+                   ylabel="Tracker frame age at event (ms)")
+        fig.suptitle("Tracker Frame Age at Servo Events",
+                     fontsize=13, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+    t0 = min([tracker_ns[0]] + ([command_ns[0]] if command_ns else []) + ([telemetry_ns[0]] if telemetry_ns else []))
+    command_ages = [
+        (
+            float(event_ns - t0) / 1_000_000_000.0,
+            _nearest_preceding_offset_ms(event_ns, tracker_ns),
+        )
+        for event_ns in command_ns
+    ]
+    telemetry_ages = [
+        (
+            float(event_ns - t0) / 1_000_000_000.0,
+            _nearest_preceding_offset_ms(event_ns, tracker_ns),
+        )
+        for event_ns in telemetry_ns
+    ]
+    cmd_x = [t for t, age in command_ages if age is not None]
+    cmd_y = [age for t, age in command_ages if age is not None]
+    tel_x = [t for t, age in telemetry_ages if age is not None]
+    tel_y = [age for t, age in telemetry_ages if age is not None]
+    if cmd_x:
+        ax.scatter(cmd_x, cmd_y, s=18, color=color("rejected"), alpha=0.7,
+                   label=f"Command events ({len(cmd_x)})")
+    if tel_x:
+        ax.scatter(tel_x, tel_y, s=8, color=color("measured"), alpha=0.5,
+                   label=f"Telemetry events ({len(tel_x)})")
+    ax.axhline(25.0, color=color("threshold"), linestyle="--", linewidth=1.2,
+               label="Aurora frame interval (25 ms)", zorder=2)
+    ax.set_ylim(bottom=0.0)
+    style_axes(ax, xlabel="Time since first analyzed sample (s)",
+               ylabel="Tracker frame age at event (ms)")
+    fig.suptitle("Tracker Frame Age at Servo Events",
+                 fontsize=13, fontweight="bold", x=0.04, ha="left")
+    legend(ax, loc="upper right", ncol=1)
+    fig.text(
+        0.015, 0.02,
+        "For each servo event, elapsed time since the most recent preceding "
+        "tracker frame. Sustained values above the 25 ms Aurora interval "
+        "indicate the tracker is falling behind and command/telemetry events "
+        "are landing on stale frames.",
+        fontsize=9, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
+    )
+    save_figure(fig, path)
+
+
+def _write_sync_servo_telemetry_interval_histogram(
+    *,
+    path: Path,
+    servo_telemetry_records: list[dict[str, Any]],
+) -> None:
+    """Phase-4 figure 5: gap distribution between consecutive servo telemetry samples."""
+    telemetry_ns = _analyzed_servo_telemetry_times_ns(servo_telemetry_records)
+    intervals_ms = [
+        float(later - earlier) / 1_000_000.0
+        for earlier, later in zip(telemetry_ns[:-1], telemetry_ns[1:])
+    ]
+    _write_offset_histogram(
+        path=path,
+        offsets_ms=intervals_ms,
+        title="Servo Telemetry Inter-Sample Interval",
+        xlabel="Gap between consecutive servo telemetry samples (ms)",
+        caption=(
+            "If the servo telemetry poll loop falls behind its configured "
+            "interval, this distribution shifts right."
+        ),
+    )
+
+
+def _write_sync_combined_timing_summary(
+    *,
+    path: Path,
+    metrics: dict[str, Any],
+    tracker_records: list[dict[str, Any]],
+    servo_command_records: list[dict[str, Any]],
+    servo_telemetry_records: list[dict[str, Any]],
+) -> None:
+    """Phase-4 figure 6: 2x2 combined summary for at-a-glance reporting.
+
+      Top-left:    command-to-tracker offset histogram (compact)
+      Top-right:   telemetry-to-tracker offset histogram (compact)
+      Bottom-left: rate-comparison bars (tracker frames vs servo telemetry vs servo commands)
+      Bottom-right: percentile table rendered as text annotations
+    """
+    with report_style() as plt:
+        fig, axes = plt.subplots(2, 2, figsize=(11.5, 7.5), constrained_layout=False)
+    fig.subplots_adjust(left=0.07, right=0.97, top=0.92, bottom=0.10,
+                         hspace=0.40, wspace=0.28)
+    sync = dict(metrics.get("servo_tracker_sync", {}) or {})
+    cmd_offsets = [float(v) for v in (sync.get("tracker_to_servo_command_offsets_ms") or [])]
+    tel_offsets = [float(v) for v in (sync.get("tracker_to_servo_telemetry_offsets_ms") or [])]
+
+    # Top-left: command offset
+    ax = axes[0, 0]
+    if cmd_offsets:
+        ax.hist(cmd_offsets, bins=20, color=color("measured"), edgecolor="white", linewidth=0.5)
+        ax.axvline(float(np.median(cmd_offsets)), color=color("fit"), linestyle="--",
+                   linewidth=1.2, label=f"Median {np.median(cmd_offsets):.2f} ms")
+        ax.legend(loc="upper right", fontsize=8)
+    else:
+        ax.text(0.5, 0.5, "No command offsets", transform=ax.transAxes, ha="center", va="center")
+    style_axes(ax, title="Command → Tracker offset", xlabel="ms", ylabel="count")
+
+    # Top-right: telemetry offset
+    ax = axes[0, 1]
+    if tel_offsets:
+        ax.hist(tel_offsets, bins=20, color=color("measured"), edgecolor="white", linewidth=0.5)
+        ax.axvline(float(np.median(tel_offsets)), color=color("fit"), linestyle="--",
+                   linewidth=1.2, label=f"Median {np.median(tel_offsets):.2f} ms")
+        ax.legend(loc="upper right", fontsize=8)
+    else:
+        ax.text(0.5, 0.5, "No telemetry offsets", transform=ax.transAxes, ha="center", va="center")
+    style_axes(ax, title="Telemetry → Tracker offset", xlabel="ms", ylabel="count")
+
+    # Bottom-left: rate comparison
+    ax = axes[1, 0]
+    tracker_ns = _analyzed_tracker_commit_times_ns(tracker_records)
+    telemetry_ns = _analyzed_servo_telemetry_times_ns(servo_telemetry_records)
+    command_ns = _analyzed_servo_command_times_ns(servo_command_records)
+    def _rate_hz(times_ns: list[int]) -> float:
+        if len(times_ns) < 2:
+            return 0.0
+        duration = (times_ns[-1] - times_ns[0]) / 1_000_000_000.0
+        return float(len(times_ns) - 1) / duration if duration > 0 else 0.0
+    labels = ["Tracker\n(unique)", "Servo\ntelemetry", "Servo\ncommands"]
+    values = [_rate_hz(tracker_ns), _rate_hz(telemetry_ns), _rate_hz(command_ns)]
+    bars = ax.bar(labels, values, color=[color("measured"), color("fit"), color("accepted")],
+                  edgecolor="white", linewidth=0.5)
+    ax.bar_label(bars, labels=[f"{value:.1f} Hz" for value in values], padding=3, fontsize=9)
+    ax.axhline(40.0, color=color("threshold"), linestyle="--", linewidth=1.2,
+               label="Aurora ceiling (40 Hz)")
+    ax.legend(loc="upper right", fontsize=8)
+    ax.set_ylim(0.0, max(max(values) * 1.25, 45.0))
+    style_axes(ax, title="Stream rates", xlabel="", ylabel="Rate (Hz)")
+
+    # Bottom-right: percentile/stats text
+    ax = axes[1, 1]
+    ax.axis("off")
+    def _fmt(value: Any) -> str:
+        try:
+            return f"{float(value):.2f} ms"
+        except (TypeError, ValueError):
+            return "n/a"
+    lines = [
+        "Per-event nearest-tracker offsets",
+        "",
+        f"Command   median = {_fmt(sync.get('tracker_to_servo_command_median_offset_ms'))}",
+        f"Command   p95    = {_fmt(sync.get('tracker_to_servo_command_p95_offset_ms'))}",
+        f"Command   max    = {_fmt(sync.get('tracker_to_servo_command_max_offset_ms'))}",
+        "",
+        f"Telemetry median = {_fmt(sync.get('tracker_to_servo_telemetry_median_offset_ms'))}",
+        f"Telemetry p95    = {_fmt(sync.get('tracker_to_servo_telemetry_p95_offset_ms'))}",
+        f"Telemetry max    = {_fmt(sync.get('tracker_to_servo_telemetry_max_offset_ms'))}",
+        "",
+        f"Command events:   {int(sync.get('tracker_to_servo_command_sample_count', 0) or 0)}",
+        f"Telemetry events: {int(sync.get('tracker_to_servo_telemetry_sample_count', 0) or 0)}",
+    ]
+    ax.text(0.0, 1.0, "\n".join(lines), transform=ax.transAxes,
+            ha="left", va="top", family="monospace", fontsize=10, color=color("text"))
+
+    fig.suptitle("Servo-Tracker Sync — Combined Timing Summary",
+                 fontsize=13, fontweight="bold", x=0.04, ha="left")
+    save_figure(fig, path)
