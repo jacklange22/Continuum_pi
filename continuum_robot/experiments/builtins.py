@@ -931,12 +931,20 @@ class ServoTrackerSyncValidationConfig:
     servo_ids: list[int] = field(default_factory=lambda: [1])
     requested_tool_ids: list[str] = field(default_factory=lambda: ["0A"])
     motion_mode: str = "alternating_step"
-    run_duration_s: float = 8.0
-    warmup_duration_s: float = 1.0
-    command_amplitude_ticks: int = 32
+    # Thesis-default report duration: 30 s of alternating-step motion after
+    # a short warmup. Long enough to capture statistically useful sync
+    # offsets; short enough to keep operator iteration tight.
+    run_duration_s: float = 30.0
+    warmup_duration_s: float = 2.0
+    # 25 ticks ≈ ±0.05 mm of cable travel on a 4096-CPR / 20 mm spool — small
+    # enough that a servo sitting in the typical 1500–2500 tick range cannot
+    # plausibly violate raw or soft bounds, large enough that the tracker
+    # sees real per-step displacement.
+    command_amplitude_ticks: int = 25
     step_period_s: float = 0.35
     telemetry_poll_interval_s: float = 0.02
-    timeout_s: float = 20.0
+    # Timeout floors at run_duration_s + warmup + a safety margin.
+    timeout_s: float = 60.0
     include_robot_frame_tip_pose: bool = True
     run_label: str = ""
 
@@ -983,12 +991,12 @@ class ServoTrackerSyncValidationConfig:
             servo_ids=servo_ids,
             requested_tool_ids=deduped_tool_ids,
             motion_mode=motion_mode,
-            run_duration_s=float(payload.get("run_duration_s", 8.0)),
-            warmup_duration_s=max(0.0, float(payload.get("warmup_duration_s", 1.0))),
-            command_amplitude_ticks=max(1, int(payload.get("command_amplitude_ticks", 32))),
+            run_duration_s=float(payload.get("run_duration_s", 30.0)),
+            warmup_duration_s=max(0.0, float(payload.get("warmup_duration_s", 2.0))),
+            command_amplitude_ticks=max(1, int(payload.get("command_amplitude_ticks", 25))),
             step_period_s=max(0.05, float(payload.get("step_period_s", 0.35))),
             telemetry_poll_interval_s=max(0.005, float(payload.get("telemetry_poll_interval_s", 0.02))),
-            timeout_s=float(payload.get("timeout_s", 20.0)),
+            timeout_s=float(payload.get("timeout_s", 60.0)),
             include_robot_frame_tip_pose=bool(payload.get("include_robot_frame_tip_pose", True)),
             run_label=str(payload.get("run_label", "") or ""),
         )
@@ -1666,17 +1674,40 @@ class ServoTrackerSyncValidationExperiment(BaseExperiment):
                 telemetry=telemetry,
             )
             if not assessment.ready:
-                raise RuntimeError(f"Servo {servo_id} is not motion-ready: {assessment.reason}")
+                raise RuntimeError(
+                    f"servo_tracker_sync_validation precheck failed: servo {servo_id} is not motion-ready. "
+                    f"Reason: {assessment.reason}"
+                )
             if telemetry is None or telemetry.present_position is None:
                 raise RuntimeError(f"Servo {servo_id} present position is unavailable.")
             current_position = int(telemetry.present_position)
             safe_min = int(assessment.safe_min_tick if assessment.safe_min_tick is not None else current_position)
             safe_max = int(assessment.safe_max_tick if assessment.safe_max_tick is not None else current_position)
+            # Verify the *current* position is actually inside the saved safe
+            # window. If the operator re-captured neutral at a different
+            # position than the servo currently rests at, the canonical wrap
+            # check inside servo_service rejects with a terse "wrap safety
+            # rejection" string; we catch it earlier here with full context
+            # so the operator knows exactly which servo + which bounds need
+            # attention.
+            if not (safe_min <= current_position <= safe_max):
+                raise RuntimeError(
+                    f"servo_tracker_sync_validation precheck failed: servo {servo_id} present "
+                    f"position {current_position} is outside the saved safe window "
+                    f"[{safe_min}, {safe_max}]. The wrap-safety check inside servo_service will "
+                    "reject any motion command from here. Recapture neutral at the current servo "
+                    "position, or jog the servo back inside the saved safe window before re-running."
+                )
+            planned_target_low = current_position - int(amplitude_ticks)
+            planned_target_high = current_position + int(amplitude_ticks)
             usable_amplitude = int(min(amplitude_ticks, current_position - safe_min, safe_max - current_position))
             if usable_amplitude <= 0:
                 raise RuntimeError(
-                    f"Servo {servo_id} cannot execute the requested bounded motion from position {current_position} "
-                    f"within safe range [{safe_min}, {safe_max}]."
+                    f"servo_tracker_sync_validation precheck failed: servo {servo_id} cannot execute "
+                    f"the requested ±{int(amplitude_ticks)}-tick motion from position {current_position} "
+                    f"within safe range [{safe_min}, {safe_max}] (planned goals would be "
+                    f"{planned_target_low}..{planned_target_high}). Reduce command_amplitude_ticks or "
+                    "widen the saved safe bounds."
                 )
             centers_by_servo[int(servo_id)] = current_position
             amplitude_by_servo[int(servo_id)] = usable_amplitude
@@ -1820,7 +1851,31 @@ class ServoTrackerSyncValidationExperiment(BaseExperiment):
                                 reason=self.name,
                             )
                             if not result.success:
-                                raise RuntimeError(result.message)
+                                # Enrich the bare service-side rejection ("wrap
+                                # safety rejection: servo N target crosses raw
+                                # tick discontinuity") with the diagnostic
+                                # fields the spec requires: current pos, start
+                                # pos, amplitude, planned min/max goals, safe
+                                # bounds, exact reason. Operator should never
+                                # see a context-free wrap message again.
+                                center = int(centers_by_servo[int(servo_id)])
+                                actual_amp = int(amplitude_by_servo[int(servo_id)])
+                                planned_low = center - actual_amp
+                                planned_high = center + actual_amp
+                                raise RuntimeError(
+                                    f"servo_tracker_sync_validation step rejected | "
+                                    f"servo_id={int(servo_id)} | "
+                                    f"current_pos_at_start={center} | "
+                                    f"used_amplitude_ticks={actual_amp} | "
+                                    f"requested_amplitude_ticks={int(amplitude_ticks)} | "
+                                    f"planned_min_goal={planned_low} | "
+                                    f"planned_max_goal={planned_high} | "
+                                    f"raw_bounds=[0, 4095] | "
+                                    f"safe_bounds=["
+                                    f"{result.safe_min_tick if result.safe_min_tick is not None else 'n/a'}, "
+                                    f"{result.safe_max_tick if result.safe_max_tick is not None else 'n/a'}] | "
+                                    f"reason={result.message}"
+                                )
                             goal_positions = servo_service.last_goal_positions()
                             goal_times = servo_service.last_goal_command_times()
                             with state_lock:
