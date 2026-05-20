@@ -231,7 +231,10 @@ def test_average_tracker_frames_spread_stats_are_consistent() -> None:
     stats = averaged["stats"]
     assert stats["valid_sample_count"] == 3
     assert stats["position_std_per_axis_mm"][0] == pytest.approx(0.0, abs=1e-9)
-    assert stats["position_std_per_axis_mm"][1] == pytest.approx(np.std([0.0, 0.6, -0.6], ddof=0))
+    # Sample std (ddof=1) — was ddof=0 pre-2026-05-20. The unbiased
+    # estimator is the project-wide convention for any noise statistic the
+    # thesis reports.
+    assert stats["position_std_per_axis_mm"][1] == pytest.approx(np.std([0.0, 0.6, -0.6], ddof=1))
     assert stats["position_std_per_axis_mm"][2] == pytest.approx(0.0, abs=1e-9)
     expected_rms = float(np.sqrt(np.mean(np.asarray(stats["position_std_per_axis_mm"]) ** 2)))
     assert stats["position_std_rms_mm"] == pytest.approx(expected_rms)
