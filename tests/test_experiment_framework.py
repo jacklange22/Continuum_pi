@@ -1505,6 +1505,11 @@ def test_pretension_validation_single_segment_staged_writes_units_metrics_and_pl
             "allow_current_only_when_tracker_missing": True,
             "enable_tip_centering": False,
             "equalization_max_iterations": 2,
+            # Pin the start mode to the no-motion legacy default. This test is
+            # about output file generation, not the new
+            # ``soft_release_to_zero_current`` default which would consume
+            # more sequenced tracker snapshots than this fixture provides.
+            "pretension_start_mode": "current_position",
         },
     )
 
@@ -1524,6 +1529,13 @@ def test_pretension_validation_single_segment_staged_writes_units_metrics_and_pl
     assert result.paths.output_dir.joinpath("pretension_final_state_report.png").exists()
     assert result.paths.output_dir.joinpath("pretension_final_current_distribution.png").exists()
     assert result.paths.output_dir.joinpath("pretension_repeatability_summary.png").exists()
+    # Bounded simplification pass (2026-05-19): the new thesis report figures
+    # and the quality JSON must always be written.
+    assert result.paths.output_dir.joinpath("pretension_current_by_servo_report.png").exists()
+    assert result.paths.output_dir.joinpath("pretension_position_by_servo_report.png").exists()
+    assert result.paths.output_dir.joinpath("pretension_final_repeatability_report.png").exists()
+    assert result.paths.output_dir.joinpath("pretension_phase_summary_report.png").exists()
+    assert result.paths.output_dir.joinpath("pretension_quality_summary.json").exists()
 
 
 def test_pretension_validation_single_segment_staged_requires_tracker_when_current_only_disabled(tmp_path: Path) -> None:

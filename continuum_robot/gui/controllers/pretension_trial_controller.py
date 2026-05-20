@@ -445,7 +445,19 @@ class PretensionTrialController:
         self.state.last_status = "Manual baseline records cleared."
         return self.state
 
-    def run_pretension_trial(self) -> PretensionTrialState:
+    def run_one_rig_consistency_proof(self, *, repeat_runs: int = 5) -> PretensionTrialState:
+        """Run the pretension experiment for ``repeat_runs`` repeats and grade
+        the result with the consistency verdict (high/medium/low/failed).
+
+        Thin wrapper around ``run_pretension_trial`` that just forces the
+        repeat count. The experiment's own consistency-verdict logic
+        (``PretensionValidationExperiment._compute_consistency_verdict``)
+        produces the headline grade, written to ``pretension_quality_summary.json``
+        and surfaced into ``state.last_run_summary["consistency_verdict"]``.
+        """
+        return self.run_pretension_trial(repeat_runs_override=int(repeat_runs))
+
+    def run_pretension_trial(self, *, repeat_runs_override: int | None = None) -> PretensionTrialState:
         """Run the pretension experiment with the saved config + active segment.
 
         Loads the example config YAML, fills in the active segment's servo IDs
@@ -453,6 +465,11 @@ class PretensionTrialController:
         ``manual_baseline_record_path`` at the sidecar file if records exist,
         and calls ``experiment_runner.run_experiment``. Synchronous; returns
         when the run is done.
+
+        Args:
+            repeat_runs_override: If set, replaces ``repeat_runs`` in the
+                loaded config payload. Used by the one-rig consistency proof
+                button on the Servos tab.
         """
         if self.state.is_running:
             raise RuntimeError("A pretension trial is already running.")
@@ -465,6 +482,8 @@ class PretensionTrialController:
         # Active segment IDs override empty servo_ids in the config.
         if not config_payload.get("servo_ids"):
             config_payload["servo_ids"] = self._active_segment_servo_ids()
+        if repeat_runs_override is not None:
+            config_payload["repeat_runs"] = max(1, int(repeat_runs_override))
         # Wire the manual baselines path so the experiment uses them for
         # comparison if any records exist.
         if self.state.manual_baseline_count > 0:
@@ -526,6 +545,15 @@ class PretensionTrialController:
             self.state.last_error = result.message
             self.state.last_status = f"Pretension trial failed: {result.message}"
         return self.state
+
+    def latest_pretension_report_path(self) -> Path | None:
+        """Path to the last pretension run's report directory (or ``None`` if
+        no run has completed in this session). Used by the Servos tab "Open
+        Latest Pretension Report" button."""
+        path = getattr(self.state, "last_run_output_dir", None)
+        if path is None:
+            return None
+        return Path(path)
 
     def _load_config_payload(self, config_path: Path) -> dict[str, Any]:
         if config_path.exists():

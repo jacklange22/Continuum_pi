@@ -102,18 +102,35 @@ max_runtime_s: 120.0
 include_tracker_displacement: true
 tracker_tool_id: "0A"
 move_to_reference: true
-# full_release_4095 is the most repeatable start condition because every run
-# begins from the same fully-slack reference tick. The safe-bounds preflight
-# clips the actual commanded target to each servo's safe_max_tick (typically
-# ~3200), so the algorithm never commands at the raw-tick wrap boundary.
-pretension_start_mode: full_release_4095  # current_position | manual_startup_artifact | release_200_from_current | full_release_4095
+# Default start mode (2026-05-19): walk each servo OUTWARD (higher tick =
+# looser on this rig) until its current sits below
+# ``release_current_abs_target_ma`` for ``release_current_stable_samples``
+# consecutive samples. This proves each tendon is genuinely slack rather than
+# trusting the position-wrap endpoint. The legacy ``full_release_4095`` mode
+# is kept for backward compatibility but is no longer recommended for the
+# normal workflow because it puts the servos at the raw-tick wrap edge.
+pretension_start_mode: soft_release_to_zero_current  # soft_release_to_zero_current (default) | current_position | manual_startup_artifact | release_200_from_current | full_release_4095
+# --- soft_release_to_zero_current knobs ----------------------------------
+release_current_abs_target_ma: 5.0      # |current_ma| below this counts as slack (operator: 15 mA = light)
+release_current_stable_samples: 3       # need this many consecutive samples below threshold
+release_max_travel_ticks: 1500          # hard cap on outward travel per servo
+release_step_ticks: 40                  # outward step size per iteration
+release_settle_s: 0.15                  # sleep between release steps so current can settle
 
-# --- Phase 2 tip-centering variant + Jacobian probe -----------------------
-# Default is paired_then_tip; current_only is a useful baseline that skips
-# tip feedback entirely; jacobian_learned_tip is experimental and falls back
-# to paired_then_tip when the per-pair tip response is below
-# jacobian_min_observable_tip_delta_mm.
-tip_centering_variant: paired_then_tip  # current_only | paired_then_tip | jacobian_learned_tip
+# --- Tip-centering variant (default + advanced) --------------------------
+# Default: ``paired_then_tip``. This is the simple, safe operator path. The
+# other variants are kept available but are advanced / diagnostic only and
+# should not be the typical operator choice:
+#   - ``current_only``: stop after take-up, no tip feedback (no tracker).
+#   - ``jacobian_learned_tip``: experimental Jacobian probe; falls back to
+#     paired_then_tip when probe response is below the observability floor.
+tip_centering_variant: paired_then_tip
+# Require_improvement: when True, paired tip-centering steps that worsen tip
+# XY error (or significantly worsen load balance) are stopped rather than
+# chased. Keeps the loop conservative for first-try reliability.
+tip_center_require_improvement: true
+# Advanced (jacobian_learned_tip only). Ignored when the default variant is
+# in use, but kept for backward-compat config payloads.
 jacobian_probe_step_ticks: 30
 jacobian_min_observable_tip_delta_mm: 0.20
 jacobian_step_gain: 0.8

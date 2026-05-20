@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import Qt, QTimer
@@ -241,47 +242,76 @@ class ServosTab(QWidget):
         manual_buttons_widget.setLayout(manual_buttons)
         manual_layout.addRow(manual_buttons_widget)
 
-        # --- Segment Pretension Trial (4-servo, one-click) ---------------
-        # Drives the pretension_validation experiment with the saved config so
-        # the operator can pretension the whole active segment from one place.
-        # Tuning still lives on the Experiments tab pretension page.
+        # --- Pretension Current Segment ----------------------------------
+        # Simple operator-facing pretension section. Three buttons cover the
+        # 95% workflow: single cycle, the one-rig consistency proof, and a
+        # shortcut to the latest report. Advanced bits (manual baseline,
+        # sign-test) are hidden behind an Advanced toggle so the normal path
+        # stays uncluttered. Tuning still lives on the Experiments tab.
         self.segment_pretension_status_label = QLabel(
-            "Pretension trial idle. Tune knobs on the Experiments tab pretension page."
+            "Pretension idle. Start mode: release until current is near zero. "
+            "Lower ticks = tighter on this rig."
         )
         self.segment_pretension_status_label.setProperty("role", "status")
         self.segment_pretension_status_label.setWordWrap(True)
         self.segment_pretension_manual_count_label = QLabel("Manual baselines recorded: 0")
         self.segment_pretension_manual_count_label.setProperty("role", "hint")
-        self.record_manual_baseline_button = QPushButton("Record Manual Baseline")
+
+        # Primary buttons.
+        self.run_segment_pretension_button = QPushButton("Run Single Pretension Cycle")
+        self.run_segment_pretension_button.setProperty("role", "primary")
+        self.run_segment_pretension_button.setToolTip(
+            "Runs ONE pretension cycle on the active segment using the saved config. "
+            "Start mode: soft_release_to_zero_current (release until current near zero, then take up)."
+        )
+        self.run_consistency_proof_button = QPushButton("Run One-Rig Pretension Proof")
+        self.run_consistency_proof_button.setToolTip(
+            "Runs 5 pretension repeats and grades them with the consistency verdict "
+            "(high / medium / low / failed). Use this to prove repeatability on the current rig."
+        )
+        self.open_latest_pretension_report_button = QPushButton("Open Latest Pretension Report")
+        self.open_latest_pretension_report_button.setProperty("variant", "ghost")
+        self.open_latest_pretension_report_button.setToolTip(
+            "Open the most recent pretension run folder in the system file browser."
+        )
+        # Advanced / diagnostic buttons (manual baseline + sign-test) kept but
+        # rendered as ghost variants so they don't compete with the primary
+        # operator workflow.
+        self.record_manual_baseline_button = QPushButton("Record Manual Baseline (Advanced)")
+        self.record_manual_baseline_button.setProperty("variant", "ghost")
         self.record_manual_baseline_button.setToolTip(
-            "Hand-tension the spine first, then click this to snapshot the current state. "
-            "Repeat 5 times to build a manual repeatability baseline that the trial compares against."
+            "Optional. Hand-tension and snapshot the state for an algorithm-vs-manual comparison report. "
+            "Not required for normal pretensioning."
         )
         self.clear_manual_baselines_button = QPushButton("Clear Baselines")
         self.clear_manual_baselines_button.setProperty("variant", "ghost")
-        self.run_segment_pretension_button = QPushButton("Run Pretension Trial")
-        self.run_segment_pretension_button.setProperty("role", "primary")
-        self.run_segment_pretension_button.setToolTip(
-            "Runs the saved pretension_validation experiment on the active segment. "
-            "Uses recorded manual baselines (if any) for the algorithm-vs-manual comparison report."
-        )
+        self.run_segment_pretension_button.clicked.connect(self._run_segment_pretension)
+        self.run_consistency_proof_button.clicked.connect(self._run_consistency_proof)
+        self.open_latest_pretension_report_button.clicked.connect(self._open_latest_pretension_report)
         self.record_manual_baseline_button.clicked.connect(self._record_manual_baseline)
         self.clear_manual_baselines_button.clicked.connect(self._clear_manual_baselines)
-        self.run_segment_pretension_button.clicked.connect(self._run_segment_pretension)
 
-        self.segment_pretension_box = QGroupBox("Segment Pretension Trial (4-servo)")
+        self.segment_pretension_box = QGroupBox("Pretension Current Segment")
         segment_pretension_layout = QVBoxLayout(self.segment_pretension_box)
         segment_pretension_layout.addWidget(self.segment_pretension_status_label)
         segment_pretension_layout.addWidget(self.segment_pretension_manual_count_label)
-        segment_pretension_button_row = QHBoxLayout()
-        segment_pretension_button_row.setSpacing(10)
-        segment_pretension_button_row.addWidget(self.record_manual_baseline_button)
-        segment_pretension_button_row.addWidget(self.clear_manual_baselines_button)
-        segment_pretension_button_row.addWidget(self.run_segment_pretension_button)
-        segment_pretension_button_row.addStretch(1)
-        segment_pretension_button_widget = QWidget()
-        segment_pretension_button_widget.setLayout(segment_pretension_button_row)
-        segment_pretension_layout.addWidget(segment_pretension_button_widget)
+        primary_row = QHBoxLayout()
+        primary_row.setSpacing(10)
+        primary_row.addWidget(self.run_segment_pretension_button)
+        primary_row.addWidget(self.run_consistency_proof_button)
+        primary_row.addWidget(self.open_latest_pretension_report_button)
+        primary_row.addStretch(1)
+        primary_widget = QWidget()
+        primary_widget.setLayout(primary_row)
+        segment_pretension_layout.addWidget(primary_widget)
+        advanced_row = QHBoxLayout()
+        advanced_row.setSpacing(10)
+        advanced_row.addWidget(self.record_manual_baseline_button)
+        advanced_row.addWidget(self.clear_manual_baselines_button)
+        advanced_row.addStretch(1)
+        advanced_widget = QWidget()
+        advanced_widget.setLayout(advanced_row)
+        segment_pretension_layout.addWidget(advanced_widget)
         # The whole section is hidden unless an experiment runner was wired in.
         self.segment_pretension_box.setVisible(self.pretension_trial_controller is not None)
         self._refresh_segment_pretension_state()
@@ -712,6 +742,7 @@ class ServosTab(QWidget):
         # Disable buttons during the run; matplotlib output writing is
         # synchronous and the experiment itself blocks on the worker.
         self.run_segment_pretension_button.setEnabled(False)
+        self.run_consistency_proof_button.setEnabled(False)
         self.record_manual_baseline_button.setEnabled(False)
         self.segment_pretension_status_label.setText("Pretension trial running…")
         try:
@@ -721,9 +752,46 @@ class ServosTab(QWidget):
             self.controller.state.status_message = f"Pretension trial failed: {exc}"
         finally:
             self.run_segment_pretension_button.setEnabled(True)
+            self.run_consistency_proof_button.setEnabled(True)
             self.record_manual_baseline_button.setEnabled(True)
             self._refresh_segment_pretension_state()
             self.update(self.controller.state)
+
+    def _run_consistency_proof(self) -> None:
+        if self.pretension_trial_controller is None:
+            return
+        self.run_segment_pretension_button.setEnabled(False)
+        self.run_consistency_proof_button.setEnabled(False)
+        self.record_manual_baseline_button.setEnabled(False)
+        self.segment_pretension_status_label.setText("One-Rig Pretension Proof running (5 repeats)…")
+        try:
+            self.pretension_trial_controller.run_one_rig_consistency_proof(repeat_runs=5)
+        except Exception as exc:
+            self.controller.state.last_error = str(exc)
+            self.controller.state.status_message = f"Pretension proof failed: {exc}"
+        finally:
+            self.run_segment_pretension_button.setEnabled(True)
+            self.run_consistency_proof_button.setEnabled(True)
+            self.record_manual_baseline_button.setEnabled(True)
+            self._refresh_segment_pretension_state()
+            self.update(self.controller.state)
+
+    def _open_latest_pretension_report(self) -> None:
+        if self.pretension_trial_controller is None:
+            return
+        path = self.pretension_trial_controller.latest_pretension_report_path()
+        if path is None or not Path(path).exists():
+            self.controller.state.status_message = (
+                "No pretension report yet. Run a single cycle first."
+            )
+            self.update(self.controller.state)
+            return
+        # Cross-platform "open in file browser": delegate to QDesktopServices.
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path))))
+        self.controller.state.status_message = f"Opened {path}"
+        self.update(self.controller.state)
 
     def _refresh_segment_pretension_state(self) -> None:
         if self.pretension_trial_controller is None:

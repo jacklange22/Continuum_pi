@@ -48,7 +48,7 @@ torque_off_on_disconnect: false
 wrap_risk_margin_ticks: 128
 max_raw_jump_without_wrap_risk_ticks: 900
 pretension_untensioned_reference_tick: 3500
-pretension_start_mode: full_release_4095  # current_position | manual_startup_artifact | release_200_from_current | full_release_4095
+pretension_start_mode: soft_release_to_zero_current  # soft_release_to_zero_current (default) | current_position | manual_startup_artifact | release_200_from_current | full_release_4095
 pretension_step_ticks: 4
 pretension_timeout_s: 30.0
 pretension_settle_time_s: 0.08

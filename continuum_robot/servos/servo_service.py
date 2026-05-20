@@ -40,11 +40,20 @@ PRETENSION_START_MODE_CURRENT_POSITION = "current_position"
 PRETENSION_START_MODE_MANUAL_STARTUP_ARTIFACT = "manual_startup_artifact"
 PRETENSION_START_MODE_RELEASE_200_FROM_CURRENT = "release_200_from_current"
 PRETENSION_START_MODE_FULL_RELEASE_4095 = "full_release_4095"
+# Current default. Steps every servo OUTWARD (higher tick = looser on this rig)
+# in small steps until present_current_ma stays below
+# ``release_current_abs_target_ma`` for ``release_current_stable_samples``
+# consecutive samples. Replaces full_release_4095 as the operator-facing
+# default because it proves each tendon is genuinely slack rather than
+# trusting the position-wrap endpoint. See PretensionValidationExperiment
+# ``_run_soft_release_to_zero_current_start``.
+PRETENSION_START_MODE_SOFT_RELEASE_TO_ZERO_CURRENT = "soft_release_to_zero_current"
 PRETENSION_START_MODE_OPTIONS = (
     PRETENSION_START_MODE_CURRENT_POSITION,
     PRETENSION_START_MODE_MANUAL_STARTUP_ARTIFACT,
     PRETENSION_START_MODE_RELEASE_200_FROM_CURRENT,
     PRETENSION_START_MODE_FULL_RELEASE_4095,
+    PRETENSION_START_MODE_SOFT_RELEASE_TO_ZERO_CURRENT,
 )
 SINGLE_SEGMENT_PAIR_INDEXES = ((0, 2), (1, 3))
 SINGLE_SEGMENT_WORKFLOW_EXPERIMENT = "experiment_motion"

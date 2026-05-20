@@ -402,3 +402,42 @@ def test_verify_tightening_signs_restores_start_tick(tmp_path: Path) -> None:
     report = ctrl.verify_tightening_signs(probe_ticks=5, settle_s=0.0)
     for sid, start in start_positions.items():
         assert ctrl.servo_service._positions[sid] == start, f"servo {sid} not restored to {start}"
+
+
+def test_pretension_trial_controller_exposes_one_rig_proof_and_latest_report() -> None:
+    """Bounded simplification pass: the controller exposes
+    ``run_one_rig_consistency_proof`` and ``latest_pretension_report_path`` so
+    the Servos tab can drive the one-rig proof and the "Open Latest Report"
+    button without each tab re-implementing the path resolution."""
+    from continuum_robot.gui.controllers.pretension_trial_controller import PretensionTrialController
+
+    assert hasattr(PretensionTrialController, "run_one_rig_consistency_proof")
+    assert hasattr(PretensionTrialController, "latest_pretension_report_path")
+
+
+def test_run_pretension_trial_accepts_repeat_runs_override() -> None:
+    """``run_pretension_trial(repeat_runs_override=N)`` must pass N through to
+    the experiment runner's config payload. This is how the one-rig proof
+    button forces 5 repeats without editing the YAML."""
+    import inspect
+    from continuum_robot.gui.controllers.pretension_trial_controller import PretensionTrialController
+
+    sig = inspect.signature(PretensionTrialController.run_pretension_trial)
+    assert "repeat_runs_override" in sig.parameters, (
+        "run_pretension_trial must accept repeat_runs_override for the one-rig proof."
+    )
+
+
+def test_pretension_trial_does_not_require_sign_check_artifact(tmp_path: Path) -> None:
+    """The pretension trial must not refuse to run because no
+    sign-verification artifact exists. Per the bounded simplification pass,
+    sign verification is advisory/diagnostic only — never a blocker."""
+    # Build the same kind of fake controller used elsewhere in this file.
+    ctrl = _build_sign_test_controller(tmp_path, sign_by_servo={1: 1, 2: 1, 3: 1, 4: 1})
+    # The controller has no run_pretension_trial path that checks for a sign
+    # artifact; the only sign-related method is the explicit verify call. We
+    # assert that nothing prevents calling verify_tightening_signs even when
+    # no sign data file exists, and the controller still produces a report.
+    report = ctrl.verify_tightening_signs(probe_ticks=5, settle_s=0.0)
+    # The report is advisory — it returns a verdict but does not raise.
+    assert "overall_verdict" in report

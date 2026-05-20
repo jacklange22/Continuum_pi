@@ -714,7 +714,15 @@ def test_staged_pretension_stops_when_tip_diverges(tmp_path: Path) -> None:
     result = runner.run_experiment("pretension_validation", config=config)
 
     run_row = result.summary.experiment_metrics["run_rows"][0]
-    assert run_row["stop_reason"] in {"tip_diverging", "tip_response_wrong_direction"}
+    # With ``tip_center_require_improvement`` (the new default), a paired step
+    # that worsens tip XY is stopped via ``tip_no_safe_improvement`` rather
+    # than chased via ``tip_response_wrong_direction``. Both legacy reasons
+    # also remain valid when require_improvement is disabled.
+    assert run_row["stop_reason"] in {
+        "tip_diverging",
+        "tip_response_wrong_direction",
+        "tip_no_safe_improvement",
+    }
     assert run_row["accepted"] is False
 
 
@@ -1024,8 +1032,15 @@ def test_smoke_shipped_safety_yaml_carries_phase1_retune() -> None:
     assert 5 <= int(payload["pretension_current_balance_tolerance_ma"]) <= 30
     # Hard stop is absolute safety; should stay at 850 mA.
     assert int(payload["pretension_hard_current_stop_ma"]) == 850
-    # Repeatable starting condition.
-    assert payload["pretension_start_mode"] == "full_release_4095"
+    # Repeatable starting condition. The default flipped from
+    # ``full_release_4095`` to ``soft_release_to_zero_current`` in the
+    # bounded simplification pass (2026-05-19) — the new mode releases until
+    # current is near zero, proving each tendon slack rather than trusting
+    # the position-wrap endpoint.
+    assert payload["pretension_start_mode"] in {
+        "soft_release_to_zero_current",
+        "full_release_4095",
+    }
     # Reference tick is the slack target; clipped to safe_max by preflight.
     assert int(payload["pretension_untensioned_reference_tick"]) == 3500
 
@@ -1046,8 +1061,14 @@ def test_smoke_example_yaml_carries_phase2_variant_knobs() -> None:
     assert "manual_baseline_capture_count" in payload
     assert "manual_baseline_pause_s" in payload
     assert "manual_baseline_record_path" in payload
-    # Repeatable start condition.
-    assert payload["pretension_start_mode"] == "full_release_4095"
+    # Repeatable start condition. The default flipped to
+    # ``soft_release_to_zero_current`` in the bounded simplification pass
+    # (2026-05-19); ``full_release_4095`` is still accepted for backward
+    # compat with older configs.
+    assert payload["pretension_start_mode"] in {
+        "soft_release_to_zero_current",
+        "full_release_4095",
+    }
     # Default variant is the conservative one, not Jacobian.
     assert payload["tip_centering_variant"] == "paired_then_tip"
 
@@ -1436,3 +1457,227 @@ def test_baseline_off_edge_step_disabled_when_offset_zero(tmp_path: Path) -> Non
     assert result["move_count"] == 0
     assert result["travel_ticks"] == 0
     assert trace_rows == []
+
+
+# --------------------------------------------------------------------------- #
+# Bounded simplification pass (2026-05-19): soft_release_to_zero_current is
+# the new default start mode; sign-verification is not blocking; consistency
+# verdict + new thesis figures + quality JSON.
+# --------------------------------------------------------------------------- #
+
+
+def test_pretension_config_defaults_to_soft_release_to_zero_current() -> None:
+    """The new default operator-facing start mode is
+    ``soft_release_to_zero_current``: walk outward until current is near zero
+    for ``release_current_stable_samples`` consecutive samples. The legacy
+    ``full_release_4095`` is no longer recommended.
+
+    Config knob defaults must reflect the operator's tendon-tension scale
+    (15 mA = light, 30 mA = tight): a 5 mA release target sits comfortably
+    inside the noise floor of an unloaded tendon."""
+    cfg = PretensionValidationExperimentConfig.from_dict({})
+    assert cfg.release_current_abs_target_ma == 5.0
+    assert cfg.release_current_stable_samples == 3
+    assert cfg.release_max_travel_ticks == 1500
+    assert cfg.release_step_ticks == 40
+    assert cfg.release_settle_s == 0.15
+    # The config field itself stays None so the start_mode falls through to
+    # the per-servo default — the experiment's _staged_parameters_for_servo
+    # then resolves to "soft_release_to_zero_current".
+    assert cfg.pretension_start_mode is None
+
+
+def test_shipped_pretension_yaml_uses_soft_release_to_zero_current() -> None:
+    """The shipped example pretension YAML must default to
+    soft_release_to_zero_current and surface the per-servo release knobs."""
+    import yaml
+    payload = yaml.safe_load(
+        Path("config/experiment_pretension_validation.example.yaml").read_text(encoding="utf-8")
+    )
+    assert str(payload.get("pretension_start_mode")).strip().lower() == "soft_release_to_zero_current"
+    for key in (
+        "release_current_abs_target_ma",
+        "release_current_stable_samples",
+        "release_max_travel_ticks",
+        "release_step_ticks",
+        "release_settle_s",
+    ):
+        assert key in payload, f"shipped YAML must expose {key}"
+    # tip_center_require_improvement should ship as true so first-try
+    # operator runs don't chase bad tip steps.
+    assert bool(payload.get("tip_center_require_improvement", True)) is True
+
+
+def test_safety_yaml_default_start_mode_is_soft_release_to_zero_current() -> None:
+    """The safety.yaml fallback for ``pretension_start_mode`` must align with
+    the experiment YAML default. Otherwise the Servos-tab one-click trial and
+    the experiments-tab run would silently use different start modes."""
+    import yaml
+    payload = yaml.safe_load(Path("config/safety.yaml").read_text(encoding="utf-8"))
+    assert str(payload.get("pretension_start_mode")).strip().lower() == "soft_release_to_zero_current"
+
+
+def test_lower_ticks_tighten_assumed_metadata_present_in_record() -> None:
+    """Every per-run record must declare the rig-convention assumption so
+    downstream consumers don't have to infer it. This is the one-rig proof's
+    explicit statement that the algorithm does not enforce a sign-check."""
+    # We synthesize a minimal record dict the way the experiment would build
+    # it, and assert the three keys are present and set to the documented
+    # values. The keys are set directly in builtins.py at the per-run record
+    # assembly site; if someone removes them the tests fail loudly.
+    import re
+    source = Path("continuum_robot/experiments/builtins.py").read_text(encoding="utf-8")
+    assert re.search(r'"lower_ticks_tighten_assumed"\s*:\s*True', source)
+    assert re.search(r'"tightening_direction_source"\s*:\s*"rig convention"', source)
+    assert re.search(r'"operator_sign_check_required"\s*:\s*False', source)
+
+
+def test_consistency_verdict_handles_all_four_buckets() -> None:
+    """high / medium / low / failed verdict from
+    ``_compute_consistency_verdict``."""
+    compute = PretensionValidationExperiment._compute_consistency_verdict
+
+    # failed: 0 accepted out of N>1
+    failed = compute(
+        run_records=[{"accepted": False}, {"accepted": False}],
+        accepted_run_count=0,
+        repeat_runs=5,
+        final_tip_xy_points_mm=[],
+    )
+    assert failed["verdict"] == "failed"
+
+    # single_run: repeat_runs == 1
+    single = compute(
+        run_records=[{"accepted": True}],
+        accepted_run_count=1,
+        repeat_runs=1,
+        final_tip_xy_points_mm=[],
+    )
+    assert single["verdict"] == "single_run"
+
+    # high: all accepted, tight spread
+    tight_rows = [
+        {
+            "accepted": True,
+            "final_position_ticks_by_servo": {"1": 2000 + i, "2": 2100 + i, "3": 2050 + i, "4": 2150 + i},
+            "load_proxy_current_ma_by_servo": {"1": 22.0, "2": 23.0, "3": 21.0, "4": 24.0},
+            "final_tip_xy_mm": [0.1 * i, 0.0],
+        }
+        for i in range(5)
+    ]
+    high = compute(
+        run_records=tight_rows,
+        accepted_run_count=5,
+        repeat_runs=5,
+        final_tip_xy_points_mm=[],
+    )
+    assert high["verdict"] == "high"
+    assert high["final_tip_xy_std_mm"] is not None
+
+    # low: half accepted but spread is wide enough that medium thresholds fail
+    wide_rows = [
+        {
+            "accepted": True,
+            "final_position_ticks_by_servo": {"1": 2000 + i * 100, "2": 2100, "3": 2050, "4": 2150},
+            "load_proxy_current_ma_by_servo": {"1": 22.0 + i * 5, "2": 23.0, "3": 21.0, "4": 24.0},
+            "final_tip_xy_mm": [i * 2.0, 0.0],
+        }
+        for i in range(3)
+    ] + [{"accepted": False}, {"accepted": False}]
+    low = compute(
+        run_records=wide_rows,
+        accepted_run_count=3,
+        repeat_runs=5,
+        final_tip_xy_points_mm=[],
+    )
+    assert low["verdict"] == "low"
+
+
+def test_phase_for_stage_maps_release_to_release_phase() -> None:
+    """The report figures depend on _phase_for_stage to group trace samples
+    into coarse phases for the shaded background and the phase summary panel.
+    A regression that mislabels the soft_release_to_zero_current stage would
+    cause every release sample to fall under "other"."""
+    from continuum_robot.experiments.pretension_validation_outputs import _phase_for_stage
+
+    assert _phase_for_stage("soft_release_to_zero_current") == "release"
+    assert _phase_for_stage("baseline_off_edge") == "off_edge"
+    assert _phase_for_stage("current_characterization_sample") == "characterization"
+    assert _phase_for_stage("engagement_scan") == "engagement"
+    assert _phase_for_stage("conservative_pair_step") == "tip_center"
+    assert _phase_for_stage("unknown_stage") == "other"
+
+
+def test_soft_release_to_zero_current_records_per_servo_release_state(tmp_path: Path) -> None:
+    """``_run_soft_release_to_zero_current_start`` must report per-servo
+    start position, travel, final current, success flag, and stop reason
+    EVEN when the mock bus's current readings do not meet the slack
+    criterion. The test verifies the per-servo record structure rather than
+    a specific outcome, because the mock bus returns whatever current it was
+    configured with and the live rig's noise floor is the real determinant."""
+    service = _servo_service(tmp_path)
+    experiment = PretensionValidationExperiment(
+        PretensionValidationExperimentConfig.from_dict(
+            {
+                "mode": "single_segment_staged",
+                "servo_ids": [1, 2, 3, 4],
+                "release_current_stable_samples": 1,
+                "release_current_abs_target_ma": 5.0,
+                "release_step_ticks": 25,
+                "release_max_travel_ticks": 80,
+            }
+        )
+    )
+
+    class _Session:
+        def __init__(self):
+            self.context = SimpleNamespace(
+                servo_service=service,
+                tracker_service=None,
+                monotonic_fn=time.monotonic,
+                sleep_fn=lambda _s: None,
+            )
+            self.staged_samples: list = []
+
+        def raise_if_stop_requested(self):
+            return None
+
+        def update_progress(self, *_a, **_kw):
+            return None
+
+    session = _Session()
+    experiment._add_staged_sample = lambda session, **kw: session.staged_samples.append(kw)  # type: ignore[assignment]
+
+    trace_rows: list = []
+    result = experiment._run_soft_release_to_zero_current_start(
+        session=session,
+        servo_service=service,
+        tracker_service=None,
+        servo_ids=[1, 2, 3, 4],
+        run_index=0,
+        target_xy_mm=[0.0, 0.0],
+        startup_reference_ticks_by_servo={sid: None for sid in (1, 2, 3, 4)},
+        mode_kind="conservative_startup",
+        trace_rows=trace_rows,
+    )
+
+    # Per-servo records exist for each id regardless of whether the mock bus
+    # declared each one released.
+    for sid in (1, 2, 3, 4):
+        assert str(sid) in result["release_start_position_by_servo"]
+        assert str(sid) in result["release_stop_reason_by_servo"]
+        # The stop reason must be one of the documented per-servo states.
+        assert result["release_stop_reason_by_servo"][str(sid)] in {
+            "released",
+            "release_travel_budget_exhausted",
+            "release_iteration_limit",
+            "missing_position",
+            "in_progress",
+        }
+    # Stage row was traced for visibility.
+    assert any(row.get("stage") == "soft_release_to_zero_current" for row in trace_rows)
+    # Top-level stop reason must be a known state.
+    assert result["stop_reason"] in {
+        "soft_release_to_zero_current_complete",
+        "soft_release_to_zero_current_disabled",
+    } or result["stop_reason"].startswith("release_incomplete_servos=")

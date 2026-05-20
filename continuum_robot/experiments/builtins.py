@@ -545,6 +545,12 @@ class PretensionValidationExperimentConfig:
     tip_center_step_ticks: int = 10
     tip_center_x_sign: int = 1
     tip_center_y_sign: int = 1
+    # Safety gate for the conservative paired-then-tip trim. When True, a
+    # paired step that worsens tip XY error (or violates load balance) is
+    # reverted, and the loop stops trying that axis. Default True for the
+    # simple/safe operator path; advanced users can disable to allow more
+    # aggressive convergence.
+    tip_center_require_improvement: bool = True
     tip_target_xy_mm: list[float] = field(default_factory=lambda: [0.0, 0.0])
     max_tip_displacement_mm: float = 50.0
     tip_divergence_stop_mm: float = 2.0
@@ -588,6 +594,32 @@ class PretensionValidationExperimentConfig:
     # every servo inward by this many ticks so characterization happens at a
     # stable, slack-but-off-edge position. 0 disables the off-edge step.
     baseline_offset_from_full_release_ticks: int = 200
+    # --- soft_release_to_zero_current knobs (default start mode) -------------
+    # The default start mode steps every servo OUTWARD (higher tick = looser
+    # on this rig) until its absolute current sits below
+    # ``release_current_abs_target_ma`` for ``release_current_stable_samples``
+    # consecutive samples. Replaces ``full_release_4095``: rather than trusting
+    # the position-wrap endpoint, we prove each tendon is genuinely slack.
+    release_current_abs_target_ma: float = 5.0
+    """A servo is considered released when |present_current_ma| <= this value.
+    Operator's empirical scale (2026-05-18): 15 mA = light tension, so 5 mA is
+    comfortably below first engagement and inside the typical noise floor."""
+    release_current_stable_samples: int = 3
+    """Number of consecutive samples below ``release_current_abs_target_ma``
+    required before a servo is declared released. Defends against single-sample
+    noise dips."""
+    release_max_travel_ticks: int = 1500
+    """Hard cap on outward travel per servo during the release phase. Sized to
+    cover a worst-case start position (~tick 1500-2500) walking out to the safe
+    max (~tick 3200). If a servo hits this cap without reaching slack, it
+    fails the run with ``release_travel_budget_exhausted``."""
+    release_step_ticks: int = 40
+    """Outward step size per release iteration. 40 ticks at
+    default_profile_velocity=15 (~234 ticks/s) takes ~170 ms of motion."""
+    release_settle_s: float = 0.15
+    """Sleep applied between release steps so current can settle before the
+    next telemetry read. Independent of ``settle_verify_time_s`` (which is for
+    the final verification settle)."""
     load_balance_tolerance_ma: float = 10.0
     pair_balance_tolerance_ma: float = 10.0
     settle_verify_time_s: float = 0.2
@@ -709,6 +741,7 @@ class PretensionValidationExperimentConfig:
             tip_center_step_ticks=max(1, int(payload.get("tip_center_step_ticks", 10))),
             tip_center_x_sign=(1 if int(payload.get("tip_center_x_sign", 1)) >= 0 else -1),
             tip_center_y_sign=(1 if int(payload.get("tip_center_y_sign", 1)) >= 0 else -1),
+            tip_center_require_improvement=bool(payload.get("tip_center_require_improvement", True)),
             tip_target_xy_mm=raw_target_xy,
             max_tip_displacement_mm=max(0.0, float(payload.get("max_tip_displacement_mm", 50.0))),
             tip_divergence_stop_mm=max(0.0, float(payload.get("tip_divergence_stop_mm", 2.0))),
@@ -738,6 +771,11 @@ class PretensionValidationExperimentConfig:
             min_meaningful_current_delta_ma=max(0.0, float(payload.get("min_meaningful_current_delta_ma", 2.0))),
             max_useful_current_delta_cap_ma=max(0.0, float(payload.get("max_useful_current_delta_cap_ma", 15.0))),
             baseline_offset_from_full_release_ticks=max(0, int(payload.get("baseline_offset_from_full_release_ticks", 200))),
+            release_current_abs_target_ma=max(0.0, float(payload.get("release_current_abs_target_ma", 5.0))),
+            release_current_stable_samples=max(1, int(payload.get("release_current_stable_samples", 3))),
+            release_max_travel_ticks=max(0, int(payload.get("release_max_travel_ticks", 1500))),
+            release_step_ticks=max(1, int(payload.get("release_step_ticks", 40))),
+            release_settle_s=max(0.0, float(payload.get("release_settle_s", 0.15))),
             load_balance_tolerance_ma=max(0.0, float(payload.get("load_balance_tolerance_ma", 10.0))),
             pair_balance_tolerance_ma=max(0.0, float(payload.get("pair_balance_tolerance_ma", 10.0))),
             settle_verify_time_s=max(0.0, float(payload.get("settle_verify_time_s", 0.2))),
@@ -2517,7 +2555,20 @@ class PretensionValidationExperiment(BaseExperiment):
                 session.update_progress(progress, total_progress, {"phase": "initial_state", "run_index": run_index})
 
                 start_mode_used = self._resolved_staged_start_mode(session, servo_ids)
-                if start_mode_used == "full_release_4095":
+                if start_mode_used == "soft_release_to_zero_current":
+                    start_result = self._run_soft_release_to_zero_current_start(
+                        session=session,
+                        servo_service=servo_service,
+                        tracker_service=tracker_service if include_tracker else None,
+                        servo_ids=servo_ids,
+                        run_index=run_index,
+                        target_xy_mm=target_xy,
+                        startup_reference_ticks_by_servo=startup_reference_ticks,
+                        mode_kind=mode_kind,
+                        trace_rows=trace_rows,
+                        deadline_monotonic=run_deadline_monotonic,
+                    )
+                elif start_mode_used == "full_release_4095":
                     start_result = self._run_explicit_full_release_start(
                         session=session,
                         servo_service=servo_service,
@@ -2547,7 +2598,13 @@ class PretensionValidationExperiment(BaseExperiment):
                 correction_travel_ticks += int(start_result.get("travel_ticks", 0))
                 self._merge_event_counts(telemetry_event_counts, start_result.get("telemetry_event_counts"))
                 packet_retry_count += int(start_result.get("packet_retry_count", 0) or 0)
-                if start_result.get("stop_reason") not in (None, "", "soft_release_complete", "full_release_complete"):
+                if start_result.get("stop_reason") not in (
+                    None,
+                    "",
+                    "soft_release_complete",
+                    "full_release_complete",
+                    "soft_release_to_zero_current_complete",
+                ):
                     fail_closed_stop_reason = str(start_result["stop_reason"])
                     reject_reasons.append(fail_closed_stop_reason)
                 after_start = self._advanced_measurement(
@@ -2878,6 +2935,14 @@ class PretensionValidationExperiment(BaseExperiment):
                     "servo_ids": list(servo_ids),
                     "servo_ids_source": str(self._last_servo_id_source or ""),
                     "active_segment_label": str(self._last_servo_id_active_segment_label or ""),
+                    # Rig-convention metadata. The pretension routine on this
+                    # rig assumes lower raw ticks tighten the tendon. We do NOT
+                    # require an operator sign-verification artifact: this is a
+                    # one-rig proof, not a universal calibration system. See
+                    # CANONICAL_POSITION_CONVENTION in servos/servo_service.py.
+                    "lower_ticks_tighten_assumed": True,
+                    "tightening_direction_source": "rig convention",
+                    "operator_sign_check_required": False,
                     "target_xy_mm": list(target_xy),
                     "current_characterization": current_characterization,
                     "effective_load_tolerance_ma": float(effective_load_tolerance_ma),
@@ -2899,6 +2964,62 @@ class PretensionValidationExperiment(BaseExperiment):
                     "final_tendon_displacement_mm_by_servo": self._json_safe_keyed(final.get("tendon_displacement_mm") or {}),
                     "load_balance_error_ma": final.get("load_balance_error_ma"),
                     "pair_balance_error_ma": final.get("pair_balance_error_ma"),
+                    # Soft-release-to-zero-current per-servo records. These keys
+                    # exist only when start_mode_used == "soft_release_to_zero_current";
+                    # they prove each tendon was independently released by
+                    # current rather than by position.
+                    "start_mode_used": str(start_mode_used),
+                    "release_start_position_by_servo": dict(start_result.get("release_start_position_by_servo") or {}),
+                    "release_final_position_by_servo": dict(start_result.get("release_final_position_by_servo") or {}),
+                    "release_travel_ticks_by_servo": dict(start_result.get("release_travel_ticks_by_servo") or {}),
+                    "release_final_current_by_servo": dict(start_result.get("release_final_current_by_servo") or {}),
+                    "release_success_by_servo": dict(start_result.get("release_success_by_servo") or {}),
+                    "release_stop_reason_by_servo": dict(start_result.get("release_stop_reason_by_servo") or {}),
+                    "release_current_abs_target_ma": float(start_result.get("release_current_abs_target_ma") or 0.0),
+                    "release_current_stable_samples_required": int(start_result.get("release_current_stable_samples_required") or 0),
+                    # Explicit acceptance criteria block — single place to read
+                    # whether the run passed, why it failed, and what each
+                    # threshold was. Mirrors fields that already live elsewhere
+                    # in the record but groups them so the operator does not
+                    # have to hunt.
+                    "acceptance": {
+                        "accepted": bool(accepted),
+                        "rejection_reasons": list(reject_reasons),
+                        "release_all_succeeded": bool(
+                            start_result.get("release_success_by_servo")
+                            and all(
+                                bool(v) for v in dict(
+                                    start_result.get("release_success_by_servo") or {}
+                                ).values()
+                            )
+                        ) if start_mode_used == "soft_release_to_zero_current" else None,
+                        "final_load_proxy_by_servo": {
+                            str(k): float(v) if v is not None else None
+                            for k, v in current_above_baseline_ma.items()
+                        },
+                        "final_position_ticks_by_servo": {
+                            str(k): (int(v) if v is not None else None)
+                            for k, v in final_position_ticks.items()
+                        },
+                        "final_tip_xy_mm": (
+                            [float(final.get("tip_xy_mm")[0]), float(final.get("tip_xy_mm")[1])]
+                            if isinstance(final.get("tip_xy_mm"), (list, tuple)) and len(final.get("tip_xy_mm")) >= 2
+                            else None
+                        ),
+                        "final_tip_offset_mm": tip_xy_offset_mm,
+                        "load_balance_error_ma": final.get("load_balance_error_ma"),
+                        "pair_balance_error_ma": final.get("pair_balance_error_ma"),
+                        "tip_centering_skipped_tracker_unavailable": bool(
+                            not include_tracker and mode_kind != "characterization"
+                        ),
+                        "thresholds": {
+                            "accept_max_load_balance_error_ma": float(self.config.accept_max_load_balance_error_ma),
+                            "accept_max_pair_balance_error_ma": float(self.config.accept_max_pair_balance_error_ma),
+                            "accept_max_final_tip_xy_offset_mm": float(self.config.accept_max_final_tip_xy_offset_mm),
+                            "takeup_target_load_proxy_ma": float(self.config.takeup_target_load_proxy_ma),
+                            "high_load_proxy_ma": float(self.config.high_load_proxy_ma),
+                        },
+                    },
                     "initial_tip_xyz_mm": initial.get("tip_xyz_mm"),
                     "pre_settle_tip_xyz_mm": pre_settle.get("tip_xyz_mm"),
                     "final_tip_xyz_mm": final.get("tip_xyz_mm"),
@@ -3021,7 +3142,193 @@ class PretensionValidationExperiment(BaseExperiment):
             "robot_mode": session.context.settings.robot.mode,
         }
         staged_metrics["operating_context"] = session.context.settings.robot.operating_context().metadata()
+        # Consistency verdict: high/medium/low/failed graded from the spread of
+        # accepted runs. Designed for the one-rig consistency proof workflow;
+        # for single-run trials it returns "single_run" so the operator doesn't
+        # misread one repeat as a "high" verdict.
+        staged_metrics["consistency_verdict"] = self._compute_consistency_verdict(
+            run_records=list(run_rows),
+            accepted_run_count=int(accepted_runs),
+            repeat_runs=int(repeat_runs),
+            final_tip_xy_points_mm=list(final_tip_xy_points_mm),
+        )
         session.metrics.update(staged_metrics)
+
+    @staticmethod
+    def _compute_consistency_verdict(
+        *,
+        run_records: list[dict[str, Any]],
+        accepted_run_count: int,
+        repeat_runs: int,
+        final_tip_xy_points_mm: list[list[float]],
+    ) -> dict[str, Any]:
+        """Grade a multi-run pretension validation as
+        ``high`` / ``medium`` / ``low`` / ``failed`` / ``single_run``.
+
+        Verdict logic (one-rig proof, deliberately permissive):
+
+        - ``failed``: 0 accepted runs.
+        - ``single_run``: only 1 repeat configured; no spread is meaningful.
+        - ``high``: >=80% accepted AND tip XY radial std <= 0.7 mm AND
+          per-servo position std <= 25 ticks AND per-servo load-proxy std
+          <= 6 mA.
+        - ``medium``: >=60% accepted AND tip XY radial std <= 1.5 mm AND
+          per-servo position std <= 60 ticks.
+        - ``low``: any acceptance below the medium thresholds but at least one
+          accepted run; useful for "we got it some of the time but not enough
+          to call repeatable".
+        - ``failed``: none of the above hold (e.g. 0 accepted but repeat_runs>1).
+
+        Thresholds are intentionally rig-friendly: this is a thesis proof on
+        ONE rig, not a universal benchmark.
+        """
+        verdict_record: dict[str, Any] = {
+            "verdict": "failed",
+            "reason": "",
+            "accepted_run_count": int(accepted_run_count),
+            "repeat_runs": int(repeat_runs),
+            "final_position_std_ticks_by_servo": {},
+            "final_load_proxy_std_ma_by_servo": {},
+            "final_tip_xy_std_mm": None,
+            "final_tip_radial_error_mean_mm": None,
+            "final_tip_radial_error_std_mm": None,
+            "thresholds": {
+                "high": {
+                    "min_accept_fraction": 0.8,
+                    "max_tip_radial_std_mm": 0.7,
+                    "max_position_std_ticks": 25.0,
+                    "max_load_proxy_std_ma": 6.0,
+                },
+                "medium": {
+                    "min_accept_fraction": 0.6,
+                    "max_tip_radial_std_mm": 1.5,
+                    "max_position_std_ticks": 60.0,
+                },
+            },
+        }
+
+        if int(repeat_runs) <= 1:
+            verdict_record["verdict"] = "single_run"
+            verdict_record["reason"] = "Only one repeat configured; no consistency spread to grade."
+            return verdict_record
+
+        if int(accepted_run_count) <= 0:
+            verdict_record["verdict"] = "failed"
+            verdict_record["reason"] = "Zero accepted runs."
+            return verdict_record
+
+        accepted_rows = [
+            row for row in run_records if bool(row.get("accepted"))
+        ]
+
+        # Per-servo final position std across accepted runs.
+        position_std_by_servo: dict[str, float] = {}
+        if accepted_rows:
+            servo_keys = sorted({
+                str(k)
+                for row in accepted_rows
+                for k in (row.get("final_position_ticks_by_servo") or {})
+            })
+            for sid in servo_keys:
+                values = [
+                    int(row["final_position_ticks_by_servo"][sid])
+                    for row in accepted_rows
+                    if isinstance(row.get("final_position_ticks_by_servo"), dict)
+                    and row["final_position_ticks_by_servo"].get(sid) is not None
+                ]
+                if len(values) >= 2:
+                    mean_v = sum(values) / float(len(values))
+                    var = sum((v - mean_v) ** 2 for v in values) / float(len(values))
+                    position_std_by_servo[sid] = float(math.sqrt(var))
+        verdict_record["final_position_std_ticks_by_servo"] = position_std_by_servo
+
+        # Per-servo final load-proxy std across accepted runs.
+        load_proxy_std_by_servo: dict[str, float] = {}
+        if accepted_rows:
+            servo_keys = sorted({
+                str(k)
+                for row in accepted_rows
+                for k in (row.get("load_proxy_current_ma_by_servo") or {})
+            })
+            for sid in servo_keys:
+                values = [
+                    float(row["load_proxy_current_ma_by_servo"][sid])
+                    for row in accepted_rows
+                    if isinstance(row.get("load_proxy_current_ma_by_servo"), dict)
+                    and row["load_proxy_current_ma_by_servo"].get(sid) is not None
+                ]
+                if len(values) >= 2:
+                    mean_v = sum(values) / float(len(values))
+                    var = sum((v - mean_v) ** 2 for v in values) / float(len(values))
+                    load_proxy_std_by_servo[sid] = float(math.sqrt(var))
+        verdict_record["final_load_proxy_std_ma_by_servo"] = load_proxy_std_by_servo
+
+        # Tip XY radial dispersion across accepted runs.
+        accepted_xy_points = [
+            (float(row.get("final_tip_xy_mm")[0]), float(row.get("final_tip_xy_mm")[1]))
+            for row in accepted_rows
+            if isinstance(row.get("final_tip_xy_mm"), (list, tuple))
+            and len(row.get("final_tip_xy_mm")) >= 2
+            and row.get("final_tip_xy_mm")[0] is not None
+            and row.get("final_tip_xy_mm")[1] is not None
+        ]
+        tip_xy_std_mm: float | None = None
+        tip_radial_mean: float | None = None
+        tip_radial_std: float | None = None
+        if len(accepted_xy_points) >= 2:
+            cx = sum(p[0] for p in accepted_xy_points) / float(len(accepted_xy_points))
+            cy = sum(p[1] for p in accepted_xy_points) / float(len(accepted_xy_points))
+            radii = [math.sqrt((p[0] - cx) ** 2 + (p[1] - cy) ** 2) for p in accepted_xy_points]
+            tip_radial_mean = float(sum(radii) / float(len(radii)))
+            tip_radial_var = sum((r - tip_radial_mean) ** 2 for r in radii) / float(len(radii))
+            tip_radial_std = float(math.sqrt(tip_radial_var))
+            # Reuse radial std as the "tip xy std" headline metric.
+            tip_xy_std_mm = float(tip_radial_std)
+        verdict_record["final_tip_xy_std_mm"] = tip_xy_std_mm
+        verdict_record["final_tip_radial_error_mean_mm"] = tip_radial_mean
+        verdict_record["final_tip_radial_error_std_mm"] = tip_radial_std
+
+        accept_fraction = float(accepted_run_count) / float(max(1, repeat_runs))
+        max_position_std = max(position_std_by_servo.values()) if position_std_by_servo else math.inf
+        max_load_proxy_std = max(load_proxy_std_by_servo.values()) if load_proxy_std_by_servo else math.inf
+
+        high = verdict_record["thresholds"]["high"]
+        medium = verdict_record["thresholds"]["medium"]
+
+        def _meets_high() -> bool:
+            return (
+                accept_fraction >= float(high["min_accept_fraction"])
+                and (tip_xy_std_mm is None or tip_xy_std_mm <= float(high["max_tip_radial_std_mm"]))
+                and max_position_std <= float(high["max_position_std_ticks"])
+                and max_load_proxy_std <= float(high["max_load_proxy_std_ma"])
+            )
+
+        def _meets_medium() -> bool:
+            return (
+                accept_fraction >= float(medium["min_accept_fraction"])
+                and (tip_xy_std_mm is None or tip_xy_std_mm <= float(medium["max_tip_radial_std_mm"]))
+                and max_position_std <= float(medium["max_position_std_ticks"])
+            )
+
+        if _meets_high():
+            verdict_record["verdict"] = "high"
+            verdict_record["reason"] = (
+                f"{accepted_run_count}/{repeat_runs} accepted, "
+                f"max_position_std={max_position_std:.1f} ticks, "
+                f"max_load_proxy_std={max_load_proxy_std:.1f} mA, "
+                f"tip_xy_std={(tip_xy_std_mm or 0.0):.2f} mm."
+            )
+        elif _meets_medium():
+            verdict_record["verdict"] = "medium"
+            verdict_record["reason"] = (
+                f"{accepted_run_count}/{repeat_runs} accepted; spread is acceptable but not high-confidence."
+            )
+        else:
+            verdict_record["verdict"] = "low"
+            verdict_record["reason"] = (
+                f"{accepted_run_count}/{repeat_runs} accepted; spread exceeds the medium thresholds."
+            )
+        return verdict_record
 
     def _execute_legacy_single_segment_staged(self, session: ExperimentSession) -> None:
         servo_service = session.context.servo_service
@@ -3894,7 +4201,9 @@ class PretensionValidationExperiment(BaseExperiment):
         defaults = session.context.servo_service.default_pretension_parameters(int(servo_id))
         default_start_mode = str(defaults.start_mode)
         if str(getattr(self.config, "staged_strategy", "") or "").strip().lower() != "legacy":
-            default_start_mode = "current_position"
+            # New operator-facing default: prove each tendon is slack by
+            # current rather than walking to the position-wrap endpoint.
+            default_start_mode = "soft_release_to_zero_current"
         return PretensionParameters(
             untensioned_reference_tick=(
                 int(self.config.untensioned_reference_tick)
@@ -3973,6 +4282,11 @@ class PretensionValidationExperiment(BaseExperiment):
             str(self._staged_parameters_for_servo(session, int(servo_id)).start_mode).strip().lower()
             for servo_id in servo_ids
         }
+        # Precedence: explicit experiment-config override > full_release_4095
+        # (advanced/diagnostic) > manual_startup_artifact > the new default
+        # soft_release_to_zero_current > release_200_from_current > current.
+        if "soft_release_to_zero_current" in modes:
+            return "soft_release_to_zero_current"
         if "full_release_4095" in modes:
             return "full_release_4095"
         if "manual_startup_artifact" in modes:
@@ -4382,6 +4696,245 @@ class PretensionValidationExperiment(BaseExperiment):
                 + (float(left_xyz_mm[2]) - float(right_xyz_mm[2])) ** 2
             )
         )
+
+    def _run_soft_release_to_zero_current_start(
+        self,
+        *,
+        session: ExperimentSession,
+        servo_service,
+        tracker_service,
+        servo_ids: list[int],
+        run_index: int,
+        target_xy_mm: list[float],
+        startup_reference_ticks_by_servo: dict[int, int | None],
+        mode_kind: str,
+        trace_rows: list[dict[str, Any]],
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, Any]:
+        """Default start mode. Step every servo OUTWARD (higher raw tick =
+        looser on this rig) until ``|present_current_ma|`` stays below
+        ``release_current_abs_target_ma`` for
+        ``release_current_stable_samples`` consecutive samples.
+
+        Replaces ``full_release_4095`` as the operator-facing default because
+        it proves each tendon is genuinely slack rather than trusting the
+        position-wrap endpoint. Records per-servo start/final position,
+        travel, final current, success flag, and stop reason so the run
+        artifact shows exactly what happened to each tendon.
+        """
+        servo_ids_int = [int(sid) for sid in servo_ids]
+        step = max(1, int(self.config.release_step_ticks))
+        max_travel = max(0, int(self.config.release_max_travel_ticks))
+        target_current = max(0.0, float(self.config.release_current_abs_target_ma))
+        stable_samples_required = max(1, int(self.config.release_current_stable_samples))
+        settle_s = max(0.0, float(self.config.release_settle_s))
+
+        result = {
+            "stop_reason": "soft_release_to_zero_current_complete",
+            "move_count": 0,
+            "travel_ticks": 0,
+            "clipped_move_count": 0,
+            "packet_retry_count": 0,
+            "telemetry_event_counts": {},
+            "released_ticks_by_servo": {str(sid): 0 for sid in servo_ids_int},
+            "low_load_reached_by_servo": {str(sid): False for sid in servo_ids_int},
+            "release_start_position_by_servo": {},
+            "release_final_position_by_servo": {},
+            "release_travel_ticks_by_servo": {str(sid): 0 for sid in servo_ids_int},
+            "release_final_current_by_servo": {},
+            "release_success_by_servo": {str(sid): False for sid in servo_ids_int},
+            "release_stop_reason_by_servo": {str(sid): "in_progress" for sid in servo_ids_int},
+            "release_stable_sample_count_by_servo": {str(sid): 0 for sid in servo_ids_int},
+            "release_current_abs_target_ma": float(target_current),
+            "release_current_stable_samples_required": int(stable_samples_required),
+            "release_max_travel_ticks": int(max_travel),
+            "release_step_ticks": int(step),
+        }
+
+        if max_travel <= 0:
+            result["stop_reason"] = "soft_release_to_zero_current_disabled"
+            return result
+
+        # Snapshot the initial position for each servo.
+        initial_telemetry, initial_policy = self._read_live_telemetry_with_policy(servo_service, servo_ids_int)
+        self._merge_event_counts(result["telemetry_event_counts"], initial_policy.get("event_counts"))
+        result["packet_retry_count"] += int(initial_policy.get("packet_retry_count", 0) or 0)
+        if initial_policy.get("telemetry_fail_closed_reason"):
+            result["stop_reason"] = str(initial_policy["telemetry_fail_closed_reason"])
+            return result
+        for sid in servo_ids_int:
+            entry = initial_telemetry.get(sid)
+            if entry is None or entry.present_position is None:
+                result["stop_reason"] = "missing_position"
+                result["release_stop_reason_by_servo"][str(sid)] = "missing_position"
+                return result
+            result["release_start_position_by_servo"][str(sid)] = int(entry.present_position)
+
+        # Iteration cap derived from max_travel / step (with a safety floor of
+        # 1 so we always do at least one iteration).
+        iterations = max(1, int(math.ceil(max_travel / float(step))) + 2)
+        for iteration in range(iterations):
+            session.raise_if_stop_requested()
+            if deadline_monotonic is not None and float(session.context.monotonic_fn()) > float(deadline_monotonic):
+                result["stop_reason"] = "runtime_budget_exhausted"
+                return result
+
+            measurement = self._advanced_measurement(
+                servo_service=servo_service,
+                tracker_service=tracker_service,
+                servo_ids=servo_ids_int,
+                baseline_current_ma_by_servo={},
+                target_xy_mm=target_xy_mm,
+                startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+                trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
+            )
+            self._merge_event_counts(result["telemetry_event_counts"], measurement.get("telemetry_event_counts"))
+            result["packet_retry_count"] += int(measurement.get("packet_retry_count", 0) or 0)
+            if measurement.get("telemetry_fail_closed_reason"):
+                result["stop_reason"] = str(measurement["telemetry_fail_closed_reason"])
+                return result
+
+            raw_current = dict(measurement.get("raw_current_ma") or {})
+            positions = dict(measurement.get("measured_positions_ticks") or {})
+
+            # Update stable-sample counts and decide who still needs to move.
+            release_targets: dict[int, int] = {}
+            for sid in servo_ids_int:
+                if result["release_success_by_servo"][str(sid)]:
+                    continue
+                current = raw_current.get(sid)
+                position = positions.get(sid)
+                if position is not None:
+                    result["release_final_position_by_servo"][str(sid)] = int(position)
+                if current is not None:
+                    result["release_final_current_by_servo"][str(sid)] = float(current)
+                travel = int(result["release_travel_ticks_by_servo"][str(sid)])
+                # Stable-sample logic: reset counter on any sample above target.
+                if current is not None and abs(float(current)) <= target_current:
+                    new_count = int(result["release_stable_sample_count_by_servo"][str(sid)]) + 1
+                    result["release_stable_sample_count_by_servo"][str(sid)] = new_count
+                    if new_count >= stable_samples_required:
+                        result["release_success_by_servo"][str(sid)] = True
+                        result["release_stop_reason_by_servo"][str(sid)] = "released"
+                        result["low_load_reached_by_servo"][str(sid)] = True
+                        continue
+                else:
+                    result["release_stable_sample_count_by_servo"][str(sid)] = 0
+
+                # Travel budget exhausted.
+                if travel >= max_travel:
+                    result["release_stop_reason_by_servo"][str(sid)] = "release_travel_budget_exhausted"
+                    continue
+
+                # Missing position blocks further motion for this servo.
+                if position is None:
+                    result["release_stop_reason_by_servo"][str(sid)] = "missing_position"
+                    continue
+
+                # Step outward (higher tick = looser).
+                delta = min(step, max_travel - travel)
+                release_targets[sid] = int(position) + int(delta)
+
+            # Trace row for visibility.
+            row = self._advanced_stage_row(
+                mode_kind=mode_kind,
+                run_index=run_index,
+                stage="soft_release_to_zero_current",
+                target_xy_mm=target_xy_mm,
+                measurement=measurement,
+                extra={
+                    "iteration": int(iteration + 1),
+                    "release_current_abs_target_ma": float(target_current),
+                    "release_current_stable_samples_required": int(stable_samples_required),
+                    "release_stable_sample_count_by_servo": dict(result["release_stable_sample_count_by_servo"]),
+                    "release_success_by_servo": dict(result["release_success_by_servo"]),
+                    "release_travel_ticks_by_servo": dict(result["release_travel_ticks_by_servo"]),
+                },
+            )
+            trace_rows.append(row)
+            self._add_staged_sample(
+                session,
+                phase="pretension_soft_release_to_zero_current",
+                run_index=run_index,
+                step_index=len(trace_rows) - 1,
+                payload=row,
+            )
+
+            # All servos released? Done.
+            if all(result["release_success_by_servo"][str(sid)] for sid in servo_ids_int):
+                break
+            # If no servo can/should move (everyone either succeeded or hit a
+            # blocker), exit.
+            if not release_targets:
+                break
+
+            telemetry, policy = self._read_live_telemetry_with_policy(servo_service, servo_ids_int)
+            self._merge_event_counts(result["telemetry_event_counts"], policy.get("event_counts"))
+            result["packet_retry_count"] += int(policy.get("packet_retry_count", 0) or 0)
+            if policy.get("telemetry_fail_closed_reason"):
+                result["stop_reason"] = str(policy["telemetry_fail_closed_reason"])
+                return result
+
+            move = self._apply_group_command(
+                servo_service=servo_service,
+                telemetry=telemetry,
+                targets_by_servo=release_targets,
+                reason="pretension_soft_release_to_zero_current_step",
+            )
+            result["move_count"] += int(move.get("move_count", 0))
+            result["travel_ticks"] += int(move.get("travel_ticks", 0))
+            if not bool(move.get("success")):
+                # Safety / preflight block: record per-servo and stop.
+                blocked_reason = str(move.get("stop_reason") or "safety_limit_rejected")
+                for sid in release_targets:
+                    if not result["release_success_by_servo"][str(sid)]:
+                        result["release_stop_reason_by_servo"][str(sid)] = blocked_reason
+                result["stop_reason"] = blocked_reason
+                break
+            # Accumulate per-servo travel from the move's delta_ticks output.
+            for sid_str, delta in dict(move.get("delta_ticks") or {}).items():
+                sid = int(sid_str)
+                result["release_travel_ticks_by_servo"][str(sid)] = (
+                    int(result["release_travel_ticks_by_servo"][str(sid)]) + abs(int(delta))
+                )
+                result["released_ticks_by_servo"][str(sid)] = (
+                    int(result["released_ticks_by_servo"][str(sid)]) + abs(int(delta))
+                )
+
+            if settle_s > 0.0:
+                session.context.sleep_fn(float(settle_s))
+        else:
+            # Loop fell through without ``break`` => iteration cap exhausted.
+            for sid in servo_ids_int:
+                if not result["release_success_by_servo"][str(sid)]:
+                    if result["release_stop_reason_by_servo"][str(sid)] == "in_progress":
+                        result["release_stop_reason_by_servo"][str(sid)] = "release_iteration_limit"
+
+        # Final per-servo accounting. If a servo's travel reached the budget
+        # without being declared released, mark it as travel-exhausted.
+        for sid in servo_ids_int:
+            if result["release_success_by_servo"][str(sid)]:
+                continue
+            travel = int(result["release_travel_ticks_by_servo"][str(sid)])
+            if travel >= max_travel and result["release_stop_reason_by_servo"][str(sid)] in (
+                "in_progress",
+                "",
+            ):
+                result["release_stop_reason_by_servo"][str(sid)] = "release_travel_budget_exhausted"
+
+        # Overall stop reason: only mark complete if every servo released.
+        if all(result["release_success_by_servo"][str(sid)] for sid in servo_ids_int):
+            result["stop_reason"] = "soft_release_to_zero_current_complete"
+        elif result["stop_reason"] in ("", "soft_release_to_zero_current_complete"):
+            # At least one tendon failed to reach slack -- do not continue into
+            # take-up pretending it was released.
+            unreleased = [
+                str(sid) for sid in servo_ids_int
+                if not result["release_success_by_servo"][str(sid)]
+            ]
+            result["stop_reason"] = f"release_incomplete_servos={','.join(unreleased)}"
+
+        return result
 
     def _run_soft_release_start(
         self,
@@ -5586,6 +6139,9 @@ class PretensionValidationExperiment(BaseExperiment):
             result["packet_retry_count"] += int(after.get("packet_retry_count", 0) or 0)
             after_tip_error = after.get("tip_xy_error_mm")
             if tip_error is not None and after_tip_error is not None and iteration_moves:
+                require_improvement = bool(
+                    getattr(self.config, "tip_center_require_improvement", True)
+                )
                 if float(after_tip_error) > float(tip_error) + float(self.config.tip_divergence_stop_mm):
                     moved_axes = []
                     for move_entry in iteration_moves:
@@ -5605,11 +6161,30 @@ class PretensionValidationExperiment(BaseExperiment):
                             result["sign_flip_used_by_axis"][axis] = True
                             result["sign_flip_count"] += 1
                         wrong_direction_count = 0
+                    elif require_improvement:
+                        # No more sign-flip budget and the move made things
+                        # worse. Stop here rather than chasing into a bad
+                        # configuration.
+                        wrong_direction_count += 1
+                        result["stop_reason"] = "tip_no_safe_improvement"
                     else:
                         wrong_direction_count += 1
                         result["stop_reason"] = "tip_response_wrong_direction"
                 else:
                     wrong_direction_count = 0
+                # Load-balance worsening guard (only when require_improvement is
+                # set): if the move made load balance significantly worse, stop
+                # so we don't chase tip centering at the cost of tendon balance.
+                if require_improvement and iteration_moves:
+                    before_load = measurement.get("load_balance_error_ma")
+                    after_load = after.get("load_balance_error_ma")
+                    if (
+                        before_load is not None
+                        and after_load is not None
+                        and float(after_load) > float(before_load) + 2.0 * float(effective_load_tolerance_ma)
+                        and not result["stop_reason"]
+                    ):
+                        result["stop_reason"] = "load_balance_worsened_by_tip_step"
             row = self._advanced_stage_row(
                 mode_kind="conservative_startup",
                 run_index=run_index,
