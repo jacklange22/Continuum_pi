@@ -1481,6 +1481,11 @@ def test_pretension_config_defaults_to_soft_release_to_zero_current() -> None:
     assert cfg.release_max_travel_ticks == 1500
     assert cfg.release_step_ticks == 40
     assert cfg.release_settle_s == 0.15
+    # Plateau fallback defaults (2026-05-19): cover the 6-10 mA holding-current
+    # regime that real XC330 servos sit at when slack.
+    assert cfg.release_plateau_max_current_ma == 10.0
+    assert cfg.release_plateau_delta_ma == 2.0
+    assert cfg.release_plateau_window_samples == 4
     # The config field itself stays None so the start_mode falls through to
     # the per-servo default — the experiment's _staged_parameters_for_servo
     # then resolves to "soft_release_to_zero_current".
@@ -1606,6 +1611,225 @@ def test_phase_for_stage_maps_release_to_release_phase() -> None:
     assert _phase_for_stage("engagement_scan") == "engagement"
     assert _phase_for_stage("conservative_pair_step") == "tip_center"
     assert _phase_for_stage("unknown_stage") == "other"
+
+
+# --------------------------------------------------------------------------- #
+# Plateau fallback for soft_release_to_zero_current.
+# --------------------------------------------------------------------------- #
+
+
+class _ScriptedCurrentService:
+    """Wraps a real ServoService so tests can script the current returned by
+    each ``read_live_telemetry`` call.
+
+    The helper does not touch positions / writes — those flow through the
+    underlying service untouched. ``script`` is a list of per-call dicts
+    keyed by servo_id; the helper returns the next dict on each call and
+    sticks on the last dict once the script is exhausted. This lets tests
+    simulate "current drops from 60 → 12 → 8 → 7 → 7 → 7 → 7 → 7" easily.
+    """
+
+    def __init__(self, base, *, script):
+        self._base = base
+        self._script = list(script)
+        self._read_index = 0
+        # Forward attribute access for everything we don't override.
+
+    def __getattr__(self, name):
+        return getattr(self._base, name)
+
+    def read_live_telemetry(self, servo_ids):
+        live = self._base.read_live_telemetry(list(servo_ids))
+        # Pick the dict for this call.
+        index = min(self._read_index, len(self._script) - 1) if self._script else None
+        plan = self._script[index] if index is not None else {}
+        self._read_index += 1
+        for sid in servo_ids:
+            entry = live.get(int(sid))
+            if entry is None:
+                continue
+            target_current = plan.get(int(sid), plan.get(str(int(sid))))
+            if target_current is None:
+                continue
+            # Replace BOTH the registered current_ma and the present_current_ma
+            # depending on which attribute the live entry exposes. The mock
+            # bus's telemetry dataclass uses present_current_ma.
+            try:
+                entry.present_current_ma = float(target_current)
+            except Exception:
+                pass
+            # Some entry types also store present_current; sync both.
+            if hasattr(entry, "present_current"):
+                try:
+                    entry.present_current = float(target_current)
+                except Exception:
+                    pass
+        return live
+
+
+def _run_release_with_scripted_currents(
+    tmp_path: Path,
+    *,
+    script: list[dict[int, float]],
+    extra_config: dict[str, Any] | None = None,
+):
+    """Run ``_run_soft_release_to_zero_current_start`` against a wrapped servo
+    service whose currents follow ``script``. Returns the result dict."""
+    base_service = _servo_service(tmp_path)
+    wrapped = _ScriptedCurrentService(base_service, script=script)
+
+    cfg_payload = {
+        "mode": "single_segment_staged",
+        "servo_ids": [1, 2, 3, 4],
+        "release_current_abs_target_ma": 5.0,
+        "release_current_stable_samples": 3,
+        "release_plateau_max_current_ma": 10.0,
+        "release_plateau_delta_ma": 2.0,
+        "release_plateau_window_samples": 4,
+        "release_step_ticks": 25,
+        "release_max_travel_ticks": 300,
+        "release_settle_s": 0.0,
+    }
+    cfg_payload.update(extra_config or {})
+    experiment = PretensionValidationExperiment(
+        PretensionValidationExperimentConfig.from_dict(cfg_payload)
+    )
+
+    class _Session:
+        def __init__(self):
+            self.context = SimpleNamespace(
+                servo_service=wrapped,
+                tracker_service=None,
+                monotonic_fn=time.monotonic,
+                sleep_fn=lambda _s: None,
+            )
+            self.staged_samples: list = []
+
+        def raise_if_stop_requested(self):
+            return None
+
+        def update_progress(self, *_a, **_kw):
+            return None
+
+    session = _Session()
+    experiment._add_staged_sample = lambda session, **kw: session.staged_samples.append(kw)  # type: ignore[assignment]
+
+    trace_rows: list = []
+    result = experiment._run_soft_release_to_zero_current_start(
+        session=session,
+        servo_service=wrapped,
+        tracker_service=None,
+        servo_ids=[1, 2, 3, 4],
+        run_index=0,
+        target_xy_mm=[0.0, 0.0],
+        startup_reference_ticks_by_servo={sid: None for sid in (1, 2, 3, 4)},
+        mode_kind="conservative_startup",
+        trace_rows=trace_rows,
+    )
+    return result, trace_rows
+
+
+def test_soft_release_plateau_exact_near_zero_release_succeeds_via_target_current(tmp_path: Path) -> None:
+    """When |current| stays at ~1 mA across enough samples, every servo must
+    be declared released via the ``target_current`` condition (the ideal
+    path) rather than via the plateau fallback."""
+    # 6 iterations of clean ~1 mA reads gives both paths a chance; the
+    # target-current path must claim release first because it only needs 3
+    # consecutive samples vs the plateau's 4.
+    script = [{1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0} for _ in range(6)]
+    result, _ = _run_release_with_scripted_currents(tmp_path, script=script)
+    assert result["stop_reason"] == "soft_release_to_zero_current_complete"
+    for sid in (1, 2, 3, 4):
+        assert result["release_success_by_servo"][str(sid)] is True
+        assert result["release_success_condition_by_servo"][str(sid)] == "target_current"
+        assert result["release_stop_reason_by_servo"][str(sid)] == "released"
+
+
+def test_soft_release_plateau_at_8ma_succeeds_via_plateau_fallback(tmp_path: Path) -> None:
+    """When |current| plateaus at ~8 mA (above target, below plateau max),
+    every servo must be declared released via the ``low_current_plateau``
+    fallback."""
+    # 6 reads of ~8 mA: well above target (5 mA) so target_current path
+    # never triggers; spread is 0 mA so plateau path kicks in once the
+    # window fills (4 samples).
+    script = [{1: 8.0, 2: 8.2, 3: 7.9, 4: 8.1} for _ in range(6)]
+    result, _ = _run_release_with_scripted_currents(tmp_path, script=script)
+    assert result["stop_reason"] == "soft_release_to_zero_current_complete"
+    for sid in (1, 2, 3, 4):
+        assert result["release_success_by_servo"][str(sid)] is True
+        assert result["release_success_condition_by_servo"][str(sid)] == "low_current_plateau"
+
+
+def test_soft_release_plateau_above_plateau_max_does_not_succeed(tmp_path: Path) -> None:
+    """When |current| plateaus ABOVE ``release_plateau_max_current_ma`` (e.g.
+    15 mA), neither the target-current path nor the plateau fallback should
+    declare release. The run must exhaust travel and fail per-servo with
+    ``release_travel_budget_exhausted``."""
+    # Keep current high enough that plateau_max is exceeded. Spread is
+    # small so the failure must come from the max-current gate, not the
+    # spread gate.
+    script = [{1: 15.0, 2: 15.5, 3: 14.8, 4: 15.2} for _ in range(40)]
+    result, _ = _run_release_with_scripted_currents(
+        tmp_path,
+        script=script,
+        # Tight budget so the test finishes fast.
+        extra_config={"release_max_travel_ticks": 100, "release_step_ticks": 25},
+    )
+    for sid in (1, 2, 3, 4):
+        assert result["release_success_by_servo"][str(sid)] is False
+        # The condition was never set because no path declared release.
+        assert result["release_success_condition_by_servo"][str(sid)] == ""
+        assert result["release_stop_reason_by_servo"][str(sid)] in {
+            "release_travel_budget_exhausted",
+            "release_iteration_limit",
+        }
+    assert result["stop_reason"].startswith("release_incomplete_servos=")
+
+
+def test_soft_release_plateau_disabled_when_cap_is_zero(tmp_path: Path) -> None:
+    """Setting ``release_plateau_max_current_ma: 0`` disables the fallback —
+    a servo plateauing at 8 mA must NOT be declared released."""
+    script = [{1: 8.0, 2: 8.0, 3: 8.0, 4: 8.0} for _ in range(40)]
+    result, _ = _run_release_with_scripted_currents(
+        tmp_path,
+        script=script,
+        extra_config={
+            "release_plateau_max_current_ma": 0.0,
+            "release_max_travel_ticks": 100,
+            "release_step_ticks": 25,
+        },
+    )
+    assert result["release_plateau_enabled"] is False
+    for sid in (1, 2, 3, 4):
+        assert result["release_success_by_servo"][str(sid)] is False
+
+
+def test_soft_release_travel_budget_exhaustion_still_fails(tmp_path: Path) -> None:
+    """A servo whose current keeps changing (no plateau, never below target)
+    must hit ``release_travel_budget_exhausted`` rather than the plateau
+    fallback. Simulate by ramping current up and down so the window spread
+    always exceeds ``release_plateau_delta_ma``."""
+    # Alternate 9 mA / 6 mA so spread = 3 mA > plateau_delta = 2 mA; never
+    # below target (5 mA).
+    script: list[dict[int, float]] = []
+    for i in range(40):
+        val = 9.0 if (i % 2 == 0) else 6.0
+        script.append({1: val, 2: val, 3: val, 4: val})
+    result, _ = _run_release_with_scripted_currents(
+        tmp_path,
+        script=script,
+        extra_config={
+            "release_max_travel_ticks": 100,
+            "release_step_ticks": 25,
+            "release_plateau_delta_ma": 2.0,
+        },
+    )
+    for sid in (1, 2, 3, 4):
+        assert result["release_success_by_servo"][str(sid)] is False
+        assert result["release_stop_reason_by_servo"][str(sid)] in {
+            "release_travel_budget_exhausted",
+            "release_iteration_limit",
+        }
 
 
 def test_soft_release_to_zero_current_records_per_servo_release_state(tmp_path: Path) -> None:

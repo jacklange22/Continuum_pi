@@ -421,6 +421,7 @@ def _write_staged_summary_text(
         f"- Manual startup artifact: {metrics.get('manual_startup_artifact')}",
         f"- Advanced startup artifacts: {metrics.get('advanced_startup_artifacts')}",
         "",
+        *_format_soft_release_summary_lines(metrics.get("run_rows") or []),
         "Saved plots:",
         "- pretension_tendon_displacement_vs_tip_xy.png",
         "- pretension_tendon_displacement_vs_current.png",
@@ -438,6 +439,68 @@ def _write_staged_summary_text(
         "- pretension_final_state_report.png",
     ]
     summary_text_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
+
+
+def _format_soft_release_summary_lines(run_rows: list[dict[str, Any]]) -> list[str]:
+    """Summarise the soft-release-to-zero-current phase across runs.
+
+    Surfaces whether each servo reached release via the ideal target-current
+    path or the low-current plateau fallback, plus the per-servo stop reason.
+    Emits nothing when no run used the soft-release start mode (e.g. all runs
+    used ``current_position`` or ``full_release_4095``).
+    """
+    soft_release_rows = [
+        row for row in run_rows
+        if str(row.get("start_mode_used") or "").strip().lower() == "soft_release_to_zero_current"
+    ]
+    if not soft_release_rows:
+        return []
+    lines: list[str] = [
+        "Soft release to zero current:",
+    ]
+    target_count = 0
+    plateau_count = 0
+    other_count = 0
+    plateau_enabled = False
+    plateau_max = 0.0
+    plateau_delta = 0.0
+    plateau_window = 0
+    for row in soft_release_rows:
+        plateau_enabled = plateau_enabled or bool(row.get("release_plateau_enabled", False))
+        plateau_max = max(plateau_max, float(row.get("release_plateau_max_current_ma") or 0.0))
+        plateau_delta = max(plateau_delta, float(row.get("release_plateau_delta_ma") or 0.0))
+        plateau_window = max(plateau_window, int(row.get("release_plateau_window_samples") or 0))
+        cond_map = row.get("release_success_condition_by_servo") or {}
+        if isinstance(cond_map, dict):
+            for v in cond_map.values():
+                s = str(v or "").strip().lower()
+                if s == "target_current":
+                    target_count += 1
+                elif s == "low_current_plateau":
+                    plateau_count += 1
+                else:
+                    other_count += 1
+    lines.append(
+        f"- Plateau fallback enabled: {plateau_enabled} "
+        f"(max_current={plateau_max:.1f} mA, delta={plateau_delta:.2f} mA, window={plateau_window} samples)"
+    )
+    lines.append(
+        f"- Servo-runs released via target_current ({_fmt_float(soft_release_rows[0].get('release_current_abs_target_ma'))} mA): {target_count}"
+    )
+    lines.append(f"- Servo-runs released via low_current_plateau fallback: {plateau_count}")
+    lines.append(f"- Servo-runs not released (empty condition / failure): {other_count}")
+    # Per-run breakdown for quick scanning.
+    for row in soft_release_rows[: min(5, len(soft_release_rows))]:
+        run_label = row.get("run_label") or f"run_{int(row.get('run_index', 0)) + 1:02d}"
+        cond = row.get("release_success_condition_by_servo") or {}
+        stop = row.get("release_stop_reason_by_servo") or {}
+        cond_text = ", ".join(f"S{sid}:{(cond.get(sid) or '—')}" for sid in sorted(cond, key=lambda s: int(s) if str(s).isdigit() else 0))
+        stop_text = ", ".join(f"S{sid}:{stop.get(sid)}" for sid in sorted(stop, key=lambda s: int(s) if str(s).isdigit() else 0))
+        lines.append(f"  - {run_label}: condition=[{cond_text}] stop=[{stop_text}]")
+    if len(soft_release_rows) > 5:
+        lines.append(f"  - … and {len(soft_release_rows) - 5} more runs (see metrics.csv).")
+    lines.append("")
+    return lines
 
 
 def _write_pretension_tip_xy_path_report(
@@ -951,6 +1014,14 @@ def _write_pretension_phase_summary_report(
     if isinstance(release_success, dict) and release_success:
         ok_count = sum(1 for v in release_success.values() if bool(v))
         lines.append(f"Released: {ok_count}/{len(release_success)} servos")
+    # Per-servo release condition (target_current vs low_current_plateau)
+    # so the operator can tell at a glance whether the ideal path succeeded
+    # or the plateau fallback kicked in.
+    condition_map = target_row.get("release_success_condition_by_servo") or {}
+    if isinstance(condition_map, dict) and condition_map:
+        plateau_n = sum(1 for v in condition_map.values() if str(v) == "low_current_plateau")
+        target_n = sum(1 for v in condition_map.values() if str(v) == "target_current")
+        lines.append(f"Release condition: target={target_n}, plateau={plateau_n}")
     lines.append(f"Lower ticks tighten: {target_row.get('lower_ticks_tighten_assumed', '—')}")
     ax_text.text(
         0.02,
@@ -1000,7 +1071,14 @@ def _write_pretension_quality_summary_json(
                 "load_balance_error_ma": _as_float(row.get("load_balance_error_ma")),
                 "pair_balance_error_ma": _as_float(row.get("pair_balance_error_ma")),
                 "release_success_by_servo": dict(row.get("release_success_by_servo") or {}),
+                "release_success_condition_by_servo": dict(row.get("release_success_condition_by_servo") or {}),
+                "release_stop_reason_by_servo": dict(row.get("release_stop_reason_by_servo") or {}),
                 "release_travel_ticks_by_servo": dict(row.get("release_travel_ticks_by_servo") or {}),
+                "release_final_current_by_servo": dict(row.get("release_final_current_by_servo") or {}),
+                "release_plateau_enabled": bool(row.get("release_plateau_enabled", False)),
+                "release_plateau_max_current_ma": _as_float(row.get("release_plateau_max_current_ma")),
+                "release_plateau_delta_ma": _as_float(row.get("release_plateau_delta_ma")),
+                "release_plateau_window_samples": int(row.get("release_plateau_window_samples") or 0),
                 "final_load_proxy_by_servo": dict(row.get("load_proxy_current_ma_by_servo") or {}),
                 "lower_ticks_tighten_assumed": bool(row.get("lower_ticks_tighten_assumed", True)),
             }

@@ -620,6 +620,28 @@ class PretensionValidationExperimentConfig:
     """Sleep applied between release steps so current can settle before the
     next telemetry read. Independent of ``settle_verify_time_s`` (which is for
     the final verification settle)."""
+    # --- low-current plateau fallback (first-try robustness) -----------------
+    # On real servos, slack often plateaus at 6-10 mA because of holding
+    # current / motor friction / telemetry noise rather than dropping all the
+    # way to <= 5 mA. Without a fallback, a servo can sit at e.g. 7 mA forever
+    # and exhaust the travel budget while still genuinely slack. The plateau
+    # fallback declares a servo released when its current stays under
+    # ``release_plateau_max_current_ma`` AND its current does not decrease by
+    # more than ``release_plateau_delta_ma`` over ``release_plateau_window_samples``
+    # — i.e. additional outward motion is not buying any meaningful drop in
+    # current, so the tendon is as slack as it will get.
+    release_plateau_max_current_ma: float = 10.0
+    """Upper bound on |current_ma| for the plateau fallback to apply. Sized
+    well below operator's 15 mA "light" tension so a plateau still implies a
+    genuinely slack tendon. Set to 0 to disable the fallback entirely."""
+    release_plateau_delta_ma: float = 2.0
+    """Maximum allowed decrease in |current| over the plateau window before
+    the fallback kicks in. If the most recent ``release_plateau_window_samples``
+    consecutive readings span less than this many mA, the tendon is on a
+    plateau and further outward motion is unlikely to lower current."""
+    release_plateau_window_samples: int = 4
+    """Number of consecutive plateau samples required before the fallback
+    declares release. 4 samples at ~150 ms each ≈ 600 ms of stable readings."""
     load_balance_tolerance_ma: float = 10.0
     pair_balance_tolerance_ma: float = 10.0
     settle_verify_time_s: float = 0.2
@@ -773,6 +795,9 @@ class PretensionValidationExperimentConfig:
             baseline_offset_from_full_release_ticks=max(0, int(payload.get("baseline_offset_from_full_release_ticks", 200))),
             release_current_abs_target_ma=max(0.0, float(payload.get("release_current_abs_target_ma", 5.0))),
             release_current_stable_samples=max(1, int(payload.get("release_current_stable_samples", 3))),
+            release_plateau_max_current_ma=max(0.0, float(payload.get("release_plateau_max_current_ma", 10.0))),
+            release_plateau_delta_ma=max(0.0, float(payload.get("release_plateau_delta_ma", 2.0))),
+            release_plateau_window_samples=max(2, int(payload.get("release_plateau_window_samples", 4))),
             release_max_travel_ticks=max(0, int(payload.get("release_max_travel_ticks", 1500))),
             release_step_ticks=max(1, int(payload.get("release_step_ticks", 40))),
             release_settle_s=max(0.0, float(payload.get("release_settle_s", 0.15))),
@@ -2977,6 +3002,11 @@ class PretensionValidationExperiment(BaseExperiment):
                     "release_stop_reason_by_servo": dict(start_result.get("release_stop_reason_by_servo") or {}),
                     "release_current_abs_target_ma": float(start_result.get("release_current_abs_target_ma") or 0.0),
                     "release_current_stable_samples_required": int(start_result.get("release_current_stable_samples_required") or 0),
+                    "release_success_condition_by_servo": dict(start_result.get("release_success_condition_by_servo") or {}),
+                    "release_plateau_max_current_ma": float(start_result.get("release_plateau_max_current_ma") or 0.0),
+                    "release_plateau_delta_ma": float(start_result.get("release_plateau_delta_ma") or 0.0),
+                    "release_plateau_window_samples": int(start_result.get("release_plateau_window_samples") or 0),
+                    "release_plateau_enabled": bool(start_result.get("release_plateau_enabled", False)),
                     # Explicit acceptance criteria block — single place to read
                     # whether the run passed, why it failed, and what each
                     # threshold was. Mirrors fields that already live elsewhere
@@ -4728,6 +4758,15 @@ class PretensionValidationExperiment(BaseExperiment):
         target_current = max(0.0, float(self.config.release_current_abs_target_ma))
         stable_samples_required = max(1, int(self.config.release_current_stable_samples))
         settle_s = max(0.0, float(self.config.release_settle_s))
+        plateau_max_current_ma = max(0.0, float(getattr(self.config, "release_plateau_max_current_ma", 0.0) or 0.0))
+        plateau_delta_ma = max(0.0, float(getattr(self.config, "release_plateau_delta_ma", 0.0) or 0.0))
+        plateau_window_samples = max(2, int(getattr(self.config, "release_plateau_window_samples", 4) or 4))
+        plateau_enabled = plateau_max_current_ma > 0.0
+
+        # Per-servo rolling buffer of recent |current_ma| samples used to detect
+        # the low-current plateau (real servos often plateau at 6-10 mA rather
+        # than dropping all the way to <= target_current).
+        recent_current_window: dict[int, list[float]] = {sid: [] for sid in servo_ids_int}
 
         result = {
             "stop_reason": "soft_release_to_zero_current_complete",
@@ -4743,10 +4782,19 @@ class PretensionValidationExperiment(BaseExperiment):
             "release_travel_ticks_by_servo": {str(sid): 0 for sid in servo_ids_int},
             "release_final_current_by_servo": {},
             "release_success_by_servo": {str(sid): False for sid in servo_ids_int},
+            "release_success_condition_by_servo": {str(sid): "" for sid in servo_ids_int},
             "release_stop_reason_by_servo": {str(sid): "in_progress" for sid in servo_ids_int},
             "release_stable_sample_count_by_servo": {str(sid): 0 for sid in servo_ids_int},
+            # Diagnostic counts so the trace shows which plateau window we used
+            # when the fallback declared release. None means "no plateau window
+            # yet built up" or "succeeded on the target-current path".
+            "release_plateau_window_by_servo": {str(sid): [] for sid in servo_ids_int},
             "release_current_abs_target_ma": float(target_current),
             "release_current_stable_samples_required": int(stable_samples_required),
+            "release_plateau_max_current_ma": float(plateau_max_current_ma),
+            "release_plateau_delta_ma": float(plateau_delta_ma),
+            "release_plateau_window_samples": int(plateau_window_samples),
+            "release_plateau_enabled": bool(plateau_enabled),
             "release_max_travel_ticks": int(max_travel),
             "release_step_ticks": int(step),
         }
@@ -4809,17 +4857,50 @@ class PretensionValidationExperiment(BaseExperiment):
                 if current is not None:
                     result["release_final_current_by_servo"][str(sid)] = float(current)
                 travel = int(result["release_travel_ticks_by_servo"][str(sid)])
-                # Stable-sample logic: reset counter on any sample above target.
+
+                # Push |current| into the rolling plateau window. Only valid
+                # samples (non-None) participate.
+                if current is not None:
+                    window = recent_current_window[sid]
+                    window.append(float(abs(float(current))))
+                    if len(window) > plateau_window_samples:
+                        del window[0]
+                    result["release_plateau_window_by_servo"][str(sid)] = list(window)
+
+                # --- Path 1: target-current stable-samples (ideal) -----------
                 if current is not None and abs(float(current)) <= target_current:
                     new_count = int(result["release_stable_sample_count_by_servo"][str(sid)]) + 1
                     result["release_stable_sample_count_by_servo"][str(sid)] = new_count
                     if new_count >= stable_samples_required:
                         result["release_success_by_servo"][str(sid)] = True
                         result["release_stop_reason_by_servo"][str(sid)] = "released"
+                        result["release_success_condition_by_servo"][str(sid)] = "target_current"
                         result["low_load_reached_by_servo"][str(sid)] = True
                         continue
                 else:
                     result["release_stable_sample_count_by_servo"][str(sid)] = 0
+
+                # --- Path 2: low-current plateau fallback --------------------
+                # Real servos commonly plateau at 6-10 mA because of holding
+                # current / friction. If |current| stays under
+                # ``release_plateau_max_current_ma`` AND the spread across the
+                # last ``release_plateau_window_samples`` samples is below
+                # ``release_plateau_delta_ma``, additional outward travel is
+                # not buying any meaningful current drop — declare slack.
+                if (
+                    plateau_enabled
+                    and current is not None
+                    and len(recent_current_window[sid]) >= plateau_window_samples
+                ):
+                    window = recent_current_window[sid]
+                    window_max = max(window)
+                    window_min = min(window)
+                    if window_max <= plateau_max_current_ma and (window_max - window_min) <= plateau_delta_ma:
+                        result["release_success_by_servo"][str(sid)] = True
+                        result["release_stop_reason_by_servo"][str(sid)] = "released"
+                        result["release_success_condition_by_servo"][str(sid)] = "low_current_plateau"
+                        result["low_load_reached_by_servo"][str(sid)] = True
+                        continue
 
                 # Travel budget exhausted.
                 if travel >= max_travel:
@@ -4846,8 +4927,17 @@ class PretensionValidationExperiment(BaseExperiment):
                     "iteration": int(iteration + 1),
                     "release_current_abs_target_ma": float(target_current),
                     "release_current_stable_samples_required": int(stable_samples_required),
+                    "release_plateau_max_current_ma": float(plateau_max_current_ma),
+                    "release_plateau_delta_ma": float(plateau_delta_ma),
+                    "release_plateau_window_samples": int(plateau_window_samples),
+                    "release_plateau_enabled": bool(plateau_enabled),
                     "release_stable_sample_count_by_servo": dict(result["release_stable_sample_count_by_servo"]),
                     "release_success_by_servo": dict(result["release_success_by_servo"]),
+                    "release_success_condition_by_servo": dict(result["release_success_condition_by_servo"]),
+                    "release_plateau_window_by_servo": {
+                        sid_str: list(window)
+                        for sid_str, window in result["release_plateau_window_by_servo"].items()
+                    },
                     "release_travel_ticks_by_servo": dict(result["release_travel_ticks_by_servo"]),
                 },
             )

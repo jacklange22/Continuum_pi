@@ -116,6 +116,16 @@ release_current_stable_samples: 3       # need this many consecutive samples bel
 release_max_travel_ticks: 1500          # hard cap on outward travel per servo
 release_step_ticks: 40                  # outward step size per iteration
 release_settle_s: 0.15                  # sleep between release steps so current can settle
+# Low-current plateau fallback for first-try robustness. Real servos often
+# plateau at 6-10 mA because of holding current / friction rather than dropping
+# all the way to <= release_current_abs_target_ma. The fallback declares a
+# servo released when |current_ma| stays below release_plateau_max_current_ma
+# AND the spread across the last release_plateau_window_samples readings is
+# below release_plateau_delta_ma — i.e. more outward motion isn't buying any
+# meaningful drop. Set release_plateau_max_current_ma to 0 to disable.
+release_plateau_max_current_ma: 10.0    # upper bound on |current_ma| for the plateau fallback
+release_plateau_delta_ma: 2.0           # max allowed spread within the plateau window
+release_plateau_window_samples: 4       # how many consecutive samples must plateau
 
 # --- Tip-centering variant (default + advanced) --------------------------
 # Default: ``paired_then_tip``. This is the simple, safe operator path. The
