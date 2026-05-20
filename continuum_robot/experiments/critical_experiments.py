@@ -893,7 +893,15 @@ class PivotCalibrationExperiment(BaseExperiment):
             "pivot_solver": primary_solver_label,
             "pivot_solver_comparison": solver_comparison,
         }
-        if ransac_result is not None:
+        # The `pivot_ransac` metric is the "this run used RANSAC; here's the
+        # full result including the inlier mask" canonical field. Only stamp
+        # it when the operator opted INTO RANSAC. Even though we always run
+        # both solvers for the side-by-side comparison panel
+        # (`pivot_solver_comparison`), a classical run should not have
+        # `pivot_ransac` set — otherwise downstream consumers cannot tell
+        # whether the operator actually selected RANSAC. The comparison
+        # panel still exposes `comparison["ransac"]` for visibility.
+        if self.config.use_ransac and ransac_result is not None:
             metrics_update["pivot_ransac"] = ransac_result.to_dict()
         session.metrics.update(metrics_update)
 
