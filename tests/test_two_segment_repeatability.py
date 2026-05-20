@@ -102,6 +102,13 @@ def test_two_segment_repeatability_executes_and_reports_per_target_scatter(tmp_p
     summary = (result.paths.output_dir / "two_segment_repeatability_summary.txt").read_text(encoding="utf-8")
     assert "valid_for_thesis_repeatability: false" in summary
     assert "automatic_two_segment_pretension_validated: false" in summary
+    # Policy 10: distal is the primary repeatability metric; intermediate is
+    # secondary. The summary and metrics must surface this explicitly.
+    assert "primary_metric: distal_tip_rms_mm" in summary
+    assert "secondary_metric: intermediate_segment_rms_mm" in summary
+    assert "aggregate_distal_rms_mm (primary)" in summary
+    assert metrics["primary_repeatability_role"] == "distal_tip"
+    assert metrics["secondary_repeatability_role"] == "intermediate_segment"
     # Repeatability summary and per-target CSV must be exportable.
     from continuum_robot.data.export_run_bundle import export_run_bundle
 

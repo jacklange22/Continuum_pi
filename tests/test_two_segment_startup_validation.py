@@ -229,11 +229,13 @@ def test_two_segment_startup_validation_preflight_warns_when_8servo_baud_below_1
         project_root=tmp_path,
     )
 
-    # Warning at 57600 for 8-servo work; never blocks.
+    # Policy: trusted dual-segment expects 1 Mbps; 57600 is debug/legacy and
+    # surfaces a warning (never a block).
     assert slow_report.overall_status != RUN_BLOCKED
-    assert any("Eight-servo work is recommended at 1 000 000" in msg for msg in slow_report.warning_messages)
+    assert any("Trusted dual-segment operation expects 1 Mbps" in msg for msg in slow_report.warning_messages)
+    assert any("debug/legacy" in msg for msg in slow_report.warning_messages)
     # No baud warning at 1 Mbps.
-    assert not any("Eight-servo work is recommended" in msg for msg in fast_report.warning_messages)
+    assert not any("debug/legacy" in msg for msg in fast_report.warning_messages)
 
 
 def test_two_segment_startup_validation_writes_stages_artifact_reports_and_validates(tmp_path: Path) -> None:

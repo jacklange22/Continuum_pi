@@ -2408,10 +2408,13 @@ def _info(key: str, label: str, message: str) -> PreflightCheck:
 def _baud_advisory_check(settings) -> PreflightCheck:
     """Soft-warn when 8-servo work runs at non-1 Mbps baud rates.
 
-    XC330 + OpenRB-150 supports up to 1 Mbps. Eight-servo work (`dual_segment`,
-    `parallel_single`) benefits substantially from the higher baud. This check
-    never blocks: it returns INFO at 1 Mbps, WARNING below 1 Mbps for 8-servo
-    modes, and INFO for 1-4 servo modes regardless.
+    Policy: trusted dual-segment operation expects 1 Mbps (1 000 000 bps).
+    57 600 bps is debug/legacy. XC330 + OpenRB-150 supports up to 1 Mbps.
+
+    This check never blocks: it returns OK at 1 Mbps, WARNING below 1 Mbps for
+    8-servo modes (`dual_segment`, `parallel_single`), and INFO for 1-4 servo
+    single-segment modes regardless. The legacy-warning wording is explicit so
+    operators do not mistake 57 600 for a trusted setting on a two-segment run.
     """
     baud = int(getattr(getattr(settings, "serial", None), "baudrate", 57600) or 57600)
     mode = str(getattr(getattr(settings, "robot", None), "operating_mode", lambda: "single_segment")())
@@ -2420,21 +2423,23 @@ def _baud_advisory_check(settings) -> PreflightCheck:
         return _ok(
             "baud_rate",
             "Bus Baud",
-            f"DYNAMIXEL bus at {baud} bps. Confirm every servo is reflashed at this baud (DYNAMIXEL Wizard).",
+            f"DYNAMIXEL bus at {baud} bps (1 Mbps, trusted dual-segment baud). "
+            "Confirm every servo is reflashed at this baud (DYNAMIXEL Wizard).",
         )
     if eight_servo_mode:
         return _warning(
             "baud_rate",
             "Bus Baud",
             (
-                f"DYNAMIXEL bus is at {baud} bps. Eight-servo work is recommended at 1 000 000 bps; "
-                "reflash every servo (DYNAMIXEL Wizard) and update `baudrate:` in system.yaml/system.local.yaml."
+                f"DYNAMIXEL bus is at {baud} bps (debug/legacy). Trusted dual-segment operation "
+                "expects 1 Mbps (1 000 000 bps). Reflash every servo with DYNAMIXEL Wizard at "
+                "1 Mbps, then update `baudrate:` in system.yaml/system.local.yaml."
             ),
         )
     return _info(
         "baud_rate",
         "Bus Baud",
-        f"DYNAMIXEL bus at {baud} bps (single-segment use).",
+        f"DYNAMIXEL bus at {baud} bps (single-segment debug/legacy baud).",
     )
 
 

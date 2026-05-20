@@ -109,10 +109,25 @@ class TwoSegmentCollectPoseDatasetConfig:
     # current draw / tendon shock. ``None`` disables ramping.
     command_ramp_step_cm: float | None = None
     command_ramp_settle_time_s: float = 0.05
-    # Per-run current/load policy for two-segment collection. This is warning
-    # first: transient reported-current spikes are summarized and warned, while
-    # sustained serious overcurrent is handled by the lower-level servo safety
-    # guard/configured hard-stop policy.
+    # Two-segment current/load policy (lock-in):
+    #   - warning around 800 mA per servo (descriptive, not a stop)
+    #   - hard stop around 1200 mA per servo ONLY if SUSTAINED
+    #   - sustained duration target = ~2 seconds (operator-tunable)
+    #   - never hard-stop on a single transient spike
+    #
+    # The thresholds below feed the post-run current/load summary. Live
+    # hard-stop during motion is still handled by the lower-level servo
+    # safety guard configured in SafetyConfig; this experiment-level policy
+    # supplements that with run-aggregate visibility.
+    #
+    # `sustained_overcurrent_sample_count` is the number of consecutive
+    # samples above the warning threshold needed to flag a servo as
+    # sustained-jam. The "2 seconds" target translates to:
+    #   capture rate ~5 Hz  -> ~10 samples
+    #   capture rate ~10 Hz -> ~20 samples
+    # The default (3) is a transient-rejecting floor; bump it for slower
+    # captures, or leave at 3 for the typical bench-day workspace_coverage
+    # cadence where 2 seconds tends to be over-protective.
     current_warning_ma: int = 800
     sustained_overcurrent_ma: int = 1200
     sustained_overcurrent_sample_count: int = 3

@@ -253,3 +253,26 @@ Re-run after each change to `config/system.local.yaml` or any code change.
 | Two-segment kinematics control | NOT IMPLEMENTED. Manual pretension + open-loop motion only. |
 | Automatic two-segment pretension | NOT IMPLEMENTED. Manual staged capture only. |
 | Camarillo predictions | UNAVAILABLE until you measure stiffness/cable/routing parameters. |
+
+## Final policy reference (locked in)
+
+These ten decisions are what the code enforces and reports. Treat them as the
+operator contract for trusted dual-segment work.
+
+| # | Policy | Where it lives |
+|---|---|---|
+| 1 | Tracker role selection is simple: tool IDs **0A / 0B / 0C** are enough. Configure in `config/registration.yaml` and per-experiment YAML; the role resolver upper-cases and matches. | `tracking/two_segment_roles.py::role_config_records` |
+| 2 | **Orientation is optional.** ANN trains on XYZ by default; tangent labels are saved when present but never required. | `modeling/two_segment/features.py::resolve_label_mode`; `dataset.py::_rejection_reason` |
+| 3 | **Distal-only datasets are valid for ANN.** `label_mode=auto` picks `two_coil_xyz` only when every accepted sample has a reliable intermediate; otherwise `distal_xyz`. | `modeling/two_segment/features.py::resolve_label_mode` |
+| 4 | **Bottom/top assembly is selectable + operator-confirmed each session.** Trusted dual-segment runs are blocked at precheck if `physical_assembly_confirmed_by_operator` is false. | `experiments/two_segment_collect_pose_dataset.py::precheck`; `gui/experiment_preflight.py::_physical_assembly_check` |
+| 5 | **Command range ramps:** ±0.25 → 0.5 → 0.75 → 1.0 cm. Default `max_segment_displacement_cm: 0.25`. Tick-delta safety still applies. | `experiments/two_segment_collect_pose_dataset.py::TwoSegmentCollectPoseDatasetConfig` |
+| 6 | **Target-valid sample mode** supports large datasets via `continue_until_valid_samples: true` + `target_valid_sample_count: N` with no upper bound. | `experiments/two_segment_collect_pose_dataset.py::execute` (long-run loop) |
+| 7 | **Current/load policy:** ~800 mA warning, ~1200 mA hard stop only if **sustained**, target ≈ 2 seconds, never on a single transient spike. Sample-count knob `sustained_overcurrent_sample_count` (default 3). | `experiments/two_segment_collect_pose_dataset.py::TwoSegmentCollectPoseDatasetConfig` + `_two_segment_current_load_summary` |
+| 8 | **1 Mbps is the trusted dual-segment baud.** 57 600 bps is debug/legacy and surfaces a preflight warning (never a block) when dual_segment / parallel_single is active. | `gui/experiment_preflight.py::_baud_advisory_check` |
+| 9 | **ANN is the priority model.** Mike CC and Camarillo unavailability never blocks ANN; each model returns an independent `ModelFitResult`. | `modeling/two_segment/train.py::run_two_segment_modeling`; `models.py::MikeConstantCurvatureModel.fit_predict` |
+| 10 | **Repeatability primary metric is distal/top coil.** Intermediate is secondary, reported when available; `primary_repeatability_role: distal_tip` is emitted in summary metrics. | `experiments/two_segment_repeatability.py::execute` + `_write_repeatability_summary` |
+
+If any of these policy expectations are violated by your bench-day config or
+data, the GUI preflight and run summaries will surface it. Do not silently
+work around a warning — fix the root cause (reflash, confirm assembly, set
+the role, etc.) and re-run.

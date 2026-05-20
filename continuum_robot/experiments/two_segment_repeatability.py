@@ -354,6 +354,12 @@ class TwoSegmentRepeatabilityExperiment(BaseExperiment):
         session.set_metric("startup_artifact_provenance", dict(self._startup_provenance))
         session.set_metric("run_trust_mode", run_trust_mode)
         session.set_metric("scatter_metrics", scatter_metrics)
+        # Policy: two-segment repeatability evaluates the distal/top coil first;
+        # intermediate is a secondary metric reported when the intermediate
+        # coil is configured and reliable. Surface this explicitly so downstream
+        # GUI rows and exports do not have to guess.
+        session.set_metric("primary_repeatability_role", "distal_tip")
+        session.set_metric("secondary_repeatability_role", "intermediate_segment")
         session.set_metric("target_distal_rms_mm", self.config.target_distal_rms_mm)
         session.set_metric("target_intermediate_rms_mm", self.config.target_intermediate_rms_mm)
         session.set_metric("valid_for_thesis_repeatability", False)
@@ -664,8 +670,14 @@ def _write_repeatability_summary(path: Path, metrics: dict[str, Any], scatter: d
         f"bottom_segment_key: {metrics.get('bottom_segment_key', '')}",
         f"top_segment_key: {metrics.get('top_segment_key', '')}",
         "",
-        f"aggregate_distal_rms_mm: {distal if distal is not None else 'n/a'}",
-        f"aggregate_intermediate_rms_mm: {intermediate if intermediate is not None else 'n/a'}",
+        # Policy: two-segment repeatability is evaluated primarily on the
+        # distal/top coil. Intermediate is a secondary metric reported when
+        # the intermediate coil is configured + reliable.
+        "primary_metric: distal_tip_rms_mm",
+        "secondary_metric: intermediate_segment_rms_mm",
+        "",
+        f"aggregate_distal_rms_mm (primary): {distal if distal is not None else 'n/a'}",
+        f"aggregate_intermediate_rms_mm (secondary): {intermediate if intermediate is not None else 'n/a'}",
         f"operator_target_distal_rms_mm: {target_distal if target_distal is not None else 'not set'}",
         f"operator_target_intermediate_rms_mm: {target_intermediate if target_intermediate is not None else 'not set'}",
     ]
