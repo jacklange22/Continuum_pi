@@ -1,0 +1,53 @@
+{
+  "dataset_run_name": "20260520_023140_collect_pose_command_dataset",
+  "dataset_mode": "workspace_coverage",
+  "selected_sample_count": 8192,
+  "evaluation_scope_used": "full_dataset",
+  "models": {
+    "mike": {
+      "model_key": "mike",
+      "label": "Mike",
+      "status": "completed",
+      "reason": "",
+      "sample_count": 8192,
+      "position_rmse_mm": 24.47676411263415,
+      "mean_position_error_mm": 23.350103823413242,
+      "max_position_error_mm": 38.12270695416539,
+      "tangent_mean_error_deg": 38.914342719759375,
+      "tangent_rmse_deg": 40.96509432248879,
+      "tangent_max_error_deg": 65.06325122841135,
+      "axis_position_rmse_mm": "[15.629920140895125, 16.721460851617394, 8.672388644577843]",
+      "axis_tangent_rmse": "[0.4063510427218277, 0.41774956561515403, 0.37919204937789414]"
+    },
+    "camarillo": {
+      "model_key": "camarillo",
+      "label": "Camarillo",
+      "status": "completed",
+      "reason": "",
+      "sample_count": 8192,
+      "position_rmse_mm": 24.517659620322192,
+      "mean_position_error_mm": 23.388689805030126,
+      "max_position_error_mm": 38.19009488045244,
+      "tangent_mean_error_deg": 38.98544210622589,
+      "tangent_rmse_deg": 41.04076794249791,
+      "tangent_max_error_deg": 65.19288630603988,
+      "axis_position_rmse_mm": "[15.659472576362468, 16.751067896604074, 8.677457934872951]",
+      "axis_tangent_rmse": "[0.4072606961552242, 0.4186641747592041, 0.379428621191024]"
+    },
+    "ann": {
+      "model_key": "ann",
+      "label": "ANN",
+      "status": "completed",
+      "reason": "",
+      "sample_count": 8192,
+      "position_rmse_mm": 2.376628297078974,
+      "mean_position_error_mm": 2.274834817209057,
+      "max_position_error_mm": 4.4645945696621245,
+      "tangent_mean_error_deg": null,
+      "tangent_rmse_deg": null,
+      "tangent_max_error_deg": null,
+      "axis_position_rmse_mm": "[0.9562604462184277, 1.8312773226597012, 1.1748835640126]",
+      "axis_tangent_rmse": "[]"
+    }
+  }
+}

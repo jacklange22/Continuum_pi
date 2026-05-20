@@ -1,0 +1,31 @@
+Linear ridge XYZ training summary
+
+Status: completed
+Created: 2026-05-20T17:00:10.535002+00:00
+Dataset: 20260520_023140_collect_pose_command_dataset
+Dataset mode: workspace_coverage
+Prepared samples: 8192
+Backend: mps (Darwin 24.5.0 | arm64)
+Model: linear_ridge_full_pose | ridge_alpha=1e-06
+Output target: xyz
+Standardized I/O: no
+Epochs completed: 1
+Best epoch: 1
+Best validation loss: 12.304098
+Test loss: 12.572793
+Training wall time (s): 0.348791
+
+Held-out test metrics (same split as training):
+  Loss (batch mean): 12.572793
+  Position RMSE XYZ (mm): 6.116426
+  Position RMSE XY (mm): 3.291998
+  Position RMSE Z (mm): 5.154941
+  Position error L2 mean / median / p95 / max (mm): 5.566632 / 5.341613 / 9.623368 / 15.030605
+
+Note: All models were trained and compared on one grouped train/validation/test split from this dataset only. Metrics do not assess cross-session or cross-run generalization.
+
+Legacy references:
+- @references/ANN.py
+- @references/real_model_learning.py
+- @references/utils_data.py
+- @references/multi_input.py

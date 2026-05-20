@@ -1,0 +1,208 @@
+{
+  "schema_version": "1.0",
+  "artifact_kind": "legacy_ann_xyz_v1",
+  "created_at_utc": "2026-05-20T17:01:07.265651+00:00",
+  "status": "completed_early_stop",
+  "legacy_references": [
+    "@references/ANN.py",
+    "@references/real_model_learning.py",
+    "@references/utils_data.py",
+    "@references/multi_input.py",
+    "@references/hysteresis_model_learning.py"
+  ],
+  "dataset": {
+    "path": "/Users/jacklange/Continuum/pi_code/data/experiments/collect_pose_command_dataset/20260520_023140_collect_pose_command_dataset",
+    "run_id": "48568fca66f1",
+    "run_name": "20260520_023140_collect_pose_command_dataset",
+    "timestamp_utc": "2026-05-20T02:32:06.734761+00:00",
+    "dataset_mode": "workspace_coverage",
+    "dataset_mode_summary": "Bounded workspace-coverage collection for first-pass forward-model training.",
+    "sample_count": 8194,
+    "accepted_count": 8194,
+    "rejected_count": 0,
+    "full_pose_available": true,
+    "sequential_context_available": true,
+    "run_label": "upgraded_robot_modeling",
+    "dataset_tag": "baseline_v1",
+    "trust_summary": "runtime tip thesis_trusted, pretension ready",
+    "runtime_tip_summary": "coil_as_tip (thesis_trusted)",
+    "pretension_summary": "manual (ready)",
+    "filtered_reason_counts": {},
+    "prepared_sample_count": 8192,
+    "source_run_valid_for_model_training": true,
+    "source_run_model_training_validity_status": "warning_valid",
+    "source_run_model_training_validity_reason": "warnings_present_but_training_ready",
+    "source_run_model_training_hard_invalidation_reasons": [],
+    "source_run_model_training_warnings": [
+      "2 accepted non-training phase rows were excluded from modeling export."
+    ],
+    "ann_training_category": "Trainable with warnings",
+    "ann_training_blocking_reasons": [],
+    "ann_training_warnings": [
+      "2 accepted non-training phase rows were excluded from modeling export."
+    ],
+    "target_valid_sample_count": 8192,
+    "complete_training_row_count": 8192,
+    "modeling_export_row_count": 8192,
+    "modeling_legacy_row_count": 8192,
+    "incomplete_rows_excluded_from_training": 0,
+    "parallel_single_demo": false,
+    "run_trust_mode": "thesis_trusted",
+    "mock_mode_flag": false
+  },
+  "model": {
+    "family": "legacy_ann",
+    "variant": "xyz",
+    "output_target": "xyz",
+    "input_dim": 4,
+    "output_dim": 3,
+    "hidden_layers": [
+      64,
+      64
+    ],
+    "activation": "relu",
+    "dtype": "float32",
+    "standardize_io": true
+  },
+  "loss": {
+    "kind": "mse_standardized",
+    "pose_orientation_scale": 10.0,
+    "weight_decay": 0.0001
+  },
+  "backend": {
+    "selected_backend": "mps",
+    "recommended_backend": "mps",
+    "torch_version": "2.11.0",
+    "python_version": "3.13.5",
+    "platform_summary": "Darwin 24.5.0 | arm64"
+  },
+  "training": {
+    "epochs_requested": 256,
+    "epochs_completed": 83,
+    "best_epoch": 53,
+    "best_validation_loss": 0.002705849753692746,
+    "test_loss": 0.002749210933689028,
+    "training_wall_time_s": 18.835473709041253,
+    "checkpointing": false,
+    "learning_rate": 0.001,
+    "batch_size": 64,
+    "random_seed": 0,
+    "weight_decay": 0.0001,
+    "early_stopping_patience": 30,
+    "early_stopped": true
+  },
+  "split": {
+    "strategy": "random_grouped_step",
+    "train_ratio": 0.7,
+    "validation_ratio": 0.15,
+    "test_ratio": 0.15,
+    "train_count": 5734,
+    "validation_count": 1229,
+    "test_count": 1229
+  },
+  "estimate": {
+    "estimated_total_s": 58.18964719772339,
+    "estimated_epoch_s": 0.227303309366107,
+    "train_batch_time_s": 0.002280444217224916,
+    "validation_batch_time_s": 0.0011031664907932281,
+    "benchmark_train_batches": 6,
+    "benchmark_validation_batches": 4,
+    "train_batch_count": 90,
+    "validation_batch_count": 20
+  },
+  "evaluation": {
+    "single_dataset_split_note": "All models were trained and compared on one grouped train/validation/test split from this dataset only. Metrics do not assess cross-session or cross-run generalization.",
+    "validation": {
+      "loss_mean": 0.002705849753692746,
+      "position_rmse_xyz_mm": 1.0103001205129751,
+      "position_rmse_xy_mm": 0.9279763942162413,
+      "position_rmse_z_mm": 0.3994573134716089,
+      "position_error_l2_mm": {
+        "mean": 0.8318462255414619,
+        "median": 0.6862948422699682,
+        "p95": 1.9408653344707805,
+        "max": 4.696335059413586
+      }
+    },
+    "test": {
+      "loss_mean": 0.002749210933689028,
+      "position_rmse_xyz_mm": 1.0049793671200433,
+      "position_rmse_xy_mm": 0.9223311178771824,
+      "position_rmse_z_mm": 0.39911005666661653,
+      "position_error_l2_mm": {
+        "mean": 0.8415013352698063,
+        "median": 0.7506308918684796,
+        "p95": 1.9952742726659651,
+        "max": 2.8980581902149205
+      }
+    }
+  },
+  "files": {
+    "model_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260520_170009_lotsofpointsfullrun_model_sweep/ann_64_64/model.pt",
+    "loss_history_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260520_170009_lotsofpointsfullrun_model_sweep/ann_64_64/loss_history.csv",
+    "loss_plot_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260520_170009_lotsofpointsfullrun_model_sweep/ann_64_64/loss_curve.png",
+    "loss_report_plot_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260520_170009_lotsofpointsfullrun_model_sweep/ann_64_64/ann_loss_curve_report.png",
+    "split_manifest_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260520_170009_lotsofpointsfullrun_model_sweep/ann_64_64/split_manifest.json",
+    "summary_text_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260520_170009_lotsofpointsfullrun_model_sweep/ann_64_64/training_summary.txt",
+    "row_filter_report_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260520_170009_lotsofpointsfullrun_model_sweep/ann_64_64/row_filter_report.json",
+    "scaler_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260520_170009_lotsofpointsfullrun_model_sweep/ann_64_64/io_scaler.json"
+  },
+  "io_scaler": {
+    "input": {
+      "mean": [
+        -0.0029248336403470527,
+        -0.00703358070198135,
+        0.0029248336403470527,
+        0.00703358070198135
+      ],
+      "std": [
+        0.43004704593516163,
+        0.4310140541284379,
+        0.43004704593516163,
+        0.4310140541284379
+      ],
+      "eps": 1e-08
+    },
+    "output": {
+      "mean": [
+        -0.005147665805849286,
+        0.8536365648795063,
+        56.75296400205959
+      ],
+      "std": [
+        18.92902468076686,
+        20.08071480078725,
+        5.154106734278949
+      ],
+      "eps": 1e-08
+    }
+  },
+  "training_provenance": {
+    "exploratory_training_override": false,
+    "source_run_valid_for_model_training": true,
+    "source_run_model_training_validity_status": "warning_valid",
+    "source_validity_reason": "warnings_present_but_training_ready",
+    "source_validity_warnings": [
+      "2 accepted non-training phase rows were excluded from modeling export."
+    ],
+    "source_validity_hard_invalidation_reasons": [],
+    "ann_training_category": "Trainable with warnings",
+    "complete_training_row_count": 8192,
+    "target_valid_sample_count": 8192,
+    "modeling_export_row_count": 8192,
+    "modeling_legacy_row_count": 8192,
+    "excluded_incomplete_rows_count": 0,
+    "source_run_id": "48568fca66f1",
+    "source_run_path": "/Users/jacklange/Continuum/pi_code/data/experiments/collect_pose_command_dataset/20260520_023140_collect_pose_command_dataset",
+    "source_run_trust_mode": "thesis_trusted",
+    "source_run_mock_mode_flag": false
+  },
+  "training_input_policy": "complete_rows_only",
+  "row_filter_report": {
+    "complete_row_count": 8192,
+    "excluded_row_count": 0,
+    "excluded_by_reason": {},
+    "target_complete_row_count": 8192,
+    "report_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260520_170009_lotsofpointsfullrun_model_sweep/ann_64_64/row_filter_report.json"
+  }
+}

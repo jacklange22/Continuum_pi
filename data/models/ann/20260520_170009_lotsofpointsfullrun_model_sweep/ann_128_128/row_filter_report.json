@@ -1,0 +1,14 @@
+{
+  "training_input_policy": "complete_rows_only",
+  "dataset_path": "/Users/jacklange/Continuum/pi_code/data/experiments/collect_pose_command_dataset/20260520_023140_collect_pose_command_dataset",
+  "export_path": "/Users/jacklange/Continuum/pi_code/data/experiments/collect_pose_command_dataset/20260520_023140_collect_pose_command_dataset/modeling_dataset_export.jsonl",
+  "total_export_rows": 8192,
+  "accepted_export_rows": 8192,
+  "complete_row_count": 8192,
+  "excluded_row_count": 0,
+  "excluded_by_reason": {},
+  "target_complete_row_count": 8192,
+  "can_train": true,
+  "block_reason": null,
+  "min_complete_rows_recommended": 100
+}
