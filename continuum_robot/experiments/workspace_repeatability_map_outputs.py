@@ -154,9 +154,13 @@ def compute_workspace_repeatability_metrics(
                 "centroid_z_mm": float(centroid[2]),
                 "rms_spread_mm": float(rms_spread),
                 "max_spread_mm": float(np.max(norm_distances)),
-                "x_stddev_mm": float(np.std(positions[:, 0], ddof=0)),
-                "y_stddev_mm": float(np.std(positions[:, 1], ddof=0)),
-                "z_stddev_mm": float(np.std(positions[:, 2], ddof=0)),
+                # Per-axis SAMPLE std (ddof=1). These are reported as
+                # measurement-noise estimates for thesis figures; the unbiased
+                # estimator is appropriate. ddof=0 (population) under-reports
+                # by sqrt((N-1)/N) ≈ 3.5% on N=15-visit runs.
+                "x_stddev_mm": float(np.std(positions[:, 0], ddof=1)) if positions.shape[0] >= 2 else 0.0,
+                "y_stddev_mm": float(np.std(positions[:, 1], ddof=1)) if positions.shape[0] >= 2 else 0.0,
+                "z_stddev_mm": float(np.std(positions[:, 2], ddof=1)) if positions.shape[0] >= 2 else 0.0,
             }
         )
     return rows

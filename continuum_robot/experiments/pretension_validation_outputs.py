@@ -76,6 +76,78 @@ def write_pretension_validation_outputs(
     }
 
 
+def _write_pretension_convention_log(
+    *,
+    output_dir: Path,
+    metadata,
+    metrics: dict[str, Any],
+) -> Path:
+    """Drop a small ``pretension_convention.json`` documenting the assumed
+    tick/tension convention for the pretension routine.
+
+    Per the 2026-05-20 audit decisions, we do NOT add a hard tendon-sign
+    verification gate in this pass. But every pretension output records:
+    - the assumed convention (decreasing ticks → increased tendon tension)
+    - the servo IDs the routine commanded
+    - per-servo tightening direction configured in the active settings, if
+      any (so a future reader can spot a disagreement)
+    - a loud ``disagreement_detected`` flag when a per-servo config flag
+      disagrees with the project convention
+
+    The file is informational only; it does not block any run. If a future
+    pass adds the hard sign-verification workflow, this same JSON shape can
+    grow to include the verifier's verdict.
+    """
+    import json
+
+    provenance = dict(getattr(metadata, "provenance_info", {}) or {})
+    commanded_ids = [int(value) for value in provenance.get("commanded_servo_ids", []) or []]
+    per_servo_directions = dict(
+        provenance.get("tightening_rotation_by_servo", {}) or {}
+    )
+    project_convention = "decreasing_tick_increases_tension"
+    project_direction = "decreasing"
+    disagreements: list[dict[str, str]] = []
+    for raw_id, direction in per_servo_directions.items():
+        direction_str = str(direction).strip().lower()
+        if direction_str and direction_str != project_direction:
+            disagreements.append({
+                "servo_id": str(raw_id),
+                "configured_direction": direction_str,
+                "expected_direction": project_direction,
+            })
+    payload = {
+        "schema_version": "pretension_convention_v1",
+        "convention": project_convention,
+        "convention_doc": (
+            "All four tendons on the current single-segment hardware are wired "
+            "the same way; decreasing the servo's commanded tick value SHORTENS "
+            "the tendon (increases tension). The pretension routine assumes "
+            "this universally and steps goal ticks downward to tighten."
+        ),
+        "commanded_servo_ids": commanded_ids,
+        "configured_tightening_direction_by_servo": {
+            str(k): str(v) for k, v in per_servo_directions.items()
+        },
+        "disagreement_detected": bool(disagreements),
+        "disagreements": disagreements,
+        "disagreement_action": (
+            "No hard sign-verification gate runs in this pass. If a "
+            "disagreement is recorded above, treat the run with extreme "
+            "caution; per-servo direction config is currently ornamental "
+            "and the routine still steps ticks downward to tighten."
+            if disagreements
+            else "no per-servo configured direction disagrees with the project convention"
+        ),
+        "verify_tightening_signs_run": bool(metrics.get("sign_verification_run", False)),
+    }
+    convention_path = output_dir / "pretension_convention.json"
+    convention_path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    return convention_path
+
+
 def _write_staged_pretension_outputs(
     *,
     output_dir: Path,
@@ -177,9 +249,13 @@ def _write_staged_pretension_outputs(
     )
     if current_vs_position_path.exists():
         response_alias_path.write_bytes(current_vs_position_path.read_bytes())
+    pretension_convention_path = _write_pretension_convention_log(
+        output_dir=output_dir, metadata=metadata, metrics=metrics
+    )
     return {
         "summary_text_path": summary_text_path,
         "metrics_csv_path": metrics_csv_path,
+        "pretension_convention_path": pretension_convention_path,
         "current_vs_position_plot_path": current_vs_position_path,
         "tendon_displacement_vs_tip_xy_plot_path": tendon_vs_tip_path,
         "tendon_displacement_vs_current_plot_path": tendon_vs_current_path,

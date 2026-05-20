@@ -588,6 +588,23 @@ class ExperimentRunner:
             "servo_sign_mapping_check": sign_mapping_info,
             "mock_mode": bool(self.settings.runtime.mock_mode),
         }
+        # Top-level "this run cannot be cited as thesis evidence" marker.
+        # Any of: mock-mode runtime, dry_run config, an explicitly lower-trust
+        # run_trust_mode, or no-tracker-test runs disqualifies a run from
+        # thesis evidence regardless of what the experiment-specific
+        # validity flags say. Audit/inventory scripts use this single field
+        # to identify non-evidence runs without parsing all the sub-fields.
+        dry_run_config = bool(config_used.get("dry_run", False))
+        not_thesis_evidence_reasons: list[str] = []
+        if mock_mode:
+            not_thesis_evidence_reasons.append("mock_mode")
+        if dry_run_config:
+            not_thesis_evidence_reasons.append("dry_run")
+        if config_trust_mode in lower_trust_modes:
+            not_thesis_evidence_reasons.append(f"run_trust_mode={config_trust_mode}")
+        if config_used.get("allow_no_tracker_test_run") and not tracker_connected:
+            not_thesis_evidence_reasons.append("no_tracker_test_run")
+        not_thesis_evidence = bool(not_thesis_evidence_reasons)
         trust_info = {
             "run_trust_mode": config_trust_mode,
             "valid_for_model_training": bool(valid_for_model_training),
@@ -595,6 +612,8 @@ class ExperimentRunner:
             "valid_for_two_segment_model_training": False if mock_mode else bool(config_used.get("valid_for_two_segment_model_training", False)),
             "valid_for_two_segment_ann_training": False if mock_mode else bool(config_used.get("valid_for_two_segment_ann_training", False)),
             "include_in_evidence_index": False,
+            "not_thesis_evidence": not_thesis_evidence,
+            "not_thesis_evidence_reasons": sorted(set(not_thesis_evidence_reasons)),
             "data_quality_warnings": sorted(set(data_quality_warnings)),
             "runtime_tip_policy": runtime_tip_policy,
             "success_does_not_imply_thesis_validity": True,
@@ -659,6 +678,18 @@ class ExperimentRunner:
         metrics.setdefault(
             "include_in_evidence_index",
             bool((session.metadata.trust_info or {}).get("include_in_evidence_index", False)),
+        )
+        # Top-level "this run cannot be cited as thesis evidence" boolean +
+        # human-readable reasons. Surfaced explicitly (not just buried under
+        # run_trust) so downstream audit scripts can find it without
+        # walking the nested trust_info structure.
+        metrics.setdefault(
+            "not_thesis_evidence",
+            bool((session.metadata.trust_info or {}).get("not_thesis_evidence", False)),
+        )
+        metrics.setdefault(
+            "not_thesis_evidence_reasons",
+            list((session.metadata.trust_info or {}).get("not_thesis_evidence_reasons", []) or []),
         )
         metrics.setdefault(
             "data_quality_warnings",

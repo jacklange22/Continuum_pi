@@ -63,6 +63,11 @@ from continuum_robot.experiments.framework import (
     ExperimentHardwareRequirements,
     ExperimentSession,
 )
+from continuum_robot.experiments.pair_axis_convention import (
+    PAIR_AXIS_CONVENTION_DOC,
+    PAIR_AXIS_CONVENTION_VERSION,
+    expand_pair_command_to_cable_deltas,
+)
 from continuum_robot.experiments.sample_builders import sample_from_tracking_snapshot
 from continuum_robot.experiments.schemas import ExperimentTimeseriesSample
 from continuum_robot.experiments.validation import (
@@ -265,14 +270,14 @@ def build_workspace_repeatability_targets(
         theta = float(index) * golden_angle
         x_mm = amplitude_mm * math.cos(theta)
         y_mm = amplitude_mm * math.sin(theta)
-        # Legacy four-cable antagonistic projection. Cable 1 shortens when
-        # the tip is pulled in +x; cable 3 lengthens; cables 2 and 4 do the
-        # same for the +y axis.
+        # Canonical tip-target → 4-cable expansion (see
+        # continuum_robot/experiments/pair_axis_convention.py). The +X-side
+        # cable shortens (negative cable delta) when the tip is pulled
+        # toward +X; this matches the hardware convention "5=+x, 6=+y,
+        # 7=-x, 8=-y; lower ticks mean more tension" documented in
+        # docs/hardware_day_runbook.md.
         cable_deltas_mm = [
-            -_clean_float(x_mm),
-            -_clean_float(y_mm),
-            _clean_float(x_mm),
-            _clean_float(y_mm),
+            _clean_float(value) for value in expand_pair_command_to_cable_deltas([x_mm, y_mm])
         ]
         cable_deltas_cm = [_clean_float(value / 10.0) for value in cable_deltas_mm]
         angle_deg = math.degrees(theta) % 360.0
@@ -632,6 +637,8 @@ class WorkspaceRepeatabilityMapExperiment(BaseExperiment):
         session.set_metric("planned_visit_count", planned_visits)
         session.set_metric("planned_capture_count", planned_visits)
         session.set_metric("protocol", "workspace_repeatability_map_vogel_from_neutral")
+        session.set_metric("pair_axis_convention", PAIR_AXIS_CONVENTION_VERSION)
+        session.set_metric("pair_axis_convention_doc", PAIR_AXIS_CONVENTION_DOC)
         session.set_metric("run_label", str(self.config.run_label or ""))
         # Surface the startup reference source + ticks so the run summary
         # records whether the experiment ran against post-pretension positions

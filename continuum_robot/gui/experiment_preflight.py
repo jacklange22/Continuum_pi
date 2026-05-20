@@ -1110,13 +1110,30 @@ def evaluate_preflight(
                     f"with about {int(config.sample_count_target)} accepted samples per block."
                 )
             checks.append(_ok("schedule", "Command Protocol", mode_message))
-        checks.append(
-            _ok(
-                "capture_plan",
-                "Capture Plan",
-                f"Planned commands={int(planned_command_count)}, samples/command={max(1, int(config.samples_per_command))}, planned captures={int(planned_command_count * max(1, int(config.samples_per_command)) + 2)}.",
-            )
+        samples_per_command_pf = max(1, int(config.samples_per_command))
+        tracker_frames_pf = max(1, int(getattr(config, "tracker_samples_per_command", 1) or 1))
+        planned_captures_pf = int(planned_command_count * samples_per_command_pf + 2)
+        # Each capture additionally collects `tracker_frames_pf` tracker
+        # frames after the single settle when averaging is on. The +2
+        # bracket captures are SINGLE-shot (no averaging).
+        total_tracker_reads_pf = int(
+            planned_command_count * samples_per_command_pf * tracker_frames_pf + 2
         )
+        if tracker_frames_pf > 1:
+            capture_plan_msg = (
+                f"Planned commands={int(planned_command_count)}, "
+                f"samples/command={samples_per_command_pf}, "
+                f"tracker frames/capture={tracker_frames_pf}, "
+                f"planned captures={planned_captures_pf} (averaged labels), "
+                f"total tracker reads={total_tracker_reads_pf}."
+            )
+        else:
+            capture_plan_msg = (
+                f"Planned commands={int(planned_command_count)}, "
+                f"samples/command={samples_per_command_pf}, "
+                f"planned captures={planned_captures_pf}."
+            )
+        checks.append(_ok("capture_plan", "Capture Plan", capture_plan_msg))
         operating_context = settings.robot.operating_context()
         commanded_servo_ids = [int(value) for value in operating_context.commanded_servo_ids]
         expected_dims = len(commanded_servo_ids)

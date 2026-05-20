@@ -22,6 +22,12 @@ from continuum_robot.data.model_training_validity import NON_TRAINING_PHASES, sa
 from continuum_robot.experiments.dataset_io import ExperimentDatasetLoader, ExperimentDatasetWriter
 from continuum_robot.experiments.experiment_models import ExperimentPoint
 from continuum_robot.experiments.framework import BaseExperiment, ExperimentHardwareRequirements, ExperimentSession
+from continuum_robot.experiments.pair_axis_convention import (
+    PAIR_AXIS_CONVENTION_DOC,
+    PAIR_AXIS_CONVENTION_VERSION,
+    expand_pair_command_to_cable_deltas,
+    pair_command_from_cable_deltas,
+)
 from continuum_robot.experiments.critical_experiments import register_critical_experiments
 from continuum_robot.experiments.calibration_validation import register_calibration_validation_experiments
 from continuum_robot.experiments.registration_trial import register_registration_trial_experiment
@@ -3219,7 +3225,11 @@ class PretensionValidationExperiment(BaseExperiment):
             "repeat_runs": int(repeat_runs),
             "final_position_std_ticks_by_servo": {},
             "final_load_proxy_std_ma_by_servo": {},
-            "final_tip_xy_std_mm": None,
+            "final_tip_xy_std_mm": None,          # back-compat alias for planar XY std
+            "final_tip_xy_planar_std_mm": None,   # true sqrt(var_x + var_y), ddof=1
+            "final_tip_x_std_mm": None,
+            "final_tip_y_std_mm": None,
+            "final_tip_radial_std_mm": None,      # std of ||p - centroid||, ddof=1
             "final_tip_radial_error_mean_mm": None,
             "final_tip_radial_error_std_mm": None,
             "thresholds": {
@@ -3302,19 +3312,42 @@ class PretensionValidationExperiment(BaseExperiment):
             and row.get("final_tip_xy_mm")[0] is not None
             and row.get("final_tip_xy_mm")[1] is not None
         ]
-        tip_xy_std_mm: float | None = None
+        # NOTE: pre-2026-05-20 `final_tip_xy_std_mm` was an alias for the
+        # *radial* std (`std(||p - centroid||)`), not a true planar XY std.
+        # Audit caught the mislabel. We now emit BOTH numbers with explicit
+        # names: planar XY std is `sqrt(var_x + var_y)` (the 2D isotropic
+        # dispersion); radial std is the std of radial distances from the
+        # centroid. They are different statistics under non-Gaussian or
+        # anisotropic dispersion. Both reported with SAMPLE std (ddof=1).
+        tip_xy_planar_std_mm: float | None = None
+        tip_x_std_mm: float | None = None
+        tip_y_std_mm: float | None = None
         tip_radial_mean: float | None = None
         tip_radial_std: float | None = None
         if len(accepted_xy_points) >= 2:
-            cx = sum(p[0] for p in accepted_xy_points) / float(len(accepted_xy_points))
-            cy = sum(p[1] for p in accepted_xy_points) / float(len(accepted_xy_points))
+            n = float(len(accepted_xy_points))
+            cx = sum(p[0] for p in accepted_xy_points) / n
+            cy = sum(p[1] for p in accepted_xy_points) / n
+            # ddof=1 sample variance per axis.
+            var_x = sum((p[0] - cx) ** 2 for p in accepted_xy_points) / (n - 1.0)
+            var_y = sum((p[1] - cy) ** 2 for p in accepted_xy_points) / (n - 1.0)
+            tip_x_std_mm = float(math.sqrt(var_x))
+            tip_y_std_mm = float(math.sqrt(var_y))
+            tip_xy_planar_std_mm = float(math.sqrt(var_x + var_y))
             radii = [math.sqrt((p[0] - cx) ** 2 + (p[1] - cy) ** 2) for p in accepted_xy_points]
-            tip_radial_mean = float(sum(radii) / float(len(radii)))
-            tip_radial_var = sum((r - tip_radial_mean) ** 2 for r in radii) / float(len(radii))
+            tip_radial_mean = float(sum(radii) / n)
+            tip_radial_var = sum((r - tip_radial_mean) ** 2 for r in radii) / (n - 1.0)
             tip_radial_std = float(math.sqrt(tip_radial_var))
-            # Reuse radial std as the "tip xy std" headline metric.
-            tip_xy_std_mm = float(tip_radial_std)
-        verdict_record["final_tip_xy_std_mm"] = tip_xy_std_mm
+        # Canonical headline name: explicit RADIAL std (was the value of the
+        # old `final_tip_xy_std_mm`, just truthfully named).
+        verdict_record["final_tip_radial_std_mm"] = tip_radial_std
+        # True planar dispersion (sqrt(var_x + var_y)) and per-axis stds.
+        verdict_record["final_tip_xy_planar_std_mm"] = tip_xy_planar_std_mm
+        verdict_record["final_tip_x_std_mm"] = tip_x_std_mm
+        verdict_record["final_tip_y_std_mm"] = tip_y_std_mm
+        # Back-compat alias retained so existing readers keep working;
+        # new readers should prefer the explicit names above.
+        verdict_record["final_tip_xy_std_mm"] = tip_xy_planar_std_mm
         verdict_record["final_tip_radial_error_mean_mm"] = tip_radial_mean
         verdict_record["final_tip_radial_error_std_mm"] = tip_radial_std
 
@@ -3325,10 +3358,13 @@ class PretensionValidationExperiment(BaseExperiment):
         high = verdict_record["thresholds"]["high"]
         medium = verdict_record["thresholds"]["medium"]
 
+        # Thresholds key is `max_tip_radial_std_mm`, so the gate compares
+        # against the RADIAL std (what was previously mis-aliased as
+        # `tip_xy_std_mm`). We use `tip_radial_std` directly now.
         def _meets_high() -> bool:
             return (
                 accept_fraction >= float(high["min_accept_fraction"])
-                and (tip_xy_std_mm is None or tip_xy_std_mm <= float(high["max_tip_radial_std_mm"]))
+                and (tip_radial_std is None or tip_radial_std <= float(high["max_tip_radial_std_mm"]))
                 and max_position_std <= float(high["max_position_std_ticks"])
                 and max_load_proxy_std <= float(high["max_load_proxy_std_ma"])
             )
@@ -3336,7 +3372,7 @@ class PretensionValidationExperiment(BaseExperiment):
         def _meets_medium() -> bool:
             return (
                 accept_fraction >= float(medium["min_accept_fraction"])
-                and (tip_xy_std_mm is None or tip_xy_std_mm <= float(medium["max_tip_radial_std_mm"]))
+                and (tip_radial_std is None or tip_radial_std <= float(medium["max_tip_radial_std_mm"]))
                 and max_position_std <= float(medium["max_position_std_ticks"])
             )
 
@@ -3346,7 +3382,7 @@ class PretensionValidationExperiment(BaseExperiment):
                 f"{accepted_run_count}/{repeat_runs} accepted, "
                 f"max_position_std={max_position_std:.1f} ticks, "
                 f"max_load_proxy_std={max_load_proxy_std:.1f} mA, "
-                f"tip_xy_std={(tip_xy_std_mm or 0.0):.2f} mm."
+                f"tip_radial_std={(tip_radial_std or 0.0):.2f} mm."
             )
         elif _meets_medium():
             verdict_record["verdict"] = "medium"
@@ -8612,6 +8648,8 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         parallel_single_demo = _collect_pose_parallel_single_mode(session)
         run_trust_mode = "servo_only" if servo_only_mode else str(self.config.run_trust_mode or "thesis_trusted")
         session.set_metric("dataset_mode", str(self.config.dataset_mode or "workspace_coverage"))
+        session.set_metric("pair_axis_convention", PAIR_AXIS_CONVENTION_VERSION)
+        session.set_metric("pair_axis_convention_doc", PAIR_AXIS_CONVENTION_DOC)
         session.set_metric("dry_run", bool(self.config.dry_run))
         session.set_metric("run_trust_mode", run_trust_mode)
         session.set_metric("tracker_connected", bool(session.context.tracking_service is not None))
@@ -11342,19 +11380,22 @@ def _halton_value(index: int, base: int) -> float:
 
 
 def _expand_pair_command_cm(pair_command_cm: list[float]) -> list[float]:
-    pair_x = float(pair_command_cm[0] if len(pair_command_cm) > 0 else 0.0)
-    pair_y = float(pair_command_cm[1] if len(pair_command_cm) > 1 else 0.0)
-    return [pair_x, pair_y, -pair_x, -pair_y]
+    """Thin wrapper for back-compat; delegates to the canonical helper.
+
+    See :mod:`continuum_robot.experiments.pair_axis_convention` for the
+    tip-target convention recorded by ``PAIR_AXIS_CONVENTION_VERSION``.
+    Pre-2026-05-20 this function used the opposite sign convention; all
+    callers in this file now agree with workspace_repeatability_map.
+    """
+    return expand_pair_command_to_cable_deltas(pair_command_cm)
 
 
 def _pair_command_from_cable_deltas(cable_deltas_cm: list[float]) -> list[float]:
-    if len(cable_deltas_cm) >= 4:
-        return [float(cable_deltas_cm[0]), float(cable_deltas_cm[1])]
-    if len(cable_deltas_cm) == 2:
-        return [float(cable_deltas_cm[0]), float(cable_deltas_cm[1])]
-    if len(cable_deltas_cm) == 1:
-        return [float(cable_deltas_cm[0]), 0.0]
-    return [0.0, 0.0]
+    """Thin wrapper for back-compat; delegates to the canonical helper.
+
+    See :mod:`continuum_robot.experiments.pair_axis_convention`.
+    """
+    return pair_command_from_cable_deltas(cable_deltas_cm)
 
 
 def _serialize_raw_tracker_frame(
@@ -11582,7 +11623,14 @@ def _average_tracker_frames(
 
     # ---- spread stats -------------------------------------------------------
     deviations = robot_positions - mean_robot_position
-    per_axis_std_mm = robot_positions.std(axis=0, ddof=0)
+    # Per-axis SAMPLE std (ddof=1) so the per-command spread is the unbiased
+    # estimator of frame-to-frame tracker noise. With N=1 frame the std is
+    # undefined; default to 0 in that case (caller should already have
+    # tracker_averaging_underflow=True via averaging_meta_base).
+    if robot_positions.shape[0] >= 2:
+        per_axis_std_mm = robot_positions.std(axis=0, ddof=1)
+    else:
+        per_axis_std_mm = np.zeros(3, dtype=float)
     rms_std_mm = float(np.sqrt(np.mean(per_axis_std_mm ** 2)))
     deviation_norms_mm = np.linalg.norm(deviations, axis=1)
     max_deviation_mm = float(deviation_norms_mm.max()) if deviation_norms_mm.size else 0.0
@@ -11597,7 +11645,11 @@ def _average_tracker_frames(
         angle_diffs_rad.append(2.0 * float(np.arccos(dot)))
     angle_diffs_deg = [float(np.degrees(value)) for value in angle_diffs_rad]
     orientation_max_spread_deg = float(max(angle_diffs_deg)) if angle_diffs_deg else 0.0
-    orientation_std_deg = float(np.std(angle_diffs_deg, ddof=0)) if angle_diffs_deg else 0.0
+    # SAMPLE std of per-frame angular deltas (ddof=1) so the orientation
+    # spread is the unbiased estimator. With ≤1 frame the std is undefined.
+    orientation_std_deg = (
+        float(np.std(angle_diffs_deg, ddof=1)) if len(angle_diffs_deg) >= 2 else 0.0
+    )
     first_vs_mean_orientation_diff_deg = float(angle_diffs_deg[0]) if angle_diffs_deg else 0.0
 
     sample_window_s: float | None = None

@@ -148,7 +148,9 @@ def average_captures(
     if points.shape[0] == 0:
         raise ValueError("points_xyz_mm must have at least one capture")
     n_input = int(points.shape[0])
-    intra_std = float(np.linalg.norm(points.std(axis=0, ddof=0)))
+    # Per-axis SAMPLE std (ddof=1). intra_std reports random capture-to-capture
+    # noise; unbiased estimator is appropriate. With N=1 fall back to 0.
+    intra_std = float(np.linalg.norm(points.std(axis=0, ddof=1))) if n_input >= 2 else 0.0
 
     if method == "mean":
         averaged = points.mean(axis=0)
@@ -670,7 +672,10 @@ def aggregate_samples_per_point(rows: Sequence[Mapping[str, object]]) -> list[di
                 "k": int(k),
                 "iteration_count": int(arr.size),
                 "fre_mean_mm": float(np.mean(arr)) if arr.size else None,
-                "fre_std_mm": float(np.std(arr, ddof=0)) if arr.size else None,
+                # SAMPLE std across iterations (ddof=1) — this is the spread
+                # of FRE across resamples, used as a stability estimate. With
+                # N=1 sample, std is undefined; emit None rather than 0.
+                "fre_std_mm": float(np.std(arr, ddof=1)) if arr.size >= 2 else None,
                 "fre_min_mm": float(np.min(arr)) if arr.size else None,
                 "fre_max_mm": float(np.max(arr)) if arr.size else None,
                 "fre_p95_mm": float(np.percentile(arr, 95)) if arr.size else None,

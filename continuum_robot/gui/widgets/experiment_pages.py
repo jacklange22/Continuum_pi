@@ -120,6 +120,11 @@ class ExperimentPageBase(QWidget):
         self.experiment_name = experiment_name
         self._history_signature: tuple[tuple[str, str, str, str, str, str], ...] | None = None
         self._responsive_layout_mode = ""
+        # One-shot guard for the auto-disable-dry-run-on-live-tracker hook
+        # (see _maybe_auto_disable_dry_run). Lives on the base so every page
+        # that opts in shares the same flag semantics: flip only once per
+        # page lifetime so a deliberate operator toggle is never reverted.
+        self._dry_run_auto_synced = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -493,6 +498,77 @@ class ExperimentPageBase(QWidget):
             getattr(viewer, "backend_mode", "unknown"),
         )
 
+    # ----- shared dry-run / hardware safety hook ----------------------------
+
+    def _tracker_is_live(self) -> bool:
+        """True iff a tracker is streaming healthy data right now.
+
+        Used by :meth:`_maybe_auto_disable_dry_run` to decide whether to
+        flip a page's Dry Run knob off when real hardware is connected.
+        Pages that override should fall back to this implementation.
+        """
+        service = getattr(self.controller, "tracking_service", None)
+        if service is None:
+            return False
+        try:
+            snapshot = service.get_snapshot()
+        except Exception:
+            return False
+        if snapshot is None:
+            return False
+        canonical = str(getattr(snapshot, "canonical_state", "") or "").lower()
+        if canonical == "streaming_healthy":
+            return True
+        connection = str(getattr(snapshot, "connection_state", "") or "").lower()
+        return connection == "connected" and not bool(getattr(snapshot, "tracker_data_stale", False))
+
+    def _captures_already_recorded(self) -> bool:
+        """Hook for subclasses that accumulate captured data before saving.
+
+        AuroraGridAccuracyPage overrides this to return True when the
+        operator has already pressed Capture Selected Point at least once,
+        so the auto-disable doesn't disrupt an in-progress capture session.
+        Default returns False (no captured-data state to protect).
+        """
+        return False
+
+    def _maybe_auto_disable_dry_run(self, *, log_fn=None) -> None:
+        """If the tracker is streaming healthy and dry-run is on, flip it off.
+
+        Behaviour applies once per page lifetime (``_dry_run_auto_synced``).
+        Skipped when:
+        - the page has no ``dry_run_check`` (silent no-op);
+        - the tracker is not actually streaming healthy;
+        - the operator has already begun capturing data (subclass hook);
+        - dry-run is already off.
+
+        Subclasses can pass a ``log_fn(message)`` to surface the auto-flip
+        in their capture log / status pane; otherwise the flip happens
+        silently (the unchecked checkbox is the user-visible signal).
+        """
+        if self._dry_run_auto_synced:
+            return
+        if not hasattr(self, "dry_run_check"):
+            return
+        if not self._tracker_is_live():
+            return
+        if self._captures_already_recorded():
+            self._dry_run_auto_synced = True
+            return
+        if not bool(self.controller.get_config_value("dry_run", True)):
+            self._dry_run_auto_synced = True
+            return
+        self.controller.set_config_value("dry_run", False)
+        if callable(log_fn):
+            try:
+                log_fn(
+                    "Tracker is live — switched off Dry Run so this save will use real "
+                    "captures. Toggle Dry Run back on if you actually want synthetic data."
+                )
+            except Exception:
+                pass
+        self._dry_run_auto_synced = True
+
     def _set_line_text(self, widget: QLineEdit, value: str) -> None:
         set_line_edit_text(widget, value, skip_if_focused=True, block_signals=True)
 
@@ -658,6 +734,7 @@ class RepeatabilityDatasetPage(ExperimentPageBase):
 
     def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
         _ = state
+        self._maybe_auto_disable_dry_run()
         config = self._repeatability_config()
         preview = self._current_preview(config=config)
         self._set_checkbox(self.dry_run_check, bool(config.dry_run))
@@ -765,8 +842,18 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
 
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
         super().__init__(controller, experiment_name, parent)
-        self.run_button.setText("Run 17-Target Repeatability")
+        # Default label; refreshed from the live preset in
+        # `_sync_parameters_from_state` so the button does not lie when the
+        # operator picks `cardinal_5` or one of the ring presets.
+        self.run_button.setText("Run Repeatability Targets")
         self._target_table_signature: tuple[tuple[str, str, str, str, str, str], ...] | None = None
+
+    def _refresh_run_button_label(self) -> None:
+        try:
+            label = str(self.target_preset_combo.currentText() or "Repeatability Targets").strip()
+        except Exception:
+            label = "Repeatability Targets"
+        self.run_button.setText(f"Run {label}" if label else "Run Repeatability Targets")
 
     def _build_parameter_sections(self) -> None:
         protocol_card = ExperimentCard("Protocol")
@@ -964,6 +1051,7 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
     def _on_target_preset_changed(self) -> None:
         key = str(self.target_preset_combo.currentData() or TARGET_PRESET_LEGACY_17)
         self.controller.set_config_value("target_preset", key)
+        self._refresh_run_button_label()
 
     def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
         _ = state
@@ -991,6 +1079,8 @@ class SingleSegmentRepeatabilityPage(ExperimentPageBase):
         self._sync_target_table(config)
 
     def _sync_protocol_summary(self, config: SingleSegmentRepeatabilityConfig) -> None:
+        # Keep the run button label honest about the selected preset.
+        self._refresh_run_button_label()
         targets = build_targets_for_preset(
             config.target_preset,
             inner_ring_radius_mm=float(config.inner_ring_radius_mm),
@@ -1111,58 +1201,16 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         self._preview_cache_key: str | None = None
         self._preview_cache: GridAccuracyPreview | None = None
         self._capture_settings_locked = False
-        self._dry_run_auto_synced = False
         super().__init__(controller, experiment_name, parent)
         self.run_button.setText("Save Grid Validation Run")
         self.refresh_button.setText("Refresh Tracker State")
         self.stop_button.hide()
 
-    def _tracker_is_live(self) -> bool:
-        """True when a live tracker is streaming healthy data right now."""
-        service = getattr(self.controller, "tracking_service", None)
-        if service is None:
-            return False
-        try:
-            snapshot = service.get_snapshot()
-        except Exception:
-            return False
-        if snapshot is None:
-            return False
-        # canonical_state is set to "streaming_healthy" once the backend is
-        # connected and producing fresh frames; "connection_state" alone can
-        # read "connected" while the tracker is still warming up or stale.
-        canonical = str(getattr(snapshot, "canonical_state", "") or "").lower()
-        if canonical == "streaming_healthy":
-            return True
-        # Fall back to connection_state for backends that don't populate
-        # canonical_state (e.g., the bare mock).
-        connection = str(getattr(snapshot, "connection_state", "") or "").lower()
-        return connection == "connected" and not bool(getattr(snapshot, "tracker_data_stale", False))
-
-    def _maybe_auto_disable_dry_run(self) -> None:
-        """One-time auto-flip: if a live tracker is connected when the page first
-        loads and the operator has not captured any points yet, default to live
-        capture mode instead of synthetic. Pinning ``dry_run: true`` in the YAML
-        still wins because that's an explicit choice rather than the dataclass
-        default."""
-        if self._dry_run_auto_synced:
-            return
-        if not self._tracker_is_live():
-            return
-        if bool(self.controller.get_config_value("captured_points", []) or []):
-            # Operator already started capturing; respect whatever mode they're in.
-            self._dry_run_auto_synced = True
-            return
-        if not bool(self.controller.get_config_value("dry_run", True)):
-            # Already in live mode; nothing to do.
-            self._dry_run_auto_synced = True
-            return
-        self.controller.set_config_value("dry_run", False)
-        self._append_capture_log(
-            "Tracker is live — switched off Dry Run so this save will use real captures. "
-            "Toggle Dry Run back on if you actually want synthetic data."
-        )
-        self._dry_run_auto_synced = True
+    def _captures_already_recorded(self) -> bool:
+        """Don't auto-disable Dry Run mid-capture session for grid_accuracy
+        — once the operator has pressed Capture Selected Point even once,
+        respect whatever mode they are in."""
+        return bool(self.controller.get_config_value("captured_points", []) or [])
 
     def _build_parameter_sections(self) -> None:
         params_card = ExperimentCard(
@@ -1358,7 +1406,7 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
 
     def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
         _ = state
-        self._maybe_auto_disable_dry_run()
+        self._maybe_auto_disable_dry_run(log_fn=self._append_capture_log)
         config = self._grid_config()
         dims = list(config.dimensions) or [3, 3]
         if len(dims) == 1:
@@ -2456,6 +2504,7 @@ class TwoSegmentCollectPoseDatasetPage(ExperimentPageBase):
 
     def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
         _ = state
+        self._maybe_auto_disable_dry_run()
         config = TwoSegmentCollectPoseDatasetConfig.from_dict(self.controller.config_payload())
         self._set_combo_value(self.schedule_combo, config.schedule_type)
         self._set_double(self.max_disp_spin, float(config.max_segment_displacement_cm))
@@ -3112,7 +3161,7 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         self.sample_target_spin.setRange(1, 50000)
         self.sample_target_spin.setToolTip(
             "Total number of CAPTURES the run will collect (across all positions).\n"
-            "Number of distinct workspace positions visited = Target Samples ÷ Samples / Command.\n"
+            "Number of distinct commanded tendon positions visited = Target Samples ÷ Samples / Command.\n"
             "So with Target Samples=120 and Samples / Command=5, the run visits 24 positions and\n"
             "captures 5 samples at each = 120 total."
         )
@@ -3157,7 +3206,7 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         self.settle_time_spin.valueChanged.connect(lambda value: self.controller.set_config_value("settle_time_s", float(value)))
         collection_form.addRow("Dataset Mode", self.dataset_mode_combo)
         collection_form.addRow("Target Samples", self.sample_target_spin)
-        collection_form.addRow("Workspace Amplitude", self.workspace_amplitude_spin)
+        collection_form.addRow("Cable Command Amplitude", self.workspace_amplitude_spin)
         collection_form.addRow("Samples per Command", self.samples_per_command_spin)
         collection_form.addRow("Tracker Frames per Position", self.tracker_frames_per_position_spin)
         collection_form.addRow("Settle Time", self.settle_time_spin)
@@ -3350,6 +3399,7 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
 
     def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
         _ = state
+        self._maybe_auto_disable_dry_run()
         mode = str(self.controller.get_config_value("dataset_mode", "workspace_coverage") or "workspace_coverage")
         self._set_combo_value(self.dataset_mode_combo, mode)
         self._set_checkbox(self.dry_run_check, bool(self.controller.get_config_value("dry_run", False)))
@@ -3424,16 +3474,20 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         samples_per_command = max(1, int(self.controller.get_config_value("samples_per_command", 1)))
         tracker_frames = max(1, int(self.controller.get_config_value("tracker_samples_per_command", 1)))
         if tracker_frames > 1:
-            total_frames = planned_captures * tracker_frames
+            # Each commanded position writes `samples_per_command` captures and
+            # each capture collects `tracker_frames` post-settle frames. The
+            # +2 start/end neutral bracket captures are SINGLE-shot regardless
+            # of `tracker_frames`, so do NOT multiply them by tracker_frames.
+            total_frames = planned_commands * samples_per_command * tracker_frames + 2
             preview = (
-                f"→ {planned_commands} workspace positions × {samples_per_command} captures × "
+                f"→ {planned_commands} commanded tendon positions × {samples_per_command} captures × "
                 f"{tracker_frames} tracker frames each = {total_frames} total tracker reads, "
                 f"{planned_captures} averaged samples for modeling · {duration_label}  "
                 f"({self._mode_blurb(mode)})"
             )
         else:
             preview = (
-                f"→ {planned_commands} workspace positions × {samples_per_command} captures each "
+                f"→ {planned_commands} commanded tendon positions × {samples_per_command} captures each "
                 f"= {planned_captures} total captures · {duration_label}  "
                 f"({self._mode_blurb(mode)})"
             )
@@ -4674,7 +4728,7 @@ class WorkspaceRepeatabilityMapPage(ExperimentPageBase):
             lambda value: self.controller.set_config_value("max_target_tick_delta_from_startup", int(value))
         )
         geometry_form.addRow("Target Count", self.target_count_spin)
-        geometry_form.addRow("Max Amplitude", self.max_amplitude_spin)
+        geometry_form.addRow("Cable Command Amplitude", self.max_amplitude_spin)
         geometry_form.addRow("Max Tick Delta Cap", self.max_tick_spin)
         geometry_card.body_layout.addLayout(geometry_form)
         self.parameter_layout.addWidget(geometry_card)
@@ -4771,6 +4825,7 @@ class WorkspaceRepeatabilityMapPage(ExperimentPageBase):
 
     def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
         _ = state
+        self._maybe_auto_disable_dry_run()
         self._set_spin(
             self.target_count_spin,
             int(self.controller.get_config_value("target_count", WORKSPACE_DEFAULT_TARGET_COUNT)),

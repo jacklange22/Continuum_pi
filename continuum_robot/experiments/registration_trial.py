@@ -237,7 +237,26 @@ class RegistrationTrialExperiment(BaseExperiment):
             ),
         }
         session.metrics.update(metrics)
-        session.metrics["summary_requirements"] = {"force_status": "success"}
+        # NOTE: pre-2026-05-20 this set ``force_status = "success"`` regardless
+        # of the actual FRE numbers. The audit caught that ``status: success``
+        # could not be used as a verdict — readers must read
+        # ``method_summary.best_fre_mm`` and threshold it themselves.
+        # We now report whether the run *completed* (the trial captured the
+        # configured points and produced a method/subset sweep) separately
+        # from any FRE-based judgment.
+        run_completed = bool(metrics.get("method_summary"))
+        session.metrics["run_completed"] = bool(run_completed)
+        session.metrics["validation_passed"] = None  # the trial is a diagnostic, not a pass/fail gate
+        session.metrics["summary_requirements"] = {
+            "force_status": "success" if run_completed else "failed",
+            "force_status_reason": (
+                "registration_trial is a diagnostic; the run "
+                "completed and produced a method/subset sweep. Validation "
+                "verdict belongs to the operator using best_fre_mm."
+                if run_completed
+                else "registration_trial did not produce a method summary; treat as failed."
+            ),
+        }
         # Persist the raw captures we used so the run folder is self-contained.
         session.metrics["raw_captures_by_label"] = {
             label: [list(map(float, point)) for point in points]

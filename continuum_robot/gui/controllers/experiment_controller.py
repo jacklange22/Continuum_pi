@@ -25,7 +25,11 @@ from continuum_robot.experiments.dataset_io import (
     canonical_timestamped_name,
     sanitize_output_name,
 )
-from continuum_robot.experiments.single_segment_repeatability import SingleSegmentRepeatabilityConfig
+from continuum_robot.experiments.single_segment_repeatability import (
+    SingleSegmentRepeatabilityConfig,
+    build_targets_for_preset,
+    generate_legacy_revisit_sequence,
+)
 from continuum_robot.experiments.workspace_repeatability_map import WorkspaceRepeatabilityMapConfig
 from continuum_robot.tracking.timing_benchmark import (
     compute_servo_tracker_sync_summary,
@@ -1913,9 +1917,31 @@ class ExperimentController:
     def _config_summary_label(experiment_name: str, config_payload: dict[str, Any]) -> str:
         if experiment_name == "single_segment_repeatability":
             config = SingleSegmentRepeatabilityConfig.from_dict(config_payload)
+            # Derive target/visit/capture counts from the LIVE preset rather
+            # than hardcoding the legacy-17 numbers. Pre-2026-05-20 this said
+            # "272 visits, 544 captures" regardless of preset, which lied for
+            # cardinal_5 (5 targets), center_inner_ring (9), center_outer_ring (9).
+            try:
+                targets = build_targets_for_preset(
+                    config.target_preset,
+                    inner_ring_radius_mm=float(config.inner_ring_radius_mm),
+                    outer_ring_radius_mm=float(config.outer_ring_radius_mm),
+                )
+                visits = generate_legacy_revisit_sequence(
+                    targets=targets,
+                    seed=int(config.random_seed),
+                    visits_per_target=int(config.visits_per_target),
+                )
+                target_count = len(targets)
+                visit_count = len(visits)
+            except Exception:
+                target_count = 17
+                visit_count = 272
+            captures = visit_count * 2  # each visit captures approach + repeat
             return (
-                f"legacy 17 targets ({float(config.inner_ring_radius_mm):.1f}/{float(config.outer_ring_radius_mm):.1f} mm rings), "
-                f"272 visits, 544 captures, "
+                f"preset {config.target_preset}: {target_count} targets "
+                f"({float(config.inner_ring_radius_mm):.1f}/{float(config.outer_ring_radius_mm):.1f} mm rings), "
+                f"{visit_count} visits, {captures} captures, "
                 f"cap {int(config.max_target_tick_delta_from_startup)} ticks, "
                 f"settle {float(config.settle_time_s):.2f}s, "
                 f"tool {config.tool_id}"
@@ -1927,7 +1953,9 @@ class ExperimentController:
             return (
                 f"vogel disk {int(config.target_count)} pts × {int(config.visits_per_target)} visits "
                 f"= {total_visits} captures, "
-                f"R={float(config.max_amplitude_mm):.1f} mm, "
+                # Tendon-space cable amplitude, NOT a tip workspace radius.
+                # The tip workspace is much larger on a curving robot.
+                f"cable amp {float(config.max_amplitude_mm):.1f} mm, "
                 f"settle {float(config.neutral_settle_s):.1f}+{float(config.target_settle_s):.1f}s, "
                 f"cap {int(config.max_target_tick_delta_from_startup)} ticks, "
                 f"tool {config.tool_id}{dry_suffix}"

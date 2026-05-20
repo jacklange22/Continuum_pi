@@ -312,7 +312,21 @@ def _write_tracker_thesis_01_cycle_distribution(
     mean_ms = float(arr.mean())
     p95_ms = float(np.percentile(arr, 95.0))
     p99_ms = float(np.percentile(arr, 99.0))
-    realized_mean_hz = _hz_for_ms(mean_ms) or 0.0
+    # `_hz_for_ms(mean_ms)` is 1000/mean(ms), which is NOT the same as the
+    # mean of (1000/ms) and not the same as the (N-1)/wall_duration rate
+    # the GUI surfaces as `effective_loop_rate_hz`. We always prefer the
+    # canonical rate from metrics so the figure agrees with the GUI/summary.
+    effective_loop_rate_hz = metrics.get("effective_loop_rate_hz")
+    if effective_loop_rate_hz is None:
+        # Fall back to 1000/mean(ms) only if the canonical rate isn't on
+        # the metrics dict; explicit label tells the reader why.
+        effective_loop_rate_hz = _hz_for_ms(mean_ms) or 0.0
+        effective_rate_label = "1000/mean(ms)"
+    else:
+        effective_loop_rate_hz = float(effective_loop_rate_hz)
+        effective_rate_label = "(N-1)/wall"
+    # p95-equivalent rate (1000/p95_ms) is reported separately as a
+    # "what's the worst end of the distribution" indicator.
     realized_p95_hz = _hz_for_ms(p95_ms) or 0.0
 
     x_min = max(0.0, float(arr.min()) * 0.95)
@@ -342,9 +356,9 @@ def _write_tracker_thesis_01_cycle_distribution(
     ax.axvline(AURORA_THEORETICAL_INTERVAL_MS, color=color("threshold"), linestyle="-",
                linewidth=1.6, label=f"Aurora 40 Hz target ({AURORA_THEORETICAL_INTERVAL_MS:.0f} ms)", zorder=4)
     ax.axvline(mean_ms, color=color("fit"), linestyle="--", linewidth=1.4,
-               label=f"Mean ({mean_ms:.1f} ms ≈ {realized_mean_hz:.1f} Hz)", zorder=4)
+               label=f"Mean ({mean_ms:.1f} ms)", zorder=4)
     ax.axvline(p95_ms, color=color("rejected"), linestyle=":", linewidth=1.4,
-               label=f"p95 ({p95_ms:.1f} ms ≈ {realized_p95_hz:.1f} Hz)", zorder=4)
+               label=f"p95 ({p95_ms:.1f} ms)", zorder=4)
     ax.axvline(p99_ms, color=color("rejected"), linestyle=":", linewidth=1.0, alpha=0.7,
                label=f"p99 ({p99_ms:.1f} ms)", zorder=4)
 
@@ -361,7 +375,13 @@ def _write_tracker_thesis_01_cycle_distribution(
         "  •  ".join(
             _strip_empty([
                 f"Samples: {len(values)}",
-                f"Realized: {realized_mean_hz:.1f} Hz mean / {realized_p95_hz:.1f} Hz at p95",
+                # Canonical effective rate matches summary.json and the GUI
+                # `effective_loop_rate_hz` field. The p95-equivalent uses
+                # 1000/p95_ms to characterize the worst end of the
+                # distribution. Both rate definitions are spelled out so
+                # the reader can reproduce them.
+                f"Effective loop rate: {float(effective_loop_rate_hz):.1f} Hz "
+                f"[{effective_rate_label}]   ·   1000/p95 ms: {realized_p95_hz:.1f} Hz",
                 f"Target: 40 Hz (25 ms cycle)",
                 f"Duplicate frames: {duplicate_ratio:.1f}%" if duplicate_ratio is not None else None,
             ])
@@ -473,7 +493,13 @@ def _write_tracker_thesis_02_stage_breakdown(
             _strip_empty([
                 f"Samples: {n_samples}",
                 f"Dominant stage: {stage_display[dominant_stage].split(' (')[0]} ({dominant_pct:.0f}% of mean cycle)",
-                f"Mean realized: {_hz_for_ms(table['total_cycle_ms']['mean']):.1f} Hz vs 40 Hz target" if table["total_cycle_ms"]["mean"] > 0 else None,
+                # 1000/mean(ms) is reported as an EQUIVALENT rate of the
+                # mean cycle time; this is NOT the (N-1)/wall_duration
+                # `effective_loop_rate_hz` reported in summary.json. The
+                # caption spells out which definition is in use.
+                f"1000/mean cycle ms: {_hz_for_ms(table['total_cycle_ms']['mean']):.1f} Hz "
+                f"(vs 40 Hz target; see summary.json for canonical effective_loop_rate_hz)"
+                if table["total_cycle_ms"]["mean"] > 0 else None,
             ])
         ),
         fontsize=9, color=color("text"), ha="left", va="bottom",

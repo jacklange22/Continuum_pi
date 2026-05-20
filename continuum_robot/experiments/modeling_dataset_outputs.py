@@ -36,11 +36,29 @@ def build_modeling_dataset_summary_pairs(*, metrics: dict[str, Any]) -> list[tup
     pretension = dict(provenance.get("pretension_artifact", {}) or {})
     command_range = dict(metrics.get("command_pair_range_cm", {}) or {})
     workspace_span = dict(metrics.get("workspace_span_mm", {}) or {})
+    # `accepted_sample_count` includes start/end neutral-bracket captures
+    # that are filtered out of modeling_dataset_export.jsonl. The training
+    # row count is `modeling_export_row_count` (or `accepted_training_row_count`)
+    # which excludes those bracket captures. Surface both so a reader doesn't
+    # cite the wrong "training rows collected" number.
+    accepted = int(metrics.get("accepted_sample_count", 0) or 0)
+    training_rows = int(
+        metrics.get("modeling_export_row_count", metrics.get("accepted_training_row_count", 0)) or 0
+    )
+    bracket_rows = max(0, accepted - training_rows)
     return [
         ("Dataset Mode", str(metrics.get("dataset_mode", "unknown") or "unknown").replace("_", " ")),
         ("Run Label", str(metrics.get("run_label", "") or "n/a")),
         ("Dataset Tag", str(metrics.get("dataset_tag", "") or "n/a")),
-        ("Accepted Samples", str(int(metrics.get("accepted_sample_count", 0) or 0))),
+        (
+            "Accepted Samples (incl brackets)",
+            (
+                f"{accepted}  ({training_rows} training + {bracket_rows} neutral brackets)"
+                if bracket_rows > 0
+                else str(accepted)
+            ),
+        ),
+        ("Training Rows Exported", str(training_rows)),
         ("Rejected Samples", str(int(metrics.get("rejected_sample_count", 0) or 0))),
         (
             "Acceptance Rate",
@@ -835,7 +853,13 @@ def _write_collect_pose_debug_json(
         "run_label": metrics.get("run_label"),
         "dataset_tag": metrics.get("dataset_tag"),
         "acceptance": {
+            # `accepted_sample_count` includes the start/end neutral-bracket
+            # captures even though they are filtered from the training export.
+            # `modeling_export_row_count` (under trainability) is the number
+            # actually written to modeling_dataset_export.jsonl. Do not cite
+            # `accepted_sample_count` as the training-row count.
             "accepted_sample_count": accepted,
+            "accepted_sample_count_includes_brackets": True,
             "rejected_sample_count": rejected,
             "acceptance_rate": (accepted / (accepted + rejected)) if (accepted + rejected) > 0 else None,
             "rejection_reasons": rejection_reasons,
