@@ -7284,6 +7284,7 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 "consecutive_transport_burst_failures",
                 int(session.metrics.get("consecutive_transport_burst_failures", 0) or 0) + 1,
             )
+<<<<<<< Updated upstream
             session.set_metric(
                 "consecutive_post_motion_packet_failures",
                 int(session.metrics.get("consecutive_transport_burst_failures", 0) or 0),
@@ -7385,6 +7386,27 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                 "consecutive_post_motion_packet_failures": 0,
                 "total_post_motion_packet_failure_events": int(total_ev),
                 "tracker_age_s": self._collect_pose_tracker_age_s(session),
+=======
+            raise RuntimeError("collect-pose long-run resync telemetry failed after post-motion packet error.") from resync_exc
+        _append_collect_pose_jsonl_event(
+            _collect_pose_output_root(session),
+            "sample_failure_events.jsonl",
+            {
+                # NOTE: 2026-05-14 renamed from "post_motion_telemetry_resync_success".
+                # The bus was resynced after a post-motion packet error, but the original
+                # sample was already dropped (synthetic_drop=True / modeling_export_exclude=True).
+                # This event means the bus is healthy again; it does NOT mean the sample
+                # was recovered. See recovered_packet_error_count for true recoveries.
+                "event": "bus_resynced_after_drop",
+                "step_index": int(step_index_for_event),
+                "failed_servo_id": ctx.get("failed_servo_id"),
+                "retry_count": retry_count,
+                "resync_read_attempts": int(self.config.resync_read_attempts),
+                "resync_delay_s": float(self.config.resync_delay_s),
+                "consecutive_post_motion_packet_failures": consecutive,
+                "total_post_motion_packet_failure_events": total_ev,
+                "sample_recovered": False,
+>>>>>>> Stashed changes
             },
         )
         # Note: renamed from "post_motion_telemetry_resync_success" because that name
@@ -7496,7 +7518,10 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
                     "ramp_include_telemetry_checks": bool(self.config.ramp_include_telemetry_checks),
                 }
                 session.set_metric("consecutive_post_motion_packet_failures", 0)
+<<<<<<< Updated upstream
                 session.set_metric("consecutive_transport_burst_failures", 0)
+=======
+>>>>>>> Stashed changes
                 if command_retries_attempted > 0:
                     # A previously-failing command produced a usable sample after retry/resync; this is a real recovery.
                     session.set_metric(

@@ -245,7 +245,10 @@ class AppWindow(QMainWindow):
             self.registration_controller,
             workflow_controller=self.tracker_mvp_controller,
             open_runtime_tip_calibration=self._open_runtime_tip_calibration,
+<<<<<<< Updated upstream
             open_registration_trial=self._open_registration_trial,
+=======
+>>>>>>> Stashed changes
             open_registration_sampling_study=self._open_registration_sampling_study,
         )
         self.servos_tab = ServosTab(
@@ -409,6 +412,7 @@ class AppWindow(QMainWindow):
         dialog.activateWindow()
         dialog.refresh()
 
+<<<<<<< Updated upstream
     def _open_registration_trial(self) -> None:
         from continuum_robot.gui.widgets.registration_trial_dialog import (
             RegistrationTrialDialog,
@@ -458,6 +462,8 @@ class AppWindow(QMainWindow):
         )
         dialog.exec()
 
+=======
+>>>>>>> Stashed changes
     def _open_registration_sampling_study(self) -> None:
         """Switch to the Experiment tab and preselect the registration sampling study.
 

@@ -565,11 +565,17 @@ class TrackerMvpController:
         # In coil_as_tip mode (operator-selected, README-trusted) T_coil_tip is
         # identity and the tracking service may stamp the status as either
         # "coil_as_tip" (per-frame update path) or "identity_tip_fallback" (the
+<<<<<<< Updated upstream
         # cached label from the artifact-load path, used before live frames flow
         # — e.g. mock mode or before the first packet). Both produce the same
         # valid math; both should surface the live position. Other modes still
         # require "ok" so identity_tip_fallback never leaks the lower-trust
         # display path elsewhere.
+=======
+        # cached label from the artifact-load path, used when no live frames have
+        # arrived yet, e.g. mock mode). Both produce the same valid math; both
+        # should surface the live position. Other modes still require "ok".
+>>>>>>> Stashed changes
         runtime_tip_mode = str(getattr(snapshot, "runtime_tip_mode", "") or "")
         if runtime_tip_mode == "coil_as_tip":
             acceptable_statuses = ("ok", "coil_as_tip", "identity_tip_fallback")
