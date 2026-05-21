@@ -327,7 +327,10 @@ def _write_tracker_thesis_01_cycle_distribution(
     """
     values = _filter_analyzed_cycle_times(tracker_records)
     fig, ax = create_figure(size="wide", constrained_layout=False)
-    fig.subplots_adjust(left=0.085, right=0.92, top=0.90, bottom=0.22)
+    # Reserve right margin for the legend so it never overlaps bars or
+    # reference lines. Title hugs the top; caption strip sits at the bottom.
+    # 0.70 gives room for the CDF axis ticks + ylabel + the legend block.
+    fig.subplots_adjust(left=0.075, right=0.70, top=0.88, bottom=0.22)
 
     if not values:
         ax.text(0.5, 0.5, "No analyzed tracker cycles available",
@@ -388,25 +391,39 @@ def _write_tracker_thesis_01_cycle_distribution(
     # (the rate at which the device actually produces fresh frames). It is
     # NOT a pipeline target — labeling it as such would suggest shorter
     # cycles are better, which is the opposite of the truth.
+    #
+    # We deliberately drop p99 from the chart (it's still in the caption)
+    # so the reference-line set stays at 3 — Aurora ceiling, mean, p95.
+    # Four vertical lines in a 1-axis figure crowd each other and read as
+    # noise rather than as references.
     ax.axvline(
         AURORA_THEORETICAL_INTERVAL_MS,
         color=color("threshold"), linestyle="-", linewidth=1.6,
         label=(
-            f"Aurora frame interval "
-            f"({AURORA_THEORETICAL_INTERVAL_MS:.0f} ms = 40 Hz hardware rate)"
+            f"Aurora frame interval ({AURORA_THEORETICAL_INTERVAL_MS:.0f} ms = 40 Hz)"
         ),
         zorder=4,
     )
     ax.axvline(mean_ms, color=color("fit"), linestyle="--", linewidth=1.4,
-               label=f"Mean ({mean_ms:.1f} ms)", zorder=4)
+               label=f"Mean = {mean_ms:.1f} ms", zorder=4)
     ax.axvline(p95_ms, color=color("rejected"), linestyle=":", linewidth=1.4,
-               label=f"p95 ({p95_ms:.1f} ms)", zorder=4)
-    ax.axvline(p99_ms, color=color("rejected"), linestyle=":", linewidth=1.0, alpha=0.7,
-               label=f"p99 ({p99_ms:.1f} ms)", zorder=4)
+               label=f"p95 = {p95_ms:.1f} ms", zorder=4)
 
     style_axes(ax, xlabel="Total cycle time (ms)", ylabel="Cycle count")
     ax.set_xlim(x_min, x_max)
-    legend(ax, loc="upper right", ncol=1)
+    # Place legend OUTSIDE the plot area on the right so it never sits on
+    # top of the histogram peak or the reference lines. Anchor is right of
+    # the CDF axis (0.70) plus margin for its ticks + ylabel.
+    handles, labels = ax.get_legend_handles_labels()
+    cdf_handles, cdf_labels = cdf_ax.get_legend_handles_labels()
+    fig.legend(
+        handles + cdf_handles,
+        labels + cdf_labels,
+        loc="upper left",
+        bbox_to_anchor=(0.78, 0.86),
+        frameon=True, facecolor="white", edgecolor="#cbd5e1", framealpha=0.95,
+        fontsize=9,
+    )
 
     fig.suptitle("Tracker Cycle Time Distribution vs Aurora Frame Interval",
                  fontsize=13, fontweight="bold", x=0.04, ha="left")
@@ -455,7 +472,10 @@ def _write_tracker_thesis_02_stage_breakdown(
     table = _stage_percentile_table(stages)
 
     fig, ax = create_figure(size="wide", constrained_layout=False)
-    fig.subplots_adjust(left=0.135, right=0.97, top=0.90, bottom=0.22)
+    # More bottom margin: legend lives between the bars and the caption strip,
+    # not inside the plot. Previous version's "lower right" legend completely
+    # covered the p95 and p99 bars.
+    fig.subplots_adjust(left=0.115, right=0.97, top=0.88, bottom=0.30)
 
     percentile_labels = ["median", "mean", "p95", "p99"]
     if not stages["total_cycle_ms"]:
@@ -516,8 +536,7 @@ def _write_tracker_thesis_02_stage_breakdown(
         AURORA_THEORETICAL_INTERVAL_MS, color=color("threshold"), linestyle="-",
         linewidth=1.6,
         label=(
-            f"Aurora frame interval "
-            f"({AURORA_THEORETICAL_INTERVAL_MS:.0f} ms = 40 Hz hardware rate)"
+            f"Aurora frame interval ({AURORA_THEORETICAL_INTERVAL_MS:.0f} ms = 40 Hz)"
         ),
         zorder=3,
     )
@@ -527,7 +546,18 @@ def _write_tracker_thesis_02_stage_breakdown(
     style_axes(ax, xlabel="Time per cycle (ms)", ylabel="Percentile")
     # Leave headroom on the right for per-bar labels
     ax.set_xlim(0.0, max(max_total * 1.30, AURORA_THEORETICAL_INTERVAL_MS * 1.2))
-    legend(ax, loc="lower right", ncol=1)
+    # Place legend BELOW the bars (outside the plot rectangle) so it cannot
+    # overlap the p95/p99 rows — the previous "lower right" anchor hid them
+    # entirely.
+    handles, labels = ax.get_legend_handles_labels()
+    fig.legend(
+        handles, labels,
+        loc="upper center",
+        bbox_to_anchor=(0.50, 0.16),
+        ncol=4,
+        frameon=False,
+        fontsize=9,
+    )
 
     fig.suptitle("Tracker Per-Cycle Time Budget by Stage",
                  fontsize=13, fontweight="bold", x=0.04, ha="left")
@@ -542,18 +572,16 @@ def _write_tracker_thesis_02_stage_breakdown(
         if table["total_cycle_ms"]["mean"] > 0 else 0.0
     )
     fig.text(
-        0.015, 0.02,
+        0.015, 0.015,
         "  •  ".join(
             _strip_empty([
                 f"Samples: {n_samples}",
                 f"Dominant stage: {stage_display[dominant_stage].split(' (')[0]} ({dominant_pct:.0f}% of mean cycle)",
                 # 1000/mean(ms) is reported as an EQUIVALENT rate of the
                 # mean cycle time; this is NOT the (N-1)/wall_duration
-                # `effective_loop_rate_hz` reported in summary.json. The
-                # caption spells out which definition is in use.
-                f"1000/mean cycle ms: {_hz_for_ms(table['total_cycle_ms']['mean']):.1f} Hz "
-                f"(vs 40 Hz Aurora hardware ceiling; see summary.json for "
-                "canonical effective_loop_rate_hz)"
+                # `effective_loop_rate_hz` reported in summary.json.
+                f"1000/mean cycle: {_hz_for_ms(table['total_cycle_ms']['mean']):.1f} Hz "
+                f"vs 40 Hz ceiling"
                 if table["total_cycle_ms"]["mean"] > 0 else None,
             ])
         ),
@@ -622,7 +650,9 @@ def _write_tracker_inter_frame_interval_histogram(
     """
     intervals = _inter_frame_interval_ms(tracker_records)
     fig, ax = create_figure(size="wide", constrained_layout=False)
-    fig.subplots_adjust(left=0.085, right=0.97, top=0.90, bottom=0.22)
+    # Same right-margin trick as thesis_01: reserve space for the legend
+    # outside the plot rectangle. No CDF axis here so we can be tighter.
+    fig.subplots_adjust(left=0.075, right=0.72, top=0.88, bottom=0.22)
     if not intervals:
         ax.text(0.5, 0.5, "No analyzed inter-frame intervals available",
                 transform=ax.transAxes, ha="center", va="center")
@@ -633,26 +663,52 @@ def _write_tracker_inter_frame_interval_histogram(
         return
     arr = np.asarray(intervals, dtype=float)
     bin_count = max(20, min(60, int(np.sqrt(len(arr)) * 2)))
-    ax.hist(arr, bins=bin_count, color=color("measured"), edgecolor="white",
+    # Make the histogram x-range always include the 25 ms Aurora reference
+    # so the relationship between observed intervals and the hardware
+    # ceiling is visible even when the observed range is much higher.
+    x_lo = min(float(arr.min()) * 0.95, AURORA_THEORETICAL_INTERVAL_MS - 2.0)
+    x_lo = max(0.0, x_lo)
+    x_hi = max(float(arr.max()) * 1.05, AURORA_THEORETICAL_INTERVAL_MS + 5.0)
+    ax.hist(arr, bins=bin_count, range=(x_lo, x_hi),
+            color=color("measured"), edgecolor="white",
             linewidth=0.6, alpha=0.85, zorder=2)
     mean_ms = float(arr.mean())
     median_ms = float(np.median(arr))
     std_ms = float(arr.std(ddof=0))
     p95_ms = float(np.percentile(arr, 95.0))
     max_ms = float(arr.max())
+    delivered_rate_hz = (1000.0 / median_ms) if median_ms > 0 else 0.0
+
+    # Aurora 25 ms reference comes FIRST so it sits behind the percentile
+    # markers — the observed distribution is always to the right of it on
+    # the rebuilt platform, and the operator should see the gap at a glance.
+    ax.axvline(
+        AURORA_THEORETICAL_INTERVAL_MS,
+        color=color("threshold"), linestyle="-", linewidth=1.6,
+        label=f"Aurora frame interval ({AURORA_THEORETICAL_INTERVAL_MS:.0f} ms = 40 Hz)",
+        zorder=2,
+    )
     ax.axvline(median_ms, color=color("fit"), linestyle="--", linewidth=1.4,
-               label=f"Median = {median_ms:.2f} ms", zorder=3)
-    ax.axvline(mean_ms, color=color("threshold"), linestyle=":", linewidth=1.4,
-               label=f"Mean = {mean_ms:.2f} ms", zorder=3)
+               label=f"Median = {median_ms:.2f} ms ({delivered_rate_hz:.1f} Hz)", zorder=3)
     ax.axvline(p95_ms, color=color("rejected"), linestyle="-.", linewidth=1.2,
                label=f"p95 = {p95_ms:.2f} ms", zorder=3)
     style_axes(ax, xlabel="Inter-frame interval (ms)", ylabel="Count")
+    ax.set_xlim(x_lo, x_hi)
     fig.suptitle("Tracker Inter-Frame Interval Distribution",
                  fontsize=13, fontweight="bold", x=0.04, ha="left")
-    legend(ax, loc="upper right", ncol=1)
+    # Legend outside the plot, anchored just right of the data axis.
+    handles, labels = ax.get_legend_handles_labels()
+    fig.legend(
+        handles, labels,
+        loc="upper left",
+        bbox_to_anchor=(0.745, 0.86),
+        frameon=True, facecolor="white", edgecolor="#cbd5e1", framealpha=0.95,
+        fontsize=9,
+    )
     fig.text(
         0.015, 0.02,
         f"N = {len(intervals)} intervals   •   "
+        f"mean = {mean_ms:.2f} ms   •   "
         f"std = {std_ms:.2f} ms   •   max = {max_ms:.2f} ms   •   "
         "raw gap between consecutive sample-commit timestamps (jitter view)",
         fontsize=9, color=color("text"), ha="left", va="bottom",
@@ -772,25 +828,31 @@ def _write_tracker_duplicate_invalid_timeline(
     """
     times_ns = _analyzed_commit_times_ns(tracker_records)
     fig, ax = create_figure(size="wide", constrained_layout=False)
-    fig.subplots_adjust(left=0.085, right=0.97, top=0.90, bottom=0.22)
+    fig.subplots_adjust(left=0.085, right=0.97, top=0.88, bottom=0.22)
     if not times_ns:
         ax.text(0.5, 0.5, "No analyzed samples",
                 transform=ax.transAxes, ha="center", va="center")
-        style_axes(ax, xlabel="Time since first analyzed sample (s)", ylabel="")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
         fig.suptitle("Duplicate and Invalid Frame Timeline",
                      fontsize=13, fontweight="bold", x=0.04, ha="left")
         save_figure(fig, path)
         return
     t0 = times_ns[0]
+    run_duration_s = float(times_ns[-1] - t0) / 1_000_000_000.0
     duplicate_seconds: list[float] = []
     invalid_seconds: list[float] = []
     requested = [str(x).upper() for x in (metrics.get("requested_tool_ids") or [])]
+    analyzed_count = 0
     for record in tracker_records:
         if record.get("warmup_discarded"):
             continue
         commit = record.get("sample_commit_monotonic_ns")
         if commit is None:
             continue
+        analyzed_count += 1
         elapsed = float(int(commit) - t0) / 1_000_000_000.0
         if bool(record.get("is_duplicate_frame", False)):
             duplicate_seconds.append(elapsed)
@@ -798,10 +860,49 @@ def _write_tracker_duplicate_invalid_timeline(
             validity = record.get("tool_validity", {}) or {}
             if any(str(validity.get(tool_id, "missing")).strip().lower() != "tracked" for tool_id in requested):
                 invalid_seconds.append(elapsed)
+
+    # Clean-run path: when zero duplicates AND zero invalid frames are
+    # observed, render a success card instead of an empty scatter on a
+    # meaningless ±0.05 s axis. The empty-scatter form was misleading —
+    # operators read it as "the figure failed to render" rather than
+    # "the run was clean."
+    if not duplicate_seconds and not invalid_seconds:
+        ax.set_xlim(0.0, max(run_duration_s, 1.0))
+        ax.set_ylim(0.0, 1.0)
+        ax.set_yticks([])
+        ax.set_xticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        # Single large success block, centered.
+        success_text = (
+            f"Zero duplicate frames   ·   Zero invalid frames\n"
+            f"over {run_duration_s:.1f} s ({analyzed_count} analyzed samples)"
+        )
+        ax.text(
+            0.5, 0.58, success_text,
+            transform=ax.transAxes, ha="center", va="center",
+            fontsize=15, fontweight="bold", color=color("accepted"),
+        )
+        ax.text(
+            0.5, 0.30,
+            "Tracker pipeline ran clean: no over-poll cache hits, no tool dropouts."
+            + (f"\nRequested tools: {', '.join(requested)}." if requested else ""),
+            transform=ax.transAxes, ha="center", va="center",
+            fontsize=10, color=color("text"),
+        )
+        fig.suptitle("Duplicate and Invalid Frame Timeline",
+                     fontsize=13, fontweight="bold", x=0.04, ha="left")
+        save_figure(fig, path)
+        return
+
+    # Event-path: keep the scatter, but FORCE the x-axis to span the
+    # analyzed window so a single event at t=2s doesn't compress the
+    # entire chart into a few pixels.
     ax.scatter(duplicate_seconds, [1.0] * len(duplicate_seconds),
                s=22, color=color("threshold"), alpha=0.8, label="Duplicate frame")
     ax.scatter(invalid_seconds, [0.0] * len(invalid_seconds),
                s=28, marker="x", color=color("rejected"), alpha=0.85, label="Invalid frame")
+    ax.set_xlim(0.0, max(run_duration_s, 1.0))
     ax.set_ylim(-0.6, 1.6)
     ax.set_yticks([0.0, 1.0])
     ax.set_yticklabels(["Invalid", "Duplicate"])
@@ -812,6 +913,7 @@ def _write_tracker_duplicate_invalid_timeline(
     fig.text(
         0.015, 0.02,
         f"Duplicates: {len(duplicate_seconds)}   •   Invalid: {len(invalid_seconds)}   •   "
+        f"Window: {run_duration_s:.1f} s   •   "
         "clusters in time indicate transient outages; spread-out events indicate "
         "ongoing measurement noise.",
         fontsize=9, color=color("text"), ha="left", va="bottom",
@@ -826,48 +928,114 @@ def _write_tracker_polling_vs_unique_rate_summary(
     path: Path,
     metrics: dict[str, Any],
 ) -> None:
-    """Phase-3 figure 4: side-by-side bars for polling vs unique vs valid pose rate.
+    """Phase-3 figure 4: rate summary — software capacity vs Aurora delivery.
 
-    Headline answer to "how fast is the tracker actually delivering useful
-    data?" — polling_rate_hz is what the software asked for; unique frame
-    rate is what the backend produced; valid pose rate is what survived
-    tool-validity filtering. The 40 Hz ceiling sits as a dashed reference.
+    Four bars at the same scale tell the full story in one chart:
+
+      Software capacity  = 1000 / mean cycle time. What the poll loop COULD
+                           sustain if Aurora delivered a fresh frame on every
+                           call. Usually exceeds the Aurora ceiling.
+      Polling            = (N samples - 1) / wall window. The actual rate at
+                           which the software asked the backend for a frame.
+      Unique frames      = the rate at which the backend produced a fresh
+                           Aurora frame (is_new_frame=True).
+      Valid pose         = unique frames where every requested tool was
+                           in the 'tracked' state.
+
+    The 40 Hz Aurora hardware ceiling sits as a solid reference line.
+    The gap between Software Capacity and Polling tells the operator whether
+    the loop is artificially throttled. The gap between Polling and Unique
+    Frames is the cached-frame fraction. The gap between Unique Frames and
+    Valid Pose is the tool-dropout fraction.
     """
     fig, ax = create_figure(size="wide", constrained_layout=False)
-    fig.subplots_adjust(left=0.10, right=0.97, top=0.90, bottom=0.22)
+    fig.subplots_adjust(left=0.085, right=0.97, top=0.88, bottom=0.24)
+
+    # Try to compute the software-capacity rate from the cycle-time mean.
+    # Falls back gracefully if not present.
+    cycle_stats = metrics.get("loop_period_ms_stats") or metrics.get("total_cycle_ms_stats") or {}
+    mean_cycle_ms = _as_float(cycle_stats.get("mean")) if isinstance(cycle_stats, dict) else None
+    software_capacity_hz = (1000.0 / mean_cycle_ms) if (mean_cycle_ms and mean_cycle_ms > 0) else None
+
     rates = [
+        ("Software\ncapacity", software_capacity_hz),
         ("Polling", _as_float(metrics.get("polling_rate_hz"))),
-        ("Unique frames", _as_float(metrics.get("unique_frame_rate_hz"))),
-        ("Valid pose", _as_float(metrics.get("valid_pose_rate_hz"))),
+        ("Unique\nframes", _as_float(metrics.get("unique_frame_rate_hz"))),
+        ("Valid\npose", _as_float(metrics.get("valid_pose_rate_hz"))),
     ]
     rates_present = [(label, value) for label, value in rates if value is not None]
     if not rates_present:
         ax.text(0.5, 0.5, "No rate metrics available",
                 transform=ax.transAxes, ha="center", va="center")
         style_axes(ax, xlabel="", ylabel="Rate (Hz)")
-        fig.suptitle("Polling vs Unique Frame Rate vs Valid Pose Rate",
+        fig.suptitle("Tracker Rate Summary: Software vs Aurora Delivery",
                      fontsize=13, fontweight="bold", x=0.04, ha="left")
         save_figure(fig, path)
         return
     labels = [label for label, _ in rates_present]
     values = [float(value) for _, value in rates_present]
-    bar_colors = [color("measured"), color("fit"), color("accepted")][: len(rates_present)]
+    # Four distinct colors so the bars stay distinguishable even when
+    # values are equal — the previous 3-bar version with identical heights
+    # read as "the figure is broken."
+    bar_color_palette = [
+        color("text"),     # software capacity — neutral gray-ish
+        color("measured"), # polling
+        color("fit"),      # unique frames
+        color("accepted"), # valid pose
+    ]
+    bar_colors = bar_color_palette[: len(rates_present)]
+    # If software_capacity wasn't computed, palette slides down.
+    if software_capacity_hz is None:
+        bar_colors = bar_color_palette[1: 1 + len(rates_present)]
+
     bars = ax.bar(labels, values, color=bar_colors, edgecolor="white", linewidth=0.6, zorder=2)
     ax.bar_label(bars, labels=[f"{value:.1f} Hz" for value in values], padding=4, fontsize=10)
-    ax.axhline(40.0, color=color("threshold"), linestyle="--", linewidth=1.4,
+
+    # Aurora ceiling — solid line, prominent, with shaded "above-ceiling"
+    # region so the reader sees at a glance which bars exceed the hardware.
+    ax.axhline(40.0, color=color("threshold"), linestyle="-", linewidth=1.6,
                label="Aurora hardware ceiling (40 Hz)", zorder=3)
-    ax.set_ylim(0.0, max(max(values) * 1.25, 45.0))
+    y_top = max(max(values) * 1.30, 50.0)
+    ax.axhspan(40.0, y_top, color=color("threshold"), alpha=0.06, zorder=1)
+    ax.set_ylim(0.0, y_top)
     style_axes(ax, xlabel="", ylabel="Rate (Hz)")
-    fig.suptitle("Polling vs Unique Frame Rate vs Valid Pose Rate",
+    fig.suptitle("Tracker Rate Summary: Software vs Aurora Delivery",
                  fontsize=13, fontweight="bold", x=0.04, ha="left")
     legend(ax, loc="upper right", ncol=1)
+
+    # Smart caption: detect the dominant story for THIS run.
+    caption_parts: list[str] = []
+    delivered = _as_float(metrics.get("unique_frame_rate_hz"))
+    polled = _as_float(metrics.get("polling_rate_hz"))
+    valid = _as_float(metrics.get("valid_pose_rate_hz"))
+    if software_capacity_hz is not None and delivered is not None:
+        gap = software_capacity_hz - delivered
+        if gap > 5.0:
+            caption_parts.append(
+                f"Software could poll at {software_capacity_hz:.1f} Hz but Aurora "
+                f"only delivered {delivered:.1f} Hz → tracker is the bottleneck "
+                f"(headroom {gap:.1f} Hz)."
+            )
+    if polled is not None and delivered is not None and abs(polled - delivered) > 2.0:
+        caption_parts.append(
+            f"Polling > unique by {polled - delivered:.1f} Hz → "
+            "some polls hit cached frames."
+        )
+    if delivered is not None and valid is not None and abs(delivered - valid) > 1.0:
+        caption_parts.append(
+            f"Unique > valid by {delivered - valid:.1f} Hz → "
+            "tracker dropped tool intermittently."
+        )
+    if not caption_parts:
+        caption_parts.append(
+            "Polling = software ask rate; Unique = backend new-frame rate; "
+            "Valid = unique frames where every requested tool was tracked. "
+            "All consistent → no software throttle, no cached frames, no tool dropouts."
+        )
     fig.text(
         0.015, 0.02,
-        "Polling = software ask rate. Unique frames = backend new-frame rate. "
-        "Valid pose = unique frames that also had every requested tool tracked. "
-        "Polling > unique → some polls hit the cached frame; unique > valid → "
-        "tracker sometimes lost the tool.",
-        fontsize=8, color=color("text"), ha="left", va="bottom",
+        "  •  ".join(caption_parts),
+        fontsize=9, color=color("text"), ha="left", va="bottom",
         bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
               "edgecolor": color("grid"), "alpha": 0.94},
     )

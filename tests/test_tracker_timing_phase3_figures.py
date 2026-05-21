@@ -119,6 +119,30 @@ def test_duplicate_invalid_timeline_handles_empty(tmp_path: Path) -> None:
     _assert_real_png(path)
 
 
+def test_duplicate_invalid_timeline_clean_run_uses_success_card(tmp_path: Path) -> None:
+    """When the run had records but ZERO duplicates and ZERO invalid frames,
+    the writer must render a clean success card, not an empty scatter on a
+    meaningless ±0.05 s axis.
+
+    The success-card path is a code branch reached only when records exist
+    AND there are no duplicate/invalid events; previously this fell through
+    to the scatter writer and produced an unreadable empty figure.
+    """
+    records = _make_records(n=60)
+    for rec in records:
+        rec["is_duplicate_frame"] = False
+        rec["tool_validity"] = {"0A": "tracked"}
+    path = tmp_path / "dup_clean.png"
+    outputs._write_tracker_duplicate_invalid_timeline(
+        path=path, tracker_records=records, metrics=_metrics(),
+    )
+    _assert_real_png(path)
+    # Clean-run path must produce a real PNG (not the tiny placeholder).
+    assert path.stat().st_size > 5_000, (
+        "Clean-run PNG should be a real success card, not a placeholder"
+    )
+
+
 def test_polling_vs_unique_rate_summary_renders(tmp_path: Path) -> None:
     path = tmp_path / "rates.png"
     outputs._write_tracker_polling_vs_unique_rate_summary(
