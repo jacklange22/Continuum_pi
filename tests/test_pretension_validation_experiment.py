@@ -1729,6 +1729,155 @@ def _run_release_with_scripted_currents(
     return result, trace_rows
 
 
+# --------------------------------------------------------------------------- #
+# Holding-current (post-move settle + burst average) — tension decisions
+# must be based on settled holding readings, not in-motion drive current.
+# --------------------------------------------------------------------------- #
+
+
+def test_post_move_settle_and_burst_defaults_match_operator_intent() -> None:
+    """``post_move_settle_s``, ``holding_current_burst_count``, and
+    ``holding_current_burst_interval_s`` must default to values that defeat
+    the motion-current artifacts seen in run 20260521_155327. The defaults
+    were picked to settle the XC330 PID + back-EMF before sampling tension."""
+    cfg = PretensionValidationExperimentConfig.from_dict({})
+    assert cfg.post_move_settle_s >= 0.2, "settle must be long enough for PID to decay"
+    assert cfg.holding_current_burst_count >= 2, "need a burst to defeat noise"
+    assert cfg.holding_current_burst_interval_s > 0.0
+
+
+def test_read_holding_telemetry_averages_burst_and_reports_std(tmp_path: Path) -> None:
+    """``_read_holding_telemetry`` must sleep, take a burst of reads, and
+    return the averaged signed current per servo plus the spread (std).
+    Telemetry that comes back stable across the burst → small std (PID is
+    settled); high std → motion has not yet decayed."""
+    service = _servo_service(tmp_path)
+    # Script three settled reads at -25 mA per servo (operator's "tensioned"
+    # signed current). We expect the helper to average them and report a
+    # small std.
+    script = [{1: -25.0, 2: -28.0, 3: -24.0, 4: -31.0} for _ in range(3)]
+    wrapped = _ScriptedCurrentService(service, script=script)
+    experiment = PretensionValidationExperiment(
+        PretensionValidationExperimentConfig.from_dict(
+            {
+                "mode": "single_segment_staged",
+                "servo_ids": [1, 2, 3, 4],
+                "post_move_settle_s": 0.0,  # no real sleep in the test
+                "holding_current_burst_count": 3,
+                "holding_current_burst_interval_s": 0.0,
+            }
+        )
+    )
+
+    class _Session:
+        def __init__(self):
+            self.context = SimpleNamespace(
+                servo_service=wrapped,
+                tracker_service=None,
+                monotonic_fn=time.monotonic,
+                sleep_fn=lambda _s: None,
+            )
+
+        def raise_if_stop_requested(self):
+            return None
+
+        def update_progress(self, *_a, **_kw):
+            return None
+
+    holding = experiment._read_holding_telemetry(
+        servo_service=wrapped,
+        servo_ids=[1, 2, 3, 4],
+        session=_Session(),
+    )
+
+    assert holding["holding_burst_count"] == 3
+    averaged = holding["holding_current_ma_by_servo"]
+    # Manual reference values exactly preserved by the averaging step.
+    assert averaged[1] == pytest.approx(-25.0)
+    assert averaged[2] == pytest.approx(-28.0)
+    assert averaged[3] == pytest.approx(-24.0)
+    assert averaged[4] == pytest.approx(-31.0)
+    # Std should be ~0 since every sample is identical.
+    for sid in (1, 2, 3, 4):
+        assert holding["holding_current_std_by_servo"][sid] == pytest.approx(0.0, abs=1e-6)
+    # Burst samples preserved for traceability.
+    for sid in (1, 2, 3, 4):
+        assert len(holding["holding_current_samples_by_servo"][sid]) == 3
+
+
+def test_advanced_measurement_with_holding_overrides_motion_currents(tmp_path: Path) -> None:
+    """``_advanced_measurement_with_holding`` must override the raw_current_ma
+    fields with the burst-averaged holding values, so downstream tension
+    decisions read the settled current instead of any in-motion read.
+
+    The instantaneous reads must be preserved under
+    ``raw_current_ma_instantaneous`` for diagnostics."""
+    service = _servo_service(tmp_path)
+    # Burst returns -25 mA per servo (settled, "tensioned" reference values).
+    script = [{1: -25.0, 2: -25.0, 3: -25.0, 4: -25.0} for _ in range(4)]
+    wrapped = _ScriptedCurrentService(service, script=script)
+    experiment = PretensionValidationExperiment(
+        PretensionValidationExperimentConfig.from_dict(
+            {
+                "mode": "single_segment_staged",
+                "servo_ids": [1, 2, 3, 4],
+                "post_move_settle_s": 0.0,
+                "holding_current_burst_count": 3,
+                "holding_current_burst_interval_s": 0.0,
+            }
+        )
+    )
+
+    class _Session:
+        def __init__(self):
+            self.context = SimpleNamespace(
+                servo_service=wrapped,
+                tracker_service=None,
+                monotonic_fn=time.monotonic,
+                sleep_fn=lambda _s: None,
+            )
+
+        def raise_if_stop_requested(self):
+            return None
+
+        def update_progress(self, *_a, **_kw):
+            return None
+
+    measurement = experiment._advanced_measurement_with_holding(
+        servo_service=wrapped,
+        tracker_service=None,
+        servo_ids=[1, 2, 3, 4],
+        baseline_current_ma_by_servo={1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0},
+        target_xy_mm=[0.0, 0.0],
+        session=_Session(),
+        startup_reference_ticks_by_servo={1: None, 2: None, 3: None, 4: None},
+        trust_status="current_only_lower_trust",
+    )
+
+    # The overridden currents reflect the averaged holding burst (-25 mA each).
+    for sid in (1, 2, 3, 4):
+        assert measurement["raw_current_ma"][sid] == -25, (
+            f"servo {sid} raw_current_ma should be the averaged holding value -25, "
+            f"got {measurement['raw_current_ma'][sid]}"
+        )
+        assert measurement["signed_raw_current_ma"][sid] == -25
+        assert measurement["filtered_current_ma"][sid] == pytest.approx(-25.0)
+        # Load proxy = |held - baseline| = |-25 - 0| = 25 mA.
+        assert measurement["current_above_baseline_ma"][sid] == pytest.approx(25.0)
+        assert measurement["load_proxy_current_ma"][sid] == pytest.approx(25.0)
+    # Burst metadata surfaced for the trace row + report.
+    assert measurement["current_sample_phase"] == "holding"
+    assert measurement["holding_burst_count"] == 3
+    assert measurement["holding_current_ma_by_servo"][1] == pytest.approx(-25.0)
+    # Instantaneous reads preserved (they were the FIRST read of the burst,
+    # which the mock served from the first script entry).
+    assert "raw_current_ma_instantaneous" in measurement
+    assert "signed_raw_current_ma_instantaneous" in measurement
+    # Load balance recomputed from the overridden values: all 4 at 25 mA →
+    # spread = 0.
+    assert measurement["load_balance_error_ma"] == pytest.approx(0.0)
+
+
 def test_soft_release_signed_current_at_minus_2_succeeds_via_target_current(tmp_path: Path) -> None:
     """Signed convention on this rig: ``raw_current_ma`` is signed. A near-
     slack tendon reads e.g. -1 to -2 mA (or even positive when the motor is

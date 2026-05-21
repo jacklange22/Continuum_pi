@@ -638,7 +638,38 @@ class PretensionValidationExperimentConfig:
     release_settle_s: float = 0.15
     """Sleep applied between release steps so current can settle before the
     next telemetry read. Independent of ``settle_verify_time_s`` (which is for
-    the final verification settle)."""
+    the final verification settle). Deprecated for tension decisions —
+    ``post_move_settle_s`` + ``holding_current_burst_count`` are now the
+    primary motion-decay knobs."""
+    # --- holding-current sampling (post-move settle + burst average) ---------
+    # Real XC330 telemetry includes large motion artifacts: while the motor is
+    # moving (or right after a goal-position write while the PID is still
+    # closing on its setpoint), present_current_ma is dominated by the drive
+    # torque pushing the spool, NOT by the tendon load. A single instantaneous
+    # read therefore reports values like +17 mA (motor pushing outward) or 0
+    # (just finished, no holding load yet) when the steady-state holding
+    # current at that position would be -25 mA. Tension decisions made from
+    # those motion samples cause the take-up phase to declare "engaged" or
+    # "in target band" prematurely and the final state ends up loose.
+    #
+    # Holding-current sampling fixes this: AFTER a commanded move, we
+    # sleep ``post_move_settle_s`` so the PID and motor back-EMF decay, then
+    # take ``holding_current_burst_count`` reads separated by
+    # ``holding_current_burst_interval_s`` and average them. The averaged
+    # value is the steady-state holding current at the current position —
+    # which is what indicates tendon tension on this rig.
+    post_move_settle_s: float = 0.30
+    """Settle delay applied after a commanded move BEFORE sampling the
+    holding current. 300 ms is enough for XC330 PID + motor back-EMF to
+    decay to within a few mA of the steady-state holding setpoint at the
+    profile_velocity/profile_acceleration used by this rig."""
+    holding_current_burst_count: int = 3
+    """Number of consecutive telemetry reads taken AFTER ``post_move_settle_s``
+    and averaged to produce the holding current. Defeats single-sample noise
+    without paying for many reads."""
+    holding_current_burst_interval_s: float = 0.04
+    """Sleep between consecutive burst reads. 40 ms is far longer than a
+    DYNAMIXEL round-trip but short enough that 3 samples take ~120 ms."""
     # --- low-current plateau fallback (first-try robustness) -----------------
     # On real servos, slack often plateaus at -7 to -10 mA because of holding
     # current / motor friction rather than the signed current rising all the
@@ -821,6 +852,9 @@ class PretensionValidationExperimentConfig:
             release_plateau_max_current_ma=max(0.0, float(payload.get("release_plateau_max_current_ma", 10.0))),
             release_plateau_delta_ma=max(0.0, float(payload.get("release_plateau_delta_ma", 2.0))),
             release_plateau_window_samples=max(2, int(payload.get("release_plateau_window_samples", 4))),
+            post_move_settle_s=max(0.0, float(payload.get("post_move_settle_s", 0.30))),
+            holding_current_burst_count=max(1, int(payload.get("holding_current_burst_count", 3))),
+            holding_current_burst_interval_s=max(0.0, float(payload.get("holding_current_burst_interval_s", 0.04))),
             release_max_travel_ticks=max(0, int(payload.get("release_max_travel_ticks", 1500))),
             release_step_ticks=max(1, int(payload.get("release_step_ticks", 40))),
             release_settle_s=max(0.0, float(payload.get("release_settle_s", 0.15))),
@@ -4937,12 +4971,17 @@ class PretensionValidationExperiment(BaseExperiment):
                 result["stop_reason"] = "runtime_budget_exhausted"
                 return result
 
-            measurement = self._advanced_measurement(
+            # Holding-current measurement so the slack-detection decision
+            # uses the steady-state signed current (negative when the motor
+            # is still holding tendon tension, positive/zero when slack)
+            # rather than the in-motion drive current.
+            measurement = self._advanced_measurement_with_holding(
                 servo_service=servo_service,
                 tracker_service=tracker_service,
                 servo_ids=servo_ids_int,
                 baseline_current_ma_by_servo={},
                 target_xy_mm=target_xy_mm,
+                session=session,
                 startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
                 trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
             )
@@ -5498,12 +5537,17 @@ class PretensionValidationExperiment(BaseExperiment):
             if deadline_monotonic is not None and float(session.context.monotonic_fn()) > float(deadline_monotonic):
                 result["stop_reason"] = "runtime_budget_exhausted"
                 return result
-            measurement = self._advanced_measurement(
+            # Holding-current measurement: sleeps post_move_settle_s, then
+            # averages a small burst so the engagement-detection decision is
+            # based on the SETTLED holding current (the steady-state load on
+            # the motor), not the in-motion drive current.
+            measurement = self._advanced_measurement_with_holding(
                 servo_service=servo_service,
                 tracker_service=tracker_service,
                 servo_ids=servo_ids,
                 baseline_current_ma_by_servo=baseline_current_ma_by_servo,
                 target_xy_mm=target_xy_mm,
+                session=session,
                 startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
                 trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
             )
@@ -5665,12 +5709,18 @@ class PretensionValidationExperiment(BaseExperiment):
             if deadline_monotonic is not None and float(session.context.monotonic_fn()) > float(deadline_monotonic):
                 result["stop_reason"] = "runtime_budget_exhausted"
                 return result
-            measurement = self._advanced_measurement(
+            # Holding-current measurement so the target-band decision uses
+            # the steady-state load on the motor, not the in-motion drive
+            # current. Run 20260521_155327 showed final currents of 0/+17 mA
+            # (motor mid-motion) reported as in-band when the actual settled
+            # holding current at the same position was -25/-31 mA.
+            measurement = self._advanced_measurement_with_holding(
                 servo_service=servo_service,
                 tracker_service=tracker_service,
                 servo_ids=servo_ids,
                 baseline_current_ma_by_servo=baseline_current_ma_by_servo,
                 target_xy_mm=target_xy_mm,
+                session=session,
                 startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
                 trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
             )
@@ -5787,6 +5837,205 @@ class PretensionValidationExperiment(BaseExperiment):
             "max_current_ma": float(max(cleaned)),
             "peak_to_peak_current_ma": float(max(cleaned) - min(cleaned)),
         }
+
+    def _read_holding_telemetry(
+        self,
+        *,
+        servo_service,
+        servo_ids: list[int],
+        session,
+        settle_s: float | None = None,
+        burst_count: int | None = None,
+        burst_interval_s: float | None = None,
+    ) -> dict[str, Any]:
+        """Read SETTLED holding telemetry after motion has decayed.
+
+        Use this for any tension decision (engagement detection, target-band
+        check, slack-release check, final verification). A single
+        instantaneous ``read_live_telemetry`` call right after a goal-position
+        write returns currents dominated by drive torque (positive when the
+        motor is pushing outward) rather than the steady-state tendon load
+        (negative when the motor is holding against tension). The 2026-05-21
+        run showed this clearly: final currents read 0 / +17 mA when the
+        manual reference for the same physical state was -25 to -31 mA.
+
+        Behavior:
+          1. Sleep ``settle_s`` (default ``post_move_settle_s``) so the PID
+             and motor back-EMF can decay to the steady-state holding setpoint.
+          2. Take ``burst_count`` (default ``holding_current_burst_count``)
+             telemetry reads, separated by ``burst_interval_s``
+             (default ``holding_current_burst_interval_s``).
+          3. Average the signed currents per-servo to defeat noise.
+
+        Returns:
+          A dict with the LAST telemetry entry per servo (for position +
+          tracker passthrough) plus:
+            - ``holding_current_ma_by_servo``: averaged signed current per
+              servo (the steady-state holding current; this is what tension
+              decisions should use).
+            - ``holding_current_std_by_servo``: per-servo std across the
+              burst. High std means motion has not yet fully decayed.
+            - ``holding_current_samples_by_servo``: every burst sample per
+              servo, for traceability.
+            - ``holding_settle_s``: settle time applied.
+            - ``holding_burst_count`` / ``holding_burst_interval_s``: knobs used.
+            - ``event_counts`` / ``packet_retry_count``: aggregated across
+              every read in the burst.
+            - ``telemetry_fail_closed_reason``: first non-None reason seen.
+        """
+        sleep_fn = session.context.sleep_fn
+        settle = float(settle_s if settle_s is not None else getattr(self.config, "post_move_settle_s", 0.30))
+        bcount = max(1, int(burst_count if burst_count is not None else getattr(self.config, "holding_current_burst_count", 3)))
+        interval = float(burst_interval_s if burst_interval_s is not None else getattr(self.config, "holding_current_burst_interval_s", 0.04))
+
+        if settle > 0.0:
+            sleep_fn(settle)
+
+        samples_by_servo: dict[int, list[float]] = {int(sid): [] for sid in servo_ids}
+        last_telemetry: dict[int, Any] = {}
+        event_counts: dict[str, int] = {}
+        packet_retry_count = 0
+        fail_closed: str | None = None
+        for idx in range(bcount):
+            telemetry, policy = self._read_live_telemetry_with_policy(servo_service, servo_ids)
+            self._merge_event_counts(event_counts, policy.get("event_counts"))
+            packet_retry_count += int(policy.get("packet_retry_count", 0) or 0)
+            if policy.get("telemetry_fail_closed_reason") and fail_closed is None:
+                fail_closed = str(policy["telemetry_fail_closed_reason"])
+            last_telemetry = telemetry
+            for sid in servo_ids:
+                entry = telemetry.get(int(sid))
+                if entry is None or entry.present_current_ma is None:
+                    continue
+                samples_by_servo[int(sid)].append(float(entry.present_current_ma))
+            if idx < bcount - 1 and interval > 0.0:
+                sleep_fn(interval)
+
+        averaged: dict[int, float | None] = {}
+        std_by_servo: dict[int, float | None] = {}
+        for sid in servo_ids:
+            samples = samples_by_servo[int(sid)]
+            if not samples:
+                averaged[int(sid)] = None
+                std_by_servo[int(sid)] = None
+                continue
+            mean = sum(samples) / float(len(samples))
+            averaged[int(sid)] = float(mean)
+            if len(samples) >= 2:
+                var = sum((v - mean) ** 2 for v in samples) / float(len(samples))
+                std_by_servo[int(sid)] = float(math.sqrt(var))
+            else:
+                std_by_servo[int(sid)] = 0.0
+
+        return {
+            "telemetry": last_telemetry,
+            "holding_current_ma_by_servo": averaged,
+            "holding_current_std_by_servo": std_by_servo,
+            "holding_current_samples_by_servo": {
+                int(sid): list(samples_by_servo[int(sid)]) for sid in servo_ids
+            },
+            "holding_settle_s": float(settle),
+            "holding_burst_count": int(bcount),
+            "holding_burst_interval_s": float(interval),
+            "event_counts": event_counts,
+            "packet_retry_count": int(packet_retry_count),
+            "telemetry_fail_closed_reason": fail_closed,
+        }
+
+    def _advanced_measurement_with_holding(
+        self,
+        *,
+        servo_service,
+        tracker_service,
+        servo_ids: list[int],
+        baseline_current_ma_by_servo: dict[int, float],
+        target_xy_mm: list[float],
+        session,
+        commanded_positions_ticks: dict[int, int | None] | None = None,
+        startup_reference_ticks_by_servo: dict[int, int | None] | None = None,
+        trust_status: str = "runtime_tip",
+    ) -> dict[str, Any]:
+        """Like ``_advanced_measurement`` but with current fields overridden
+        by the settled holding-current burst average.
+
+        This is the entry point for ALL tension decisions in the take-up,
+        engagement-scan, and soft-release loops. It:
+          1. Calls ``_read_holding_telemetry`` to get the averaged
+             holding currents.
+          2. Calls ``_advanced_measurement`` to capture the standard
+             position/tip/displacement layout.
+          3. Overrides the current-related fields with the burst-averaged
+             holding values. The original instantaneous read is preserved
+             under ``raw_current_ma_instantaneous`` for diagnostics.
+        """
+        holding = self._read_holding_telemetry(
+            servo_service=servo_service,
+            servo_ids=servo_ids,
+            session=session,
+        )
+        # If telemetry fail-closed during the burst, propagate that as the
+        # measurement's fail-closed reason and skip the override (the
+        # downstream code will see the same failure path).
+        measurement = self._advanced_measurement(
+            servo_service=servo_service,
+            tracker_service=tracker_service,
+            servo_ids=servo_ids,
+            baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+            target_xy_mm=target_xy_mm,
+            commanded_positions_ticks=commanded_positions_ticks,
+            startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+            trust_status=trust_status,
+        )
+
+        # Preserve the instantaneous reads under a separate key for diagnostics.
+        measurement["raw_current_ma_instantaneous"] = dict(measurement.get("raw_current_ma") or {})
+        measurement["signed_raw_current_ma_instantaneous"] = dict(measurement.get("signed_raw_current_ma") or {})
+
+        # Override the current-derived fields with the averaged holding values.
+        holding_currents = holding["holding_current_ma_by_servo"]
+        for sid in servo_ids:
+            sid_int = int(sid)
+            held = holding_currents.get(sid_int)
+            if held is None:
+                continue
+            held_int = int(round(float(held)))
+            measurement["raw_current_ma"][sid_int] = held_int
+            measurement["signed_raw_current_ma"][sid_int] = held_int
+            measurement["filtered_current_ma"][sid_int] = float(held)
+            baseline = baseline_current_ma_by_servo.get(sid_int)
+            if baseline is not None:
+                measurement["current_above_baseline_ma"][sid_int] = abs(float(held) - float(baseline))
+                measurement["load_proxy_current_ma"][sid_int] = abs(float(held) - float(baseline))
+            else:
+                measurement["current_above_baseline_ma"][sid_int] = None
+                measurement["load_proxy_current_ma"][sid_int] = None
+
+        # Recompute load_balance / pair_balance from the overridden values.
+        above_baseline = dict(measurement.get("current_above_baseline_ma") or {})
+        load_values = [float(v) for v in above_baseline.values() if v is not None]
+        measurement["load_balance_error_ma"] = (
+            float(max(load_values) - min(load_values)) if load_values else None
+        )
+        if len(servo_ids) >= 4 and all(above_baseline.get(int(sid)) is not None for sid in servo_ids):
+            measurement["pair_balance_error_ma"] = max(
+                abs(float(above_baseline[int(servo_ids[0])] - above_baseline[int(servo_ids[2])])),
+                abs(float(above_baseline[int(servo_ids[1])] - above_baseline[int(servo_ids[3])])),
+            )
+
+        # Surface the holding metadata so the trace row can show it.
+        measurement["holding_current_ma_by_servo"] = {int(sid): holding_currents.get(int(sid)) for sid in servo_ids}
+        measurement["holding_current_std_by_servo"] = dict(holding["holding_current_std_by_servo"])
+        measurement["holding_current_samples_by_servo"] = dict(holding["holding_current_samples_by_servo"])
+        measurement["holding_settle_s"] = holding["holding_settle_s"]
+        measurement["holding_burst_count"] = holding["holding_burst_count"]
+        measurement["holding_burst_interval_s"] = holding["holding_burst_interval_s"]
+        measurement["current_sample_phase"] = "holding"
+        # Aggregate the burst's telemetry events into the measurement's totals.
+        self._merge_event_counts(measurement.setdefault("telemetry_event_counts", {}), holding.get("event_counts"))
+        measurement["packet_retry_count"] = int(measurement.get("packet_retry_count", 0) or 0) + int(holding.get("packet_retry_count", 0) or 0)
+        if holding.get("telemetry_fail_closed_reason") and not measurement.get("telemetry_fail_closed_reason"):
+            measurement["telemetry_fail_closed_reason"] = holding["telemetry_fail_closed_reason"]
+        return measurement
 
     def _advanced_measurement(
         self,

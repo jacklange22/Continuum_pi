@@ -134,6 +134,25 @@ release_plateau_max_current_ma: 10.0    # signed_current must be >= -10 mA over 
 release_plateau_delta_ma: 2.0           # max allowed spread within the plateau window
 release_plateau_window_samples: 4       # how many consecutive samples must plateau
 
+# --- holding-current sampling (post-move settle + burst average) ---------
+# Tension decisions are based on the SETTLED holding current, not the
+# in-motion drive current. Without this, a single read right after a goal-
+# position write returns currents dominated by drive torque (e.g. +17 mA
+# while the motor is pushing outward) when the steady-state holding current
+# at the same position would read e.g. -25 mA. Run 20260521_155327 ended
+# up loose because of exactly this — final currents read 0 / +17 mA when
+# the manual reference for the same physical state was -25 to -31 mA.
+#
+# After every commanded move the experiment now waits post_move_settle_s
+# for the PID and motor back-EMF to decay, then takes
+# holding_current_burst_count reads spaced by holding_current_burst_interval_s
+# and averages them. The averaged value is what the engagement-scan,
+# fine take-up, and soft-release loops actually compare against their
+# tension thresholds.
+post_move_settle_s: 0.30                # sleep after motion before sampling tension
+holding_current_burst_count: 3          # samples averaged for the holding read
+holding_current_burst_interval_s: 0.04  # spacing between burst samples
+
 # --- Tip-centering variant (default + advanced) --------------------------
 # Default: ``paired_then_tip``. This is the simple, safe operator path. The
 # other variants are kept available but are advanced / diagnostic only and
