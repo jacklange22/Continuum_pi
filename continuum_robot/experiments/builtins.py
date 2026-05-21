@@ -549,6 +549,16 @@ class PretensionValidationExperimentConfig:
     tip_center_tolerance_mm: float = 1.0
     tip_center_max_iterations: int = 16
     tip_center_step_ticks: int = 10
+    # Tip-centering algorithm: when True, tip-centering only TIGHTENS the
+    # tendon that pulls toward the desired tip-correction direction, instead
+    # of doing a paired symmetric move (tighten one, release the other).
+    # Run 20260521_194307 showed paired moves work for centering but reduce
+    # tension on the "release" side to 0 mA, breaking the operator's "all
+    # four servos at -30 mA" requirement. Tighten-only adds tension to the
+    # pull-side and never releases. Total tension can grow during
+    # tip-centering; ``takeup_high_holding_tension_ma`` (default 50 mA) is
+    # the upper-bound guard that stops a runaway.
+    tip_center_tighten_only: bool = True
     tip_center_x_sign: int = 1
     tip_center_y_sign: int = 1
     # Safety gate for the conservative paired-then-tip trim. When True, a
@@ -841,6 +851,7 @@ class PretensionValidationExperimentConfig:
             tip_center_tolerance_mm=max(0.0, float(payload.get("tip_center_tolerance_mm", 1.0))),
             tip_center_max_iterations=max(0, int(payload.get("tip_center_max_iterations", 16))),
             tip_center_step_ticks=max(1, int(payload.get("tip_center_step_ticks", 10))),
+            tip_center_tighten_only=bool(payload.get("tip_center_tighten_only", True)),
             tip_center_x_sign=(1 if int(payload.get("tip_center_x_sign", 1)) >= 0 else -1),
             tip_center_y_sign=(1 if int(payload.get("tip_center_y_sign", 1)) >= 0 else -1),
             tip_center_require_improvement=bool(payload.get("tip_center_require_improvement", True)),
@@ -6650,8 +6661,63 @@ class PretensionValidationExperiment(BaseExperiment):
                 result["stop_reason"] = str(policy["telemetry_fail_closed_reason"])
                 break
             commands: list[tuple[str, int, int, int, int]] = []
+            tighten_only_targets: dict[int, int] = {}
+            tighten_only_labels: list[str] = []
+            tighten_only_mode = bool(getattr(self.config, "tip_center_tighten_only", True))
+            tighten_only_high_tension_ma = float(
+                getattr(self.config, "takeup_high_holding_tension_ma", 50.0)
+            )
             tip_xy = measurement.get("tip_xy_mm")
-            if tip_xy is not None:
+            if tip_xy is not None and tighten_only_mode:
+                # Tighten-only tip centering. To move the tip toward -X we
+                # tighten the -X tendon (servo_ids[2]) and DO NOT release the
+                # +X tendon (servo_ids[0]). The "release" half of a paired
+                # symmetric move is what was driving runs to land with one or
+                # two servos at 0 mA tension (see run 20260521_194307).
+                # Skip the tightening if the chosen servo is already above
+                # takeup_high_holding_tension_ma — that's the runaway guard.
+                pre_signed = dict(
+                    measurement.get("signed_raw_current_ma")
+                    or measurement.get("raw_current_ma")
+                    or {}
+                )
+                pre_tension = {
+                    int(sid): (max(0.0, -float(pre_signed[int(sid)])) if pre_signed.get(int(sid)) is not None else None)
+                    for sid in servo_ids
+                }
+                x_error = float(tip_xy[0]) - float(target_xy_mm[0])
+                y_error = float(tip_xy[1]) - float(target_xy_mm[1])
+
+                def _consider_tighten(sid: int, axis_label: str) -> None:
+                    entry = telemetry.get(int(sid))
+                    if entry is None or entry.present_position is None:
+                        return
+                    if int(sid) in tighten_only_targets:
+                        return
+                    tension = pre_tension.get(int(sid))
+                    if tension is not None and float(tension) >= tighten_only_high_tension_ma:
+                        # Already at the overshoot guard; don't add more tension.
+                        return
+                    # Lower tick = tighten on this rig.
+                    tighten_only_targets[int(sid)] = int(entry.present_position) - int(step)
+                    tighten_only_labels.append(axis_label)
+
+                if abs(x_error) > float(self.config.tip_center_tolerance_mm) * 0.5:
+                    sign_x = int(self.config.tip_center_x_sign or 1) * int(axis_sign_correction["x"])
+                    if (x_error > 0.0) == (sign_x > 0):
+                        # tip too far +X → tighten -X tendon (servo_ids[2])
+                        _consider_tighten(int(servo_ids[2]), "tighten_neg_x")
+                    else:
+                        # tip too far -X → tighten +X tendon (servo_ids[0])
+                        _consider_tighten(int(servo_ids[0]), "tighten_pos_x")
+                if abs(y_error) > float(self.config.tip_center_tolerance_mm) * 0.5:
+                    sign_y = int(self.config.tip_center_y_sign or 1) * int(axis_sign_correction["y"])
+                    if (y_error > 0.0) == (sign_y > 0):
+                        _consider_tighten(int(servo_ids[3]), "tighten_neg_y")
+                    else:
+                        _consider_tighten(int(servo_ids[1]), "tighten_pos_y")
+            elif tip_xy is not None:
+                # Legacy paired-symmetric path (kept for tip_center_tighten_only=False).
                 x_error = float(tip_xy[0]) - float(target_xy_mm[0])
                 y_error = float(tip_xy[1]) - float(target_xy_mm[1])
                 if abs(x_error) > float(self.config.tip_center_tolerance_mm) * 0.5:
@@ -6683,10 +6749,37 @@ class PretensionValidationExperiment(BaseExperiment):
                     delta_a = step if diff > 0.0 else -step
                     delta_b = -step if diff > 0.0 else step
                     commands.append((label, sid_a, delta_a, sid_b, delta_b))
-            if not commands:
+            if not commands and not tighten_only_targets:
                 result["stop_reason"] = "no_actionable_error"
                 break
             iteration_moves = []
+            if tighten_only_targets:
+                # Apply all tighten-only single-servo moves in one group write
+                # so they happen simultaneously. ``_apply_group_command``
+                # without ``require_opposed_pair`` accepts arbitrary target
+                # dictionaries.
+                move = self._apply_group_command(
+                    servo_service=servo_service,
+                    telemetry=telemetry,
+                    targets_by_servo=tighten_only_targets,
+                    reason="pretension_tip_center_tighten_only",
+                )
+                # Record one synthetic iteration_moves entry per axis. The
+                # label encodes whether the X or Y axis was active so the
+                # downstream sign-flip recovery still has something to flip.
+                for axis_label in tighten_only_labels:
+                    if "_x" in axis_label:
+                        pair_label = "tighten_only_x"
+                    elif "_y" in axis_label:
+                        pair_label = "tighten_only_y"
+                    else:
+                        pair_label = axis_label
+                    iteration_moves.append({"pair_label": pair_label, **move, "tighten_only": True})
+                result["move_count"] += int(move.get("move_count", 0))
+                result["travel_ticks"] += int(move.get("travel_ticks", 0))
+                result["clipped_move_count"] += int(move.get("clipped_move_count", 0))
+                if not bool(move.get("success")):
+                    result["stop_reason"] = str(move.get("stop_reason") or "tip_center_tighten_only_move_failed")
             for label, sid_a, delta_a, sid_b, delta_b in commands[:2]:
                 move = self._apply_pair_command(
                     servo_service=servo_service,
@@ -6724,9 +6817,11 @@ class PretensionValidationExperiment(BaseExperiment):
                     moved_axes = []
                     for move_entry in iteration_moves:
                         label = str(move_entry.get("pair_label", ""))
-                        if label == "center_pair_1_3" and "x" not in moved_axes:
+                        # Recognise both the legacy paired labels and the new
+                        # tighten-only labels emitted when tip_center_tighten_only=True.
+                        if (label == "center_pair_1_3" or label == "tighten_only_x") and "x" not in moved_axes:
                             moved_axes.append("x")
-                        if label == "center_pair_2_4" and "y" not in moved_axes:
+                        if (label == "center_pair_2_4" or label == "tighten_only_y") and "y" not in moved_axes:
                             moved_axes.append("y")
                     axes_to_flip = [
                         axis

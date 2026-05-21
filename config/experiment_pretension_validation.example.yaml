@@ -176,6 +176,15 @@ tip_centering_variant: paired_then_tip
 # XY error (or significantly worsen load balance) are stopped rather than
 # chased. Keeps the loop conservative for first-try reliability.
 tip_center_require_improvement: true
+# Tighten-only tip-centering (validated 2026-05-21): instead of doing a paired
+# symmetric move (tighten one tendon, release the other), tip-centering only
+# TIGHTENS the tendon that pulls toward the desired tip-correction direction.
+# This preserves the operator's "all 4 servos at -30 mA" requirement, which
+# paired-symmetric moves were breaking by releasing the "other" servo to 0
+# mA. The total tension can grow above takeup_target_holding_tension_ma
+# during centering; takeup_high_holding_tension_ma (50 mA) is the upper-
+# bound guard that stops a runaway.
+tip_center_tighten_only: true
 # Advanced (jacobian_learned_tip only). Ignored when the default variant is
 # in use, but kept for backward-compat config payloads.
 jacobian_probe_step_ticks: 30
