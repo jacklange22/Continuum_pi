@@ -1729,30 +1729,44 @@ def _run_release_with_scripted_currents(
     return result, trace_rows
 
 
-def test_soft_release_plateau_exact_near_zero_release_succeeds_via_target_current(tmp_path: Path) -> None:
-    """When |current| stays at ~1 mA across enough samples, every servo must
-    be declared released via the ``target_current`` condition (the ideal
-    path) rather than via the plateau fallback."""
-    # 6 iterations of clean ~1 mA reads gives both paths a chance; the
-    # target-current path must claim release first because it only needs 3
-    # consecutive samples vs the plateau's 4.
-    script = [{1: 1.0, 2: 1.0, 3: 1.0, 4: 1.0} for _ in range(6)]
+def test_soft_release_signed_current_at_minus_2_succeeds_via_target_current(tmp_path: Path) -> None:
+    """Signed convention on this rig: ``raw_current_ma`` is signed. A near-
+    slack tendon reads e.g. -1 to -2 mA (or even positive when the motor is
+    still pushing outward). With the default release_current_abs_target_ma=5,
+    the condition is ``signed_current >= -5`` for N stable samples — so
+    -2 mA must fire the ``target_current`` path."""
+    script = [{1: -2.0, 2: -1.0, 3: 0.0, 4: -3.0} for _ in range(6)]
     result, _ = _run_release_with_scripted_currents(tmp_path, script=script)
     assert result["stop_reason"] == "soft_release_to_zero_current_complete"
     for sid in (1, 2, 3, 4):
         assert result["release_success_by_servo"][str(sid)] is True
         assert result["release_success_condition_by_servo"][str(sid)] == "target_current"
-        assert result["release_stop_reason_by_servo"][str(sid)] == "released"
 
 
-def test_soft_release_plateau_at_8ma_succeeds_via_plateau_fallback(tmp_path: Path) -> None:
-    """When |current| plateaus at ~8 mA (above target, below plateau max),
-    every servo must be declared released via the ``low_current_plateau``
-    fallback."""
-    # 6 reads of ~8 mA: well above target (5 mA) so target_current path
-    # never triggers; spread is 0 mA so plateau path kicks in once the
-    # window fills (4 samples).
-    script = [{1: 8.0, 2: 8.2, 3: 7.9, 4: 8.1} for _ in range(6)]
+def test_soft_release_positive_current_during_outward_motion_counts_as_released(tmp_path: Path) -> None:
+    """Operator note (2026-05-20): "positive currents will be seen when the
+    servos are moving to higher ticks". Those positive currents indicate the
+    motor is driving the outward motion freely with no tendon resistance —
+    that is fully released. The condition signed_current >= -5 must accept
+    positive currents trivially."""
+    script = [{1: 5.0, 2: 3.0, 3: 8.0, 4: 12.0} for _ in range(6)]
+    result, _ = _run_release_with_scripted_currents(tmp_path, script=script)
+    assert result["stop_reason"] == "soft_release_to_zero_current_complete"
+    for sid in (1, 2, 3, 4):
+        assert result["release_success_by_servo"][str(sid)] is True
+        assert result["release_success_condition_by_servo"][str(sid)] == "target_current"
+
+
+def test_soft_release_at_minus_8_signed_succeeds_via_plateau_fallback(tmp_path: Path) -> None:
+    """A real servo often plateaus at around -7 to -10 mA when slack because
+    of holding current / friction — the signed current never makes it all
+    the way up to >= -5. The plateau fallback must declare release when
+    signed_current stays >= -release_plateau_max_current_ma (>= -10 mA
+    default) AND the spread across the plateau window is small."""
+    # Signed -8 mA: never reaches >= -5 (target path fails), stays >= -10
+    # (plateau max), spread ~0.3 mA << 2 mA delta → plateau fires after the
+    # 4-sample window fills.
+    script = [{1: -8.0, 2: -8.2, 3: -7.9, 4: -8.1} for _ in range(6)]
     result, _ = _run_release_with_scripted_currents(tmp_path, script=script)
     assert result["stop_reason"] == "soft_release_to_zero_current_complete"
     for sid in (1, 2, 3, 4):
@@ -1760,24 +1774,23 @@ def test_soft_release_plateau_at_8ma_succeeds_via_plateau_fallback(tmp_path: Pat
         assert result["release_success_condition_by_servo"][str(sid)] == "low_current_plateau"
 
 
-def test_soft_release_plateau_above_plateau_max_does_not_succeed(tmp_path: Path) -> None:
-    """When |current| plateaus ABOVE ``release_plateau_max_current_ma`` (e.g.
-    15 mA), neither the target-current path nor the plateau fallback should
-    declare release. The run must exhaust travel and fail per-servo with
-    ``release_travel_budget_exhausted``."""
-    # Keep current high enough that plateau_max is exceeded. Spread is
-    # small so the failure must come from the max-current gate, not the
-    # spread gate.
-    script = [{1: 15.0, 2: 15.5, 3: 14.8, 4: 15.2} for _ in range(40)]
+def test_soft_release_at_minus_30_does_not_release_tensioned_state(tmp_path: Path) -> None:
+    """Operator's empirical scale: all four servos at -30 mA is GOOD
+    PRETENSION — the tendons are taut. The release algorithm must NOT
+    declare this state as released. Neither the target_current path
+    (-30 < -5) nor the plateau fallback (-30 < -10) should fire; the run
+    must exhaust its travel budget."""
+    # Hold deeply negative, low spread so the spread gate alone doesn't
+    # save the test. The deepest-allowed signed reading is -10 mA, and -30
+    # is well below that, so plateau must NOT fire.
+    script = [{1: -30.0, 2: -30.5, 3: -29.8, 4: -30.2} for _ in range(40)]
     result, _ = _run_release_with_scripted_currents(
         tmp_path,
         script=script,
-        # Tight budget so the test finishes fast.
         extra_config={"release_max_travel_ticks": 100, "release_step_ticks": 25},
     )
     for sid in (1, 2, 3, 4):
         assert result["release_success_by_servo"][str(sid)] is False
-        # The condition was never set because no path declared release.
         assert result["release_success_condition_by_servo"][str(sid)] == ""
         assert result["release_stop_reason_by_servo"][str(sid)] in {
             "release_travel_budget_exhausted",
@@ -1786,10 +1799,26 @@ def test_soft_release_plateau_above_plateau_max_does_not_succeed(tmp_path: Path)
     assert result["stop_reason"].startswith("release_incomplete_servos=")
 
 
+def test_soft_release_at_minus_15_below_plateau_cap_does_not_release(tmp_path: Path) -> None:
+    """Signed -15 mA sits BELOW the default plateau_max (-10 mA), so even a
+    perfectly stable plateau at -15 must NOT trigger the fallback. This is
+    the boundary case between "real slack with holding current" (-7 to -10)
+    and "still tensioned" (-15+) that protects against false-slack."""
+    script = [{1: -15.0, 2: -15.2, 3: -14.8, 4: -15.1} for _ in range(40)]
+    result, _ = _run_release_with_scripted_currents(
+        tmp_path,
+        script=script,
+        extra_config={"release_max_travel_ticks": 100, "release_step_ticks": 25},
+    )
+    for sid in (1, 2, 3, 4):
+        assert result["release_success_by_servo"][str(sid)] is False
+        assert result["release_success_condition_by_servo"][str(sid)] == ""
+
+
 def test_soft_release_plateau_disabled_when_cap_is_zero(tmp_path: Path) -> None:
     """Setting ``release_plateau_max_current_ma: 0`` disables the fallback —
-    a servo plateauing at 8 mA must NOT be declared released."""
-    script = [{1: 8.0, 2: 8.0, 3: 8.0, 4: 8.0} for _ in range(40)]
+    a servo plateauing at -8 mA must NOT be declared released."""
+    script = [{1: -8.0, 2: -8.0, 3: -8.0, 4: -8.0} for _ in range(40)]
     result, _ = _run_release_with_scripted_currents(
         tmp_path,
         script=script,
@@ -1805,15 +1834,13 @@ def test_soft_release_plateau_disabled_when_cap_is_zero(tmp_path: Path) -> None:
 
 
 def test_soft_release_travel_budget_exhaustion_still_fails(tmp_path: Path) -> None:
-    """A servo whose current keeps changing (no plateau, never below target)
-    must hit ``release_travel_budget_exhausted`` rather than the plateau
-    fallback. Simulate by ramping current up and down so the window spread
-    always exceeds ``release_plateau_delta_ma``."""
-    # Alternate 9 mA / 6 mA so spread = 3 mA > plateau_delta = 2 mA; never
-    # below target (5 mA).
+    """A servo whose signed current keeps swinging (no stable plateau, never
+    above -5 mA) must hit ``release_travel_budget_exhausted`` rather than the
+    plateau fallback. Simulate by alternating -8 / -12 so the window spread
+    is 4 mA > plateau_delta (2 mA) and the floor is -12 < -plateau_max."""
     script: list[dict[int, float]] = []
     for i in range(40):
-        val = 9.0 if (i % 2 == 0) else 6.0
+        val = -8.0 if (i % 2 == 0) else -12.0
         script.append({1: val, 2: val, 3: val, 4: val})
     result, _ = _run_release_with_scripted_currents(
         tmp_path,

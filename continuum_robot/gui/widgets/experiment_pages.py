@@ -2651,7 +2651,8 @@ class PretensionValidationPage(ExperimentPageBase):
     page_hint = (
         "Pretensions the active segment (4 servos) using the soft-release → take-up → tip-center pipeline. "
         "For the standard one-click flow use the Servos tab buttons; this page is for TUNING the algorithm. "
-        "Lower ticks = tighter on this rig. Current is a load proxy only."
+        "Sign convention on this rig: lower ticks = tighter; signed current is negative when the motor "
+        "is holding tension (-30 mA per servo = good tension; > -5 mA = slack)."
     )
 
     def __init__(self, controller, experiment_name: str, parent=None) -> None:
@@ -2809,8 +2810,10 @@ class PretensionValidationPage(ExperimentPageBase):
         self.pretension_start_mode_combo.addItem("Full Release 4095 (legacy)", "full_release_4095")
         self.pretension_start_mode_combo.setToolTip(
             "How each pretension cycle starts before take-up.\n\n"
-            "• Soft Release to Zero Current — step outward until current is near zero "
-            "(or plateaus). Proves each tendon is genuinely slack. RECOMMENDED.\n"
+            "• Soft Release to Zero Current — step outward (higher ticks = looser) "
+            "until each servo's SIGNED current rises above -5 mA (or plateaus around "
+            "-7 to -10 mA). Proves the tendon is genuinely slack. On this rig, "
+            "-30 mA = good tension, -15 mA = light, > -5 mA = slack. RECOMMENDED.\n"
             "• Current Position — start from wherever the servo currently is. No release.\n"
             "• Release 200 From Current — back off 200 ticks from current. Quick rough release.\n"
             "• Manual Startup Artifact — use the saved per-servo startup state.\n"

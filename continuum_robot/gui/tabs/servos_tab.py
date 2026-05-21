@@ -249,8 +249,9 @@ class ServosTab(QWidget):
         # sign-test) are hidden behind an Advanced toggle so the normal path
         # stays uncluttered. Tuning still lives on the Experiments tab.
         self.segment_pretension_status_label = QLabel(
-            "Pretension idle. Start mode: release until current is near zero. "
-            "Lower ticks = tighter on this rig."
+            "Pretension idle. Start mode: release until signed current is no longer "
+            "deeply negative (>= -5 mA), then take up to the target band. "
+            "Lower ticks = tighter; -30 mA per servo = good tension on this rig."
         )
         self.segment_pretension_status_label.setProperty("role", "status")
         self.segment_pretension_status_label.setWordWrap(True)
@@ -262,7 +263,7 @@ class ServosTab(QWidget):
         self.run_segment_pretension_button.setProperty("role", "primary")
         self.run_segment_pretension_button.setToolTip(
             "Runs ONE pretension cycle on the active segment using the saved config. "
-            "Start mode: soft_release_to_zero_current (release until current near zero, then take up)."
+            "Start mode: soft_release_to_zero_current (release until signed current >= -5 mA, then take up)."
         )
         self.run_consistency_proof_button = QPushButton("Run One-Rig Pretension Proof")
         self.run_consistency_proof_button.setToolTip(

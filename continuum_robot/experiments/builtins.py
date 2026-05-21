@@ -602,14 +602,27 @@ class PretensionValidationExperimentConfig:
     baseline_offset_from_full_release_ticks: int = 200
     # --- soft_release_to_zero_current knobs (default start mode) -------------
     # The default start mode steps every servo OUTWARD (higher tick = looser
-    # on this rig) until its absolute current sits below
-    # ``release_current_abs_target_ma`` for ``release_current_stable_samples``
-    # consecutive samples. Replaces ``full_release_4095``: rather than trusting
-    # the position-wrap endpoint, we prove each tendon is genuinely slack.
+    # on this rig) until the signed current is no longer deeply negative.
+    #
+    # Sign convention (XC330 in position mode, this rig):
+    #   - POSITIVE current: motor is pushing toward higher ticks (release
+    #     direction). Seen during outward motion or when no tendon load resists.
+    #   - NEGATIVE current: motor is holding against tendon tension that's
+    #     pulling the spool outward. -30 mA per servo is good pretension.
+    #   - NEAR ZERO (or slightly positive): tendon is slack. This is what
+    #     soft-release-to-zero-current is checking for.
+    #
+    # Release success therefore checks ``signed_current >= -release_current_abs_target_ma``
+    # — equivalently, "current is not below -5 mA" with the default. Using
+    # |current| would (wrongly) accept a deeply-negative reading like -30 mA
+    # as "released" when in fact the tendon is fully tensioned.
     release_current_abs_target_ma: float = 5.0
-    """A servo is considered released when |present_current_ma| <= this value.
-    Operator's empirical scale (2026-05-18): 15 mA = light tension, so 5 mA is
-    comfortably below first engagement and inside the typical noise floor."""
+    """A servo is considered released when its SIGNED present_current_ma is
+    >= -release_current_abs_target_ma (i.e. >= -5 mA with the default). The
+    field is named ``_abs_`` for backward compatibility; semantically it is
+    the magnitude of the deepest-negative-current the algorithm will tolerate
+    before declaring the tendon slack. Operator's empirical scale (2026-05-19):
+    -30 mA = good tension, -15 mA = light, > -5 mA = slack."""
     release_current_stable_samples: int = 3
     """Number of consecutive samples below ``release_current_abs_target_ma``
     required before a servo is declared released. Defends against single-sample
@@ -627,24 +640,28 @@ class PretensionValidationExperimentConfig:
     next telemetry read. Independent of ``settle_verify_time_s`` (which is for
     the final verification settle)."""
     # --- low-current plateau fallback (first-try robustness) -----------------
-    # On real servos, slack often plateaus at 6-10 mA because of holding
-    # current / motor friction / telemetry noise rather than dropping all the
-    # way to <= 5 mA. Without a fallback, a servo can sit at e.g. 7 mA forever
-    # and exhaust the travel budget while still genuinely slack. The plateau
-    # fallback declares a servo released when its current stays under
-    # ``release_plateau_max_current_ma`` AND its current does not decrease by
-    # more than ``release_plateau_delta_ma`` over ``release_plateau_window_samples``
-    # — i.e. additional outward motion is not buying any meaningful drop in
-    # current, so the tendon is as slack as it will get.
+    # On real servos, slack often plateaus at -7 to -10 mA because of holding
+    # current / motor friction rather than the signed current rising all the
+    # way to >= -5. Without a fallback, a servo can sit at -8 mA forever and
+    # exhaust the travel budget while still genuinely slack. The plateau
+    # fallback declares a servo released when its SIGNED current stays above
+    # ``-release_plateau_max_current_ma`` (i.e. not deeper than -10 mA with
+    # the default) AND the spread across the plateau window is below
+    # ``release_plateau_delta_ma`` — i.e. additional outward motion is not
+    # buying any meaningful rise in current, so the tendon is as slack as it
+    # will get on this servo.
     release_plateau_max_current_ma: float = 10.0
-    """Upper bound on |current_ma| for the plateau fallback to apply. Sized
-    well below operator's 15 mA "light" tension so a plateau still implies a
-    genuinely slack tendon. Set to 0 to disable the fallback entirely."""
+    """Magnitude of the deepest signed current allowed for the plateau fallback
+    to fire. Released-by-plateau requires ``signed_current >= -release_plateau_max_current_ma``
+    (i.e. >= -10 mA with the default). Sized well above the release target so
+    realistic holding-current plateaus still qualify, and well below operator's
+    -15 mA light-tension band so a plateau still implies genuine slack. Set to
+    0 to disable the fallback entirely."""
     release_plateau_delta_ma: float = 2.0
-    """Maximum allowed decrease in |current| over the plateau window before
-    the fallback kicks in. If the most recent ``release_plateau_window_samples``
-    consecutive readings span less than this many mA, the tendon is on a
-    plateau and further outward motion is unlikely to lower current."""
+    """Maximum allowed spread (max - min) of the signed current readings over
+    the plateau window. If the most recent ``release_plateau_window_samples``
+    consecutive signed readings span less than this many mA, the tendon is
+    plateaued and further outward motion is unlikely to change it."""
     release_plateau_window_samples: int = 4
     """Number of consecutive plateau samples required before the fallback
     declares release. 4 samples at ~150 ms each ≈ 600 ms of stable readings."""
@@ -4854,9 +4871,11 @@ class PretensionValidationExperiment(BaseExperiment):
         plateau_window_samples = max(2, int(getattr(self.config, "release_plateau_window_samples", 4) or 4))
         plateau_enabled = plateau_max_current_ma > 0.0
 
-        # Per-servo rolling buffer of recent |current_ma| samples used to detect
-        # the low-current plateau (real servos often plateau at 6-10 mA rather
-        # than dropping all the way to <= target_current).
+        # Per-servo rolling buffer of recent SIGNED current samples used to
+        # detect the low-current plateau (real servos often plateau around
+        # -7 to -10 mA rather than rising all the way to >= -target_current).
+        # Signed values preserve the sign convention: positive = motor pushing
+        # outward, negative = motor holding against tendon tension.
         recent_current_window: dict[int, list[float]] = {sid: [] for sid in servo_ids_int}
 
         result = {
@@ -4949,17 +4968,25 @@ class PretensionValidationExperiment(BaseExperiment):
                     result["release_final_current_by_servo"][str(sid)] = float(current)
                 travel = int(result["release_travel_ticks_by_servo"][str(sid)])
 
-                # Push |current| into the rolling plateau window. Only valid
-                # samples (non-None) participate.
+                # Push SIGNED current into the rolling plateau window. Only
+                # valid samples (non-None) participate. Signed values preserve
+                # the convention: positive = motor pushing outward (release
+                # direction), negative = motor holding against tendon tension.
                 if current is not None:
                     window = recent_current_window[sid]
-                    window.append(float(abs(float(current))))
+                    window.append(float(current))
                     if len(window) > plateau_window_samples:
                         del window[0]
                     result["release_plateau_window_by_servo"][str(sid)] = list(window)
 
-                # --- Path 1: target-current stable-samples (ideal) -----------
-                if current is not None and abs(float(current)) <= target_current:
+                # --- Path 1: signed-current stable-samples (ideal) -----------
+                # Released when signed current is no longer deeply negative
+                # (i.e. signed_current >= -release_current_abs_target_ma) for
+                # ``release_current_stable_samples`` consecutive samples.
+                # Positive currents (motor still pushing outward) count as
+                # released too — they only appear when there's no tendon load
+                # resisting the motion.
+                if current is not None and float(current) >= -target_current:
                     new_count = int(result["release_stable_sample_count_by_servo"][str(sid)]) + 1
                     result["release_stable_sample_count_by_servo"][str(sid)] = new_count
                     if new_count >= stable_samples_required:
@@ -4972,12 +4999,13 @@ class PretensionValidationExperiment(BaseExperiment):
                     result["release_stable_sample_count_by_servo"][str(sid)] = 0
 
                 # --- Path 2: low-current plateau fallback --------------------
-                # Real servos commonly plateau at 6-10 mA because of holding
-                # current / friction. If |current| stays under
-                # ``release_plateau_max_current_ma`` AND the spread across the
-                # last ``release_plateau_window_samples`` samples is below
-                # ``release_plateau_delta_ma``, additional outward travel is
-                # not buying any meaningful current drop — declare slack.
+                # Real servos commonly plateau at -7 to -10 mA because of
+                # holding current / friction. If signed current stays >=
+                # ``-release_plateau_max_current_ma`` AND the spread across
+                # the last ``release_plateau_window_samples`` samples is
+                # below ``release_plateau_delta_ma``, additional outward
+                # travel is not buying any meaningful rise in signed current
+                # — the tendon is as slack as it will get on this servo.
                 if (
                     plateau_enabled
                     and current is not None
@@ -4986,7 +5014,12 @@ class PretensionValidationExperiment(BaseExperiment):
                     window = recent_current_window[sid]
                     window_max = max(window)
                     window_min = min(window)
-                    if window_max <= plateau_max_current_ma and (window_max - window_min) <= plateau_delta_ma:
+                    # Deepest signed value in the window must be no deeper than
+                    # -plateau_max_current_ma. ``window_min`` is the most
+                    # negative reading (or the smallest positive one) over
+                    # the window; the inequality ``window_min >= -plateau_max``
+                    # is the signed equivalent of the old "max(abs) <= plateau_max".
+                    if window_min >= -plateau_max_current_ma and (window_max - window_min) <= plateau_delta_ma:
                         result["release_success_by_servo"][str(sid)] = True
                         result["release_stop_reason_by_servo"][str(sid)] = "released"
                         result["release_success_condition_by_servo"][str(sid)] = "low_current_plateau"

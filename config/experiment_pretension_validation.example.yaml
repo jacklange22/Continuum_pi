@@ -102,28 +102,35 @@ max_runtime_s: 120.0
 include_tracker_displacement: true
 tracker_tool_id: "0A"
 move_to_reference: true
-# Default start mode (2026-05-19): walk each servo OUTWARD (higher tick =
-# looser on this rig) until its current sits below
-# ``release_current_abs_target_ma`` for ``release_current_stable_samples``
-# consecutive samples. This proves each tendon is genuinely slack rather than
-# trusting the position-wrap endpoint. The legacy ``full_release_4095`` mode
-# is kept for backward compatibility but is no longer recommended for the
-# normal workflow because it puts the servos at the raw-tick wrap edge.
+# Default start mode (2026-05-20): walk each servo OUTWARD (higher tick =
+# looser on this rig) until its SIGNED current is no longer deeply negative.
+#
+# Sign convention on this rig (XC330 in position mode):
+#   - POSITIVE current: motor pushing toward higher ticks (release direction).
+#     Seen during outward motion or when the tendon has no resistance to give.
+#   - NEGATIVE current: motor holding against the tendon pulling outward.
+#     -30 mA per servo is "good tension"; -15 mA is "light"; > -5 mA is slack.
+#
+# Release succeeds when signed_current >= -release_current_abs_target_ma
+# (i.e. >= -5 mA) for release_current_stable_samples consecutive samples, OR
+# when the plateau fallback fires (see below). The legacy full_release_4095
+# mode is kept for backward compatibility but is no longer recommended.
 pretension_start_mode: soft_release_to_zero_current  # soft_release_to_zero_current (default) | current_position | manual_startup_artifact | release_200_from_current | full_release_4095
 # --- soft_release_to_zero_current knobs ----------------------------------
-release_current_abs_target_ma: 5.0      # |current_ma| below this counts as slack (operator: 15 mA = light)
-release_current_stable_samples: 3       # need this many consecutive samples below threshold
+release_current_abs_target_ma: 5.0      # signed_current >= -5 mA = slack (operator: -15 mA = light, -30 mA = tight)
+release_current_stable_samples: 3       # need this many consecutive samples meeting the signed threshold
 release_max_travel_ticks: 1500          # hard cap on outward travel per servo
 release_step_ticks: 40                  # outward step size per iteration
 release_settle_s: 0.15                  # sleep between release steps so current can settle
 # Low-current plateau fallback for first-try robustness. Real servos often
-# plateau at 6-10 mA because of holding current / friction rather than dropping
-# all the way to <= release_current_abs_target_ma. The fallback declares a
-# servo released when |current_ma| stays below release_plateau_max_current_ma
-# AND the spread across the last release_plateau_window_samples readings is
-# below release_plateau_delta_ma — i.e. more outward motion isn't buying any
-# meaningful drop. Set release_plateau_max_current_ma to 0 to disable.
-release_plateau_max_current_ma: 10.0    # upper bound on |current_ma| for the plateau fallback
+# plateau at -7 to -10 mA because of holding current / friction rather than
+# the signed current rising all the way to >= -5. The fallback declares a
+# servo released when signed_current stays >= -release_plateau_max_current_ma
+# (i.e. >= -10 mA with the default) AND the spread across the last
+# release_plateau_window_samples readings is below release_plateau_delta_ma
+# — i.e. more outward motion isn't buying any meaningful rise in signed
+# current. Set release_plateau_max_current_ma to 0 to disable.
+release_plateau_max_current_ma: 10.0    # signed_current must be >= -10 mA over the window
 release_plateau_delta_ma: 2.0           # max allowed spread within the plateau window
 release_plateau_window_samples: 4       # how many consecutive samples must plateau
 
