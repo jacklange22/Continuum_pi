@@ -67,6 +67,17 @@ engagement_back_off_ticks: 50
 # to the trim phase if any servo overshoots into the UPPER band edge.
 takeup_target_load_proxy_ma: 20.0
 high_load_proxy_ma: 40.0
+# Signed holding-tension targets (operator-validated 2026-05-21). Take-up
+# now stops when EVERY servo's tension_ma = max(0, -signed_current_ma) >=
+# takeup_target_holding_tension_ma. This replaces the legacy
+# |current - baseline| load_proxy criterion which accepted runs where one
+# servo had signed -3 mA (basically no tension) as "in target band" because
+# the positive baseline contribution made the proxy look big. Final-state
+# acceptance also checks this — a run with any servo more than
+# accept_max_load_balance_error_ma below the holding-tension target is
+# rejected with reason "holding_tension_below_target".
+takeup_target_holding_tension_ma: 30.0   # signed_current must reach <= -30 mA per servo
+takeup_high_holding_tension_ma: 50.0     # overshoot threshold (-50 mA signed = too much)
 takeup_max_iterations: 64
 staged_packet_retry_budget: 3
 characterization_step_ticks: 2

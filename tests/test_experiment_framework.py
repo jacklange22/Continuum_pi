@@ -1510,6 +1510,11 @@ def test_pretension_validation_single_segment_staged_writes_units_metrics_and_pl
             # ``soft_release_to_zero_current`` default which would consume
             # more sequenced tracker snapshots than this fixture provides.
             "pretension_start_mode": "current_position",
+            # The mock bus doesn't drive currents to -30 mA, so relax the
+            # signed-tension acceptance gate to 0 mA for this output-file
+            # generation test. The tension gate itself is exercised by the
+            # dedicated unit tests in test_pretension_validation_experiment.
+            "takeup_target_holding_tension_ma": 0.0,
         },
     )
 

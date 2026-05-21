@@ -577,6 +577,32 @@ class PretensionValidationExperimentConfig:
     soft_release_current_target_ma: float = 10.0
     takeup_target_load_proxy_ma: float = 25.0
     high_load_proxy_ma: float = 40.0
+    # --- signed holding-tension targets (operator's empirical scale) ---------
+    # Operator-validated 2026-05-21: a properly tensioned tendon on this rig
+    # holds at signed_current ≈ -30 mA (motor drawing negative current to
+    # resist the tendon pulling the spool outward). The legacy load_proxy
+    # metric was |current - baseline| which silently accepted servos at e.g.
+    # signed -3 mA as "in target band" if baseline happened to be +18 mA
+    # (motion-artifact baselines are common on this rig). Run 20260521_160957
+    # ended at signed currents [-3, -18, -21, -17] while the load-proxy
+    # algorithm reported it as converged — only one of the four servos was
+    # actually near the operator's "good tension" point.
+    #
+    # The new metric is ``tension_ma = max(0, -signed_current_ma)`` (a
+    # non-negative scalar): 0 mA means no tension on the tendon, 30 mA means
+    # the motor is drawing -30 mA signed to hold against the tendon, etc.
+    # Take-up keeps tightening until EVERY servo's tension_ma >=
+    # ``takeup_target_holding_tension_ma``. Pair / load balance checks
+    # compare tension_ma across servos so all four end up near 30 mA.
+    takeup_target_holding_tension_ma: float = 30.0
+    """Operator-facing tension target on the signed current. Take-up stops
+    when every servo's ``tension_ma = max(0, -signed_current_ma)`` reaches
+    this value. 30 mA matches the operator's empirical "good tension" scale
+    (15 mA = light, 30 mA = tight, 50 mA = a lot)."""
+    takeup_high_holding_tension_ma: float = 50.0
+    """Upper limit on holding tension. If any servo's tension_ma exceeds
+    this, the take-up phase transitions to the trim phase (so the tendon
+    isn't over-tensioned)."""
     takeup_max_iterations: int = 16
     staged_packet_retry_budget: int = 3
     characterization_step_ticks: int = 1
@@ -838,6 +864,8 @@ class PretensionValidationExperimentConfig:
                 float(payload.get("takeup_target_load_proxy_ma", payload.get("engaged_load_proxy_target_ma", 25.0))),
             ),
             high_load_proxy_ma=max(0.0, float(payload.get("high_load_proxy_ma", 40.0))),
+            takeup_target_holding_tension_ma=max(0.0, float(payload.get("takeup_target_holding_tension_ma", 30.0))),
+            takeup_high_holding_tension_ma=max(0.0, float(payload.get("takeup_high_holding_tension_ma", 50.0))),
             takeup_max_iterations=max(0, int(payload.get("takeup_max_iterations", 16))),
             staged_packet_retry_budget=max(1, int(payload.get("staged_packet_retry_budget", 3))),
             characterization_step_ticks=max(1, int(payload.get("characterization_step_ticks", 1))),
@@ -2891,6 +2919,11 @@ class PretensionValidationExperiment(BaseExperiment):
                         "takeup_complete",
                         "within_load_target",
                         "high_load_transition_to_trim",
+                        # New signed-tension stop reasons (2026-05-21): take-up
+                        # now drives off tension_ma = max(0, -signed_current)
+                        # instead of |current - baseline|.
+                        "within_holding_tension_target",
+                        "high_holding_tension_transition_to_trim",
                     ):
                         reject_reasons.append(str(takeup_result["stop_reason"]))
                     variant = str(
@@ -2974,12 +3007,16 @@ class PretensionValidationExperiment(BaseExperiment):
                 )
                 if float(self.config.settle_verify_time_s) > 0.0:
                     session.context.sleep_fn(float(self.config.settle_verify_time_s))
-                final = self._advanced_measurement(
+                # Final state must be a SETTLED holding read so the reported
+                # tension reflects the steady-state holding current at the
+                # final position, not a transient/in-motion reading.
+                final = self._advanced_measurement_with_holding(
                     servo_service=servo_service,
                     tracker_service=tracker_service if include_tracker else None,
                     servo_ids=servo_ids,
                     baseline_current_ma_by_servo=baseline_current_ma_by_servo,
                     target_xy_mm=target_xy,
+                    session=session,
                     startup_reference_ticks_by_servo=startup_reference_ticks,
                     trust_status=("runtime_tip" if include_tracker else "current_only_lower_trust"),
                 )
@@ -3021,6 +3058,32 @@ class PretensionValidationExperiment(BaseExperiment):
                     and float(final["load_balance_error_ma"]) > float(self.config.accept_max_load_balance_error_ma)
                 ):
                     reject_reasons.append("load_balance_error")
+                # Signed-tension acceptance: every servo must end up close to
+                # the operator's holding tension target. tension_ma = max(0,
+                # -signed_current_ma). A run that ended with the load_proxy
+                # "in target band" but signed currents of e.g. [-3, -18, -21,
+                # -17] would FAIL this check (servo 1's tension is only 3 mA,
+                # 27 mA below the 30 mA target). Tolerance is the same as the
+                # load-balance acceptance threshold so the gate behaves
+                # symmetrically.
+                final_signed_currents = dict(final.get("signed_raw_current_ma") or final.get("raw_current_ma") or {})
+                final_tension_ma_by_servo: dict[int, float | None] = {}
+                for sid in servo_ids:
+                    val = final_signed_currents.get(int(sid))
+                    final_tension_ma_by_servo[int(sid)] = (
+                        max(0.0, -float(val)) if val is not None else None
+                    )
+                target_holding_tension_ma = float(getattr(self.config, "takeup_target_holding_tension_ma", 30.0))
+                holding_tension_tolerance_ma = float(getattr(self.config, "accept_max_load_balance_error_ma", 30.0))
+                tension_values = [
+                    float(v) for v in final_tension_ma_by_servo.values() if v is not None
+                ]
+                if (
+                    mode_kind != "characterization"
+                    and len(tension_values) == len(servo_ids)
+                    and (target_holding_tension_ma - min(tension_values)) > holding_tension_tolerance_ma
+                ):
+                    reject_reasons.append("holding_tension_below_target")
                 if mode_kind != "characterization" and not include_tracker:
                     reject_reasons.append("current_only_lower_trust")
                 if include_tracker and tip_xy_offset_mm is None and not bool(self.config.allow_current_only_when_tracker_missing):
@@ -3087,6 +3150,13 @@ class PretensionValidationExperiment(BaseExperiment):
                     "final_current_ma_by_servo": {str(k): v for k, v in final_currents_ma.items()},
                     "current_above_baseline_ma_by_servo": {str(k): v for k, v in current_above_baseline_ma.items()},
                     "load_proxy_current_ma_by_servo": {str(k): v for k, v in current_above_baseline_ma.items()},
+                    # Signed-tension view: tension_ma = max(0, -signed_current).
+                    # 0 mA = no tendon load on the motor, 30 mA = motor holding
+                    # against -30 mA signed (operator's "good tension"). The
+                    # acceptance gate "holding_tension_below_target" uses this.
+                    "final_tension_ma_by_servo": {str(int(k)): v for k, v in final_tension_ma_by_servo.items()},
+                    "takeup_target_holding_tension_ma": float(target_holding_tension_ma),
+                    "takeup_high_holding_tension_ma": float(getattr(self.config, "takeup_high_holding_tension_ma", 50.0)),
                     "start_position_ticks_by_servo": {str(k): v for k, v in start_position_ticks.items()},
                     "final_position_ticks_by_servo": {str(k): v for k, v in final_position_ticks.items()},
                     # Flattened convenience keys for the comparison helper.
@@ -3139,6 +3209,14 @@ class PretensionValidationExperiment(BaseExperiment):
                             str(k): float(v) if v is not None else None
                             for k, v in current_above_baseline_ma.items()
                         },
+                        # tension_ma per servo (new — the metric take-up
+                        # actually drives off of). All four near
+                        # takeup_target_holding_tension_ma = 30 mA = accepted.
+                        "final_tension_ma_by_servo": {
+                            str(int(k)): (float(v) if v is not None else None)
+                            for k, v in final_tension_ma_by_servo.items()
+                        },
+                        "takeup_target_holding_tension_ma": float(target_holding_tension_ma),
                         "final_position_ticks_by_servo": {
                             str(k): (int(v) if v is not None else None)
                             for k, v in final_position_ticks.items()
@@ -5525,6 +5603,12 @@ class PretensionValidationExperiment(BaseExperiment):
         refine_step = max(1, int(self.config.conservative_step_ticks))
         target_load = max(float(self.config.takeup_target_load_proxy_ma), float(effective_load_tolerance_ma) * 0.5)
         high_load = max(target_load, float(getattr(self.config, "high_load_proxy_ma", 40.0)))
+        # New signed-tension targets. tension_ma = max(0, -signed_current_ma)
+        # so tightening (more negative current) increases tension_ma.
+        target_holding_tension = max(0.0, float(getattr(self.config, "takeup_target_holding_tension_ma", 30.0)))
+        high_holding_tension = max(target_holding_tension, float(getattr(self.config, "takeup_high_holding_tension_ma", 50.0)))
+        result["engagement_scan"]["target_holding_tension_ma"] = float(target_holding_tension)
+        result["engagement_scan"]["high_holding_tension_ma"] = float(high_holding_tension)
         max_travel = max(0, int(self.config.conservative_max_cumulative_travel_ticks))
         max_iterations = max(1, int(self.config.takeup_max_iterations))
 
@@ -5557,17 +5641,33 @@ class PretensionValidationExperiment(BaseExperiment):
                 result["stop_reason"] = str(measurement["telemetry_fail_closed_reason"])
                 return result
             positions = dict(measurement.get("measured_positions_ticks") or {})
+            signed_currents = dict(measurement.get("signed_raw_current_ma") or measurement.get("raw_current_ma") or {})
+            tensions_ma = {
+                int(sid): (max(0.0, -float(signed_currents[int(sid)])) if signed_currents.get(int(sid)) is not None else None)
+                for sid in servo_ids
+            }
             loads = dict(measurement.get("load_proxy_current_ma") or measurement.get("current_above_baseline_ma") or {})
 
-            # Mark newly-engaged servos based on this step's measurement.
+            # Mark newly-engaged servos. Engagement fires when EITHER:
+            #   - signed tension_ma rises above the threshold (motor drawing
+            #     negative current to hold against the tendon — the right
+            #     signal on real hardware), OR
+            #   - the legacy load_proxy = |current - baseline| rises above
+            #     the threshold (a magnitude-only signal that still works on
+            #     fixtures whose signed current model is incomplete).
+            # The take-up stop condition still uses signed tension only; this
+            # is just to keep engagement detection robust.
             for servo_id in servo_ids:
                 sid = int(servo_id)
                 if sid in engagement_tick_by_servo:
                     continue
-                load = loads.get(sid)
-                if load is None or positions.get(sid) is None:
+                if positions.get(sid) is None:
                     continue
-                if float(load) >= float(rise_threshold_ma):
+                tension = tensions_ma.get(sid)
+                load = loads.get(sid)
+                tension_engaged = tension is not None and float(tension) >= float(rise_threshold_ma)
+                load_engaged = load is not None and float(load) >= float(rise_threshold_ma)
+                if tension_engaged or load_engaged:
                     engagement_tick_by_servo[sid] = int(positions[sid])
                     iterations_to_engage_by_servo[sid] = int(iteration + 1)
 
@@ -5729,13 +5829,25 @@ class PretensionValidationExperiment(BaseExperiment):
             if measurement.get("telemetry_fail_closed_reason"):
                 result["stop_reason"] = str(measurement["telemetry_fail_closed_reason"])
                 return result
-            loads = dict(measurement.get("load_proxy_current_ma") or measurement.get("current_above_baseline_ma") or {})
-            valid_loads = [float(loads.get(int(sid))) for sid in servo_ids if loads.get(int(sid)) is not None]
-            if len(valid_loads) == len(servo_ids) and min(valid_loads) >= target_load:
-                result["stop_reason"] = "within_load_target"
+            # Tension metric: tension_ma = max(0, -signed_current_ma). 30 mA
+            # means the motor is drawing -30 mA signed to hold against the
+            # tendon. Take-up stops when every servo reaches the operator's
+            # target_holding_tension. Legacy load_proxy retained for the trace.
+            signed_currents = dict(measurement.get("signed_raw_current_ma") or measurement.get("raw_current_ma") or {})
+            tensions_ma = {
+                int(sid): (max(0.0, -float(signed_currents[int(sid)])) if signed_currents.get(int(sid)) is not None else None)
+                for sid in servo_ids
+            }
+            valid_tensions = [
+                float(tensions_ma[int(sid)])
+                for sid in servo_ids
+                if tensions_ma.get(int(sid)) is not None
+            ]
+            if len(valid_tensions) == len(servo_ids) and min(valid_tensions) >= target_holding_tension:
+                result["stop_reason"] = "within_holding_tension_target"
                 return result
-            if len(valid_loads) == len(servo_ids) and max(valid_loads) >= high_load:
-                result["stop_reason"] = "high_load_transition_to_trim"
+            if len(valid_tensions) == len(servo_ids) and max(valid_tensions) >= high_holding_tension:
+                result["stop_reason"] = "high_holding_tension_transition_to_trim"
                 return result
             if max_travel > 0 and int(result["travel_ticks"]) >= max_travel:
                 result["stop_reason"] = "travel_budget_exhausted"
@@ -5746,20 +5858,20 @@ class PretensionValidationExperiment(BaseExperiment):
             if policy.get("telemetry_fail_closed_reason"):
                 result["stop_reason"] = str(policy["telemetry_fail_closed_reason"])
                 return result
-            # Step inward only servos that are still below the target band.
+            # Step inward only servos whose tension is still below the target.
             targets = {}
             for servo_id in servo_ids:
                 sid = int(servo_id)
-                load = loads.get(sid)
+                tension = tensions_ma.get(sid)
                 entry = telemetry.get(sid)
                 if entry is None or entry.present_position is None:
                     result["stop_reason"] = "missing_position"
                     return result
-                if load is None or float(load) < float(target_load):
+                if tension is None or float(tension) < float(target_holding_tension):
                     targets[sid] = int(entry.present_position) - int(refine_step)
             if not targets:
-                # Every servo already at or above target_load — convergence.
-                result["stop_reason"] = "within_load_target"
+                # Every servo already at or above the tension target.
+                result["stop_reason"] = "within_holding_tension_target"
                 return result
             move = self._apply_group_command(
                 servo_service=servo_service,
@@ -5792,6 +5904,9 @@ class PretensionValidationExperiment(BaseExperiment):
                     "iteration": int(iteration + 1),
                     "takeup_target_load_proxy_ma": float(target_load),
                     "high_load_proxy_ma": float(high_load),
+                    "takeup_target_holding_tension_ma": float(target_holding_tension),
+                    "takeup_high_holding_tension_ma": float(high_holding_tension),
+                    "tension_ma_by_servo": {str(int(sid)): tensions_ma.get(int(sid)) for sid in servo_ids},
                     "fine_step_ticks": int(refine_step),
                     "stepped_servo_ids": sorted(int(sid) for sid in targets),
                     "move": move,

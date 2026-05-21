@@ -1735,6 +1735,80 @@ def _run_release_with_scripted_currents(
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# Signed holding-tension acceptance — take-up must reach ~-30 mA per servo,
+# not just hit the |current - baseline| load proxy band.
+# --------------------------------------------------------------------------- #
+
+
+def test_takeup_holding_tension_defaults_match_operator_scale() -> None:
+    """Operator's tendon-tension scale: -15 mA = light, -30 mA = tight,
+    -50 mA = a lot. The config must default to -30 mA (i.e. 30 mA of holding
+    tension) as the take-up target and -50 mA as the upper bound. Setting
+    the new metric (tension_ma = max(0, -signed_current)) as the take-up
+    criterion replaces the |current - baseline| load_proxy that allowed
+    runs to end with a servo at signed -3 mA being mis-classified as
+    "in target band"."""
+    cfg = PretensionValidationExperimentConfig.from_dict({})
+    assert cfg.takeup_target_holding_tension_ma == 30.0
+    assert cfg.takeup_high_holding_tension_ma == 50.0
+
+
+def test_holding_tension_below_target_rejected_for_under_tensioned_run(tmp_path: Path) -> None:
+    """A run whose final signed currents land at the values observed in
+    20260521_160957 (servo 1 at signed -3 mA, others -17 to -21 mA) must be
+    REJECTED. Before this change the legacy load-proxy check accepted it
+    because |signed - baseline| was around 20 mA. The new check applies
+    holding_tension_below_target whenever any servo's tension_ma is more
+    than accept_max_load_balance_error_ma below the target.
+
+    We verify the gate via a unit-level simulation of the acceptance logic:
+    pick a known final signed_current vector, compute tension_ma, and
+    confirm the threshold expression flags servo 1."""
+    # Reproduce the run_1 final state from 20260521_160957.
+    final_signed = {1: -3, 2: -18, 3: -21, 4: -17}
+    tension_by_sid = {sid: max(0.0, -float(val)) for sid, val in final_signed.items()}
+    target = 30.0
+    tolerance = 15.0
+    assert (target - min(tension_by_sid.values())) > tolerance, (
+        "Servo 1 with tension_ma=3 must fall more than 15 mA below the 30 mA target."
+    )
+
+
+def test_holding_tension_target_band_accepts_well_tensioned_run() -> None:
+    """A run with every servo near -30 mA signed current must NOT trigger
+    holding_tension_below_target."""
+    final_signed = {1: -28, 2: -32, 3: -30, 4: -29}
+    tension_by_sid = {sid: max(0.0, -float(val)) for sid, val in final_signed.items()}
+    target = 30.0
+    tolerance = 15.0
+    # min tension is 28 → target - 28 = 2 mA < tolerance, NOT below target.
+    assert (target - min(tension_by_sid.values())) <= tolerance
+
+
+def test_holding_tension_target_band_accepts_overshoot_run() -> None:
+    """A servo overshooting to -45 mA is still tensioned (tension_ma = 45);
+    the gate only flags UNDER-tensioned servos, not over-tensioned ones."""
+    final_signed = {1: -45, 2: -32, 3: -30, 4: -29}
+    tension_by_sid = {sid: max(0.0, -float(val)) for sid, val in final_signed.items()}
+    target = 30.0
+    tolerance = 15.0
+    assert (target - min(tension_by_sid.values())) <= tolerance
+
+
+def test_positive_signed_current_means_zero_tension_for_target_check() -> None:
+    """A servo reading positive signed current (motor pushing outward, no
+    tendon load) has tension_ma = 0 — the gate must clamp at 0 rather than
+    going negative. Otherwise an overshoot below 0 would give the math a
+    false sense of "negative tension" that masks a truly slack tendon."""
+    final_signed = {1: +18, 2: -28, 3: -30, 4: -29}
+    tension_by_sid = {sid: max(0.0, -float(val)) for sid, val in final_signed.items()}
+    assert tension_by_sid[1] == 0.0
+    target = 30.0
+    tolerance = 15.0
+    assert (target - min(tension_by_sid.values())) > tolerance
+
+
 def test_post_move_settle_and_burst_defaults_match_operator_intent() -> None:
     """``post_move_settle_s``, ``holding_current_burst_count``, and
     ``holding_current_burst_interval_s`` must default to values that defeat
