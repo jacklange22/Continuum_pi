@@ -78,6 +78,17 @@ high_load_proxy_ma: 40.0
 # rejected with reason "holding_tension_below_target".
 takeup_target_holding_tension_ma: 30.0   # signed_current must reach <= -30 mA per servo
 takeup_high_holding_tension_ma: 50.0     # overshoot threshold (-50 mA signed = too much)
+# Tension equalization pass (operator-validated 2026-05-21): after take-up
+# reaches the holding target, this pass drives every servo's tension to
+# within ``equalize_tensions_tolerance_ma`` of every other servo's by
+# TIGHTENING the low ones only (never releasing). Friction in the spine
+# dominates small tip movements, so balanced tendon force is the meaningful
+# signal — not tip XY. Disable to skip this phase (legacy: take-up → tip-
+# centering only).
+equalize_tensions_enabled: true
+equalize_tensions_tolerance_ma: 5.0      # max(tension) - min(tension) <= this counts as balanced
+equalize_tensions_step_ticks: 4          # tightening step per iteration
+equalize_tensions_max_iterations: 32
 takeup_max_iterations: 64
 staged_packet_retry_budget: 3
 characterization_step_ticks: 2

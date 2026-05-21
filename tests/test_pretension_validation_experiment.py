@@ -1746,6 +1746,212 @@ def _run_release_with_scripted_currents(
 # --------------------------------------------------------------------------- #
 
 
+# --------------------------------------------------------------------------- #
+# Tension equalization pass — after take-up, drive every servo to the
+# same holding tension by tightening the low ones (never releasing).
+# --------------------------------------------------------------------------- #
+
+
+def test_equalize_tensions_defaults_match_operator_intent() -> None:
+    """The tension equalization pass must be enabled by default with a tight
+    convergence tolerance (5 mA) so the operator's "all four servos at the
+    same tension" criterion is met without additional configuration."""
+    cfg = PretensionValidationExperimentConfig.from_dict({})
+    assert cfg.equalize_tensions_enabled is True
+    assert cfg.equalize_tensions_tolerance_ma == 5.0
+    assert cfg.equalize_tensions_step_ticks == 4
+    assert cfg.equalize_tensions_max_iterations == 32
+
+
+def test_equalize_tensions_can_be_disabled() -> None:
+    """``equalize_tensions_enabled: false`` must skip the pass entirely so
+    legacy configs that don't expect the new phase still run unchanged."""
+    cfg = PretensionValidationExperimentConfig.from_dict({"equalize_tensions_enabled": False})
+    assert cfg.equalize_tensions_enabled is False
+
+
+def test_equalize_tensions_already_balanced_returns_immediately(tmp_path: Path) -> None:
+    """If the take-up state is already balanced (all tensions within the
+    tolerance), the equalization pass must declare ``tensions_equalized``
+    on the first iteration without commanding any motion."""
+    service = _servo_service(tmp_path)
+    # Script every read at signed -30 mA → tension_ma = 30 for every servo;
+    # spread = 0 < tolerance (5).
+    script = [{1: -30.0, 2: -30.0, 3: -30.0, 4: -30.0} for _ in range(8)]
+    wrapped = _ScriptedCurrentService(service, script=script)
+    experiment = PretensionValidationExperiment(
+        PretensionValidationExperimentConfig.from_dict(
+            {
+                "mode": "single_segment_staged",
+                "servo_ids": [1, 2, 3, 4],
+                "equalize_tensions_enabled": True,
+                "equalize_tensions_tolerance_ma": 5.0,
+                "equalize_tensions_step_ticks": 4,
+                "equalize_tensions_max_iterations": 32,
+                "post_move_settle_s": 0.0,
+                "holding_current_burst_count": 1,
+                "holding_current_burst_interval_s": 0.0,
+            }
+        )
+    )
+
+    class _Session:
+        def __init__(self):
+            self.context = SimpleNamespace(
+                servo_service=wrapped,
+                tracker_service=None,
+                monotonic_fn=time.monotonic,
+                sleep_fn=lambda _s: None,
+            )
+            self.staged_samples: list = []
+
+        def raise_if_stop_requested(self):
+            return None
+
+        def update_progress(self, *_a, **_kw):
+            return None
+
+    session = _Session()
+    experiment._add_staged_sample = lambda session, **kw: session.staged_samples.append(kw)  # type: ignore[assignment]
+
+    trace_rows: list = []
+    result = experiment._run_tension_equalization_pass(
+        session=session,
+        servo_service=wrapped,
+        tracker_service=None,
+        servo_ids=[1, 2, 3, 4],
+        run_index=0,
+        target_xy_mm=[0.0, 0.0],
+        baseline_current_ma_by_servo={1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0},
+        trace_rows=trace_rows,
+        startup_reference_ticks_by_servo={sid: None for sid in (1, 2, 3, 4)},
+    )
+
+    assert result["stop_reason"] == "tensions_equalized"
+    assert result["iterations"] == 1
+    assert result["move_count"] == 0
+    # Every servo registers identical tension; spread is 0.
+    spread_history = result["tension_spread_ma_history"]
+    assert spread_history == [pytest.approx(0.0)]
+    # No travel was used.
+    assert result["travel_ticks"] == 0
+
+
+def test_equalize_tensions_skips_servos_at_high_tension_guard(tmp_path: Path) -> None:
+    """When one servo is already at the high-tension guard (50 mA = signed
+    -50), the equalization pass must NOT tighten it further even if its
+    tension is above the rest. (Other low-tension servos are still tightened.)"""
+    service = _servo_service(tmp_path)
+    # Servo 1 at signed -55 (tension 55, above the 50 mA guard).
+    # Other servos at -30 (tension 30). Spread is 25 mA, way above the
+    # 5 mA tolerance. The pass should tighten servos 2-4 (the low ones)
+    # while leaving servo 1 alone.
+    script = [{1: -55.0, 2: -30.0, 3: -30.0, 4: -30.0} for _ in range(40)]
+    wrapped = _ScriptedCurrentService(service, script=script)
+    experiment = PretensionValidationExperiment(
+        PretensionValidationExperimentConfig.from_dict(
+            {
+                "mode": "single_segment_staged",
+                "servo_ids": [1, 2, 3, 4],
+                "equalize_tensions_enabled": True,
+                "equalize_tensions_tolerance_ma": 5.0,
+                "equalize_tensions_step_ticks": 4,
+                "equalize_tensions_max_iterations": 4,
+                "takeup_high_holding_tension_ma": 50.0,
+                "post_move_settle_s": 0.0,
+                "holding_current_burst_count": 1,
+                "holding_current_burst_interval_s": 0.0,
+            }
+        )
+    )
+
+    class _Session:
+        def __init__(self):
+            self.context = SimpleNamespace(
+                servo_service=wrapped,
+                tracker_service=None,
+                monotonic_fn=time.monotonic,
+                sleep_fn=lambda _s: None,
+            )
+            self.staged_samples: list = []
+
+        def raise_if_stop_requested(self):
+            return None
+
+        def update_progress(self, *_a, **_kw):
+            return None
+
+    session = _Session()
+    experiment._add_staged_sample = lambda session, **kw: session.staged_samples.append(kw)  # type: ignore[assignment]
+
+    trace_rows: list = []
+    result = experiment._run_tension_equalization_pass(
+        session=session,
+        servo_service=wrapped,
+        tracker_service=None,
+        servo_ids=[1, 2, 3, 4],
+        run_index=0,
+        target_xy_mm=[0.0, 0.0],
+        baseline_current_ma_by_servo={1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0},
+        trace_rows=trace_rows,
+        startup_reference_ticks_by_servo={sid: None for sid in (1, 2, 3, 4)},
+    )
+
+    # Servo 1 must not have been moved (above the guard).
+    assert int(result["moves_by_servo"]["1"]) == 0
+    # Servos 2-4 must have been moved (low tension, qualifies for tightening).
+    for sid in ("2", "3", "4"):
+        assert int(result["moves_by_servo"][sid]) > 0
+
+
+def test_equalize_tensions_disabled_returns_disabled_status(tmp_path: Path) -> None:
+    """When ``equalize_tensions_enabled: false`` is set, the pass must
+    return immediately with ``tension_equalization_disabled`` and no motion."""
+    service = _servo_service(tmp_path)
+    experiment = PretensionValidationExperiment(
+        PretensionValidationExperimentConfig.from_dict(
+            {
+                "mode": "single_segment_staged",
+                "servo_ids": [1, 2, 3, 4],
+                "equalize_tensions_enabled": False,
+            }
+        )
+    )
+
+    class _Session:
+        def __init__(self):
+            self.context = SimpleNamespace(
+                servo_service=service,
+                tracker_service=None,
+                monotonic_fn=time.monotonic,
+                sleep_fn=lambda _s: None,
+            )
+
+        def raise_if_stop_requested(self):
+            return None
+
+        def update_progress(self, *_a, **_kw):
+            return None
+
+    trace_rows: list = []
+    result = experiment._run_tension_equalization_pass(
+        session=_Session(),
+        servo_service=service,
+        tracker_service=None,
+        servo_ids=[1, 2, 3, 4],
+        run_index=0,
+        target_xy_mm=[0.0, 0.0],
+        baseline_current_ma_by_servo={1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0},
+        trace_rows=trace_rows,
+        startup_reference_ticks_by_servo={sid: None for sid in (1, 2, 3, 4)},
+    )
+
+    assert result["stop_reason"] == "tension_equalization_disabled"
+    assert result["move_count"] == 0
+    assert result["travel_ticks"] == 0
+    assert trace_rows == []
+
+
 def test_tip_center_tighten_only_default_is_true() -> None:
     """The default for ``tip_center_tighten_only`` must be True so the
     Servos-tab one-click flow centers the tip without releasing any tendon.

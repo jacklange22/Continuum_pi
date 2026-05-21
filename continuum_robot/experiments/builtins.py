@@ -613,6 +613,35 @@ class PretensionValidationExperimentConfig:
     """Upper limit on holding tension. If any servo's tension_ma exceeds
     this, the take-up phase transitions to the trim phase (so the tendon
     isn't over-tensioned)."""
+    # --- tension equalization pass (run after take-up) -----------------------
+    # Operator-validated 2026-05-21: the take-up phase reaches the holding
+    # target ("each tension >= 30 mA") but leaves spread of 5-10 mA between
+    # servos. The operator wants per-servo tensions EQUAL, not just all
+    # above target — friction in the spine dominates small tip movements
+    # anyway, so the meaningful signal is balanced tendon force, not tip
+    # position. The equalization pass runs after take-up and tightens the
+    # low-tension servos by small steps until max(tension) - min(tension)
+    # falls below ``equalize_tensions_tolerance_ma``. It NEVER releases —
+    # tightening only, so no servo's tension can drop during this phase.
+    equalize_tensions_enabled: bool = True
+    """When True (default), run the tension equalization pass after take-up.
+    The pass tightens the lowest-tension servos until the spread across all
+    four is within ``equalize_tensions_tolerance_ma``. Disable to skip
+    (legacy behaviour: takeup → tip-centering with no balance pass)."""
+    equalize_tensions_tolerance_ma: float = 5.0
+    """Convergence tolerance: max(tension_ma) - min(tension_ma) must be
+    below this for the equalization pass to declare success. 5 mA is well
+    below operator's 15 mA "light" tension band so the four servos are
+    indistinguishable at the operator's scale."""
+    equalize_tensions_step_ticks: int = 4
+    """Tick step per equalization iteration. Half of the take-up step
+    (default 8) so the equalization phase resolves balance without
+    overshooting past the tolerance band."""
+    equalize_tensions_max_iterations: int = 32
+    """Iteration cap on the equalization loop. With step 4 ticks and 32
+    iterations the upper bound on per-servo travel is ~128 ticks of
+    additional tightening — plenty to close a 10-15 mA spread without
+    exhausting the run budget."""
     takeup_max_iterations: int = 16
     staged_packet_retry_budget: int = 3
     characterization_step_ticks: int = 1
@@ -877,6 +906,10 @@ class PretensionValidationExperimentConfig:
             high_load_proxy_ma=max(0.0, float(payload.get("high_load_proxy_ma", 40.0))),
             takeup_target_holding_tension_ma=max(0.0, float(payload.get("takeup_target_holding_tension_ma", 30.0))),
             takeup_high_holding_tension_ma=max(0.0, float(payload.get("takeup_high_holding_tension_ma", 50.0))),
+            equalize_tensions_enabled=bool(payload.get("equalize_tensions_enabled", True)),
+            equalize_tensions_tolerance_ma=max(0.0, float(payload.get("equalize_tensions_tolerance_ma", 5.0))),
+            equalize_tensions_step_ticks=max(1, int(payload.get("equalize_tensions_step_ticks", 4))),
+            equalize_tensions_max_iterations=max(0, int(payload.get("equalize_tensions_max_iterations", 32))),
             takeup_max_iterations=max(0, int(payload.get("takeup_max_iterations", 16))),
             staged_packet_retry_budget=max(1, int(payload.get("staged_packet_retry_budget", 3))),
             characterization_step_ticks=max(1, int(payload.get("characterization_step_ticks", 1))),
@@ -2877,6 +2910,12 @@ class PretensionValidationExperiment(BaseExperiment):
                 progress += 1
                 session.update_progress(progress, total_progress, {"phase": "current_characterization", "run_index": run_index})
 
+                # Initialise the equalization result here so the per-run
+                # record builder can read it regardless of which mode branch
+                # below actually runs (characterization mode skips both the
+                # takeup phase and the equalization pass).
+                equalization_result: dict[str, Any] = {}
+
                 if fail_closed_stop_reason:
                     mode_result = {
                         "stop_reason": fail_closed_stop_reason,
@@ -2937,6 +2976,36 @@ class PretensionValidationExperiment(BaseExperiment):
                         "high_holding_tension_transition_to_trim",
                     ):
                         reject_reasons.append(str(takeup_result["stop_reason"]))
+                    # Tension equalization pass (2026-05-21): drive every
+                    # servo to the same holding tension by tightening the
+                    # low ones. Friction in the spine means small-tip
+                    # movements don't matter much, but tension balance does.
+                    # Tightening-only so no servo's tension can drop.
+                    equalization_result: dict[str, Any] = {}
+                    if bool(getattr(self.config, "equalize_tensions_enabled", True)):
+                        equalization_result = self._run_tension_equalization_pass(
+                            session=session,
+                            servo_service=servo_service,
+                            tracker_service=tracker_service if include_tracker else None,
+                            servo_ids=servo_ids,
+                            run_index=run_index,
+                            target_xy_mm=target_xy,
+                            baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                            trace_rows=trace_rows,
+                            startup_reference_ticks_by_servo=startup_reference_ticks,
+                            deadline_monotonic=run_deadline_monotonic,
+                        )
+                        correction_move_count += int(equalization_result.get("move_count", 0))
+                        correction_travel_ticks += int(equalization_result.get("travel_ticks", 0))
+                        self._merge_event_counts(telemetry_event_counts, equalization_result.get("telemetry_event_counts"))
+                        packet_retry_count += int(equalization_result.get("packet_retry_count", 0) or 0)
+                        if equalization_result.get("stop_reason") not in (
+                            None,
+                            "",
+                            "tensions_equalized",
+                            "tension_equalization_disabled",
+                        ):
+                            reject_reasons.append(str(equalization_result["stop_reason"]))
                     variant = str(
                         getattr(self.config, "tip_centering_variant", PRETENSION_TIP_VARIANT_PAIRED_THEN_TIP)
                         or PRETENSION_TIP_VARIANT_PAIRED_THEN_TIP
@@ -3168,6 +3237,21 @@ class PretensionValidationExperiment(BaseExperiment):
                     "final_tension_ma_by_servo": {str(int(k)): v for k, v in final_tension_ma_by_servo.items()},
                     "takeup_target_holding_tension_ma": float(target_holding_tension_ma),
                     "takeup_high_holding_tension_ma": float(getattr(self.config, "takeup_high_holding_tension_ma", 50.0)),
+                    # Tension equalization summary so the per-run record /
+                    # quality JSON show whether the equalization pass
+                    # converged and how much movement it added.
+                    "tension_equalization": {
+                        "stop_reason": str(equalization_result.get("stop_reason") or ""),
+                        "iterations": int(equalization_result.get("iterations") or 0),
+                        "move_count": int(equalization_result.get("move_count") or 0),
+                        "travel_ticks": int(equalization_result.get("travel_ticks") or 0),
+                        "tolerance_ma": float(equalization_result.get("tolerance_ma") or 0.0),
+                        "step_ticks": int(equalization_result.get("step_ticks") or 0),
+                        "initial_tension_ma_by_servo": dict(equalization_result.get("initial_tension_ma_by_servo") or {}),
+                        "final_tension_ma_by_servo": dict(equalization_result.get("final_tension_ma_by_servo") or {}),
+                        "tension_spread_ma_history": list(equalization_result.get("tension_spread_ma_history") or []),
+                        "moves_by_servo": dict(equalization_result.get("moves_by_servo") or {}),
+                    } if equalization_result else None,
                     "start_position_ticks_by_servo": {str(k): v for k, v in start_position_ticks.items()},
                     "final_position_ticks_by_servo": {str(k): v for k, v in final_position_ticks.items()},
                     # Flattened convenience keys for the comparison helper.
@@ -6577,6 +6661,231 @@ class PretensionValidationExperiment(BaseExperiment):
                     return total
         total["stop_reason"] = "characterization_complete"
         return total
+
+    def _run_tension_equalization_pass(
+        self,
+        *,
+        session: ExperimentSession,
+        servo_service,
+        tracker_service,
+        servo_ids: list[int],
+        run_index: int,
+        target_xy_mm: list[float],
+        baseline_current_ma_by_servo: dict[int, float],
+        trace_rows: list[dict[str, Any]],
+        startup_reference_ticks_by_servo: dict[int, int | None] | None = None,
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, Any]:
+        """Drive every servo's holding tension to within
+        ``equalize_tensions_tolerance_ma`` of every other servo's by ONLY
+        tightening the low ones.
+
+        After ``_run_symmetric_paired_takeup`` declares
+        ``within_holding_tension_target`` the per-servo tensions are all
+        above the 30 mA target but can vary by 5-15 mA. This pass closes
+        that gap so the operator's "all four tendons at the same tension"
+        criterion is met. Tightening-only means the pass cannot reduce any
+        servo's tension below where it started — over-tensioned servos
+        stay where they are; only under-tensioned servos move.
+
+        Behavior:
+          1. Read holding tensions via ``_advanced_measurement_with_holding``.
+          2. If ``max(tension) - min(tension) <= tolerance``: converged.
+          3. Else: pick every servo whose tension is more than tolerance
+             below the current max, tighten each by ``step_ticks`` (lower
+             tick). Skip any servo already above
+             ``takeup_high_holding_tension_ma`` (overshoot guard).
+          4. Apply via ``_apply_group_command`` (no opposed-pair constraint).
+          5. Loop up to ``max_iterations``.
+        """
+        tolerance = max(0.0, float(getattr(self.config, "equalize_tensions_tolerance_ma", 5.0)))
+        step = max(1, int(getattr(self.config, "equalize_tensions_step_ticks", 4)))
+        max_iterations = max(0, int(getattr(self.config, "equalize_tensions_max_iterations", 32)))
+        high_tension_guard = float(getattr(self.config, "takeup_high_holding_tension_ma", 50.0))
+
+        result: dict[str, Any] = {
+            "stop_reason": "tension_equalization_disabled",
+            "move_count": 0,
+            "travel_ticks": 0,
+            "iterations": 0,
+            "telemetry_event_counts": {},
+            "packet_retry_count": 0,
+            "tolerance_ma": float(tolerance),
+            "step_ticks": int(step),
+            "max_iterations": int(max_iterations),
+            "high_tension_guard_ma": float(high_tension_guard),
+            "initial_tension_ma_by_servo": {},
+            "final_tension_ma_by_servo": {},
+            "tension_spread_ma_history": [],
+            "moves_by_servo": {str(int(sid)): 0 for sid in servo_ids},
+        }
+        if max_iterations <= 0 or not bool(getattr(self.config, "equalize_tensions_enabled", True)):
+            return result
+
+        servo_ids_int = [int(sid) for sid in servo_ids]
+        initial_recorded = False
+
+        for iteration in range(max_iterations):
+            session.raise_if_stop_requested()
+            if deadline_monotonic is not None and float(session.context.monotonic_fn()) > float(deadline_monotonic):
+                result["stop_reason"] = "runtime_budget_exhausted"
+                result["iterations"] = int(iteration)
+                return result
+
+            # Settled holding tensions for the balance decision.
+            measurement = self._advanced_measurement_with_holding(
+                servo_service=servo_service,
+                tracker_service=tracker_service,
+                servo_ids=servo_ids_int,
+                baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+                target_xy_mm=target_xy_mm,
+                session=session,
+                startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+                trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
+            )
+            self._merge_event_counts(result["telemetry_event_counts"], measurement.get("telemetry_event_counts"))
+            result["packet_retry_count"] += int(measurement.get("packet_retry_count", 0) or 0)
+            if measurement.get("telemetry_fail_closed_reason"):
+                result["stop_reason"] = str(measurement["telemetry_fail_closed_reason"])
+                result["iterations"] = int(iteration)
+                return result
+
+            signed_currents = dict(
+                measurement.get("signed_raw_current_ma")
+                or measurement.get("raw_current_ma")
+                or {}
+            )
+            tensions = {
+                sid: max(0.0, -float(signed_currents[sid])) if signed_currents.get(sid) is not None else None
+                for sid in servo_ids_int
+            }
+            valid_tensions = {sid: float(t) for sid, t in tensions.items() if t is not None}
+
+            if not initial_recorded:
+                result["initial_tension_ma_by_servo"] = {str(sid): float(t) for sid, t in valid_tensions.items()}
+                initial_recorded = True
+
+            if len(valid_tensions) < len(servo_ids_int):
+                result["stop_reason"] = "missing_tension_reading"
+                result["iterations"] = int(iteration)
+                result["final_tension_ma_by_servo"] = {str(sid): float(t) for sid, t in valid_tensions.items()}
+                return result
+
+            spread = max(valid_tensions.values()) - min(valid_tensions.values())
+            result["tension_spread_ma_history"].append(float(spread))
+            target_to_match = max(valid_tensions.values())
+
+            row = self._advanced_stage_row(
+                mode_kind="conservative_startup",
+                run_index=run_index,
+                stage="tension_equalization",
+                target_xy_mm=target_xy_mm,
+                measurement=measurement,
+                extra={
+                    "iteration": int(iteration + 1),
+                    "equalize_tolerance_ma": float(tolerance),
+                    "equalize_step_ticks": int(step),
+                    "tension_ma_by_servo": {str(sid): float(t) for sid, t in valid_tensions.items()},
+                    "tension_spread_ma": float(spread),
+                    "target_to_match_ma": float(target_to_match),
+                },
+            )
+            trace_rows.append(row)
+            self._add_staged_sample(
+                session,
+                phase="pretension_tension_equalization",
+                run_index=run_index,
+                step_index=len(trace_rows) - 1,
+                payload=row,
+            )
+
+            if float(spread) <= float(tolerance):
+                result["stop_reason"] = "tensions_equalized"
+                result["iterations"] = int(iteration + 1)
+                result["final_tension_ma_by_servo"] = {str(sid): float(t) for sid, t in valid_tensions.items()}
+                return result
+
+            # Read fresh positions for the goal-position writes. We use a
+            # separate (non-burst) telemetry call here because we only need
+            # positions, not settled current.
+            telemetry, policy = self._read_live_telemetry_with_policy(servo_service, servo_ids_int)
+            self._merge_event_counts(result["telemetry_event_counts"], policy.get("event_counts"))
+            result["packet_retry_count"] += int(policy.get("packet_retry_count", 0) or 0)
+            if policy.get("telemetry_fail_closed_reason"):
+                result["stop_reason"] = str(policy["telemetry_fail_closed_reason"])
+                result["iterations"] = int(iteration + 1)
+                result["final_tension_ma_by_servo"] = {str(sid): float(t) for sid, t in valid_tensions.items()}
+                return result
+
+            # Tighten every servo whose tension is below (max - tolerance).
+            # Skip any servo already at the high-tension guard.
+            targets: dict[int, int] = {}
+            for sid in servo_ids_int:
+                tension = valid_tensions[sid]
+                if tension >= high_tension_guard:
+                    continue
+                if (target_to_match - tension) <= tolerance:
+                    continue
+                entry = telemetry.get(int(sid))
+                if entry is None or entry.present_position is None:
+                    continue
+                targets[int(sid)] = int(entry.present_position) - int(step)
+
+            if not targets:
+                # No servo qualifies for tightening yet the spread exceeds
+                # tolerance. This can happen if every low servo is already
+                # at the high-tension guard. Stop with a descriptive reason.
+                result["stop_reason"] = "tension_spread_blocked_by_high_tension_guard"
+                result["iterations"] = int(iteration + 1)
+                result["final_tension_ma_by_servo"] = {str(sid): float(t) for sid, t in valid_tensions.items()}
+                return result
+
+            move = self._apply_group_command(
+                servo_service=servo_service,
+                telemetry=telemetry,
+                targets_by_servo=targets,
+                reason="pretension_tension_equalization_step",
+            )
+            result["move_count"] += int(move.get("move_count", 0))
+            result["travel_ticks"] += int(move.get("travel_ticks", 0))
+            for sid_str, delta in dict(move.get("delta_ticks") or {}).items():
+                try:
+                    sid_int = int(sid_str)
+                except Exception:
+                    continue
+                result["moves_by_servo"][str(sid_int)] = (
+                    int(result["moves_by_servo"][str(sid_int)]) + abs(int(delta))
+                )
+            if not bool(move.get("success")):
+                result["stop_reason"] = str(move.get("stop_reason") or "tension_equalization_move_failed")
+                result["iterations"] = int(iteration + 1)
+                result["final_tension_ma_by_servo"] = {str(sid): float(t) for sid, t in valid_tensions.items()}
+                return result
+
+        # Loop exhausted without converging.
+        result["stop_reason"] = "tension_equalization_iteration_limit"
+        result["iterations"] = int(max_iterations)
+        # Read one more settled measurement to populate the final tensions.
+        final_measurement = self._advanced_measurement_with_holding(
+            servo_service=servo_service,
+            tracker_service=tracker_service,
+            servo_ids=servo_ids_int,
+            baseline_current_ma_by_servo=baseline_current_ma_by_servo,
+            target_xy_mm=target_xy_mm,
+            session=session,
+            startup_reference_ticks_by_servo=startup_reference_ticks_by_servo,
+            trust_status=("runtime_tip" if tracker_service is not None else "current_only_lower_trust"),
+        )
+        final_signed = dict(
+            final_measurement.get("signed_raw_current_ma")
+            or final_measurement.get("raw_current_ma")
+            or {}
+        )
+        result["final_tension_ma_by_servo"] = {
+            str(sid): (max(0.0, -float(final_signed[sid])) if final_signed.get(sid) is not None else None)
+            for sid in servo_ids_int
+        }
+        return result
 
     def _run_conservative_startup_sequence(
         self,
