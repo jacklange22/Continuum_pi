@@ -1,0 +1,56 @@
+# @claude integration: tag @claude in any issue / PR comment / review and it goes to work.
+#
+# Setup (one-time):
+#   1. From inside `claude` in this repo, run:  /install-github-app
+#      (creates the GitHub App install + ANTHROPIC_API_KEY secret for you)
+#   2. Or, manually: install https://github.com/apps/claude and add ANTHROPIC_API_KEY
+#      under Settings → Secrets → Actions.
+#
+# After setup: write "@claude please add a test for foo()" on any issue or PR.
+# Claude will run on a fresh GitHub runner, open/push a PR, and report back inline.
+name: Claude
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened, assigned]
+
+jobs:
+  claude:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install project deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f pyproject.toml ]; then pip install -e . || true; fi
+
+      - name: Run Claude
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Tools Claude is allowed to use without prompting on the runner.
+          allowed_tools: "Bash(pytest *),Bash(.venv/bin/python *),Bash(pip *),Bash(git *),Bash(gh *),Bash(make *),Edit,Write,Read"

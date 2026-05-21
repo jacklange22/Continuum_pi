@@ -1,0 +1,40 @@
+// Devcontainer for sandboxed autonomous Claude Code work.
+// Anything destructive Claude does is confined to this container, not your Mac.
+// Open with: VS Code "Reopen in Container", or `devcontainer up --workspace-folder .`
+{
+  "name": "pi_code-claude-sandbox",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11-bookworm",
+  "remoteUser": "vscode",
+
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/node:1": { "version": "lts" }
+  },
+
+  // Workspace is mounted from your Mac; everything outside it is invisible to Claude.
+  "workspaceFolder": "/workspaces/pi_code",
+  "mounts": [
+    // Persist Claude Code login + history so you don't re-auth every container rebuild.
+    "source=claude-code-config-pi,target=/home/vscode/.claude,type=volume",
+    "source=${localEnv:HOME}/.gitconfig,target=/home/vscode/.gitconfig,type=bind,readonly"
+  ],
+
+  "containerEnv": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PIP_DISABLE_PIP_VERSION_CHECK": "1"
+  },
+
+  // Install Claude Code + project Python deps on first container build.
+  "postCreateCommand": "npm install -g @anthropic-ai/claude-code && python -m venv .venv && .venv/bin/pip install --upgrade pip && (test -f requirements.txt && .venv/bin/pip install -r requirements.txt) ; (test -f pyproject.toml && .venv/bin/pip install -e .) || true",
+
+  // VS Code niceties (ignored if you only use the CLI).
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "anthropic.claude-code"
+      ]
+    }
+  }
+}
