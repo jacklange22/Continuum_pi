@@ -944,58 +944,223 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Thesis-figure design language for the tracker_variability_* figure set.
+#
+# All five figures share:
+#   • the canonical metric name "Per-command 3D RMS spread (mm)" — never
+#     "std RMS" or "position std" (mixing those two confuses readers about
+#     whether the colour bar is a std-of-stds or a true RMS, when it's
+#     actually the RMS of per-axis sample stds = ‖σ_x, σ_y, σ_z‖₂);
+#   • the same honest interpretation text — within-command pose spread
+#     reflects tracker noise PLUS settling drift, mechanical compliance, and
+#     local instability; not "random tracker noise only";
+#   • the same suptitle / subtitle typography hierarchy;
+#   • constrained_layout + tight bbox so the saved PNG has minimal margins.
+# ---------------------------------------------------------------------------
+
+_THESIS_FIG_TITLE_SIZE = 13.5
+_THESIS_FIG_SUBTITLE_SIZE = 9.8
+_THESIS_FIG_AXES_LABEL_SIZE = 10.5
+_THESIS_FIG_TICK_SIZE = 9.5
+_THESIS_FIG_LEGEND_SIZE = 9.0
+_THESIS_FIG_FOOTER_SIZE = 8.6
+
+_METRIC_LABEL = "Per-command 3D RMS spread (mm)"
+"""Canonical name for the per-command variability metric.
+
+This is ‖[σ_x, σ_y, σ_z]‖₂ — the RMS combination of per-axis sample stds
+across the N (=tracker_samples_per_command) post-settle frames at one
+commanded pose. Reported as a SAMPLE estimate (ddof=1, see the
+2026-05-20 audit pass). Express in millimetres. Do not mix this with
+"std RMS" wording — readers reasonably interpret "std" and "RMS" as
+distinct statistics; the canonical name removes that ambiguity.
+"""
+
+_HONEST_INTERPRETATION = (
+    "Within-command pose spread = tracker noise + post-settle drift + mechanical compliance\n"
+    "  + any local instability. Not 'random tracker noise alone'."
+)
+
+
+def _apply_variability_suptitle(fig, *, figure_label: str, headline: str, subtitle: str) -> None:
+    """Two-tier title used by every tracker_variability figure.
+
+    ``figure_label`` is a short prefix like "Workspace map" or "Distribution";
+    ``headline`` is the descriptive title; ``subtitle`` is the italic
+    explanatory line. Title position and styling are pinned so the five
+    figures look like one consistent set.
+    """
+    fig.suptitle(
+        f"{figure_label}  —  {headline}",
+        fontsize=_THESIS_FIG_TITLE_SIZE,
+        fontweight="bold",
+        x=0.04,
+        ha="left",
+        y=0.985,
+    )
+    fig.text(
+        0.04,
+        0.945,
+        subtitle,
+        fontsize=_THESIS_FIG_SUBTITLE_SIZE,
+        color=color("text"),
+        ha="left",
+        va="top",
+        style="italic",
+        linespacing=1.30,
+    )
+
+
+def _apply_variability_footer(fig, lines: list[str]) -> None:
+    """Stacked, low-margin footer used by every tracker_variability figure."""
+    text = "\n".join(line for line in lines if line)
+    fig.text(
+        0.012,
+        0.010,
+        text,
+        fontsize=_THESIS_FIG_FOOTER_SIZE,
+        color=color("text"),
+        ha="left",
+        va="bottom",
+        linespacing=1.30,
+        bbox={
+            "boxstyle": "round,pad=0.35",
+            "facecolor": "white",
+            "edgecolor": color("grid"),
+            "alpha": 0.94,
+        },
+    )
+
+
+def _spatial_cluster_note(
+    *,
+    xs: list[float],
+    ys: list[float],
+    stds: list[float],
+    threshold_pctl: float = 90.0,
+) -> str | None:
+    """Return a one-line note if the high-variability points cluster spatially.
+
+    Compares the median XY of points whose ``position_std_rms_mm`` is above
+    ``threshold_pctl`` to the median XY of all points. If the offset exceeds
+    a meaningful fraction of the workspace span, we name the quadrant. This
+    keeps the figure honest: a uniform-noise run produces no note; a
+    clustered run gets one. Returns ``None`` when no clear cluster.
+    """
+    if not stds or len(stds) < 20:
+        return None
+    arr = np.asarray(stds, dtype=float)
+    if not np.isfinite(arr).any():
+        return None
+    threshold = float(np.percentile(arr, threshold_pctl))
+    hi_indices = [i for i, value in enumerate(stds) if float(value) >= threshold]
+    if len(hi_indices) < 5:
+        return None
+    hi_x = float(np.median([xs[i] for i in hi_indices]))
+    hi_y = float(np.median([ys[i] for i in hi_indices]))
+    all_x = float(np.median(xs))
+    all_y = float(np.median(ys))
+    span_x = max(abs(max(xs) - min(xs)), 1.0)
+    span_y = max(abs(max(ys) - min(ys)), 1.0)
+    # "Clustered" means the high-variability median is offset from the global
+    # median by ≥ 20% of the workspace span on at least one axis. This is a
+    # heuristic, not a statistical test.
+    if (abs(hi_x - all_x) / span_x) < 0.20 and (abs(hi_y - all_y) / span_y) < 0.20:
+        return None
+    quadrant_x = "right" if hi_x > all_x else "left"
+    quadrant_y = "upper" if hi_y > all_y else "lower"
+    return (
+        f"High-variability commands cluster in the {quadrant_y}-{quadrant_x} workspace "
+        f"(median XY ≈ ({hi_x:+.0f}, {hi_y:+.0f}) mm vs run median "
+        f"({all_x:+.0f}, {all_y:+.0f}) mm) —\n"
+        "  a spatially localized pattern, not uniform-noise behaviour."
+    )
+
+
 def _write_tracker_variability_workspace_xy(
     *,
     path: Path,
     records: list[dict[str, Any]],
 ) -> None:
-    """Tip XY scatter colored by per-command position std RMS.
+    """Workspace map of within-command pose spread.
 
-    Each marker is one averaged command point at its averaged tip XY in the
-    robot frame; color encodes the per-command frame-to-frame position
-    std RMS (random measurement noise around the averaged label). Reader
-    sees whether tracker noise is uniform across the workspace or clusters
-    in specific regions (e.g. edges of the NDI tracking volume).
-
-    Skeptical: color reflects random frame-to-frame variability only. It
-    says nothing about systematic registration bias, settling, or drift.
+    Each marker is one commanded pose plotted at its averaged tip XY in the
+    robot frame; colour encodes the per-command 3D RMS spread across the
+    N post-settle tracker frames at that command. Reader sees whether
+    spread is spatially uniform or clusters in specific workspace regions —
+    a clustered pattern usually indicates a real mechanical or measurement
+    effect at that location rather than uniform tracker noise.
     """
-    fig, ax = create_figure(size="square")
-    valid = [(r["averaged_x_mm"], r["averaged_y_mm"], r["position_std_rms_mm"])
-             for r in records if r["position_std_rms_mm"] is not None]
+    with report_style() as plt:
+        fig, ax = plt.subplots(figsize=(7.4, 7.0), constrained_layout=False)
+    fig.subplots_adjust(left=0.105, right=0.99, top=0.88, bottom=0.13)
+
+    valid = [
+        (r["averaged_x_mm"], r["averaged_y_mm"], r["position_std_rms_mm"])
+        for r in records
+        if r["position_std_rms_mm"] is not None
+    ]
     if not valid:
-        ax.text(0.5, 0.5, "No averaged samples with position std data",
-                transform=ax.transAxes, ha="center", va="center")
+        ax.text(0.5, 0.5, "No averaged samples with position spread data",
+                transform=ax.transAxes, ha="center", va="center",
+                fontsize=_THESIS_FIG_AXES_LABEL_SIZE)
         style_axes(ax, xlabel="Robot X (mm)", ylabel="Robot Y (mm)")
-        fig.suptitle("Tracker Frame-to-Frame Variability vs Workspace Location",
-                     fontsize=12, fontweight="bold", x=0.04, ha="left")
+        _apply_variability_suptitle(
+            fig,
+            figure_label="Workspace map",
+            headline=_METRIC_LABEL,
+            subtitle="No averaged samples available for this run.",
+        )
         save_figure(fig, path)
         return
+
     xs = [v[0] for v in valid]
     ys = [v[1] for v in valid]
     stds = [v[2] for v in valid]
     scatter = ax.scatter(
-        xs, ys, c=stds, cmap="plasma", s=42,
-        edgecolors="white", linewidths=0.5, alpha=0.95,
+        xs,
+        ys,
+        c=stds,
+        cmap="plasma",
+        s=44,
+        edgecolors="white",
+        linewidths=0.45,
+        alpha=0.95,
     )
     ax.set_aspect("equal", adjustable="datalim")
     style_axes(ax, xlabel="Robot X (mm)", ylabel="Robot Y (mm)")
-    cbar = fig.colorbar(scatter, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label("Position std RMS per command (mm)")
+    ax.tick_params(axis="both", labelsize=_THESIS_FIG_TICK_SIZE)
+    ax.xaxis.label.set_size(_THESIS_FIG_AXES_LABEL_SIZE)
+    ax.yaxis.label.set_size(_THESIS_FIG_AXES_LABEL_SIZE)
+
+    cbar = fig.colorbar(scatter, ax=ax, fraction=0.042, pad=0.025, shrink=0.88)
+    cbar.set_label(_METRIC_LABEL, fontsize=_THESIS_FIG_AXES_LABEL_SIZE)
+    cbar.ax.tick_params(labelsize=_THESIS_FIG_TICK_SIZE)
     cbar.outline.set_edgecolor(color("grid"))
-    fig.suptitle("Per-Command Tracker Variability vs Workspace Location",
-                 fontsize=12, fontweight="bold", x=0.04, ha="left")
+
     median_std = float(np.median(stds))
+    p95_std = float(np.percentile(stds, 95))
     max_std = float(np.max(stds))
-    fig.text(
-        0.015, 0.02,
-        f"Commands: {len(valid)}   •   median std RMS: {median_std:.3f} mm   "
-        f"•   max: {max_std:.3f} mm   •   color = random frame noise only "
-        "(not systematic bias / hysteresis / drift)",
-        fontsize=8, color=color("text"), ha="left", va="bottom",
-        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
-              "edgecolor": color("grid"), "alpha": 0.94},
+    cluster_note = _spatial_cluster_note(xs=xs, ys=ys, stds=stds)
+    subtitle = (
+        "One marker per commanded pose at its averaged tip XY; colour = within-command 3D RMS spread "
+        f"across {int(np.median([r.get('valid_sample_count', 0) for r in records]) or 0)} tracker "
+        "frames after settle."
     )
+    _apply_variability_suptitle(
+        fig,
+        figure_label="Workspace map",
+        headline=_METRIC_LABEL,
+        subtitle=subtitle,
+    )
+    footer_lines = [
+        f"Commands: {len(valid)}   ·   median: {median_std:.3f} mm   ·   p95: {p95_std:.3f} mm   ·   max: {max_std:.3f} mm",
+        _HONEST_INTERPRETATION,
+    ]
+    if cluster_note:
+        footer_lines.append(cluster_note)
+    _apply_variability_footer(fig, footer_lines)
     save_figure(fig, path)
 
 
@@ -1004,21 +1169,30 @@ def _write_tracker_variability_std_histogram(
     path: Path,
     records: list[dict[str, Any]],
 ) -> None:
-    """Distribution of per-command position std RMS across the run.
+    """Distribution of per-command 3D RMS spread across the run.
 
-    Answers: typically how noisy is one command point worth of frames?
-    Long tail indicates a few commands where the tracker briefly degraded
-    (occlusion, marker edge, or transient noise). Median + mean overlaid
-    so the operator can see how skewed the distribution is.
+    Answers: across the run as a whole, how big is the within-command
+    pose spread typically, and how long is the tail? A heavy tail says
+    a few commands had much wider spread than the median — often the
+    same commands that show settling-drift directional clusters in
+    :func:`_write_tracker_variability_sample_spread`.
     """
-    fig, ax = create_figure(size="wide")
+    with report_style() as plt:
+        fig, ax = plt.subplots(figsize=(7.6, 4.4), constrained_layout=False)
+    fig.subplots_adjust(left=0.105, right=0.98, top=0.83, bottom=0.20)
+
     stds = [r["position_std_rms_mm"] for r in records if r["position_std_rms_mm"] is not None]
     if not stds:
-        ax.text(0.5, 0.5, "No averaged samples with position std data",
-                transform=ax.transAxes, ha="center", va="center")
-        style_axes(ax, xlabel="Position std RMS (mm)", ylabel="Command count")
-        fig.suptitle("Distribution of Per-Command Tracker Frame-to-Frame Std RMS",
-                     fontsize=12, fontweight="bold", x=0.04, ha="left")
+        ax.text(0.5, 0.5, "No averaged samples with position spread data",
+                transform=ax.transAxes, ha="center", va="center",
+                fontsize=_THESIS_FIG_AXES_LABEL_SIZE)
+        style_axes(ax, xlabel=_METRIC_LABEL, ylabel="Command count")
+        _apply_variability_suptitle(
+            fig,
+            figure_label="Distribution",
+            headline=_METRIC_LABEL,
+            subtitle="No averaged samples available for this run.",
+        )
         save_figure(fig, path)
         return
     arr = np.asarray(stds, dtype=float)
@@ -1027,24 +1201,33 @@ def _write_tracker_variability_std_histogram(
     median = float(np.median(arr))
     mean = float(np.mean(arr))
     p95 = float(np.percentile(arr, 95))
-    ax.axvline(median, color=color("reference"), linestyle="--",
-               linewidth=1.4, label=f"Median {median:.3f} mm")
-    ax.axvline(mean, color=color("fit"), linestyle=":",
-               linewidth=1.4, label=f"Mean {mean:.3f} mm")
-    ax.axvline(p95, color=color("rejected"), linestyle="-.",
-               linewidth=1.2, label=f"p95 {p95:.3f} mm")
-    style_axes(ax, xlabel="Position std RMS (mm)", ylabel="Command count")
-    fig.suptitle("Distribution of Per-Command Tracker Frame-to-Frame Std RMS",
-                 fontsize=12, fontweight="bold", x=0.04, ha="left")
-    legend(ax, loc="upper right", ncol=1)
-    fig.text(
-        0.015, 0.02,
-        f"Commands: {len(arr)}   •   "
-        "captures random frame-to-frame label noise only "
-        "(systematic bias / hysteresis / drift not visible here)",
-        fontsize=8, color=color("text"), ha="left", va="bottom",
-        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
-              "edgecolor": color("grid"), "alpha": 0.94},
+    ax.axvline(median, color=color("reference"), linestyle="--", linewidth=1.4,
+               label=f"Median {median:.3f} mm")
+    ax.axvline(mean, color=color("fit"), linestyle=":", linewidth=1.4,
+               label=f"Mean {mean:.3f} mm")
+    ax.axvline(p95, color=color("rejected"), linestyle="-.", linewidth=1.2,
+               label=f"p95 {p95:.3f} mm")
+    style_axes(ax, xlabel=_METRIC_LABEL, ylabel="Command count")
+    ax.tick_params(axis="both", labelsize=_THESIS_FIG_TICK_SIZE)
+    ax.xaxis.label.set_size(_THESIS_FIG_AXES_LABEL_SIZE)
+    ax.yaxis.label.set_size(_THESIS_FIG_AXES_LABEL_SIZE)
+    legend_obj = ax.legend(loc="upper right", frameon=True, facecolor="white",
+                           edgecolor=color("grid"), framealpha=0.95,
+                           fontsize=_THESIS_FIG_LEGEND_SIZE)
+    if legend_obj is not None:
+        legend_obj.get_frame().set_linewidth(0.6)
+    _apply_variability_suptitle(
+        fig,
+        figure_label="Distribution",
+        headline=_METRIC_LABEL,
+        subtitle="One bin per command. Vertical lines mark the median, mean, and 95th percentile of the run.",
+    )
+    _apply_variability_footer(
+        fig,
+        [
+            f"Commands: {len(arr)}",
+            _HONEST_INTERPRETATION,
+        ],
     )
     save_figure(fig, path)
 
@@ -1054,23 +1237,35 @@ def _write_tracker_variability_first_vs_mean(
     path: Path,
     records: list[dict[str, Any]],
 ) -> None:
-    """Distance between the first-frame label and the averaged-frame label.
+    """Distance between the first-frame label and the averaged label per command.
 
-    For each command point, this is `‖first_position - averaged_position‖`.
-    Larger values say "the first valid post-settle frame was further from
-    the average than usual" — useful for arguing why averaging matters
-    when comparing ANN models trained on the two label sets.
+    For each commanded pose this is ``‖first_position − mean_position‖``
+    across the N post-settle frames. Indicates how much the first-frame
+    label set (the legacy capture path) shifts when replaced by the
+    frame-averaged label set — useful for arguing whether the two label
+    variants train materially different ANN models.
     """
-    fig, ax = create_figure(size="wide")
-    diffs = [r["first_vs_mean_position_diff_mm"] for r in records
-             if r["first_vs_mean_position_diff_mm"] is not None]
+    with report_style() as plt:
+        fig, ax = plt.subplots(figsize=(7.6, 4.4), constrained_layout=False)
+    fig.subplots_adjust(left=0.105, right=0.98, top=0.83, bottom=0.20)
+
+    diffs = [
+        r["first_vs_mean_position_diff_mm"]
+        for r in records
+        if r["first_vs_mean_position_diff_mm"] is not None
+    ]
     if not diffs:
-        ax.text(0.5, 0.5, "No first-vs-mean diff data available",
-                transform=ax.transAxes, ha="center", va="center")
-        style_axes(ax, xlabel="First-frame vs averaged-frame distance (mm)",
+        ax.text(0.5, 0.5, "No first-vs-mean difference data available",
+                transform=ax.transAxes, ha="center", va="center",
+                fontsize=_THESIS_FIG_AXES_LABEL_SIZE)
+        style_axes(ax, xlabel="First-frame vs averaged-frame label distance (mm)",
                    ylabel="Command count")
-        fig.suptitle("Label Difference: First Valid Post-Settle Frame vs Averaged Frames",
-                     fontsize=12, fontweight="bold", x=0.04, ha="left")
+        _apply_variability_suptitle(
+            fig,
+            figure_label="Label comparison",
+            headline="First valid frame vs averaged frames",
+            subtitle="No averaged samples available for this run.",
+        )
         save_figure(fig, path)
         return
     arr = np.asarray(diffs, dtype=float)
@@ -1078,23 +1273,35 @@ def _write_tracker_variability_first_vs_mean(
     ax.hist(arr, bins=bins, color=color("fit"), edgecolor="white", alpha=0.92)
     median = float(np.median(arr))
     mean = float(np.mean(arr))
-    ax.axvline(median, color=color("reference"), linestyle="--",
-               linewidth=1.4, label=f"Median {median:.3f} mm")
-    ax.axvline(mean, color=color("rejected"), linestyle=":",
-               linewidth=1.4, label=f"Mean {mean:.3f} mm")
-    style_axes(ax, xlabel="First-frame vs averaged-frame distance (mm)",
+    ax.axvline(median, color=color("reference"), linestyle="--", linewidth=1.4,
+               label=f"Median {median:.3f} mm")
+    ax.axvline(mean, color=color("rejected"), linestyle=":", linewidth=1.4,
+               label=f"Mean {mean:.3f} mm")
+    style_axes(ax, xlabel="First-frame vs averaged-frame label distance (mm)",
                ylabel="Command count")
-    fig.suptitle("Label Difference: First Valid Post-Settle Frame vs Averaged Frames",
-                 fontsize=12, fontweight="bold", x=0.04, ha="left")
-    legend(ax, loc="upper right", ncol=1)
-    fig.text(
-        0.015, 0.02,
-        f"Commands: {len(arr)}   •   "
-        "distance between the legacy label (first valid frame) and the "
-        "averaged label at the same command point",
-        fontsize=8, color=color("text"), ha="left", va="bottom",
-        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
-              "edgecolor": color("grid"), "alpha": 0.94},
+    ax.tick_params(axis="both", labelsize=_THESIS_FIG_TICK_SIZE)
+    ax.xaxis.label.set_size(_THESIS_FIG_AXES_LABEL_SIZE)
+    ax.yaxis.label.set_size(_THESIS_FIG_AXES_LABEL_SIZE)
+    legend_obj = ax.legend(loc="upper right", frameon=True, facecolor="white",
+                           edgecolor=color("grid"), framealpha=0.95,
+                           fontsize=_THESIS_FIG_LEGEND_SIZE)
+    if legend_obj is not None:
+        legend_obj.get_frame().set_linewidth(0.6)
+    _apply_variability_suptitle(
+        fig,
+        figure_label="Label comparison",
+        headline="First valid frame vs averaged frames",
+        subtitle=(
+            "Per-command distance between the legacy label (first valid post-settle frame) "
+            "and the N-frame averaged label at the same commanded pose."
+        ),
+    )
+    _apply_variability_footer(
+        fig,
+        [
+            f"Commands: {len(arr)}",
+            "Bounds the label shift you'd see by switching the ANN training set from first-frame to averaged.",
+        ],
     )
     save_figure(fig, path)
 
@@ -1107,26 +1314,30 @@ def _write_tracker_variability_sample_spread(
 ) -> None:
     """Raw per-frame XY clusters at three representative commands.
 
-    Shows the actual per-frame XY positions (centered on each command's
-    mean) for: the command with the tightest cluster (min std RMS), the
-    command nearest the median, and the command with the loosest cluster
-    (max std RMS). If the loose cluster shows a directional drift instead
-    of an isotropic blob, averaging is hiding settling/drift rather than
-    just smoothing noise.
+    Shows the actual per-frame XY positions (centred on each command's
+    mean) for: the command with the tightest cluster (min 3D RMS spread),
+    the command nearest the median, and the command with the loosest
+    cluster (max 3D RMS spread). If the loose cluster shows a directional
+    drift instead of an isotropic blob, averaging is hiding settling/drift
+    rather than just smoothing tracker noise.
     """
     with report_style() as plt:
-        fig, axes = plt.subplots(1, 3, figsize=(11.0, 4.3), constrained_layout=False)
-    fig.subplots_adjust(left=0.08, right=0.97, top=0.85, bottom=0.20, wspace=0.32)
+        fig, axes = plt.subplots(1, 3, figsize=(11.0, 4.6), constrained_layout=False)
+    fig.subplots_adjust(left=0.07, right=0.985, top=0.80, bottom=0.20, wspace=0.30)
 
     valid = [(r["command_index"], r["position_std_rms_mm"])
              for r in records if r["position_std_rms_mm"] is not None]
     if not valid or not raw_rows:
         for ax in np.atleast_1d(axes):
             ax.text(0.5, 0.5, "No raw frames", transform=ax.transAxes,
-                    ha="center", va="center")
+                    ha="center", va="center", fontsize=_THESIS_FIG_AXES_LABEL_SIZE)
             style_axes(ax, xlabel="ΔX (mm)", ylabel="ΔY (mm)")
-        fig.suptitle("Raw Per-Frame Spread at Representative Commands",
-                     fontsize=12, fontweight="bold", x=0.04, ha="left")
+        _apply_variability_suptitle(
+            fig,
+            figure_label="Per-command spread",
+            headline="Raw per-frame XY clusters at representative commands",
+            subtitle="No raw frames available for this run.",
+        )
         save_figure(fig, path)
         return
 
@@ -1135,9 +1346,9 @@ def _write_tracker_variability_sample_spread(
     pick_med = valid_sorted[len(valid_sorted) // 2]
     pick_max = valid_sorted[-1]
     picks = [
-        (int(pick_min[0]), float(pick_min[1]), "min std RMS"),
-        (int(pick_med[0]), float(pick_med[1]), "median std RMS"),
-        (int(pick_max[0]), float(pick_max[1]), "max std RMS"),
+        (int(pick_min[0]), float(pick_min[1]), "tightest cluster"),
+        (int(pick_med[0]), float(pick_med[1]), "median cluster"),
+        (int(pick_max[0]), float(pick_max[1]), "loosest cluster"),
     ]
     raw_by_cmd: dict[int, list[dict[str, Any]]] = {}
     for row in raw_rows:
@@ -1157,33 +1368,51 @@ def _write_tracker_variability_sample_spread(
             ys.append(float(translation[1]))
         if len(xs) < 1:
             ax.text(0.5, 0.5, f"No raw frames\nfor cmd {cmd_idx}",
-                    transform=ax.transAxes, ha="center", va="center")
+                    transform=ax.transAxes, ha="center", va="center",
+                    fontsize=_THESIS_FIG_AXES_LABEL_SIZE)
             style_axes(ax, xlabel="ΔX (mm)", ylabel="ΔY (mm)")
-            ax.set_title(f"cmd {cmd_idx}  ({name})\nstd RMS = {std_rms:.3f} mm",
-                         fontsize=10, color=color("text"))
+            ax.set_title(f"cmd {cmd_idx}  —  {name}\nRMS spread = {std_rms:.3f} mm",
+                         fontsize=_THESIS_FIG_AXES_LABEL_SIZE, color=color("text"),
+                         loc="left", pad=8)
             continue
         cx = float(np.mean(xs))
         cy = float(np.mean(ys))
         rel_xs = [x - cx for x in xs]
         rel_ys = [y - cy for y in ys]
-        ax.scatter(rel_xs, rel_ys, color=color("measured"), s=32,
+        ax.scatter(rel_xs, rel_ys, color=color("measured"), s=34,
                    edgecolors="white", linewidths=0.4)
         ax.axhline(0, color=color("grid"), linewidth=0.6)
         ax.axvline(0, color=color("grid"), linewidth=0.6)
         ax.set_aspect("equal", adjustable="datalim")
         style_axes(ax, xlabel="ΔX from cmd mean (mm)", ylabel="ΔY from cmd mean (mm)")
-        ax.set_title(f"cmd {cmd_idx}  ({name})\nstd RMS = {std_rms:.3f} mm  ·  N = {len(xs)} frames",
-                     fontsize=10, color=color("text"))
+        ax.tick_params(axis="both", labelsize=_THESIS_FIG_TICK_SIZE)
+        ax.xaxis.label.set_size(_THESIS_FIG_AXES_LABEL_SIZE)
+        ax.yaxis.label.set_size(_THESIS_FIG_AXES_LABEL_SIZE)
+        ax.set_title(
+            f"cmd {cmd_idx}  —  {name}\nRMS spread = {std_rms:.3f} mm   N = {len(xs)} frames",
+            fontsize=_THESIS_FIG_AXES_LABEL_SIZE,
+            color=color("text"),
+            loc="left",
+            pad=8,
+        )
 
-    fig.suptitle("Raw Per-Frame Spread at Representative Commands",
-                 fontsize=12, fontweight="bold", x=0.04, ha="left")
-    fig.text(
-        0.015, 0.02,
-        "Directional clusters at the right-hand panel suggest settling drift "
-        "during the sample window; isotropic clusters suggest random tracker noise.",
-        fontsize=8, color=color("text"), ha="left", va="bottom",
-        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
-              "edgecolor": color("grid"), "alpha": 0.94},
+    _apply_variability_suptitle(
+        fig,
+        figure_label="Per-command spread",
+        headline="Raw per-frame XY clusters at representative commands",
+        subtitle=(
+            "Panels show the tightest, median, and loosest within-command clusters in the run. "
+            "Directional structure in a panel = drift during the averaging window; "
+            "isotropic clouds = uncorrelated tracker noise."
+        ),
+    )
+    _apply_variability_footer(
+        fig,
+        [
+            "Reads the raw N-frame stream at three picked commands; "
+            "each dot is one tracker frame, recentered on that command's mean.",
+            _HONEST_INTERPRETATION,
+        ],
     )
     save_figure(fig, path)
 
@@ -1193,36 +1422,43 @@ def _write_tracker_variability_std_vs_command_index(
     path: Path,
     records: list[dict[str, Any]],
 ) -> None:
-    """std RMS over collection order — does tracker noise grow over time?
+    """Per-command 3D RMS spread over collection order.
 
-    Plots per-command std RMS against command_index (the order in which
-    they were collected). A flat trend says noise is stationary over the
-    session; a rising trend says the tracker drifted, the rig warmed up,
-    a coil came loose, or some other time-correlated effect kicked in
-    that the averaging path can't compensate for.
+    Does the within-command pose spread grow over the session? A flat trend
+    says it stays stationary; a rising trend points at time-correlated
+    drift — the tracker warming up, a coil shifting, mechanical loosening
+    — that the averaging path cannot remove on its own.
     """
-    fig, ax = create_figure(size="wide")
+    with report_style() as plt:
+        fig, ax = plt.subplots(figsize=(7.8, 4.4), constrained_layout=False)
+    fig.subplots_adjust(left=0.105, right=0.98, top=0.83, bottom=0.20)
+
     rows_sorted = sorted(
         (r for r in records if r["position_std_rms_mm"] is not None),
         key=lambda r: int(r["command_index"]),
     )
     if not rows_sorted:
-        ax.text(0.5, 0.5, "No averaged samples with position std data",
-                transform=ax.transAxes, ha="center", va="center")
+        ax.text(0.5, 0.5, "No averaged samples with position spread data",
+                transform=ax.transAxes, ha="center", va="center",
+                fontsize=_THESIS_FIG_AXES_LABEL_SIZE)
         style_axes(ax, xlabel="Command index (collection order)",
-                   ylabel="Position std RMS (mm)")
-        fig.suptitle("Per-Command Tracker Variability Over Collection Time",
-                     fontsize=12, fontweight="bold", x=0.04, ha="left")
+                   ylabel=_METRIC_LABEL)
+        _apply_variability_suptitle(
+            fig,
+            figure_label="Time series",
+            headline=f"{_METRIC_LABEL} over collection order",
+            subtitle="No averaged samples available for this run.",
+        )
         save_figure(fig, path)
         return
     xs = [int(r["command_index"]) for r in rows_sorted]
     ys = [float(r["position_std_rms_mm"]) for r in rows_sorted]
-    ax.plot(xs, ys, color=color("measured"), linewidth=0.9,
-            marker="o", markersize=3.5, markerfacecolor=color("measured"),
-            markeredgecolor="white", markeredgewidth=0.3, alpha=0.85,
-            label="Per-command std RMS")
-    # Running-median trend line (window = max(5, len/20)) so the operator
-    # can see the underlying drift without scrolling through every point.
+    ax.plot(xs, ys, color=color("measured"), linewidth=0.8,
+            marker="o", markersize=3.0, markerfacecolor=color("measured"),
+            markeredgecolor="white", markeredgewidth=0.25, alpha=0.80,
+            label="Per-command RMS spread")
+    # Rolling mean (window ≈ N/20, min 5) so the underlying trend reads at a
+    # glance without the operator scrolling through every dot.
     window = max(5, len(ys) // 20)
     if len(ys) >= window:
         kernel = np.ones(window) / float(window)
@@ -1232,17 +1468,30 @@ def _write_tracker_variability_std_vs_command_index(
             ax.plot(smooth_x, smoothed, color=color("rejected"),
                     linewidth=1.6, label=f"Rolling mean (window={window})")
     style_axes(ax, xlabel="Command index (collection order)",
-               ylabel="Position std RMS (mm)")
-    fig.suptitle("Per-Command Tracker Variability Over Collection Time",
-                 fontsize=12, fontweight="bold", x=0.04, ha="left")
-    legend(ax, loc="upper right", ncol=1)
+               ylabel=_METRIC_LABEL)
+    ax.tick_params(axis="both", labelsize=_THESIS_FIG_TICK_SIZE)
+    ax.xaxis.label.set_size(_THESIS_FIG_AXES_LABEL_SIZE)
+    ax.yaxis.label.set_size(_THESIS_FIG_AXES_LABEL_SIZE)
+    legend_obj = ax.legend(loc="upper right", frameon=True, facecolor="white",
+                           edgecolor=color("grid"), framealpha=0.95,
+                           fontsize=_THESIS_FIG_LEGEND_SIZE)
+    if legend_obj is not None:
+        legend_obj.get_frame().set_linewidth(0.6)
+    _apply_variability_suptitle(
+        fig,
+        figure_label="Time series",
+        headline=f"{_METRIC_LABEL} over collection order",
+        subtitle=(
+            "One dot per command in the order it was driven; rolling mean overlaid. "
+            "A rising trend implies time-correlated drift the averaging step cannot remove."
+        ),
+    )
     overall_median = float(np.median(ys))
-    fig.text(
-        0.015, 0.02,
-        f"Commands: {len(ys)}   •   overall median std RMS: {overall_median:.3f} mm   "
-        "•   rising trend suggests time-correlated tracker drift that averaging cannot remove",
-        fontsize=8, color=color("text"), ha="left", va="bottom",
-        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
-              "edgecolor": color("grid"), "alpha": 0.94},
+    _apply_variability_footer(
+        fig,
+        [
+            f"Commands: {len(ys)}   ·   overall median: {overall_median:.3f} mm",
+            _HONEST_INTERPRETATION,
+        ],
     )
     save_figure(fig, path)
