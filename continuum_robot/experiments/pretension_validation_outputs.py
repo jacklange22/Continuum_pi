@@ -4,12 +4,28 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 import struct
 from typing import Any
 import zlib
 
-from continuum_robot.experiments.plotting import add_metric_box, color, create_figure, legend, save_figure, set_equal_xy, style_axes
+from continuum_robot.experiments.plotting import (
+    add_metric_box,
+    color,
+    create_figure,
+    legend,
+    report_style,
+    save_figure,
+    set_equal_xy,
+    style_axes,
+)
+
+
+PRETENSION_REPORT_FIGURES = (
+    "pretension_telemetry_timeline_report.png",
+    "pretension_final_state_consistency_report.png",
+)
 
 
 @dataclass(frozen=True)
@@ -169,19 +185,8 @@ def _write_staged_pretension_outputs(
     quality_dist_path = output_dir / "pretension_quality_score_distribution.png"
     repeatability_path = output_dir / "pretension_repeatability_summary.png"
     response_alias_path = output_dir / "pretension_response.png"
-    tip_xy_path_report = output_dir / "pretension_tip_xy_path_report.png"
-    load_proxy_report = output_dir / "pretension_load_proxy_by_servo_report.png"
-    tendon_vs_load_proxy_report = output_dir / "pretension_tendon_displacement_vs_load_proxy_report.png"
-    final_state_report = output_dir / "pretension_final_state_report.png"
-    # New thesis-quality report figures for the one-rig pretension proof.
-    # These are the five figures called out in the simplification pass: they
-    # show what each tendon's current and position did across release/take-up/
-    # tip-centering, where the tip ended up across runs, and a compact phase
-    # summary for the last accepted run.
-    current_by_servo_report = output_dir / "pretension_current_by_servo_report.png"
-    position_by_servo_report = output_dir / "pretension_position_by_servo_report.png"
-    final_repeatability_report = output_dir / "pretension_final_repeatability_report.png"
-    phase_summary_report = output_dir / "pretension_phase_summary_report.png"
+    telemetry_timeline_report = output_dir / PRETENSION_REPORT_FIGURES[0]
+    final_state_consistency_report = output_dir / PRETENSION_REPORT_FIGURES[1]
     quality_summary_json_path = output_dir / "pretension_quality_summary.json"
     comparison_markdown_path = output_dir / "pretension_algorithm_vs_manual.md"
     comparison_plot_path = output_dir / "pretension_algorithm_vs_manual.png"
@@ -208,26 +213,16 @@ def _write_staged_pretension_outputs(
     _write_staged_final_position_distribution_plot(plot_path=final_position_dist_path, run_rows=run_rows)
     _write_staged_quality_distribution_plot(plot_path=quality_dist_path, run_rows=run_rows)
     _write_staged_repeatability_plot(repeatability_path=repeatability_path, metrics=metrics)
-    _write_pretension_tip_xy_path_report(plot_path=tip_xy_path_report, trace_rows=trace_rows, run_rows=run_rows)
-    _write_pretension_load_proxy_by_servo_report(plot_path=load_proxy_report, trace_rows=trace_rows, run_rows=run_rows)
-    _write_pretension_tendon_vs_load_proxy_report(plot_path=tendon_vs_load_proxy_report, trace_rows=trace_rows, run_rows=run_rows)
-    _write_pretension_final_state_report(plot_path=final_state_report, run_rows=run_rows, metrics=metrics)
-    _write_pretension_current_by_servo_report(
-        plot_path=current_by_servo_report,
+    _write_pretension_telemetry_timeline_report(
+        plot_path=telemetry_timeline_report,
         trace_rows=trace_rows,
-    )
-    _write_pretension_position_by_servo_report(
-        plot_path=position_by_servo_report,
-        trace_rows=trace_rows,
-    )
-    _write_pretension_final_repeatability_report(
-        plot_path=final_repeatability_report,
         run_rows=run_rows,
         metrics=metrics,
     )
-    _write_pretension_phase_summary_report(
-        plot_path=phase_summary_report,
+    _write_pretension_final_state_consistency_report(
+        plot_path=final_state_consistency_report,
         run_rows=run_rows,
+        metrics=metrics,
     )
     _write_pretension_quality_summary_json(
         json_path=quality_summary_json_path,
@@ -267,14 +262,8 @@ def _write_staged_pretension_outputs(
         "final_position_distribution_plot_path": final_position_dist_path,
         "quality_score_distribution_plot_path": quality_dist_path,
         "repeatability_plot_path": repeatability_path,
-        "tip_xy_path_report_path": tip_xy_path_report,
-        "load_proxy_by_servo_report_path": load_proxy_report,
-        "tendon_displacement_vs_load_proxy_report_path": tendon_vs_load_proxy_report,
-        "final_state_report_path": final_state_report,
-        "current_by_servo_report_path": current_by_servo_report,
-        "position_by_servo_report_path": position_by_servo_report,
-        "final_repeatability_report_path": final_repeatability_report,
-        "phase_summary_report_path": phase_summary_report,
+        "telemetry_timeline_report_path": telemetry_timeline_report,
+        "final_state_consistency_report_path": final_state_consistency_report,
         "quality_summary_json_path": quality_summary_json_path,
         "algorithm_vs_manual_markdown_path": comparison_markdown_path,
         "algorithm_vs_manual_plot_path": comparison_plot_path,
@@ -498,7 +487,11 @@ def _write_staged_summary_text(
         f"- Advanced startup artifacts: {metrics.get('advanced_startup_artifacts')}",
         "",
         *_format_soft_release_summary_lines(metrics.get("run_rows") or []),
-        "Saved plots:",
+        "Thesis report figures:",
+        "- pretension_telemetry_timeline_report.png",
+        "- pretension_final_state_consistency_report.png",
+        "",
+        "Diagnostic/support plots:",
         "- pretension_tendon_displacement_vs_tip_xy.png",
         "- pretension_tendon_displacement_vs_current.png",
         "- pretension_current_vs_tip_error.png",
@@ -509,10 +502,6 @@ def _write_staged_summary_text(
         "- pretension_final_position_distribution.png",
         "- pretension_quality_score_distribution.png",
         "- pretension_repeatability_summary.png",
-        "- pretension_tip_xy_path_report.png",
-        "- pretension_load_proxy_by_servo_report.png",
-        "- pretension_tendon_displacement_vs_load_proxy_report.png",
-        "- pretension_final_state_report.png",
     ]
     summary_text_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
 
@@ -579,159 +568,6 @@ def _format_soft_release_summary_lines(run_rows: list[dict[str, Any]]) -> list[s
     return lines
 
 
-def _write_pretension_tip_xy_path_report(
-    *,
-    plot_path: Path,
-    trace_rows: list[dict[str, Any]],
-    run_rows: list[dict[str, Any]],
-) -> None:
-    points: list[tuple[float, float]] = []
-    for row in trace_rows:
-        xy = _extract_tip_xy(row)
-        if xy is not None:
-            points.append(xy)
-    for row in run_rows:
-        xy = _extract_tip_xy(row)
-        if xy is not None:
-            points.append(xy)
-    fig, ax = create_figure(size="square")
-    ax.scatter([0.0], [0.0], marker="+", s=120, color=color("target"), label="Target center", zorder=4)
-    if points:
-        ax.plot([point[0] for point in points], [point[1] for point in points], color=color("measured"), alpha=0.65, label="Tip path")
-        ax.scatter([points[0][0]], [points[0][1]], s=42, color=color("reference"), label="Start", zorder=5)
-        ax.scatter([points[-1][0]], [points[-1][1]], s=54, color=color("accepted"), label="End", zorder=5)
-        all_points = points + [(0.0, 0.0)]
-        set_equal_xy(ax, x_values=[point[0] for point in all_points], y_values=[point[1] for point in all_points], minimum_span=3.0)
-        final_error = ((points[-1][0] ** 2) + (points[-1][1] ** 2)) ** 0.5
-        add_metric_box(ax, [f"Final XY error: {final_error:.2f} mm", f"Samples: {len(points)}"], loc="upper right")
-    else:
-        ax.text(0.5, 0.5, "No robot-frame 0A XY samples available", transform=ax.transAxes, ha="center", va="center")
-        set_equal_xy(ax, x_values=[-1.0, 1.0], y_values=[-1.0, 1.0], minimum_span=3.0)
-    style_axes(
-        ax,
-        title="Pretension Tip XY Path",
-        xlabel="Robot-frame 0A X position (mm)",
-        ylabel="Robot-frame 0A Y position (mm)",
-    )
-    legend(ax, loc="best")
-    save_figure(fig, plot_path)
-
-
-def _write_pretension_load_proxy_by_servo_report(
-    *,
-    plot_path: Path,
-    trace_rows: list[dict[str, Any]],
-    run_rows: list[dict[str, Any]],
-) -> None:
-    grouped: dict[int, list[tuple[int, float]]] = {}
-    sample_index = 0
-    for row in trace_rows:
-        for servo_id, value in _extract_load_proxy_map(row).items():
-            grouped.setdefault(int(servo_id), []).append((sample_index, float(value)))
-        sample_index += 1
-    for row in run_rows:
-        for servo_id, value in _extract_load_proxy_map(row).items():
-            grouped.setdefault(int(servo_id), []).append((sample_index, float(value)))
-        sample_index += 1
-    fig, ax = create_figure(size="wide")
-    if not grouped:
-        ax.text(0.5, 0.5, "No load-proxy current data available", transform=ax.transAxes, ha="center", va="center")
-    for index, servo_id in enumerate(sorted(grouped)):
-        points = grouped[servo_id]
-        ax.plot(
-            [point[0] for point in points],
-            [point[1] for point in points],
-            marker="o",
-            markersize=3.5,
-            color=_servo_color(index),
-            alpha=0.85,
-            label=f"Servo {servo_id}",
-        )
-    style_axes(
-        ax,
-        title="Pretension Load Proxy by Servo",
-        xlabel="Pretension sample index",
-        ylabel="Load proxy current (mA)",
-    )
-    legend(ax, loc="best", ncol=2)
-    save_figure(fig, plot_path)
-
-
-def _write_pretension_tendon_vs_load_proxy_report(
-    *,
-    plot_path: Path,
-    trace_rows: list[dict[str, Any]],
-    run_rows: list[dict[str, Any]],
-) -> None:
-    grouped: dict[int, list[tuple[float, float]]] = {}
-    for row in [*trace_rows, *run_rows]:
-        load_map = _extract_load_proxy_map(row)
-        tendon_map = _extract_tendon_displacement_map(row)
-        for servo_id, load_proxy in load_map.items():
-            tendon = tendon_map.get(int(servo_id))
-            if tendon is None:
-                continue
-            grouped.setdefault(int(servo_id), []).append((float(tendon), float(load_proxy)))
-    fig, ax = create_figure(size="wide")
-    if not grouped:
-        ax.text(0.5, 0.5, "No tendon displacement/load-proxy data available", transform=ax.transAxes, ha="center", va="center")
-    for index, servo_id in enumerate(sorted(grouped)):
-        points = grouped[servo_id]
-        ax.scatter(
-            [point[0] for point in points],
-            [point[1] for point in points],
-            s=24,
-            alpha=0.72,
-            color=_servo_color(index),
-            linewidths=0,
-            label=f"Servo {servo_id}",
-        )
-    style_axes(
-        ax,
-        title="Tendon Displacement vs Load Proxy",
-        xlabel="Tendon displacement relative to startup (mm)",
-        ylabel="Load proxy current (mA)",
-    )
-    legend(ax, loc="best", ncol=2)
-    save_figure(fig, plot_path)
-
-
-def _write_pretension_final_state_report(
-    *,
-    plot_path: Path,
-    run_rows: list[dict[str, Any]],
-    metrics: dict[str, Any],
-) -> None:
-    final_row = run_rows[-1] if run_rows else {}
-    load_map = _extract_load_proxy_map(final_row)
-    servo_ids = sorted(load_map)
-    fig, ax = create_figure(size="wide")
-    if servo_ids:
-        ax.bar([f"S{servo_id}" for servo_id in servo_ids], [float(load_map[servo_id]) for servo_id in servo_ids], color=color("measured"))
-    else:
-        ax.text(0.5, 0.5, "No final load-proxy data available", transform=ax.transAxes, ha="center", va="center")
-    quality = _as_float(final_row.get("quality_score_0_100"))
-    if quality is None:
-        quality = _as_float(metrics.get("quality_score_mean_0_100"))
-    flags = [str(flag) for flag in (final_row.get("quality_flags") or [])]
-    metric_lines = [
-        f"Final XY error: {_fmt_float(final_row.get('final_tip_xy_offset_mm'))} mm",
-        f"Load spread: {_fmt_float(final_row.get('load_balance_error_ma'))} mA",
-        f"Pair balance: {_fmt_float(final_row.get('pair_balance_error_ma'))} mA",
-        f"Quality: {_fmt_float(quality)} / 100",
-    ]
-    if flags:
-        metric_lines.append("Flags: " + ", ".join(flags[:3]))
-    add_metric_box(ax, metric_lines, loc="upper right")
-    style_axes(
-        ax,
-        title="Pretension Final State",
-        xlabel="Servo",
-        ylabel="Final load proxy current (mA)",
-    )
-    save_figure(fig, plot_path)
-
-
 def _phase_for_stage(stage: str) -> str:
     """Map a trace-row stage to a coarse pretension phase name.
 
@@ -774,346 +610,570 @@ _PHASE_COLORS = {
 }
 
 
-def _write_pretension_current_by_servo_report(
+def _write_pretension_telemetry_timeline_report(
     *,
     plot_path: Path,
     trace_rows: list[dict[str, Any]],
+    run_rows: list[dict[str, Any]],
+    metrics: dict[str, Any],
 ) -> None:
-    """Thesis Figure 1. Current / load proxy vs sample index, one line per
-    servo, with vertical phase boundaries annotated."""
-    grouped: dict[int, list[tuple[int, float]]] = {}
-    phase_boundaries: list[tuple[int, str]] = []
-    last_phase = None
-    for sample_index, row in enumerate(trace_rows):
-        phase = _phase_for_stage(row.get("stage"))
-        if phase != last_phase:
-            phase_boundaries.append((int(sample_index), phase))
-            last_phase = phase
-        load_map = _extract_load_proxy_map(row)
-        if not load_map:
-            # Fall back to raw_current_ma so the release/characterization
-            # phases (before a baseline exists) still render.
-            raw = row.get("raw_current_ma") or {}
-            if isinstance(raw, dict):
-                for sid, val in raw.items():
-                    v = _as_float(val)
-                    if v is not None:
-                        grouped.setdefault(int(sid), []).append((int(sample_index), float(v)))
-        else:
-            for sid, val in load_map.items():
-                grouped.setdefault(int(sid), []).append((int(sample_index), float(val)))
+    """Primary pretension report figure.
 
-    fig, ax = create_figure(size="wide")
-    if not grouped:
-        ax.text(0.5, 0.5, "No current data available", transform=ax.transAxes, ha="center", va="center")
-    else:
-        for index, servo_id in enumerate(sorted(grouped)):
-            points = grouped[servo_id]
-            ax.plot(
-                [p[0] for p in points],
-                [p[1] for p in points],
-                marker="o",
-                markersize=2.5,
-                linewidth=1.2,
-                color=_servo_color(index),
-                alpha=0.85,
-                label=f"Servo {servo_id}",
-            )
-        # Phase shading: light vertical bands per phase.
-        for i, (start, phase) in enumerate(phase_boundaries):
-            end = phase_boundaries[i + 1][0] if i + 1 < len(phase_boundaries) else len(trace_rows)
-            if end <= start:
-                continue
-            ax.axvspan(
-                start - 0.5,
-                end - 0.5,
-                alpha=0.10,
-                color=_PHASE_COLORS.get(phase, _PHASE_COLORS["other"]),
-                lw=0,
-            )
-        # Label phases under the x-axis at the midpoint of each band.
-        for i, (start, phase) in enumerate(phase_boundaries):
-            end = phase_boundaries[i + 1][0] if i + 1 < len(phase_boundaries) else len(trace_rows)
-            if end <= start:
-                continue
-            ax.annotate(
-                phase,
-                xy=((start + end) / 2.0 - 0.5, 0.02),
-                xycoords=("data", "axes fraction"),
-                ha="center",
-                va="bottom",
-                fontsize=7,
-                color="#444",
-            )
-    style_axes(
-        ax,
-        title="Pretension Current by Servo (with phase shading)",
-        xlabel="Trace sample index",
-        ylabel="Current / load proxy (mA)",
-    )
-    legend(ax, loc="best", ncol=2)
-    save_figure(fig, plot_path)
+    Shows the full staged routine as three aligned time axes: servo current,
+    servo position, and tracked tip offset. This is the cleanest single view of
+    whether all four tendons loaded together while the tip moved toward target.
+    """
+    x_values, x_label = _trace_time_axis(trace_rows)
+    servo_ids = _pretension_servo_ids(trace_rows=trace_rows, run_rows=run_rows, metrics=metrics)
+    current_by_servo: dict[int, list[tuple[float, float]]] = {sid: [] for sid in servo_ids}
+    position_by_servo: dict[int, list[tuple[float, float]]] = {sid: [] for sid in servo_ids}
+    tip_x: list[tuple[float, float]] = []
+    tip_y: list[tuple[float, float]] = []
+    tip_r: list[tuple[float, float]] = []
 
+    for index, row in enumerate(trace_rows):
+        if index >= len(x_values):
+            continue
+        x = float(x_values[index])
+        for sid, value in _extract_numeric_servo_map(
+            row,
+            ("signed_raw_current_ma", "raw_current_ma", "filtered_current_ma"),
+        ).items():
+            current_by_servo.setdefault(int(sid), []).append((x, float(value)))
+        for sid, value in _extract_numeric_servo_map(
+            row,
+            ("measured_positions_ticks", "commanded_positions_ticks"),
+        ).items():
+            position_by_servo.setdefault(int(sid), []).append((x, float(value)))
+        xy = _extract_tip_xy(row)
+        target_xy = _extract_target_xy(row=row, metrics=metrics)
+        if xy is not None and target_xy is not None:
+            dx = float(xy[0]) - float(target_xy[0])
+            dy = float(xy[1]) - float(target_xy[1])
+            tip_x.append((x, dx))
+            tip_y.append((x, dy))
+            tip_r.append((x, (dx * dx + dy * dy) ** 0.5))
 
-def _write_pretension_position_by_servo_report(
-    *,
-    plot_path: Path,
-    trace_rows: list[dict[str, Any]],
-) -> None:
-    """Thesis Figure 2. Position ticks vs sample index, one line per servo,
-    with phase shading and an annotation noting "lower ticks = tighter on this
-    rig" for thesis readers unfamiliar with the convention."""
-    grouped: dict[int, list[tuple[int, float]]] = {}
-    phase_boundaries: list[tuple[int, str]] = []
-    last_phase = None
-    for sample_index, row in enumerate(trace_rows):
-        phase = _phase_for_stage(row.get("stage"))
-        if phase != last_phase:
-            phase_boundaries.append((int(sample_index), phase))
-            last_phase = phase
-        positions = row.get("measured_positions_ticks") or {}
-        if isinstance(positions, dict):
-            for sid, val in positions.items():
-                v = _as_float(val)
-                if v is not None:
-                    grouped.setdefault(int(sid), []).append((int(sample_index), float(v)))
-    fig, ax = create_figure(size="wide")
-    if not grouped:
-        ax.text(0.5, 0.5, "No position data available", transform=ax.transAxes, ha="center", va="center")
-    else:
-        for index, servo_id in enumerate(sorted(grouped)):
-            points = grouped[servo_id]
-            ax.plot(
-                [p[0] for p in points],
-                [p[1] for p in points],
-                marker="o",
-                markersize=2.5,
-                linewidth=1.2,
-                color=_servo_color(index),
-                alpha=0.85,
-                label=f"Servo {servo_id}",
-            )
-        for i, (start, phase) in enumerate(phase_boundaries):
-            end = phase_boundaries[i + 1][0] if i + 1 < len(phase_boundaries) else len(trace_rows)
-            if end <= start:
-                continue
-            ax.axvspan(
-                start - 0.5,
-                end - 0.5,
-                alpha=0.10,
-                color=_PHASE_COLORS.get(phase, _PHASE_COLORS["other"]),
-                lw=0,
-            )
-        ax.invert_yaxis()  # so "tighter" (lower tick) appears at the top
-        ax.text(
-            0.99,
-            0.97,
-            "Lower ticks = tighter tendon (this rig)\nAxis inverted so up = tighter.",
-            transform=ax.transAxes,
-            ha="right",
-            va="top",
-            fontsize=8,
-            color="#444",
-            bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "edgecolor": "#888", "alpha": 0.9},
+    with report_style() as plt:
+        fig, axes = plt.subplots(
+            3,
+            1,
+            figsize=(7.6, 7.2),
+            sharex=True,
+            constrained_layout=True,
+            gridspec_kw={"height_ratios": [1.0, 1.0, 1.05]},
         )
-    style_axes(
-        ax,
-        title="Pretension Position by Servo (lower ticks = tighter)",
-        xlabel="Trace sample index",
-        ylabel="Raw position (ticks)",
+    ax_current, ax_position, ax_tip = axes
+    _shade_pretension_phases(axes=axes, trace_rows=trace_rows, x_values=x_values)
+    _draw_run_boundaries(axes=axes, trace_rows=trace_rows, x_values=x_values)
+
+    marker = "o" if len(trace_rows) <= 72 else None
+    for index, servo_id in enumerate(servo_ids):
+        current_points = current_by_servo.get(int(servo_id), [])
+        if current_points:
+            ax_current.plot(
+                [p[0] for p in current_points],
+                [p[1] for p in current_points],
+                marker=marker,
+                markersize=2.4 if marker else 0.0,
+                linewidth=1.35,
+                color=_servo_color(index),
+                alpha=0.9,
+                label=f"S{servo_id}",
+            )
+        position_points = position_by_servo.get(int(servo_id), [])
+        if position_points:
+            ax_position.plot(
+                [p[0] for p in position_points],
+                [p[1] for p in position_points],
+                marker=marker,
+                markersize=2.4 if marker else 0.0,
+                linewidth=1.35,
+                color=_servo_color(index),
+                alpha=0.9,
+                label=f"S{servo_id}",
+            )
+
+    if not any(current_by_servo.values()):
+        ax_current.text(
+            0.5,
+            0.5,
+            "No current telemetry available",
+            transform=ax_current.transAxes,
+            ha="center",
+            va="center",
+        )
+    ax_current.axhline(0.0, color=color("threshold"), linewidth=0.8, alpha=0.55)
+    target_tension = _final_tension_target_ma(run_rows)
+    if target_tension is not None and target_tension > 0.0:
+        ax_current.axhline(
+            -float(target_tension),
+            color=color("threshold"),
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.75,
+            label=f"target tension ({-float(target_tension):.0f} mA)",
+        )
+    style_axes(ax_current, title="Servo current", ylabel="Current (mA)")
+    legend(
+        ax_current,
+        loc="best",
+        ncol=min(5, max(1, len(servo_ids) + (1 if target_tension else 0))),
     )
-    legend(ax, loc="lower right", ncol=2)
+
+    if not any(position_by_servo.values()):
+        ax_position.text(
+            0.5,
+            0.5,
+            "No servo position telemetry available",
+            transform=ax_position.transAxes,
+            ha="center",
+            va="center",
+        )
+    if _lower_ticks_tighten(run_rows):
+        ax_position.invert_yaxis()
+        ylabel = "Position (ticks)\nlower = tighter"
+    else:
+        ylabel = "Position (ticks)"
+    style_axes(ax_position, title="Servo position", ylabel=ylabel)
+
+    if tip_x and tip_y:
+        ax_tip.plot(
+            [p[0] for p in tip_x],
+            [p[1] for p in tip_x],
+            color=color("measured"),
+            linewidth=1.35,
+            label="X offset",
+        )
+        ax_tip.plot(
+            [p[0] for p in tip_y],
+            [p[1] for p in tip_y],
+            color=color("fit"),
+            linewidth=1.35,
+            label="Y offset",
+        )
+        ax_tip.plot(
+            [p[0] for p in tip_r],
+            [p[1] for p in tip_r],
+            color=color("reference"),
+            linewidth=1.45,
+            linestyle="--",
+            label="Radial error",
+        )
+        ax_tip.axhline(0.0, color=color("threshold"), linewidth=0.8, alpha=0.55)
+    else:
+        ax_tip.text(
+            0.5,
+            0.5,
+            "No robot-frame tip samples available",
+            transform=ax_tip.transAxes,
+            ha="center",
+            va="center",
+        )
+    style_axes(ax_tip, title="Tip position", xlabel=x_label, ylabel="Tip offset (mm)")
+    legend(ax_tip, loc="best", ncol=3)
+
+    fig.suptitle(
+        "Pretension timeline: current, servo position, and tip motion",
+        x=0.01,
+        ha="left",
+        fontsize=12,
+        fontweight="bold",
+    )
     save_figure(fig, plot_path)
 
 
-def _write_pretension_final_repeatability_report(
+def _write_pretension_final_state_consistency_report(
     *,
     plot_path: Path,
     run_rows: list[dict[str, Any]],
     metrics: dict[str, Any],
 ) -> None:
-    """Thesis Figure 4. Three-panel: tip XY scatter across runs, final
-    load-proxy spread per servo, final position spread per servo."""
-    import matplotlib.pyplot as plt  # local import; matplotlib lives behind plotting helpers
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
+    """Primary pretension report figure for endpoint consistency."""
+    servo_ids = _pretension_servo_ids(trace_rows=[], run_rows=run_rows, metrics=metrics)
+    accepted_rows = [row for row in run_rows if bool(row.get("accepted"))]
+    plotted_rows = accepted_rows if accepted_rows else list(run_rows)
+    with report_style() as plt:
+        fig, axes = plt.subplots(
+            1,
+            3,
+            figsize=(8.2, 4.4),
+            constrained_layout=True,
+        )
+    ax_tip, ax_current, ax_position = axes
 
-    # Panel 1: tip XY scatter (accepted = green, rejected = grey).
-    ax_xy = axes[0]
-    accepted_pts: list[tuple[float, float]] = []
-    rejected_pts: list[tuple[float, float]] = []
-    target = metrics.get("tip_target_xy_mm") or [0.0, 0.0]
-    if not isinstance(target, (list, tuple)) or len(target) < 2:
-        target = [0.0, 0.0]
+    target_xy = (
+        _extract_target_xy(row=(run_rows[-1] if run_rows else {}), metrics=metrics)
+        or (0.0, 0.0)
+    )
+    accepted_xy: list[tuple[float, float]] = []
+    rejected_xy: list[tuple[float, float]] = []
     for row in run_rows:
-        xy = row.get("final_tip_xy_mm")
-        if not isinstance(xy, (list, tuple)) or len(xy) < 2:
-            continue
-        x = _as_float(xy[0])
-        y = _as_float(xy[1])
-        if x is None or y is None:
+        xy = _extract_tip_xy(row)
+        if xy is None:
             continue
         if bool(row.get("accepted")):
-            accepted_pts.append((float(x), float(y)))
+            accepted_xy.append(xy)
         else:
-            rejected_pts.append((float(x), float(y)))
-    if rejected_pts:
-        ax_xy.scatter([p[0] for p in rejected_pts], [p[1] for p in rejected_pts], color="#cccccc", s=48, label="rejected")
-    if accepted_pts:
-        ax_xy.scatter([p[0] for p in accepted_pts], [p[1] for p in accepted_pts], color=_PHASE_COLORS["takeup"], s=48, label="accepted")
-    ax_xy.scatter([float(target[0])], [float(target[1])], color="#000", marker="x", s=80, label="target")
-    ax_xy.set_title("Final tip XY across runs")
-    ax_xy.set_xlabel("X (mm)")
-    ax_xy.set_ylabel("Y (mm)")
-    ax_xy.grid(True, alpha=0.3)
-    ax_xy.legend(loc="best", fontsize=8)
-    all_xy_pts = accepted_pts + rejected_pts + [(float(target[0]), float(target[1]))]
+            rejected_xy.append(xy)
+    if rejected_xy:
+        ax_tip.scatter(
+            [p[0] for p in rejected_xy],
+            [p[1] for p in rejected_xy],
+            s=34,
+            color=color("rejected"),
+            alpha=0.45,
+            linewidths=0,
+            label="Rejected",
+        )
+    if accepted_xy:
+        ax_tip.scatter(
+            [p[0] for p in accepted_xy],
+            [p[1] for p in accepted_xy],
+            s=38,
+            color=color("accepted"),
+            alpha=0.86,
+            linewidths=0,
+            label="Accepted",
+        )
+    if not accepted_xy and not rejected_xy:
+        ax_tip.text(0.5, 0.5, "No final tip XY data", transform=ax_tip.transAxes, ha="center", va="center")
+    ax_tip.scatter([target_xy[0]], [target_xy[1]], marker="+", s=110, color=color("target"), label="Target", zorder=4)
+    all_xy = accepted_xy + rejected_xy + [target_xy]
     set_equal_xy(
-        ax_xy,
-        x_values=[p[0] for p in all_xy_pts],
-        y_values=[p[1] for p in all_xy_pts],
+        ax_tip,
+        x_values=[p[0] for p in all_xy],
+        y_values=[p[1] for p in all_xy],
+        minimum_span=2.5,
+    )
+    style_axes(ax_tip, title="Final tip position", xlabel="X (mm)", ylabel="Y (mm)")
+    legend(ax_tip, loc="best")
+    add_metric_box(
+        ax_tip,
+        [
+            f"Accepted: {len(accepted_rows)}/{len(run_rows)}",
+            f"Tip XY std: {_fmt_float(metrics.get('final_tip_xy_std_mm'))} mm",
+        ],
+        loc="lower right",
     )
 
-    # Panel 2: final load proxy spread per servo.
-    ax_lp = axes[1]
-    by_servo_lp: dict[str, list[float]] = {}
-    for row in run_rows:
-        if not bool(row.get("accepted")):
-            continue
-        load_map = row.get("load_proxy_current_ma_by_servo") or {}
-        if isinstance(load_map, dict):
-            for sid, val in load_map.items():
-                v = _as_float(val)
-                if v is not None:
-                    by_servo_lp.setdefault(str(sid), []).append(float(v))
-    if by_servo_lp:
-        servo_keys = sorted(by_servo_lp, key=lambda s: int(s) if str(s).isdigit() else s)
-        ax_lp.boxplot([by_servo_lp[k] for k in servo_keys], tick_labels=[f"S{k}" for k in servo_keys])
-    else:
-        ax_lp.text(0.5, 0.5, "No accepted runs", transform=ax_lp.transAxes, ha="center", va="center")
-    ax_lp.set_title("Final load proxy spread")
-    ax_lp.set_xlabel("Servo")
-    ax_lp.set_ylabel("Load proxy (mA)")
-    ax_lp.grid(True, alpha=0.3)
+    current_values = _collect_final_servo_values(
+        plotted_rows,
+        ("final_current_ma_by_servo", "currents_ma_by_servo"),
+        servo_ids=servo_ids,
+    )
+    final_tension_target = _final_tension_target_ma(run_rows)
+    _plot_final_servo_distribution(
+        ax_current,
+        values_by_servo=current_values,
+        servo_ids=servo_ids,
+        title="Final current by servo",
+        ylabel="Signed current (mA)",
+        target_y=(-float(final_tension_target) if final_tension_target else None),
+        target_label="tension target",
+    )
 
-    # Panel 3: final position spread per servo.
-    ax_pos = axes[2]
-    by_servo_pos: dict[str, list[float]] = {}
-    for row in run_rows:
-        if not bool(row.get("accepted")):
-            continue
-        pos_map = row.get("final_position_ticks_by_servo") or {}
-        if isinstance(pos_map, dict):
-            for sid, val in pos_map.items():
-                v = _as_float(val)
-                if v is not None:
-                    by_servo_pos.setdefault(str(sid), []).append(float(v))
-    if by_servo_pos:
-        servo_keys = sorted(by_servo_pos, key=lambda s: int(s) if str(s).isdigit() else s)
-        ax_pos.boxplot([by_servo_pos[k] for k in servo_keys], tick_labels=[f"S{k}" for k in servo_keys])
-    else:
-        ax_pos.text(0.5, 0.5, "No accepted runs", transform=ax_pos.transAxes, ha="center", va="center")
-    ax_pos.set_title("Final position spread")
-    ax_pos.set_xlabel("Servo")
-    ax_pos.set_ylabel("Final tick")
-    ax_pos.grid(True, alpha=0.3)
+    position_values = _collect_final_servo_values(
+        plotted_rows,
+        ("final_position_ticks_by_servo", "positions_by_servo"),
+        servo_ids=servo_ids,
+    )
+    _plot_final_servo_distribution(
+        ax_position,
+        values_by_servo=position_values,
+        servo_ids=servo_ids,
+        title="Final servo position",
+        ylabel=(
+            "Position (ticks, lower = tighter)"
+            if _lower_ticks_tighten(run_rows)
+            else "Position (ticks)"
+        ),
+        invert_y=_lower_ticks_tighten(run_rows),
+    )
 
-    verdict = (metrics.get("consistency_verdict") or {}).get("verdict")
-    accepted_n = sum(1 for row in run_rows if bool(row.get("accepted")))
     fig.suptitle(
-        f"Repeatability report — {accepted_n} accepted / {len(run_rows)} runs"
-        + (f" — verdict: {verdict}" if verdict else ""),
-        fontsize=11,
-    )
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
-    save_figure(fig, plot_path)
-
-
-def _write_pretension_phase_summary_report(
-    *,
-    plot_path: Path,
-    run_rows: list[dict[str, Any]],
-) -> None:
-    """Thesis Figure 5. Compact bar/table figure: release travel per servo,
-    engagement tick per servo, final load proxy, accepted/rejected. Reports the
-    LAST accepted run; if none, the last run regardless."""
-    import matplotlib.pyplot as plt
-    accepted_runs = [row for row in run_rows if bool(row.get("accepted"))]
-    target_row = accepted_runs[-1] if accepted_runs else (run_rows[-1] if run_rows else {})
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5))
-
-    # Panel 1: release travel per servo.
-    ax_rt = axes[0]
-    release_travel = target_row.get("release_travel_ticks_by_servo") or {}
-    if isinstance(release_travel, dict) and release_travel:
-        keys = sorted(release_travel, key=lambda s: int(s) if str(s).isdigit() else s)
-        values = [int(_as_float(release_travel[k]) or 0) for k in keys]
-        ax_rt.bar([f"S{k}" for k in keys], values, color=_PHASE_COLORS["release"])
-        ax_rt.set_title("Release travel per servo")
-        ax_rt.set_ylabel("Travel (ticks)")
-    else:
-        ax_rt.text(0.5, 0.5, "No release data", transform=ax_rt.transAxes, ha="center", va="center")
-        ax_rt.set_title("Release travel per servo")
-    ax_rt.grid(True, alpha=0.3)
-
-    # Panel 2: final load proxy per servo (target run).
-    ax_lp = axes[1]
-    load_map = _extract_load_proxy_map(target_row)
-    if load_map:
-        keys = sorted(load_map)
-        values = [float(load_map[k]) for k in keys]
-        ax_lp.bar([f"S{k}" for k in keys], values, color=_PHASE_COLORS["takeup"])
-        ax_lp.set_title("Final load proxy per servo")
-        ax_lp.set_ylabel("Load proxy (mA)")
-    else:
-        ax_lp.text(0.5, 0.5, "No load proxy data", transform=ax_lp.transAxes, ha="center", va="center")
-        ax_lp.set_title("Final load proxy per servo")
-    ax_lp.grid(True, alpha=0.3)
-
-    # Panel 3: text block summary (acceptance + key fields).
-    ax_text = axes[2]
-    ax_text.axis("off")
-    acceptance = target_row.get("acceptance") or {}
-    lines = [
-        f"Run index: {target_row.get('run_index')}",
-        f"Accepted: {'YES' if bool(target_row.get('accepted')) else 'NO'}",
-    ]
-    reasons = acceptance.get("rejection_reasons") or target_row.get("reject_reasons") or []
-    if reasons:
-        lines.append("Rejection reasons:")
-        for reason in reasons[:5]:
-            lines.append(f"  - {reason}")
-    lines.append("")
-    lines.append(f"Tip offset: {_fmt_float(target_row.get('final_tip_xy_offset_mm'))} mm")
-    lines.append(f"Load balance: {_fmt_float(target_row.get('load_balance_error_ma'))} mA")
-    lines.append(f"Pair balance: {_fmt_float(target_row.get('pair_balance_error_ma'))} mA")
-    release_success = target_row.get("release_success_by_servo") or {}
-    if isinstance(release_success, dict) and release_success:
-        ok_count = sum(1 for v in release_success.values() if bool(v))
-        lines.append(f"Released: {ok_count}/{len(release_success)} servos")
-    # Per-servo release condition (target_current vs low_current_plateau)
-    # so the operator can tell at a glance whether the ideal path succeeded
-    # or the plateau fallback kicked in.
-    condition_map = target_row.get("release_success_condition_by_servo") or {}
-    if isinstance(condition_map, dict) and condition_map:
-        plateau_n = sum(1 for v in condition_map.values() if str(v) == "low_current_plateau")
-        target_n = sum(1 for v in condition_map.values() if str(v) == "target_current")
-        lines.append(f"Release condition: target={target_n}, plateau={plateau_n}")
-    lines.append(f"Lower ticks tighten: {target_row.get('lower_ticks_tighten_assumed', '—')}")
-    ax_text.text(
-        0.02,
-        0.98,
-        "\n".join(lines),
-        transform=ax_text.transAxes,
+        "Pretension final-state consistency",
+        x=0.01,
         ha="left",
-        va="top",
-        fontsize=9,
-        family="monospace",
+        fontsize=12,
+        fontweight="bold",
     )
-    ax_text.set_title("Phase summary")
-
-    fig.suptitle("Pretension phase summary", fontsize=11)
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
     save_figure(fig, plot_path)
+
+
+def _trace_time_axis(trace_rows: list[dict[str, Any]]) -> tuple[list[float], str]:
+    if not trace_rows:
+        return [], "Trace sample index"
+    elapsed_values = [
+        _as_float(
+            row.get("elapsed_s")
+            if row.get("elapsed_s") is not None
+            else row.get("monotonic_time_s")
+        )
+        for row in trace_rows
+    ]
+    if all(value is not None for value in elapsed_values):
+        first = float(elapsed_values[0] or 0.0)
+        x_values = [float(value or 0.0) - first for value in elapsed_values]
+        if _has_meaningful_time_span(x_values):
+            return x_values, "Elapsed time (s)"
+    timestamp_values = [_parse_timestamp_s(row.get("timestamp_utc")) for row in trace_rows]
+    if all(value is not None for value in timestamp_values):
+        first = float(timestamp_values[0] or 0.0)
+        x_values = [float(value or 0.0) - first for value in timestamp_values]
+        if _has_meaningful_time_span(x_values):
+            return x_values, "Elapsed time (s)"
+    return [float(index) for index in range(len(trace_rows))], "Trace sample index"
+
+
+def _parse_timestamp_s(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return float(datetime.fromisoformat(text).timestamp())
+    except ValueError:
+        return None
+
+
+def _has_meaningful_time_span(x_values: list[float]) -> bool:
+    if len(x_values) < 2:
+        return False
+    return (max(x_values) - min(x_values)) >= 0.25
+
+
+def _shade_pretension_phases(*, axes, trace_rows: list[dict[str, Any]], x_values: list[float]) -> None:
+    if not trace_rows or not x_values:
+        return
+    pad = _axis_cell_pad(x_values)
+    spans: list[tuple[float, float, str]] = []
+    start_index = 0
+    current_phase = _phase_for_stage(trace_rows[0].get("stage"))
+    for index, row in enumerate(trace_rows[1:], start=1):
+        phase = _phase_for_stage(row.get("stage"))
+        if phase == current_phase:
+            continue
+        spans.append(
+            (
+                float(x_values[start_index]) - pad,
+                float(x_values[index - 1]) + pad,
+                current_phase,
+            )
+        )
+        start_index = index
+        current_phase = phase
+    spans.append((float(x_values[start_index]) - pad, float(x_values[-1]) + pad, current_phase))
+    for ax in axes:
+        for left, right, phase in spans:
+            if right <= left:
+                continue
+            ax.axvspan(
+                left,
+                right,
+                color=_PHASE_COLORS.get(phase, _PHASE_COLORS["other"]),
+                alpha=0.055,
+                lw=0,
+                zorder=0,
+            )
+
+
+def _draw_run_boundaries(*, axes, trace_rows: list[dict[str, Any]], x_values: list[float]) -> None:
+    if not trace_rows or not x_values:
+        return
+    last_run = trace_rows[0].get("run_index")
+    for index, row in enumerate(trace_rows[1:], start=1):
+        run_index = row.get("run_index")
+        if run_index == last_run:
+            continue
+        x = float(x_values[index])
+        for ax in axes:
+            ax.axvline(x, color=color("axis"), linewidth=0.75, alpha=0.28, zorder=1)
+        last_run = run_index
+
+
+def _axis_cell_pad(x_values: list[float]) -> float:
+    if len(x_values) < 2:
+        return 0.5
+    positive_diffs = [
+        abs(float(b) - float(a))
+        for a, b in zip(x_values, x_values[1:])
+        if abs(float(b) - float(a)) > 1e-9
+    ]
+    if not positive_diffs:
+        return 0.5
+    return max(min(positive_diffs) * 0.5, 0.02)
+
+
+def _pretension_servo_ids(
+    *,
+    trace_rows: list[dict[str, Any]],
+    run_rows: list[dict[str, Any]],
+    metrics: dict[str, Any],
+) -> list[int]:
+    ids: set[int] = set()
+    for raw in metrics.get("servo_ids") or []:
+        parsed = _as_int(raw)
+        if parsed is not None:
+            ids.add(int(parsed))
+    for row in [*trace_rows, *run_rows]:
+        for raw in row.get("servo_ids") or []:
+            parsed = _as_int(raw)
+            if parsed is not None:
+                ids.add(int(parsed))
+        for key in (
+            "measured_positions_ticks",
+            "commanded_positions_ticks",
+            "final_position_ticks_by_servo",
+            "signed_raw_current_ma",
+            "raw_current_ma",
+            "final_current_ma_by_servo",
+            "currents_ma_by_servo",
+        ):
+            value = row.get(key)
+            if not isinstance(value, dict):
+                continue
+            for raw in value:
+                parsed = _as_int(raw)
+                if parsed is not None:
+                    ids.add(int(parsed))
+    return sorted(ids)
+
+
+def _extract_numeric_servo_map(row: dict[str, Any], keys: tuple[str, ...]) -> dict[int, float]:
+    for key in keys:
+        value = row.get(key)
+        if not isinstance(value, dict):
+            continue
+        extracted: dict[int, float] = {}
+        for raw_servo_id, raw_value in value.items():
+            servo_id = _as_int(raw_servo_id)
+            parsed_value = _as_float(raw_value)
+            if servo_id is None or parsed_value is None:
+                continue
+            extracted[int(servo_id)] = float(parsed_value)
+        if extracted:
+            return extracted
+    return {}
+
+
+def _extract_target_xy(*, row: dict[str, Any], metrics: dict[str, Any]) -> tuple[float, float] | None:
+    candidates = [
+        row.get("target_xy_mm"),
+        row.get("tip_target_xy_mm"),
+        metrics.get("tip_target_xy_mm"),
+    ]
+    comparison = metrics.get("pretension_comparison_report")
+    if isinstance(comparison, dict):
+        candidates.append(comparison.get("tip_target_xy_mm"))
+    for value in candidates:
+        if not isinstance(value, (list, tuple)) or len(value) < 2:
+            continue
+        x = _as_float(value[0])
+        y = _as_float(value[1])
+        if x is not None and y is not None:
+            return (float(x), float(y))
+    return None
+
+
+def _final_tension_target_ma(run_rows: list[dict[str, Any]]) -> float | None:
+    for row in reversed(run_rows):
+        value = _as_float(row.get("takeup_target_holding_tension_ma"))
+        if value is not None:
+            return float(value)
+        acceptance = row.get("acceptance")
+        if isinstance(acceptance, dict):
+            value = _as_float(acceptance.get("takeup_target_holding_tension_ma"))
+            if value is not None:
+                return float(value)
+    return None
+
+
+def _lower_ticks_tighten(run_rows: list[dict[str, Any]]) -> bool:
+    for row in reversed(run_rows):
+        if row.get("lower_ticks_tighten_assumed") is not None:
+            return bool(row.get("lower_ticks_tighten_assumed"))
+    return True
+
+
+def _collect_final_servo_values(
+    rows: list[dict[str, Any]],
+    keys: tuple[str, ...],
+    *,
+    servo_ids: list[int],
+) -> dict[int, list[float]]:
+    values_by_servo: dict[int, list[float]] = {int(sid): [] for sid in servo_ids}
+    for row in rows:
+        values = _extract_numeric_servo_map(row, keys)
+        for servo_id, value in values.items():
+            values_by_servo.setdefault(int(servo_id), []).append(float(value))
+    return values_by_servo
+
+
+def _plot_final_servo_distribution(
+    ax,
+    *,
+    values_by_servo: dict[int, list[float]],
+    servo_ids: list[int],
+    title: str,
+    ylabel: str,
+    invert_y: bool = False,
+    target_y: float | None = None,
+    target_label: str | None = None,
+) -> None:
+    plotted = False
+    for index, servo_id in enumerate(servo_ids):
+        values = [float(value) for value in values_by_servo.get(int(servo_id), []) if value is not None]
+        if not values:
+            continue
+        plotted = True
+        offsets = _symmetric_offsets(len(values), width=0.22)
+        ax.scatter(
+            [float(index) + offset for offset in offsets],
+            values,
+            s=26,
+            color=_servo_color(index),
+            alpha=0.78,
+            linewidths=0,
+            label=f"S{servo_id}",
+            zorder=3,
+        )
+        mean_value = sum(values) / len(values)
+        ax.plot(
+            [index - 0.24, index + 0.24],
+            [mean_value, mean_value],
+            color=color("reference"),
+            linewidth=1.5,
+            solid_capstyle="round",
+            zorder=4,
+        )
+    if not plotted:
+        ax.text(0.5, 0.5, "No accepted-run data", transform=ax.transAxes, ha="center", va="center")
+    if target_y is not None:
+        ax.axhline(
+            float(target_y),
+            color=color("threshold"),
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.72,
+            label=target_label or "Target",
+        )
+    ax.set_xticks(list(range(len(servo_ids))))
+    ax.set_xticklabels([f"S{sid}" for sid in servo_ids])
+    if invert_y:
+        ax.invert_yaxis()
+    style_axes(ax, title=title, xlabel="Servo", ylabel=ylabel)
+
+
+def _symmetric_offsets(count: int, *, width: float) -> list[float]:
+    if count <= 1:
+        return [0.0]
+    step = float(width) / float(max(1, count - 1))
+    start = -float(width) / 2.0
+    return [start + (step * index) for index in range(count)]
 
 
 def _write_pretension_quality_summary_json(

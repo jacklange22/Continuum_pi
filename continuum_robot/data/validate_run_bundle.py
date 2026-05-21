@@ -29,10 +29,8 @@ EXPECTED_REPORT_FIGURES = {
         "thesis_03_path_dependence_vs_total.png",
     ],
     "pretension_validation": [
-        "pretension_tip_xy_path_report.png",
-        "pretension_load_proxy_by_servo_report.png",
-        "pretension_tendon_displacement_vs_load_proxy_report.png",
-        "pretension_final_state_report.png",
+        "pretension_telemetry_timeline_report.png",
+        "pretension_final_state_consistency_report.png",
     ],
     "collect_pose_command_dataset": [
         "thesis_01_workspace_coverage_3d.png",

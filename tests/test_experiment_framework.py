@@ -1528,18 +1528,19 @@ def test_pretension_validation_single_segment_staged_writes_units_metrics_and_pl
     assert result.paths.output_dir.joinpath("pretension_summary.txt").exists()
     assert result.paths.output_dir.joinpath("pretension_current_vs_position.png").exists()
     assert result.paths.output_dir.joinpath("pretension_tip_xy_path.png").exists()
-    assert result.paths.output_dir.joinpath("pretension_tip_xy_path_report.png").exists()
-    assert result.paths.output_dir.joinpath("pretension_load_proxy_by_servo_report.png").exists()
-    assert result.paths.output_dir.joinpath("pretension_tendon_displacement_vs_load_proxy_report.png").exists()
-    assert result.paths.output_dir.joinpath("pretension_final_state_report.png").exists()
     assert result.paths.output_dir.joinpath("pretension_final_current_distribution.png").exists()
     assert result.paths.output_dir.joinpath("pretension_repeatability_summary.png").exists()
-    # Bounded simplification pass (2026-05-19): the new thesis report figures
-    # and the quality JSON must always be written.
-    assert result.paths.output_dir.joinpath("pretension_current_by_servo_report.png").exists()
-    assert result.paths.output_dir.joinpath("pretension_position_by_servo_report.png").exists()
-    assert result.paths.output_dir.joinpath("pretension_final_repeatability_report.png").exists()
-    assert result.paths.output_dir.joinpath("pretension_phase_summary_report.png").exists()
+    # Thesis report set: one synchronized timeline plus one final-state
+    # consistency figure. Older overlapping plots remain diagnostics only.
+    report_pngs = sorted(path.name for path in result.paths.output_dir.glob("*_report.png"))
+    assert report_pngs == [
+        "pretension_final_state_consistency_report.png",
+        "pretension_telemetry_timeline_report.png",
+    ]
+    from continuum_robot.data.run_management import summarize_run
+
+    run_summary = summarize_run(result.paths.output_dir)
+    assert sorted(run_summary.report_figures) == report_pngs
     assert result.paths.output_dir.joinpath("pretension_quality_summary.json").exists()
 
 

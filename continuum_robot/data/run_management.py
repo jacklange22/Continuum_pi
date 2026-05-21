@@ -318,8 +318,7 @@ def summarize_run(run_dir: Path) -> ManagedRunSummary:
         pretension_startup_summary=_format_startup_summary(metrics, metadata_provenance, run_provenance),
         report_figures=_relative_files(
             run_dir,
-            lambda path: path.suffix.lower() == ".png"
-            and ("_report" in path.name or path.name.startswith("thesis_")),
+            _is_report_figure_file,
         ),
         metrics_files=_relative_files(run_dir, lambda path: path.suffix.lower() == ".csv"),
         samples_present=samples_path.exists(),
@@ -737,6 +736,14 @@ def _relative_files(run_dir: Path, predicate) -> list[str]:
             except ValueError:
                 files.append(str(path))
     return files
+
+
+def _is_report_figure_file(path: Path) -> bool:
+    if path.suffix.lower() != ".png":
+        return False
+    if any("debug" in str(part).lower() for part in path.parts[:-1]):
+        return False
+    return "_report" in path.name or path.name.startswith("thesis_")
 
 
 def _timestamp_label(run_dir: Path, metadata: dict[str, Any], summary: dict[str, Any]) -> str:

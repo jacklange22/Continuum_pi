@@ -71,7 +71,7 @@ def test_validate_run_folder_warns_for_missing_trust_and_report_figure(tmp_path:
 
     assert report.status == "WARN"
     assert "run_trust_mode" in text
-    assert "pretension_tip_xy_path_report.png" in text
+    assert "pretension_telemetry_timeline_report.png" in text
 
 
 def test_validate_run_folder_fails_without_summary(tmp_path: Path) -> None:

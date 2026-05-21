@@ -327,10 +327,8 @@ def test_advanced_pretension_staged_run_saves_quality_pairing_and_plots(tmp_path
         "pretension_final_current_distribution.png",
         "pretension_final_position_distribution.png",
         "pretension_quality_score_distribution.png",
-        "pretension_tip_xy_path_report.png",
-        "pretension_load_proxy_by_servo_report.png",
-        "pretension_tendon_displacement_vs_load_proxy_report.png",
-        "pretension_final_state_report.png",
+        "pretension_telemetry_timeline_report.png",
+        "pretension_final_state_consistency_report.png",
     ]
     for filename in expected_plots:
         assert (result.paths.output_dir / filename).exists()

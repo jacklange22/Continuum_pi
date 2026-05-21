@@ -7895,6 +7895,8 @@ class PretensionValidationExperiment(BaseExperiment):
         step_index: int,
         payload: dict[str, Any],
     ) -> None:
+        elapsed_s = float(session.elapsed_s())
+        payload.setdefault("elapsed_s", elapsed_s)
         servo_id = payload.get("servo_id")
         commanded_motor_values = {}
         if servo_id not in (None, ""):
@@ -7903,7 +7905,7 @@ class PretensionValidationExperiment(BaseExperiment):
             commanded_motor_values["commanded_position_ticks"] = int(payload["final_position_tick"])
         session.add_sample(
             ExperimentTimeseriesSample(
-                monotonic_time_s=session.elapsed_s(),
+                monotonic_time_s=elapsed_s,
                 wall_time_utc=_utc_now_iso(),
                 phase=str(phase),
                 step_index=int(step_index),

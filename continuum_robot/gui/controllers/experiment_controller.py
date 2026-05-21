@@ -1796,8 +1796,9 @@ class ExperimentController:
             return pairs
         if bundle_experiment_name == "tracker_timing_validation":
             metrics = bundle.summary.experiment_metrics if isinstance(bundle.summary.experiment_metrics, dict) else {}
-            thesis_01_path = bundle.paths.output_dir / "thesis_01_cycle_time_distribution.png"
-            thesis_02_path = bundle.paths.output_dir / "thesis_02_stage_time_budget.png"
+            thesis_01_path = bundle.paths.output_dir / "thesis_01_rate_vs_ceiling.png"
+            thesis_02_path = bundle.paths.output_dir / "thesis_02_inter_frame_interval.png"
+            thesis_03_path = bundle.paths.output_dir / "thesis_03_cycle_time_budget.png"
             debug_path = bundle.paths.output_dir / "debug.json"
             pairs.extend(
                 [
@@ -1824,8 +1825,9 @@ class ExperimentController:
                             else "n/a"
                         ),
                     ),
-                    ("Cycle Distribution", str(thesis_01_path) if thesis_01_path.exists() else "not written"),
-                    ("Stage Time Budget", str(thesis_02_path) if thesis_02_path.exists() else "not written"),
+                    ("Rate vs Ceiling", str(thesis_01_path) if thesis_01_path.exists() else "not written"),
+                    ("Inter-Frame Interval", str(thesis_02_path) if thesis_02_path.exists() else "not written"),
+                    ("Cycle Time Budget", str(thesis_03_path) if thesis_03_path.exists() else "not written"),
                     ("Debug JSON", str(debug_path) if debug_path.exists() else "not written"),
                 ]
             )
