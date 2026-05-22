@@ -62,6 +62,9 @@ from continuum_robot.experiments.builtins import (
     ServoTrackerSyncValidationConfig,
     TrackerTimingValidationConfig,
 )
+from continuum_robot.experiments.dynamic_modeling_dataset import (
+    DynamicModelingDatasetConfig,
+)
 from continuum_robot.experiments.penprobe_chasing_demo import (
     MAPPING_AGGRESSIVE_TICK_DEMO,
     MAPPING_LEGACY_POLYNOMIAL_WORKSPACE,
@@ -75,6 +78,9 @@ from continuum_robot.gui.widgets.no_wheel_combo_box import NoWheelComboBox
 from continuum_robot.experiments.calibration_validation import (
     list_pivot_validation_candidates,
     list_registration_validation_candidates,
+)
+from continuum_robot.experiments.neutral_setpoint_drift_validation import (
+    list_neutral_setpoint_drift_candidates,
 )
 from continuum_robot.experiments.single_segment_repeatability import (
     DEFAULT_INNER_RING_RADIUS_MM,
@@ -4557,6 +4563,74 @@ class RegistrationValidationPage(_ValidationSelectionPage):
         return f"{len(included)} selected | mean FRE {_fmt_float(float(np.mean(fre_values)))} mm"
 
 
+class NeutralSetpointDriftValidationPage(_ValidationSelectionPage):
+    """Thesis-grade analysis of the neutral / zero setpoint history log.
+
+    Operators pick which JSONL history log(s) to analyze (default: the
+    canonical ``data/calibration/neutral_zero_log.jsonl``) and the
+    experiment writes four thesis-quality figures plus a debug.json.
+    Matches the registration / pivot validation UX: a candidate table at
+    the top, a Refresh / Select All / Clear toolbar, and a Run button that
+    drives the offline analysis.
+    """
+
+    page_hint = (
+        "Analyze the append-only neutral / zero setpoint history log as one thesis-facing "
+        "validation bundle. Plots per-servo drift over time, distribution per servo, "
+        "drift magnitude, and event-type breakdown. The history log is written by the "
+        "Servos tab every time a neutral is captured, a manual pretension is accepted, "
+        "or an automatic pretension run finishes — no live hardware needed for this "
+        "analysis."
+    )
+    selection_title = "Saved Neutral / Zero History Logs"
+    selection_subtitle = (
+        "Choose which neutral-zero history log to analyze. The canonical log lives at "
+        "data/calibration/neutral_zero_log.jsonl; archived logs may also appear under "
+        "data/calibration/neutral_zero_log_history/ if you've snapshotted older runs."
+    )
+    run_button_text = "Run Neutral Setpoint Drift Validation"
+    table_headers = ("Use", "Last update", "Events", "Servos", "Event types", "Log file")
+
+    def _discover_candidates(self):
+        return list_neutral_setpoint_drift_candidates(self.controller.project_root)
+
+    def _row_values(self, candidate) -> tuple[str, ...]:
+        # The metadata for this page lives on the dataclass itself rather
+        # than the generic ``metadata`` dict the registration / pivot pages
+        # use, because the candidate IS the analysis subject (a log file).
+        event_types_summary = ", ".join(getattr(candidate, "event_types", []) or [])
+        if len(event_types_summary) > 60:
+            event_types_summary = event_types_summary[:57] + "..."
+        last_ts = str(getattr(candidate, "last_timestamp_utc", "") or "")
+        last_ts = last_ts.replace("T", " ").replace("+00:00", "Z")
+        return (
+            "",
+            last_ts,
+            str(int(getattr(candidate, "event_count", 0) or 0)),
+            str(int(getattr(candidate, "servo_count", 0) or 0)),
+            event_types_summary or "(none)",
+            str(candidate.path),
+        )
+
+    def _selection_summary_text(self, included) -> str:
+        if not included:
+            return "Select at least 1 neutral-zero history log."
+        total_events = sum(int(getattr(c, "event_count", 0) or 0) for c in included)
+        all_servo_counts = [int(getattr(c, "servo_count", 0) or 0) for c in included]
+        servo_count = max(all_servo_counts) if all_servo_counts else 0
+        return (
+            f"{len(included)} log(s) selected | "
+            f"{total_events} total events | up to {servo_count} servos"
+        )
+
+    # The base class checks for >= 2 selections; override so a single log is
+    # accepted (the canonical case — one big rolling log file).
+    def _precheck_can_run(self, selected_paths: list[str]) -> tuple[bool, str]:
+        if not selected_paths:
+            return False, "Select at least 1 neutral-zero history log to analyze."
+        return True, ""
+
+
 class PivotValidationPage(_ValidationSelectionPage):
     page_hint = (
         "Analyze repeated saved pivot-calibration runs as one thesis-facing validation bundle. "
@@ -5005,6 +5079,242 @@ class WorkspaceRepeatabilityMapPage(ExperimentPageBase):
         )
 
 
+class DynamicModelingDatasetPage(ExperimentPageBase):
+    """Workspace page for the continuous dynamic-modeling dataset experiment."""
+
+    show_visualization = False
+    page_hint = (
+        "Continuous bounded random tendon trajectory with synchronized servo command, servo telemetry, "
+        "and tracker frames logged at ~20 Hz. Smoke at 30 s, validate at 5 min, then 30 min, then 2 hr."
+    )
+
+    def __init__(self, controller, experiment_name: str, parent=None) -> None:
+        super().__init__(controller, experiment_name, parent)
+        self.run_button.setText("Run Dynamic Modeling Dataset")
+
+    def _build_parameter_sections(self) -> None:
+        motion_card = ExperimentCard(
+            "Motion And Sampling",
+            "Bounded smooth random walk in tendon space. Sync rows align the latest command, nearest tracker frame, and nearest servo telemetry.",
+        )
+        motion_form = QFormLayout()
+        self.duration_spin = QDoubleSpinBox()
+        self.duration_spin.setRange(1.0, 60 * 60 * 4.0)
+        self.duration_spin.setDecimals(1)
+        self.duration_spin.setSingleStep(5.0)
+        self.duration_spin.setSuffix(" s")
+        self.duration_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("duration_s", float(value))
+        )
+        self.sample_rate_spin = QDoubleSpinBox()
+        self.sample_rate_spin.setRange(1.0, 100.0)
+        self.sample_rate_spin.setDecimals(1)
+        self.sample_rate_spin.setSingleStep(1.0)
+        self.sample_rate_spin.setSuffix(" Hz")
+        self.sample_rate_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("target_sample_rate_hz", float(value))
+        )
+        self.command_rate_spin = QDoubleSpinBox()
+        self.command_rate_spin.setRange(0.5, 100.0)
+        self.command_rate_spin.setDecimals(1)
+        self.command_rate_spin.setSingleStep(0.5)
+        self.command_rate_spin.setSuffix(" Hz")
+        self.command_rate_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("command_update_rate_hz", float(value))
+        )
+        self.max_delta_spin = QSpinBox()
+        self.max_delta_spin.setRange(1, 4096)
+        self.max_delta_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_tick_delta_from_start", int(value))
+        )
+        self.max_step_spin = QSpinBox()
+        self.max_step_spin.setRange(1, 1024)
+        self.max_step_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_step_ticks_per_update", int(value))
+        )
+        self.seed_spin = QSpinBox()
+        self.seed_spin.setRange(0, 999_999_999)
+        self.seed_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("random_seed", int(value))
+        )
+        self.servo_ids_edit = QLineEdit()
+        self.servo_ids_edit.setPlaceholderText("blank = active segment, e.g. 5,6,7,8")
+        self.servo_ids_edit.editingFinished.connect(self._on_servo_ids_changed)
+        self.require_tracker_check = QCheckBox(
+            "Require tracker frames (mark sample invalid when tracker is missing)"
+        )
+        self.require_tracker_check.toggled.connect(
+            lambda value: self.controller.set_config_value("require_tracker", bool(value))
+        )
+        self.return_to_start_check = QCheckBox(
+            "Return-to-start: coast back toward initial position at the end of the run"
+        )
+        self.return_to_start_check.toggled.connect(
+            lambda value: self.controller.set_config_value("return_to_start_at_end", bool(value))
+        )
+        motion_form.addRow("Duration", self.duration_spin)
+        motion_form.addRow("Sample Rate", self.sample_rate_spin)
+        motion_form.addRow("Command Update Rate", self.command_rate_spin)
+        motion_form.addRow("Max Tick Delta From Start", self.max_delta_spin)
+        motion_form.addRow("Max Step Ticks / Update", self.max_step_spin)
+        motion_form.addRow("Random Seed", self.seed_spin)
+        motion_form.addRow("Servo IDs", self.servo_ids_edit)
+        motion_card.body_layout.addLayout(motion_form)
+        motion_card.body_layout.addWidget(self.require_tracker_check)
+        motion_card.body_layout.addWidget(self.return_to_start_check)
+
+        sync_card = ExperimentCard(
+            "Sync And Safety Thresholds",
+            "Tighten thresholds for thesis runs; loosen for lower-trust diagnostic runs (which are saved as not_thesis_evidence).",
+        )
+        sync_form = QFormLayout()
+        self.max_tracker_age_spin = QDoubleSpinBox()
+        self.max_tracker_age_spin.setRange(1.0, 5000.0)
+        self.max_tracker_age_spin.setDecimals(1)
+        self.max_tracker_age_spin.setSingleStep(5.0)
+        self.max_tracker_age_spin.setSuffix(" ms")
+        self.max_tracker_age_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_tracker_age_ms", float(value))
+        )
+        self.max_servo_age_spin = QDoubleSpinBox()
+        self.max_servo_age_spin.setRange(1.0, 5000.0)
+        self.max_servo_age_spin.setDecimals(1)
+        self.max_servo_age_spin.setSingleStep(5.0)
+        self.max_servo_age_spin.setSuffix(" ms")
+        self.max_servo_age_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_servo_age_ms", float(value))
+        )
+        self.hard_cap_spin = QSpinBox()
+        self.hard_cap_spin.setRange(1, 4096)
+        self.hard_cap_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_tick_delta_hard_cap", int(value))
+        )
+        self.smoothing_spin = QDoubleSpinBox()
+        self.smoothing_spin.setRange(0.0, 1.0)
+        self.smoothing_spin.setDecimals(2)
+        self.smoothing_spin.setSingleStep(0.05)
+        self.smoothing_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("trajectory_smoothing", float(value))
+        )
+        self.tracker_tool_edit = QLineEdit()
+        self.tracker_tool_edit.editingFinished.connect(
+            lambda: self.controller.set_config_value(
+                "tracker_tool_id", (self.tracker_tool_edit.text() or "0A").strip().upper()
+            )
+        )
+        self.dry_run_check = QCheckBox(
+            "Dry run (skip hardware writes; marks the run not_thesis_evidence automatically)"
+        )
+        self.dry_run_check.toggled.connect(
+            lambda value: self.controller.set_config_value("dry_run", bool(value))
+        )
+        self.allow_lower_trust_check = QCheckBox(
+            "Allow lower-trust runtime tip (saves as not_thesis_evidence)"
+        )
+        self.allow_lower_trust_check.toggled.connect(
+            lambda value: self.controller.set_config_value("allow_lower_trust_runtime_tip", bool(value))
+        )
+        self.run_label_edit = QLineEdit()
+        self.run_label_edit.editingFinished.connect(
+            lambda: self.controller.set_config_value("run_label", self.run_label_edit.text().strip())
+        )
+        sync_form.addRow("Max Tracker Age", self.max_tracker_age_spin)
+        sync_form.addRow("Max Servo Age", self.max_servo_age_spin)
+        sync_form.addRow("Trajectory Smoothing", self.smoothing_spin)
+        sync_form.addRow("Hard Tick Cap", self.hard_cap_spin)
+        sync_form.addRow("Tracker Tool ID", self.tracker_tool_edit)
+        sync_form.addRow("Run Label", self.run_label_edit)
+        sync_card.body_layout.addLayout(sync_form)
+        sync_card.body_layout.addWidget(self.dry_run_check)
+        sync_card.body_layout.addWidget(self.allow_lower_trust_check)
+
+        summary_card = ExperimentCard(
+            "Context And Estimates",
+            "Estimated dataset size and live tracker/servo state for the next run.",
+        )
+        self.context_widget = KeyValueSummaryWidget()
+        summary_card.body_layout.addWidget(self.context_widget)
+        self.estimate_label = QLabel("")
+        self.estimate_label.setWordWrap(True)
+        self.estimate_label.setProperty("role", "muted")
+        summary_card.body_layout.addWidget(self.estimate_label)
+
+        self.parameter_layout.addWidget(motion_card)
+        self.parameter_layout.addWidget(sync_card)
+        self.parameter_layout.addWidget(summary_card)
+
+    def _on_servo_ids_changed(self) -> None:
+        raw_text = self.servo_ids_edit.text().strip()
+        parsed = DynamicModelingDatasetConfig.from_dict({"servo_ids": raw_text}).servo_ids
+        self.controller.set_config_value("servo_ids", parsed)
+        self._set_line_text(self.servo_ids_edit, ",".join(str(servo_id) for servo_id in parsed))
+
+    def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
+        _ = state
+        config = DynamicModelingDatasetConfig.from_dict(self.controller.config_payload())
+        self._set_double(self.duration_spin, float(config.duration_s))
+        self._set_double(self.sample_rate_spin, float(config.target_sample_rate_hz))
+        self._set_double(self.command_rate_spin, float(config.command_update_rate_hz))
+        self._set_spin(self.max_delta_spin, int(config.max_tick_delta_from_start))
+        self._set_spin(self.max_step_spin, int(config.max_step_ticks_per_update))
+        self._set_spin(self.seed_spin, int(config.random_seed))
+        self._set_line_text(
+            self.servo_ids_edit,
+            ",".join(str(servo_id) for servo_id in config.servo_ids),
+        )
+        self._set_checkbox(self.require_tracker_check, bool(config.require_tracker))
+        self._set_checkbox(self.return_to_start_check, bool(config.return_to_start_at_end))
+        self._set_double(self.max_tracker_age_spin, float(config.max_tracker_age_ms))
+        self._set_double(self.max_servo_age_spin, float(config.max_servo_age_ms))
+        self._set_double(self.smoothing_spin, float(config.trajectory_smoothing))
+        self._set_spin(self.hard_cap_spin, int(config.max_tick_delta_hard_cap))
+        self._set_line_text(self.tracker_tool_edit, str(config.tracker_tool_id))
+        self._set_checkbox(self.dry_run_check, bool(config.dry_run))
+        self._set_checkbox(self.allow_lower_trust_check, bool(config.allow_lower_trust_runtime_tip))
+        self._set_line_text(self.run_label_edit, str(config.run_label or ""))
+        self._refresh_context_summary(config=config, state=state)
+
+    def _refresh_context_summary(
+        self,
+        *,
+        config: DynamicModelingDatasetConfig,
+        state: ExperimentViewState,
+    ) -> None:
+        _ = state
+        tracking_service = getattr(self.controller, "tracking_service", None)
+        tracking_snapshot = tracking_service.get_snapshot() if tracking_service is not None else None
+        tracker_state = "unavailable"
+        runtime_tip = "unavailable"
+        if tracking_snapshot is not None:
+            tracker_state = (
+                f"{tracking_snapshot.canonical_state} (age "
+                f"{(tracking_snapshot.tracker_data_age_s or 0.0) * 1000.0:.1f} ms)"
+            )
+            runtime_tip = (
+                f"{tracking_snapshot.runtime_tip_mode} ({tracking_snapshot.runtime_tip_trust_level})"
+            )
+        servo_service = getattr(self.controller, "servo_service", None)
+        bus_ready = bool(getattr(servo_service, "is_connected", False)) if servo_service is not None else False
+        estimated_rows = int(round(float(config.duration_s) * float(config.target_sample_rate_hz)))
+        # Each compressed row is ~120 raw bytes; gzip typically achieves ~5x
+        # compression on numeric CSV data with repeated values. The estimate
+        # is intentionally a rough order-of-magnitude.
+        approx_bytes = int(round(estimated_rows * 120.0 / 5.0))
+        approx_mb = approx_bytes / (1024.0 * 1024.0)
+        self.context_widget.set_pairs(
+            [
+                ("Tracker", tracker_state),
+                ("Runtime Tip", runtime_tip),
+                ("Servo Bus", "ready" if bus_ready else "not connected"),
+                ("Dry Run", "yes (not_thesis_evidence)" if bool(config.dry_run) else "no"),
+                ("Output Folder", self.controller.state.planned_output_dir or "n/a"),
+            ]
+        )
+        self.estimate_label.setText(
+            f"Estimated rows: ~{estimated_rows}; estimated dynamic_samples.csv.gz size: ~{approx_mb:.2f} MB."
+        )
+
+
 def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBase:
     """Return the custom page widget for one supported experiment."""
     factories: dict[str, Callable[[object], ExperimentPageBase]] = {
@@ -5012,6 +5322,9 @@ def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBas
         "workspace_repeatability_map": lambda ctrl: WorkspaceRepeatabilityMapPage(ctrl, "workspace_repeatability_map"),
         "registration_validation": lambda ctrl: RegistrationValidationPage(ctrl, "registration_validation"),
         "pivot_validation": lambda ctrl: PivotValidationPage(ctrl, "pivot_validation"),
+        "neutral_setpoint_drift_validation": lambda ctrl: NeutralSetpointDriftValidationPage(
+            ctrl, "neutral_setpoint_drift_validation"
+        ),
         "aurora_grid_accuracy": lambda ctrl: AuroraGridAccuracyPage(ctrl, "aurora_grid_accuracy"),
         "tracker_timing_validation": lambda ctrl: TrackerTimingValidationPage(ctrl, "tracker_timing_validation"),
         "servo_tracker_sync_validation": lambda ctrl: ServoTrackerSyncValidationPage(ctrl, "servo_tracker_sync_validation"),
@@ -5021,6 +5334,7 @@ def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBas
         "penprobe_chasing_demo": lambda ctrl: PenprobeChasingDemoPage(ctrl, "penprobe_chasing_demo"),
         "command_schedule_validation": lambda ctrl: CommandScheduleValidationPage(ctrl, "command_schedule_validation"),
         "collect_pose_command_dataset": lambda ctrl: CollectPoseCommandDatasetPage(ctrl, "collect_pose_command_dataset"),
+        "dynamic_modeling_dataset": lambda ctrl: DynamicModelingDatasetPage(ctrl, "dynamic_modeling_dataset"),
         "replay_runner": lambda ctrl: ReplayRunnerPage(ctrl, "replay_runner"),
     }
     if experiment_name not in factories:

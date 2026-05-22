@@ -1,0 +1,35 @@
+# Offline neutral / zero setpoint drift validation experiment.
+#
+# Reads the append-only history log written by NeutralCalibrationService
+# (default location: data/calibration/neutral_zero_log.jsonl) and produces
+# thesis-quality figures showing per-servo drift over time, distribution per
+# servo, drift magnitude bars, and event-type / capture-source breakdown.
+#
+# This is a pure-analysis experiment — no hardware required. The Servos tab
+# writes the history log automatically every time a neutral is captured, a
+# manual pretension is accepted, or an automatic pretension run finishes.
+
+# Logs to analyze. Empty list = use the canonical log path
+# (data/calibration/neutral_zero_log.jsonl). The GUI page populates this from
+# the selection table; you can also override it here for batch runs.
+log_paths: []
+
+# Event-type filter. Empty = include all known event types from the log.
+# Known types (see neutral_setpoint_drift_validation.KNOWN_EVENT_TYPES):
+#   - neutral_captured             (bulk re-zero via Capture Neutral)
+#   - servo_calibration_saved      (single-servo bounds update)
+#   - manual_pretension_captured   (operator snapshot, not yet accepted)
+#   - manual_pretension_accepted   (operator accepted a manual snapshot)
+#   - pretension_result_saved      (automatic pretension run finished)
+#   - pretension_accepted          (operator accepted a saved pretension)
+include_event_types: []
+
+# Convenience: when true and include_event_types is empty, only "accepted"
+# events are analyzed (the operator-final timeline). Set to false (default)
+# to see every captured event including not-yet-accepted snapshots.
+accepted_events_only: false
+
+# Servo-ID filter. Empty = include every servo that appears in the log.
+# Set to the active segment IDs (e.g. [1, 2, 3, 4]) to focus the plots on
+# one spine when the log contains both segments.
+include_servo_ids: []

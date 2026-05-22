@@ -30,6 +30,10 @@ from continuum_robot.experiments.pair_axis_convention import (
 )
 from continuum_robot.experiments.critical_experiments import register_critical_experiments
 from continuum_robot.experiments.calibration_validation import register_calibration_validation_experiments
+from continuum_robot.experiments.neutral_setpoint_drift_validation import register_neutral_setpoint_drift_validation_experiment
+from continuum_robot.experiments.dynamic_modeling_dataset import (
+    register_dynamic_modeling_dataset,
+)
 from continuum_robot.experiments.registration_trial import register_registration_trial_experiment
 from continuum_robot.experiments.modeling_dataset_outputs import write_modeling_dataset_outputs
 from continuum_robot.registration.legacy_compat import average_quaternions
@@ -1231,8 +1235,12 @@ class TransformChainValidationExperiment(BaseExperiment):
                 transform_validity={"synthetic_chain": "valid"},
                 pose_in_tracker_frame={"synthetic_coil": {"matrix": T_aurora_coil.tolist()}},
                 pose_in_robot_frame={"synthetic_tip": {"matrix": T_robot_tip.tolist()}},
-                status_flags=[],
-                extra={"expected_translation_mm": expected_translation.tolist()},
+                status_flags=["synthetic_validation"],
+                backend_health={"capture_mode": "synthetic_diagnostic"},
+                extra={
+                    "expected_translation_mm": expected_translation.tolist(),
+                    "capture_mode": "synthetic_diagnostic",
+                },
             )
         )
         session.set_metric("translation_error_mm", error_mm)
@@ -1299,8 +1307,9 @@ class DatasetSchemaRoundtripExperiment(BaseExperiment):
                     step_index=sample_index,
                     sample_index=sample_index,
                     commanded_cable_deltas_cm=[0.1 * float(sample_index)],
-                    status_flags=["schema_validation"],
-                    extra={"value": sample_index},
+                    status_flags=["schema_validation", "synthetic_validation"],
+                    backend_health={"capture_mode": "synthetic_diagnostic"},
+                    extra={"value": sample_index, "capture_mode": "synthetic_diagnostic"},
                 )
             )
         roundtrip_root = session.context.output_root / "_schema_roundtrip_tmp"
@@ -13231,8 +13240,10 @@ def register_builtin_experiments(registry) -> None:
         factory=RegistrationSamplingStudyExperiment.from_dict,
     )
     register_calibration_validation_experiments(registry)
+    register_neutral_setpoint_drift_validation_experiment(registry)
     register_critical_experiments(registry)
     register_registration_trial_experiment(registry)
+    register_dynamic_modeling_dataset(registry)
 
 
 def _load_neutral_ticks(session: ExperimentSession) -> list[int]:
