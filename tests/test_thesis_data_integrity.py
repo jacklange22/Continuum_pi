@@ -118,6 +118,34 @@ class TestAuditClassifications:
         assert any("dry_run" in r for r in reasons)
         assert any("synthetic_seed_used" in r for r in reasons)
 
+    def test_grid_capture_mode_counts_flag_synthetic_samples(self, tmp_path: Path) -> None:
+        run_dir = _write_run_folder(
+            tmp_path / "data" / "experiments",
+            experiment_name="aurora_grid_accuracy",
+            timestamp="20260520_010150",
+            metadata={
+                "experiment_name": "aurora_grid_accuracy",
+                "provenance_info": {"mock_mode": False, "tracker_backend": "ndi"},
+                "registration_info": {
+                    "runtime_tip_mode": "coil_as_tip",
+                    "runtime_tip_trust_level": "thesis_trusted",
+                },
+                "trust_info": {"run_trust_mode": "thesis_trusted"},
+            },
+            summary={
+                "experiment_metrics": {
+                    "capture_mode_counts": {"synthetic_dry_run": 3},
+                    "dry_run_sample_count": 3,
+                }
+            },
+            config_snapshot={"dry_run": False},
+        )
+        result = audit_run_folder(run_dir)
+        reasons = result["synthetic_reasons"]
+        assert result["classification"] == CLASS_DEBUG_OR_SYNTHETIC
+        assert any("capture_mode_counts.synthetic_dry_run" in r for r in reasons)
+        assert any("dry_run_sample_count" in r for r in reasons)
+
     def test_mock_mode_flags_synthetic(self, tmp_path: Path) -> None:
         run_dir = _write_run_folder(
             tmp_path / "data" / "experiments",

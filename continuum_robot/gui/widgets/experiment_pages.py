@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
+import secrets
 import threading
 import time
 from typing import Callable
@@ -1549,6 +1550,8 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
             f"spread {_fmt_metric(point_metrics.get('sample_spread_rms_mm'))} mm, "
             f"residual {_fmt_metric(point_metrics.get('residual_mm'))} mm."
         )
+        if any(str(sample.get("capture_mode", "")) == "synthetic_dry_run" for sample in raw_samples):
+            capture_message += " DRY-RUN synthetic samples, not live tracker data."
         if not had_existing_capture:
             next_target_index = self._next_incomplete_target_index(
                 updated_preview,
@@ -1589,6 +1592,7 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
             return
         self.controller.set_config_value("captured_points", [])
         self._selected_target_index = 0
+        self._dry_run_auto_synced = False
         self._append_capture_log("Restarted the grid-validation run and cleared all captured points.")
         self._refresh_now()
 
@@ -1598,6 +1602,13 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
             raise RuntimeError("Tip calibration is required for this grid capture.")
         sample_count = max(1, int(config.samples_per_point))
         raw_samples: list[dict[str, object]] = []
+        synthetic_capture_seed = (
+            int(config.seed)
+            if config.dry_run and config.seed is not None
+            else int(secrets.randbits(32))
+            if config.dry_run
+            else None
+        )
         for sample_index in range(sample_count):
             if config.dry_run:
                 raw_sample = self._synthetic_grid_sample(
@@ -1605,6 +1616,7 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
                     truth_entry=truth_entry,
                     sample_index=sample_index,
                     tip_available=tip_available,
+                    capture_seed=int(synthetic_capture_seed or 0),
                 )
             else:
                 snapshot = self.controller.tracking_service.get_snapshot()
@@ -1629,15 +1641,11 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
         truth_entry: dict[str, object],
         sample_index: int,
         tip_available: bool,
+        capture_seed: int,
     ) -> dict[str, object]:
         if config.use_tip_calibration and not tip_available and not config.allow_coil_origin_fallback:
             raise RuntimeError("Tip calibration is required for this grid capture.")
         truth_point = np.asarray(truth_entry["truth_point_mm"], dtype=float)
-        # GridDefinitionConfig.seed is None by default (so the experiment-level
-        # synthetic run picks a fresh seed each Save); the GUI "Capture Selected
-        # Point" preview should stay deterministic per point so refreshing
-        # doesn't jitter the visible metrics. Fall back to 0 when unpinned.
-        capture_seed = int(config.seed) if config.seed is not None else 0
         rng = np.random.default_rng(capture_seed + (int(truth_entry["target_index"]) * 100) + sample_index)
         position = truth_point + np.asarray(config.synthetic_bias_mm, dtype=float) + rng.normal(
             0.0,
@@ -1651,8 +1659,10 @@ class AuroraGridAccuracyPage(ExperimentPageBase):
             "tracker_frame_id": sample_index,
             "freshness_s": 0.0,
             "tracking_state": "valid",
-            "status_flags": ["dry_run"],
-            "position_source": "tip" if tip_available else "coil_origin",
+            "status_flags": ["dry_run", "synthetic_capture"],
+            "position_source": "synthetic_tip" if tip_available else "synthetic_coil_origin",
+            "capture_mode": "synthetic_dry_run",
+            "synthetic_seed_used": int(capture_seed),
         }
 
     def _current_preview(self, *, config: GridDefinitionConfig | None = None):

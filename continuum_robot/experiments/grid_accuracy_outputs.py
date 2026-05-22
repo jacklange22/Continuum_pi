@@ -55,6 +55,10 @@ def build_grid_accuracy_summary_pairs(
         f"{str(source)}={int(count)}"
         for source, count in sorted((metrics.get("position_source_counts", {}) or {}).items())
     ) or "n/a"
+    capture_mode_summary = ", ".join(
+        f"{str(mode)}={int(count)}"
+        for mode, count in sorted((metrics.get("capture_mode_counts", {}) or {}).items())
+    ) or "n/a"
     return [
         ("Grid", f"{rows} x {cols}"),
         ("Spacing", f"{_fmt_float(config_used.get('spacing_mm'))} mm"),
@@ -76,6 +80,7 @@ def build_grid_accuracy_summary_pairs(
         ("Tip Calibration Requested", "yes" if tip_requested else "no"),
         ("Tip Calibration Used", _tip_usage_label(metrics=metrics, tip_requested=tip_requested)),
         ("Position Sources", position_source_summary),
+        ("Capture Modes", capture_mode_summary),
     ]
 
 

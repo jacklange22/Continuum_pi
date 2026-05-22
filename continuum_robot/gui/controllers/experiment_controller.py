@@ -1965,10 +1965,23 @@ class ExperimentController:
         if experiment_name == "aurora_grid_accuracy":
             captured_points = config_payload.get("captured_points", []) or []
             captured_count = len(captured_points) if captured_points else int(config_payload.get("captured_point_count", 0) or 0)
+            capture_modes = {
+                str(sample.get("capture_mode", "legacy_manual_capture") or "legacy_manual_capture")
+                for point in captured_points
+                if isinstance(point, dict)
+                for sample in (point.get("raw_samples", []) or [])
+                if isinstance(sample, dict)
+            }
+            source_suffix = ""
+            if "synthetic_dry_run" in capture_modes:
+                source_suffix = ", SYNTHETIC dry-run captures"
+            elif capture_modes:
+                source_suffix = f", capture source: {', '.join(sorted(capture_modes))}"
             return (
                 f"{config_payload.get('dimensions', [])} @ {config_payload.get('spacing_mm', 'n/a')} mm, "
                 f"{captured_count} captured points, "
                 f"{int(config_payload.get('samples_per_point', 0) or 0)} samples/point"
+                f"{source_suffix}"
             )
         if experiment_name == "command_schedule_validation":
             schedule = config_payload.get("schedule", {}) or {}

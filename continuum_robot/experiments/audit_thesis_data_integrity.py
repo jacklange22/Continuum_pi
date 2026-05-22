@@ -29,6 +29,8 @@ Synthetic / mock / dry-run signals checked (any one triggers
 * explicit ``not_thesis_evidence: true`` in metrics
 * ``synthetic_seed_used`` field present in summary metrics
   (signals grid_accuracy ran in synthetic mode)
+* grid-accuracy ``capture_mode_counts`` / ``dry_run_sample_count`` showing
+  synthetic dry-run samples
 * ``status_flags`` containing ``synthetic`` or ``dry_run`` on samples
   (only checked when summary.json doesn't disambiguate)
 * output_dir under ``data/mock_experiments/``
@@ -163,6 +165,14 @@ def _detect_synthetic_signals(
     metrics = dict(summ.get("experiment_metrics") or {})
     if metrics.get("synthetic_seed_used") is not None:
         reasons.append("metrics.synthetic_seed_used present (grid_accuracy synthetic)")
+    capture_mode_counts = metrics.get("capture_mode_counts")
+    if isinstance(capture_mode_counts, dict):
+        for mode, count in capture_mode_counts.items():
+            mode_text = str(mode).lower()
+            if int(count or 0) > 0 and ("synthetic" in mode_text or "dry_run" in mode_text):
+                reasons.append(f"metrics.capture_mode_counts.{mode}={count}")
+    if int(metrics.get("dry_run_sample_count") or 0) > 0:
+        reasons.append(f"metrics.dry_run_sample_count={metrics.get('dry_run_sample_count')}")
     if bool(metrics.get("not_thesis_evidence")):
         reasons.append("metrics.not_thesis_evidence=true")
     for reason in list(metrics.get("not_thesis_evidence_reasons") or []):

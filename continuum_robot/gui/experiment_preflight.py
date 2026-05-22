@@ -55,6 +55,7 @@ from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
 from continuum_robot.experiments.critical_experiments import (
     GridDefinitionConfig,
     PivotCalibrationConfig,
+    _captured_points_contain_synthetic_samples,
 )
 from continuum_robot.experiments.schedules import generate_command_schedule
 from continuum_robot.tracking.runtime_tip_policy import (
@@ -849,6 +850,7 @@ def evaluate_preflight(
         partial_points = 0
         raw_samples = 0
         required_samples = max(1, int(config.samples_per_point))
+        synthetic_captured_samples = _captured_points_contain_synthetic_samples(config.captured_points)
         for point in config.captured_points:
             if not isinstance(point, dict):
                 continue
@@ -862,6 +864,30 @@ def evaluate_preflight(
         if complete_points == 0 and partial_points == 0 and raw_samples == 0:
             complete_points = int(payload.get("captured_point_count", 0) or 0)
             raw_samples = int(payload.get("captured_sample_count", 0) or 0)
+        if synthetic_captured_samples and not config.dry_run:
+            checks.append(
+                _blocked(
+                    "capture_source",
+                    "Capture Source",
+                    "Captured grid samples include dry-run/synthetic data while Dry Run is off. Restart the grid run and recapture with live tracking.",
+                )
+            )
+        elif synthetic_captured_samples:
+            checks.append(
+                _warning(
+                    "capture_source",
+                    "Capture Source",
+                    "Captured grid samples are synthetic dry-run data, not live Aurora measurements.",
+                )
+            )
+        elif raw_samples > 0:
+            checks.append(
+                _ok(
+                    "capture_source",
+                    "Capture Source",
+                    "Captured grid samples are marked as live/legacy manual measurements, not synthetic dry-run data.",
+                )
+            )
         if complete_points >= 3:
             checks.append(
                 _ok(

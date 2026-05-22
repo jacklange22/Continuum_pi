@@ -583,20 +583,15 @@ class AuroraGridAccuracyExperiment(BaseExperiment):
             self.config,
             project_root=session.context.project_root,
         )
+        if self.config.captured_points and not self.config.dry_run and _captured_points_contain_synthetic_samples(
+            self.config.captured_points
+        ):
+            raise RuntimeError(
+                "Live Aurora grid accuracy run contains dry-run/synthetic captured samples. "
+                "Restart the grid run, confirm Dry Run is off, and recapture the points from the live tracker."
+            )
         truth_points = [entry["truth_point_mm"] for entry in preview.truth_catalog]
         tip_vector, tip_calibration_available = _load_tip_vector(session, self.config)
-        # Synthetic-mode seed: when the caller did not pin a specific seed,
-        # roll a fresh one each run so successive "Save Grid Validation Run"
-        # presses produce different synthetic datasets (operators were seeing
-        # identical results every time because the old default seed=0 made
-        # the synthetic noise deterministic).
-        effective_seed = (
-            int(self.config.seed)
-            if self.config.seed is not None
-            else int(secrets.randbits(32))
-        )
-        session.metrics["synthetic_seed_used"] = int(effective_seed)
-        rng = np.random.default_rng(effective_seed)
         if preview.samples:
             total = len(preview.samples)
             for completed, sample in enumerate(preview.samples, start=1):
@@ -611,6 +606,23 @@ class AuroraGridAccuracyExperiment(BaseExperiment):
                     },
                 )
         else:
+            if not self.config.dry_run:
+                raise RuntimeError(
+                    "Live Aurora grid accuracy requires captured_points from the page-side tracker capture workflow. "
+                    "No captured points were supplied, so the experiment refused to synthesize live data."
+                )
+            # Synthetic-mode seed: when the caller did not pin a specific seed,
+            # roll a fresh one each run so successive "Save Grid Validation Run"
+            # presses produce different synthetic datasets. This metric is only
+            # written for generated dry-run data because the thesis-integrity
+            # audit uses it as an explicit synthetic marker.
+            effective_seed = (
+                int(self.config.seed)
+                if self.config.seed is not None
+                else int(secrets.randbits(32))
+            )
+            session.metrics["synthetic_seed_used"] = int(effective_seed)
+            rng = np.random.default_rng(effective_seed)
             total = len(truth_points) * max(1, self.config.repetitions_per_point) * max(1, self.config.samples_per_point)
             completed = 0
             truth_catalog = preview.truth_catalog
@@ -636,11 +648,11 @@ class AuroraGridAccuracyExperiment(BaseExperiment):
                             + rng.normal(0.0, self.config.synthetic_noise_std_mm, size=3)
                         )
                         if tip_vector is None and self.config.use_tip_calibration:
-                            status_flags = ["missing_tip_calibration"]
+                            status_flags = ["dry_run", "synthetic_capture", "missing_tip_calibration"]
                             position_source = "missing_tip_calibration"
                         else:
-                            status_flags = ["dry_run"] if self.config.dry_run else []
-                            position_source = "tip" if tip_vector is not None else "coil_origin"
+                            status_flags = ["dry_run", "synthetic_capture"]
+                            position_source = "synthetic_tip" if tip_vector is not None else "synthetic_coil_origin"
                         sample = sample_from_tracking_snapshot(
                             session,
                             snapshot=_grid_snapshot(session, self.config.tool_id),
@@ -658,6 +670,8 @@ class AuroraGridAccuracyExperiment(BaseExperiment):
                                 "truth_label": truth_entry["label"],
                                 "truth_point_mm": [float(value) for value in truth_point],
                                 "position_source": position_source,
+                                "capture_mode": "synthetic_dry_run",
+                                "synthetic_seed_used": int(effective_seed),
                             },
                         )
                         session.add_sample(sample)
@@ -1671,6 +1685,9 @@ def grid_capture_records_to_samples(
             tracker_frame_id = raw_sample.get("tracker_frame_id")
             freshness_s = raw_sample.get("freshness_s")
             status_flags = sorted(set(str(flag) for flag in raw_sample.get("status_flags", []) or []))
+            capture_mode = str(raw_sample.get("capture_mode", "legacy_manual_capture") or "legacy_manual_capture")
+            if capture_mode == "synthetic_dry_run":
+                status_flags = sorted(set(status_flags + ["dry_run", "synthetic_capture"]))
             if raw_sample.get("position_source") == "coil_origin":
                 status_flags.append("coil_origin_fallback")
             output.append(
@@ -1707,15 +1724,40 @@ def grid_capture_records_to_samples(
                     backend_health={
                         "position_source": str(raw_sample.get("position_source", "tracker_tool")),
                         "measurement_mode": "captured_point",
+                        "capture_mode": capture_mode,
+                        "backend_identity": raw_sample.get("backend_identity"),
+                        "selected_backend_name": raw_sample.get("selected_backend_name"),
+                        "backend_frame_counter": raw_sample.get("backend_frame_counter"),
+                        "last_packet_utc": raw_sample.get("last_packet_utc"),
                     },
                     extra={
                         "truth_label": label,
                         "truth_point_mm": [float(value) for value in truth_entry["truth_point_mm"]],
                         "position_source": str(raw_sample.get("position_source", "tracker_tool")),
+                        "capture_mode": capture_mode,
+                        "capture_wall_time_utc": raw_sample.get("wall_time_utc"),
+                        "capture_monotonic_time_s": raw_sample.get("monotonic_time_s"),
+                        "synthetic_seed_used": raw_sample.get("synthetic_seed_used"),
+                        "tool_translation_mm": raw_sample.get("tool_translation_mm"),
                     },
                 )
             )
     return output
+
+
+def _captured_points_contain_synthetic_samples(captured_points: list[dict[str, Any]]) -> bool:
+    """Return True if saved page-side captures include synthetic dry-run samples."""
+    for point in captured_points or []:
+        if not isinstance(point, dict):
+            continue
+        for raw_sample in point.get("raw_samples", []) or []:
+            if not isinstance(raw_sample, dict):
+                continue
+            flags = {str(flag).lower() for flag in raw_sample.get("status_flags", []) or []}
+            capture_mode = str(raw_sample.get("capture_mode", "") or "").lower()
+            if capture_mode.startswith("synthetic") or "dry_run" in flags or "synthetic_capture" in flags:
+                return True
+    return False
 
 
 def capture_grid_measurement_from_snapshot(
@@ -1768,6 +1810,11 @@ def capture_grid_measurement_from_snapshot(
         "tracking_state": str(tool.tracking_state),
         "status_flags": status_flags,
         "position_source": position_source,
+        "capture_mode": "live_tracker",
+        "backend_identity": getattr(snapshot, "backend_identity", None),
+        "selected_backend_name": getattr(snapshot, "selected_backend_name", None),
+        "backend_frame_counter": getattr(snapshot, "backend_frame_counter", None),
+        "last_packet_utc": getattr(snapshot, "last_packet_utc", None),
     }
 
 
@@ -1815,6 +1862,9 @@ def compute_grid_accuracy_metrics(
             "tip_calibration_used": bool(tip_calibration_available),
             "coil_origin_fallback_used": False,
             "position_source_counts": {},
+            "capture_mode_counts": {},
+            "dry_run_sample_count": 0,
+            "live_tracker_sample_count": 0,
         }
     truth_by_index = {index: [float(value) for value in truth_points_mm[index]] for index in range(len(truth_points_mm))}
     samples_by_index: dict[int, list[Any]] = {}
@@ -1830,6 +1880,7 @@ def compute_grid_accuracy_metrics(
     outlier_count = 0
     per_point_spreads: list[float] = []
     position_source_counts: dict[str, int] = {}
+    capture_mode_counts: dict[str, int] = {}
     for point_index in sorted(grouped):
         positions = grouped.get(point_index, [])
         if not positions:
@@ -1858,10 +1909,14 @@ def compute_grid_accuracy_metrics(
         outlier_count += len(rejected_indices)
         point_samples = samples_by_index.get(point_index, [])
         point_position_source_counts: dict[str, int] = {}
+        point_capture_mode_counts: dict[str, int] = {}
         for sample in point_samples:
             position_source = str(sample.extra.get("position_source", "tracker_tool") or "tracker_tool")
             position_source_counts[position_source] = int(position_source_counts.get(position_source, 0) or 0) + 1
             point_position_source_counts[position_source] = int(point_position_source_counts.get(position_source, 0) or 0) + 1
+            capture_mode = str(sample.extra.get("capture_mode", "unknown") or "unknown")
+            capture_mode_counts[capture_mode] = int(capture_mode_counts.get(capture_mode, 0) or 0) + 1
+            point_capture_mode_counts[capture_mode] = int(point_capture_mode_counts.get(capture_mode, 0) or 0) + 1
         label = next(
             (
                 str(sample.extra.get("truth_label"))
@@ -1888,6 +1943,12 @@ def compute_grid_accuracy_metrics(
             "position_source_summary": ", ".join(
                 f"{source}={count}"
                 for source, count in sorted(point_position_source_counts.items())
+            )
+            or "n/a",
+            "capture_mode_counts": point_capture_mode_counts,
+            "capture_mode_summary": ", ".join(
+                f"{mode}={count}"
+                for mode, count in sorted(point_capture_mode_counts.items())
             )
             or "n/a",
             "status": (
@@ -1950,8 +2011,16 @@ def compute_grid_accuracy_metrics(
                 point_metrics["residual_mm"] = float(residual_norms[index])
                 per_point_residuals[label] = float(residual_norms[index])
 
-    coil_origin_fallback_used = bool(position_source_counts.get("coil_origin", 0) or 0)
-    tip_calibration_used = bool(position_source_counts.get("tip", 0) or 0) and not coil_origin_fallback_used
+    coil_origin_fallback_used = bool(
+        position_source_counts.get("coil_origin", 0)
+        or position_source_counts.get("synthetic_coil_origin", 0)
+    )
+    tip_calibration_used = bool(
+        position_source_counts.get("tip", 0)
+        or position_source_counts.get("synthetic_tip", 0)
+    ) and not coil_origin_fallback_used
+    dry_run_sample_count = int(capture_mode_counts.get("synthetic_dry_run", 0) or 0)
+    live_tracker_sample_count = int(capture_mode_counts.get("live_tracker", 0) or 0)
 
     if require_tip_calibration and (coil_origin_fallback_used or not tip_calibration_available) and not allow_coil_origin_fallback:
         status = STATUS_INVALID_MISSING_TIP_CAL
@@ -1991,6 +2060,9 @@ def compute_grid_accuracy_metrics(
         "alignment_ready_reason": alignment_ready_reason,
         "alignment_transform_truth_to_measured": alignment_transform,
         "position_source_counts": position_source_counts,
+        "capture_mode_counts": capture_mode_counts,
+        "dry_run_sample_count": dry_run_sample_count,
+        "live_tracker_sample_count": live_tracker_sample_count,
         "registration_available": registration_available,
         "tip_calibration_available": tip_calibration_available,
         "tip_calibration_used": tip_calibration_used,
@@ -2011,7 +2083,9 @@ def _grid_tip_calibration_used_by_samples(
     }
     if not position_sources:
         return bool(fallback_configured)
-    return "tip" in position_sources and "coil_origin" not in position_sources
+    return bool({"tip", "synthetic_tip"} & position_sources) and not bool(
+        {"coil_origin", "synthetic_coil_origin"} & position_sources
+    )
 
 
 def _grid_capture_progress_metrics(

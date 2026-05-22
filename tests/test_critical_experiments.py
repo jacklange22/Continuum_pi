@@ -721,6 +721,59 @@ def test_aurora_grid_accuracy_no_longer_requires_registration(tmp_path: Path) ->
     assert result.summary.status == "success"
 
 
+def test_aurora_grid_accuracy_live_without_captured_points_refuses_synthetic_fallback(tmp_path: Path) -> None:
+    runner = _runner(tmp_path)
+    result = runner.run_experiment(
+        "aurora_grid_accuracy",
+        config={
+            "dry_run": False,
+            "dimensions": [2, 2],
+            "repetitions_per_point": 1,
+            "samples_per_point": 1,
+            "tool_id": "0B",
+            "use_tip_calibration": False,
+            "allow_coil_origin_fallback": True,
+        },
+    )
+
+    assert result.success is False
+    assert "refused to synthesize live data" in result.message
+
+
+def test_aurora_grid_accuracy_live_rejects_synthetic_captured_points(tmp_path: Path) -> None:
+    runner = _runner(tmp_path)
+    result = runner.run_experiment(
+        "aurora_grid_accuracy",
+        config={
+            "dry_run": False,
+            "dimensions": [2, 2],
+            "samples_per_point": 1,
+            "tool_id": "0B",
+            "use_tip_calibration": False,
+            "allow_coil_origin_fallback": True,
+            "captured_points": [
+                {
+                    "label": "P01",
+                    "target_index": 0,
+                    "raw_samples": [
+                        {
+                            "position_mm": [0.0, 0.0, 0.0],
+                            "quaternion_wxyz": [1.0, 0.0, 0.0, 0.0],
+                            "tracking_state": "valid",
+                            "position_source": "synthetic_tip",
+                            "capture_mode": "synthetic_dry_run",
+                            "status_flags": ["dry_run", "synthetic_capture"],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+
+    assert result.success is False
+    assert "dry-run/synthetic captured samples" in result.message
+
+
 def test_aurora_grid_accuracy_run_saves_captured_point_dataset(tmp_path: Path) -> None:
     runner = _runner(tmp_path)
     result = runner.run_experiment(
