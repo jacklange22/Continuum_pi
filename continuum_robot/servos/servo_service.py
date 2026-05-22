@@ -2245,6 +2245,11 @@ class ServoService:
             for servo_id in expected_ids
             if include_scan and self._ping_servo(int(servo_id))
         ]
+        if include_scan and not discovered_ids:
+            discovered_ids = self.scan_ids(
+                min_id=int(self.dxl_bus.config.discovery_min_id),
+                max_id=int(self.dxl_bus.config.discovery_max_id),
+            )
         telemetry_by_id = (
             self.read_telemetry(expected_ids)
             if profile == "full"

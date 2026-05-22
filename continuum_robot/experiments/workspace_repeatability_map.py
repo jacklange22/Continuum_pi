@@ -1058,6 +1058,8 @@ class WorkspaceRepeatabilityMapExperiment(BaseExperiment):
             phase="workspace_map_visit",
             step_index=int(visit_position),
             sample_index=int(sample_index),
+            status_flags=["dry_run", "synthetic_capture"],
+            backend_health={"capture_mode": "synthetic_dry_run"},
             extra={
                 "visit_position": int(visit_position),
                 "cycle_index": int(cycle_index),
@@ -1072,6 +1074,7 @@ class WorkspaceRepeatabilityMapExperiment(BaseExperiment):
                 "position_mm": [float(value) for value in position_mm],
                 "rejected": False,
                 "dry_run": True,
+                "capture_mode": "synthetic_dry_run",
             },
         )
 

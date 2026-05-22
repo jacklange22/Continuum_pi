@@ -1,0 +1,31 @@
+schedule_type: "single_axis_micro"
+dry_run: true
+max_segment_displacement_cm: 0.25
+max_tick_delta_from_startup: 320
+samples_per_pattern: 1
+capture_repeats: 1
+settle_time_s: 0.0
+allow_servo_only_test_run: true
+run_trust_mode: "servo_only"
+capture_tracker_snapshot: true
+requested_tool_roles:
+  "0A": "distal_tip"
+run_label: ""
+dataset_tag: ""
+continue_until_valid_samples: false
+target_valid_sample_count: 0
+max_total_packet_failures: null
+max_consecutive_packet_failures: null
+max_total_dropped_samples: null
+long_run_recovery_enabled: false
+drop_sample_on_transport_error: true
+pattern_count_budget: 0
+random_seed: 0
+grid_points_per_axis: 5
+command_ramp_step_cm: null
+command_ramp_settle_time_s: 0.05
+current_warning_ma: 800
+sustained_overcurrent_ma: 1200
+sustained_overcurrent_sample_count: 3
+physical_assembly_confirmed_by_operator: false
+physical_assembly_confirmed_at_utc: ""

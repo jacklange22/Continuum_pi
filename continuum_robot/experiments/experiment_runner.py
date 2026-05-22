@@ -43,6 +43,8 @@ from continuum_robot.two_segment import build_two_segment_foundation_metadata
 
 LOG = logging.getLogger(__name__)
 
+THESIS_TRUST_MODE = "thesis_trusted"
+
 
 @dataclass
 class ExperimentRunSummary:
@@ -535,16 +537,15 @@ class ExperimentRunner:
         mock_mode = bool(self.settings.runtime.mock_mode)
         config_trust_mode = str(config_used.get("run_trust_mode", "") or "").strip().lower()
         if not config_trust_mode:
-            config_trust_mode = "thesis_trusted"
+            config_trust_mode = THESIS_TRUST_MODE
         if mock_mode:
             config_trust_mode = "mock"
         tracker_state = str(backend_info.get("tracking_state", "") or "")
         tracker_connected = tracker_state not in {"", "disabled", "disconnected", "missing", "none"}
-        lower_trust_modes = {"servo_only", "current_only", "lower_trust", "debug_only", "debug", "mock"}
         data_quality_warnings: list[str] = []
         if mock_mode:
             data_quality_warnings.append("mock_mode")
-        if config_trust_mode in lower_trust_modes:
+        if _is_lower_trust_mode(config_trust_mode):
             data_quality_warnings.append(f"run_trust_mode={config_trust_mode}")
         if config_used.get("allow_no_tracker_test_run") and not tracker_connected:
             data_quality_warnings.append("no_tracker_test_run")
@@ -554,19 +555,19 @@ class ExperimentRunner:
         valid_for_model_training = bool(
             experiment_lower == "collect_pose_command_dataset"
             and not mock_mode
-            and config_trust_mode not in lower_trust_modes
+            and not _is_lower_trust_mode(config_trust_mode)
             and not bool(config_used.get("allow_no_tracker_test_run") and not tracker_connected)
             and bool(runtime_tip_policy.get("allowed_for_workflow", runtime_tip_policy.get("thesis_trusted", False)))
         )
         valid_for_thesis_repeatability = bool(
             experiment_lower == "single_segment_repeatability"
             and not mock_mode
-            and config_trust_mode not in lower_trust_modes
+            and not _is_lower_trust_mode(config_trust_mode)
             and bool(runtime_tip_policy.get("thesis_trusted", False))
         )
         if experiment_lower not in {"collect_pose_command_dataset", "single_segment_repeatability"}:
             valid_for_thesis_repeatability = bool(
-                not mock_mode and config_trust_mode not in lower_trust_modes and bool(runtime_tip_policy.get("thesis_trusted", False))
+                not mock_mode and not _is_lower_trust_mode(config_trust_mode) and bool(runtime_tip_policy.get("thesis_trusted", False))
             )
         provenance_info = {
             "hardware_profile": self.settings.runtime.robot_config,
@@ -600,7 +601,7 @@ class ExperimentRunner:
             not_thesis_evidence_reasons.append("mock_mode")
         if dry_run_config:
             not_thesis_evidence_reasons.append("dry_run")
-        if config_trust_mode in lower_trust_modes:
+        if _is_lower_trust_mode(config_trust_mode):
             not_thesis_evidence_reasons.append(f"run_trust_mode={config_trust_mode}")
         if config_used.get("allow_no_tracker_test_run") and not tracker_connected:
             not_thesis_evidence_reasons.append("no_tracker_test_run")
@@ -779,6 +780,12 @@ class ExperimentRunner:
             if run_provenance:
                 run_provenance["valid_for_model_training"] = bool(metrics["valid_for_model_training"])
                 metrics["run_provenance"] = run_provenance
+        self._apply_integrity_disqualification(
+            metrics=metrics,
+            samples=list(session.samples),
+            config_used=dict(session.metadata.config_used or {}),
+            metadata=session.metadata,
+        )
         return ExperimentSummary(
             schema_version=self.SCHEMA_VERSION,
             experiment_name=experiment_name,
@@ -854,6 +861,61 @@ class ExperimentRunner:
         commit = completed.stdout.strip()
         return commit or None
 
+    @staticmethod
+    def _apply_integrity_disqualification(
+        *,
+        metrics: dict[str, Any],
+        samples: list,
+        config_used: dict[str, Any],
+        metadata: ExperimentMetadata,
+    ) -> None:
+        """Promote any synthetic/dry-run/sample-level evidence marker to run-level trust fields."""
+        reasons = _detect_non_evidence_reasons(
+            config_used=config_used,
+            metrics=metrics,
+            samples=samples,
+            metadata=metadata,
+        )
+        if not reasons:
+            return
+        existing = set(_as_string_list(metrics.get("not_thesis_evidence_reasons")))
+        existing.update(reasons)
+        sorted_reasons = sorted(existing)
+        metrics["not_thesis_evidence"] = True
+        metrics["not_thesis_evidence_reasons"] = sorted_reasons
+        metrics["include_in_evidence_index"] = False
+        metrics["valid_for_model_training"] = False
+        metrics["valid_for_thesis_repeatability"] = False
+        metrics["valid_for_two_segment_model_training"] = False
+        metrics["valid_for_two_segment_ann_training"] = False
+        warnings = set(_as_string_list(metrics.get("data_quality_warnings")))
+        warnings.update(sorted_reasons)
+        metrics["data_quality_warnings"] = sorted(warnings)
+        run_trust = dict(metrics.get("run_trust", {}) or {})
+        run_trust["not_thesis_evidence"] = True
+        run_trust["not_thesis_evidence_reasons"] = sorted_reasons
+        run_trust["include_in_evidence_index"] = False
+        run_trust["valid_for_model_training"] = False
+        run_trust["valid_for_thesis_repeatability"] = False
+        run_trust["valid_for_two_segment_model_training"] = False
+        run_trust["valid_for_two_segment_ann_training"] = False
+        run_trust["data_quality_warnings"] = sorted(warnings)
+        metrics["run_trust"] = run_trust
+        metadata_trust = dict(metadata.trust_info or {})
+        metadata_reasons = set(_as_string_list(metadata_trust.get("not_thesis_evidence_reasons")))
+        metadata_reasons.update(sorted_reasons)
+        metadata_warnings = set(_as_string_list(metadata_trust.get("data_quality_warnings")))
+        metadata_warnings.update(sorted_reasons)
+        metadata_trust["not_thesis_evidence"] = True
+        metadata_trust["not_thesis_evidence_reasons"] = sorted(metadata_reasons)
+        metadata_trust["include_in_evidence_index"] = False
+        metadata_trust["valid_for_model_training"] = False
+        metadata_trust["valid_for_thesis_repeatability"] = False
+        metadata_trust["valid_for_two_segment_model_training"] = False
+        metadata_trust["valid_for_two_segment_ann_training"] = False
+        metadata_trust["data_quality_warnings"] = sorted(metadata_warnings)
+        metadata.trust_info = metadata_trust
+
 
 def _as_string_list(value: Any) -> list[str]:
     if value is None:
@@ -863,6 +925,94 @@ def _as_string_list(value: Any) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [value.strip()]
     return []
+
+
+def _is_lower_trust_mode(value: Any) -> bool:
+    mode = str(value or "").strip().lower()
+    return bool(mode and mode != THESIS_TRUST_MODE)
+
+
+def _detect_non_evidence_reasons(
+    *,
+    config_used: dict[str, Any],
+    metrics: dict[str, Any],
+    samples: list,
+    metadata: ExperimentMetadata,
+) -> list[str]:
+    reasons: list[str] = []
+    if bool(config_used.get("dry_run", False)):
+        reasons.append("config.dry_run=true")
+    for key in ("dry_run", "effective_dry_run"):
+        if bool(metrics.get(key, False)):
+            reasons.append(f"metrics.{key}=true")
+    trust_mode = (
+        metrics.get("run_trust_mode")
+        or dict(metrics.get("run_trust", {}) or {}).get("run_trust_mode")
+        or dict(metadata.trust_info or {}).get("run_trust_mode")
+    )
+    if _is_lower_trust_mode(trust_mode):
+        reasons.append(f"run_trust_mode={str(trust_mode).strip().lower()}")
+    if bool(metrics.get("mock_mode", False)) or bool(dict(metadata.provenance_info or {}).get("mock_mode", False)):
+        reasons.append("mock_mode")
+    if metrics.get("synthetic_seed_used") is not None:
+        reasons.append("metrics.synthetic_seed_used present")
+    if metrics.get("synthetic_truth_T_aurora_robot") is not None:
+        reasons.append("metrics.synthetic_truth_T_aurora_robot present")
+    if metrics.get("penprobe_demo_valid_for_thesis") is False:
+        reasons.append("metrics.penprobe_demo_valid_for_thesis=false")
+    run_validity = metrics.get("run_validity")
+    if isinstance(run_validity, dict) and run_validity.get("thesis_valid_run") is False:
+        reasons.append("metrics.run_validity.thesis_valid_run=false")
+    capture_mode_counts = metrics.get("capture_mode_counts")
+    if isinstance(capture_mode_counts, dict):
+        for mode, count in capture_mode_counts.items():
+            mode_text = str(mode).strip().lower()
+            if int(count or 0) > 0 and _synthetic_marker_text(mode_text):
+                reasons.append(f"metrics.capture_mode_counts.{mode}={count}")
+    if int(metrics.get("dry_run_sample_count") or 0) > 0:
+        reasons.append(f"metrics.dry_run_sample_count={metrics.get('dry_run_sample_count')}")
+
+    dry_flag_count = 0
+    synthetic_flag_count = 0
+    mock_flag_count = 0
+    dry_extra_count = 0
+    synthetic_capture_mode_count = 0
+    dry_wall_time_count = 0
+    for sample in samples or []:
+        flags = {str(flag).strip().lower() for flag in getattr(sample, "status_flags", []) or []}
+        if "dry_run" in flags:
+            dry_flag_count += 1
+        if any("synthetic" in flag for flag in flags):
+            synthetic_flag_count += 1
+        if any("mock" in flag for flag in flags):
+            mock_flag_count += 1
+        extra = dict(getattr(sample, "extra", {}) or {})
+        backend_health = dict(getattr(sample, "backend_health", {}) or {})
+        if bool(extra.get("dry_run", False)):
+            dry_extra_count += 1
+        capture_mode = str(extra.get("capture_mode") or backend_health.get("capture_mode") or "").strip().lower()
+        if _synthetic_marker_text(capture_mode):
+            synthetic_capture_mode_count += 1
+        if str(getattr(sample, "wall_time_utc", "") or "").strip().lower() == "dry_run":
+            dry_wall_time_count += 1
+    if dry_flag_count:
+        reasons.append(f"samples.status_flags.dry_run={dry_flag_count}")
+    if synthetic_flag_count:
+        reasons.append(f"samples.status_flags.synthetic={synthetic_flag_count}")
+    if mock_flag_count:
+        reasons.append(f"samples.status_flags.mock={mock_flag_count}")
+    if dry_extra_count:
+        reasons.append(f"samples.extra.dry_run=true:{dry_extra_count}")
+    if synthetic_capture_mode_count:
+        reasons.append(f"samples.capture_mode.synthetic_or_dry_run={synthetic_capture_mode_count}")
+    if dry_wall_time_count:
+        reasons.append(f"samples.wall_time_utc=dry_run:{dry_wall_time_count}")
+    return sorted(set(reasons))
+
+
+def _synthetic_marker_text(value: str) -> bool:
+    lowered = str(value or "").strip().lower()
+    return bool(lowered and ("synthetic" in lowered or "dry_run" in lowered or lowered == "mock"))
 
 
 def _latest_sign_mapping_summary(

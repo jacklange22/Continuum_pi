@@ -146,6 +146,65 @@ class TestAuditClassifications:
         assert any("capture_mode_counts.synthetic_dry_run" in r for r in reasons)
         assert any("dry_run_sample_count" in r for r in reasons)
 
+    def test_sample_level_dry_run_flags_synthetic_even_when_config_is_live(self, tmp_path: Path) -> None:
+        run_dir = _write_run_folder(
+            tmp_path / "data" / "experiments",
+            experiment_name="registration_sampling_study",
+            timestamp="20260520_010175",
+            metadata={
+                "experiment_name": "registration_sampling_study",
+                "provenance_info": {"mock_mode": False, "tracker_backend": "ndi"},
+                "registration_info": {
+                    "runtime_tip_mode": "coil_as_tip",
+                    "runtime_tip_trust_level": "thesis_trusted",
+                },
+                "trust_info": {"run_trust_mode": "thesis_trusted"},
+            },
+            summary={"experiment_metrics": {"status": "success"}},
+            config_snapshot={"dry_run": False},
+        )
+        (run_dir / "samples.jsonl").write_text(
+            json.dumps(
+                {
+                    "status_flags": ["dry_run", "synthetic_capture"],
+                    "wall_time_utc": "dry_run",
+                    "backend_health": {"capture_mode": "synthetic_dry_run"},
+                    "extra": {"dry_run": True, "capture_mode": "synthetic_dry_run"},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = audit_run_folder(run_dir)
+        reasons = result["synthetic_reasons"]
+        assert result["classification"] == CLASS_DEBUG_OR_SYNTHETIC
+        assert any("samples.status_flags.dry_run" in r for r in reasons)
+        assert any("samples.capture_mode.synthetic_or_dry_run" in r for r in reasons)
+
+    def test_explicit_not_thesis_valid_metric_excludes_live_demo(self, tmp_path: Path) -> None:
+        run_dir = _write_run_folder(
+            tmp_path / "data" / "experiments",
+            experiment_name="penprobe_chasing_demo",
+            timestamp="20260520_010185",
+            metadata={
+                "experiment_name": "penprobe_chasing_demo",
+                "provenance_info": {"mock_mode": False, "tracker_backend": "ndi"},
+                "registration_info": {
+                    "runtime_tip_mode": "coil_as_tip",
+                    "runtime_tip_trust_level": "thesis_trusted",
+                },
+                "trust_info": {"run_trust_mode": "thesis_trusted"},
+            },
+            summary={"experiment_metrics": {"penprobe_demo_valid_for_thesis": False}},
+            config_snapshot={"dry_run": False},
+        )
+
+        result = audit_run_folder(run_dir)
+
+        assert result["classification"] == CLASS_DEBUG_OR_SYNTHETIC
+        assert "metrics.penprobe_demo_valid_for_thesis=false" in result["synthetic_reasons"]
+
     def test_mock_mode_flags_synthetic(self, tmp_path: Path) -> None:
         run_dir = _write_run_folder(
             tmp_path / "data" / "experiments",

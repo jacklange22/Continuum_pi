@@ -88,6 +88,15 @@ def _app() -> QApplication:
     return app
 
 
+def _wait_until(predicate, *, timeout_ms: int = 1000, step_ms: int = 20) -> bool:
+    deadline = time.monotonic() + timeout_ms / 1000.0
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        QTest.qWait(step_ms)
+    return bool(predicate())
+
+
 def _settings() -> Settings:
     return Settings(
         runtime=RuntimeConfig(mock_mode=True, poll_rate_hz=10, robot_config="robot_4servo.yaml"),
@@ -647,7 +656,16 @@ def test_app_window_promotes_tracking_and_registration_before_legacy(tmp_path: P
     window = AppWindow(_app_context(tmp_path))
     try:
         labels = [window.tab_widget.tabText(index) for index in range(window.tab_widget.count())]
-        assert labels == ["System", "Tracking", "Registration", "Servos", "Pretension", "Experiment", "Modeling", "Data"]
+        assert labels == [
+            "System",
+            "Tracking",
+            "Registration",
+            "Servos",
+            "Experiment",
+            "Modeling",
+            "2-Segment Modeling",
+            "Data",
+        ]
     finally:
         window.shutdown()
 
@@ -1511,7 +1529,7 @@ def test_system_tab_keeps_hardware_profile_in_advanced_settings() -> None:
     tab.update(controller.state)
 
     assert tab.settings_advanced_panel.isHidden() is True
-    assert tab.robot_config_combo.isHidden() is True
+    assert tab.settings_advanced_panel.isAncestorOf(tab.robot_config_combo) is True
 
     tab.settings_advanced_toggle.click()
 
@@ -1794,6 +1812,7 @@ def test_two_segment_collect_pose_page_selects_tracker_roles_and_range(tmp_path:
     page.distal_tool_combo.setEditText("0A")
     page.intermediate_tool_combo.setEditText("0C")
     page.range_preset_combo.setCurrentIndex(page.range_preset_combo.findData(0.75))
+    page.max_tick_spin.setValue(350)
     page.continue_valid_check.setChecked(True)
     page.target_valid_spin.setValue(5000)
     page.assembly_confirm_check.setChecked(True)
@@ -1801,6 +1820,8 @@ def test_two_segment_collect_pose_page_selects_tracker_roles_and_range(tmp_path:
     assert controller.config_payload()["requested_tool_roles"]["0A"] == "distal_tip"
     assert controller.config_payload()["requested_tool_roles"]["0C"] == "intermediate_segment"
     assert controller.config_payload()["max_segment_displacement_cm"] == 0.75
+    assert page.max_tick_spin.maximum() >= 1200
+    assert controller.config_payload()["max_tick_delta_from_startup"] == 350
     assert controller.config_payload()["continue_until_valid_samples"] is True
     assert controller.config_payload()["target_valid_sample_count"] == 5000
     assert controller.config_payload()["physical_assembly_confirmed_by_operator"] is True
@@ -2300,7 +2321,7 @@ def test_registration_controller_toggle_selection_limits_to_four_unique_points(t
     controller.toggle_selected_model_point("L5")
     assert controller.state.selected_model_labels == ["L1", "L3", "L4", "L5"]
 
-    with pytest.raises(RuntimeError, match="Only four model points"):
+    with pytest.raises(RuntimeError, match="At most 4 model points"):
         controller.toggle_selected_model_point("L2")
 
 
@@ -2436,6 +2457,7 @@ def test_experiment_workspace_filters_options_by_operating_mode(tmp_path: Path) 
     dual_options = [option.name for option in controller.refresh().experiment_options]
     assert "two_segment_startup_validation" in dual_options
     assert "two_segment_collect_pose_command_dataset" in dual_options
+    assert "two_segment_repeatability" in dual_options
     assert "pretension_validation" not in dual_options
     assert "single_segment_repeatability" not in dual_options
     assert "penprobe_chasing_demo" not in dual_options
@@ -2457,6 +2479,51 @@ def test_experiment_workspace_clears_hidden_selection_after_mode_change(tmp_path
 
     assert state.selected_experiment == ""
     assert "hidden for operating_mode=dual_segment" in state.status_message
+
+
+def test_experiment_workspace_loads_two_segment_repeatability_page(tmp_path: Path) -> None:
+    _app()
+    controller = _experiment_controller(tmp_path)
+    controller.settings.robot = RobotConfig(
+        mode="dual_segment",
+        spool_diameter_cm=1.2,
+        ticks_per_revolution=4096,
+        servo_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+        tendon_to_servo=[1, 2, 3, 4, 5, 6, 7, 8],
+        segments={
+            "segment_a": RobotSegmentConfig(
+                key="segment_a",
+                label="Spine 1",
+                segment_label="Segment A",
+                segment_role="proximal",
+                segment_order_index=0,
+                servo_ids=[1, 2, 3, 4],
+                pairs={"axis_a": [1, 3], "axis_b": [2, 4]},
+            ),
+            "segment_b": RobotSegmentConfig(
+                key="segment_b",
+                label="Spine 2",
+                segment_label="Segment B",
+                segment_role="distal",
+                segment_order_index=1,
+                servo_ids=[5, 6, 7, 8],
+                pairs={"axis_a": [5, 7], "axis_b": [6, 8]},
+            ),
+        },
+        bottom_segment_key="segment_a",
+        top_segment_key="segment_b",
+        physical_assembly_confirmed_by_operator=True,
+    )
+    tab = ExperimentTab(controller)
+
+    controller.select_experiment("two_segment_repeatability")
+    state = controller.refresh()
+    tab.update(state)
+    page = tab._page_for("two_segment_repeatability")
+
+    assert state.selected_experiment == "two_segment_repeatability"
+    assert isinstance(page, experiment_pages_module.TwoSegmentRepeatabilityPage)
+    assert page.run_button.text() == "Run Two-Segment Repeatability"
 
 
 def test_experiment_workspace_blocks_single_segment_repeatability_in_mock_mode(tmp_path: Path) -> None:
@@ -2563,7 +2630,7 @@ def test_registration_validation_page_deferred_loads_candidates_without_blocking
     page = tab._page_for("registration_validation")
 
     assert elapsed < 0.1
-    assert page.loading_label.isVisible()
+    assert page.loading_label.isHidden() is False
     assert "Loading saved runs" in page.loading_label.text()
     assert page.run_table.isEnabled() is False
 
@@ -2833,9 +2900,12 @@ def test_registration_validation_page_slow_row_formatting_stays_responsive(
     elapsed = time.monotonic() - started
 
     assert elapsed < 0.1
-    assert page.loading_label.isVisible() is True
+    assert page.loading_label.isHidden() is False
 
-    QTest.qWait(180)
+    assert _wait_until(
+        lambda: page._table_apply_complete and page.run_table.rowCount() == len(candidates),
+        timeout_ms=1500,
+    )
 
     assert page._table_apply_complete is True
     assert page.run_table.item(47, 0) is not None
@@ -2864,10 +2934,10 @@ def test_registration_validation_placeholder_hides_after_candidates_load(
     page = tab._page_for("registration_validation")
     QTest.qWait(60)
 
-    assert page.loading_label.isVisible() is False
+    assert page.loading_label.isHidden() is True
     assert page.loading_label.isEnabled() is False
     assert page.loading_label.testAttribute(Qt.WA_TransparentForMouseEvents) is True
-    assert page.run_table.isVisible() is True
+    assert page.run_table.isHidden() is False
     assert page.run_table.isEnabled() is True
     assert page.run_table.rowCount() == 1
 
@@ -2916,10 +2986,10 @@ def test_validation_pages_use_exclusive_non_intercepting_candidate_surfaces(
     page = tab._page_for(experiment_name)
     QTest.qWait(80)
 
-    assert page.loading_label.isVisible() is False
+    assert page.loading_label.isHidden() is True
     assert page.loading_label.isEnabled() is False
     assert page.loading_label.testAttribute(Qt.WA_TransparentForMouseEvents) is True
-    assert page.run_table.isVisible() is True
+    assert page.run_table.isHidden() is False
     assert page.run_table.isEnabled() is True
     assert page.run_table.viewport().isEnabled() is True
     assert page.run_table.rowCount() == 1
@@ -3300,16 +3370,17 @@ def test_experiment_selector_switches_away_after_validation_candidates_apply(
     tab.update(controller.refresh())
     page = tab._page_for(experiment_name)
     QTest.qWait(80)
-    assert page.run_table.isVisible() is True
+    assert page.run_table.isHidden() is False
 
-    target_index = tab.experiment_combo.findData("command_schedule_validation")
+    target_experiment = "single_segment_repeatability"
+    target_index = tab.experiment_combo.findData(target_experiment)
     assert target_index >= 0
     tab.experiment_combo.setCurrentIndex(target_index)
     QTest.qWait(20)
     tab.update(controller.refresh())
 
-    assert controller.state.selected_experiment == "command_schedule_validation"
-    assert tab.page_stack.currentWidget() is tab._page_for("command_schedule_validation")
+    assert controller.state.selected_experiment == target_experiment
+    assert tab.page_stack.currentWidget() is tab._page_for(target_experiment)
 
 
 def test_experiment_workspace_loads_pivot_validation_page(tmp_path: Path) -> None:
@@ -3452,7 +3523,7 @@ def test_experiment_workspace_loads_motor_babble_run_result_details(tmp_path: Pa
         output_dir_name="motor_babble_run",
     )
 
-    assert result.paths.output_dir.joinpath("modeling_dataset_summary.txt").exists()
+    assert result.paths.output_dir.joinpath("dataset_quality_summary.txt").exists()
     assert result.paths.output_dir.joinpath("modeling_dataset_export.jsonl").exists()
 
     controller.load_run(result.paths.output_dir)
@@ -3460,10 +3531,10 @@ def test_experiment_workspace_loads_motor_babble_run_result_details(tmp_path: Pa
     labels = {label for label, _value in loaded.result_details}
 
     assert loaded.selected_experiment == "collect_pose_command_dataset"
-    assert "Workspace Plot" in labels
-    assert "Command Plot" in labels
+    assert "Workspace Coverage (3D)" in labels
+    assert "Command + Workspace (2D)" in labels
     assert "Export JSONL" in labels
-    assert "Summary Note" in labels
+    assert "Dataset Quality Summary" in labels
 
 
 def test_experiment_workspace_blocks_grid_accuracy_without_tip_calibration(tmp_path: Path) -> None:
@@ -3873,6 +3944,11 @@ def test_experiment_workspace_loads_prior_run_and_history(tmp_path: Path) -> Non
 
     controller.select_experiment("command_schedule_validation")
     state = controller.refresh()
+    assert _wait_until(
+        lambda: any("saved_schedule_run" in entry.path for entry in controller.refresh().history),
+        timeout_ms=1500,
+    )
+    state = controller.refresh()
     assert any("saved_schedule_run" in entry.path for entry in state.history)
 
     controller.load_run(result.paths.output_dir)
@@ -3890,7 +3966,7 @@ def test_experiment_workspace_plans_output_under_experiment_type_folder(tmp_path
     state = controller.refresh()
 
     assert Path(state.planned_output_dir).parent == (
-        tmp_path / "data" / "experiments" / "command_schedule_validation"
+        tmp_path / "data" / "mock_experiments" / "command_schedule_validation"
     )
 
 
@@ -3956,7 +4032,7 @@ def test_repeatability_page_defers_3d_viewer_construction_until_data_exists(
 
     assert page.viewer_3d is None
     assert page.viewer_placeholder is not None
-    assert page.viewer_placeholder.isVisible()
+    assert page.viewer_placeholder.isHidden() is False
 
 
 def test_repeatability_page_preserves_target_table_scroll_on_benign_refresh(tmp_path: Path) -> None:
@@ -3995,7 +4071,8 @@ def test_experiment_shell_header_stays_compact_and_tracks_selection(tmp_path: Pa
 
     assert tab.load_defaults_button.isEnabled() is True
     assert tab.selected_experiment_title.text() == "Aurora Grid Accuracy"
-    assert "align" in tab.selected_experiment_description.text().lower()
+    assert tab.selected_experiment_description.text() == ""
+    assert tab.selected_experiment_description.isHidden() is True
     assert tab.selected_badges_label.isHidden() is False
 
 
@@ -4394,15 +4471,23 @@ def test_servos_controller_routes_displacement_through_servo_service(
     service = _servo_service(tmp_path)
     service.connect("/dev/mock-openrb", 115200)
     controller = ServosController(service, _settings())
-    controller.state.neutral_setpoints = {1: 2048, 2: 2048, 3: 2048, 4: 2048}
+    service.save_neutral_setpoints({1: 2048, 2: 2048, 3: 2048, 4: 2048})
+    controller.load_neutral_setpoints()
     controller.set_tendon_displacements([0.0, 0.1, -0.1, 0.0])
     seen: dict[str, object] = {}
 
-    def _fake_command(*, tendon_displacements_cm: list[float], neutral_ticks: list[int], servo_ids: list[int]) -> ServoCommandResult:
+    def _fake_command(
+        *,
+        tendon_displacements_cm: list[float],
+        neutral_ticks: list[int],
+        servo_ids: list[int],
+        motion_workflow: str,
+    ) -> ServoCommandResult:
         seen["payload"] = {
             "tendon_displacements_cm": list(tendon_displacements_cm),
             "neutral_ticks": list(neutral_ticks),
             "servo_ids": list(servo_ids),
+            "motion_workflow": str(motion_workflow),
         }
         return ServoCommandResult(
             positions_by_id={1: 2048, 2: 2059, 3: 2037, 4: 2048},
@@ -4418,5 +4503,6 @@ def test_servos_controller_routes_displacement_through_servo_service(
         "tendon_displacements_cm": [0.0, 0.1, -0.1, 0.0],
         "neutral_ticks": [2048, 2048, 2048, 2048],
         "servo_ids": [1, 2, 3, 4],
+        "motion_workflow": "experiment_motion",
     }
     assert controller.state.status_message == "Displacement routed through servo service."

@@ -728,6 +728,31 @@ class LifecycleProbeExperiment(BaseExperiment):
         return {"summary_called": True}
 
 
+class IntegrityLeakProbeExperiment(BaseExperiment):
+    name = "integrity_leak_probe"
+    description = "Simulate an experiment that falls back to synthetic data after metadata is built."
+    hardware_requirements = ExperimentHardwareRequirements(mock_compatible=True)
+
+    @classmethod
+    def from_dict(cls, payload=None):
+        return cls(config=dict(payload or {}))
+
+    def execute(self, session: ExperimentSession) -> None:
+        session.set_metric("dry_run", True)
+        session.add_sample(
+            ExperimentTimeseriesSample(
+                monotonic_time_s=0.0,
+                wall_time_utc="dry_run",
+                phase="capture",
+                step_index=0,
+                sample_index=0,
+                status_flags=["dry_run", "synthetic_capture"],
+                backend_health={"capture_mode": "synthetic_dry_run"},
+                extra={"capture_mode": "synthetic_dry_run", "dry_run": True},
+            )
+        )
+
+
 def test_experiment_lifecycle_records_stage_results(tmp_path: Path) -> None:
     registry = ExperimentRegistry()
     registry.register(
@@ -749,6 +774,30 @@ def test_experiment_lifecycle_records_stage_results(tmp_path: Path) -> None:
     assert result.summary.experiment_metrics["precheck_called"] is True
     assert result.summary.experiment_metrics["finalize_called"] is True
     assert result.summary.experiment_metrics["summary_called"] is True
+
+
+def test_runner_promotes_sample_level_dry_run_to_run_level_non_evidence(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    registry = ExperimentRegistry()
+    registry.register(
+        name=IntegrityLeakProbeExperiment.name,
+        description=IntegrityLeakProbeExperiment.description,
+        factory=IntegrityLeakProbeExperiment.from_dict,
+    )
+    runner = _runner(tmp_path, settings=settings, registry=registry)
+
+    result = runner.run_experiment("integrity_leak_probe", config={"dry_run": False})
+
+    metrics = result.summary.experiment_metrics
+    reasons = metrics["not_thesis_evidence_reasons"]
+    assert result.metadata.trust_info["not_thesis_evidence"] is True
+    assert metrics["not_thesis_evidence"] is True
+    assert metrics["valid_for_model_training"] is False
+    assert metrics["valid_for_thesis_repeatability"] is False
+    assert "metrics.dry_run=true" in reasons
+    assert any("samples.status_flags.dry_run" in reason for reason in reasons)
+    assert any("samples.capture_mode.synthetic_or_dry_run" in reason for reason in reasons)
 
 
 def test_dataset_writer_roundtrip_loads_canonical_bundle(tmp_path: Path) -> None:

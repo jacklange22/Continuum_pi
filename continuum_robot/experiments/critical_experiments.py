@@ -364,6 +364,9 @@ class RepeatabilityDatasetExperiment(BaseExperiment):
         rng = np.random.default_rng(self.config.schedule.seed)
         total = len(visits) * (3 + max(1, self.config.schedule.samples_per_point))
         completed = 0
+        capture_mode = "synthetic_dry_run" if self.config.dry_run else "live_tracker"
+        sample_status_flags = ["dry_run", "synthetic_capture"] if self.config.dry_run else []
+        session.set_metric("dry_run", bool(self.config.dry_run))
         for visit_sequence_index, visit in enumerate(visits):
             session.raise_if_stop_requested()
             visit_extra = {
@@ -377,6 +380,7 @@ class RepeatabilityDatasetExperiment(BaseExperiment):
                 "approach_magnitude_class": visit.approach_magnitude_class,
                 "target_set": resolved_target_set,
                 "visit_sequence_index": int(visit_sequence_index),
+                "capture_mode": capture_mode,
             }
             approach_payload = _issue_command_payload(
                 session,
@@ -384,12 +388,16 @@ class RepeatabilityDatasetExperiment(BaseExperiment):
                 neutral_ticks=self._neutral_ticks,
                 dry_run=self.config.dry_run,
             )
-            approach_tracker = _synthetic_repeatability_position_mm(
-                visit.approach_deltas_cm,
-                previous_deltas_cm=visit.approach_deltas_cm,
-                rng=rng,
-                noise_std_mm=self.config.synthetic_noise_std_mm,
-                hysteresis_mm=self.config.synthetic_hysteresis_mm,
+            approach_tracker = (
+                _synthetic_repeatability_position_mm(
+                    visit.approach_deltas_cm,
+                    previous_deltas_cm=visit.approach_deltas_cm,
+                    rng=rng,
+                    noise_std_mm=self.config.synthetic_noise_std_mm,
+                    hysteresis_mm=self.config.synthetic_hysteresis_mm,
+                )
+                if self.config.dry_run
+                else None
             )
             snapshot = session.context.tracking_service.get_snapshot()
             session.add_sample(
@@ -407,10 +415,12 @@ class RepeatabilityDatasetExperiment(BaseExperiment):
                     commanded_motor_values=approach_payload,
                     override_tracker_position_mm=approach_tracker,
                     override_robot_position_mm=(
-                        approach_tracker if session.context.registration_path.exists() else None
+                        approach_tracker
+                        if self.config.dry_run and session.context.registration_path.exists()
+                        else None
                     ),
                     tracker_tool_id=self.config.tool_id,
-                    status_flags=["dry_run"] if self.config.dry_run else [],
+                    status_flags=list(sample_status_flags),
                     extra=visit_extra,
                 )
             )
@@ -433,10 +443,12 @@ class RepeatabilityDatasetExperiment(BaseExperiment):
                     commanded_motor_values=approach_payload,
                     override_tracker_position_mm=approach_tracker,
                     override_robot_position_mm=(
-                        approach_tracker if session.context.registration_path.exists() else None
+                        approach_tracker
+                        if self.config.dry_run and session.context.registration_path.exists()
+                        else None
                     ),
                     tracker_tool_id=self.config.tool_id,
-                    status_flags=["dry_run"] if self.config.dry_run else [],
+                    status_flags=list(sample_status_flags),
                     extra=visit_extra,
                 )
             )
@@ -449,12 +461,16 @@ class RepeatabilityDatasetExperiment(BaseExperiment):
                 neutral_ticks=self._neutral_ticks,
                 dry_run=self.config.dry_run,
             )
-            target_tracker = _synthetic_repeatability_position_mm(
-                visit.target_deltas_cm,
-                previous_deltas_cm=visit.approach_deltas_cm,
-                rng=rng,
-                noise_std_mm=self.config.synthetic_noise_std_mm,
-                hysteresis_mm=self.config.synthetic_hysteresis_mm,
+            target_tracker = (
+                _synthetic_repeatability_position_mm(
+                    visit.target_deltas_cm,
+                    previous_deltas_cm=visit.approach_deltas_cm,
+                    rng=rng,
+                    noise_std_mm=self.config.synthetic_noise_std_mm,
+                    hysteresis_mm=self.config.synthetic_hysteresis_mm,
+                )
+                if self.config.dry_run
+                else None
             )
             session.add_sample(
                 sample_from_tracking_snapshot(
@@ -471,10 +487,12 @@ class RepeatabilityDatasetExperiment(BaseExperiment):
                     commanded_motor_values=target_payload,
                     override_tracker_position_mm=target_tracker,
                     override_robot_position_mm=(
-                        target_tracker if session.context.registration_path.exists() else None
+                        target_tracker
+                        if self.config.dry_run and session.context.registration_path.exists()
+                        else None
                     ),
                     tracker_tool_id=self.config.tool_id,
-                    status_flags=["dry_run"] if self.config.dry_run else [],
+                    status_flags=list(sample_status_flags),
                     extra=visit_extra,
                 )
             )
@@ -484,9 +502,13 @@ class RepeatabilityDatasetExperiment(BaseExperiment):
                 session.context.sleep_fn(self.config.schedule.settle_time_s)
             for sample_index in range(max(1, self.config.schedule.samples_per_point)):
                 jittered_target = (
-                    np.asarray(target_tracker, dtype=float)
-                    + rng.normal(0.0, self.config.synthetic_noise_std_mm, size=3)
-                ).tolist()
+                    (
+                        np.asarray(target_tracker, dtype=float)
+                        + rng.normal(0.0, self.config.synthetic_noise_std_mm, size=3)
+                    ).tolist()
+                    if self.config.dry_run and target_tracker is not None
+                    else None
+                )
                 session.add_sample(
                     sample_from_tracking_snapshot(
                         session,
@@ -502,10 +524,12 @@ class RepeatabilityDatasetExperiment(BaseExperiment):
                         commanded_motor_values=target_payload,
                         override_tracker_position_mm=jittered_target,
                         override_robot_position_mm=(
-                            jittered_target if session.context.registration_path.exists() else None
+                            jittered_target
+                            if self.config.dry_run and session.context.registration_path.exists()
+                            else None
                         ),
                         tracker_tool_id=self.config.tool_id,
-                        status_flags=["dry_run"] if self.config.dry_run else [],
+                        status_flags=list(sample_status_flags),
                         extra=visit_extra,
                     )
                 )
@@ -744,6 +768,7 @@ class PivotCalibrationExperiment(BaseExperiment):
             session.metrics.update(exc.report.to_metrics())
             raise RuntimeError(str(exc)) from exc
         session.metrics.update(input_metrics)
+        session.set_metric("dry_run", bool(self.config.dry_run))
         for index, transform in enumerate(transforms):
             quaternion = list(rotmat_to_quat_wxyz(transform[0:3, 0:3]))
             translation = [float(value) for value in transform[0:3, 3]]
@@ -759,7 +784,18 @@ class PivotCalibrationExperiment(BaseExperiment):
                 tracker_tool_id=self.config.tool_id,
                 override_tracker_position_mm=translation,
                 override_tracker_quaternion_wxyz=quaternion,
-                status_flags=["offline_input"] if self.config.input_path else (["dry_run"] if self.config.dry_run else []),
+                status_flags=(
+                    ["offline_input"]
+                    if self.config.input_path
+                    else (["dry_run", "synthetic_capture"] if self.config.dry_run else [])
+                ),
+                extra={
+                    "capture_mode": (
+                        "offline_input"
+                        if self.config.input_path
+                        else ("synthetic_dry_run" if self.config.dry_run else "live_tracker")
+                    )
+                },
             )
             session.add_sample(sample)
         if len(transforms) < int(self.config.min_samples):

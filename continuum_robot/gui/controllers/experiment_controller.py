@@ -335,6 +335,8 @@ class ExperimentController:
             history = list(cached_history)
             self._ensure_history_scan(output_root=output_root, experiment_name=selected_experiment)
             history_loading = True
+        elif not history_loading and cached_history:
+            history = list(cached_history)
 
         tracking_snapshot = self.tracking_service.get_snapshot()
         neutral_setpoints = self.servo_service.load_neutral_setpoints()
@@ -771,6 +773,7 @@ class ExperimentController:
             "servo_tracker_sync_validation",
             "two_segment_startup_validation",
             "two_segment_collect_pose_command_dataset",
+            "two_segment_repeatability",
             "pretension_validation",
             "command_schedule_validation",
             "replay_runner",
@@ -1734,6 +1737,7 @@ class ExperimentController:
             thesis_01_path = bundle.paths.output_dir / "thesis_01_workspace_coverage_3d.png"
             thesis_02_path = bundle.paths.output_dir / "thesis_02_command_and_workspace_2d.png"
             debug_path = bundle.paths.output_dir / "debug.json"
+            quality_summary_path = bundle.paths.output_dir / "dataset_quality_summary.txt"
             export_jsonl_path = bundle.paths.output_dir / "modeling_dataset_export.jsonl"
             legacy_dat_path = bundle.paths.output_dir / "modeling_dataset_legacy_compat.dat"
             pairs.extend(build_modeling_dataset_summary_pairs(metrics=metrics))
@@ -1742,6 +1746,7 @@ class ExperimentController:
                     ("Workspace Coverage (3D)", str(thesis_01_path) if thesis_01_path.exists() else "not written"),
                     ("Command + Workspace (2D)", str(thesis_02_path) if thesis_02_path.exists() else "not written"),
                     ("Debug JSON", str(debug_path) if debug_path.exists() else "not written"),
+                    ("Dataset Quality Summary", str(quality_summary_path) if quality_summary_path.exists() else "not written"),
                     ("Export JSONL", str(export_jsonl_path) if export_jsonl_path.exists() else "not written"),
                     ("Legacy DAT", str(legacy_dat_path) if legacy_dat_path.exists() else "not written"),
                 ]

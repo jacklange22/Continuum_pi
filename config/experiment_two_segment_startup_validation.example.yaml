@@ -1,0 +1,8 @@
+allow_missing_current: true
+capture_tracker_snapshot: true
+final_accept: true
+capture_stage: ""
+workflow_state_path: "data/two_segment_startup_validation/current_workflow_state.json"
+reset_workflow_state: false
+stage_notes: {}
+run_trust_mode: "servo_only_startup_validation"

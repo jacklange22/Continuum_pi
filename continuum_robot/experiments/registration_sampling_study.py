@@ -282,7 +282,7 @@ class RegistrationSamplingStudyExperiment(BaseExperiment):
                     ):
                         aurora_vec = aurora_vec + synthetic_outlier_offset
                     aurora_xyz = [float(value) for value in aurora_vec]
-                    status_flags.append("dry_run")
+                    status_flags.extend(["dry_run", "synthetic_capture"])
                 else:
                     aurora_xyz = _read_pen_probe_aurora_xyz(
                         session=session,
@@ -424,11 +424,13 @@ def _build_study_sample(
     without scanning the full pose dicts.
     """
     accepted = bool(aurora_xyz_mm is not None and "capture_rejected" not in status_flags)
+    capture_mode = "synthetic_dry_run" if dry_run else "live_tracker"
     extra = {
         "record_kind": "registration_sampling_sample",
         "label": str(label),
         "label_index": int(label_index),
         "capture_accepted": bool(accepted),
+        "capture_mode": capture_mode,
         "registration_sample": {
             "label": str(label),
             "truth_body_xyz_mm": [float(value) for value in list(truth_body_xyz_mm)[:3]],
@@ -437,6 +439,7 @@ def _build_study_sample(
             ),
             "pen_probe_tool_id": str(pen_probe_tool_id),
             "dry_run": bool(dry_run),
+            "capture_mode": capture_mode,
         },
     }
     if snapshot is not None:
@@ -448,7 +451,7 @@ def _build_study_sample(
             sample_index=sample_index,
             commanded_cable_deltas_cm=[],
             commanded_motor_values={},
-            status_flags=list(status_flags),
+            status_flags=sorted(set(status_flags)),
             extra=extra,
             target_index=label_index,
             tracker_tool_id=pen_probe_tool_id,
@@ -483,6 +486,6 @@ def _build_study_sample(
         freshness_s=0.0,
         latency_s=0.0,
         status_flags=sorted(set(status_flags)),
-        backend_health={},
+        backend_health={"capture_mode": capture_mode},
         extra=extra,
     )

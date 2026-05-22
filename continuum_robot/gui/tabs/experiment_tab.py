@@ -181,7 +181,7 @@ class ExperimentTab(QWidget):
         self._update_status_chip(state)
         set_state_started = time.monotonic()
         page.set_state(state)
-        self._page_state_fingerprints[state.selected_experiment] = fingerprint
+        self._page_state_fingerprints[state.selected_experiment] = page.state_fingerprint(state)
         self._page_state_applied_at_s[state.selected_experiment] = time.monotonic()
         self._log_event(
             "set_state_applied",

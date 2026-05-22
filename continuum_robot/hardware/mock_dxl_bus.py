@@ -13,7 +13,7 @@ class MockDxlBus(DxlBus):
 
     def __init__(self, servo_ids: list[int] | None = None) -> None:
         super().__init__()
-        ids = servo_ids or [1, 2, 3, 4]
+        ids = [1, 2, 3, 4] if servo_ids is None else list(servo_ids)
         self._state: dict[int, ServoTelemetry] = {
             sid: ServoTelemetry(
                 servo_id=sid,

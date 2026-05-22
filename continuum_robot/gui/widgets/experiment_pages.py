@@ -74,6 +74,9 @@ from continuum_robot.experiments.penprobe_chasing_demo import (
 from continuum_robot.experiments.two_segment_collect_pose_dataset import (
     TwoSegmentCollectPoseDatasetConfig,
 )
+from continuum_robot.experiments.two_segment_repeatability import (
+    TwoSegmentRepeatabilityConfig,
+)
 from continuum_robot.gui.widgets.no_wheel_combo_box import NoWheelComboBox
 from continuum_robot.experiments.calibration_validation import (
     list_pivot_validation_candidates,
@@ -2447,7 +2450,8 @@ class TwoSegmentCollectPoseDatasetPage(ExperimentPageBase):
         self.range_warning_label.setProperty("role", "muted")
         self.range_warning_label.setWordWrap(True)
         self.max_tick_spin = QSpinBox()
-        self.max_tick_spin.setRange(1, 200)
+        self.max_tick_spin.setRange(1, 1200)
+        self.max_tick_spin.setSingleStep(50)
         self.max_tick_spin.valueChanged.connect(lambda value: self.controller.set_config_value("max_tick_delta_from_startup", int(value)))
         self.samples_spin = QSpinBox()
         self.samples_spin.setRange(1, 20)
@@ -2653,6 +2657,226 @@ class TwoSegmentCollectPoseDatasetPage(ExperimentPageBase):
             "physical_assembly_confirmed_at_utc",
             datetime.now(timezone.utc).isoformat() if confirmed else "",
         )
+
+    @staticmethod
+    def _bottom_top_summary(context) -> str:
+        assembly = dict(getattr(context, "physical_assembly", {}) or {})
+        bottom = assembly.get("bottom_segment_label") or assembly.get("bottom_segment_key") or "?"
+        top = assembly.get("top_segment_label") or assembly.get("top_segment_key") or "?"
+        return f"bottom={bottom} {list(assembly.get('bottom_servo_ids') or [])}; top={top} {list(assembly.get('top_servo_ids') or [])}"
+
+
+class TwoSegmentRepeatabilityPage(ExperimentPageBase):
+    show_visualization = False
+    refresh_policy = "manual"
+    page_hint = (
+        "Open-loop dual-segment repeatability scaffold. Runs bounded bottom/top tendon-space targets "
+        "around the accepted all-8 startup state and reports scatter without claiming closed-loop control."
+    )
+
+    def __init__(self, controller, experiment_name: str, parent=None) -> None:
+        self.summary_widget = None
+        super().__init__(controller, experiment_name, parent)
+        self.run_button.setText("Run Two-Segment Repeatability")
+
+    def _build_parameter_sections(self) -> None:
+        target_card = ExperimentCard("Targets", "Bounded bottom/top target set used for the open-loop repeatability run.")
+        target_form = QFormLayout()
+        self.target_set_combo = NoWheelComboBox()
+        self.target_set_combo.addItem("Default Demo", "default_demo")
+        self.target_set_combo.currentIndexChanged.connect(
+            lambda _index: self.controller.set_config_value("target_set", self.target_set_combo.currentData())
+        )
+        self.bottom_inner_spin = self._radius_spin("bottom_inner_radius_cm")
+        self.bottom_outer_spin = self._radius_spin("bottom_outer_radius_cm")
+        self.top_inner_spin = self._radius_spin("top_inner_radius_cm")
+        self.top_outer_spin = self._radius_spin("top_outer_radius_cm")
+        self.points_spin = self._int_spin("points_per_ring", minimum=1, maximum=16, step=1)
+        self.repeats_spin = self._int_spin("repeat_visits", minimum=1, maximum=50, step=1)
+        self.samples_spin = self._int_spin("samples_per_visit", minimum=1, maximum=20, step=1)
+        self.max_tick_spin = self._int_spin("max_tick_delta_from_startup", minimum=1, maximum=600, step=20)
+        self.settle_spin = QDoubleSpinBox()
+        self.settle_spin.setRange(0.0, 10.0)
+        self.settle_spin.setDecimals(3)
+        self.settle_spin.setSingleStep(0.05)
+        self.settle_spin.valueChanged.connect(lambda value: self.controller.set_config_value("settle_time_s", float(value)))
+        target_form.addRow("Target Set", self.target_set_combo)
+        target_form.addRow("Bottom Inner Radius (cm)", self.bottom_inner_spin)
+        target_form.addRow("Bottom Outer Radius (cm)", self.bottom_outer_spin)
+        target_form.addRow("Top Inner Radius (cm)", self.top_inner_spin)
+        target_form.addRow("Top Outer Radius (cm)", self.top_outer_spin)
+        target_form.addRow("Points / Ring", self.points_spin)
+        target_form.addRow("Repeat Visits", self.repeats_spin)
+        target_form.addRow("Samples / Visit", self.samples_spin)
+        target_form.addRow("Max Tick Delta", self.max_tick_spin)
+        target_form.addRow("Settle Time (s)", self.settle_spin)
+        target_card.body_layout.addLayout(target_form)
+        self.parameter_layout.addWidget(target_card)
+
+        trust_card = ExperimentCard("Trust", "Startup, telemetry, and tracking state recorded with the run.")
+        trust_form = QFormLayout()
+        self.servo_only_check = QCheckBox("Allow servo-only test run")
+        self.servo_only_check.toggled.connect(lambda value: self.controller.set_config_value("allow_servo_only_test_run", bool(value)))
+        self.capture_tracker_check = QCheckBox("Capture tracker snapshot when available")
+        self.capture_tracker_check.toggled.connect(lambda value: self.controller.set_config_value("capture_tracker_snapshot", bool(value)))
+        self.run_trust_combo = NoWheelComboBox()
+        for label, value in [("Servo Only", "servo_only"), ("Lower Trust", "lower_trust"), ("Thesis Trusted", "thesis_trusted")]:
+            self.run_trust_combo.addItem(label, value)
+        self.run_trust_combo.currentIndexChanged.connect(
+            lambda _index: self.controller.set_config_value("run_trust_mode", self.run_trust_combo.currentData())
+        )
+        self.distal_tool_combo = NoWheelComboBox()
+        self.distal_tool_combo.setEditable(True)
+        self.intermediate_tool_combo = NoWheelComboBox()
+        self.intermediate_tool_combo.setEditable(True)
+        for combo in (self.distal_tool_combo, self.intermediate_tool_combo):
+            combo.currentIndexChanged.connect(self._on_role_combo_changed)
+            combo.editTextChanged.connect(lambda _text: self._on_role_combo_changed())
+        self.dataset_tag_edit = QLineEdit()
+        self.dataset_tag_edit.editingFinished.connect(lambda: self.controller.set_config_value("dataset_tag", self.dataset_tag_edit.text()))
+        self.summary_widget = KeyValueSummaryWidget()
+        trust_form.addRow("Servo Only", self.servo_only_check)
+        trust_form.addRow("Tracking", self.capture_tracker_check)
+        trust_form.addRow("Run Trust", self.run_trust_combo)
+        trust_form.addRow("Distal Tip Tool", self.distal_tool_combo)
+        trust_form.addRow("Intermediate Tool", self.intermediate_tool_combo)
+        trust_form.addRow("Dataset Tag", self.dataset_tag_edit)
+        trust_card.body_layout.addLayout(trust_form)
+        trust_card.body_layout.addWidget(self.summary_widget)
+        self.parameter_layout.addWidget(trust_card)
+
+    def _radius_spin(self, key: str) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(0.0, 1.0)
+        spin.setDecimals(2)
+        spin.setSingleStep(0.05)
+        spin.valueChanged.connect(lambda value, key=key: self.controller.set_config_value(key, float(value)))
+        return spin
+
+    def _int_spin(self, key: str, *, minimum: int, maximum: int, step: int) -> QSpinBox:
+        spin = QSpinBox()
+        spin.setRange(int(minimum), int(maximum))
+        spin.setSingleStep(int(step))
+        spin.valueChanged.connect(lambda value, key=key: self.controller.set_config_value(key, int(value)))
+        return spin
+
+    def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
+        _ = state
+        config = TwoSegmentRepeatabilityConfig.from_dict(self.controller.config_payload())
+        self._set_combo_value(self.target_set_combo, config.target_set)
+        self._set_double(self.bottom_inner_spin, float(config.bottom_inner_radius_cm))
+        self._set_double(self.bottom_outer_spin, float(config.bottom_outer_radius_cm))
+        self._set_double(self.top_inner_spin, float(config.top_inner_radius_cm))
+        self._set_double(self.top_outer_spin, float(config.top_outer_radius_cm))
+        self._set_spin(self.points_spin, int(config.points_per_ring))
+        self._set_spin(self.repeats_spin, int(config.repeat_visits))
+        self._set_spin(self.samples_spin, int(config.samples_per_visit))
+        self._set_spin(self.max_tick_spin, int(config.max_tick_delta_from_startup))
+        self._set_double(self.settle_spin, float(config.settle_time_s))
+        self._set_checkbox(self.servo_only_check, bool(config.allow_servo_only_test_run))
+        self._set_checkbox(self.capture_tracker_check, bool(config.capture_tracker_snapshot))
+        self._set_combo_value(self.run_trust_combo, config.run_trust_mode)
+        self._set_line_text(self.dataset_tag_edit, str(config.dataset_tag or ""))
+        self._sync_role_combos(config)
+        context = self.controller.settings.robot.operating_context()
+        self.summary_widget.set_pairs(
+            [
+                ("Operating Mode", str(context.operating_mode)),
+                ("Commanded IDs", str(list(getattr(context, "commanded_servo_ids", [])))),
+                ("Bottom/Top", self._bottom_top_summary(context)),
+                ("Targets", f"{self._target_count(config)} command points x {int(config.repeat_visits)} visits"),
+                ("Validity", "open-loop repeatability scaffold; not closed-loop two-segment control"),
+            ]
+        )
+
+    def _parameter_state_fingerprint(self, state: ExperimentViewState) -> tuple[object, ...]:
+        _ = state
+        config = TwoSegmentRepeatabilityConfig.from_dict(self.controller.config_payload())
+        return (
+            config.target_set,
+            config.bottom_inner_radius_cm,
+            config.bottom_outer_radius_cm,
+            config.top_inner_radius_cm,
+            config.top_outer_radius_cm,
+            config.points_per_ring,
+            config.repeat_visits,
+            config.samples_per_visit,
+            config.max_tick_delta_from_startup,
+            config.settle_time_s,
+            config.allow_servo_only_test_run,
+            config.capture_tracker_snapshot,
+            config.run_trust_mode,
+            config.dataset_tag,
+            tuple(sorted(config.requested_tool_roles.items())),
+        )
+
+    def _sync_role_combos(self, config: TwoSegmentRepeatabilityConfig) -> None:
+        requested = {str(key).upper(): str(value) for key, value in dict(config.requested_tool_roles or {}).items()}
+        role_to_tool = {role: tool for tool, role in requested.items()}
+        role_configs = getattr(self.controller.settings.registration, "two_segment_tracking_roles", {}) or {}
+        for role, raw_config in dict(role_configs).items():
+            if role not in role_to_tool:
+                tool_id = str(getattr(raw_config, "tool_id", "") or "").upper()
+                if tool_id:
+                    role_to_tool[str(role)] = tool_id
+        available = self._available_tracking_tool_ids()
+        for combo, role, default in (
+            (self.distal_tool_combo, "distal_tip", "0A"),
+            (self.intermediate_tool_combo, "intermediate_segment", ""),
+        ):
+            current = str(role_to_tool.get(role, default) or "").upper()
+            options = sorted(set(available + ([current] if current else []) + ["0A", "0B", "0C"]))
+            with QSignalBlocker(combo):
+                combo.clear()
+                combo.addItem("Unconfigured", "")
+                for tool_id in options:
+                    if tool_id:
+                        combo.addItem(tool_id, tool_id)
+                index = combo.findData(current)
+                if index >= 0:
+                    combo.setCurrentIndex(index)
+                elif current:
+                    combo.setEditText(current)
+
+    def _available_tracking_tool_ids(self) -> list[str]:
+        service = getattr(self.controller, "tracking_service", None)
+        snapshot = None
+        for method_name in ("get_snapshot", "peek_snapshot"):
+            method = getattr(service, method_name, None)
+            if callable(method):
+                try:
+                    snapshot = method()
+                    break
+                except Exception:
+                    continue
+        tools = dict(getattr(snapshot, "tools", {}) or {}) if snapshot is not None else {}
+        return sorted(str(tool_id).upper() for tool_id in tools)
+
+    def _on_role_combo_changed(self) -> None:
+        roles: dict[str, str] = {}
+        for combo, role in (
+            (self.distal_tool_combo, "distal_tip"),
+            (self.intermediate_tool_combo, "intermediate_segment"),
+        ):
+            tool_id = str(combo.currentData() or combo.currentText() or "").strip().upper()
+            if tool_id and tool_id != "UNCONFIGURED":
+                roles[tool_id] = role
+        self.controller.set_config_value("requested_tool_roles", roles)
+
+    @staticmethod
+    def _target_count(config: TwoSegmentRepeatabilityConfig) -> int:
+        points = max(1, int(config.points_per_ring))
+        rings = sum(
+            1
+            for radius in (
+                config.bottom_inner_radius_cm,
+                config.bottom_outer_radius_cm,
+                config.top_inner_radius_cm,
+                config.top_outer_radius_cm,
+            )
+            if float(radius) > 0.0
+        )
+        return 1 + rings * points + 4
 
     @staticmethod
     def _bottom_top_summary(context) -> str:
@@ -5330,6 +5554,7 @@ def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBas
         "servo_tracker_sync_validation": lambda ctrl: ServoTrackerSyncValidationPage(ctrl, "servo_tracker_sync_validation"),
         "two_segment_startup_validation": lambda ctrl: TwoSegmentStartupValidationPage(ctrl, "two_segment_startup_validation"),
         "two_segment_collect_pose_command_dataset": lambda ctrl: TwoSegmentCollectPoseDatasetPage(ctrl, "two_segment_collect_pose_command_dataset"),
+        "two_segment_repeatability": lambda ctrl: TwoSegmentRepeatabilityPage(ctrl, "two_segment_repeatability"),
         "pretension_validation": lambda ctrl: PretensionValidationPage(ctrl, "pretension_validation"),
         "penprobe_chasing_demo": lambda ctrl: PenprobeChasingDemoPage(ctrl, "penprobe_chasing_demo"),
         "command_schedule_validation": lambda ctrl: CommandScheduleValidationPage(ctrl, "command_schedule_validation"),

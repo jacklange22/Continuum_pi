@@ -27,6 +27,7 @@ from continuum_robot.experiments.two_segment_collect_pose_dataset import (
     TwoSegmentCollectPoseDatasetConfig,
     build_two_segment_command_schedule,
 )
+from continuum_robot.gui.experiment_preflight import RUN_BLOCKED, evaluate_preflight
 from continuum_robot.hardware.mock_dxl_bus import MockDxlBus
 from continuum_robot.servos.displacement_mapper import TendonDisplacementMapper
 from continuum_robot.servos.neutral_calibration_service import NeutralCalibrationService, ServoCalibrationContext
@@ -439,6 +440,70 @@ def test_two_segment_collect_pose_dataset_sample_records_distal_pose_role_and_va
     assert sample_payload["extra"]["label_mode_used"] == "distal_xyz"
     assert sample_payload["two_segment_pose"]["distal_tip_pose"]
     assert sample_payload["pose_in_robot_frame"]["roles"]["distal_tip"]["T_robot_tip"]
+
+
+def test_two_segment_collect_pose_dataset_blocks_trusted_run_without_robot_frame_distal_pose(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    service = _servo_service(tmp_path, settings=settings)
+    _save_all8_startup(service)
+    snapshot = _tracking_snapshot(include_distal=True, include_intermediate=False)
+    snapshot.T_robot_tip = None
+    snapshot.registration_state = "missing_registration"
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        service=service,
+        tracking_service=_FakeTrackingService(snapshot),
+    )
+
+    result = runner.run_experiment(
+        EXPERIMENT_NAME,
+        config={
+            "dry_run": False,
+            "allow_servo_only_test_run": False,
+            "run_trust_mode": "thesis_trusted",
+            "schedule_type": "zero",
+            "physical_assembly_confirmed_by_operator": True,
+        },
+    )
+
+    assert result.success is False
+    assert "requires a live robot-frame distal_tip pose" in result.message
+
+
+def test_two_segment_collect_pose_preflight_blocks_trusted_run_without_robot_frame_distal_pose(tmp_path: Path) -> None:
+    settings = _settings()
+    settings.runtime.mock_mode = False
+    settings.robot.physical_assembly_confirmed_by_operator = True
+    service = _servo_service(tmp_path, settings=settings)
+    _save_all8_startup(service)
+    snapshot = _tracking_snapshot(include_distal=True, include_intermediate=False)
+    snapshot.T_robot_tip = None
+    snapshot.registration_state = "missing_registration"
+
+    report = evaluate_preflight(
+        experiment_name=EXPERIMENT_NAME,
+        config_payload={
+            "dry_run": False,
+            "allow_servo_only_test_run": False,
+            "run_trust_mode": "thesis_trusted",
+            "schedule_type": "zero",
+        },
+        config_error=None,
+        settings=settings,
+        tracking_snapshot=snapshot,
+        servo_connected=True,
+        neutral_setpoints={},
+        registration_path=tmp_path / "latest_registration.json",
+        output_root=tmp_path / "data" / "experiments",
+        planned_output_dir=tmp_path / "data" / "experiments" / EXPERIMENT_NAME / "run",
+        project_root=tmp_path,
+        servo_calibration_summary=service.get_calibration_summary(),
+    )
+
+    assert report.overall_status == RUN_BLOCKED
+    assert any("no live robot-frame distal_tip pose" in check.message for check in report.checks)
 
 
 def test_two_segment_collect_pose_dataset_requires_startup_for_trusted_live_run(tmp_path: Path) -> None:

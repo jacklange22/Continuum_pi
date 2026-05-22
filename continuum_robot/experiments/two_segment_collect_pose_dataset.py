@@ -298,6 +298,23 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
                 "Trusted two-segment dataset collection requires an accepted all-8 manual startup artifact. "
                 "Use two_segment_startup_validation first or run with allow_servo_only_test_run=true and run_trust_mode=servo_only."
             )
+        if trusted_requested:
+            _observation, pose_fields = _two_segment_pose_observation(
+                session=session,
+                config=self.config,
+                run_trust_mode=_run_trust_mode(self.config),
+            )
+            missing_required = list(pose_fields.get("missing_required_roles", []) or [])
+            if "distal_tip" in missing_required:
+                raise RuntimeError(
+                    "Trusted two-segment dataset collection requires a live distal_tip tracker role. "
+                    "Configure and track the distal/top tool before collecting thesis-intended data."
+                )
+            if not pose_fields_have_distal_robot_frame(pose_fields):
+                raise RuntimeError(
+                    "Trusted two-segment dataset collection requires a live robot-frame distal_tip pose. "
+                    "Load an accepted registration/runtime-tip path so T_robot_tip is available before collecting model-training data."
+                )
         violations = _command_limit_violations(
             steps=self._command_steps,
             context=context,
@@ -1310,6 +1327,26 @@ def _two_segment_registration_summary(*, session) -> dict[str, Any]:
     }
 
 
+def pose_fields_have_distal_robot_frame(fields: dict[str, Any]) -> bool:
+    """Return True when the resolved pose fields include a robot-frame distal label."""
+
+    roles = dict(dict(fields.get("pose_in_robot_frame") or {}).get("roles") or {})
+    distal = dict(roles.get("distal_tip") or {})
+    if _matrix_has_translation(distal.get("T_robot_tip")):
+        return True
+    translation = distal.get("translation_mm")
+    return bool(isinstance(translation, list) and len(translation) >= 3)
+
+
+def _matrix_has_translation(value: Any) -> bool:
+    if not isinstance(value, list) or len(value) < 3:
+        return False
+    try:
+        return all(len(list(value[index])) >= 4 for index in range(3))
+    except (TypeError, ValueError):
+        return False
+
+
 def _two_segment_tracker_freshness_summary(
     *,
     samples: list[ExperimentTimeseriesSample],
@@ -1474,6 +1511,7 @@ def _two_segment_current_load_summary(
 
 def _pose_label_summary(samples: list[ExperimentTimeseriesSample]) -> dict[str, Any]:
     distal = 0
+    distal_robot_frame = 0
     intermediate = 0
     observed = 0
     orientation = 0
@@ -1483,6 +1521,10 @@ def _pose_label_summary(samples: list[ExperimentTimeseriesSample]) -> dict[str, 
         pose = dict(sample.two_segment_pose or {})
         if dict(pose.get("distal_tip_pose", {}) or {}):
             distal += 1
+        if pose_fields_have_distal_robot_frame(
+            {"pose_in_robot_frame": dict(getattr(sample, "pose_in_robot_frame", {}) or {})}
+        ):
+            distal_robot_frame += 1
         if dict(pose.get("intermediate_pose", {}) or {}):
             intermediate += 1
         if bool(sample.extra.get("pose_observations_present")):
@@ -1494,6 +1536,7 @@ def _pose_label_summary(samples: list[ExperimentTimeseriesSample]) -> dict[str, 
     return {
         "pose_observation_sample_count": int(observed),
         "distal_pose_sample_count": int(distal),
+        "distal_robot_frame_pose_sample_count": int(distal_robot_frame),
         "intermediate_pose_sample_count": int(intermediate),
         "includes_intermediate_pose": bool(intermediate),
         "distal_only": bool(distal and not intermediate),
@@ -1506,9 +1549,11 @@ def _pose_label_summary(samples: list[ExperimentTimeseriesSample]) -> dict[str, 
 def _pose_label_summary_from_fields(fields: dict[str, Any]) -> dict[str, Any]:
     available_roles = set(str(value) for value in list(fields.get("available_roles", []) or []))
     includes_orientation = _pose_fields_include_orientation(fields)
+    distal_robot_frame = pose_fields_have_distal_robot_frame(fields)
     return {
         "pose_observation_sample_count": int(bool(fields.get("pose_observations_present"))),
         "distal_pose_sample_count": int("distal_tip" in available_roles),
+        "distal_robot_frame_pose_sample_count": int(distal_robot_frame),
         "intermediate_pose_sample_count": int("intermediate_segment" in available_roles),
         "missing_required_roles": list(fields.get("missing_required_roles", []) or []),
         "includes_intermediate_pose": "intermediate_segment" in available_roles,
@@ -1549,6 +1594,7 @@ def _valid_for_two_segment_model_training(
         not _servo_only_mode(config)
         and bool(startup_provenance.get("accepted_all_8_startup"))
         and int(pose_summary.get("distal_pose_sample_count", 0) or 0) > 0
+        and int(pose_summary.get("distal_robot_frame_pose_sample_count", 0) or 0) > 0
         and "distal_tip" not in list(pose_summary.get("missing_required_roles", []) or [])
         and int(command_failures) == 0
     )
@@ -1562,6 +1608,8 @@ def _data_quality_warnings(*, config: TwoSegmentCollectPoseDatasetConfig, pose_s
         warnings.append("accepted_all_8_startup_artifact_not_available")
     if int(pose_summary.get("pose_observation_sample_count", 0) or 0) == 0:
         warnings.append("pose_labels_missing")
+    if int(pose_summary.get("distal_robot_frame_pose_sample_count", 0) or 0) == 0:
+        warnings.append("distal_tip_robot_frame_pose_missing")
     missing_required = list(pose_summary.get("missing_required_roles", []) or [])
     if "distal_tip" in missing_required:
         warnings.append("required_pose_roles_missing")

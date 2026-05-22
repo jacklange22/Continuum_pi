@@ -744,8 +744,10 @@ class SystemController:
         elif openrb_connected and not self.state.bus_reachable:
             self.state.openrb_status_label = "Degraded"
             self.state.openrb_status_kind = "warning"
+            missing_suffix = f" Missing: {missing_ids}." if missing_ids else ""
             self.state.openrb_truth_summary = (
                 "OpenRB is connected, but no configured servos responded on the DYNAMIXEL bus."
+                f"{missing_suffix}"
             )
         elif openrb_connected and missing_ids:
             self.state.openrb_status_label = "Degraded"
@@ -785,12 +787,10 @@ class SystemController:
         tracker_healthy: bool,
         openrb_connected: bool,
     ) -> str:
-        if self.state.last_error:
-            return str(self.state.last_error)
         if not tracker_connected:
             return "Tracker is not connected."
         if not tracker_healthy:
-            return self.state.tracker_connection_state.replace("_", " ")
+            return str(self.state.last_error or self.state.tracker_connection_state.replace("_", " "))
         if self.state.mock_mode:
             return self.state.status_message
         if not openrb_connected:
@@ -810,6 +810,8 @@ class SystemController:
             return f"Configured servos missing on DYNAMIXEL bus: {missing_ids}."
         if not self.state.motion_ready:
             return self.state.readiness_message or "Servo readiness is blocked."
+        if self.state.last_error:
+            return str(self.state.last_error)
         return self.state.status_message
 
     @staticmethod

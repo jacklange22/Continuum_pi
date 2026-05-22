@@ -1,0 +1,18 @@
+target_set: "default_demo"
+bottom_inner_radius_cm: 0.10
+bottom_outer_radius_cm: 0.20
+top_inner_radius_cm: 0.10
+top_outer_radius_cm: 0.20
+points_per_ring: 4
+repeat_visits: 3
+settle_time_s: 1.5
+samples_per_visit: 1
+max_tick_delta_from_startup: 320
+allow_servo_only_test_run: true
+run_trust_mode: "servo_only"
+capture_tracker_snapshot: true
+requested_tool_roles:
+  "0A": "distal_tip"
+dataset_tag: ""
+target_distal_rms_mm: null
+target_intermediate_rms_mm: null

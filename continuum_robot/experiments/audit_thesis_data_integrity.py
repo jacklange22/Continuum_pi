@@ -25,8 +25,10 @@ Synthetic / mock / dry-run signals checked (any one triggers
 * ``dry_run: true`` in config_snapshot
 * ``mock_mode: true`` in metadata's provenance_info
 * ``run_trust_mode == "mock"`` in trust_info
+* any non-``thesis_trusted`` run trust mode in metadata or metrics
 * ``tracker_backend`` containing ``mock`` (e.g., ``mock_tracker_manager``)
 * explicit ``not_thesis_evidence: true`` in metrics
+* explicit experiment metrics saying a run is not thesis-valid
 * ``synthetic_seed_used`` field present in summary metrics
   (signals grid_accuracy ran in synthetic mode)
 * grid-accuracy ``capture_mode_counts`` / ``dry_run_sample_count`` showing
@@ -154,8 +156,9 @@ def _detect_synthetic_signals(
     backend = str(prov.get("tracker_backend") or "").lower()
     if "mock" in backend:
         reasons.append(f"tracker_backend={prov.get('tracker_backend')}")
-    if str(trust.get("run_trust_mode") or "").lower() == "mock":
-        reasons.append("trust_info.run_trust_mode=mock")
+    trust_mode = str(trust.get("run_trust_mode") or "").strip().lower()
+    if trust_mode and trust_mode != "thesis_trusted":
+        reasons.append(f"trust_info.run_trust_mode={trust_mode}")
     if bool(trust.get("not_thesis_evidence")):
         reasons.append("trust_info.not_thesis_evidence=true")
     for reason in list(trust.get("not_thesis_evidence_reasons") or []):
@@ -165,6 +168,11 @@ def _detect_synthetic_signals(
     metrics = dict(summ.get("experiment_metrics") or {})
     if metrics.get("synthetic_seed_used") is not None:
         reasons.append("metrics.synthetic_seed_used present (grid_accuracy synthetic)")
+    if metrics.get("penprobe_demo_valid_for_thesis") is False:
+        reasons.append("metrics.penprobe_demo_valid_for_thesis=false")
+    run_validity = metrics.get("run_validity")
+    if isinstance(run_validity, dict) and run_validity.get("thesis_valid_run") is False:
+        reasons.append("metrics.run_validity.thesis_valid_run=false")
     capture_mode_counts = metrics.get("capture_mode_counts")
     if isinstance(capture_mode_counts, dict):
         for mode, count in capture_mode_counts.items():
@@ -177,10 +185,65 @@ def _detect_synthetic_signals(
         reasons.append("metrics.not_thesis_evidence=true")
     for reason in list(metrics.get("not_thesis_evidence_reasons") or []):
         reasons.append(f"metrics.reason={reason}")
-    if str(metrics.get("run_trust_mode") or "").lower() == "mock":
-        reasons.append("metrics.run_trust_mode=mock")
+    metric_trust_mode = str(metrics.get("run_trust_mode") or "").strip().lower()
+    if metric_trust_mode and metric_trust_mode != "thesis_trusted":
+        reasons.append(f"metrics.run_trust_mode={metric_trust_mode}")
+    sample_reasons = _detect_sample_synthetic_signals(run_dir / "samples.jsonl")
+    reasons.extend(sample_reasons)
 
     return (bool(reasons), sorted(set(reasons)))
+
+
+def _detect_sample_synthetic_signals(samples_path: Path) -> list[str]:
+    if not samples_path.exists():
+        return []
+    dry_flag_count = 0
+    synthetic_flag_count = 0
+    mock_flag_count = 0
+    dry_extra_count = 0
+    synthetic_capture_mode_count = 0
+    dry_wall_time_count = 0
+    try:
+        lines = samples_path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            sample = json.loads(line)
+        except Exception:
+            continue
+        flags = {str(flag).strip().lower() for flag in sample.get("status_flags", []) or []}
+        if "dry_run" in flags:
+            dry_flag_count += 1
+        if any("synthetic" in flag for flag in flags):
+            synthetic_flag_count += 1
+        if any("mock" in flag for flag in flags):
+            mock_flag_count += 1
+        extra = dict(sample.get("extra") or {})
+        backend = dict(sample.get("backend_health") or {})
+        if bool(extra.get("dry_run", False)):
+            dry_extra_count += 1
+        capture_mode = str(extra.get("capture_mode") or backend.get("capture_mode") or "").strip().lower()
+        if capture_mode and ("synthetic" in capture_mode or "dry_run" in capture_mode or capture_mode == "mock"):
+            synthetic_capture_mode_count += 1
+        if str(sample.get("wall_time_utc") or "").strip().lower() == "dry_run":
+            dry_wall_time_count += 1
+    reasons: list[str] = []
+    if dry_flag_count:
+        reasons.append(f"samples.status_flags.dry_run={dry_flag_count}")
+    if synthetic_flag_count:
+        reasons.append(f"samples.status_flags.synthetic={synthetic_flag_count}")
+    if mock_flag_count:
+        reasons.append(f"samples.status_flags.mock={mock_flag_count}")
+    if dry_extra_count:
+        reasons.append(f"samples.extra.dry_run=true:{dry_extra_count}")
+    if synthetic_capture_mode_count:
+        reasons.append(f"samples.capture_mode.synthetic_or_dry_run={synthetic_capture_mode_count}")
+    if dry_wall_time_count:
+        reasons.append(f"samples.wall_time_utc=dry_run:{dry_wall_time_count}")
+    return reasons
 
 
 def _detect_provenance_gaps(
