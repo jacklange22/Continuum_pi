@@ -864,38 +864,21 @@ def _write_workspace_thesis_04_rms_map_scatter(
     max_amplitude_mm: float,
     quality: str | None,
 ) -> Path:
-    """Thesis figure 4: top-down per-target scatter colored by RMS spread.
+    """Thesis figure 4: clean top-down per-target RMS map.
 
-    The 2D companion to figure 1: same one-dot-per-target visualization and
-    same colormap, but flattened to XY. Two practical differences from the
-    other figures in the set:
-
-    - vs figure 1 (3D scatter): prints flat, no rotation needed for a thesis
-      PDF, and a top-down view makes spatial structure (rim vs center,
-      directional bias) immediately readable.
-    - vs figure 2 (contour-filled field): no Delaunay smoothing -- the reader
-      sees every measured target directly, with no spatial interpolation
-      hiding which targets are actually carrying the workspace-level numbers.
-
-    Axes are autoscaled to the actual tip workspace extent, not the
-    commanded cable amplitude. ``max_amplitude_mm`` is the commanded cable
-    deflection ceiling (tendon-space input), while ``centroid_x/y_mm`` are
-    tip positions in robot frame; a curving continuum robot's tip moves
-    much further than its cable input, so the two are not the same workspace
-    and a cable-amplitude reference disk would visually misrepresent the
-    physical region.
+    One dot is one measured target at its average robot-frame tip position.
+    Color is that target's 3D RMS spread across visits. The figure is kept
+    intentionally sparse: no interpolation, no callout boxes, no captions.
     """
-    plt = import_matplotlib()
-    from matplotlib.patches import Circle
 
     xs = np.asarray([float(row["centroid_x_mm"]) for row in rows], dtype=float)
     ys = np.asarray([float(row["centroid_y_mm"]) for row in rows], dtype=float)
     rms_values = np.asarray([float(row["rms_spread_mm"]) for row in rows], dtype=float)
-    vmax = _color_vmax(rms_values.tolist())
+    vmax = max(float(np.max(rms_values)) if rms_values.size > 0 else 1.0, 1e-9)
 
     with report_style() as plt_styled:
-        fig, ax = plt_styled.subplots(figsize=(7.6, 6.4), constrained_layout=False)
-    fig.subplots_adjust(left=0.10, right=0.92, top=0.88, bottom=0.14)
+        fig, ax = plt_styled.subplots(figsize=(7.2, 6.5), constrained_layout=False)
+    fig.subplots_adjust(left=0.105, right=0.88, top=0.90, bottom=0.12)
 
     # Auto-scale axes to the actual tip workspace, with symmetric square
     # bounds so X and Y read at the same scale. Pad by 8% so the rim dots
@@ -904,10 +887,12 @@ def _write_workspace_thesis_04_rms_map_scatter(
         xy_extent = max(float(np.max(np.abs(xs))), float(np.max(np.abs(ys))), 1.0)
     else:
         xy_extent = 1.0
-    pad = xy_extent * 0.08
+    pad = xy_extent * 0.06
     ax.set_xlim(-xy_extent - pad, xy_extent + pad)
     ax.set_ylim(-xy_extent - pad, xy_extent + pad)
     ax.set_aspect("equal", adjustable="box")
+    ax.axhline(0.0, color=color("grid"), linewidth=0.8, zorder=1)
+    ax.axvline(0.0, color=color("grid"), linewidth=0.8, zorder=1)
 
     scatter = ax.scatter(
         xs,
@@ -916,69 +901,29 @@ def _write_workspace_thesis_04_rms_map_scatter(
         cmap="viridis",
         vmin=0.0,
         vmax=vmax,
-        s=72,
+        s=54,
         edgecolors="white",
-        linewidths=0.7,
+        linewidths=0.55,
         alpha=0.95,
         zorder=3,
     )
 
-    # Call out the single worst target so the reader can locate the
-    # workspace's worst spot directly rather than scanning for the brightest
-    # yellow dot among 100. Only annotate when the worst is meaningfully
-    # worse than the median (i.e. there's actually a worst worth pointing at).
-    # Label is placed INWARD toward the origin (along the radial vector) so it
-    # stays inside the plot area rather than getting clipped at the rim.
-    worst = list(summary.get("worst_targets") or [])
-    median_rms = float(summary.get("workspace_rms_median_mm") or 0.0)
-    if worst and rms_values.size > 0:
-        worst_top = worst[0]
-        worst_rms = float(worst_top.get("rms_spread_mm") or 0.0)
-        if worst_rms > median_rms * 1.4 and worst_rms > 0.0:
-            worst_idx = int(np.argmax(rms_values))
-            wx = float(xs[worst_idx])
-            wy = float(ys[worst_idx])
-            r = float(np.hypot(wx, wy)) or 1.0
-            offset = min(13.0, r * 0.45)
-            label_x = wx * (1.0 - offset / r)
-            label_y = wy * (1.0 - offset / r)
-            ax.annotate(
-                f"worst target: {worst_top.get('target_label', 'T?')}\n({worst_rms:.2f} mm RMS)",
-                xy=(wx, wy),
-                xytext=(label_x, label_y),
-                fontsize=8,
-                color=color("text"),
-                ha="center",
-                va="center",
-                zorder=7,
-                bbox={"boxstyle": "round,pad=0.3", "facecolor": "white", "edgecolor": color("grid"), "alpha": 0.95},
-                arrowprops={
-                    "arrowstyle": "->",
-                    "color": color("axis"),
-                    "alpha": 0.75,
-                    "lw": 0.9,
-                    "shrinkA": 4,
-                    "shrinkB": 6,
-                },
-            )
-
     style_axes(ax, xlabel="Robot X (mm)", ylabel="Robot Y (mm)")
+    ax.tick_params(axis="both", labelsize=9.5)
+    ax.xaxis.label.set_size(10.5)
+    ax.yaxis.label.set_size(10.5)
 
-    cbar = fig.colorbar(scatter, ax=ax, shrink=0.85, pad=0.025)
-    cbar.set_label(_COLORBAR_LABEL_RMS)
+    cbar = fig.colorbar(scatter, ax=ax, fraction=0.048, pad=0.025, shrink=0.88)
+    cbar.set_label("RMS spread (mm)", fontsize=10.5)
+    cbar.ax.tick_params(labelsize=9.5)
     cbar.outline.set_edgecolor(color("grid"))
 
-    _apply_suptitle(
-        fig,
-        figure_number=4,
-        headline="Per-target tip repeatability across the workspace (top-down)",
-        subtitle=(
-            "Each dot = one target, drawn where the tip actually landed on average.\n"
-            "Color = RMS spread across visits. No interpolation — every measured target is visible."
-        ),
-    )
-    _draw_footer(
-        fig,
-        _footer_caption_lines(summary=summary, rows_with_data=rows, max_amplitude_mm=max_amplitude_mm),
+    fig.suptitle(
+        "Workspace Repeatability",
+        fontsize=12.5,
+        fontweight="bold",
+        x=0.04,
+        ha="left",
+        y=0.975,
     )
     return save_figure(fig, Path(path), quality=quality)

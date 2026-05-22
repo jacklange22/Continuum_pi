@@ -2974,6 +2974,14 @@ class PretensionValidationExperiment(BaseExperiment):
                         # instead of |current - baseline|.
                         "within_holding_tension_target",
                         "high_holding_tension_transition_to_trim",
+                        # The equalization pass that runs after take-up
+                        # closes any tension gap remaining when fine take-up
+                        # hits its iteration cap. If the equalization pass
+                        # converges then the take-up iter limit is a
+                        # non-blocking soft-stop — the final state still
+                        # gets gated by ``holding_tension_below_target`` and
+                        # the tension-balance check below.
+                        "fine_take_up_iteration_limit",
                     ):
                         reject_reasons.append(str(takeup_result["stop_reason"]))
                     # Tension equalization pass (2026-05-21): drive every
@@ -3116,13 +3124,35 @@ class PretensionValidationExperiment(BaseExperiment):
                     final_tip_xy_points_mm.append(list(final["tip_xy_mm"]))
                 if missing_fields:
                     reject_reasons.append("missing_telemetry")
-                if mode_kind != "characterization" and not converged:
+                # not_converged is now a SOFT signal: the run is only rejected
+                # for non-convergence if tension balance was also bad. Friction
+                # in the spine makes sub-mm tip moves unreliable, so a
+                # tip-centering routine that "did not converge" is fine as
+                # long as the four tendon tensions are equal and at target.
+                # The dedicated tension-balance and holding-tension gates
+                # below catch the cases where the run actually failed.
+                final_tension_balance_for_gate = final.get("load_balance_error_ma")
+                tension_balance_ok = (
+                    final_tension_balance_for_gate is not None
+                    and float(final_tension_balance_for_gate) <= float(self.config.accept_max_load_balance_error_ma)
+                )
+                if mode_kind != "characterization" and not converged and not tension_balance_ok:
                     reject_reasons.append("not_converged")
+                # Tip-centering error: only reject when tip is OFF target by
+                # more than ``accept_max_final_tip_xy_offset_mm`` AND tension
+                # balance failed. Friction in the spine limits the tip's
+                # response to small tendon adjustments, so a small tip offset
+                # alongside balanced tensions is the expected operating point
+                # (matches operator's 2026-05-21 observation that friction
+                # dominates small movements). A run with equal tendons at
+                # target tension and a 3 mm tip offset is still a usable
+                # pretension state for downstream collect-pose / repeatability.
                 if (
                     mode_kind != "characterization"
                     and include_tracker
                     and tip_xy_offset_mm is not None
                     and float(tip_xy_offset_mm) > float(self.config.accept_max_final_tip_xy_offset_mm)
+                    and not tension_balance_ok
                 ):
                     reject_reasons.append("tip_center_error")
                 quality_flags: list[str] = []
@@ -6220,17 +6250,39 @@ class PretensionValidationExperiment(BaseExperiment):
                 measurement["current_above_baseline_ma"][sid_int] = None
                 measurement["load_proxy_current_ma"][sid_int] = None
 
-        # Recompute load_balance / pair_balance from the overridden values.
-        above_baseline = dict(measurement.get("current_above_baseline_ma") or {})
-        load_values = [float(v) for v in above_baseline.values() if v is not None]
+        # Recompute load_balance / pair_balance from SIGNED TENSION values.
+        # The legacy ``load_proxy = |current - baseline|`` metric silently
+        # rejected runs whose baselines were asymmetric (typical on this rig:
+        # +18 mA on servos 1/4, near-zero on 2/3) — a perfectly tensioned
+        # run with signed currents [-30, -31, -28, -26] would report
+        # load_proxy = [48, 32, 29, 41] and look like a 20 mA spread when
+        # the actual tension spread is 5 mA. Switching to ``tension_ma =
+        # max(0, -signed_current_ma)`` removes the baseline artifact and
+        # makes the acceptance gate honest about whether the four tendons
+        # carry equal force.
+        tension_by_sid: dict[int, float] = {}
+        for sid in servo_ids:
+            held = holding_currents.get(int(sid))
+            if held is None:
+                continue
+            tension_by_sid[int(sid)] = max(0.0, -float(held))
+
+        tension_values = list(tension_by_sid.values())
+        measurement["tension_ma_by_servo"] = {int(sid): tension_by_sid.get(int(sid)) for sid in servo_ids}
         measurement["load_balance_error_ma"] = (
-            float(max(load_values) - min(load_values)) if load_values else None
+            float(max(tension_values) - min(tension_values)) if tension_values else None
         )
-        if len(servo_ids) >= 4 and all(above_baseline.get(int(sid)) is not None for sid in servo_ids):
+        if len(servo_ids) >= 4 and all(tension_by_sid.get(int(sid)) is not None for sid in servo_ids):
             measurement["pair_balance_error_ma"] = max(
-                abs(float(above_baseline[int(servo_ids[0])] - above_baseline[int(servo_ids[2])])),
-                abs(float(above_baseline[int(servo_ids[1])] - above_baseline[int(servo_ids[3])])),
+                abs(float(tension_by_sid[int(servo_ids[0])] - tension_by_sid[int(servo_ids[2])])),
+                abs(float(tension_by_sid[int(servo_ids[1])] - tension_by_sid[int(servo_ids[3])])),
             )
+        # Preserve the legacy load-proxy spread under a separate key so the
+        # trace / debugging plots can still see it.
+        above_baseline = dict(measurement.get("current_above_baseline_ma") or {})
+        load_proxy_values = [float(v) for v in above_baseline.values() if v is not None]
+        if load_proxy_values:
+            measurement["legacy_load_proxy_spread_ma"] = float(max(load_proxy_values) - min(load_proxy_values))
 
         # Surface the holding metadata so the trace row can show it.
         measurement["holding_current_ma_by_servo"] = {int(sid): holding_currents.get(int(sid)) for sid in servo_ids}

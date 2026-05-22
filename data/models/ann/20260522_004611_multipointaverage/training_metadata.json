@@ -1,0 +1,208 @@
+{
+  "schema_version": "1.0",
+  "artifact_kind": "legacy_ann_xyz_v1",
+  "created_at_utc": "2026-05-22T00:46:17.095407+00:00",
+  "status": "completed_early_stop",
+  "legacy_references": [
+    "@references/ANN.py",
+    "@references/real_model_learning.py",
+    "@references/utils_data.py",
+    "@references/multi_input.py",
+    "@references/hysteresis_model_learning.py"
+  ],
+  "dataset": {
+    "path": "/Users/jacklange/Continuum/pi_code/data/experiments/collect_pose_command_dataset/20260521_204818_collect_pose_command_dataset",
+    "run_id": "eb3116f593a7",
+    "run_name": "20260521_204818_collect_pose_command_dataset",
+    "timestamp_utc": "2026-05-21T20:48:28.540406+00:00",
+    "dataset_mode": "workspace_coverage",
+    "dataset_mode_summary": "Bounded workspace-coverage collection for first-pass forward-model training.",
+    "sample_count": 2048,
+    "accepted_count": 2048,
+    "rejected_count": 0,
+    "full_pose_available": true,
+    "sequential_context_available": true,
+    "run_label": "upgraded_robot_modeling",
+    "dataset_tag": "baseline_v1",
+    "trust_summary": "runtime tip thesis_trusted, pretension ready",
+    "runtime_tip_summary": "coil_as_tip (thesis_trusted)",
+    "pretension_summary": "manual (ready)",
+    "filtered_reason_counts": {},
+    "prepared_sample_count": 2046,
+    "source_run_valid_for_model_training": true,
+    "source_run_model_training_validity_status": "warning_valid",
+    "source_run_model_training_validity_reason": "warnings_present_but_training_ready",
+    "source_run_model_training_hard_invalidation_reasons": [],
+    "source_run_model_training_warnings": [
+      "2 accepted non-training phase rows were excluded from modeling export."
+    ],
+    "ann_training_category": "Trainable with warnings",
+    "ann_training_blocking_reasons": [],
+    "ann_training_warnings": [
+      "2 accepted non-training phase rows were excluded from modeling export."
+    ],
+    "target_valid_sample_count": 2046,
+    "complete_training_row_count": 2046,
+    "modeling_export_row_count": 2046,
+    "modeling_legacy_row_count": 2046,
+    "incomplete_rows_excluded_from_training": 0,
+    "parallel_single_demo": false,
+    "run_trust_mode": "thesis_trusted",
+    "mock_mode_flag": false
+  },
+  "model": {
+    "family": "legacy_ann",
+    "variant": "xyz",
+    "output_target": "xyz",
+    "input_dim": 4,
+    "output_dim": 3,
+    "hidden_layers": [
+      128,
+      128
+    ],
+    "activation": "relu",
+    "dtype": "float32",
+    "standardize_io": true
+  },
+  "loss": {
+    "kind": "mse_standardized",
+    "pose_orientation_scale": 10.0,
+    "weight_decay": 0.0001
+  },
+  "backend": {
+    "selected_backend": "mps",
+    "recommended_backend": "mps",
+    "torch_version": "2.11.0",
+    "python_version": "3.13.5",
+    "platform_summary": "Darwin 24.5.0 | arm64"
+  },
+  "training": {
+    "epochs_requested": 256,
+    "epochs_completed": 106,
+    "best_epoch": 76,
+    "best_validation_loss": 0.0004046770452987403,
+    "test_loss": 0.00035555909271351994,
+    "training_wall_time_s": 5.8057665408123285,
+    "checkpointing": false,
+    "learning_rate": 0.001,
+    "batch_size": 64,
+    "random_seed": 0,
+    "weight_decay": 0.0001,
+    "early_stopping_patience": 30,
+    "early_stopped": true
+  },
+  "split": {
+    "strategy": "random_grouped_step",
+    "train_ratio": 0.7,
+    "validation_ratio": 0.15,
+    "test_ratio": 0.15,
+    "train_count": 1432,
+    "validation_count": 307,
+    "test_count": 307
+  },
+  "estimate": {
+    "estimated_total_s": 16.276070882876713,
+    "estimated_epoch_s": 0.06357840188623716,
+    "train_batch_time_s": 0.002574298686037461,
+    "validation_batch_time_s": 0.0008739064214751124,
+    "benchmark_train_batches": 6,
+    "benchmark_validation_batches": 4,
+    "train_batch_count": 23,
+    "validation_batch_count": 5
+  },
+  "evaluation": {
+    "single_dataset_split_note": "All models were trained and compared on one grouped train/validation/test split from this dataset only. Metrics do not assess cross-session or cross-run generalization.",
+    "validation": {
+      "loss_mean": 0.0004046770452987403,
+      "position_rmse_xyz_mm": 0.5425319154666026,
+      "position_rmse_xy_mm": 0.5281030706238499,
+      "position_rmse_z_mm": 0.12429008849269499,
+      "position_error_l2_mm": {
+        "mean": 0.42123384344948417,
+        "median": 0.33202642430186535,
+        "p95": 1.0124139980176627,
+        "max": 2.7972917314864216
+      }
+    },
+    "test": {
+      "loss_mean": 0.00035555909271351994,
+      "position_rmse_xyz_mm": 0.493056296677171,
+      "position_rmse_xy_mm": 0.47760856590933426,
+      "position_rmse_z_mm": 0.12245231505788529,
+      "position_error_l2_mm": {
+        "mean": 0.3998047469874019,
+        "median": 0.3222661803679372,
+        "p95": 0.9734480118248253,
+        "max": 2.0816702085276457
+      }
+    }
+  },
+  "files": {
+    "model_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260522_004611_multipointaverage/model.pt",
+    "loss_history_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260522_004611_multipointaverage/loss_history.csv",
+    "loss_plot_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260522_004611_multipointaverage/loss_curve.png",
+    "loss_report_plot_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260522_004611_multipointaverage/ann_loss_curve_report.png",
+    "split_manifest_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260522_004611_multipointaverage/split_manifest.json",
+    "summary_text_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260522_004611_multipointaverage/training_summary.txt",
+    "row_filter_report_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260522_004611_multipointaverage/row_filter_report.json",
+    "scaler_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260522_004611_multipointaverage/io_scaler.json"
+  },
+  "io_scaler": {
+    "input": {
+      "mean": [
+        0.0007876603962988826,
+        0.001146630802124326,
+        -0.0007876603962988826,
+        -0.001146630802124326
+      ],
+      "std": [
+        0.4306302920608443,
+        0.4324926271745956,
+        0.4306302920608443,
+        0.4324926271745956
+      ],
+      "eps": 1e-08
+    },
+    "output": {
+      "mean": [
+        -0.10985810321518366,
+        0.022299042673385033,
+        55.672926010276235
+      ],
+      "std": [
+        20.057747580877763,
+        20.584978023578277,
+        5.371481224538117
+      ],
+      "eps": 1e-08
+    }
+  },
+  "training_provenance": {
+    "exploratory_training_override": false,
+    "source_run_valid_for_model_training": true,
+    "source_run_model_training_validity_status": "warning_valid",
+    "source_validity_reason": "warnings_present_but_training_ready",
+    "source_validity_warnings": [
+      "2 accepted non-training phase rows were excluded from modeling export."
+    ],
+    "source_validity_hard_invalidation_reasons": [],
+    "ann_training_category": "Trainable with warnings",
+    "complete_training_row_count": 2046,
+    "target_valid_sample_count": 2046,
+    "modeling_export_row_count": 2046,
+    "modeling_legacy_row_count": 2046,
+    "excluded_incomplete_rows_count": 0,
+    "source_run_id": "eb3116f593a7",
+    "source_run_path": "/Users/jacklange/Continuum/pi_code/data/experiments/collect_pose_command_dataset/20260521_204818_collect_pose_command_dataset",
+    "source_run_trust_mode": "thesis_trusted",
+    "source_run_mock_mode_flag": false
+  },
+  "training_input_policy": "complete_rows_only",
+  "row_filter_report": {
+    "complete_row_count": 2046,
+    "excluded_row_count": 0,
+    "excluded_by_reason": {},
+    "target_complete_row_count": 2046,
+    "report_path": "/Users/jacklange/Continuum/pi_code/data/models/ann/20260522_004611_multipointaverage/row_filter_report.json"
+  }
+}

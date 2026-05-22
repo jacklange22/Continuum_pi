@@ -1,0 +1,14 @@
+ANN / linear ridge model sweep summary
+
+Created (UTC): 2026-05-21T23:55:20.072142+00:00
+Sweep folder: /Users/jacklange/Continuum/pi_code/data/models/ann/20260521_235440_legacy_ann_full_pose_model_sweep
+
+Warning: All models were trained and compared on one grouped train/validation/test split from this dataset only. Metrics do not assess cross-session or cross-run generalization.
+
+Best model (selected by lowest validation_position_rmse_xyz_mm; test column reported only for the selected architecture's held-out evaluation): ANN [128, 128] | subdir=ann_128_128
+  val_xyz_rmse_mm=0.558175 test_xyz_rmse_mm=0.512672
+
+- linear_ridge: val_xyz_rmse_mm=5.849301 val_loss=11.346031 test_xyz_rmse_mm=6.201445 test_loss=12.933327 time_s=0.331266
+- ANN [32, 32]: val_xyz_rmse_mm=0.636565 val_loss=0.000532 test_xyz_rmse_mm=0.620600 test_loss=0.000529 time_s=13.936508
+- ANN [64, 64]: val_xyz_rmse_mm=0.589561 val_loss=0.000457 test_xyz_rmse_mm=0.559481 test_loss=0.000438 time_s=12.247506
+- ANN [128, 128]: val_xyz_rmse_mm=0.558175 val_loss=0.000457 test_xyz_rmse_mm=0.512672 test_loss=0.000464 time_s=9.654164

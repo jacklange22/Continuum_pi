@@ -1745,6 +1745,130 @@ def _run_release_with_scripted_currents(
 
 
 # --------------------------------------------------------------------------- #
+# Load-balance error uses tension_ma, NOT |current - baseline|.
+# Regression for run 20260521_201136 where every repeat reached
+# [-30, -31, -28, -26] mA but was rejected because the legacy load_proxy
+# calculation reported a 19.5 mA spread.
+# --------------------------------------------------------------------------- #
+
+
+def test_load_balance_error_computed_from_tension_not_load_proxy(tmp_path: Path) -> None:
+    """Reproduce run 0 of 20260521_201136: signed currents [-30, -31, -28, -26]
+    with asymmetric baselines [+18.2, +0.77, +0.7, +15.33] produce a
+    load_proxy spread of 19.5 mA (would reject) but a tension spread of
+    only 5 mA (should accept)."""
+    service = _servo_service(tmp_path)
+    script = [{1: -30.0, 2: -31.0, 3: -28.0, 4: -26.0} for _ in range(4)]
+    wrapped = _ScriptedCurrentService(service, script=script)
+    experiment = PretensionValidationExperiment(
+        PretensionValidationExperimentConfig.from_dict(
+            {
+                "mode": "single_segment_staged",
+                "servo_ids": [1, 2, 3, 4],
+                "post_move_settle_s": 0.0,
+                "holding_current_burst_count": 3,
+                "holding_current_burst_interval_s": 0.0,
+            }
+        )
+    )
+
+    class _Session:
+        def __init__(self):
+            self.context = SimpleNamespace(
+                servo_service=wrapped,
+                tracker_service=None,
+                monotonic_fn=time.monotonic,
+                sleep_fn=lambda _s: None,
+            )
+
+        def raise_if_stop_requested(self):
+            return None
+
+        def update_progress(self, *_a, **_kw):
+            return None
+
+    baselines = {1: 18.2, 2: 0.77, 3: 0.7, 4: 15.33}
+    measurement = experiment._advanced_measurement_with_holding(
+        servo_service=wrapped,
+        tracker_service=None,
+        servo_ids=[1, 2, 3, 4],
+        baseline_current_ma_by_servo=baselines,
+        target_xy_mm=[0.0, 0.0],
+        session=_Session(),
+        startup_reference_ticks_by_servo={sid: None for sid in (1, 2, 3, 4)},
+        trust_status="current_only_lower_trust",
+    )
+
+    # Tension-based spread, not load-proxy spread.
+    # tensions = [30, 31, 28, 26]; spread = 31-26 = 5 mA.
+    # pair_1_3 = |30-28| = 2 mA, pair_2_4 = |31-26| = 5 mA, max = 5 mA.
+    assert measurement["load_balance_error_ma"] == pytest.approx(5.0, abs=1e-3)
+    assert measurement["pair_balance_error_ma"] == pytest.approx(5.0, abs=1e-3)
+    assert measurement["tension_ma_by_servo"][1] == pytest.approx(30.0)
+    assert measurement["tension_ma_by_servo"][4] == pytest.approx(26.0)
+    # Legacy load-proxy spread preserved for diagnostics.
+    assert measurement["legacy_load_proxy_spread_ma"] == pytest.approx(19.5, abs=1.0)
+
+
+def test_load_balance_error_immune_to_asymmetric_baselines(tmp_path: Path) -> None:
+    """Every servo at signed -30 mA must report spread 0 regardless of how
+    asymmetric the baseline characterization was."""
+    service = _servo_service(tmp_path)
+    script = [{1: -30.0, 2: -30.0, 3: -30.0, 4: -30.0} for _ in range(4)]
+    wrapped = _ScriptedCurrentService(service, script=script)
+    experiment = PretensionValidationExperiment(
+        PretensionValidationExperimentConfig.from_dict(
+            {
+                "mode": "single_segment_staged",
+                "servo_ids": [1, 2, 3, 4],
+                "post_move_settle_s": 0.0,
+                "holding_current_burst_count": 1,
+                "holding_current_burst_interval_s": 0.0,
+            }
+        )
+    )
+
+    class _Session:
+        def __init__(self):
+            self.context = SimpleNamespace(
+                servo_service=wrapped,
+                tracker_service=None,
+                monotonic_fn=time.monotonic,
+                sleep_fn=lambda _s: None,
+            )
+
+        def raise_if_stop_requested(self):
+            return None
+
+        def update_progress(self, *_a, **_kw):
+            return None
+
+    baselines = {1: 18.2, 2: -10.0, 3: 5.0, 4: 22.0}
+    measurement = experiment._advanced_measurement_with_holding(
+        servo_service=wrapped,
+        tracker_service=None,
+        servo_ids=[1, 2, 3, 4],
+        baseline_current_ma_by_servo=baselines,
+        target_xy_mm=[0.0, 0.0],
+        session=_Session(),
+        startup_reference_ticks_by_servo={sid: None for sid in (1, 2, 3, 4)},
+        trust_status="current_only_lower_trust",
+    )
+    assert measurement["load_balance_error_ma"] == pytest.approx(0.0, abs=1e-3)
+    assert measurement["pair_balance_error_ma"] == pytest.approx(0.0, abs=1e-3)
+
+
+def test_load_balance_error_catches_under_tensioned_servo() -> None:
+    """The tension-based gate must still reject runs with one servo at
+    signed -3 mA while others hold -30: tension spread = 27 mA > 15 mA accept
+    threshold."""
+    tensions = {1: 3.0, 2: 30.0, 3: 30.0, 4: 30.0}
+    load_balance_error = max(tensions.values()) - min(tensions.values())
+    assert load_balance_error == 27.0
+    assert load_balance_error > 15.0  # YAML accept_max_load_balance_error_ma
+
+
+# --------------------------------------------------------------------------- #
 # Tension equalization pass — after take-up, drive every servo to the
 # same holding tension by tightening the low ones (never releasing).
 # --------------------------------------------------------------------------- #

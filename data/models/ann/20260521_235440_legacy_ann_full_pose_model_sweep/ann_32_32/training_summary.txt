@@ -1,0 +1,33 @@
+Legacy ANN XYZ training summary
+
+Status: completed_early_stop
+Created: 2026-05-21T23:54:56.887441+00:00
+Dataset: 20260521_165938_collect_pose_command_dataset
+Dataset mode: workspace_coverage
+Prepared samples: 2046
+Backend: mps (Darwin 24.5.0 | arm64)
+Hidden layers: [32, 32]
+Output target: xyz
+Standardized I/O: yes
+Epochs completed: 224
+Best epoch: 194
+Best validation loss: 0.000532
+Test loss: 0.000529
+Training wall time (s): 13.936508
+Early stopped: yes (patience=30)
+Warmup estimate: 16.1 s
+
+Held-out test metrics (same split as training):
+  Loss (batch mean): 0.000529
+  Position RMSE XYZ (mm): 0.620600
+  Position RMSE XY (mm): 0.605780
+  Position RMSE Z (mm): 0.134814
+  Position error L2 mean / median / p95 / max (mm): 0.502227 / 0.402992 / 1.237926 / 2.170150
+
+Note: All models were trained and compared on one grouped train/validation/test split from this dataset only. Metrics do not assess cross-session or cross-run generalization.
+
+Legacy references:
+- @references/ANN.py
+- @references/real_model_learning.py
+- @references/utils_data.py
+- @references/multi_input.py
