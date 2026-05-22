@@ -68,6 +68,7 @@ MODE_EXPERIMENT_VISIBILITY: dict[str, set[str]] = {
         "aurora_grid_accuracy",
         "registration_validation",
         "pivot_validation",
+        "neutral_setpoint_drift_validation",
     },
     "single_segment": {
         "pretension_validation",
@@ -78,6 +79,7 @@ MODE_EXPERIMENT_VISIBILITY: dict[str, set[str]] = {
         "penprobe_chasing_demo",
         "registration_validation",
         "pivot_validation",
+        "neutral_setpoint_drift_validation",
         "aurora_grid_accuracy",
         "tracker_timing_validation",
         "servo_tracker_sync_validation",
@@ -90,6 +92,7 @@ MODE_EXPERIMENT_VISIBILITY: dict[str, set[str]] = {
         "two_segment_repeatability",
         "registration_validation",
         "pivot_validation",
+        "neutral_setpoint_drift_validation",
         "aurora_grid_accuracy",
         "tracker_timing_validation",
         "servo_tracker_sync_validation",
@@ -102,6 +105,7 @@ MODE_EXPERIMENT_VISIBILITY: dict[str, set[str]] = {
         "command_schedule_validation",
         "tracker_timing_validation",
         "servo_tracker_sync_validation",
+        "neutral_setpoint_drift_validation",
     },
 }
 
@@ -168,6 +172,7 @@ class ExperimentController:
     MANUAL_REFRESH_EXPERIMENTS = {
         "registration_validation",
         "pivot_validation",
+        "neutral_setpoint_drift_validation",
         "single_segment_repeatability",
         "workspace_repeatability_map",
         "pretension_validation",
@@ -760,6 +765,7 @@ class ExperimentController:
             "collect_pose_command_dataset",
             "registration_validation",
             "pivot_validation",
+            "neutral_setpoint_drift_validation",
             "aurora_grid_accuracy",
             "tracker_timing_validation",
             "servo_tracker_sync_validation",

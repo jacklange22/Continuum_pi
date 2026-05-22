@@ -20,6 +20,9 @@ from continuum_robot.experiments.calibration_validation import (
     PivotValidationConfig,
     RegistrationValidationConfig,
 )
+from continuum_robot.experiments.neutral_setpoint_drift_validation import (
+    NeutralSetpointDriftValidationConfig,
+)
 from continuum_robot.experiments.single_segment_repeatability import (
     LEGACY_CAPTURE_COUNT,
     LEGACY_TARGET_COUNT,
@@ -46,6 +49,7 @@ from continuum_robot.experiments.two_segment_startup_validation import DUAL_SEGM
 from continuum_robot.experiments.two_segment_collect_pose_dataset import (
     BLOCK_MESSAGE as TWO_SEGMENT_DATASET_BLOCK_MESSAGE,
     TwoSegmentCollectPoseDatasetConfig,
+    pose_fields_have_distal_robot_frame,
 )
 from continuum_robot.tracking.two_segment_roles import (
     resolve_two_segment_tracking_roles,
@@ -1074,6 +1078,61 @@ def evaluate_preflight(
                     )
                 )
 
+    elif experiment_name == "neutral_setpoint_drift_validation":
+        # Offline analysis of the neutral / zero history log; no live hardware
+        # required and registration / tracking state are irrelevant. The
+        # canonical log is data/calibration/neutral_zero_log.jsonl; the GUI
+        # selection page populates ``log_paths`` from there + any archived
+        # logs under data/calibration/neutral_zero_log_history/.
+        config = NeutralSetpointDriftValidationConfig.from_dict(payload)
+        checks.append(_info("tracking_state", "Tracking", "Neutral setpoint drift validation is an offline analysis. Live tracking is not required."))
+        checks.append(_info("mode", "Run Mode", "Reads the append-only neutral / zero history log written by every neutral / pretension capture."))
+        checks.append(_info("registration", "Registration", "Neutral setpoint drift validation does not require live registration state."))
+        if not config.log_paths:
+            # Empty log_paths means "use the canonical project log at runtime".
+            # We just need to check that file exists for a useful preflight.
+            canonical = project_root / "data" / "calibration" / "neutral_zero_log.jsonl"
+            if not canonical.exists():
+                checks.append(
+                    _blocked(
+                        "log_paths",
+                        "Selected Logs",
+                        "No log selected and the canonical "
+                        "data/calibration/neutral_zero_log.jsonl does not exist yet. "
+                        "Capture a neutral or accept a pretension to populate the log.",
+                    )
+                )
+            else:
+                checks.append(
+                    _ok(
+                        "log_paths",
+                        "Selected Logs",
+                        "Canonical neutral-zero history log will be analyzed offline.",
+                    )
+                )
+        else:
+            missing = [
+                str(_resolve_repo_path(project_root, raw_path))
+                for raw_path in config.log_paths
+                if not _resolve_repo_path(project_root, raw_path).exists()
+            ]
+            if missing:
+                checks.append(
+                    _blocked(
+                        "log_paths",
+                        "Selected Logs",
+                        f"Some selected logs are missing: {', '.join(missing[:3])}",
+                    )
+                )
+            else:
+                checks.append(
+                    _ok(
+                        "log_paths",
+                        "Selected Logs",
+                        f"{len(config.log_paths)} neutral-zero history log(s) will be analyzed offline.",
+                    )
+                )
+
     elif experiment_name == "collect_pose_command_dataset":
         config = CollectPoseCommandDatasetConfig.from_dict(payload)
         no_tracker_servo_only = bool(
@@ -1455,6 +1514,19 @@ def evaluate_preflight(
         else:
             checks.append(_ok("operating_mode", "Operating Mode", "dual_segment two-segment dataset mode is selected."))
         checks.append(_physical_assembly_check(operating_context))
+        assembly = dict(getattr(operating_context, "physical_assembly", {}) or {})
+        assembly_confirmed = bool(
+            config.physical_assembly_confirmed_by_operator
+            or assembly.get("confirmed_by_operator", False)
+        )
+        if not servo_only_override and not assembly_confirmed:
+            checks.append(
+                _blocked(
+                    "physical_assembly_confirmation",
+                    "Bottom/Top Confirmation",
+                    "Trusted two-segment dataset collection requires operator confirmation of the bottom/top physical assembly.",
+                )
+            )
         checks.append(_baud_advisory_check(settings))
         if expected_ids != [1, 2, 3, 4, 5, 6, 7, 8] or commanded_ids != expected_ids:
             checks.append(
@@ -1526,7 +1598,27 @@ def evaluate_preflight(
                 )
             else:
                 available_roles = set(str(role) for role in list(role_resolution.get("available_roles", []) or []))
-                if "distal_tip" in available_roles and "intermediate_segment" not in available_roles:
+                pose_fields = {
+                    "pose_in_robot_frame": dict(role_resolution.get("pose_in_robot_frame", {}) or {})
+                }
+                has_distal_robot_frame = pose_fields_have_distal_robot_frame(pose_fields)
+                if not has_distal_robot_frame and not servo_only_override:
+                    checks.append(
+                        _blocked(
+                            "tracking_roles",
+                            "Two-Segment Pose Roles",
+                            "distal_tip is tracked, but no live robot-frame distal_tip pose is available. Load an accepted registration/runtime-tip path before collecting training-intended data.",
+                        )
+                    )
+                elif not has_distal_robot_frame:
+                    checks.append(
+                        _warning(
+                            "tracking_roles",
+                            "Two-Segment Pose Roles",
+                            "distal_tip is tracked, but no robot-frame distal_tip pose is available; servo-only/dry-run output will be marked not trainable.",
+                        )
+                    )
+                elif "distal_tip" in available_roles and "intermediate_segment" not in available_roles:
                     checks.append(
                         _warning(
                             "tracking_roles",
