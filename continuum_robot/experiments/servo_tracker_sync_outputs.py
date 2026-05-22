@@ -78,36 +78,59 @@ def _tracker_signed_projection_series(
     maximum variance of the tracker translation across non-warmup samples;
     the projection's sign is aligned with the supplied servo reference (if
     provided) so positive servo travel maps to positive tracker excursion.
+
+    Important: this samples a SINGLE coordinate frame for the whole series.
+    Earlier revisions silently fell back from robot-frame tip to
+    tracker-frame tool position when the robot-frame tip was missing on a
+    given sample; the resulting frame jumps were ~50 mm coordinate
+    offsets, not real motion, and the PCA principal axis would lock onto
+    them. If the preferred frame is missing for >50% of analyzed samples
+    we fall back to the alternative frame for the whole run, never within
+    it.
     """
     primary_tool = str(requested_tool_ids[0]) if requested_tool_ids else "0A"
-    positions: list[np.ndarray] = []
-    times: list[float] = []
-    source_label = "unavailable"
-    for sample in samples:
-        extra = dict(getattr(sample, "extra", {}) or {})
-        if str(extra.get("record_kind", "")).strip().lower() != "tracker_timing":
-            continue
-        if bool(extra.get("warmup_discarded", False)):
-            continue
-        position_mm = None
-        if prefer_robot_frame_tip:
-            position_mm, frame_name = extract_tip_or_tool_position_mm(
-                sample, tool_id=primary_tool, prefer_robot_frame=True,
-            )
-            if position_mm is not None and frame_name == "robot":
-                source_label = "robot tip"
-        if position_mm is None:
-            for tool_id in requested_tool_ids:
-                position_mm, _ = extract_tip_or_tool_position_mm(
-                    sample, tool_id=str(tool_id), prefer_robot_frame=False,
+
+    def _collect(prefer_robot: bool) -> tuple[list[np.ndarray], list[float], str]:
+        kept_positions: list[np.ndarray] = []
+        kept_times: list[float] = []
+        label = "unavailable"
+        for sample in samples:
+            extra = dict(getattr(sample, "extra", {}) or {})
+            if str(extra.get("record_kind", "")).strip().lower() != "tracker_timing":
+                continue
+            if bool(extra.get("warmup_discarded", False)):
+                continue
+            if prefer_robot:
+                position_mm, frame_name = extract_tip_or_tool_position_mm(
+                    sample, tool_id=primary_tool, prefer_robot_frame=True,
                 )
-                if position_mm is not None:
-                    source_label = f"tool {tool_id} (tracker frame)"
-                    break
-        if position_mm is None:
-            continue
-        positions.append(np.asarray(position_mm, dtype=float))
-        times.append(float(sample.monotonic_time_s))
+                if position_mm is None or frame_name != "robot":
+                    continue  # do not mix frames; skip if robot-frame tip absent
+                label = "robot tip"
+            else:
+                position_mm, _ = extract_tip_or_tool_position_mm(
+                    sample, tool_id=primary_tool, prefer_robot_frame=False,
+                )
+                if position_mm is None:
+                    continue
+                label = f"tool {primary_tool} (tracker frame)"
+            kept_positions.append(np.asarray(position_mm, dtype=float))
+            kept_times.append(float(sample.monotonic_time_s))
+        return kept_positions, kept_times, label
+
+    positions, times, source_label = ([], [], "unavailable")
+    if prefer_robot_frame_tip:
+        positions, times, source_label = _collect(prefer_robot=True)
+        # Also count total candidates so we can decide whether to fall back
+        # to the tracker-frame source. We use 50% coverage as the cutoff: if
+        # robot-frame tip is present on most samples, stay with it; if not,
+        # the tracker-frame tool gives a denser and more representative
+        # series.
+        tracker_positions, tracker_times, tracker_label = _collect(prefer_robot=False)
+        if len(positions) < 0.5 * len(tracker_positions):
+            positions, times, source_label = tracker_positions, tracker_times, tracker_label
+    else:
+        positions, times, source_label = _collect(prefer_robot=False)
 
     if not positions:
         return [], source_label
@@ -359,9 +382,9 @@ def _write_servo_thesis_02_motion_correspondence(
 
     with report_style() as plt:
         fig, (ax_top, ax_bot) = plt.subplots(
-            2, 1, figsize=(7.6, 5.2), sharex=True, constrained_layout=False,
+            2, 1, figsize=(8.0, 5.6), sharex=True, constrained_layout=False,
         )
-    fig.subplots_adjust(left=0.10, right=0.97, top=0.88, bottom=0.14, hspace=0.20)
+    fig.subplots_adjust(left=0.14, right=0.97, top=0.87, bottom=0.14, hspace=0.30)
 
     if not servo_signal and not tracker_signal:
         ax_top.text(0.5, 0.5, "No motion data available",
@@ -394,10 +417,13 @@ def _write_servo_thesis_02_motion_correspondence(
 
     # Light vertical guides at each servo command transition, on both axes,
     # so the eye can read "the tip moved when the command changed."
+    # Slightly darker than the grid colour so they are visible against the
+    # white panel background but still stay in the visual background.
+    transition_guide_color = "#94a3b8"
     for ax in (ax_top, ax_bot):
         for transition_t in command_times_rel:
-            ax.axvline(transition_t, color=color("grid"),
-                       linewidth=0.8, alpha=0.9, zorder=1)
+            ax.axvline(transition_t, color=transition_guide_color,
+                       linewidth=0.9, alpha=0.55, zorder=1)
         ax.axhline(0.0, color=color("axis"), linewidth=0.6, alpha=0.45, zorder=1)
 
     if servo_t.size:
@@ -421,8 +447,11 @@ def _write_servo_thesis_02_motion_correspondence(
         xlabel=f"Time in {window_end - window_start:.1f} s window  (s)",
         ylabel="Tracker displacement (mm, signed)",
     )
+    # source_label already ends with " (principal axis)" — strip that for the
+    # heading so the panel title isn't "(principal axis) ... (principal axis)".
+    source_for_title = source_label.replace(" (principal axis)", "").strip()
     ax_bot.set_title(
-        f"Tracker tip  (signed projection on principal axis, source: {source_label})",
+        f"Tracker tip  (signed, projected on principal motion axis — source: {source_for_title})",
         loc="left", pad=4, fontsize=11, fontweight="bold",
     )
 

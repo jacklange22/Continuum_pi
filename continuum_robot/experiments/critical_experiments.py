@@ -1736,7 +1736,9 @@ def capture_grid_measurement_from_snapshot(
         raise RuntimeError(f"Tool {tool_id} translation is unavailable.")
     if tool.quaternion_wxyz is None:
         raise RuntimeError(f"Tool {tool_id} orientation is unavailable.")
-    if str(tool.tracking_state).lower() not in {"valid", "tracking", "enabled"}:
+    if tool.valid is False:
+        raise RuntimeError(f"Tool {tool_id} is invalid for capture.")
+    if str(tool.tracking_state).lower() not in {"tracked", "valid", "tracking", "enabled", "ok", "visible"}:
         raise RuntimeError(f"Tool {tool_id} is not valid for capture ({tool.tracking_state}).")
 
     position_source = "tip"

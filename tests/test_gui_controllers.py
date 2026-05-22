@@ -3519,6 +3519,55 @@ def test_grid_accuracy_page_captures_labeled_points_and_updates_preview(tmp_path
     assert page.capture_summary_widget._pairs_signature is not None
 
 
+def test_grid_accuracy_live_capture_accepts_tracked_tool_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: the tracking service reports visible tools as ``tracked``.
+
+    Preflight accepted that state, but the page-side Capture Selected Point
+    path used to reject it as not valid, so the button appeared to do nothing
+    during real Aurora grid runs.
+    """
+    from continuum_robot.services.models import ServiceHealthSnapshot, ToolTrackingSnapshot, TrackingSnapshot
+
+    _app()
+    controller = _experiment_controller(tmp_path)
+    tab = ExperimentTab(controller)
+    controller.select_experiment("aurora_grid_accuracy")
+    controller.set_config_value("dry_run", False)
+    controller.set_config_value("use_tip_calibration", False)
+    controller.set_config_value("dimensions", [2, 2])
+    controller.set_config_value("samples_per_point", 2)
+
+    snapshot = TrackingSnapshot(
+        health=ServiceHealthSnapshot(name="tracking", health="healthy", state="tracking", status="ok"),
+        connection_state="connected",
+        canonical_state="streaming_healthy",
+        tracker_data_age_s=0.01,
+        tracker_data_stale=False,
+        tools={
+            "0B": ToolTrackingSnapshot(
+                tool_id="0B",
+                present=True,
+                valid=True,
+                tracking_state="tracked",
+                translation_mm=(10.0, 20.0, 30.0),
+                quaternion_wxyz=(1.0, 0.0, 0.0, 0.0),
+                frame_number=123,
+            )
+        },
+    )
+    monkeypatch.setattr(controller.tracking_service, "get_snapshot", lambda: snapshot)
+
+    tab.update(controller.refresh())
+    page = tab._page_for("aurora_grid_accuracy")
+    page.capture_selected_point()
+
+    captured_points = controller.get_config_value("captured_points", [])
+    assert len(captured_points) == 1
+    assert len(captured_points[0]["raw_samples"]) == 2
+    assert captured_points[0]["raw_samples"][0]["tracking_state"] == "tracked"
+    assert "capture failed" not in page.capture_status_text.toPlainText().lower()
+
+
 def test_grid_accuracy_page_shows_partial_status_and_selected_point_summary(tmp_path: Path) -> None:
     _app()
     controller = _experiment_controller(tmp_path)

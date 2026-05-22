@@ -980,8 +980,9 @@ def test_tracker_timing_validation_experiment_writes_canonical_outputs_and_summa
     assert result.summary.experiment_metrics["unique_frame_count"] == 1
     assert result.summary.experiment_metrics["requested_tool_ids"] == ["0A", "0B"]
     assert result.summary.experiment_metrics["servo_sync"]["enabled"] is False
-    assert result.paths.output_dir.joinpath("thesis_01_cycle_time_distribution.png").exists()
-    assert result.paths.output_dir.joinpath("thesis_02_stage_time_budget.png").exists()
+    assert result.paths.output_dir.joinpath("thesis_01_rate_vs_ceiling.png").exists()
+    assert result.paths.output_dir.joinpath("thesis_02_inter_frame_interval.png").exists()
+    assert result.paths.output_dir.joinpath("thesis_03_cycle_time_budget.png").exists()
     assert result.paths.output_dir.joinpath("debug.json").exists()
     for removed in [
         "aurora_timing_histogram.png",
@@ -989,6 +990,14 @@ def test_tracker_timing_validation_experiment_writes_canonical_outputs_and_summa
         "aurora_timing_timeseries.png",
         "aurora_timing_summary.txt",
         "aurora_timing_sync_offsets.png",
+        # Pre-thesis-grade tracker artifacts: replaced by the 3 figures above.
+        "thesis_01_cycle_time_distribution.png",
+        "thesis_02_stage_time_budget.png",
+        "tracker_inter_frame_interval_histogram.png",
+        "tracker_unique_frame_rate_over_time.png",
+        "tracker_duplicate_invalid_timeline.png",
+        "tracker_polling_vs_unique_frame_rate.png",
+        "tracker_valid_pose_rate_over_time.png",
     ]:
         assert not result.paths.output_dir.joinpath(removed).exists(), f"deprecated tracker_timing artifact should be gone: {removed}"
     debug_payload = json.loads((result.paths.output_dir / "debug.json").read_text(encoding="utf-8"))
@@ -1049,8 +1058,9 @@ def test_tracker_timing_validation_experiment_outputs_do_not_crash_when_optional
     )
 
     assert result.success is True
-    assert result.paths.output_dir.joinpath("thesis_01_cycle_time_distribution.png").exists()
-    assert result.paths.output_dir.joinpath("thesis_02_stage_time_budget.png").exists()
+    assert result.paths.output_dir.joinpath("thesis_01_rate_vs_ceiling.png").exists()
+    assert result.paths.output_dir.joinpath("thesis_02_inter_frame_interval.png").exists()
+    assert result.paths.output_dir.joinpath("thesis_03_cycle_time_budget.png").exists()
     assert result.paths.output_dir.joinpath("debug.json").exists()
     assert result.summary.experiment_metrics["error_sample_count"] == 1
 
