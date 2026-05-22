@@ -1,0 +1,31 @@
+# Continuous dynamic modeling dataset run.
+#
+# This experiment drives the robot through a bounded smooth random tendon
+# trajectory while continuously logging synchronized servo command, servo
+# telemetry, and tracker frames. It is separate from the quasi-static
+# collect_pose_command_dataset workflow.
+#
+# Defaults below match the 30 s "smoke" rung of the validation ladder. Raise
+# duration and tick caps for the 5 min / 30 min / 2 hr rungs after each
+# previous rung succeeds.
+
+duration_s: 30.0
+target_sample_rate_hz: 20.0
+command_update_rate_hz: 5.0
+max_tick_delta_from_start: 50
+max_tick_delta_hard_cap: 600
+max_step_ticks_per_update: 5
+random_seed: 0
+servo_ids: []  # empty => use the active segment's commanded servos
+require_tracker: true
+return_to_start_at_end: true
+max_tracker_age_ms: 75.0
+max_servo_age_ms: 100.0
+tracker_poll_interval_s: 0.005
+servo_telemetry_interval_s: 0.03
+trajectory_smoothing: 0.35
+tracker_tool_id: "0A"
+dry_run: false
+allow_lower_trust_runtime_tip: false
+timeout_s: 0.0
+run_label: ""

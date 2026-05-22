@@ -67,6 +67,8 @@ _WORKFLOW_ALIASES: dict[str, str] = {
     "modeling_platform": WORKFLOW_MODELING_DATASET,
     "two_segment_collect_pose_command_dataset": WORKFLOW_MODELING_DATASET,
     "two_segment_modeling": WORKFLOW_MODELING_DATASET,
+    "dynamic_modeling_dataset": WORKFLOW_MODELING_DATASET,
+    "dynamic_modeling": WORKFLOW_MODELING_DATASET,
     "two_segment_repeatability": WORKFLOW_REPEATABILITY,
     WORKFLOW_TRANSFORM_CHAIN_VALIDATION: WORKFLOW_TRANSFORM_CHAIN_VALIDATION,
     "transform_chain": WORKFLOW_TRANSFORM_CHAIN_VALIDATION,

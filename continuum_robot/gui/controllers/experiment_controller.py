@@ -74,6 +74,7 @@ MODE_EXPERIMENT_VISIBILITY: dict[str, set[str]] = {
         "single_segment_repeatability",
         "workspace_repeatability_map",
         "collect_pose_command_dataset",
+        "dynamic_modeling_dataset",
         "penprobe_chasing_demo",
         "registration_validation",
         "pivot_validation",
@@ -97,6 +98,7 @@ MODE_EXPERIMENT_VISIBILITY: dict[str, set[str]] = {
     },
     "parallel_single": {
         "collect_pose_command_dataset",
+        "dynamic_modeling_dataset",
         "command_schedule_validation",
         "tracker_timing_validation",
         "servo_tracker_sync_validation",
