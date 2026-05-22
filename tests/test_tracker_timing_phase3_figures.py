@@ -71,20 +71,35 @@ def _metrics() -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def test_inter_frame_interval_histogram_renders(tmp_path: Path) -> None:
-    path = tmp_path / "iface.png"
-    outputs._write_tracker_inter_frame_interval_histogram(
+def test_thesis_01_frame_interval_histogram_renders(tmp_path: Path) -> None:
+    """Headline figure 1 is now a SIMPLE inter-frame interval histogram."""
+    path = tmp_path / "frame_interval.png"
+    outputs._write_tracker_thesis_01_frame_interval_histogram(
         path=path, tracker_records=_make_records(), metrics=_metrics(),
     )
     _assert_real_png(path)
 
 
-def test_inter_frame_interval_histogram_handles_empty(tmp_path: Path) -> None:
-    path = tmp_path / "iface_empty.png"
-    outputs._write_tracker_inter_frame_interval_histogram(
+def test_thesis_01_frame_interval_histogram_handles_empty(tmp_path: Path) -> None:
+    path = tmp_path / "frame_interval_empty.png"
+    outputs._write_tracker_thesis_01_frame_interval_histogram(
         path=path, tracker_records=[], metrics=_metrics(),
     )
     _assert_real_png(path)
+
+
+def test_thesis_01_frame_interval_minimal_reference_set(tmp_path: Path) -> None:
+    """Operator wanted the figure SIMPLE: just histogram + median +
+    Aurora 25ms ceiling. No CDF / twin axis, no p95/p99 lines crowding
+    the chart. Checks code patterns, not docstring text."""
+    import inspect
+
+    src = inspect.getsource(outputs._write_tracker_thesis_01_frame_interval_histogram)
+    # Strip docstring (so the word "CDF" in the explanatory comment doesn't
+    # trip the check). Walk the function body only.
+    body = src.split('"""', 2)[-1]
+    assert ".twinx(" not in body, "thesis_01 must stay a single-axis histogram"
+    assert "percentile(" not in body, "thesis_01 must not plot any percentile lines"
 
 
 def test_unique_frame_rate_over_time_renders(tmp_path: Path) -> None:
@@ -103,44 +118,35 @@ def test_unique_frame_rate_over_time_handles_empty(tmp_path: Path) -> None:
     _assert_real_png(path)
 
 
-def test_duplicate_invalid_timeline_renders(tmp_path: Path) -> None:
-    path = tmp_path / "dup.png"
-    outputs._write_tracker_duplicate_invalid_timeline(
-        path=path, tracker_records=_make_records(), metrics=_metrics(),
+def test_writer_no_longer_emits_duplicate_invalid_timeline(tmp_path: Path) -> None:
+    """Operator dropped the duplicate/invalid timeline figure from the
+    output contract (it nearly always rendered empty on a clean run, and
+    the counts are still in debug.json + summary metrics)."""
+    from continuum_robot.experiments.schemas import (
+        ExperimentMetadata, ExperimentSummary,
     )
-    _assert_real_png(path)
-
-
-def test_duplicate_invalid_timeline_handles_empty(tmp_path: Path) -> None:
-    path = tmp_path / "dup_empty.png"
-    outputs._write_tracker_duplicate_invalid_timeline(
-        path=path, tracker_records=[], metrics=_metrics(),
+    metadata = ExperimentMetadata(
+        schema_version="1.0", experiment_name="tracker_timing_validation",
+        run_id="dropped_fig_test", timestamp_utc="2026-05-20T00:00:00Z",
+        git_commit="abc", backend_info={"mock_mode": True},
+        registration_info={}, config_used={},
     )
-    _assert_real_png(path)
-
-
-def test_duplicate_invalid_timeline_clean_run_uses_success_card(tmp_path: Path) -> None:
-    """When the run had records but ZERO duplicates and ZERO invalid frames,
-    the writer must render a clean success card, not an empty scatter on a
-    meaningless ±0.05 s axis.
-
-    The success-card path is a code branch reached only when records exist
-    AND there are no duplicate/invalid events; previously this fell through
-    to the scatter writer and produced an unreadable empty figure.
-    """
-    records = _make_records(n=60)
-    for rec in records:
-        rec["is_duplicate_frame"] = False
-        rec["tool_validity"] = {"0A": "tracked"}
-    path = tmp_path / "dup_clean.png"
-    outputs._write_tracker_duplicate_invalid_timeline(
-        path=path, tracker_records=records, metrics=_metrics(),
+    summary = ExperimentSummary(
+        schema_version="1.0", experiment_name="tracker_timing_validation",
+        run_id="dropped_fig_test", success=True,
+        sample_counts={"total": 0}, dropped_frames=0, invalid_transforms=0,
+        stage_pass_fail={"setup": "passed", "precheck": "passed",
+                         "execute": "passed", "finalize": "passed"},
+        status="success", experiment_metrics=_metrics(),
     )
-    _assert_real_png(path)
-    # Clean-run path must produce a real PNG (not the tiny placeholder).
-    assert path.stat().st_size > 5_000, (
-        "Clean-run PNG should be a real success card, not a placeholder"
+    paths = outputs.write_tracker_timing_outputs(
+        output_dir=tmp_path, metadata=metadata, summary=summary, samples=[],
     )
+    assert "duplicate_invalid_timeline_path" not in paths, (
+        "Figure dropped by operator; do not re-add to the output contract."
+    )
+    # Also confirm no stray PNG with that name was written.
+    assert not (tmp_path / "tracker_duplicate_invalid_timeline.png").exists()
 
 
 def test_polling_vs_unique_rate_summary_renders(tmp_path: Path) -> None:
@@ -183,10 +189,15 @@ def test_valid_pose_rate_over_time_handles_no_requested_tools(tmp_path: Path) ->
 # --------------------------------------------------------------------------- #
 
 
-def test_writer_returns_all_5_supplementary_paths(tmp_path: Path) -> None:
-    """write_tracker_timing_outputs must surface the 5 new figure paths
+def test_writer_returns_all_remaining_figure_paths(tmp_path: Path) -> None:
+    """write_tracker_timing_outputs must surface every emitted figure path
     in its return dict so a downstream caller (CLI, GUI summary) can find
-    them without scanning the directory."""
+    them without scanning the directory.
+
+    After the operator-requested simplification: thesis_01 (simple frame
+    interval histogram) + thesis_02 (stage breakdown) + 3 supplementary
+    figures. The old inter_frame_interval_histogram and
+    duplicate_invalid_timeline paths are intentionally absent."""
     from continuum_robot.experiments.schemas import (
         ExperimentMetadata,
         ExperimentSummary,
@@ -224,11 +235,19 @@ def test_writer_returns_all_5_supplementary_paths(tmp_path: Path) -> None:
         samples=[],
     )
     for key in (
-        "inter_frame_interval_histogram_path",
+        "thesis_01_path",
+        "thesis_02_path",
         "unique_frame_rate_over_time_path",
-        "duplicate_invalid_timeline_path",
         "polling_vs_unique_rate_path",
         "valid_pose_rate_over_time_path",
     ):
-        assert key in paths, f"Phase 3 figure path missing: {key}"
-        assert paths[key].exists(), f"Phase 3 figure not written: {key}"
+        assert key in paths, f"Figure path missing from writer return: {key}"
+        assert paths[key].exists(), f"Figure not written: {key}"
+    # Negative guard: dropped figures must NOT come back in the return dict.
+    for dropped_key in (
+        "inter_frame_interval_histogram_path",
+        "duplicate_invalid_timeline_path",
+    ):
+        assert dropped_key not in paths, (
+            f"Operator-dropped figure {dropped_key} reappeared in writer output."
+        )

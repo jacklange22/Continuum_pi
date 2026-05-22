@@ -191,13 +191,20 @@ def write_tracker_timing_outputs(*, output_dir: Path, metadata, summary, samples
     """
     output_dir = Path(output_dir)
     debug_json_path = output_dir / "debug.json"
-    thesis_01_path = output_dir / "thesis_01_cycle_time_distribution.png"
+    # thesis_01 is now a SIMPLE inter-frame interval histogram — the
+    # straight "how long does it take to get the next frame?" view.
+    # The CDF / cycle-time-vs-Aurora-ceiling combo is gone; the operator
+    # found it confusing and the same data is now plotted cleanly here.
+    thesis_01_path = output_dir / "thesis_01_frame_interval_histogram.png"
     thesis_02_path = output_dir / "thesis_02_stage_time_budget.png"
     # Phase-3 supplementary figures (operator-spec request). Live alongside
     # the headline thesis figures; each answers one question on its own.
-    iface_histogram_path = output_dir / "tracker_inter_frame_interval_histogram.png"
+    #
+    # Figure 3 (duplicate_invalid_timeline) was dropped by operator request:
+    # the run nearly always produces zero events so the figure is empty;
+    # the duplicate/invalid counts remain available in debug.json and in the
+    # summary metrics for anyone who wants them.
     unique_rate_path = output_dir / "tracker_unique_frame_rate_over_time.png"
-    dup_invalid_path = output_dir / "tracker_duplicate_invalid_timeline.png"
     rate_summary_path = output_dir / "tracker_polling_vs_unique_frame_rate.png"
     valid_pose_rate_path = output_dir / "tracker_valid_pose_rate_over_time.png"
 
@@ -215,20 +222,14 @@ def write_tracker_timing_outputs(*, output_dir: Path, metadata, summary, samples
         servo_records=servo_records,
     )
     for path, writer in [
-        (thesis_01_path, lambda: _write_tracker_thesis_01_cycle_distribution(
+        (thesis_01_path, lambda: _write_tracker_thesis_01_frame_interval_histogram(
             path=thesis_01_path, tracker_records=tracker_records, metrics=metrics,
         )),
         (thesis_02_path, lambda: _write_tracker_thesis_02_stage_breakdown(
             path=thesis_02_path, tracker_records=tracker_records, metrics=metrics,
         )),
-        (iface_histogram_path, lambda: _write_tracker_inter_frame_interval_histogram(
-            path=iface_histogram_path, tracker_records=tracker_records, metrics=metrics,
-        )),
         (unique_rate_path, lambda: _write_tracker_unique_frame_rate_over_time(
             path=unique_rate_path, tracker_records=tracker_records, metrics=metrics,
-        )),
-        (dup_invalid_path, lambda: _write_tracker_duplicate_invalid_timeline(
-            path=dup_invalid_path, tracker_records=tracker_records, metrics=metrics,
         )),
         (rate_summary_path, lambda: _write_tracker_polling_vs_unique_rate_summary(
             path=rate_summary_path, metrics=metrics,
@@ -245,9 +246,7 @@ def write_tracker_timing_outputs(*, output_dir: Path, metadata, summary, samples
         "debug_json_path": debug_json_path,
         "thesis_01_path": thesis_01_path,
         "thesis_02_path": thesis_02_path,
-        "inter_frame_interval_histogram_path": iface_histogram_path,
         "unique_frame_rate_over_time_path": unique_rate_path,
-        "duplicate_invalid_timeline_path": dup_invalid_path,
         "polling_vs_unique_rate_path": rate_summary_path,
         "valid_pose_rate_over_time_path": valid_pose_rate_path,
     }
@@ -309,146 +308,97 @@ def _hz_for_ms(value_ms: float) -> float | None:
     return 1000.0 / float(value_ms)
 
 
-def _write_tracker_thesis_01_cycle_distribution(
+def _write_tracker_thesis_01_frame_interval_histogram(
     *,
     path: Path,
     tracker_records: list[dict[str, Any]],
     metrics: dict[str, Any],
 ) -> None:
-    """Thesis figure 1: cycle-time distribution + CDF vs Aurora frame interval.
+    """Thesis figure 1: simple histogram of how long it takes to get each frame.
 
-    Answers "how fast and how consistent is the tracker poll loop?" in one
-    chart. Histogram (count) on left axis, cumulative fraction on right axis.
-    The 25 ms vertical line is the Aurora hardware frame interval — NOT a
-    pipeline target. Cycles shorter than 25 ms mean the loop is over-polling
-    a cached frame (duplicate frames likely); cycles longer mean the loop is
-    under-polling (Aurora frames will be missed). Observed mean, p95, p99
-    marked with vertical lines.
+    The plot answers ONE question: how long is the wall-clock gap between
+    consecutive tracker frames? That's the rate the rest of the system has
+    to plan around — every downstream consumer (sync experiments, modeling
+    dataset, control loop) is limited by it.
+
+    Deliberately minimal: histogram, one median reference line, one Aurora
+    25 ms reference line. No CDF, no p99 marker, no per-cycle stage colors.
+    Earlier versions stacked all of those on one axis and the operator
+    couldn't read the result. The detailed per-cycle / per-stage view lives
+    in thesis_02 (stage breakdown) and in debug.json.
     """
-    values = _filter_analyzed_cycle_times(tracker_records)
+    # Use the inter-frame interval (wall-clock gap between successive
+    # commits), not the per-cycle work time. "How long does it take to get
+    # a frame" is the gap between frames — that's what consumers feel.
+    commit_times_ns = sorted(
+        int(rec["sample_commit_monotonic_ns"])
+        for rec in tracker_records
+        if not rec.get("warmup_discarded")
+        and rec.get("sample_commit_monotonic_ns") is not None
+    )
+    intervals = [
+        float(later - earlier) / 1_000_000.0
+        for earlier, later in zip(commit_times_ns[:-1], commit_times_ns[1:])
+    ]
     fig, ax = create_figure(size="wide", constrained_layout=False)
-    # Reserve right margin for the legend so it never overlaps bars or
-    # reference lines. Title hugs the top; caption strip sits at the bottom.
-    # 0.70 gives room for the CDF axis ticks + ylabel + the legend block.
-    fig.subplots_adjust(left=0.075, right=0.70, top=0.88, bottom=0.22)
+    fig.subplots_adjust(left=0.085, right=0.97, top=0.88, bottom=0.20)
 
-    if not values:
-        ax.text(0.5, 0.5, "No analyzed tracker cycles available",
+    if not intervals:
+        ax.text(0.5, 0.5, "No analyzed frames available",
                 transform=ax.transAxes, ha="center", va="center")
-        style_axes(ax, xlabel="Total cycle time (ms)", ylabel="Cycle count")
-        fig.suptitle("Tracker Cycle Time Distribution vs Aurora Frame Interval",
+        style_axes(ax, xlabel="Time between frames (ms)", ylabel="Frame count")
+        fig.suptitle("How Long It Takes To Get Each Tracker Frame",
                      fontsize=13, fontweight="bold", x=0.04, ha="left")
         save_figure(fig, path)
         return
 
-    arr = np.asarray(values, dtype=float)
-    mean_ms = float(arr.mean())
-    p95_ms = float(np.percentile(arr, 95.0))
-    p99_ms = float(np.percentile(arr, 99.0))
-    # `_hz_for_ms(mean_ms)` is 1000/mean(ms), which is NOT the same as the
-    # mean of (1000/ms) and not the same as the (N-1)/wall_duration rate
-    # the GUI surfaces as `effective_loop_rate_hz`. We always prefer the
-    # canonical rate from metrics so the figure agrees with the GUI/summary.
-    effective_loop_rate_hz = metrics.get("effective_loop_rate_hz")
-    if effective_loop_rate_hz is None:
-        # Fall back to 1000/mean(ms) only if the canonical rate isn't on
-        # the metrics dict; explicit label tells the reader why.
-        effective_loop_rate_hz = _hz_for_ms(mean_ms) or 0.0
-        effective_rate_label = "1000/mean(ms)"
-    else:
-        effective_loop_rate_hz = float(effective_loop_rate_hz)
-        effective_rate_label = "(N-1)/wall"
-    # p95-equivalent rate (1000/p95_ms) is reported separately as a
-    # "what's the worst end of the distribution" indicator.
-    realized_p95_hz = _hz_for_ms(p95_ms) or 0.0
+    arr = np.asarray(intervals, dtype=float)
+    median_ms = float(np.median(arr))
+    delivered_hz = (1000.0 / median_ms) if median_ms > 0 else 0.0
 
-    x_min = max(0.0, float(arr.min()) * 0.95)
-    x_max = max(float(arr.max()) * 1.05, AURORA_THEORETICAL_INTERVAL_MS * 1.2)
-
-    # No shaded zone: the previous green "made 40 Hz budget" shade implied
-    # short cycles are good, which is misleading — short cycles indicate the
-    # loop is over-polling a cached frame. The 25 ms line (drawn below) and
-    # the caption strip explain the duality without the false-good shade.
-
+    # X-range always includes the 25 ms Aurora reference so the gap (or
+    # lack of gap) between hardware ceiling and observed delivery is
+    # visible at a glance.
+    x_lo = max(0.0, min(float(arr.min()) * 0.95, AURORA_THEORETICAL_INTERVAL_MS - 2.0))
+    x_hi = max(float(arr.max()) * 1.05, AURORA_THEORETICAL_INTERVAL_MS + 5.0)
     bin_count = max(20, min(60, int(np.sqrt(len(arr)) * 2)))
-    counts, bins, _patches = ax.hist(
-        arr, bins=bin_count, range=(x_min, x_max),
-        color=color("measured"), edgecolor="white", linewidth=0.6, alpha=0.85, zorder=2,
+    ax.hist(
+        arr, bins=bin_count, range=(x_lo, x_hi),
+        color=color("measured"), edgecolor="white", linewidth=0.6, alpha=0.9, zorder=2,
     )
 
-    # CDF overlay on twin y-axis
-    cdf_ax = ax.twinx()
-    sorted_vals = np.sort(arr)
-    cdf_y = np.arange(1, len(sorted_vals) + 1) / float(len(sorted_vals))
-    cdf_ax.plot(sorted_vals, cdf_y, color=color("reference"), linewidth=1.6, alpha=0.85, zorder=3, label="CDF")
-    cdf_ax.set_ylim(0.0, 1.05)
-    cdf_ax.set_ylabel("Cumulative fraction", color=color("reference"))
-    cdf_ax.tick_params(axis="y", colors=color("reference"))
-    cdf_ax.spines["top"].set_visible(False)
-    cdf_ax.spines["right"].set_color(color("reference"))
-
-    # Reference lines. The 25 ms line is the Aurora hardware frame interval
-    # (the rate at which the device actually produces fresh frames). It is
-    # NOT a pipeline target — labeling it as such would suggest shorter
-    # cycles are better, which is the opposite of the truth.
-    #
-    # We deliberately drop p99 from the chart (it's still in the caption)
-    # so the reference-line set stays at 3 — Aurora ceiling, mean, p95.
-    # Four vertical lines in a 1-axis figure crowd each other and read as
-    # noise rather than as references.
+    # Just two reference lines — the median (where the distribution sits)
+    # and the Aurora 25 ms hardware ceiling (what "as fast as possible"
+    # would look like).
     ax.axvline(
         AURORA_THEORETICAL_INTERVAL_MS,
         color=color("threshold"), linestyle="-", linewidth=1.6,
-        label=(
-            f"Aurora frame interval ({AURORA_THEORETICAL_INTERVAL_MS:.0f} ms = 40 Hz)"
-        ),
+        label=f"Aurora hardware ceiling ({AURORA_THEORETICAL_INTERVAL_MS:.0f} ms = 40 Hz)",
+        zorder=3,
+    )
+    ax.axvline(
+        median_ms,
+        color=color("fit"), linestyle="--", linewidth=1.6,
+        label=f"Median = {median_ms:.1f} ms  →  {delivered_hz:.1f} Hz delivered",
         zorder=4,
     )
-    ax.axvline(mean_ms, color=color("fit"), linestyle="--", linewidth=1.4,
-               label=f"Mean = {mean_ms:.1f} ms", zorder=4)
-    ax.axvline(p95_ms, color=color("rejected"), linestyle=":", linewidth=1.4,
-               label=f"p95 = {p95_ms:.1f} ms", zorder=4)
 
-    style_axes(ax, xlabel="Total cycle time (ms)", ylabel="Cycle count")
-    ax.set_xlim(x_min, x_max)
-    # Place legend OUTSIDE the plot area on the right so it never sits on
-    # top of the histogram peak or the reference lines. Anchor is right of
-    # the CDF axis (0.70) plus margin for its ticks + ylabel.
-    handles, labels = ax.get_legend_handles_labels()
-    cdf_handles, cdf_labels = cdf_ax.get_legend_handles_labels()
-    fig.legend(
-        handles + cdf_handles,
-        labels + cdf_labels,
-        loc="upper left",
-        bbox_to_anchor=(0.78, 0.86),
-        frameon=True, facecolor="white", edgecolor="#cbd5e1", framealpha=0.95,
-        fontsize=9,
-    )
+    style_axes(ax, xlabel="Time between frames (ms)", ylabel="Frame count")
+    ax.set_xlim(x_lo, x_hi)
+    ax.legend(loc="upper right", frameon=True, facecolor="white",
+              edgecolor="#cbd5e1", framealpha=0.95, fontsize=10)
 
-    fig.suptitle("Tracker Cycle Time Distribution vs Aurora Frame Interval",
+    fig.suptitle("How Long It Takes To Get Each Tracker Frame",
                  fontsize=13, fontweight="bold", x=0.04, ha="left")
 
-    duplicate_ratio = _safe_ratio(metrics.get("duplicate_frame_ratio"))
     fig.text(
         0.015, 0.02,
-        "  •  ".join(
-            _strip_empty([
-                f"Samples: {len(values)}",
-                # Canonical effective rate matches summary.json and the GUI
-                # `effective_loop_rate_hz` field. The p95-equivalent uses
-                # 1000/p95_ms to characterize the worst end of the
-                # distribution. Both rate definitions are spelled out so
-                # the reader can reproduce them.
-                f"Effective loop rate: {float(effective_loop_rate_hz):.1f} Hz "
-                f"[{effective_rate_label}]   ·   1000/p95 ms: {realized_p95_hz:.1f} Hz",
-                "Aurora hardware ceiling: 40 Hz (25 ms/frame). "
-                "Cycle < 25 ms → over-poll, expect duplicate frames; "
-                "cycle > 25 ms → under-poll, expect missed frames.",
-                f"Duplicate frames: {duplicate_ratio:.1f}%" if duplicate_ratio is not None else None,
-            ])
-        ),
-        fontsize=9, color=color("text"), ha="left", va="bottom",
-        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white", "edgecolor": color("grid"), "alpha": 0.94},
+        f"N = {len(intervals)} frame intervals   ·   "
+        f"min = {float(arr.min()):.1f} ms   ·   "
+        f"max = {float(arr.max()):.1f} ms",
+        fontsize=10, color=color("text"), ha="left", va="bottom",
+        bbox={"boxstyle": "round,pad=0.4", "facecolor": "white",
+              "edgecolor": color("grid"), "alpha": 0.94},
     )
     save_figure(fig, path)
 
