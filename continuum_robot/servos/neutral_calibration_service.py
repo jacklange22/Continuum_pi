@@ -17,6 +17,16 @@ from continuum_robot.experiments.dataset_io import canonical_timestamped_path
 
 SCHEMA_VERSION = 4
 
+# Append-only history log emitted every time a neutral / zero / manual
+# pretension state is written. Operators can plot the per-servo neutral
+# tick drift over time from this file (similar to how pivot-validation
+# runs are inspected) without scraping every archived snapshot. Each line
+# is a single JSON object — `jsonl` lets us tail the file and load with
+# pandas / numpy for drift analysis. Schema versioned so future readers
+# can fail fast on incompatible records.
+NEUTRAL_ZERO_LOG_SCHEMA_VERSION = "neutral_zero_log_v1"
+NEUTRAL_ZERO_LOG_FILENAME = "neutral_zero_log.jsonl"
+
 
 @dataclass
 class ServoCalibrationContext:
@@ -243,12 +253,30 @@ class NeutralCalibrationService:
         *,
         archive_root: Path | None = None,
         context: ServoCalibrationContext | None = None,
+        history_log_path: Path | None = None,
     ) -> None:
         project_root = Path(__file__).resolve().parents[2]
         self.path = path or (project_root / "config" / "neutral_setpoints.json")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.archive_root = archive_root or self._default_archive_root(self.path)
         self.archive_root.mkdir(parents=True, exist_ok=True)
+        # Append-only neutral/zero history log. Default location sits at
+        # ``data/calibration/neutral_zero_log.jsonl`` (one level above the
+        # archive root so operators can grep one file for drift analysis
+        # instead of opening every snapshot). Operators can override the
+        # path for tests; pass ``Path(os.devnull)`` to disable logging.
+        self.history_log_path = (
+            history_log_path
+            if history_log_path is not None
+            else self._default_history_log_path(self.path, self.archive_root)
+        )
+        if str(self.history_log_path) and str(self.history_log_path) != "":
+            try:
+                self.history_log_path.parent.mkdir(parents=True, exist_ok=True)
+            except (OSError, PermissionError):
+                # Best-effort: if we can't create the parent (e.g. test
+                # passed /dev/null), proceed and let the append step skip.
+                pass
         self.context = context or ServoCalibrationContext()
 
     def save_neutral_setpoints(
@@ -319,6 +347,18 @@ class NeutralCalibrationService:
         artifact.robot.update(dict(calibration_metadata or {}))
         artifact.source_format = "servo_calibration_v2"
         self.save_calibration_artifact(artifact)
+        # Append to the append-only neutral/zero history log so drift over
+        # time can be plotted later. Limited to servos whose neutral was
+        # actually updated in THIS call (i.e. the keys passed in).
+        self._append_neutral_zero_log_event(
+            event_type="neutral_captured",
+            servo_entries={
+                int(sid): artifact.servos[int(sid)]
+                for sid in setpoints_by_id
+                if int(sid) in artifact.servos
+            },
+            capture_source=str(capture_source) if capture_source else None,
+        )
 
     def save_servo_calibration(
         self,
@@ -392,6 +432,11 @@ class NeutralCalibrationService:
         artifact.updated_at_utc = timestamp
         artifact.robot = self._robot_metadata()
         self.save_calibration_artifact(artifact)
+        self._append_neutral_zero_log_event(
+            event_type="servo_calibration_saved",
+            servo_entries={int(servo_id): entry},
+            capture_source=existing.capture_source,
+        )
         return entry
 
     def save_pretension_result(
@@ -451,6 +496,11 @@ class NeutralCalibrationService:
         artifact.updated_at_utc = timestamp
         artifact.robot = self._robot_metadata()
         self.save_calibration_artifact(artifact)
+        self._append_neutral_zero_log_event(
+            event_type="pretension_result_saved",
+            servo_entries={int(servo_id): entry},
+            capture_source=entry.pretension_source,
+        )
         return entry
 
     def save_manual_pretension_state(
@@ -534,6 +584,13 @@ class NeutralCalibrationService:
         artifact.updated_at_utc = timestamp
         artifact.robot = self._robot_metadata()
         self.save_calibration_artifact(artifact)
+        self._append_neutral_zero_log_event(
+            event_type="manual_pretension_accepted" if accepted else "manual_pretension_captured",
+            servo_entries=saved_entries,
+            capture_source="manual",
+            operator_note=clean_note,
+            accepted=bool(accepted),
+        )
         return saved_entries
 
     def clear_manual_pretension_state(self, servo_ids: list[int]) -> list[int]:
@@ -716,6 +773,12 @@ class NeutralCalibrationService:
         artifact.updated_at_utc = timestamp
         artifact.robot = self._robot_metadata()
         self.save_calibration_artifact(artifact)
+        self._append_neutral_zero_log_event(
+            event_type="pretension_accepted",
+            servo_entries={int(servo_id): entry},
+            capture_source=entry.pretension_source,
+            accepted=True,
+        )
         return entry
 
     def _read_payload(self) -> dict[str, Any] | None:
@@ -1033,6 +1096,96 @@ class NeutralCalibrationService:
         if resolved.name == "neutral_setpoints.json" and resolved.parent.name == "config":
             return resolved.parent.parent / "data" / "calibration" / "servo_calibration"
         return resolved.parent / "history"
+
+    @staticmethod
+    def _default_history_log_path(neutral_path: Path, archive_root: Path) -> Path:
+        """Append-only JSONL history log for neutral / zero updates.
+
+        Default location: ``data/calibration/neutral_zero_log.jsonl`` (one
+        level above the per-snapshot archive root so a single file captures
+        every update across all manual / automatic capture paths). Falls
+        back to ``<archive_root>/neutral_zero_log.jsonl`` for non-standard
+        install layouts.
+        """
+        resolved_archive = Path(archive_root)
+        if resolved_archive.parent.exists() or resolved_archive.parent != resolved_archive:
+            return resolved_archive.parent / NEUTRAL_ZERO_LOG_FILENAME
+        return resolved_archive / NEUTRAL_ZERO_LOG_FILENAME
+
+    def _append_neutral_zero_log_event(
+        self,
+        *,
+        event_type: str,
+        servo_entries: dict[int, ServoCalibrationEntry],
+        capture_source: str | None = None,
+        operator_note: str | None = None,
+        accepted: bool | None = None,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Append one line to the neutral/zero history JSONL log.
+
+        Called from every write path that updates neutral, safe bounds, or
+        manual pretension state. The log is purely additive — drift over
+        time is plotted by streaming every record, grouping by servo, and
+        ordering by ``timestamp_utc``. See ``NEUTRAL_ZERO_LOG_SCHEMA_VERSION``
+        for the record schema.
+
+        Best-effort: if the file cannot be written (permission error,
+        invalid path, etc.) the operation is silently skipped — the caller's
+        primary write (the canonical ``neutral_setpoints.json``) has
+        already succeeded and we don't want a logging failure to surface
+        as a calibration error.
+        """
+        path = self.history_log_path
+        if path is None:
+            return
+        timestamp = _utc_now()
+        by_servo_record: dict[str, dict[str, Any]] = {}
+        for servo_id, entry in sorted(servo_entries.items()):
+            by_servo_record[str(int(servo_id))] = {
+                "neutral_setpoint": entry.neutral_setpoint,
+                "safe_min_tick": entry.safe_min_tick,
+                "safe_max_tick": entry.safe_max_tick,
+                "pretension_current_threshold_ma": entry.pretension_current_threshold_ma,
+                "pretension_final_position_tick": entry.pretension_final_position_tick,
+                "pretension_result_status": entry.pretension_result_status,
+                "pretension_source": entry.pretension_source,
+                "pretension_note": entry.pretension_note,
+                "pretension_completed_at_utc": entry.pretension_completed_at_utc,
+                "last_measured_current_ma": entry.last_measured_current_ma,
+                "tightening_rotation": entry.tightening_rotation,
+                "status": entry.status,
+                "valid": entry.valid,
+                "calibrated_at_utc": entry.calibrated_at_utc,
+            }
+        record: dict[str, Any] = {
+            "schema_version": NEUTRAL_ZERO_LOG_SCHEMA_VERSION,
+            "timestamp_utc": timestamp,
+            "event_type": str(event_type),
+            "capture_source": capture_source,
+            "operator_note": operator_note,
+            "accepted": accepted,
+            "active_segment_key": self.context.active_segment_key,
+            "active_segment_label": self.context.active_segment_label,
+            "active_segment_servo_ids": list(self.context.active_segment_servo_ids),
+            "operating_mode": self.context.robot_mode,
+            "robot_config_name": self.context.robot_config_name,
+            "mode_profile": self.context.mode_profile,
+            "servo_count": len(by_servo_record),
+            "by_servo": by_servo_record,
+        }
+        if extra:
+            for key, value in dict(extra).items():
+                record.setdefault(str(key), value)
+        try:
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, sort_keys=True))
+                fh.write("\n")
+        except (OSError, PermissionError):
+            # Logging failure must never bubble up — the primary calibration
+            # write already succeeded. Drift analysis will simply miss this
+            # event.
+            return
 
     @staticmethod
     def _is_legacy_neutral_payload(payload: dict[str, Any]) -> bool:
