@@ -28,6 +28,7 @@ from continuum_robot.experiments.framework import BaseExperiment, ExperimentHard
 from continuum_robot.experiments.plotting import color, create_figure, save_figure, style_axes
 from continuum_robot.experiments.schemas import ExperimentTimeseriesSample
 from continuum_robot.experiments.two_segment_collect_pose_dataset import (
+    _apply_top_routing_compensation,
     _effective_role_configs,
     _read_live_telemetry,
     _resolve_startup_ticks,
@@ -80,7 +81,11 @@ class TwoSegmentRepeatabilityConfig:
     top_outer_radius_cm: float = 0.20
     points_per_ring: int = 4
     repeat_visits: int = 3
-    settle_time_s: float = 1.5
+    # 2026-05-19: default settle bumped from 1.5 -> 2.0 s for the early
+    # two-segment bench-up. Aligned with the collect-pose default so both
+    # experiments give the tendons + tracker the same relaxation window
+    # before sampling a pose.
+    settle_time_s: float = 2.0
     samples_per_visit: int = 1
     max_tick_delta_from_startup: int = 320
     allow_servo_only_test_run: bool = True
@@ -93,6 +98,11 @@ class TwoSegmentRepeatabilityConfig:
     # The shared startup-tick resolver from the collect-pose experiment expects
     # these attributes. Repeatability runs are always live (no `dry_run`).
     dry_run: bool = False
+    # Same top-segment routing compensation as collect-pose. Repeatability
+    # commands at fixed bottom/top targets; without this flag the top servo
+    # would under-pull when the bottom is non-zero. Defaults True for the
+    # physical stacked rig; flip False only for independently routed tendons.
+    top_segment_tendon_routing_compensation: bool = True
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any] | None) -> "TwoSegmentRepeatabilityConfig":
@@ -106,7 +116,7 @@ class TwoSegmentRepeatabilityConfig:
             top_outer_radius_cm=max(0.0, float(payload.get("top_outer_radius_cm", 0.20))),
             points_per_ring=max(1, int(payload.get("points_per_ring", 4))),
             repeat_visits=max(1, int(payload.get("repeat_visits", 3))),
-            settle_time_s=max(0.0, float(payload.get("settle_time_s", 1.5))),
+            settle_time_s=max(0.0, float(payload.get("settle_time_s", 2.0))),
             samples_per_visit=max(1, int(payload.get("samples_per_visit", 1))),
             max_tick_delta_from_startup=max(0, int(payload.get("max_tick_delta_from_startup", 320))),
             allow_servo_only_test_run=bool(payload.get("allow_servo_only_test_run", True)),
@@ -121,6 +131,9 @@ class TwoSegmentRepeatabilityConfig:
             target_intermediate_rms_mm=(
                 None if payload.get("target_intermediate_rms_mm") in (None, "")
                 else float(payload.get("target_intermediate_rms_mm"))
+            ),
+            top_segment_tendon_routing_compensation=bool(
+                payload.get("top_segment_tendon_routing_compensation", True)
             ),
         )
 
@@ -412,17 +425,34 @@ class TwoSegmentRepeatabilityExperiment(BaseExperiment):
 
     def _issue_command(self, *, session: ExperimentSession, command: TwoSegmentCommand) -> dict[str, Any]:
         context = session.context.settings.robot.operating_context()
-        flat_cm = command.to_flat(context=context)
+        # User-intended flat command for the modeling/feature audit trail.
+        intended_flat_cm = command.to_flat(context=context)
+        # Compensated flat command for the actual servo write. See
+        # `_apply_top_routing_compensation` in collect-pose for the physical
+        # reasoning. Repeatability re-uses the helper so the bench sees
+        # identical actuator behavior across the two experiments.
+        if bool(self.config.top_segment_tendon_routing_compensation):
+            servo_flat_cm, compensation_info = _apply_top_routing_compensation(
+                intended_flat_cm, context=context,
+            )
+        else:
+            servo_flat_cm = list(intended_flat_cm)
+            compensation_info = {"applied": False, "reason": "disabled_by_config"}
         commanded_ids = [int(value) for value in context.commanded_servo_ids]
         startup_ticks = [int(self._startup_ticks_by_servo[servo_id]) for servo_id in commanded_ids]
-        goal_ticks = session.context.servo_service.mapper.to_goal_positions(flat_cm, startup_ticks)
+        goal_ticks = session.context.servo_service.mapper.to_goal_positions(servo_flat_cm, startup_ticks)
         goals_by_servo = {int(servo_id): int(goal) for servo_id, goal in zip(commanded_ids, goal_ticks)}
         result = {
             "success": True,
-            "requested_flat_command_cm": list(flat_cm),
+            "requested_flat_command_cm": list(intended_flat_cm),
+            "servo_flat_command_cm": list(servo_flat_cm),
+            "top_routing_compensation": dict(compensation_info),
             "goal_ticks_by_servo": {str(key): int(value) for key, value in sorted(goals_by_servo.items())},
         }
-        # Validate tick delta safety
+        # Validate tick delta safety on the COMPENSATED ticks: that is what
+        # the bus will actually receive, so that is what must respect the
+        # safety budget. Without this, a small intended top + large intended
+        # bottom could sail through the check and then exceed at write time.
         for servo_id, startup_tick, goal_tick in zip(commanded_ids, startup_ticks, goal_ticks):
             delta = abs(int(goal_tick) - int(startup_tick))
             if delta > int(self.config.max_tick_delta_from_startup):
@@ -523,6 +553,11 @@ class TwoSegmentRepeatabilityExperiment(BaseExperiment):
                 "run_trust_mode": str(run_trust_mode),
                 "pose_summary": pose_summary,
                 "physical_assembly": dict(context.metadata().get("physical_assembly") or {}),
+                # Audit trail for top-segment routing compensation. Matches
+                # the equivalent field in collect-pose so downstream analysis
+                # is uniform across the two experiments.
+                "servo_flat_command_cm": list(command_result.get("servo_flat_command_cm") or command.to_flat(context=context)),
+                "top_routing_compensation": dict(command_result.get("top_routing_compensation") or {}),
             },
         )
         return sample, pose_summary

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from continuum_robot.config.schemas import (
     CalibrationConfig,
     ExperimentConfig,
@@ -578,6 +580,192 @@ def test_two_segment_dataset_config_has_range_ramp_and_current_defaults() -> Non
     assert config.target_valid_sample_count == 10000
     assert config.current_warning_ma == 800
     assert config.sustained_overcurrent_ma == 1200
+
+
+def test_two_segment_dataset_config_default_settle_time_is_two_seconds() -> None:
+    """Policy 2026-05-19: settle_time_s default is 2.0 s (safer bench-up default)."""
+    config = TwoSegmentCollectPoseDatasetConfig.from_dict({})
+    assert config.settle_time_s == 2.0
+    explicit = TwoSegmentCollectPoseDatasetConfig.from_dict({"settle_time_s": 0.5})
+    assert explicit.settle_time_s == 0.5  # explicit override still wins
+
+
+def test_two_segment_dataset_config_top_routing_compensation_defaults_on() -> None:
+    """Policy 2026-05-19: top tendons route through bottom -> compensation default ON."""
+    config = TwoSegmentCollectPoseDatasetConfig.from_dict({})
+    assert config.top_segment_tendon_routing_compensation is True
+    disabled = TwoSegmentCollectPoseDatasetConfig.from_dict(
+        {"top_segment_tendon_routing_compensation": False}
+    )
+    assert disabled.top_segment_tendon_routing_compensation is False
+
+
+def test_top_routing_compensation_adds_bottom_to_top_per_tendon_index() -> None:
+    """When B=bottom, the top servos (1..4) receive top_intended + bottom_intended.
+
+    Convention is per-tendon-index across bottom/top. Tendon order within each
+    segment is [+X, +Y, -X, -Y]; index 0 of bottom maps to index 0 of top.
+    """
+    from continuum_robot.experiments.two_segment_collect_pose_dataset import (
+        _apply_top_routing_compensation,
+    )
+
+    settings = _settings()
+    # Match the bench default: B=bottom (servos 5..8), A=top (servos 1..4).
+    settings.robot.bottom_segment_key = "segment_b"
+    settings.robot.top_segment_key = "segment_a"
+    context = settings.robot.operating_context()
+
+    # commanded_servo_ids = [1..8]; index 0..3 = segment_a values, 4..7 = segment_b.
+    # With B=bottom: segment_b is bottom and gets pulled +0.5 on tendon[0].
+    # segment_a is top and intends +0.3 on tendon[0].
+    # Expected compensated top tendon[0] (servo 1) = 0.3 + 0.5 = 0.8.
+    intended_flat = [0.3, 0.0, 0.0, 0.0,  # segment_a (top) -- user intent
+                     0.5, 0.0, 0.0, 0.0]  # segment_b (bottom) -- user intent
+    compensated, info = _apply_top_routing_compensation(intended_flat, context=context)
+
+    assert info["applied"] is True
+    # Bottom servos (5..8) unchanged.
+    assert compensated[4:] == [0.5, 0.0, 0.0, 0.0]
+    # Top servos (1..4) get bottom contribution added per tendon index.
+    assert compensated[:4] == [0.8, 0.0, 0.0, 0.0]
+    # Provenance records what the bottom contributed to each top servo.
+    contrib = info["bottom_contribution_added_to_top_servo_cm"]
+    assert contrib == {"1": 0.5, "2": 0.0, "3": 0.0, "4": 0.0}
+    assert info["bottom_servo_ids"] == [5, 6, 7, 8]
+    assert info["top_servo_ids"] == [1, 2, 3, 4]
+
+
+def test_top_routing_compensation_respects_a_equals_bottom_assembly_swap() -> None:
+    """When A=bottom (legacy), top servos (5..8) get bottom (1..4) added per index."""
+    from continuum_robot.experiments.two_segment_collect_pose_dataset import (
+        _apply_top_routing_compensation,
+    )
+
+    settings = _settings()
+    settings.robot.bottom_segment_key = "segment_a"
+    settings.robot.top_segment_key = "segment_b"
+    context = settings.robot.operating_context()
+
+    # Bottom (segment_a, servos 1..4) intends +0.4 on tendon[1] (+Y).
+    # Top (segment_b, servos 5..8) intends +0.2 on tendon[1] (+Y).
+    # Expected compensated top servo 6 = 0.2 + 0.4 = 0.6.
+    intended_flat = [0.0, 0.4, 0.0, 0.0,  # segment_a (bottom)
+                     0.0, 0.2, 0.0, 0.0]  # segment_b (top)
+    compensated, info = _apply_top_routing_compensation(intended_flat, context=context)
+
+    assert info["applied"] is True
+    assert compensated[:4] == pytest.approx([0.0, 0.4, 0.0, 0.0])  # bottom unchanged
+    assert compensated[4:] == pytest.approx([0.0, 0.6, 0.0, 0.0])  # top got bottom +0.4 added at tendon[1]
+
+
+def test_top_routing_compensation_records_bus_command_in_sample_extra(tmp_path: Path) -> None:
+    """Live run records both intended and compensated commands so the audit trail is complete."""
+    settings = _settings()
+    settings.robot.bottom_segment_key = "segment_b"
+    settings.robot.top_segment_key = "segment_a"
+    settings.robot.physical_assembly_confirmed_by_operator = True
+    service = _servo_service(tmp_path, settings=settings)
+    _save_all8_startup(service)
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        service=service,
+        tracking_service=_FakeTrackingService(_tracking_snapshot(include_distal=True)),
+    )
+
+    result = runner.run_experiment(
+        EXPERIMENT_NAME,
+        config={
+            "dry_run": False,
+            "allow_servo_only_test_run": True,
+            "run_trust_mode": "servo_only",
+            "schedule_type": "bottom_only_sweep",
+            "max_segment_displacement_cm": 0.05,
+            "samples_per_pattern": 1,
+            "capture_repeats": 1,
+            "settle_time_s": 0.0,  # keep the test fast
+            "top_segment_tendon_routing_compensation": True,
+        },
+    )
+
+    assert result.success is True
+    # Find a sample where bottom is non-zero (so compensation should fire).
+    samples = [
+        json.loads(line)
+        for line in result.paths.samples_path.read_text(encoding="utf-8").splitlines()
+    ]
+    nonzero = [
+        s for s in samples
+        if any(abs(v) > 1e-9 for v in s["extra"]["ordered_8_displacements_cm"][4:])
+    ]
+    assert nonzero, "bottom_only_sweep with B=bottom must produce non-zero segment_b values"
+    sample = nonzero[0]
+    intended = sample["extra"]["ordered_8_displacements_cm"]
+    compensated = sample["extra"]["servo_flat_command_cm"]
+    info = sample["extra"]["top_routing_compensation"]
+    # User-intended top (servos 1..4) is all zeros for bottom_only_sweep.
+    assert intended[:4] == [0.0, 0.0, 0.0, 0.0]
+    # But the bus saw compensated values equal to the bottom values per index.
+    assert compensated[:4] == intended[4:]
+    # Bottom (servos 5..8) is unchanged.
+    assert compensated[4:] == intended[4:]
+    assert info["applied"] is True
+    assert info["bottom_servo_ids"] == [5, 6, 7, 8]
+    assert info["top_servo_ids"] == [1, 2, 3, 4]
+
+
+def test_top_routing_compensation_disabled_by_config_passes_through(tmp_path: Path) -> None:
+    """Operator can disable compensation for independently-routed-tendon benches."""
+    from continuum_robot.experiments.two_segment_collect_pose_dataset import (
+        _apply_top_routing_compensation,
+    )
+
+    settings = _settings()
+    context = settings.robot.operating_context()
+    intended_flat = [0.3, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0]
+    # When called directly with normal assembly, helper always applies; the
+    # disable lives at the experiment config layer.
+    compensated, info = _apply_top_routing_compensation(intended_flat, context=context)
+    assert info["applied"] is True
+    # Now simulate the disable path by setting the config flag false and
+    # checking the sample's compensated == intended (no change).
+    settings.robot.physical_assembly_confirmed_by_operator = True
+    service = _servo_service(tmp_path, settings=settings)
+    _save_all8_startup(service)
+    runner = _runner(
+        tmp_path,
+        settings=settings,
+        service=service,
+        tracking_service=_FakeTrackingService(_tracking_snapshot(include_distal=True)),
+    )
+    result = runner.run_experiment(
+        EXPERIMENT_NAME,
+        config={
+            "dry_run": False,
+            "allow_servo_only_test_run": True,
+            "run_trust_mode": "servo_only",
+            "schedule_type": "bottom_only_sweep",
+            "max_segment_displacement_cm": 0.05,
+            "samples_per_pattern": 1,
+            "capture_repeats": 1,
+            "settle_time_s": 0.0,
+            "top_segment_tendon_routing_compensation": False,  # OPT OUT
+        },
+    )
+    assert result.success is True
+    samples = [
+        json.loads(line)
+        for line in result.paths.samples_path.read_text(encoding="utf-8").splitlines()
+    ]
+    # Without compensation, servo_flat_command_cm matches ordered_8_displacements_cm.
+    for sample in samples:
+        intended = sample["extra"]["ordered_8_displacements_cm"]
+        compensated = sample["extra"]["servo_flat_command_cm"]
+        assert compensated == intended
+        info = sample["extra"]["top_routing_compensation"]
+        assert info["applied"] is False
+        assert info["reason"] == "disabled_by_config"
 
 
 def test_two_segment_schedule_supports_bottom_only_sweep_with_role_swap() -> None:

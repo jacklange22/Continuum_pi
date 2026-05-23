@@ -80,7 +80,27 @@ class TwoSegmentCollectPoseDatasetConfig:
     max_tick_delta_from_startup: int = 320
     samples_per_pattern: int = 1
     capture_repeats: int = 1
-    settle_time_s: float = 0.0
+    # 2026-05-19 default: 2.0 s settle between commanded patterns. Tendons +
+    # constant-curvature mechanics have a few hundred ms of relaxation time
+    # after each new goal-position write; 2 s is conservatively above that
+    # window and gives the tracker time to converge on a stable pose. Operator
+    # can shorten in config when throughput matters (random_babble / large
+    # workspace_coverage) but the default is the safe-bench-day value.
+    settle_time_s: float = 2.0
+    # Top-segment tendon routing compensation. When True (default), every
+    # actuator-level write adds the bottom-segment per-tendon command to the
+    # top-segment per-tendon command before computing goal ticks. This is the
+    # physical reality of a stacked two-segment continuum robot whose top
+    # tendons route through the bottom segment: bottom-segment displacement
+    # drags top tendons by the same amount, so the top servo must pull
+    # `top_intended + bottom_intended` to make the top achieve its intended
+    # displacement RELATIVE to the intermediate plate. The user-intended
+    # command (`TwoSegmentCommand.segment_a` / `segment_b`) is recorded as
+    # the modeling feature; the compensated command is recorded under
+    # `extra.servo_flat_command_cm` for full audit. Setting this False (only
+    # for benches with independently routed tendons) restores the legacy
+    # passthrough behaviour.
+    top_segment_tendon_routing_compensation: bool = True
     allow_servo_only_test_run: bool = True
     run_trust_mode: str = "servo_only"
     capture_tracker_snapshot: bool = True
@@ -155,7 +175,7 @@ class TwoSegmentCollectPoseDatasetConfig:
             max_tick_delta_from_startup=max(0, int(payload.get("max_tick_delta_from_startup", 320))),
             samples_per_pattern=max(1, int(payload.get("samples_per_pattern", payload.get("samples_per_command", 1)))),
             capture_repeats=max(1, int(payload.get("capture_repeats", 1))),
-            settle_time_s=max(0.0, float(payload.get("settle_time_s", 0.0))),
+            settle_time_s=max(0.0, float(payload.get("settle_time_s", 2.0))),
             allow_servo_only_test_run=bool(payload.get("allow_servo_only_test_run", True)),
             run_trust_mode=str(payload.get("run_trust_mode", "servo_only") or "servo_only").strip().lower(),
             capture_tracker_snapshot=bool(payload.get("capture_tracker_snapshot", True)),
@@ -200,6 +220,9 @@ class TwoSegmentCollectPoseDatasetConfig:
                 or payload.get("physical_assembly_confirmed", False)
             ),
             physical_assembly_confirmed_at_utc=str(payload.get("physical_assembly_confirmed_at_utc", "") or ""),
+            top_segment_tendon_routing_compensation=bool(
+                payload.get("top_segment_tendon_routing_compensation", True)
+            ),
         )
 
     @property
@@ -321,6 +344,7 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
             startup_ticks_by_servo=self._startup_ticks_by_servo,
             max_tick_delta=int(self.config.max_tick_delta_from_startup),
             mapper=session.context.servo_service.mapper,
+            apply_top_routing_compensation=bool(self.config.top_segment_tendon_routing_compensation),
         )
         if violations:
             raise RuntimeError("Two-segment command schedule exceeds configured tick limits: " + "; ".join(violations))
@@ -589,15 +613,34 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
 
     def _issue_command(self, *, session: ExperimentSession, command: TwoSegmentCommand) -> dict[str, Any]:
         context = session.context.settings.robot.operating_context()
-        flat_cm = command.to_flat(context=context)
+        # `intended_flat_cm` is the user/scheduler-intended 8-vector in
+        # commanded_servo_ids order. It is recorded as the modeling feature
+        # (`ordered_8_displacements_cm`) so the trained model maps from
+        # "operator intent" → measured pose.
+        intended_flat_cm = command.to_flat(context=context)
+        # `servo_flat_cm` is what the bus actually receives. Top-segment
+        # tendons route through the bottom segment, so the top servo must
+        # pull `top_intended + bottom_intended` to make the top achieve its
+        # intended displacement relative to the intermediate plate. Disable
+        # via `top_segment_tendon_routing_compensation: false` only if your
+        # rig's tendons are independently routed (no parallel pass-through).
+        if bool(self.config.top_segment_tendon_routing_compensation):
+            servo_flat_cm, compensation_info = _apply_top_routing_compensation(
+                intended_flat_cm, context=context,
+            )
+        else:
+            servo_flat_cm = list(intended_flat_cm)
+            compensation_info = {"applied": False, "reason": "disabled_by_config"}
         commanded_ids = [int(value) for value in context.commanded_servo_ids]
         startup_ticks = [int(self._startup_ticks_by_servo[servo_id]) for servo_id in commanded_ids]
-        goal_ticks = session.context.servo_service.mapper.to_goal_positions(flat_cm, startup_ticks)
+        goal_ticks = session.context.servo_service.mapper.to_goal_positions(servo_flat_cm, startup_ticks)
         goals_by_servo = {int(servo_id): int(goal) for servo_id, goal in zip(commanded_ids, goal_ticks)}
         result = {
             "success": True,
-            "requested_flat_command_cm": list(flat_cm),
-            "ordered_8_displacements_cm": list(flat_cm),
+            "requested_flat_command_cm": list(intended_flat_cm),
+            "ordered_8_displacements_cm": list(intended_flat_cm),
+            "servo_flat_command_cm": list(servo_flat_cm),
+            "top_routing_compensation": dict(compensation_info),
             "commanded_servo_ids": list(commanded_ids),
             "startup_ticks_by_servo": {str(key): int(value) for key, value in sorted(self._startup_ticks_by_servo.items())},
             "goal_ticks_by_servo": {str(key): int(value) for key, value in sorted(goals_by_servo.items())},
@@ -605,15 +648,17 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
             "dry_run": bool(self.config.dry_run),
         }
         if self.config.dry_run:
-            self._previous_flat_cm = list(flat_cm)
+            self._previous_flat_cm = list(intended_flat_cm)
             return result
         # Optional command ramping: if any tendon jump exceeds the configured
         # step, write intermediate sub-commands first. Intermediate writes do
         # NOT generate samples — only the final target counts toward
-        # accepted/rejected.
+        # accepted/rejected. Ramping interpolates in user-intended space and
+        # applies compensation per interim write so the bus always sees
+        # physically consistent goal ticks.
         ramp_substeps = self._ramp_command_writes(
             session=session,
-            target_flat_cm=list(flat_cm),
+            target_flat_cm=list(intended_flat_cm),
             commanded_ids=commanded_ids,
             startup_ticks=startup_ticks,
         )
@@ -622,7 +667,7 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
             if not callable(writer):
                 raise RuntimeError("ServoService all-8 raw goal writer is unavailable.")
             writer(goals_by_servo)
-            self._previous_flat_cm = list(flat_cm)
+            self._previous_flat_cm = list(intended_flat_cm)
             self._ramp_substep_count += int(ramp_substeps)
             result["ramp_substeps"] = int(ramp_substeps)
             result["command_message"] = (
@@ -670,10 +715,19 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
         mapper = session.context.servo_service.mapper
         sleep_fn = session.context.sleep_fn
         settle = float(self.config.command_ramp_settle_time_s)
+        context = session.context.settings.robot.operating_context()
+        apply_compensation = bool(self.config.top_segment_tendon_routing_compensation)
         for k in range(1, substep_count + 1):
             fraction = float(k) / float(substep_count + 1)  # never reaches 1.0
+            # Interpolate in user-intended space, then compensate the interim
+            # write so the bus sees physically consistent goal ticks at every
+            # ramp substep (consistent with the final write).
             interim_flat = [float(p) + float(d) * fraction for p, d in zip(previous, deltas)]
-            interim_goals = mapper.to_goal_positions(interim_flat, startup_ticks)
+            if apply_compensation:
+                servo_interim_flat, _info = _apply_top_routing_compensation(interim_flat, context=context)
+            else:
+                servo_interim_flat = list(interim_flat)
+            interim_goals = mapper.to_goal_positions(servo_interim_flat, startup_ticks)
             interim_goals_by_servo = {int(sid): int(goal) for sid, goal in zip(commanded_ids, interim_goals)}
             try:
                 writer(interim_goals_by_servo)
@@ -777,6 +831,14 @@ class TwoSegmentCollectPoseCommandDatasetExperiment(BaseExperiment):
                 "segment_order": list(context.segment_order),
                 "segments": dict(context.metadata().get("segments", {}) or {}),
                 "goal_ticks_by_servo": dict(command_result.get("goal_ticks_by_servo", {}) or {}),
+                # Audit trail for the top-segment tendon routing compensation
+                # applied at servo-write time. `servo_flat_command_cm` is what
+                # the bus actually saw; `ordered_8_displacements_cm` (above)
+                # is what the user intended and is what the modeling feature
+                # path reads. Both are recorded so post-hoc analysis can
+                # reconstruct the actuator-level command and verify policy.
+                "servo_flat_command_cm": list(command_result.get("servo_flat_command_cm") or ordered_8),
+                "top_routing_compensation": dict(command_result.get("top_routing_compensation") or {}),
                 "startup_artifact_provenance": dict(startup_provenance),
                 "measured_servo_feedback": servo_feedback,
                 "missing_measured_servo_ids": list(missing_measured_servo_ids),
@@ -1115,17 +1177,111 @@ def _run_trust_mode(config: TwoSegmentCollectPoseDatasetConfig) -> str:
     return str(config.run_trust_mode or "thesis_trusted")
 
 
-def _command_limit_violations(*, steps: list[TwoSegmentCommandStep], context, startup_ticks_by_servo: dict[int, int], max_tick_delta: int, mapper) -> list[str]:
+def _command_limit_violations(
+    *,
+    steps: list[TwoSegmentCommandStep],
+    context,
+    startup_ticks_by_servo: dict[int, int],
+    max_tick_delta: int,
+    mapper,
+    apply_top_routing_compensation: bool = True,
+) -> list[str]:
+    """Return safety violations for the configured schedule.
+
+    When ``apply_top_routing_compensation`` is True (the default and the
+    policy for trusted dual-segment work), the per-step tick delta is
+    computed from the COMPENSATED flat command — i.e. the values actually
+    written to servos. This is important because compensation can almost
+    double the top-segment per-servo displacement (top tendon shares the
+    bottom's pull) and the safety budget must be checked against what the
+    bus will actually receive.
+    """
     violations: list[str] = []
     commanded_ids = [int(value) for value in context.commanded_servo_ids]
     startup_ticks = [int(startup_ticks_by_servo[int(servo_id)]) for servo_id in commanded_ids]
     for step in steps:
-        goals = mapper.to_goal_positions(step.command.to_flat(context=context), startup_ticks)
+        intended_flat = step.command.to_flat(context=context)
+        if apply_top_routing_compensation:
+            servo_flat, _info = _apply_top_routing_compensation(intended_flat, context=context)
+        else:
+            servo_flat = list(intended_flat)
+        goals = mapper.to_goal_positions(servo_flat, startup_ticks)
         for servo_id, startup, goal in zip(commanded_ids, startup_ticks, goals):
             delta = abs(int(goal) - int(startup))
             if delta > int(max_tick_delta):
                 violations.append(f"{step.label}: servo {servo_id} delta {delta} > {int(max_tick_delta)}")
     return violations
+
+
+def _apply_top_routing_compensation(
+    flat_cm: list[float],
+    *,
+    context,
+) -> tuple[list[float], dict[str, Any]]:
+    """Compensate top-segment tendon displacements for routing through the bottom segment.
+
+    Physical reality of the stacked rig: top-segment tendons route through
+    the bottom segment in parallel with the bottom-segment tendons. When the
+    bottom +X tendon shortens by Δ (bending the bottom toward +X), the top
+    +X tendon (which passes through the bottom on the same parallel path)
+    is dragged by the same Δ. To make the top segment achieve its
+    operator-intended displacement ``t`` RELATIVE to the intermediate plate,
+    the top servo must therefore pull ``t + Δ``.
+
+    Convention: tendon order within each 4-vector is ``[+X, +Y, -X, -Y]``
+    and matches by-list-index across bottom and top. Per-tendon compensation
+    is ``top_servo[i] = top_intended[i] + bottom_intended[i]``.
+
+    Inputs:
+        ``flat_cm`` — 8-vector in ``context.commanded_servo_ids`` order
+        (user-intended per-segment displacements; the canonical
+        TwoSegmentCommand.to_flat output).
+
+    Returns ``(compensated_flat_cm, info)``. When the physical assembly is
+    missing or malformed the function returns the input unchanged with
+    ``info["applied"] = False`` and a descriptive reason.
+    """
+    commanded_ids = [int(value) for value in getattr(context, "commanded_servo_ids", [])]
+    metadata = context.metadata() if callable(getattr(context, "metadata", None)) else {}
+    assembly = dict(metadata.get("physical_assembly") or {})
+    bottom_servo_ids = [int(value) for value in list(assembly.get("bottom_servo_ids") or [])]
+    top_servo_ids = [int(value) for value in list(assembly.get("top_servo_ids") or [])]
+    if (
+        len(bottom_servo_ids) != 4
+        or len(top_servo_ids) != 4
+        or len(flat_cm) != 8
+        or len(commanded_ids) != 8
+    ):
+        return list(flat_cm), {
+            "applied": False,
+            "reason": "physical_assembly_incomplete_or_unexpected_command_shape",
+            "bottom_servo_ids": list(bottom_servo_ids),
+            "top_servo_ids": list(top_servo_ids),
+        }
+    by_servo = {int(servo_id): float(value) for servo_id, value in zip(commanded_ids, flat_cm)}
+    compensated_by_servo = dict(by_servo)
+    bottom_contribution_by_top: dict[int, float] = {}
+    for tendon_index in range(4):
+        bottom_id = int(bottom_servo_ids[tendon_index])
+        top_id = int(top_servo_ids[tendon_index])
+        bottom_value = float(by_servo.get(bottom_id, 0.0))
+        compensated_by_servo[top_id] = float(by_servo.get(top_id, 0.0)) + bottom_value
+        bottom_contribution_by_top[top_id] = bottom_value
+    compensated_flat = [float(compensated_by_servo[int(servo_id)]) for servo_id in commanded_ids]
+    return compensated_flat, {
+        "applied": True,
+        "schema_version": "two_segment_top_routing_compensation_v1",
+        "bottom_servo_ids": list(bottom_servo_ids),
+        "top_servo_ids": list(top_servo_ids),
+        "bottom_contribution_added_to_top_servo_cm": {
+            str(servo_id): float(value)
+            for servo_id, value in sorted(bottom_contribution_by_top.items())
+        },
+        "convention": (
+            "top_servo[i] = top_intended[i] + bottom_intended[i]; "
+            "tendon order [+X, +Y, -X, -Y]; matches by-list-index across bottom and top."
+        ),
+    }
 
 
 def _read_live_telemetry(*, session: ExperimentSession, servo_ids: list[int], dry_run: bool) -> dict[int, Any]:
