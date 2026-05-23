@@ -30,6 +30,14 @@ runtime_tip_coil_sample_count: 50
 runtime_tip_coil_sample_interval_s: 0.02
 runtime_tip_max_hat_rmse_mm: 2.0
 runtime_tip_setup_id: ""
+# Two-segment tracking roles. Bench default (2026-05-19): single coil only —
+# 0B is the registration probe, 0A is the distal/top coil and is the sole
+# pose label. Intermediate (0C) is wired in below but `enabled: false`; flip
+# `enabled: true` and set `tool_id: "0C"` (or whichever Aurora port the
+# second coil lands on) when a second coil becomes available. Auto label
+# mode will then upgrade trained datasets to `two_coil_xyz` automatically
+# without any code change — the policy gate is reliability of the
+# intermediate coil during collection, not flag flipping.
 two_segment_tracking_roles:
   registration_probe:
     tool_id: "0B"
@@ -43,7 +51,7 @@ two_segment_tracking_roles:
     enabled: true
   distal_tip:
     tool_id: "0A"
-    physical_meaning: "Distal/top robot coil or calibrated physical distal tip used as the primary two-segment output label."
+    physical_meaning: "Distal/top robot coil. Sole pose label for single-coil bench setup; primary metric for two-segment repeatability."
     pose_kind: "calibrated_tip"
     required_for_two_segment_model_training: true
     required_for_control: false
@@ -52,8 +60,13 @@ two_segment_tracking_roles:
     max_age_s: 0.15
     enabled: true
   intermediate_segment:
+    # SECOND COIL PLACEHOLDER. Leave `enabled: false` until a second Aurora
+    # coil is wired into the rig and registered; then set `tool_id: "0C"`
+    # (or actual port) and `enabled: true`. Distal-only datasets remain
+    # valid for ANN training while this stays disabled — `label_mode=auto`
+    # will pick `distal_xyz` and the run reports `distal_only: true`.
     tool_id: ""
-    physical_meaning: "Optional Segment A distal end / intermediate joint coil."
+    physical_meaning: "Optional intermediate (bottom-segment top / inter-segment) coil. Disabled while only one coil is wired."
     pose_kind: "coil_origin"
     required_for_two_segment_model_training: false
     required_for_control: false

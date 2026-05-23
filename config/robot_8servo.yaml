@@ -40,8 +40,14 @@ tightening_rotation_by_servo:
 # operator can flip the physical stack without renaming servos. The two-segment
 # kinematics convention is T_distal = T_bottom(q_bottom) * T_top(q_top); no
 # two-segment control is implemented yet.
+#
+# Bench default (2026-05-19): servos [5,6,7,8] are physically the bottom
+# (proximal) segment, [1,2,3,4] are the top (distal) segment. Flip these two
+# values together if the physical stack is rebuilt the other way; the operator
+# must still confirm bottom/top on every trusted dual-segment session
+# (`physical_assembly_confirmed_by_operator`).
 physical_assembly:
-  bottom_segment: "segment_a"
-  top_segment: "segment_b"
+  bottom_segment: "segment_b"   # servos [5,6,7,8] — physically the lower segment
+  top_segment: "segment_a"      # servos [1,2,3,4] — physically the upper segment
   lower_tick_means_tension: true
   notes: ""
