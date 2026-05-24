@@ -39,6 +39,9 @@ from continuum_robot.experiments.workspace_repeatability_map import (
     build_workspace_repeatability_targets,
     workspace_target_tick_profile,
 )
+from continuum_robot.experiments.dynamic_modeling_dataset import (
+    DynamicModelingDatasetConfig,
+)
 from continuum_robot.experiments.penprobe_chasing_demo import (
     MAPPING_AGGRESSIVE_TICK_DEMO,
     MAPPING_PAIRED_XY_PROPORTIONAL,
@@ -2198,6 +2201,223 @@ def evaluate_preflight(
                 "MVP demo controls XY only using 0A coil-as-tip and 0B tool origin. Z is logged but does not drive commands.",
             )
         )
+
+    elif experiment_name == "dynamic_modeling_dataset":
+        # Continuous dynamic-modeling dataset collector. Live thesis runs need:
+        # tracker streaming, servo connected with neutral setpoints, runtime tip
+        # policy permitting the modeling-dataset workflow, sane tick caps, and
+        # the same single-segment / parallel-single mode the experiment writes.
+        # Dry-run and the lower-trust override paths surface as warnings so the
+        # operator sees they will be tagged not_thesis_evidence.
+        config = DynamicModelingDatasetConfig.from_dict(payload)
+        dry_run = bool(config.dry_run)
+        if dry_run:
+            checks.append(
+                _warning(
+                    "mode",
+                    "Run Mode",
+                    "Dry-run is enabled: the experiment will synthesize tracker/servo records "
+                    "and the bundle will be tagged debug_or_synthetic / not_thesis_evidence.",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "mode",
+                    "Run Mode",
+                    "Live dynamic modeling dataset collection.",
+                )
+            )
+        if bool(settings.runtime.mock_mode):
+            checks.append(
+                _blocked(
+                    "mock_mode",
+                    "Runtime Mode",
+                    "Dynamic modeling is a live thesis experiment. Disable mock mode before running.",
+                )
+            )
+        else:
+            checks.append(_ok("runtime_mode", "Runtime Mode", "Live runtime mode is enabled."))
+        if not dry_run:
+            checks.append(
+                _tracking_state_check(
+                    settings=settings,
+                    tracker_ready=tracker_ready,
+                    backend_name=backend_name,
+                    tracking_snapshot=tracking_snapshot,
+                )
+            )
+            checks.append(
+                _strict_tool_gate_check(
+                    tool_id=config.tracker_tool_id,
+                    snapshot=tracking_snapshot,
+                    max_tracker_age_s=max(0.05, float(config.max_tracker_age_ms) / 1000.0 * 4.0),
+                )
+            )
+            if tracking_snapshot.registration_state == "loaded" and tracking_snapshot.T_robot_aurora is not None:
+                checks.append(
+                    _ok(
+                        "registration",
+                        "Base Registration",
+                        "Accepted base registration is loaded.",
+                    )
+                )
+            else:
+                checks.append(
+                    _blocked(
+                        "registration",
+                        "Base Registration",
+                        f"Accepted base registration must be loaded. Runtime state is {tracking_snapshot.registration_state}.",
+                    )
+                )
+            runtime_tip_policy = evaluate_runtime_tip_trust(
+                snapshot=tracking_snapshot,
+                workflow=experiment_name,
+                allow_lower_trust=bool(getattr(config, "allow_lower_trust_runtime_tip", False)),
+            )
+            if runtime_tip_policy.allowed_for_workflow and runtime_tip_policy.thesis_trusted:
+                checks.append(
+                    _ok(
+                        "runtime_tip",
+                        "Runtime Tip Policy",
+                        runtime_tip_policy.status_message,
+                    )
+                )
+            elif runtime_tip_policy.allowed_for_workflow:
+                checks.append(
+                    _warning(
+                        "runtime_tip",
+                        "Runtime Tip Policy",
+                        "Dynamic modeling will run on a lower-trust runtime tip path; "
+                        "the bundle will be tagged not_thesis_evidence. "
+                        f"mode={runtime_tip_policy.mode}, trust={runtime_tip_policy.trust_label}.",
+                    )
+                )
+            else:
+                checks.append(
+                    _blocked(
+                        "runtime_tip",
+                        "Runtime Tip Policy",
+                        "Dynamic modeling requires a permitted runtime tip path. "
+                        f"workflow={runtime_tip_policy.workflow}, mode={runtime_tip_policy.mode}, "
+                        f"trust={runtime_tip_policy.trust_label}, "
+                        f"reasons={runtime_tip_policy.reasons or ['policy_not_allowed']}.",
+                    )
+                )
+        operating_context = settings.robot.operating_context()
+        configured_ids = list(config.servo_ids) or [int(value) for value in operating_context.active_segment_servo_ids]
+        if not configured_ids:
+            checks.append(
+                _blocked(
+                    "servo_ids",
+                    "Servo Selection",
+                    "No servo IDs are configured for the active segment.",
+                )
+            )
+        else:
+            if operating_context.operating_mode == "parallel_single":
+                expected = 8
+            else:
+                expected = 4
+            if len(configured_ids) != expected:
+                checks.append(
+                    _blocked(
+                        "servo_ids",
+                        "Servo Selection",
+                        f"{operating_context.operating_mode} mode expects {expected} servos; configured {configured_ids}.",
+                    )
+                )
+            else:
+                checks.append(
+                    _ok(
+                        "servo_ids",
+                        "Servo Selection",
+                        f"Running against {operating_context.operating_mode} ({len(configured_ids)} servos): {configured_ids}.",
+                    )
+                )
+        if not dry_run:
+            if not servo_connected:
+                checks.append(
+                    _blocked(
+                        "servo_service",
+                        "Servo Service",
+                        "Live dynamic modeling requires a connected ServoService.",
+                    )
+                )
+            else:
+                checks.append(_ok("servo_service", "Servo Service", "ServoService is connected."))
+            missing_neutrals = [sid for sid in configured_ids if int(sid) not in neutral_setpoints]
+            if missing_neutrals:
+                checks.append(
+                    _blocked(
+                        "neutral_setpoints",
+                        "Neutral Setpoints",
+                        f"Missing neutral setpoints for servo(s): {missing_neutrals}.",
+                    )
+                )
+            else:
+                checks.append(
+                    _ok(
+                        "neutral_setpoints",
+                        "Neutral Setpoints",
+                        f"Neutral setpoints loaded for {configured_ids}.",
+                    )
+                )
+        if int(config.max_tick_delta_from_start) > int(config.max_tick_delta_hard_cap):
+            checks.append(
+                _blocked(
+                    "tick_cap",
+                    "Tick Cap",
+                    f"max_tick_delta_from_start={int(config.max_tick_delta_from_start)} exceeds hard cap "
+                    f"{int(config.max_tick_delta_hard_cap)}.",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "tick_cap",
+                    "Tick Cap",
+                    f"Trajectory soft cap {int(config.max_tick_delta_from_start)} ticks, "
+                    f"hard cap {int(config.max_tick_delta_hard_cap)} ticks, "
+                    f"max step {int(config.max_step_ticks_per_update)} ticks/update.",
+                )
+            )
+        if int(config.max_step_ticks_per_update) > int(config.max_tick_delta_from_start):
+            checks.append(
+                _warning(
+                    "step_cap",
+                    "Step Cap",
+                    "max_step_ticks_per_update exceeds the soft cap; trajectory will saturate every update.",
+                )
+            )
+        target_rate = float(config.target_sample_rate_hz)
+        duration_s = float(config.duration_s)
+        planned_rows = int(round(target_rate * duration_s))
+        # Rough size estimate: ~400 bytes per CSV row gzipped (uncompressed CSV
+        # row is ~1500 bytes; gzip on numeric text compresses ~3-4x).
+        estimated_mb = planned_rows * 400.0 / 1_000_000.0
+        if duration_s >= 60 * 60:
+            duration_text = f"~{duration_s / 60.0 / 60.0:.1f} h"
+        elif duration_s >= 60:
+            duration_text = f"~{duration_s / 60.0:.1f} min"
+        else:
+            duration_text = f"{duration_s:.0f} s"
+        checks.append(
+            _info(
+                "estimates",
+                "Run Estimates",
+                f"Duration {duration_text} at {target_rate:.1f} Hz "
+                f"→ ~{planned_rows} synchronized rows, ~{estimated_mb:.1f} MB compressed dynamic_samples.csv.gz.",
+            )
+        )
+        if duration_s >= 60 * 30:
+            checks.append(
+                _warning(
+                    "long_run",
+                    "Long Run",
+                    f"Planned duration is {duration_text}. Validate at 30 s and 5 min first; verify disk space before launching long runs.",
+                )
+            )
 
     else:
         checks.append(_blocked("experiment", "Experiment", f"Unsupported experiment selection: {experiment_name}"))

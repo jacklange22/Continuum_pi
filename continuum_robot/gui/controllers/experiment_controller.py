@@ -1223,6 +1223,18 @@ class ExperimentController:
                 return f"accepted={int(value)}"
             mode = metrics.get("dataset_mode")
             return str(mode).replace("_", " ") if mode else ""
+        if experiment_name == "dynamic_modeling_dataset":
+            rows = metrics.get("dynamic_sample_count")
+            valid_ratio = metrics.get("valid_sample_ratio")
+            achieved = metrics.get("achieved_sample_rate_hz")
+            parts: list[str] = []
+            if rows is not None:
+                parts.append(f"rows={int(rows)}")
+            if achieved is not None:
+                parts.append(f"rate={float(achieved):.1f}Hz")
+            if valid_ratio is not None:
+                parts.append(f"valid={float(valid_ratio) * 100:.0f}%")
+            return " ".join(parts)
         if experiment_name == "registration_validation":
             summary = metrics.get("translation_delta_to_consensus_summary_mm", {}) or {}
             value = summary.get("mean")
@@ -1916,6 +1928,12 @@ class ExperimentController:
             if bool(config_payload.get("dry_run", False)):
                 return "dry-run workspace map"
             return "live workspace repeatability map"
+        if experiment_name == "dynamic_modeling_dataset":
+            if bool(config_payload.get("dry_run", False)):
+                return "dry-run dynamic modeling"
+            if bool(config_payload.get("allow_lower_trust_runtime_tip", False)):
+                return "live dynamic modeling (lower-trust tip)"
+            return "live dynamic modeling dataset"
         if experiment_name == "command_schedule_validation":
             return "software validation"
         if experiment_name == "tracker_timing_validation":
@@ -1974,6 +1992,24 @@ class ExperimentController:
                 f"settle {float(config.neutral_settle_s):.1f}+{float(config.target_settle_s):.1f}s, "
                 f"cap {int(config.max_target_tick_delta_from_startup)} ticks, "
                 f"tool {config.tool_id}{dry_suffix}"
+            )
+        if experiment_name == "dynamic_modeling_dataset":
+            duration_s = float(config_payload.get("duration_s", 30.0) or 30.0)
+            sample_hz = float(config_payload.get("target_sample_rate_hz", 20.0) or 20.0)
+            cmd_hz = float(config_payload.get("command_update_rate_hz", 5.0) or 5.0)
+            soft_cap = int(config_payload.get("max_tick_delta_from_start", 200) or 200)
+            step_cap = int(config_payload.get("max_step_ticks_per_update", 10) or 10)
+            if duration_s >= 3600:
+                dur_text = f"{duration_s / 3600.0:.1f}h"
+            elif duration_s >= 60:
+                dur_text = f"{duration_s / 60.0:.1f}min"
+            else:
+                dur_text = f"{duration_s:.0f}s"
+            planned_rows = int(round(duration_s * sample_hz))
+            return (
+                f"dur {dur_text} @ {sample_hz:.0f}Hz "
+                f"(~{planned_rows} rows), cmd {cmd_hz:.0f}Hz, "
+                f"soft cap {soft_cap} ticks, step ≤{step_cap} ticks"
             )
         if experiment_name == "aurora_grid_accuracy":
             captured_points = config_payload.get("captured_points", []) or []

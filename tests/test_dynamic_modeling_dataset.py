@@ -686,3 +686,216 @@ def test_dynamic_modeling_dataset_dry_run_emits_synthetic_sample_markers(tmp_pat
         "dry_run" in (sample.status_flags or [])
         for sample in bundle.samples
     )
+
+
+# ---------------------------------------------------------------------------
+# GUI integration: preflight branch + controller labels + visibility map
+# ---------------------------------------------------------------------------
+
+
+class TestGuiIntegration:
+    """Verify the dynamic_modeling_dataset experiment is wired into every GUI
+    surface, not just the page widget: preflight evaluator, controller labels
+    (mode/config-summary/history-metric), MODE_EXPERIMENT_VISIBILITY, and the
+    runtime tip policy alias. These regressions would silently break the GUI
+    flow even though the underlying experiment module is fine."""
+
+    def test_visible_in_single_segment_and_parallel_single_modes(self) -> None:
+        from continuum_robot.gui.controllers.experiment_controller import (
+            MODE_EXPERIMENT_VISIBILITY,
+        )
+
+        assert "dynamic_modeling_dataset" in MODE_EXPERIMENT_VISIBILITY["single_segment"]
+        assert "dynamic_modeling_dataset" in MODE_EXPERIMENT_VISIBILITY["parallel_single"]
+
+    def test_runtime_tip_policy_alias_resolves_to_modeling_dataset_workflow(self) -> None:
+        from continuum_robot.tracking.runtime_tip_policy import (
+            WORKFLOW_MODELING_DATASET,
+            resolve_runtime_tip_workflow,
+        )
+
+        resolution = resolve_runtime_tip_workflow("dynamic_modeling_dataset")
+        assert resolution.canonical_workflow == WORKFLOW_MODELING_DATASET
+
+    def test_mode_label_branches_by_dry_run_and_trust_override(self) -> None:
+        from continuum_robot.gui.controllers.experiment_controller import (
+            ExperimentController,
+        )
+
+        assert ExperimentController._mode_label(
+            "dynamic_modeling_dataset",
+            {"dry_run": False, "allow_lower_trust_runtime_tip": False},
+        ) == "live dynamic modeling dataset"
+        assert ExperimentController._mode_label(
+            "dynamic_modeling_dataset", {"dry_run": True}
+        ) == "dry-run dynamic modeling"
+        assert ExperimentController._mode_label(
+            "dynamic_modeling_dataset",
+            {"dry_run": False, "allow_lower_trust_runtime_tip": True},
+        ) == "live dynamic modeling (lower-trust tip)"
+
+    def test_config_summary_label_reports_duration_rate_and_caps(self) -> None:
+        from continuum_robot.gui.controllers.experiment_controller import (
+            ExperimentController,
+        )
+
+        label = ExperimentController._config_summary_label(
+            "dynamic_modeling_dataset",
+            {
+                "duration_s": 300.0,
+                "target_sample_rate_hz": 20.0,
+                "command_update_rate_hz": 5.0,
+                "max_tick_delta_from_start": 100,
+                "max_step_ticks_per_update": 10,
+            },
+        )
+        assert "dur 5.0min" in label
+        assert "20Hz" in label
+        assert "6000 rows" in label  # 300 s * 20 Hz
+        assert "cmd 5Hz" in label
+        assert "soft cap 100 ticks" in label
+        assert "step ≤10 ticks" in label
+
+    def test_history_metric_label_surfaces_rows_rate_validity(self) -> None:
+        from continuum_robot.gui.controllers.experiment_controller import (
+            ExperimentController,
+        )
+
+        label = ExperimentController._history_metric_label(
+            experiment_name="dynamic_modeling_dataset",
+            metrics={
+                "dynamic_sample_count": 6000,
+                "achieved_sample_rate_hz": 19.7,
+                "valid_sample_ratio": 0.985,
+            },
+        )
+        assert "rows=6000" in label
+        assert "rate=19.7Hz" in label
+        assert "valid=98%" in label
+
+    def _preflight_kwargs(self, controller, tmp_path: Path) -> dict:
+        return {
+            "settings": controller.settings,
+            "project_root": Path(__file__).resolve().parents[1],
+            "tracking_snapshot": controller.tracking_service.get_snapshot(),
+            "servo_calibration_summary": controller.servo_service.get_calibration_summary(),
+            "servo_connected": False,
+            "neutral_setpoints": {},
+            "output_root": tmp_path,
+            "planned_output_dir": tmp_path / "planned",
+            "active_run_output_dir": None,
+            "registration_path": tmp_path / "missing.json",
+            "config_error": None,
+        }
+
+    def test_preflight_branch_fires_and_classifies_checks(self, tmp_path: Path) -> None:
+        """With mock_mode=True (default in test settings) and dry_run=False the
+        preflight branch must surface mock_mode as blocked plus the standard
+        tick_cap + estimates checks. This regression-tests that the experiment
+        no longer falls through to the catch-all 'Unsupported experiment'."""
+        from tests.test_gui_controllers import _experiment_controller
+        from continuum_robot.gui.experiment_preflight import (
+            evaluate_preflight,
+            PREFLIGHT_BLOCKED,
+        )
+
+        controller = _experiment_controller(tmp_path)
+        payload = {
+            "duration_s": 30.0,
+            "target_sample_rate_hz": 20.0,
+            "command_update_rate_hz": 5.0,
+            "max_tick_delta_from_start": 50,
+            "max_step_ticks_per_update": 5,
+            "max_tick_delta_hard_cap": 500,
+            "dry_run": False,
+        }
+        report = evaluate_preflight(
+            experiment_name="dynamic_modeling_dataset",
+            config_payload=payload,
+            **self._preflight_kwargs(controller, tmp_path),
+        )
+        keys = {check.key for check in report.checks}
+        # Falling through to the catch-all 'else' would surface only a single
+        # "experiment" check; the branch must produce the real check ids.
+        assert "tick_cap" in keys
+        assert "estimates" in keys
+        assert "servo_ids" in keys
+        # mock_mode default for test settings is True → must block live runs.
+        mock_check = next((c for c in report.checks if c.key == "mock_mode"), None)
+        assert mock_check is not None
+        assert mock_check.status == PREFLIGHT_BLOCKED
+
+    def test_preflight_dry_run_warns_not_thesis_evidence(self, tmp_path: Path) -> None:
+        from tests.test_gui_controllers import _experiment_controller
+        from continuum_robot.gui.experiment_preflight import (
+            evaluate_preflight,
+            PREFLIGHT_WARNING,
+        )
+
+        controller = _experiment_controller(tmp_path)
+        payload = {
+            "duration_s": 30.0,
+            "target_sample_rate_hz": 20.0,
+            "command_update_rate_hz": 5.0,
+            "max_tick_delta_from_start": 50,
+            "max_step_ticks_per_update": 5,
+            "dry_run": True,
+        }
+        report = evaluate_preflight(
+            experiment_name="dynamic_modeling_dataset",
+            config_payload=payload,
+            **self._preflight_kwargs(controller, tmp_path),
+        )
+        mode_check = next((c for c in report.checks if c.key == "mode"), None)
+        assert mode_check is not None
+        assert mode_check.status == PREFLIGHT_WARNING
+        assert "not_thesis_evidence" in mode_check.message
+
+    def test_preflight_blocks_when_soft_cap_exceeds_hard_cap(self, tmp_path: Path) -> None:
+        from tests.test_gui_controllers import _experiment_controller
+        from continuum_robot.gui.experiment_preflight import (
+            evaluate_preflight,
+            PREFLIGHT_BLOCKED,
+        )
+
+        controller = _experiment_controller(tmp_path)
+        payload = {
+            "duration_s": 30.0,
+            "target_sample_rate_hz": 20.0,
+            "max_tick_delta_from_start": 800,  # > hard cap below
+            "max_tick_delta_hard_cap": 500,
+        }
+        report = evaluate_preflight(
+            experiment_name="dynamic_modeling_dataset",
+            config_payload=payload,
+            **self._preflight_kwargs(controller, tmp_path),
+        )
+        tick_check = next((c for c in report.checks if c.key == "tick_cap"), None)
+        assert tick_check is not None
+        assert tick_check.status == PREFLIGHT_BLOCKED
+        assert "exceeds hard cap" in tick_check.message
+
+    def test_preflight_long_run_emits_warning(self, tmp_path: Path) -> None:
+        """A 30-min+ duration should surface the long-run validation warning."""
+        from tests.test_gui_controllers import _experiment_controller
+        from continuum_robot.gui.experiment_preflight import (
+            evaluate_preflight,
+            PREFLIGHT_WARNING,
+        )
+
+        controller = _experiment_controller(tmp_path)
+        payload = {
+            "duration_s": 60 * 60.0,  # 1 h
+            "target_sample_rate_hz": 20.0,
+            "max_tick_delta_from_start": 100,
+            "max_tick_delta_hard_cap": 500,
+            "max_step_ticks_per_update": 5,
+        }
+        report = evaluate_preflight(
+            experiment_name="dynamic_modeling_dataset",
+            config_payload=payload,
+            **self._preflight_kwargs(controller, tmp_path),
+        )
+        long_check = next((c for c in report.checks if c.key == "long_run"), None)
+        assert long_check is not None
+        assert long_check.status == PREFLIGHT_WARNING
