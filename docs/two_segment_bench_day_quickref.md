@@ -78,7 +78,7 @@ The Schedule card has just five knobs:
 | **Range Preset** | Per-segment tendon amplitude (±0.25 / 0.50 / 0.75 / 1.00 cm). **The tick safety budget is auto-derived from this** — you never set ticks manually. The budget accounts for top-tendon routing compensation, so the bus has ~2× headroom over the per-segment amplitude. |
 | **Target Samples** | Total accepted captures. **0 = run schedule once.** **N > 0 = continue cycling until N captures collected.** Distinct positions visited ≈ Target Samples ÷ Samples / Pattern. |
 | **Samples / Pattern** | Captures at each distinct position. Leave at 1 for random_babble; bump to 3–5 to average noise at each position. |
-| **Settle Time (s)** | Wait after each goal write. Default 2.0 s (conservative); drop to 0.1–0.5 once the bench is settled. |
+| **Settle Time (s)** | Wait after each goal write. Default 3.0 s (conservative); drop only after the bench is settled. |
 
 YAML equivalent for an unattended first run:
 
@@ -88,6 +88,9 @@ max_segment_displacement_cm: 0.25      # Range Preset = ±0.25 cm
 target_valid_sample_count: 500         # Target Samples = 500
 continue_until_valid_samples: true     # implicit when Target Samples > 0 in GUI
 samples_per_pattern: 1
+settle_time_s: 3.0
+command_ramp_step_cm: 0.05
+command_ramp_settle_time_s: 0.10
 allow_servo_only_test_run: false       # we want trusted data
 run_trust_mode: "thesis_trusted"
 long_run_recovery_enabled: true
@@ -195,6 +198,62 @@ best_model: ann (xyz_rmse_mm=2.1)
 
 Each model's full status is in `model_status.json`. Physics-model gating is in
 `physics_model_parameter_report.txt`.
+
+## Stage 5b: Two-segment penprobe lookup demo (~10 min, presentation-only)
+
+After collecting one or more trusted dual-segment datasets (Stage 2), you can
+play them back as a demo where the live 0B penprobe drives the robot to the
+nearest reachable map point.
+
+**This is DEMO ONLY.** It is not closed-loop control, not validated for
+thesis/model-training data, and not a substitute for inverse kinematics.
+
+1. **Build the workspace lookup map (offline, ~1 s):**
+   ```bash
+   .venv/bin/python -m continuum_robot.demo.two_segment_workspace_lookup \
+       --latest --voxel-size-mm 6 --output-dir data/experiments/two_segment_workspace_lookup_maps/$(date +%Y%m%d_%H%M%S)_demo_map
+   ```
+   Outputs: `two_segment_workspace_lookup_map.json`, `*_points.csv`, `*_summary.txt`,
+   `*_quality.json`, plus optional XY/density/coverage figures.
+
+2. **Run the demo (GUI or experiment runner):**
+   Run `two_segment_penprobe_lookup_demo` from the Experiment tab.
+   Config keys you actually care about:
+   - `map_path`: path to the JSON from step 1
+   - `target_tool_id`: `0B` (the penprobe)
+   - `control_rate_hz`: `2`–`5` (low, deliberate)
+   - `nearest_distance_warning_mm`: `5.0`
+   - `max_nearest_distance_mm`: `25.0` (hard stop)
+   - `interpolation_mode`: `nearest` (safest); `inverse_distance` only after
+     the demo behaves cleanly at `nearest`
+   - `physical_assembly_confirmed_by_operator`: `true`
+
+3. **What you'll see at runtime:**
+   - The bus receives the all-8 goal ticks of whichever map point sits closest
+     to the current 0B robot-frame pose.
+   - When 0B sits inside the mapped workspace, `nearest_distance_mm` stays small.
+   - When 0B leaves the mapped workspace, `is_extrapolating: true` flips and
+     after `max_nearest_distance_mm` the controller stops issuing commands.
+   - Tracker stale, wrong servo IDs, or mismatched bottom/top all skip the
+     command and record the reason in `demo_trace.jsonl`.
+
+4. **Outputs:**
+   - `two_segment_penprobe_lookup_demo_summary.txt` — human-readable, includes
+     the loud "DEMO ONLY" labels and `not_closed_loop_validated: True`.
+   - `demo_trace.csv` / `demo_trace.jsonl` — per-iteration timeline:
+     target XYZ, selected map XYZ, nearest distance, goal ticks written,
+     skip/block reasons, max current proxy, tracker freshness.
+   - `map_used.json` — frozen snapshot of the map metadata used for this run.
+
+5. **Limitations to call out in any demo:**
+   - The robot follows the **closest pre-recorded pose**, not arbitrary IK.
+     If your dataset didn't cover a region, the demo silently selects the
+     nearest border point and warns rather than extrapolating wildly.
+   - The control loop is feedforward only — no error-feedback term.
+   - `0B` is the **probe origin**, not a calibrated physical pen tip unless
+     you have a separate validated pivot calibration.
+   - The map's quality is fundamentally limited by the dataset density and
+     trust; the demo cannot beat the underlying data.
 
 ## Stage 6: Evidence index + handoff (~2 min)
 

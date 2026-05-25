@@ -59,6 +59,11 @@ _WORKFLOW_ALIASES: dict[str, str] = {
     "penprobe": WORKFLOW_PENPROBE_CHASING,
     "penprobe_chasing_demo": WORKFLOW_PENPROBE_CHASING,
     "penprobe_platform": WORKFLOW_PENPROBE_CHASING,
+    # Two-segment penprobe lookup demo uses the same 0B-driven tracker
+    # contract as the single-segment penprobe chasing demo, so it shares the
+    # `penprobe_chasing` runtime-tip policy bucket. The demo is still loudly
+    # demo-only at the experiment level.
+    "two_segment_penprobe_lookup_demo": WORKFLOW_PENPROBE_CHASING,
     WORKFLOW_MODELING_DATASET: WORKFLOW_MODELING_DATASET,
     "collect_pose_command_dataset": WORKFLOW_MODELING_DATASET,
     "two_segment_collect_pose_command_dataset": WORKFLOW_MODELING_DATASET,

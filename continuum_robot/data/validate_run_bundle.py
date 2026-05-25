@@ -157,6 +157,8 @@ def validate_run_folder(run_dir: Path) -> RunValidationReport:
         _check_two_segment_modeling(issues, run_dir=run_dir, metrics=metrics)
     if experiment_name == "two_segment_repeatability":
         _check_physical_assembly_metadata(issues, metrics)
+    if experiment_name == "two_segment_penprobe_lookup_demo":
+        _check_two_segment_penprobe_lookup_demo(issues, run_dir=run_dir, metrics=metrics)
     if experiment_name == "registration_sampling_study":
         _check_registration_sampling_study(issues, run_dir=run_dir, metrics=metrics)
     _check_any_field(
@@ -448,6 +450,51 @@ def _check_two_segment_collect_pose_dataset(
     extra = first.get("extra") if isinstance(first.get("extra"), dict) else {}
     if "role_observations" not in extra or "missing_required_pose_roles" not in extra:
         issues.append(RunValidationIssue("WARN", "First sample is missing two-segment pose role observation metadata."))
+
+
+def _check_two_segment_penprobe_lookup_demo(
+    issues: list[RunValidationIssue],
+    *,
+    run_dir: Path,
+    metrics: dict[str, Any],
+) -> None:
+    """Validate a two-segment penprobe lookup demo run folder.
+
+    The demo is loudly demo-only: it MUST report ``demo_only=True``,
+    ``not_closed_loop_validated=True``, and the file artifacts must be
+    present. The validator FAILS only on missing artifacts; it WARNs on
+    metric-level demo-flag drift so an out-of-date schema doesn't block
+    review of an otherwise-valid demo.
+    """
+    if metrics.get("demo_only") is not True:
+        issues.append(RunValidationIssue("WARN", "two_segment_penprobe_lookup_demo run must set demo_only=true."))
+    if metrics.get("not_closed_loop_validated") is not True:
+        issues.append(
+            RunValidationIssue("WARN", "two_segment_penprobe_lookup_demo run must set not_closed_loop_validated=true.")
+        )
+    if metrics.get("valid_for_model_training") is not False:
+        issues.append(
+            RunValidationIssue("FAIL", "two_segment_penprobe_lookup_demo must not set valid_for_model_training=true.")
+        )
+    if metrics.get("valid_for_thesis_repeatability") is not False:
+        issues.append(
+            RunValidationIssue(
+                "FAIL", "two_segment_penprobe_lookup_demo must not set valid_for_thesis_repeatability=true."
+            )
+        )
+    for filename, label in [
+        ("two_segment_penprobe_lookup_demo_summary.txt", "demo summary"),
+        ("demo_trace.csv", "demo trace CSV"),
+        ("demo_trace.jsonl", "demo trace JSONL"),
+        ("map_used.json", "map metadata snapshot"),
+    ]:
+        if not (run_dir / filename).exists():
+            issues.append(RunValidationIssue("WARN", f"{filename} is missing ({label})."))
+    map_meta = metrics.get("map_metadata") if isinstance(metrics.get("map_metadata"), dict) else {}
+    if map_meta and map_meta.get("demo_only_artifact") is not True:
+        issues.append(
+            RunValidationIssue("WARN", "Linked lookup map metadata should mark itself demo_only_artifact=true.")
+        )
 
 
 def _check_two_segment_modeling(

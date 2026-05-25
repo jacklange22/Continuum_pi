@@ -53,8 +53,14 @@ from continuum_robot.experiments.two_segment_startup_validation import (
 from continuum_robot.experiments.two_segment_collect_pose_dataset import (
     TwoSegmentCollectPoseCommandDatasetExperiment,
 )
+from continuum_robot.experiments.two_segment_penprobe_lookup_demo import (
+    TwoSegmentPenprobeLookupDemoExperiment,
+)
 from continuum_robot.experiments.two_segment_repeatability import (
     TwoSegmentRepeatabilityExperiment,
+)
+from continuum_robot.experiments.two_segment_slow_motion_demo import (
+    register_two_segment_slow_motion_demo,
 )
 from continuum_robot.experiments.schedules import (
     CommandScheduleConfig,
@@ -186,7 +192,7 @@ class CollectPoseCommandDatasetConfig:
     export_first_sample_label: bool = True
     # When None: auto-true iff averaged_label_enabled is on.
     export_averaged_sample_label: bool | None = None
-    settle_time_s: float = 0.15
+    settle_time_s: float = 3.0
     max_tracker_age_s: float = 0.15
     capture_timeout_s: float = 1.0
     capture_poll_interval_s: float = 0.02
@@ -249,10 +255,10 @@ class CollectPoseCommandDatasetConfig:
     resync_read_attempts: int = 3
     resync_delay_s: float = 0.05
     return_to_neutral_on_resync_failure: bool = False
-    command_transition_ramp_enabled: bool = False
+    command_transition_ramp_enabled: bool = True
     max_delta_cm_per_transition: float | None = None
-    max_delta_cm_per_ramp_step: float | None = None
-    ramp_step_settle_s: float = 0.0
+    max_delta_cm_per_ramp_step: float | None = 0.05
+    ramp_step_settle_s: float = 0.10
     ramp_include_telemetry_checks: bool = True
     ramp_log_intermediate_telemetry: bool = False
     profile_velocity_ticks_per_s: int | None = None
@@ -272,6 +278,19 @@ class CollectPoseCommandDatasetConfig:
     def from_dict(cls, payload: dict[str, Any] | None) -> "CollectPoseCommandDatasetConfig":
         payload = dict(payload or {})
         schedule_payload = payload.get("command_schedule") or payload.get("schedule")
+        ramp_key = (
+            "max_delta_cm_per_ramp_step"
+            if "max_delta_cm_per_ramp_step" in payload
+            else "max_delta_cm_per_transition"
+            if "max_delta_cm_per_transition" in payload
+            else None
+        )
+        if ramp_key is None:
+            ramp_step_cm = 0.05
+        elif payload.get(ramp_key) in (None, ""):
+            ramp_step_cm = None
+        else:
+            ramp_step_cm = max(0.0, float(payload.get(ramp_key)))
         return cls(
             dataset_mode=str(payload.get("dataset_mode", "workspace_coverage") or "workspace_coverage").strip().lower(),
             dry_run=bool(payload.get("dry_run", False)),
@@ -295,7 +314,7 @@ class CollectPoseCommandDatasetConfig:
                 if payload.get("export_averaged_sample_label") in (None, "")
                 else bool(payload.get("export_averaged_sample_label"))
             ),
-            settle_time_s=float(payload.get("settle_time_s", 0.15)),
+            settle_time_s=float(payload.get("settle_time_s", 3.0)),
             max_tracker_age_s=float(payload.get("max_tracker_age_s", 0.15)),
             capture_timeout_s=float(payload.get("capture_timeout_s", 1.0)),
             capture_poll_interval_s=float(payload.get("capture_poll_interval_s", 0.02)),
@@ -370,40 +389,10 @@ class CollectPoseCommandDatasetConfig:
             resync_read_attempts=max(1, int(payload.get("resync_read_attempts", 3))),
             resync_delay_s=max(0.0, float(payload.get("resync_delay_s", 0.05))),
             return_to_neutral_on_resync_failure=bool(payload.get("return_to_neutral_on_resync_failure", False)),
-            command_transition_ramp_enabled=bool(payload.get("command_transition_ramp_enabled", False)),
-            max_delta_cm_per_transition=(
-                None
-                if (
-                    payload.get("max_delta_cm_per_transition") in (None, "")
-                    and payload.get("max_delta_cm_per_ramp_step") in (None, "")
-                )
-                else max(
-                    0.0,
-                    float(
-                        payload.get(
-                            "max_delta_cm_per_ramp_step",
-                            payload.get("max_delta_cm_per_transition"),
-                        )
-                    ),
-                )
-            ),
-            max_delta_cm_per_ramp_step=(
-                None
-                if (
-                    payload.get("max_delta_cm_per_ramp_step") in (None, "")
-                    and payload.get("max_delta_cm_per_transition") in (None, "")
-                )
-                else max(
-                    0.0,
-                    float(
-                        payload.get(
-                            "max_delta_cm_per_ramp_step",
-                            payload.get("max_delta_cm_per_transition"),
-                        )
-                    ),
-                )
-            ),
-            ramp_step_settle_s=max(0.0, float(payload.get("ramp_step_settle_s", 0.0))),
+            command_transition_ramp_enabled=bool(payload.get("command_transition_ramp_enabled", True)),
+            max_delta_cm_per_transition=ramp_step_cm,
+            max_delta_cm_per_ramp_step=ramp_step_cm,
+            ramp_step_settle_s=max(0.0, float(payload.get("ramp_step_settle_s", 0.10))),
             ramp_include_telemetry_checks=bool(payload.get("ramp_include_telemetry_checks", True)),
             ramp_log_intermediate_telemetry=bool(payload.get("ramp_log_intermediate_telemetry", False)),
             profile_velocity_ticks_per_s=(
@@ -10205,10 +10194,14 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
             }
         original_profile_velocity = getattr(servo_service.dxl_bus.config, "single_segment_experiment_default_profile_velocity", None)
         original_profile_acc = getattr(servo_service.dxl_bus.config, "single_segment_experiment_default_profile_acceleration", None)
+        original_bus_profile_velocity = getattr(servo_service.dxl_bus.config, "default_profile_velocity", None)
+        original_bus_profile_acc = getattr(servo_service.dxl_bus.config, "default_profile_acceleration", None)
         if profile_velocity_override is not None:
             servo_service.dxl_bus.config.single_segment_experiment_default_profile_velocity = int(profile_velocity_override)
+            servo_service.dxl_bus.config.default_profile_velocity = int(profile_velocity_override)
         if profile_acceleration_override is not None:
             servo_service.dxl_bus.config.single_segment_experiment_default_profile_acceleration = int(profile_acceleration_override)
+            servo_service.dxl_bus.config.default_profile_acceleration = int(profile_acceleration_override)
         try:
             try:
                 command = servo_service.command_displacement(
@@ -10243,8 +10236,10 @@ class CollectPoseCommandDatasetExperiment(BaseExperiment):
         finally:
             if profile_velocity_override is not None:
                 servo_service.dxl_bus.config.single_segment_experiment_default_profile_velocity = original_profile_velocity
+                servo_service.dxl_bus.config.default_profile_velocity = original_bus_profile_velocity
             if profile_acceleration_override is not None:
                 servo_service.dxl_bus.config.single_segment_experiment_default_profile_acceleration = original_profile_acc
+                servo_service.dxl_bus.config.default_profile_acceleration = original_bus_profile_acc
         motion_profile = _servo_motion_profile_from_result(command)
         command_metadata = {**dict(parallel_command_metadata), **dict(command.command_metadata or {})}
         if command_metadata.get("parallel_single_demo"):
@@ -13196,6 +13191,14 @@ def register_builtin_experiments(registry) -> None:
         factory=TwoSegmentRepeatabilityExperiment.from_dict,
     )
     registry.register(
+        name=TwoSegmentPenprobeLookupDemoExperiment.name,
+        title="Two-Segment Penprobe Lookup Demo",
+        description=TwoSegmentPenprobeLookupDemoExperiment.description,
+        category="demo",
+        tags=["Two Segment", "Demo", "Penprobe", "Lookup", "Not Closed Loop"],
+        factory=TwoSegmentPenprobeLookupDemoExperiment.from_dict,
+    )
+    registry.register(
         name=TrackerTimingValidationExperiment.name,
         title="Tracker Timing Validation",
         description=TrackerTimingValidationExperiment.description,
@@ -13256,6 +13259,7 @@ def register_builtin_experiments(registry) -> None:
     register_critical_experiments(registry)
     register_registration_trial_experiment(registry)
     register_dynamic_modeling_dataset(registry)
+    register_two_segment_slow_motion_demo(registry)
 
 
 def _load_neutral_ticks(session: ExperimentSession) -> list[int]:
