@@ -1,9 +1,12 @@
+import pytest
+
 from continuum_robot.experiments.schemas import ExperimentTimeseriesSample
 from continuum_robot.tracking.timing_benchmark import (
     compute_servo_tracker_sync_summary,
     compute_servo_sync_summary,
     compute_tracker_timing_summary,
     extract_servo_command_records,
+    extract_servo_timing_records,
     extract_tracker_timing_records,
 )
 
@@ -189,6 +192,30 @@ def test_extract_servo_command_records_reads_canonical_command_samples() -> None
     assert records[0]["motion_phase"] == "step_positive"
 
 
+def test_extract_servo_timing_records_reports_position_error_ticks() -> None:
+    sample = ExperimentTimeseriesSample(
+        monotonic_time_s=0.03,
+        wall_time_utc="2026-01-01T00:00:00Z",
+        phase="servo_timing",
+        step_index=1,
+        sample_index=4,
+        extra={
+            "record_kind": "servo_timing",
+            "sample_monotonic_ns": 30_000_000,
+            "servo_id": 2,
+            "commanded_position_ticks": 2100,
+            "present_position_ticks": 2097,
+            "warmup_discarded": False,
+        },
+    )
+
+    records = extract_servo_timing_records([sample])
+
+    assert len(records) == 1
+    assert records[0]["servo_id"] == 2
+    assert records[0]["position_error_ticks"] == -3
+
+
 def test_compute_servo_tracker_sync_summary_matches_tracker_telemetry_and_command_streams() -> None:
     tracker_records = [
         {"sample_commit_monotonic_ns": 1_000_000, "warmup_discarded": False, "frame_number": None},
@@ -221,6 +248,61 @@ def test_compute_servo_tracker_sync_summary_matches_tracker_telemetry_and_comman
     assert summary["tracker_to_servo_telemetry_within_5ms_count"] == 3
     assert summary["tracker_to_servo_telemetry_within_10ms_rate"] == 1.0
     assert summary["tracker_to_servo_command_p95_offset_ms"] == 1.0
+
+
+def test_compute_servo_tracker_sync_summary_reports_servo_position_following_error() -> None:
+    servo_telemetry_records = [
+        {
+            "sample_monotonic_ns": 1_000_000,
+            "servo_id": 1,
+            "commanded_position_ticks": 100,
+            "present_position_ticks": 103,
+            "warmup_discarded": False,
+        },
+        {
+            "sample_monotonic_ns": 2_000_000,
+            "servo_id": 1,
+            "commanded_position_ticks": 110,
+            "present_position_ticks": 108,
+            "warmup_discarded": False,
+        },
+        {
+            "sample_monotonic_ns": 3_000_000,
+            "servo_id": 2,
+            "commanded_position_ticks": 200,
+            "present_position_ticks": 205,
+            "warmup_discarded": False,
+        },
+        {
+            "sample_monotonic_ns": 4_000_000,
+            "servo_id": 2,
+            "commanded_position_ticks": 210,
+            "present_position_ticks": None,
+            "warmup_discarded": False,
+        },
+        {
+            "sample_monotonic_ns": 5_000_000,
+            "servo_id": 1,
+            "commanded_position_ticks": 120,
+            "present_position_ticks": 120,
+            "warmup_discarded": True,
+        },
+    ]
+
+    summary = compute_servo_tracker_sync_summary([], servo_telemetry_records, [])
+
+    following = summary["servo_position_following"]
+    assert following["available"] is True
+    assert following["error_definition"] == "present_position_ticks - commanded_position_ticks"
+    assert following["telemetry_sample_count"] == 4
+    assert following["sample_count"] == 3
+    assert following["missing_command_or_position_count"] == 1
+    assert following["mean_signed_error_ticks"] == 2.0
+    assert following["mean_abs_error_ticks"] == 10.0 / 3.0
+    assert following["p95_abs_error_ticks"] == pytest.approx(4.8)
+    assert following["max_abs_error_ticks"] == 5.0
+    assert following["per_servo"]["1"]["sample_count"] == 2
+    assert following["per_servo"]["1"]["max_abs_error_ticks"] == 3.0
 
 
 def test_compute_servo_tracker_sync_summary_ignores_warmup_samples() -> None:

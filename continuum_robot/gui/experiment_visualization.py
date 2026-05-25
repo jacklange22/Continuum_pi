@@ -1427,6 +1427,7 @@ def _build_servo_tracker_sync_model(*, samples, metrics: dict[str, Any], config_
                 color_hex=COLORS.scene_measurement,
             )
         )
+    position_following = dict(sync.get("servo_position_following", {}) or {})
     summary_lines = [
         f"Backend: {metrics.get('backend_identity', 'n/a')}",
         f"Servo IDs: {', '.join(str(value) for value in (metrics.get('selected_servo_ids') or [])) or 'n/a'}",
@@ -1441,6 +1442,7 @@ def _build_servo_tracker_sync_model(*, samples, metrics: dict[str, Any], config_
         f"Tracker->servo telemetry mean/p95: {_fmt(sync.get('tracker_to_servo_telemetry_mean_offset_ms'))} / {_fmt(sync.get('tracker_to_servo_telemetry_p95_offset_ms'))} ms",
         f"Tracker->servo command mean/p95: {_fmt(sync.get('tracker_to_servo_command_mean_offset_ms'))} / {_fmt(sync.get('tracker_to_servo_command_p95_offset_ms'))} ms",
         f"Tracker->servo <= 5 / 10 / 20 / 25 ms: {100.0 * float(sync.get('tracker_to_servo_telemetry_within_5ms_rate', 0.0) or 0.0):.1f}% / {100.0 * float(sync.get('tracker_to_servo_telemetry_within_10ms_rate', 0.0) or 0.0):.1f}% / {100.0 * float(sync.get('tracker_to_servo_telemetry_within_20ms_rate', 0.0) or 0.0):.1f}% / {100.0 * float(sync.get('tracker_to_servo_telemetry_within_25ms_rate', 0.0) or 0.0):.1f}%",
+        f"Servo encoder vs command mean/p95/max abs error: {_fmt(position_following.get('mean_abs_error_ticks'))} / {_fmt(position_following.get('p95_abs_error_ticks'))} / {_fmt(position_following.get('max_abs_error_ticks'))} ticks",
         (
             f"Tracker motion metric source: {tracker_metric_source}"
             if tracker_metric_source != "unavailable"

@@ -1870,18 +1870,30 @@ class ServoTrackerSyncValidationExperiment(BaseExperiment):
             for servo_id in servo_ids:
                 telemetry = telemetry_by_id.get(int(servo_id))
                 goal_time_s = goal_times.get(int(servo_id))
+                raw_commanded_position = goal_positions.get(int(servo_id))
+                commanded_position = (
+                    int(raw_commanded_position)
+                    if raw_commanded_position is not None
+                    else None
+                )
+                present_position = (
+                    int(telemetry.present_position)
+                    if telemetry is not None and telemetry.present_position is not None
+                    else None
+                )
                 pending_record = {
                     "sample_monotonic_ns": int(sample_ns),
                     "servo_id": int(servo_id),
-                    "commanded_position_ticks": goal_positions.get(int(servo_id)),
+                    "commanded_position_ticks": commanded_position,
                     "commanded_position_age_s": (
                         float(max(0.0, (sample_ns / 1_000_000_000.0) - float(goal_time_s)))
                         if goal_time_s is not None
                         else None
                     ),
-                    "present_position_ticks": (
-                        int(telemetry.present_position)
-                        if telemetry is not None and telemetry.present_position is not None
+                    "present_position_ticks": present_position,
+                    "position_error_ticks": (
+                        int(present_position) - int(commanded_position)
+                        if present_position is not None and commanded_position is not None
                         else None
                     ),
                     "present_current_ma": (

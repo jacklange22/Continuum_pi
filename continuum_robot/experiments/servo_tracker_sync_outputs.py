@@ -519,6 +519,7 @@ def _write_servo_debug_json(
 ) -> None:
     """Consolidate everything that doesn't make it onto the thesis figures."""
     sync_block = dict(metrics.get("servo_tracker_sync", {}) or {})
+    position_following = dict(sync_block.get("servo_position_following", {}) or {})
     offsets, series_label = _primary_offset_series(metrics)
     threshold_rates: dict[str, float] = {}
     if offsets:
@@ -576,6 +577,7 @@ def _write_servo_debug_json(
             "requested_tool_ids": list(metrics.get("requested_tool_ids", []) or []),
             "include_robot_frame_tip_pose": metrics.get("include_robot_frame_tip_pose"),
         },
+        "servo_position_following": position_following,
         "errors": {
             "error_sample_count": int(metrics.get("error_sample_count", 0) or 0),
         },

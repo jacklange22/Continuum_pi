@@ -142,14 +142,20 @@ def extract_servo_timing_records(samples) -> list[dict[str, Any]]:
         extra = dict(getattr(sample, "extra", {}) or {})
         if str(extra.get("record_kind", "")).strip().lower() != "servo_timing":
             continue
+        commanded_position = _as_int(extra.get("commanded_position_ticks"))
+        present_position = _as_int(extra.get("present_position_ticks"))
+        position_error = _as_int(extra.get("position_error_ticks"))
+        if position_error is None and commanded_position is not None and present_position is not None:
+            position_error = int(present_position) - int(commanded_position)
         rows.append(
             {
                 "sample_index": _as_int(extra.get("sample_index")),
                 "sample_monotonic_ns": _as_int(extra.get("sample_monotonic_ns")),
                 "servo_id": _as_int(extra.get("servo_id")),
-                "commanded_position_ticks": _as_int(extra.get("commanded_position_ticks")),
+                "commanded_position_ticks": commanded_position,
                 "commanded_position_age_s": _as_float(extra.get("commanded_position_age_s")),
-                "present_position_ticks": _as_int(extra.get("present_position_ticks")),
+                "present_position_ticks": present_position,
+                "position_error_ticks": position_error,
                 "present_current_ma": _as_int(extra.get("present_current_ma")),
                 "telemetry_age_s": _as_float(extra.get("telemetry_age_s")),
                 "reported_servo_id": _as_int(extra.get("reported_servo_id")),
@@ -280,6 +286,78 @@ def _offset_summary(
     return result
 
 
+def _position_following_summary(servo_telemetry_records: list[dict[str, Any]]) -> dict[str, Any]:
+    analyzed_records = [
+        dict(record or {})
+        for record in servo_telemetry_records
+        if not bool(dict(record or {}).get("warmup_discarded", False))
+    ]
+    signed_errors: list[float] = []
+    errors_by_servo: dict[int, list[float]] = {}
+    missing_count = 0
+    for record in analyzed_records:
+        servo_id = _as_int(record.get("servo_id"))
+        commanded = _as_int(record.get("commanded_position_ticks"))
+        present = _as_int(record.get("present_position_ticks"))
+        position_error = _as_int(record.get("position_error_ticks"))
+        if position_error is None and commanded is not None and present is not None:
+            position_error = int(present) - int(commanded)
+        if servo_id is None or commanded is None or present is None or position_error is None:
+            missing_count += 1
+            continue
+        error = float(position_error)
+        signed_errors.append(error)
+        errors_by_servo.setdefault(int(servo_id), []).append(error)
+
+    abs_errors = [abs(value) for value in signed_errors]
+    abs_stats = _numeric_stats(abs_errors)
+    signed_stats = _numeric_stats(signed_errors)
+    rmse = (
+        math.sqrt(statistics.fmean([value * value for value in signed_errors]))
+        if signed_errors
+        else None
+    )
+
+    per_servo: dict[str, Any] = {}
+    for servo_id, values in sorted(errors_by_servo.items()):
+        servo_abs = [abs(value) for value in values]
+        servo_abs_stats = _numeric_stats(servo_abs)
+        servo_signed_stats = _numeric_stats(values)
+        servo_rmse = (
+            math.sqrt(statistics.fmean([value * value for value in values]))
+            if values
+            else None
+        )
+        per_servo[str(int(servo_id))] = {
+            "sample_count": len(values),
+            "mean_signed_error_ticks": servo_signed_stats["mean"],
+            "mean_abs_error_ticks": servo_abs_stats["mean"],
+            "median_abs_error_ticks": servo_abs_stats["median"],
+            "p95_abs_error_ticks": servo_abs_stats["p95"],
+            "max_abs_error_ticks": servo_abs_stats["max"],
+            "rmse_error_ticks": servo_rmse,
+        }
+
+    return {
+        "available": bool(signed_errors),
+        "units": "encoder_ticks",
+        "error_definition": "present_position_ticks - commanded_position_ticks",
+        "telemetry_sample_count": len(analyzed_records),
+        "sample_count": len(signed_errors),
+        "missing_command_or_position_count": int(missing_count),
+        "mean_signed_error_ticks": signed_stats["mean"],
+        "min_signed_error_ticks": signed_stats["min"],
+        "max_signed_error_ticks": signed_stats["max"],
+        "mean_abs_error_ticks": abs_stats["mean"],
+        "median_abs_error_ticks": abs_stats["median"],
+        "p95_abs_error_ticks": abs_stats["p95"],
+        "p99_abs_error_ticks": abs_stats["p99"],
+        "max_abs_error_ticks": abs_stats["max"],
+        "rmse_error_ticks": rmse,
+        "per_servo": per_servo,
+    }
+
+
 def compute_servo_tracker_sync_summary(
     tracker_records: list[dict[str, Any]],
     servo_telemetry_records: list[dict[str, Any]],
@@ -362,6 +440,7 @@ def compute_servo_tracker_sync_summary(
             thresholds_ms=thresholds_ms,
         )
     )
+    summary["servo_position_following"] = _position_following_summary(servo_telemetry_records)
     return summary
 
 

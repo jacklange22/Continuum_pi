@@ -1256,6 +1256,10 @@ def test_servo_tracker_sync_validation_experiment_writes_canonical_outputs_and_s
     assert result.summary.experiment_metrics["servo_telemetry_sample_count"] > 0
     assert result.summary.experiment_metrics["servo_command_sample_count"] > 0
     assert result.summary.experiment_metrics["servo_tracker_sync"]["available"] is True
+    following = result.summary.experiment_metrics["servo_tracker_sync"]["servo_position_following"]
+    assert following["available"] is True
+    assert following["sample_count"] > 0
+    assert following["max_abs_error_ticks"] is not None
     assert result.paths.output_dir.joinpath("thesis_01_pair_time_alignment.png").exists()
     assert result.paths.output_dir.joinpath("thesis_02_motion_correspondence.png").exists()
     assert result.paths.output_dir.joinpath("debug.json").exists()
@@ -1271,10 +1275,15 @@ def test_servo_tracker_sync_validation_experiment_writes_canonical_outputs_and_s
     assert debug_payload["experiment_name"] == "servo_tracker_sync_validation"
     assert "alignment" in debug_payload
     assert "threshold_cross_rates" in debug_payload["alignment"]
+    assert debug_payload["servo_position_following"]["available"] is True
     assert "sample_counts" in debug_payload
     bundle = runner.load_dataset(result.paths.output_dir)
     assert any(sample.extra.get("record_kind") == "servo_command" for sample in bundle.samples)
     assert any(sample.extra.get("record_kind") == "servo_timing" for sample in bundle.samples)
+    assert any(
+        sample.extra.get("record_kind") == "servo_timing" and "position_error_ticks" in sample.extra
+        for sample in bundle.samples
+    )
     assert any(sample.extra.get("record_kind") == "tracker_timing" for sample in bundle.samples)
 
 
