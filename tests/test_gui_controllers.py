@@ -1801,6 +1801,7 @@ class _TwoSegmentDatasetPageController:
 
 
 def test_two_segment_collect_pose_page_selects_tracker_roles_and_range(tmp_path: Path) -> None:
+    """Range Preset drives BOTH amplitude AND tick budget; Target Samples is the only run-size knob."""
     _app()
     controller = _TwoSegmentDatasetPageController(tmp_path)
     page = experiment_pages_module.TwoSegmentCollectPoseDatasetPage(
@@ -1811,20 +1812,76 @@ def test_two_segment_collect_pose_page_selects_tracker_roles_and_range(tmp_path:
     page._sync_parameters_from_state(SimpleNamespace())
     page.distal_tool_combo.setEditText("0A")
     page.intermediate_tool_combo.setEditText("0C")
+    # Range Preset is now the single knob for amplitude + tick budget.
     page.range_preset_combo.setCurrentIndex(page.range_preset_combo.findData(0.75))
-    page.max_tick_spin.setValue(350)
-    page.continue_valid_check.setChecked(True)
-    page.target_valid_spin.setValue(5000)
+    # Target Samples > 0 implies continue-until-valid; 0 means run schedule once.
+    page.target_samples_spin.setValue(5000)
     page.assembly_confirm_check.setChecked(True)
 
-    assert controller.config_payload()["requested_tool_roles"]["0A"] == "distal_tip"
-    assert controller.config_payload()["requested_tool_roles"]["0C"] == "intermediate_segment"
-    assert controller.config_payload()["max_segment_displacement_cm"] == 0.75
-    assert page.max_tick_spin.maximum() >= 1200
-    assert controller.config_payload()["max_tick_delta_from_startup"] == 350
-    assert controller.config_payload()["continue_until_valid_samples"] is True
-    assert controller.config_payload()["target_valid_sample_count"] == 5000
-    assert controller.config_payload()["physical_assembly_confirmed_by_operator"] is True
+    payload = controller.config_payload()
+    assert payload["requested_tool_roles"]["0A"] == "distal_tip"
+    assert payload["requested_tool_roles"]["0C"] == "intermediate_segment"
+    # Range Preset 0.75 cm -> amplitude 0.75 and auto tick budget computed
+    # from `tick_budget_for_segment_amplitude_cm` (accounts for top-routing
+    # compensation doubling). Spool 2.0 cm, ticks/rev 4096, safety 1.2 ->
+    # ceil(2 * 0.75 * 4096 / (π * 2) * 1.2) = ~1173 ticks.
+    assert payload["max_segment_displacement_cm"] == 0.75
+    assert payload["max_tick_delta_from_startup"] >= 1000  # well above old 320 default
+    assert payload["max_tick_delta_from_startup"] <= 1300  # bounded by formula + safety
+    # Target Samples > 0 turns on the continue-until-valid loop automatically.
+    assert payload["continue_until_valid_samples"] is True
+    assert payload["target_valid_sample_count"] == 5000
+    # Repeats is now always 1 — the long-run loop handles cycling.
+    assert payload["capture_repeats"] == 1
+    assert payload["physical_assembly_confirmed_by_operator"] is True
+
+
+def test_two_segment_collect_pose_page_target_samples_zero_disables_continue_until_valid(tmp_path: Path) -> None:
+    """Target Samples = 0 means "run schedule once" (no long-run loop)."""
+    _app()
+    controller = _TwoSegmentDatasetPageController(tmp_path)
+    page = experiment_pages_module.TwoSegmentCollectPoseDatasetPage(
+        controller,
+        "two_segment_collect_pose_command_dataset",
+    )
+
+    page._sync_parameters_from_state(SimpleNamespace())
+    # Bounce through non-zero first to ensure the value-changed signal fires
+    # both ways (QSpinBox.setValue(N) is a no-op when N == current value).
+    page.target_samples_spin.setValue(500)
+    page.target_samples_spin.setValue(0)
+
+    payload = controller.config_payload()
+    assert payload["continue_until_valid_samples"] is False
+    assert payload["target_valid_sample_count"] == 0
+    assert payload["capture_repeats"] == 1
+
+
+def test_two_segment_collect_pose_page_range_preset_auto_scales_tick_budget(tmp_path: Path) -> None:
+    """Bigger amplitude -> bigger auto tick budget; relationship is monotonic."""
+    _app()
+    controller = _TwoSegmentDatasetPageController(tmp_path)
+    page = experiment_pages_module.TwoSegmentCollectPoseDatasetPage(
+        controller,
+        "two_segment_collect_pose_command_dataset",
+    )
+    page._sync_parameters_from_state(SimpleNamespace())
+
+    budgets: dict[float, int] = {}
+    for amplitude in (0.50, 0.25, 0.75, 1.00):  # start NOT at default 0.25 so signal fires
+        page.range_preset_combo.setCurrentIndex(page.range_preset_combo.findData(amplitude))
+        payload = controller.config_payload()
+        assert payload["max_segment_displacement_cm"] == amplitude
+        budgets[amplitude] = int(payload["max_tick_delta_from_startup"])
+    # Strictly increasing with amplitude, and all comfortably above 0.
+    amplitudes_sorted = sorted(budgets)
+    for prev, curr in zip(amplitudes_sorted, amplitudes_sorted[1:]):
+        assert budgets[curr] > budgets[prev]
+    # 0.25 cm at default spool 2.0 cm with 2x top-routing compensation + 1.2 safety:
+    # ceil(2 * 0.25 * 4096 / (π * 2) * 1.2) ≈ 391 ticks.
+    assert 350 <= budgets[0.25] <= 450
+    # 1.00 cm: ~1565 ticks. The budget must accommodate full ±1 cm motion.
+    assert 1400 <= budgets[1.00] <= 1700
 
 
 def test_system_tab_warns_when_legacy_profile_cannot_support_parallel_single() -> None:

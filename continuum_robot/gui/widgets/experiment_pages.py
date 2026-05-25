@@ -2411,79 +2411,96 @@ class TwoSegmentCollectPoseDatasetPage(ExperimentPageBase):
         self.run_button.setText("Run Two-Segment Dataset")
 
     def _build_parameter_sections(self) -> None:
-        schedule_card = ExperimentCard("Schedule", "Bounded open-loop command patterns around the accepted all-8 startup state.")
+        schedule_card = ExperimentCard(
+            "Schedule",
+            "Bounded open-loop command patterns around the accepted all-8 startup state. "
+            "Range Preset is the single knob for amplitude and tick safety; Target Samples is the "
+            "single knob for run size.",
+        )
         form = QFormLayout()
         self.schedule_combo = NoWheelComboBox()
         for label, value in [
-            ("Zero", "zero"),
-            ("Single Axis Micro", "single_axis_micro"),
-            ("Segment Isolation", "segment_isolation"),
-            ("Small Combined", "small_combined"),
-            ("Bottom Only Sweep", "bottom_only_sweep"),
-            ("Top Only Sweep", "top_only_sweep"),
-            ("Workspace Coverage", "workspace_coverage"),
-            ("Random Babble", "random_babble"),
-            ("Structured Grid", "structured_grid"),
-            ("Mixed Training", "mixed_training"),
+            ("Random Babble — quasi-random coverage of the two-segment tendon box", "random_babble"),
+            ("Workspace Coverage — 2D grid per segment (cartesian product)", "workspace_coverage"),
+            ("Structured Grid — finer regular grid", "structured_grid"),
+            ("Mixed Training — random + structured interleaved", "mixed_training"),
+            ("Bottom Only Sweep — bottom segment swept, top zero", "bottom_only_sweep"),
+            ("Top Only Sweep — top segment swept, bottom zero", "top_only_sweep"),
+            ("Single Axis Micro — cardinal sweeps per segment", "single_axis_micro"),
+            ("Segment Isolation — alternating per-segment patterns", "segment_isolation"),
+            ("Small Combined — small combined bottom+top motions", "small_combined"),
+            ("Zero — single zero-command smoke test", "zero"),
         ]:
             self.schedule_combo.addItem(label, value)
         self.schedule_combo.currentIndexChanged.connect(
             lambda _index: self.controller.set_config_value("schedule_type", self.schedule_combo.currentData())
         )
-        self.max_disp_spin = QDoubleSpinBox()
+        # Range Preset is the SINGLE source of truth for per-segment amplitude
+        # AND for the tick safety budget. Changing this updates both
+        # `max_segment_displacement_cm` and `max_tick_delta_from_startup`
+        # behind the scenes — the operator never has to think about ticks.
         self.range_preset_combo = NoWheelComboBox()
         for label, value in [
-            ("±0.25 cm first-pass", 0.25),
+            ("±0.25 cm — first-pass safer-zone", 0.25),
             ("±0.50 cm", 0.50),
             ("±0.75 cm", 0.75),
-            ("±1.00 cm full planned range", 1.00),
+            ("±1.00 cm — full planned range", 1.00),
         ]:
             self.range_preset_combo.addItem(label, float(value))
-        self.range_preset_combo.currentIndexChanged.connect(self._on_range_preset_changed)
-        self.max_disp_spin.setRange(0.0, 1.0)
-        self.max_disp_spin.setDecimals(2)
-        self.max_disp_spin.setSingleStep(0.25)
-        self.max_disp_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("max_segment_displacement_cm", float(value))
+        self.range_preset_combo.setToolTip(
+            "Per-segment tendon amplitude bound. The tick safety budget is "
+            "auto-derived from this value (accounts for top-tendon routing "
+            "compensation, so the top servo can pull up to 2× the per-segment "
+            "amplitude). Pick the smallest range that gives the bend you need."
         )
+        self.range_preset_combo.currentIndexChanged.connect(self._on_range_preset_changed)
         self.range_warning_label = QLabel("High ranges still obey tick, wrap, current/load, and startup bounds.")
         self.range_warning_label.setProperty("role", "muted")
         self.range_warning_label.setWordWrap(True)
-        self.max_tick_spin = QSpinBox()
-        self.max_tick_spin.setRange(1, 1200)
-        self.max_tick_spin.setSingleStep(50)
-        self.max_tick_spin.valueChanged.connect(lambda value: self.controller.set_config_value("max_tick_delta_from_startup", int(value)))
+        # Single "Target Samples" knob — replaces target_valid + long_run +
+        # repeats. 0 means "run the schedule once"; > 0 means "continue
+        # cycling until N accepted samples have been collected".
+        self.target_samples_spin = QSpinBox()
+        self.target_samples_spin.setRange(0, 1000000)
+        self.target_samples_spin.setSingleStep(100)
+        self.target_samples_spin.setSpecialValueText("Run schedule once")
+        self.target_samples_spin.setToolTip(
+            "Total number of ACCEPTED CAPTURES the run will collect.\n"
+            "0 = run the schedule once (no continue-until-valid loop).\n"
+            "N > 0 = continue cycling until N accepted samples are recorded.\n\n"
+            "Number of distinct commanded positions visited = Target Samples ÷ Samples / Pattern.\n"
+            "For random_babble at Target Samples=500, Samples / Pattern=1, you get ~500\n"
+            "different random commands. For workspace_coverage the schedule loops as needed."
+        )
+        self.target_samples_spin.valueChanged.connect(self._on_target_samples_changed)
         self.samples_spin = QSpinBox()
         self.samples_spin.setRange(1, 20)
+        self.samples_spin.setToolTip(
+            "Number of captures at each distinct commanded position.\n"
+            "Raising this AT FIXED Target Samples reduces the number of distinct positions visited."
+        )
         self.samples_spin.valueChanged.connect(lambda value: self.controller.set_config_value("samples_per_pattern", int(value)))
-        self.repeats_spin = QSpinBox()
-        self.repeats_spin.setRange(1, 20)
-        self.repeats_spin.valueChanged.connect(lambda value: self.controller.set_config_value("capture_repeats", int(value)))
-        self.continue_valid_check = QCheckBox("Continue until target valid samples")
-        self.continue_valid_check.toggled.connect(
-            lambda value: self.controller.set_config_value("continue_until_valid_samples", bool(value))
-        )
-        self.target_valid_spin = QSpinBox()
-        self.target_valid_spin.setRange(0, 1000000)
-        self.target_valid_spin.setSingleStep(100)
-        self.target_valid_spin.valueChanged.connect(
-            lambda value: self.controller.set_config_value("target_valid_sample_count", int(value))
-        )
         self.settle_spin = QDoubleSpinBox()
         self.settle_spin.setRange(0.0, 10.0)
         self.settle_spin.setDecimals(3)
         self.settle_spin.setSingleStep(0.05)
+        self.settle_spin.setToolTip(
+            "Seconds to wait after each goal-position write before the tracker reads.\n"
+            "Default 2.0 s is conservatively above the tendon + constant-curvature\n"
+            "relaxation window. Drop to 0.1–0.5 s once the rig is settled and you want throughput."
+        )
         self.settle_spin.valueChanged.connect(lambda value: self.controller.set_config_value("settle_time_s", float(value)))
+        # Operator-facing preview of derived safety + plan.
+        self.plan_preview_label = QLabel("")
+        self.plan_preview_label.setWordWrap(True)
+        self.plan_preview_label.setProperty("role", "hint")
         form.addRow("Schedule Type", self.schedule_combo)
         form.addRow("Range Preset", self.range_preset_combo)
-        form.addRow("Max Segment Displacement (cm)", self.max_disp_spin)
-        form.addRow("Max Tick Delta", self.max_tick_spin)
+        form.addRow("Target Samples", self.target_samples_spin)
         form.addRow("Samples / Pattern", self.samples_spin)
-        form.addRow("Target Valid Samples", self.target_valid_spin)
-        form.addRow("Long Run Mode", self.continue_valid_check)
-        form.addRow("Repeats", self.repeats_spin)
         form.addRow("Settle Time (s)", self.settle_spin)
         schedule_card.body_layout.addLayout(form)
+        schedule_card.body_layout.addWidget(self.plan_preview_label)
         schedule_card.body_layout.addWidget(self.range_warning_label)
         self.parameter_layout.addWidget(schedule_card)
 
@@ -2527,14 +2544,17 @@ class TwoSegmentCollectPoseDatasetPage(ExperimentPageBase):
         self._maybe_auto_disable_dry_run()
         config = TwoSegmentCollectPoseDatasetConfig.from_dict(self.controller.config_payload())
         self._set_combo_value(self.schedule_combo, config.schedule_type)
-        self._set_double(self.max_disp_spin, float(config.max_segment_displacement_cm))
         self._sync_range_preset(float(config.max_segment_displacement_cm))
-        self._set_spin(self.max_tick_spin, int(config.max_tick_delta_from_startup))
+        # Target Samples: surface the saved continue-until-valid count, or 0 when
+        # the run is "schedule-once" (continue_until_valid_samples false).
+        target_samples_effective = (
+            int(config.target_valid_sample_count) if bool(config.continue_until_valid_samples)
+            else 0
+        )
+        self._set_spin(self.target_samples_spin, int(target_samples_effective))
         self._set_spin(self.samples_spin, int(config.samples_per_pattern))
-        self._set_spin(self.repeats_spin, int(config.capture_repeats))
-        self._set_spin(self.target_valid_spin, int(config.target_valid_sample_count))
-        self._set_checkbox(self.continue_valid_check, bool(config.continue_until_valid_samples))
         self._set_double(self.settle_spin, float(config.settle_time_s))
+        self._update_plan_preview(config=config)
         self._set_checkbox(self.dry_run_check, bool(config.dry_run))
         self._set_checkbox(self.servo_only_check, bool(config.allow_servo_only_test_run))
         self._set_combo_value(self.run_trust_combo, config.run_trust_mode)
@@ -2577,13 +2597,64 @@ class TwoSegmentCollectPoseDatasetPage(ExperimentPageBase):
             config.run_trust_mode,
             config.physical_assembly_confirmed_by_operator,
             tuple(sorted(config.requested_tool_roles.items())),
+            config.top_segment_tendon_routing_compensation,
+        )
+
+    def _on_target_samples_changed(self, value: int) -> None:
+        """Map the single GUI 'Target Samples' field onto the dataclass triple.
+
+        Target Samples = 0  -> run the schedule once (continue_until_valid=False,
+                                target_valid=0, capture_repeats=1)
+        Target Samples > 0  -> continue cycling until N accepted samples
+                                (continue_until_valid=True, target_valid=N,
+                                capture_repeats=1 — the long-run loop will cycle
+                                the schedule as many times as needed)
+        """
+        target_int = max(0, int(value))
+        self.controller.set_config_value("target_valid_sample_count", int(target_int))
+        self.controller.set_config_value("continue_until_valid_samples", bool(target_int > 0))
+        self.controller.set_config_value("capture_repeats", 1)
+        self._update_plan_preview()
+
+    def _update_plan_preview(self, *, config: "TwoSegmentCollectPoseDatasetConfig | None" = None) -> None:
+        try:
+            if config is None:
+                config = TwoSegmentCollectPoseDatasetConfig.from_dict(self.controller.config_payload())
+        except Exception:
+            self.plan_preview_label.setText("")
+            return
+        target = int(config.target_valid_sample_count) if bool(config.continue_until_valid_samples) else 0
+        samples_per_pattern = max(1, int(config.samples_per_pattern))
+        amplitude = float(config.max_segment_displacement_cm)
+        tick_budget = int(config.max_tick_delta_from_startup)
+        if target > 0:
+            positions = max(1, int(target / samples_per_pattern))
+            run_summary = f"~{positions} distinct positions × {samples_per_pattern} captures = {target} accepted samples."
+        else:
+            run_summary = "Schedule will run once (Target Samples = 0)."
+        self.plan_preview_label.setText(
+            f"Plan: {config.schedule_type} at ±{amplitude:.2f} cm/segment, tick budget ±{tick_budget} (auto). {run_summary}"
         )
 
     def _on_range_preset_changed(self, *_args) -> None:
         value = self.range_preset_combo.currentData()
         if value is None:
             return
-        self.max_disp_spin.setValue(float(value))
+        amplitude_cm = float(value)
+        # Range Preset is the single knob for amplitude AND tick safety.
+        # Compute and set both, so the operator never has to think about the
+        # tick budget; bigger amplitude -> bigger budget, both move together.
+        from continuum_robot.experiments.two_segment_collect_pose_dataset import (
+            tick_budget_for_segment_amplitude_cm,
+        )
+        spool_diameter_cm = float(getattr(self.controller.settings.robot, "spool_diameter_cm", 2.0))
+        tick_budget = tick_budget_for_segment_amplitude_cm(
+            amplitude_cm,
+            spool_diameter_cm=spool_diameter_cm,
+        )
+        self.controller.set_config_value("max_segment_displacement_cm", amplitude_cm)
+        self.controller.set_config_value("max_tick_delta_from_startup", int(tick_budget))
+        self._update_plan_preview()
 
     def _sync_range_preset(self, value_cm: float) -> None:
         best = -1

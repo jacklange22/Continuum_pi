@@ -582,6 +582,31 @@ def test_two_segment_dataset_config_has_range_ramp_and_current_defaults() -> Non
     assert config.sustained_overcurrent_ma == 1200
 
 
+def test_tick_budget_for_segment_amplitude_cm_scales_with_amplitude_and_compensation() -> None:
+    """The auto tick budget covers compensated top-servo displacement + headroom."""
+    from continuum_robot.experiments.two_segment_collect_pose_dataset import (
+        tick_budget_for_segment_amplitude_cm,
+    )
+    import math
+
+    spool = 2.0
+    # Formula: ceil( 2 * amplitude * 4096 / (π * spool) * 1.2 ).
+    for amplitude in (0.10, 0.25, 0.50, 0.75, 1.00):
+        budget = tick_budget_for_segment_amplitude_cm(amplitude, spool_diameter_cm=spool)
+        expected = int(math.ceil(2.0 * amplitude * 4096 / (math.pi * spool) * 1.2))
+        assert budget == expected, f"amplitude {amplitude}: got {budget}, want {expected}"
+    # Disabling the doubling halves the budget (single-segment-style routing).
+    full = tick_budget_for_segment_amplitude_cm(0.5, spool_diameter_cm=spool)
+    half = tick_budget_for_segment_amplitude_cm(0.5, spool_diameter_cm=spool, compensation_doubles_top=False)
+    assert half * 2 >= full - 2, "without compensation, budget should be roughly half"
+    # Bigger spool diameter -> fewer ticks per cm -> smaller budget.
+    small_spool = tick_budget_for_segment_amplitude_cm(1.0, spool_diameter_cm=1.0)
+    big_spool = tick_budget_for_segment_amplitude_cm(1.0, spool_diameter_cm=4.0)
+    assert small_spool > big_spool
+    # Returns a positive int even for tiny amplitudes (floor at 1).
+    assert tick_budget_for_segment_amplitude_cm(0.0001, spool_diameter_cm=2.0) >= 1
+
+
 def test_two_segment_dataset_config_default_settle_time_is_two_seconds() -> None:
     """Policy 2026-05-19: settle_time_s default is 2.0 s (safer bench-up default)."""
     config = TwoSegmentCollectPoseDatasetConfig.from_dict({})

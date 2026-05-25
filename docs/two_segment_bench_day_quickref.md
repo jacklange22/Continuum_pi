@@ -69,19 +69,32 @@ shows `manual_two_segment_startup: true` and the correct bottom/top keys.
 
 ## Stage 2: First two-segment motor babble (~10 min)
 
-Run `two_segment_collect_pose_command_dataset`. Recommended first-run config:
+Run `two_segment_collect_pose_command_dataset` from the **Experiment** tab.
+The Schedule card has just five knobs:
+
+| Knob | What it does |
+|---|---|
+| **Schedule Type** | `Random Babble` / `Workspace Coverage` for modeling-grade data; axis sweeps and zero for smoke tests. |
+| **Range Preset** | Per-segment tendon amplitude (±0.25 / 0.50 / 0.75 / 1.00 cm). **The tick safety budget is auto-derived from this** — you never set ticks manually. The budget accounts for top-tendon routing compensation, so the bus has ~2× headroom over the per-segment amplitude. |
+| **Target Samples** | Total accepted captures. **0 = run schedule once.** **N > 0 = continue cycling until N captures collected.** Distinct positions visited ≈ Target Samples ÷ Samples / Pattern. |
+| **Samples / Pattern** | Captures at each distinct position. Leave at 1 for random_babble; bump to 3–5 to average noise at each position. |
+| **Settle Time (s)** | Wait after each goal write. Default 2.0 s (conservative); drop to 0.1–0.5 once the bench is settled. |
+
+YAML equivalent for an unattended first run:
 
 ```yaml
-schedule_type: "single_axis_micro"     # cardinal bottom + cardinal top sweeps
-max_segment_displacement_cm: 0.25      # CONSERVATIVE - ramp up later
-max_tick_delta_from_startup: 320       # safety cap on tick travel
+schedule_type: "random_babble"
+max_segment_displacement_cm: 0.25      # Range Preset = ±0.25 cm
+target_valid_sample_count: 500         # Target Samples = 500
+continue_until_valid_samples: true     # implicit when Target Samples > 0 in GUI
 samples_per_pattern: 1
-capture_repeats: 1
 allow_servo_only_test_run: false       # we want trusted data
 run_trust_mode: "thesis_trusted"
-long_run_recovery_enabled: true        # drop dropped samples, continue
+long_run_recovery_enabled: true
 drop_sample_on_transport_error: true
 physical_assembly_confirmed_by_operator: true
+# max_tick_delta_from_startup: omitted when set by the GUI; if hand-editing the
+# YAML, use ~400 ticks for ±0.25 cm and ~1600 ticks for ±1.00 cm.
 ```
 
 Set tracker roles in the GUI collect-pose page:

@@ -1177,6 +1177,41 @@ def _run_trust_mode(config: TwoSegmentCollectPoseDatasetConfig) -> str:
     return str(config.run_trust_mode or "thesis_trusted")
 
 
+def tick_budget_for_segment_amplitude_cm(
+    amplitude_cm: float,
+    *,
+    spool_diameter_cm: float,
+    ticks_per_rev: int = 4096,
+    safety_factor: float = 1.2,
+    compensation_doubles_top: bool = True,
+) -> int:
+    """Compute a per-servo tick budget that comfortably covers an amplitude.
+
+    The two-segment top-tendon routing compensation can almost double the
+    top-segment per-servo displacement (top servo receives
+    ``top_intended + bottom_intended``). The safety budget the GUI/preflight
+    enforces must therefore account for that doubling plus headroom for
+    settling/jitter.
+
+    The formula is:
+        effective_cm  = amplitude_cm * (2 if compensation_doubles_top else 1)
+        ticks         = effective_cm * ticks_per_rev / (π * spool_diameter_cm)
+        budget        = ceil(ticks * safety_factor)
+
+    Defaults to ``safety_factor=1.2`` (20 % headroom) and
+    ``compensation_doubles_top=True``. Returns a positive integer tick
+    delta budget — the operator's chosen amplitude maps deterministically
+    to this number so the GUI never has to ask the operator to set it
+    manually.
+    """
+    import math
+
+    effective_cm = max(0.0, float(amplitude_cm)) * (2.0 if compensation_doubles_top else 1.0)
+    circumference_cm = math.pi * max(1e-9, float(spool_diameter_cm))
+    raw_ticks = effective_cm * float(ticks_per_rev) / circumference_cm
+    return max(1, int(math.ceil(raw_ticks * max(1.0, float(safety_factor)))))
+
+
 def _command_limit_violations(
     *,
     steps: list[TwoSegmentCommandStep],
