@@ -103,5 +103,34 @@ def test_export_core_filenames_includes_workspace_lookup_artifacts() -> None:
         "demo_trace.csv",
         "demo_trace.jsonl",
         "map_used.json",
+        "penprobe_lookup_demo_path_report.png",
+        "penprobe_lookup_demo_distance_report.png",
+        "penprobe_lookup_demo_command_report.png",
     }
     assert expected.issubset(CORE_FILENAMES)
+
+
+def test_validator_warns_when_target_tool_id_not_0b(tmp_path: Path) -> None:
+    """Polished default: target=0B, tip=0A. Drift is a WARN-level issue."""
+    run_dir = _write_demo_run(tmp_path)
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    summary["experiment_metrics"]["target_tool_id"] = "0C"
+    summary["experiment_metrics"]["tip_tool_id"] = "0A"
+    (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    report = validate_run_folder(run_dir)
+    warns = [i.message for i in report.issues if i.level == "WARN"]
+    assert any("target_tool_id='0C'" in m for m in warns)
+
+
+def test_validator_fails_when_map_distal_tool_disagrees_with_tip_tool_id(tmp_path: Path) -> None:
+    """Map distal != tip tool is a FAIL-level mismatch."""
+    run_dir = _write_demo_run(tmp_path)
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    summary["experiment_metrics"]["target_tool_id"] = "0B"
+    summary["experiment_metrics"]["tip_tool_id"] = "0A"
+    summary["experiment_metrics"]["map_distal_tool_id"] = "0C"
+    (run_dir / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    report = validate_run_folder(run_dir)
+    assert report.status == "FAIL"
+    fails = [i.message for i in report.issues if i.level == "FAIL"]
+    assert any("map_distal_tool_id='0C'" in m and "tip_tool_id='0A'" in m for m in fails)

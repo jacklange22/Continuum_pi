@@ -2583,6 +2583,42 @@ def test_experiment_workspace_loads_two_segment_repeatability_page(tmp_path: Pat
     assert page.run_button.text() == "Run Two-Segment Repeatability"
 
 
+def test_two_segment_penprobe_lookup_demo_page_constructs_offscreen_with_default_roles(tmp_path: Path) -> None:
+    """Phase 3: dedicated GUI page constructs cleanly with target=0B / tip=0A defaults."""
+    _app()
+    controller = _TwoSegmentDatasetPageController(tmp_path)
+    page = experiment_pages_module.TwoSegmentPenprobeLookupDemoPage(
+        controller,
+        "two_segment_penprobe_lookup_demo",
+    )
+
+    # Build a fake payload mirroring what the controller persists when an
+    # operator opens the page from scratch.
+    page._sync_parameters_from_state(SimpleNamespace())
+    assert page.run_button.text() == "Run 0B → 0A Lookup Demo"
+    assert page.target_tool_combo.currentData() == "0B"
+    assert page.tip_tool_combo.currentData() == "0A"
+    assert page.expected_distal_combo.currentData() == "0A"
+    # Map path edit starts blank.
+    assert page.map_path_edit.text() == ""
+    # Changing target / tip writes through to the controller payload.
+    page.target_tool_combo.setCurrentIndex(page.target_tool_combo.findData("0C"))
+    page.tip_tool_combo.setCurrentIndex(page.tip_tool_combo.findData("0B"))
+    payload = controller.config_payload()
+    assert payload["target_tool_id"] == "0C"
+    assert payload["tip_tool_id"] == "0B"
+
+
+def test_two_segment_penprobe_lookup_demo_visible_only_in_dual_segment_mode() -> None:
+    """Phase 3: the demo is gated on dual_segment per the mode-visibility mapping."""
+    from continuum_robot.gui.controllers.experiment_controller import MODE_EXPERIMENT_VISIBILITY
+
+    assert "two_segment_penprobe_lookup_demo" in MODE_EXPERIMENT_VISIBILITY["dual_segment"]
+    assert "two_segment_penprobe_lookup_demo" not in MODE_EXPERIMENT_VISIBILITY["single_segment"]
+    if "one_servo" in MODE_EXPERIMENT_VISIBILITY:
+        assert "two_segment_penprobe_lookup_demo" not in MODE_EXPERIMENT_VISIBILITY["one_servo"]
+
+
 def test_experiment_workspace_blocks_single_segment_repeatability_in_mock_mode(tmp_path: Path) -> None:
     controller = _experiment_controller(tmp_path)
     controller.select_experiment("single_segment_repeatability")

@@ -53,6 +53,7 @@ def _write_dataset_run(
     run_trust_mode: str = "thesis_trusted",
     accepted_startup: bool = True,
     bad_row: bool = False,
+    tracking_role_config: dict | None = None,
 ) -> Path:
     """Write a minimal but format-faithful samples.jsonl + summary.json."""
     bottom_servo_ids = bottom_servo_ids or [5, 6, 7, 8]
@@ -66,6 +67,19 @@ def _write_dataset_run(
     ]
     run_dir = root / "data" / "experiments" / "two_segment_collect_pose_command_dataset" / run_id
     run_dir.mkdir(parents=True)
+    role_config = tracking_role_config if tracking_role_config is not None else {
+        "distal_tip": {
+            "role_name": "distal_tip",
+            "tool_id": "0A",
+            "enabled": True,
+            "required_for_two_segment_model_training": True,
+        },
+        "registration_probe": {
+            "role_name": "registration_probe",
+            "tool_id": "0B",
+            "enabled": True,
+        },
+    }
     (run_dir / "summary.json").write_text(
         json.dumps(
             {
@@ -81,6 +95,7 @@ def _write_dataset_run(
                         "bottom_servo_ids": bottom_servo_ids,
                         "top_servo_ids": top_servo_ids,
                     },
+                    "two_segment_tracking_role_config": role_config,
                 },
             }
         ),
@@ -429,3 +444,67 @@ def test_cli_main_returns_nonzero_when_no_accepted_points(tmp_path: Path) -> Non
         ]
     )
     assert rc == 2
+
+
+def test_map_builder_extracts_distal_tool_0a_from_role_config(tmp_path: Path) -> None:
+    """Phase 2: role-to-tool mapping is pulled from summary.json into the map metadata."""
+    run_dir = _write_dataset_run(tmp_path)  # default config has distal_tip -> 0A
+    result = build_workspace_lookup_map(
+        [run_dir], config=LookupMapBuildConfig(voxel_size_mm=None, output_dir=tmp_path / "map")
+    )
+    map_payload = load_workspace_lookup_map(result.artifact_paths["map_json"])
+    meta = map_payload["metadata"]
+    assert meta["map_distal_tool_id"] == "0A"
+    assert meta["role_mapping"]["distal_tip"] == "0A"
+    assert meta["role_mapping"]["registration_probe"] == "0B"
+    assert meta["target_tool_default"] == "0B"
+    assert meta["tip_tool_default"] == "0A"
+    assert meta["map_controlled_point"].startswith("0A distal/tip coil origin")
+    assert meta["role_mapping_warnings"] == []
+    # Summary text must show the new role section.
+    summary = result.artifact_paths["summary_text"].read_text(encoding="utf-8")
+    assert "map_distal_tool_id: 0A" in summary
+    assert "0A distal/tip coil origin" in summary
+
+
+def test_map_builder_warns_when_role_config_missing(tmp_path: Path) -> None:
+    """Phase 2: absent role config -> map_distal_tool_id is None + warning recorded."""
+    run_dir = _write_dataset_run(tmp_path, tracking_role_config={})  # explicitly empty
+    result = build_workspace_lookup_map(
+        [run_dir], config=LookupMapBuildConfig(voxel_size_mm=None, output_dir=tmp_path / "map_no_roles")
+    )
+    map_payload = load_workspace_lookup_map(result.artifact_paths["map_json"])
+    meta = map_payload["metadata"]
+    assert meta["map_distal_tool_id"] is None
+    assert meta["role_mapping"] == {}
+    assert meta["role_mapping_warnings"], "missing role config should produce a warning"
+    summary = result.artifact_paths["summary_text"].read_text(encoding="utf-8")
+    assert "UNKNOWN" in summary or "(source tool ID unknown" in summary
+
+
+def test_map_builder_warns_when_role_resolves_to_multiple_tool_ids(tmp_path: Path) -> None:
+    """If two source runs disagree on which tool is `distal_tip`, the map records that conflict."""
+    run_a = _write_dataset_run(
+        tmp_path,
+        run_id="20260601_120000_run_a",
+        tracking_role_config={
+            "distal_tip": {"role_name": "distal_tip", "tool_id": "0A", "enabled": True},
+        },
+    )
+    run_b = _write_dataset_run(
+        tmp_path,
+        run_id="20260601_120001_run_b",
+        tracking_role_config={
+            "distal_tip": {"role_name": "distal_tip", "tool_id": "0C", "enabled": True},
+        },
+    )
+    result = build_workspace_lookup_map(
+        [run_a, run_b],
+        config=LookupMapBuildConfig(voxel_size_mm=None, output_dir=tmp_path / "map_conflicting"),
+    )
+    map_payload = load_workspace_lookup_map(result.artifact_paths["map_json"])
+    meta = map_payload["metadata"]
+    # Conflicting tool IDs resolve to None and surface a warning.
+    assert meta["map_distal_tool_id"] is None
+    assert meta["role_mapping"].get("distal_tip") is None
+    assert any("multiple tool IDs" in w for w in meta["role_mapping_warnings"])

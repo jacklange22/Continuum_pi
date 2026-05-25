@@ -5865,6 +5865,202 @@ class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
             self.preview_label.setText(f"Preview unavailable: {exc}")
 
 
+class TwoSegmentPenprobeLookupDemoPage(ExperimentPageBase):
+    """Dedicated page for the two-segment 0B → 0A penprobe lookup demo.
+
+    Surfaces the small operator-essential set: which map JSON to load, which
+    Aurora tools play the target and tip roles, the safety thresholds, and a
+    live status panel of the role semantics. This page is loudly demo-only —
+    every label and tooltip says so.
+    """
+
+    show_visualization = False
+    refresh_policy = "manual"
+    page_hint = (
+        "DEMO ONLY. Uses the live 0B penprobe as a desired target and commands the all-8 servo "
+        "goals of the nearest map point whose distal labels came from 0A. Not closed-loop control. "
+        "Not valid for thesis or model-training evaluation."
+    )
+
+    def __init__(self, controller, experiment_name: str, parent=None) -> None:
+        self.summary_widget = None
+        super().__init__(controller, experiment_name, parent)
+        self.run_button.setText("Run 0B → 0A Lookup Demo")
+
+    def _build_parameter_sections(self) -> None:
+        map_card = ExperimentCard(
+            "Map",
+            "Path to the workspace lookup map JSON built from a two-segment dataset. "
+            "Map distal labels are expected to come from 0A.",
+        )
+        map_form = QFormLayout()
+        self.map_path_edit = QLineEdit()
+        self.map_path_edit.setPlaceholderText(
+            "data/experiments/two_segment_workspace_lookup_maps/<run>/two_segment_workspace_lookup_map.json"
+        )
+        self.map_path_edit.editingFinished.connect(
+            lambda: self.controller.set_config_value("map_path", self.map_path_edit.text().strip())
+        )
+        map_form.addRow("Map Path", self.map_path_edit)
+        map_card.body_layout.addLayout(map_form)
+        self.parameter_layout.addWidget(map_card)
+
+        roles_card = ExperimentCard(
+            "Roles",
+            "Target = penprobe (handheld). Tip = robot distal coil (live tracking optional).",
+        )
+        roles_form = QFormLayout()
+        self.target_tool_combo = NoWheelComboBox()
+        for tool_id in ("0B", "0A", "0C"):
+            self.target_tool_combo.addItem(tool_id, tool_id)
+        self.target_tool_combo.currentIndexChanged.connect(
+            lambda _index: self.controller.set_config_value(
+                "target_tool_id", str(self.target_tool_combo.currentData())
+            )
+        )
+        self.tip_tool_combo = NoWheelComboBox()
+        for tool_id in ("0A", "0B", "0C"):
+            self.tip_tool_combo.addItem(tool_id, tool_id)
+        self.tip_tool_combo.currentIndexChanged.connect(
+            lambda _index: self.controller.set_config_value(
+                "tip_tool_id", str(self.tip_tool_combo.currentData())
+            )
+        )
+        self.expected_distal_combo = NoWheelComboBox()
+        for tool_id in ("0A", "0B", "0C"):
+            self.expected_distal_combo.addItem(tool_id, tool_id)
+        self.expected_distal_combo.currentIndexChanged.connect(
+            lambda _index: self.controller.set_config_value(
+                "expected_map_distal_tool_id", str(self.expected_distal_combo.currentData())
+            )
+        )
+        roles_form.addRow("Target Tool (penprobe, required)", self.target_tool_combo)
+        roles_form.addRow("Tip Tool (live, optional)", self.tip_tool_combo)
+        roles_form.addRow("Expected Map Distal Tool", self.expected_distal_combo)
+        roles_card.body_layout.addLayout(roles_form)
+        self.parameter_layout.addWidget(roles_card)
+
+        safety_card = ExperimentCard(
+            "Safety",
+            "Demo-safe defaults. Tighter thresholds always allowed; loosening below these is operator-owned.",
+        )
+        safety_form = QFormLayout()
+        self.control_rate_spin = QDoubleSpinBox()
+        self.control_rate_spin.setRange(0.5, 10.0)
+        self.control_rate_spin.setDecimals(1)
+        self.control_rate_spin.setSingleStep(0.5)
+        self.control_rate_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("control_rate_hz", float(value))
+        )
+        self.nearest_warning_spin = QDoubleSpinBox()
+        self.nearest_warning_spin.setRange(0.0, 100.0)
+        self.nearest_warning_spin.setDecimals(2)
+        self.nearest_warning_spin.setSingleStep(0.5)
+        self.nearest_warning_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("nearest_distance_warning_mm", float(value))
+        )
+        self.max_nearest_spin = QDoubleSpinBox()
+        self.max_nearest_spin.setRange(0.0, 500.0)
+        self.max_nearest_spin.setDecimals(2)
+        self.max_nearest_spin.setSingleStep(1.0)
+        self.max_nearest_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_nearest_distance_mm", float(value))
+        )
+        self.interpolation_combo = NoWheelComboBox()
+        for label, value in (
+            ("Nearest (recommended)", "nearest"),
+            ("Inverse-distance KNN (advanced)", "inverse_distance"),
+        ):
+            self.interpolation_combo.addItem(label, value)
+        self.interpolation_combo.currentIndexChanged.connect(
+            lambda _index: self.controller.set_config_value(
+                "interpolation_mode", str(self.interpolation_combo.currentData())
+            )
+        )
+        self.allow_interp_check = QCheckBox("Allow interpolation (off = nearest only)")
+        self.allow_interp_check.toggled.connect(
+            lambda value: self.controller.set_config_value("allow_interpolation", bool(value))
+        )
+        self.dry_run_check = QCheckBox("Dry run (no servo writes)")
+        self.dry_run_check.toggled.connect(
+            lambda value: self.controller.set_config_value("dry_run", bool(value))
+        )
+        self.servo_only_check = QCheckBox("Allow servo-only test run (no thesis startup required)")
+        self.servo_only_check.toggled.connect(
+            lambda value: self.controller.set_config_value("allow_servo_only_test_run", bool(value))
+        )
+        safety_form.addRow("Control rate (Hz)", self.control_rate_spin)
+        safety_form.addRow("Nearest-distance warning (mm)", self.nearest_warning_spin)
+        safety_form.addRow("Nearest-distance hard stop (mm)", self.max_nearest_spin)
+        safety_form.addRow("Interpolation mode", self.interpolation_combo)
+        safety_form.addRow("", self.allow_interp_check)
+        safety_form.addRow("", self.dry_run_check)
+        safety_form.addRow("", self.servo_only_check)
+        safety_card.body_layout.addLayout(safety_form)
+        self.summary_widget = KeyValueSummaryWidget()
+        safety_card.body_layout.addWidget(self.summary_widget)
+        self.parameter_layout.addWidget(safety_card)
+
+    def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
+        _ = state
+        from continuum_robot.experiments.two_segment_penprobe_lookup_demo import (
+            TwoSegmentPenprobeLookupDemoConfig,
+        )
+
+        config = TwoSegmentPenprobeLookupDemoConfig.from_dict(self.controller.config_payload())
+        if self.map_path_edit.text().strip() != config.map_path:
+            self.map_path_edit.setText(str(config.map_path or ""))
+        self._set_combo_value(self.target_tool_combo, str(config.target_tool_id))
+        self._set_combo_value(self.tip_tool_combo, str(config.tip_tool_id))
+        self._set_combo_value(self.expected_distal_combo, str(config.expected_map_distal_tool_id))
+        self._set_double(self.control_rate_spin, float(config.control_rate_hz))
+        self._set_double(self.nearest_warning_spin, float(config.nearest_distance_warning_mm))
+        self._set_double(self.max_nearest_spin, float(config.max_nearest_distance_mm))
+        self._set_combo_value(self.interpolation_combo, str(config.interpolation_mode))
+        self._set_checkbox(self.allow_interp_check, bool(config.allow_interpolation))
+        self._set_checkbox(self.dry_run_check, bool(config.dry_run))
+        self._set_checkbox(self.servo_only_check, bool(config.allow_servo_only_test_run))
+        context = self.controller.settings.robot.operating_context()
+        self.summary_widget.set_pairs(
+            [
+                ("Operating Mode", str(context.operating_mode)),
+                ("Bottom/Top", self._bottom_top_summary(context)),
+                ("Target Tool", f"{config.target_tool_id} (penprobe origin in robot base frame)"),
+                ("Tip Tool", f"{config.tip_tool_id} (distal/tip coil; live tracking OPTIONAL)"),
+                ("Expected Map Distal Tool", str(config.expected_map_distal_tool_id)),
+                ("Interpolation", config.interpolation_mode + (" (off by default)" if not config.allow_interpolation else "")),
+                ("Demo-only Validity", "demo_only=True · not_closed_loop_validated=True · valid_for_model_training=False"),
+            ]
+        )
+
+    def _parameter_state_fingerprint(self, state: ExperimentViewState) -> tuple[object, ...]:
+        _ = state
+        from continuum_robot.experiments.two_segment_penprobe_lookup_demo import (
+            TwoSegmentPenprobeLookupDemoConfig,
+        )
+
+        config = TwoSegmentPenprobeLookupDemoConfig.from_dict(self.controller.config_payload())
+        return (
+            config.map_path,
+            config.target_tool_id,
+            config.tip_tool_id,
+            config.expected_map_distal_tool_id,
+            config.control_rate_hz,
+            config.nearest_distance_warning_mm,
+            config.max_nearest_distance_mm,
+            config.interpolation_mode,
+            config.allow_interpolation,
+            config.dry_run,
+            config.allow_servo_only_test_run,
+        )
+
+    def _bottom_top_summary(self, context) -> str:
+        assembly = dict(context.metadata().get("physical_assembly") or {})
+        bottom = assembly.get("bottom_segment_key") or "?"
+        top = assembly.get("top_segment_key") or "?"
+        return f"bottom={bottom} top={top}"
+
+
 def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBase:
     """Return the custom page widget for one supported experiment."""
     factories: dict[str, Callable[[object], ExperimentPageBase]] = {
@@ -5882,6 +6078,7 @@ def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBas
         "two_segment_collect_pose_command_dataset": lambda ctrl: TwoSegmentCollectPoseDatasetPage(ctrl, "two_segment_collect_pose_command_dataset"),
         "two_segment_repeatability": lambda ctrl: TwoSegmentRepeatabilityPage(ctrl, "two_segment_repeatability"),
         "two_segment_slow_motion_demo": lambda ctrl: TwoSegmentSlowMotionDemoPage(ctrl, "two_segment_slow_motion_demo"),
+        "two_segment_penprobe_lookup_demo": lambda ctrl: TwoSegmentPenprobeLookupDemoPage(ctrl, "two_segment_penprobe_lookup_demo"),
         "pretension_validation": lambda ctrl: PretensionValidationPage(ctrl, "pretension_validation"),
         "penprobe_chasing_demo": lambda ctrl: PenprobeChasingDemoPage(ctrl, "penprobe_chasing_demo"),
         "command_schedule_validation": lambda ctrl: CommandScheduleValidationPage(ctrl, "command_schedule_validation"),

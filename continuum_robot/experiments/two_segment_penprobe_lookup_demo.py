@@ -57,11 +57,32 @@ BLOCK_MESSAGE = (
 
 @dataclass
 class TwoSegmentPenprobeLookupDemoConfig:
-    """Operator configuration for the penprobe lookup demo experiment."""
+    """Operator configuration for the penprobe lookup demo experiment.
+
+    Canonical role semantics (DO NOT confuse):
+    - ``target_tool_id`` is the **penprobe** in the operator's hand (default
+      ``0B``) — its position in robot base frame is the desired XYZ the demo
+      tries to reach by selecting the nearest map point.
+    - ``tip_tool_id`` is the **distal/tip coil** on the robot (default
+      ``0A``) — when live, its pose is recorded so the operator can see the
+      robot's actual tip vs the target. Live tip tracking is OPTIONAL and
+      never required to issue a command.
+    - The map's distal labels are expected to have been collected with the
+      ``distal_tip`` role mapped to ``0A``. The demo compares that against
+      ``expected_map_distal_tool_id`` (defaults ``0A``) and warns/blocks
+      accordingly.
+    """
 
     map_path: str = ""
     target_tool_id: str = "0B"
     target_tool_role: str = "penprobe_target"
+    tip_tool_id: str = "0A"
+    tip_tool_role: str = "distal_tip"
+    expected_map_distal_tool_id: str = "0A"
+    require_target_tool: bool = True
+    tip_tracking_optional: bool = True
+    block_on_map_tool_mismatch: bool = True
+    allow_unknown_map_tip_tool: bool = True
     control_rate_hz: float = 3.0
     max_duration_s: float = 60.0
     max_iterations: int = 600
@@ -98,6 +119,13 @@ class TwoSegmentPenprobeLookupDemoConfig:
             map_path=str(payload.get("map_path", "") or ""),
             target_tool_id=str(payload.get("target_tool_id", "0B") or "0B").upper(),
             target_tool_role=str(payload.get("target_tool_role", "penprobe_target") or "penprobe_target"),
+            tip_tool_id=str(payload.get("tip_tool_id", "0A") or "0A").upper(),
+            tip_tool_role=str(payload.get("tip_tool_role", "distal_tip") or "distal_tip"),
+            expected_map_distal_tool_id=str(payload.get("expected_map_distal_tool_id", "0A") or "0A").upper(),
+            require_target_tool=bool(payload.get("require_target_tool", True)),
+            tip_tracking_optional=bool(payload.get("tip_tracking_optional", True)),
+            block_on_map_tool_mismatch=bool(payload.get("block_on_map_tool_mismatch", True)),
+            allow_unknown_map_tip_tool=bool(payload.get("allow_unknown_map_tip_tool", True)),
             control_rate_hz=max(0.5, float(payload.get("control_rate_hz", 3.0))),
             max_duration_s=max(0.0, float(payload.get("max_duration_s", 60.0))),
             max_iterations=max(1, int(payload.get("max_iterations", 600))),
@@ -133,11 +161,18 @@ class _DemoTraceRow:
     iteration: int
     monotonic_time_s: float
     wall_time_utc: str
+    target_tool_id: str
+    tip_tool_id: str
     target_xyz_robot_mm: list[float] | None
     target_age_s: float | None
+    tip_xyz_robot_mm: list[float] | None
+    tip_age_s: float | None
+    tip_tracking_available: bool
     selected_map_index: int | None
     selected_point_xyz_robot_mm: list[float] | None
     nearest_distance_mm: float | None
+    tip_to_target_distance_mm: float | None
+    tip_to_selected_map_distance_mm: float | None
     all_8_goal_ticks: dict[str, int] | None
     command_sent: bool
     command_skip_reason: str | None
@@ -193,6 +228,31 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
         if not map_path.exists():
             raise RuntimeError(f"Workspace lookup map not found at {map_path}.")
         self._map_payload = load_workspace_lookup_map(map_path)
+        # Validate the map's distal-tool source against the demo's expected
+        # tip tool id. The map records which Aurora tool produced the
+        # `distal_tip` label during dataset collection (expected `0A`).
+        # Mismatch is operator-fixable: either rebuild the map from a
+        # 0A-labelled run or change tip_tool_id in the experiment config.
+        map_meta = dict((self._map_payload or {}).get("metadata") or {})
+        map_distal_tool_id = map_meta.get("map_distal_tool_id")
+        expected = str(self.config.expected_map_distal_tool_id or "0A").upper()
+        if map_distal_tool_id is None:
+            if not bool(self.config.allow_unknown_map_tip_tool):
+                raise RuntimeError(
+                    "Workspace lookup map has no recorded `map_distal_tool_id` "
+                    "(source dataset lacked role config). Rebuild the map after "
+                    "running collect-pose with `distal_tip` role assigned, or set "
+                    "`allow_unknown_map_tip_tool=true` to bypass for a debug run."
+                )
+        else:
+            map_distal_str = str(map_distal_tool_id).upper()
+            if map_distal_str != expected and bool(self.config.block_on_map_tool_mismatch):
+                raise RuntimeError(
+                    f"Map distal-tip source tool {map_distal_str!r} does not match "
+                    f"expected_map_distal_tool_id={expected!r}. Either rebuild the "
+                    "map from a run that used the expected distal tool, or set "
+                    "`block_on_map_tool_mismatch=false` for a debug-only run."
+                )
         context = session.context.settings.robot.operating_context()
         controller_config = LookupControllerConfig(
             interpolation_mode=self.config.interpolation_mode if bool(self.config.allow_interpolation) else "nearest",
@@ -262,10 +322,32 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
                 self._stop_reason = "max_duration_reached"
                 break
 
-            target_xyz, target_age, tracker_stale = self._read_target_pose(session=session)
+            target_xyz, target_age, tracker_stale = self._read_tool_pose(
+                session=session, tool_id=str(self.config.target_tool_id)
+            )
+            # Tip (0A) is optional: never blocks command writes, just
+            # reported for operator situational awareness + trace audit.
+            tip_xyz, tip_age, _tip_stale = self._read_tool_pose(
+                session=session, tool_id=str(self.config.tip_tool_id)
+            )
+            tip_tracking_available = tip_xyz is not None
             decision = self._controller.decide(
                 target_xyz_robot_mm=target_xyz,
                 tracker_stale=tracker_stale,
+            )
+            tip_to_target = (
+                float(np.linalg.norm(np.asarray(tip_xyz) - np.asarray(target_xyz)))
+                if tip_xyz is not None and target_xyz is not None
+                else None
+            )
+            tip_to_selected = (
+                float(
+                    np.linalg.norm(
+                        np.asarray(tip_xyz) - np.asarray(decision.selected_point_xyz_robot_mm)
+                    )
+                )
+                if tip_xyz is not None and decision.selected_point_xyz_robot_mm is not None
+                else None
             )
             max_current_ma, tracker_freshness_s = self._max_current_proxy(session=session)
             sustained_stop = self._update_sustained_overcurrent(now_s=now_s, max_current_ma=max_current_ma)
@@ -280,6 +362,11 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
                     monotonic_time_s=now_s,
                     target_xyz=target_xyz,
                     target_age=target_age,
+                    tip_xyz=tip_xyz,
+                    tip_age=tip_age,
+                    tip_tracking_available=bool(tip_tracking_available),
+                    tip_to_target_distance_mm=tip_to_target,
+                    tip_to_selected_map_distance_mm=tip_to_selected,
                     decision=decision,
                     command_sent=command_sent,
                     command_skip_reason=command_skip_reason,
@@ -313,6 +400,11 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
                 monotonic_time_s=now_s,
                 target_xyz=target_xyz,
                 target_age=target_age,
+                tip_xyz=tip_xyz,
+                tip_age=tip_age,
+                tip_tracking_available=bool(tip_tracking_available),
+                tip_to_target_distance_mm=tip_to_target,
+                tip_to_selected_map_distance_mm=tip_to_selected,
                 decision=decision,
                 command_sent=command_sent,
                 command_skip_reason=command_skip_reason,
@@ -330,6 +422,8 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
                     session=session,
                     iteration=iteration,
                     target_xyz=target_xyz,
+                    tip_xyz=tip_xyz,
+                    tip_tracking_available=bool(tip_tracking_available),
                     decision=decision,
                     command_sent=command_sent,
                     command_skip_reason=command_skip_reason,
@@ -368,9 +462,22 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
     # Internals
     # ------------------------------------------------------------------
 
-    def _read_target_pose(
-        self, *, session: ExperimentSession
+    def _read_tool_pose(
+        self, *, session: ExperimentSession, tool_id: str
     ) -> tuple[list[float] | None, float | None, bool]:
+        """Read any tracked tool in robot base frame.
+
+        Used for both ``target_tool_id`` (0B penprobe — required) and
+        ``tip_tool_id`` (0A robot tip — optional). The transform math is
+        unchanged: reuses ``_extract_chasing_pose_optional`` from the
+        single-segment penprobe chasing demo. That helper FATALLY raises
+        on ``tracker_tool_missing:*`` / ``robot_frame_transform_unavailable``
+        — appropriate for the single-segment chase where the chased tool is
+        required, but for this demo the tip is optional. We catch those
+        fatal cases here and surface them as ``(None, age, True)`` instead.
+
+        Returns ``(xyz_robot_mm_or_None, tracker_age_s_or_None, stale_flag)``.
+        """
         tracking_service = session.context.tracking_service
         if tracking_service is None:
             return None, None, True
@@ -381,20 +488,34 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
             return None, None, True
         if snapshot is None:
             return None, None, True
-        # Reuse the proven robot-frame helper from penprobe_chasing_demo so
-        # the transform math is identical to existing single-segment chasing.
         from continuum_robot.experiments.penprobe_chasing_demo import _extract_chasing_pose_optional
 
-        pose, err = _extract_chasing_pose_optional(
-            snapshot,
-            str(self.config.target_tool_id or "0B"),
-            max_tracker_age_s=float(self.config.stale_tracker_timeout_s),
-        )
+        try:
+            pose, _err = _extract_chasing_pose_optional(
+                snapshot,
+                str(tool_id or "").upper(),
+                max_tracker_age_s=float(self.config.stale_tracker_timeout_s),
+            )
+        except RuntimeError:
+            # Tool truly missing / no robot-frame transform available. For
+            # the demo this is "tool unavailable", not "demo failed".
+            tracker_age = getattr(snapshot, "tracker_data_age_s", None)
+            return None, (float(tracker_age) if tracker_age is not None else None), True
         tracker_age = getattr(snapshot, "tracker_data_age_s", None)
         tracker_stale = bool(getattr(snapshot, "tracker_data_stale", False)) or pose is None
         if pose is None:
-            return None, tracker_age, True
-        return [float(v) for v in pose.position_mm], (float(tracker_age) if tracker_age is not None else None), tracker_stale
+            return None, (float(tracker_age) if tracker_age is not None else None), True
+        return (
+            [float(v) for v in pose.position_mm],
+            (float(tracker_age) if tracker_age is not None else None),
+            tracker_stale,
+        )
+
+    # Backwards-compat alias: older callers / tests may still reference this name.
+    def _read_target_pose(
+        self, *, session: ExperimentSession
+    ) -> tuple[list[float] | None, float | None, bool]:
+        return self._read_tool_pose(session=session, tool_id=str(self.config.target_tool_id))
 
     def _issue_goal_ticks(
         self, *, session: ExperimentSession, decision: LookupDecision
@@ -490,6 +611,11 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
         monotonic_time_s: float,
         target_xyz: list[float] | None,
         target_age: float | None,
+        tip_xyz: list[float] | None,
+        tip_age: float | None,
+        tip_tracking_available: bool,
+        tip_to_target_distance_mm: float | None,
+        tip_to_selected_map_distance_mm: float | None,
         decision: LookupDecision,
         command_sent: bool,
         command_skip_reason: str | None,
@@ -501,8 +627,17 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
             iteration=int(iteration),
             monotonic_time_s=float(monotonic_time_s),
             wall_time_utc=datetime.now(timezone.utc).isoformat(),
+            target_tool_id=str(self.config.target_tool_id),
+            tip_tool_id=str(self.config.tip_tool_id),
             target_xyz_robot_mm=list(target_xyz) if target_xyz is not None else None,
             target_age_s=float(target_age) if target_age is not None else None,
+            tip_xyz_robot_mm=list(tip_xyz) if tip_xyz is not None else None,
+            tip_age_s=float(tip_age) if tip_age is not None else None,
+            tip_tracking_available=bool(tip_tracking_available),
+            tip_to_target_distance_mm=float(tip_to_target_distance_mm) if tip_to_target_distance_mm is not None else None,
+            tip_to_selected_map_distance_mm=(
+                float(tip_to_selected_map_distance_mm) if tip_to_selected_map_distance_mm is not None else None
+            ),
             selected_map_index=decision.selected_map_index,
             selected_point_xyz_robot_mm=list(decision.selected_point_xyz_robot_mm)
             if decision.selected_point_xyz_robot_mm is not None
@@ -526,6 +661,8 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
         session: ExperimentSession,
         iteration: int,
         target_xyz: list[float] | None,
+        tip_xyz: list[float] | None,
+        tip_tracking_available: bool,
         decision: LookupDecision,
         command_sent: bool,
         command_skip_reason: str | None,
@@ -556,7 +693,13 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
                 "roles": {
                     self.config.target_tool_role: {
                         "translation_mm": list(target_xyz) if target_xyz is not None else [],
-                    }
+                        "tool_id": str(self.config.target_tool_id),
+                    },
+                    self.config.tip_tool_role: {
+                        "translation_mm": list(tip_xyz) if tip_xyz is not None else [],
+                        "tool_id": str(self.config.tip_tool_id),
+                        "live_tracking_available": bool(tip_tracking_available),
+                    },
                 }
             },
             status_flags=sorted(set(flags)),
@@ -616,13 +759,31 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
             row.nearest_distance_mm for row in self._trace_rows if row.nearest_distance_mm is not None
         ]
         max_current_seen = [row.max_current_proxy_ma for row in self._trace_rows if row.max_current_proxy_ma is not None]
+        tip_available_rows = [row for row in self._trace_rows if row.tip_tracking_available]
+        tip_to_target_dists = [row.tip_to_target_distance_mm for row in tip_available_rows if row.tip_to_target_distance_mm is not None]
+        live_tip_fraction = (
+            float(len(tip_available_rows)) / float(max(1, len(self._trace_rows)))
+            if self._trace_rows
+            else 0.0
+        )
+        map_distal_tool_id = metadata.get("map_distal_tool_id")
+        controlled_point = (
+            f"{str(self.config.tip_tool_id).upper()} distal/tip coil origin (map-labelled)"
+            if map_distal_tool_id is None
+            else f"{str(map_distal_tool_id).upper()} distal/tip coil origin (from collected dataset)"
+        )
         session.set_metric("schema_version", DEMO_SCHEMA_VERSION)
         session.set_metric("demo_only", True)
         session.set_metric("not_closed_loop_validated", True)
+        session.set_metric("closed_loop_control", False)
+        session.set_metric("feedforward_lookup_demo", True)
         session.set_metric("valid_for_model_training", False)
         session.set_metric("valid_for_thesis_repeatability", False)
-        session.set_metric("controlled_point", "map distal pose (from previously collected dataset)")
-        session.set_metric("target_point", f"{self.config.target_tool_id} tool origin in robot frame")
+        session.set_metric("controlled_point", controlled_point)
+        session.set_metric(
+            "target_point",
+            f"{str(self.config.target_tool_id).upper()} penprobe origin in robot base frame",
+        )
         session.set_metric("physical_tip_chasing", False)
         session.set_metric("stop_reason", self._stop_reason or "operator_stop")
         session.set_metric("iterations", len(self._trace_rows))
@@ -638,6 +799,16 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
             },
         )
         session.set_metric(
+            "tip_to_target_distance_summary_mm",
+            {
+                "min": float(min(tip_to_target_dists)) if tip_to_target_dists else None,
+                "max": float(max(tip_to_target_dists)) if tip_to_target_dists else None,
+                "mean": float(sum(tip_to_target_dists) / len(tip_to_target_dists)) if tip_to_target_dists else None,
+            },
+        )
+        session.set_metric("live_tip_tracking_available_fraction", live_tip_fraction)
+        session.set_metric("live_tip_tracking_available", bool(tip_available_rows))
+        session.set_metric(
             "max_current_proxy_summary_ma",
             {
                 "min": float(min(max_current_seen)) if max_current_seen else None,
@@ -645,11 +816,16 @@ class TwoSegmentPenprobeLookupDemoExperiment(BaseExperiment):
             },
         )
         session.set_metric("map_metadata", metadata)
+        session.set_metric("map_distal_tool_id", map_distal_tool_id)
+        session.set_metric("expected_map_distal_tool_id", str(self.config.expected_map_distal_tool_id).upper())
         session.set_metric("bottom_top_assignment", dict(assembly or {}))
         session.set_metric("operating_mode", context.operating_mode)
         session.set_metric("commanded_servo_ids", list(context.commanded_servo_ids))
         session.set_metric("run_trust_mode", self.config.run_trust_mode)
-        session.set_metric("target_tool_id", str(self.config.target_tool_id))
+        session.set_metric("target_tool_id", str(self.config.target_tool_id).upper())
+        session.set_metric("tip_tool_id", str(self.config.tip_tool_id).upper())
+        session.set_metric("target_tool_role", str(self.config.target_tool_role))
+        session.set_metric("tip_tool_role", str(self.config.tip_tool_role))
 
 
 # ---------------------------------------------------------------------------
@@ -683,23 +859,37 @@ def write_two_segment_penprobe_lookup_demo_outputs(
         fig_path = output_dir / "penprobe_lookup_demo_path_report.png"
         _write_path_figure(fig_path, trace_rows, create_figure, save_figure, style_axes)
         paths["path_figure"] = fig_path
+        distance_path = output_dir / "penprobe_lookup_demo_distance_report.png"
+        _write_distance_figure(distance_path, trace_rows, create_figure, save_figure, style_axes)
+        paths["distance_figure"] = distance_path
+        command_path = output_dir / "penprobe_lookup_demo_command_report.png"
+        _write_command_figure(command_path, trace_rows, create_figure, save_figure, style_axes)
+        paths["command_figure"] = command_path
     except Exception:
         pass
     return paths
 
 
 def _write_summary_text(path: Path, metrics: dict[str, Any]) -> None:
+    tip_summary = metrics.get("tip_to_target_distance_summary_mm") or {}
     lines = [
         "Two-Segment Penprobe Lookup Demo (DEMO ONLY)",
         f"schema_version: {metrics.get('schema_version', DEMO_SCHEMA_VERSION)}",
         f"demo_only: {metrics.get('demo_only', True)}",
         f"not_closed_loop_validated: {metrics.get('not_closed_loop_validated', True)}",
+        f"closed_loop_control: {metrics.get('closed_loop_control', False)}",
+        f"feedforward_lookup_demo: {metrics.get('feedforward_lookup_demo', True)}",
         f"valid_for_model_training: {metrics.get('valid_for_model_training', False)}",
         f"valid_for_thesis_repeatability: {metrics.get('valid_for_thesis_repeatability', False)}",
         "",
-        f"controlled_point: {metrics.get('controlled_point', '')}",
-        f"target_point: {metrics.get('target_point', '')}",
-        f"physical_tip_chasing: {metrics.get('physical_tip_chasing', False)}",
+        "Role semantics:",
+        f"  target_tool_id: {metrics.get('target_tool_id', '')}",
+        f"  tip_tool_id:    {metrics.get('tip_tool_id', '')}",
+        f"  target_point:   {metrics.get('target_point', '')}",
+        f"  controlled_point: {metrics.get('controlled_point', '')}",
+        f"  map_distal_tool_id: {metrics.get('map_distal_tool_id') or 'UNKNOWN'}",
+        f"  expected_map_distal_tool_id: {metrics.get('expected_map_distal_tool_id', '')}",
+        f"  physical_tip_chasing: {metrics.get('physical_tip_chasing', False)}",
         "",
         f"stop_reason: {metrics.get('stop_reason', '')}",
         f"iterations: {metrics.get('iterations', 0)}",
@@ -707,12 +897,17 @@ def _write_summary_text(path: Path, metrics: dict[str, Any]) -> None:
         f"commands_skipped_in_deadband: {metrics.get('commands_skipped_in_deadband', 0)}",
         f"commands_blocked: {metrics.get('commands_blocked', 0)}",
         "",
-        "Nearest-distance summary (mm):",
+        "Nearest-map distance summary (mm) — 0B → selected map point:",
         f"  min:  {(metrics.get('nearest_distance_summary_mm') or {}).get('min')}",
         f"  max:  {(metrics.get('nearest_distance_summary_mm') or {}).get('max')}",
         f"  mean: {(metrics.get('nearest_distance_summary_mm') or {}).get('mean')}",
         "",
-        f"target_tool_id: {metrics.get('target_tool_id', '')}",
+        "Tip-to-target distance summary (mm) — 0A → 0B (only when live tip tracking available):",
+        f"  min:  {tip_summary.get('min')}",
+        f"  max:  {tip_summary.get('max')}",
+        f"  mean: {tip_summary.get('mean')}",
+        f"  live_tip_tracking_available_fraction: {metrics.get('live_tip_tracking_available_fraction', 0.0):.3f}",
+        "",
         f"bottom_top_assignment: {metrics.get('bottom_top_assignment', {})}",
         "",
         "This run is a presentation-only demo. It is NOT a closed-loop",
@@ -726,10 +921,19 @@ def _write_trace_csv(path: Path, trace_rows: list[_DemoTraceRow]) -> None:
         "iteration",
         "monotonic_time_s",
         "wall_time_utc",
+        "target_tool_id",
+        "tip_tool_id",
         "target_x_mm",
         "target_y_mm",
         "target_z_mm",
         "target_age_s",
+        "tip_x_mm",
+        "tip_y_mm",
+        "tip_z_mm",
+        "tip_age_s",
+        "tip_tracking_available",
+        "tip_to_target_distance_mm",
+        "tip_to_selected_map_distance_mm",
         "selected_map_index",
         "selected_x_mm",
         "selected_y_mm",
@@ -748,16 +952,26 @@ def _write_trace_csv(path: Path, trace_rows: list[_DemoTraceRow]) -> None:
         writer.writeheader()
         for row in trace_rows:
             tgt = row.target_xyz_robot_mm or [None, None, None]
+            tip = row.tip_xyz_robot_mm or [None, None, None]
             sel = row.selected_point_xyz_robot_mm or [None, None, None]
             ticks = row.all_8_goal_ticks or {}
             csv_row = {
                 "iteration": row.iteration,
                 "monotonic_time_s": row.monotonic_time_s,
                 "wall_time_utc": row.wall_time_utc,
+                "target_tool_id": row.target_tool_id,
+                "tip_tool_id": row.tip_tool_id,
                 "target_x_mm": tgt[0],
                 "target_y_mm": tgt[1],
                 "target_z_mm": tgt[2],
                 "target_age_s": row.target_age_s,
+                "tip_x_mm": tip[0],
+                "tip_y_mm": tip[1],
+                "tip_z_mm": tip[2],
+                "tip_age_s": row.tip_age_s,
+                "tip_tracking_available": int(row.tip_tracking_available),
+                "tip_to_target_distance_mm": row.tip_to_target_distance_mm,
+                "tip_to_selected_map_distance_mm": row.tip_to_selected_map_distance_mm,
                 "selected_map_index": row.selected_map_index,
                 "selected_x_mm": sel[0],
                 "selected_y_mm": sel[1],
@@ -785,8 +999,15 @@ def _write_trace_jsonl(path: Path, trace_rows: list[_DemoTraceRow]) -> None:
                         "iteration": row.iteration,
                         "monotonic_time_s": row.monotonic_time_s,
                         "wall_time_utc": row.wall_time_utc,
+                        "target_tool_id": row.target_tool_id,
+                        "tip_tool_id": row.tip_tool_id,
                         "target_xyz_robot_mm": row.target_xyz_robot_mm,
                         "target_age_s": row.target_age_s,
+                        "tip_xyz_robot_mm": row.tip_xyz_robot_mm,
+                        "tip_age_s": row.tip_age_s,
+                        "tip_tracking_available": row.tip_tracking_available,
+                        "tip_to_target_distance_mm": row.tip_to_target_distance_mm,
+                        "tip_to_selected_map_distance_mm": row.tip_to_selected_map_distance_mm,
                         "selected_map_index": row.selected_map_index,
                         "selected_point_xyz_robot_mm": row.selected_point_xyz_robot_mm,
                         "nearest_distance_mm": row.nearest_distance_mm,
@@ -814,11 +1035,79 @@ def _write_path_figure(path: Path, trace_rows: list[_DemoTraceRow], create_figur
         return
     targets = [row.target_xyz_robot_mm for row in trace_rows if row.target_xyz_robot_mm is not None]
     selecteds = [row.selected_point_xyz_robot_mm for row in trace_rows if row.selected_point_xyz_robot_mm is not None]
+    tips = [row.tip_xyz_robot_mm for row in trace_rows if row.tip_xyz_robot_mm is not None]
+    target_label = f"target ({trace_rows[0].target_tool_id})" if trace_rows else "target (0B)"
+    tip_label = f"live tip ({trace_rows[0].tip_tool_id})" if trace_rows else "live tip (0A)"
     if targets:
-        ax.plot([t[0] for t in targets], [t[1] for t in targets], "-o", markersize=2, label="target (0B)")
+        ax.plot([t[0] for t in targets], [t[1] for t in targets], "-o", markersize=2, label=target_label)
     if selecteds:
         ax.plot([s[0] for s in selecteds], [s[1] for s in selecteds], "-x", markersize=3, label="selected map point")
+    if tips:
+        ax.plot([t[0] for t in tips], [t[1] for t in tips], "-^", markersize=2, label=tip_label, alpha=0.6)
     style_axes(ax, title="Penprobe Lookup Demo Path (DEMO ONLY)", xlabel="X (mm)", ylabel="Y (mm)")
     ax.set_aspect("equal", adjustable="datalim")
     ax.legend(loc="best", fontsize=8)
+    save_figure(fig, path)
+
+
+def _write_distance_figure(path: Path, trace_rows: list[_DemoTraceRow], create_figure, save_figure, style_axes) -> None:
+    fig, ax = create_figure(size="wide")
+    if not trace_rows:
+        ax.text(0.5, 0.5, "No trace rows captured.", ha="center", va="center", transform=ax.transAxes)
+        style_axes(ax, title="Penprobe Lookup Demo Distances (DEMO)", xlabel="Iteration", ylabel="Distance (mm)")
+        save_figure(fig, path)
+        return
+    iters = [row.iteration for row in trace_rows]
+    nearest = [row.nearest_distance_mm for row in trace_rows]
+    tip_to_target = [row.tip_to_target_distance_mm for row in trace_rows]
+    # Plot only the iterations where each distance is defined (drop None gaps).
+    nearest_iters = [i for i, v in zip(iters, nearest) if v is not None]
+    nearest_vals = [v for v in nearest if v is not None]
+    if nearest_iters:
+        ax.plot(nearest_iters, nearest_vals, "-o", markersize=3, label="nearest map distance (0B → selected)")
+    tip_iters = [i for i, v in zip(iters, tip_to_target) if v is not None]
+    tip_vals = [v for v in tip_to_target if v is not None]
+    if tip_iters:
+        ax.plot(tip_iters, tip_vals, "-x", markersize=3, label="tip-to-target distance (0A → 0B)")
+    style_axes(
+        ax,
+        title="Penprobe Lookup Demo Distances (DEMO ONLY)",
+        xlabel="Iteration",
+        ylabel="Distance (mm)",
+    )
+    if nearest_iters or tip_iters:
+        ax.legend(loc="best", fontsize=8)
+    else:
+        ax.text(0.5, 0.5, "No distance samples in trace.", ha="center", va="center", transform=ax.transAxes)
+    save_figure(fig, path)
+
+
+def _write_command_figure(path: Path, trace_rows: list[_DemoTraceRow], create_figure, save_figure, style_axes) -> None:
+    fig, ax = create_figure(size="wide")
+    if not trace_rows:
+        ax.text(0.5, 0.5, "No trace rows captured.", ha="center", va="center", transform=ax.transAxes)
+        style_axes(ax, title="Penprobe Lookup Demo Commands (DEMO)", xlabel="Iteration", ylabel="Selected map index")
+        save_figure(fig, path)
+        return
+    iters = [row.iteration for row in trace_rows]
+    indices = [row.selected_map_index for row in trace_rows]
+    sent = [bool(row.command_sent) for row in trace_rows]
+    valid_iters = [i for i, v in zip(iters, indices) if v is not None and v >= 0]
+    valid_vals = [v for v in indices if v is not None and v >= 0]
+    sent_iters = [i for i, v, s in zip(iters, indices, sent) if v is not None and v >= 0 and s]
+    sent_vals = [v for v, s in zip(valid_vals, [s for s, v in zip(sent, indices) if v is not None and v >= 0]) if s]
+    if valid_iters:
+        ax.plot(valid_iters, valid_vals, "-", linewidth=0.7, alpha=0.7, label="selected map index (each iter)")
+    if sent_iters:
+        ax.scatter(sent_iters, sent_vals, s=24, label="command actually sent", zorder=3)
+    style_axes(
+        ax,
+        title="Penprobe Lookup Demo Selected Map Index (DEMO ONLY)",
+        xlabel="Iteration",
+        ylabel="Map index",
+    )
+    if valid_iters or sent_iters:
+        ax.legend(loc="best", fontsize=8)
+    else:
+        ax.text(0.5, 0.5, "No commands selected in trace.", ha="center", va="center", transform=ax.transAxes)
     save_figure(fig, path)

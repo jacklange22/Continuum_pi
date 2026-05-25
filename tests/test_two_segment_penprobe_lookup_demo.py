@@ -133,8 +133,12 @@ def test_demo_runs_and_writes_summary_when_target_valid(tmp_path: Path) -> None:
     assert metrics["valid_for_model_training"] is False
     assert metrics["valid_for_thesis_repeatability"] is False
     assert metrics["target_tool_id"] == "0B"
-    assert metrics["controlled_point"].startswith("map distal pose")
-    assert metrics["target_point"].startswith("0B tool origin")
+    assert metrics["tip_tool_id"] == "0A"
+    # Polished semantic strings: controlled point is 0A's coil origin (or
+    # whatever tool the map says produced the distal labels); target point
+    # is the 0B penprobe origin in robot base frame.
+    assert "distal/tip coil origin" in metrics["controlled_point"]
+    assert metrics["target_point"].startswith("0B penprobe origin in robot base frame")
     assert metrics["iterations"] >= 1
     # Files written: summary, trace csv, jsonl, map metadata copy.
     out = result.paths.output_dir
@@ -217,3 +221,227 @@ def test_demo_refuses_to_run_without_map_path(tmp_path: Path) -> None:
     result = runner.run_experiment(EXPERIMENT_NAME, config={})
     assert result.success is False
     assert "map_path" in result.message
+
+
+def test_demo_default_config_uses_target_0b_and_tip_0a() -> None:
+    """Polished defaults: 0B is target, 0A is tip, map should be 0A-labelled."""
+    from continuum_robot.experiments.two_segment_penprobe_lookup_demo import (
+        TwoSegmentPenprobeLookupDemoConfig,
+    )
+
+    config = TwoSegmentPenprobeLookupDemoConfig.from_dict({})
+    assert config.target_tool_id == "0B"
+    assert config.tip_tool_id == "0A"
+    assert config.expected_map_distal_tool_id == "0A"
+    assert config.tip_tracking_optional is True
+    assert config.require_target_tool is True
+    assert config.block_on_map_tool_mismatch is True
+
+
+def test_demo_blocks_when_map_distal_tool_explicitly_differs(tmp_path: Path) -> None:
+    """A map whose distal source was 0C must block when expected is 0A."""
+    map_path = _build_map_for_demo(tmp_path)
+    payload = json.loads(map_path.read_text(encoding="utf-8"))
+    # Pretend this map's labels came from 0C instead of 0A.
+    payload["metadata"]["map_distal_tool_id"] = "0C"
+    payload["metadata"]["role_mapping"] = {"distal_tip": "0C"}
+    map_path.write_text(json.dumps(payload), encoding="utf-8")
+    runner = _runner_with_penprobe(tmp_path)
+    result = runner.run_experiment(
+        EXPERIMENT_NAME,
+        config={
+            "map_path": str(map_path),
+            "max_iterations": 1,
+            "max_duration_s": 1.0,
+            "control_rate_hz": 5.0,
+            "allow_servo_only_test_run": True,
+        },
+    )
+    assert result.success is False
+    assert "Map distal-tip source tool" in result.message
+    assert "0C" in result.message
+
+
+def test_demo_accepts_map_with_explicit_distal_tool_0a(tmp_path: Path) -> None:
+    """A correctly-labelled map (0A) must pass setup cleanly."""
+    map_path = _build_map_for_demo(tmp_path)
+    payload = json.loads(map_path.read_text(encoding="utf-8"))
+    payload["metadata"]["map_distal_tool_id"] = "0A"
+    payload["metadata"]["role_mapping"] = {"distal_tip": "0A"}
+    map_path.write_text(json.dumps(payload), encoding="utf-8")
+    runner = _runner_with_penprobe(tmp_path)
+    result = runner.run_experiment(
+        EXPERIMENT_NAME,
+        config={
+            "map_path": str(map_path),
+            "max_iterations": 1,
+            "max_duration_s": 2.0,
+            "control_rate_hz": 5.0,
+            "command_update_deadband_mm": 0.0,
+            "min_target_motion_mm": 0.0,
+            "allow_servo_only_test_run": True,
+        },
+    )
+    assert result.success is True
+    metrics = result.summary.experiment_metrics
+    assert metrics["map_distal_tool_id"] == "0A"
+    assert metrics["expected_map_distal_tool_id"] == "0A"
+
+
+def test_demo_blocks_when_map_has_no_distal_tool_id_and_not_allowed(tmp_path: Path) -> None:
+    map_path = _build_map_for_demo(tmp_path)
+    payload = json.loads(map_path.read_text(encoding="utf-8"))
+    payload["metadata"]["map_distal_tool_id"] = None
+    payload["metadata"]["role_mapping"] = {}
+    map_path.write_text(json.dumps(payload), encoding="utf-8")
+    runner = _runner_with_penprobe(tmp_path)
+    result = runner.run_experiment(
+        EXPERIMENT_NAME,
+        config={
+            "map_path": str(map_path),
+            "max_iterations": 1,
+            "max_duration_s": 1.0,
+            "control_rate_hz": 5.0,
+            "allow_servo_only_test_run": True,
+            "allow_unknown_map_tip_tool": False,  # OPT IN to strict
+        },
+    )
+    assert result.success is False
+    assert "no recorded `map_distal_tool_id`" in result.message
+
+
+def test_demo_allows_map_with_no_distal_tool_id_by_default(tmp_path: Path) -> None:
+    """Default behavior: warn, not block, when role metadata is absent."""
+    map_path = _build_map_for_demo(tmp_path)
+    payload = json.loads(map_path.read_text(encoding="utf-8"))
+    payload["metadata"]["map_distal_tool_id"] = None
+    payload["metadata"]["role_mapping"] = {}
+    map_path.write_text(json.dumps(payload), encoding="utf-8")
+    runner = _runner_with_penprobe(tmp_path)
+    result = runner.run_experiment(
+        EXPERIMENT_NAME,
+        config={
+            "map_path": str(map_path),
+            "max_iterations": 1,
+            "max_duration_s": 2.0,
+            "control_rate_hz": 5.0,
+            "command_update_deadband_mm": 0.0,
+            "min_target_motion_mm": 0.0,
+            "allow_servo_only_test_run": True,
+            # allow_unknown_map_tip_tool defaults True
+        },
+    )
+    assert result.success is True
+
+
+def test_demo_records_live_tip_tracking_in_trace(tmp_path: Path) -> None:
+    """When 0A is visible, trace + summary capture tip XYZ + tip-to-target distance."""
+    map_path = _build_map_for_demo(tmp_path)
+    # Add 0A as a tracked tool alongside 0B.
+    settings = _settings()
+    settings.robot.bottom_segment_key = "segment_b"
+    settings.robot.top_segment_key = "segment_a"
+    settings.robot.physical_assembly_confirmed_by_operator = True
+    service = _servo_service(tmp_path, settings=settings)
+    _save_all8_startup(service)
+    from continuum_robot.services.models import ToolTrackingSnapshot
+
+    snapshot = _tracking_snapshot(include_distal=True)  # already has 0A
+    snapshot.tools["0B"] = ToolTrackingSnapshot(
+        tool_id="0B",
+        present=True,
+        valid=True,
+        tracking_state="tracked",
+        translation_mm=(3.0, 0.0, 100.0),
+        quaternion_wxyz=(1.0, 0.0, 0.0, 0.0),
+        quality=0.9,
+    )
+    snapshot.T_robot_aurora = [
+        [1, 0, 0, 0],
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1],
+    ]
+    tracking_service = _FakeTrackingService(snapshot)
+    runner = _runner(tmp_path, settings=settings, service=service, tracking_service=tracking_service)
+    result = runner.run_experiment(
+        EXPERIMENT_NAME,
+        config={
+            "map_path": str(map_path),
+            "max_iterations": 2,
+            "max_duration_s": 2.0,
+            "control_rate_hz": 5.0,
+            "command_update_deadband_mm": 0.0,
+            "min_target_motion_mm": 0.0,
+            "allow_servo_only_test_run": True,
+        },
+    )
+    assert result.success is True
+    metrics = result.summary.experiment_metrics
+    assert metrics["live_tip_tracking_available"] is True
+    assert metrics["live_tip_tracking_available_fraction"] > 0.0
+    assert metrics["tip_tool_id"] == "0A"
+    # Trace rows must carry tip XYZ + tip-to-target distance.
+    trace = [
+        json.loads(line)
+        for line in (result.paths.output_dir / "demo_trace.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    tip_seen = [row for row in trace if row.get("tip_xyz_robot_mm")]
+    assert tip_seen, "trace must contain at least one row with tip_xyz_robot_mm"
+    assert tip_seen[0]["tip_tool_id"] == "0A"
+    assert tip_seen[0]["target_tool_id"] == "0B"
+    assert tip_seen[0]["tip_to_target_distance_mm"] is not None
+    # Summary text must spell out the new role section.
+    summary = (result.paths.output_dir / "two_segment_penprobe_lookup_demo_summary.txt").read_text(encoding="utf-8")
+    assert "target_tool_id: 0B" in summary
+    assert "tip_tool_id:    0A" in summary
+    assert "Tip-to-target distance summary" in summary
+
+
+def test_demo_does_not_block_when_only_tip_0a_is_missing(tmp_path: Path) -> None:
+    """Missing live 0A must NOT block — feedforward map still drives the command."""
+    map_path = _build_map_for_demo(tmp_path)
+    # Build a snapshot with 0B but explicitly NO 0A.
+    settings = _settings()
+    settings.robot.bottom_segment_key = "segment_b"
+    settings.robot.top_segment_key = "segment_a"
+    settings.robot.physical_assembly_confirmed_by_operator = True
+    service = _servo_service(tmp_path, settings=settings)
+    _save_all8_startup(service)
+    from continuum_robot.services.models import ToolTrackingSnapshot
+
+    # include_distal=False -> no 0A in snapshot.tools.
+    snapshot = _tracking_snapshot(include_distal=False)
+    snapshot.tools["0B"] = ToolTrackingSnapshot(
+        tool_id="0B",
+        present=True,
+        valid=True,
+        tracking_state="tracked",
+        translation_mm=(2.0, 2.0, 100.0),
+        quaternion_wxyz=(1.0, 0.0, 0.0, 0.0),
+        quality=0.9,
+    )
+    snapshot.T_robot_aurora = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
+    tracking_service = _FakeTrackingService(snapshot)
+    runner = _runner(tmp_path, settings=settings, service=service, tracking_service=tracking_service)
+    result = runner.run_experiment(
+        EXPERIMENT_NAME,
+        config={
+            "map_path": str(map_path),
+            "max_iterations": 2,
+            "max_duration_s": 2.0,
+            "control_rate_hz": 5.0,
+            "command_update_deadband_mm": 0.0,
+            "min_target_motion_mm": 0.0,
+            "allow_servo_only_test_run": True,
+        },
+    )
+    assert result.success is True
+    metrics = result.summary.experiment_metrics
+    # No 0A visible -> live_tip_tracking_available = False, but the run still
+    # completed and (depending on deadband math) at least attempted commands.
+    assert metrics["live_tip_tracking_available"] is False
+    assert metrics["live_tip_tracking_available_fraction"] == 0.0
+    assert metrics["target_tool_id"] == "0B"
+    assert metrics["tip_tool_id"] == "0A"

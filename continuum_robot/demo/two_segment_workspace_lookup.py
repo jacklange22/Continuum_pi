@@ -473,6 +473,67 @@ def _resolve_assembly(candidates: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _resolve_role_mapping_from_runs(
+    run_dirs: list[Path],
+) -> tuple[dict[str, str | None], str | None, str | None, list[str]]:
+    """Extract role -> tool_id mapping from collected dataset runs.
+
+    Reads ``summary.json::experiment_metrics.two_segment_tracking_role_config``
+    (and falls back to ``two_segment_tracking_role_provenance.json``) for each
+    run and assembles a ``{role_name: tool_id_or_None}`` mapping.
+
+    Returns ``(role_mapping, map_distal_tool_id, label_mode, warnings)``.
+
+    ``map_distal_tool_id`` is None when no run records a distal_tip tool ID
+    (the runtime demo will then warn + optionally block depending on its
+    ``allow_unknown_map_tip_tool`` setting).
+    """
+    warnings: list[str] = []
+    aggregated: dict[str, set[str]] = {}
+    label_modes: set[str] = set()
+    for run_dir in run_dirs:
+        run_dir = Path(run_dir)
+        role_config: dict[str, Any] = {}
+        summary_payload = _read_json(run_dir / "summary.json")
+        run_metrics = summary_payload.get("experiment_metrics") if isinstance(summary_payload.get("experiment_metrics"), dict) else {}
+        if isinstance(run_metrics, dict):
+            block = run_metrics.get("two_segment_tracking_role_config")
+            if isinstance(block, dict):
+                role_config = block
+            label_mode = run_metrics.get("dataset_label_mode") or run_metrics.get("label_mode") or run_metrics.get("pose_label_summary", {}).get("label_mode") if isinstance(run_metrics.get("pose_label_summary"), dict) else None
+            if label_mode:
+                label_modes.add(str(label_mode))
+        if not role_config:
+            provenance = _read_json(run_dir / "two_segment_tracking_role_provenance.json")
+            block = provenance.get("two_segment_tracking_role_config") if isinstance(provenance, dict) else {}
+            if isinstance(block, dict):
+                role_config = block
+        if not role_config:
+            warnings.append(f"{run_dir.name}: tracking_role_config absent (cannot pin distal tool)")
+            continue
+        for role_name, record in role_config.items():
+            record_dict = dict(record or {}) if isinstance(record, dict) else {}
+            tool_id = str(record_dict.get("tool_id") or "").strip().upper()
+            enabled = bool(record_dict.get("enabled", True))
+            if not enabled or not tool_id:
+                continue
+            aggregated.setdefault(str(role_name), set()).add(tool_id)
+    role_mapping: dict[str, str | None] = {}
+    for role_name, tool_ids in aggregated.items():
+        if len(tool_ids) == 1:
+            role_mapping[role_name] = next(iter(tool_ids))
+        elif len(tool_ids) > 1:
+            role_mapping[role_name] = None
+            warnings.append(
+                f"role {role_name} resolves to multiple tool IDs across runs: {sorted(tool_ids)}"
+            )
+    if "distal_tip" not in role_mapping and not aggregated:
+        warnings.append("distal_tip role was not present in any run's tracking_role_config")
+    map_distal_tool_id = role_mapping.get("distal_tip")
+    label_mode = next(iter(sorted(label_modes))) if len(label_modes) == 1 else (None if not label_modes else "mixed")
+    return role_mapping, map_distal_tool_id, label_mode, warnings
+
+
 def build_workspace_lookup_map(
     run_dirs: list[Path],
     *,
@@ -532,6 +593,7 @@ def build_workspace_lookup_map(
         candidates = farthest_point_sampling(candidates, max_points=int(config.max_points))
 
     assembly = _resolve_assembly(candidates)
+    role_mapping, map_distal_tool_id, label_mode_seen, role_warnings = _resolve_role_mapping_from_runs(run_dirs)
     map_points = [
         LookupMapPoint(
             map_index=int(index),
@@ -572,6 +634,21 @@ def build_workspace_lookup_map(
         "workspace_bounds_mm": bounds,
         "command_units": "ticks (DYNAMIXEL goal_position register)",
         "label_units": "millimetres, robot base frame",
+        # Role provenance: which Aurora tool produced the distal-tip label
+        # used by the map. Expected = 0A for the standard bench setup. The
+        # runtime controller / demo experiment compare this against
+        # `expected_map_distal_tool_id` and warn/block on mismatch.
+        "role_mapping": {role: tool for role, tool in sorted(role_mapping.items())},
+        "map_distal_tool_id": map_distal_tool_id,
+        "map_controlled_point": (
+            f"{map_distal_tool_id} distal/tip coil origin"
+            if map_distal_tool_id
+            else "distal/tip role origin (source tool ID unknown — see role_mapping_warnings)"
+        ),
+        "target_tool_default": "0B",
+        "tip_tool_default": "0A",
+        "dataset_label_mode_observed": label_mode_seen,
+        "role_mapping_warnings": list(role_warnings),
     }
     git_commit = _try_resolve_git_commit()
     if git_commit:
@@ -736,6 +813,11 @@ def _write_summary_text(path: Path, metadata: dict[str, Any]) -> None:
         f"demo_only_artifact: {metadata['demo_only_artifact']}",
         f"not_closed_loop_validated: {metadata['not_closed_loop_validated']}",
         f"label_mode: {metadata['label_mode']}",
+        f"map_distal_tool_id: {metadata.get('map_distal_tool_id') or 'UNKNOWN (no role config in source runs)'}",
+        f"map_controlled_point: {metadata.get('map_controlled_point', '')}",
+        f"target_tool_default: {metadata.get('target_tool_default')}",
+        f"tip_tool_default:    {metadata.get('tip_tool_default')}",
+        f"role_mapping: {metadata.get('role_mapping') or {}}",
         f"map_point_count: {metadata['map_point_count']}",
         f"pre_downsample_candidate_count: {metadata['pre_downsample_candidate_count']}",
         f"rejected_count: {metadata['rejected_count']}",

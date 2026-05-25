@@ -199,61 +199,93 @@ best_model: ann (xyz_rmse_mm=2.1)
 Each model's full status is in `model_status.json`. Physics-model gating is in
 `physics_model_parameter_report.txt`.
 
-## Stage 5b: Two-segment penprobe lookup demo (~10 min, presentation-only)
+## Stage 5b: Two-segment 0B → 0A penprobe lookup demo (~10 min, presentation-only)
 
 After collecting one or more trusted dual-segment datasets (Stage 2), you can
-play them back as a demo where the live 0B penprobe drives the robot to the
-nearest reachable map point.
+play them back as a demo where the live **0B penprobe** drives the robot to
+the nearest reachable map point whose distal/tip label came from **0A**.
 
-**This is DEMO ONLY.** It is not closed-loop control, not validated for
-thesis/model-training data, and not a substitute for inverse kinematics.
+**Role contract (do not confuse):**
+- **`target_tool_id = 0B`** — penprobe in your hand. Its position in robot
+  base frame is the desired XYZ. Required: missing/stale 0B blocks all writes.
+- **`tip_tool_id = 0A`** — robot distal coil. When visible, its live position
+  is recorded for situational awareness (tip-to-target distance). Optional:
+  missing 0A does NOT block the demo because the map already encodes 0A's
+  pre-recorded position for each command.
+- **`expected_map_distal_tool_id = 0A`** — the map should have been built
+  from a dataset where `distal_tip` role was assigned to 0A. The demo
+  validates this at setup; mismatch blocks (override with
+  `block_on_map_tool_mismatch: false` only for debugging).
 
-1. **Build the workspace lookup map (offline, ~1 s):**
+**This is DEMO ONLY.** Feedforward lookup, not closed-loop control. Not
+validated for thesis/model-training data. Not a substitute for IK.
+
+1. **Collect a two-segment dataset with `distal_tip` = `0A`** (Stage 2 default
+   when 0A is the registered distal coil).
+
+2. **Build the workspace lookup map (offline, ~1 s):**
    ```bash
    .venv/bin/python -m continuum_robot.demo.two_segment_workspace_lookup \
-       --latest --voxel-size-mm 6 --output-dir data/experiments/two_segment_workspace_lookup_maps/$(date +%Y%m%d_%H%M%S)_demo_map
+       --latest --voxel-size-mm 6 \
+       --output-dir data/experiments/two_segment_workspace_lookup_maps/$(date +%Y%m%d_%H%M%S)_demo_map
    ```
-   Outputs: `two_segment_workspace_lookup_map.json`, `*_points.csv`, `*_summary.txt`,
-   `*_quality.json`, plus optional XY/density/coverage figures.
+   The map's `summary.txt` will print `map_distal_tool_id: 0A` and
+   `map_controlled_point: 0A distal/tip coil origin` — confirm this before
+   running the demo.
 
-2. **Run the demo (GUI or experiment runner):**
-   Run `two_segment_penprobe_lookup_demo` from the Experiment tab.
-   Config keys you actually care about:
-   - `map_path`: path to the JSON from step 1
-   - `target_tool_id`: `0B` (the penprobe)
-   - `control_rate_hz`: `2`–`5` (low, deliberate)
-   - `nearest_distance_warning_mm`: `5.0`
-   - `max_nearest_distance_mm`: `25.0` (hard stop)
-   - `interpolation_mode`: `nearest` (safest); `inverse_distance` only after
-     the demo behaves cleanly at `nearest`
-   - `physical_assembly_confirmed_by_operator`: `true`
+3. **Open the dedicated GUI page:** *Experiment tab → Two-Segment 0B → 0A
+   Lookup Demo*. The page only appears in `dual_segment` mode and exposes
+   exactly five operator-essential controls:
+   - **Map Path** — paste the JSON path from step 2
+   - **Target Tool** dropdown (default `0B`)
+   - **Tip Tool** dropdown (default `0A`)
+   - **Expected Map Distal Tool** (default `0A`)
+   - **Control Rate / Nearest-distance warning + hard stop / Interpolation /
+     Dry run / Allow servo-only**
 
-3. **What you'll see at runtime:**
-   - The bus receives the all-8 goal ticks of whichever map point sits closest
-     to the current 0B robot-frame pose.
-   - When 0B sits inside the mapped workspace, `nearest_distance_mm` stays small.
-   - When 0B leaves the mapped workspace, `is_extrapolating: true` flips and
-     after `max_nearest_distance_mm` the controller stops issuing commands.
-   - Tracker stale, wrong servo IDs, or mismatched bottom/top all skip the
-     command and record the reason in `demo_trace.jsonl`.
+4. **Run flow:**
+   1. *Dry run first* — set `dry_run: true`, click Run, watch the trace
+      record what *would* be written without touching the bus.
+   2. Live run at `control_rate_hz: 2`–`3` Hz. Hold 0B inside the mapped
+      workspace.
+   3. The bus receives the all-8 goal ticks of whichever map point sits
+      closest to the current 0B robot-frame pose.
+   4. If 0A is visible, the trace records its position too plus
+      `tip_to_target_distance_mm` per iteration.
+   5. Tracker stale, wrong servo IDs, mismatched bottom/top, or missing 0B
+      all skip the command and record the reason.
 
-4. **Outputs:**
-   - `two_segment_penprobe_lookup_demo_summary.txt` — human-readable, includes
-     the loud "DEMO ONLY" labels and `not_closed_loop_validated: True`.
-   - `demo_trace.csv` / `demo_trace.jsonl` — per-iteration timeline:
-     target XYZ, selected map XYZ, nearest distance, goal ticks written,
-     skip/block reasons, max current proxy, tracker freshness.
-   - `map_used.json` — frozen snapshot of the map metadata used for this run.
+5. **Outputs:**
+   - `two_segment_penprobe_lookup_demo_summary.txt` — role semantics,
+     command counts, both distance summaries, demo-only labelling.
+   - `demo_trace.csv` / `demo_trace.jsonl` — per-iteration: target 0B XYZ,
+     tip 0A XYZ (when available), `tip_to_target_distance_mm`,
+     `tip_to_selected_map_distance_mm`, selected map index, goal ticks
+     written, skip/block reasons, current/load proxy, tracker freshness.
+   - `map_used.json` — frozen snapshot of the map metadata used.
+   - `penprobe_lookup_demo_path_report.png` — target / selected / tip paths.
+   - `penprobe_lookup_demo_distance_report.png` — nearest distance + tip-to-target
+     over time.
+   - `penprobe_lookup_demo_command_report.png` — selected map index per
+     iteration with markers for actually-sent commands.
 
-5. **Limitations to call out in any demo:**
-   - The robot follows the **closest pre-recorded pose**, not arbitrary IK.
-     If your dataset didn't cover a region, the demo silently selects the
-     nearest border point and warns rather than extrapolating wildly.
+6. **Limitations to call out in any presentation:**
+   - The robot follows the **closest pre-recorded 0A pose**, not arbitrary IK.
    - The control loop is feedforward only — no error-feedback term.
-   - `0B` is the **probe origin**, not a calibrated physical pen tip unless
-     you have a separate validated pivot calibration.
+   - `0B` is the **probe origin**, not a calibrated physical pen tip.
+   - Tip 0A tracking is for display/audit only; the demo cannot use it to
+     correct the command in this version.
    - The map's quality is fundamentally limited by the dataset density and
-     trust; the demo cannot beat the underlying data.
+     trust.
+
+7. **Hardware safety checklist before powering on:**
+   - All-8 startup artifact accepted (Stage 1)
+   - Bottom/top assembly confirmed in this session
+   - Map's `bottom_top_assignment` matches your current runtime
+   - Map's `map_distal_tool_id == 0A`
+   - 1 Mbps baud (recommended for all-8 throughput)
+   - Start in `nearest` mode, not `inverse_distance`
+   - Start with `control_rate_hz: 2`, raise only after one clean run
 
 ## Stage 6: Evidence index + handoff (~2 min)
 

@@ -482,6 +482,34 @@ def _check_two_segment_penprobe_lookup_demo(
                 "FAIL", "two_segment_penprobe_lookup_demo must not set valid_for_thesis_repeatability=true."
             )
         )
+    # Role semantics: 0B target, 0A tip is the polished default. Drift here
+    # is operator-visible at run time but worth catching as a WARN in the
+    # post-hoc validator so review across many demo runs stays sane.
+    target_tool_id = str(metrics.get("target_tool_id") or "").upper()
+    if target_tool_id and target_tool_id != "0B":
+        issues.append(
+            RunValidationIssue(
+                "WARN",
+                f"target_tool_id={target_tool_id!r} (expected 0B for the canonical penprobe demo).",
+            )
+        )
+    tip_tool_id = str(metrics.get("tip_tool_id") or "").upper()
+    if tip_tool_id and tip_tool_id != "0A":
+        issues.append(
+            RunValidationIssue(
+                "WARN",
+                f"tip_tool_id={tip_tool_id!r} (expected 0A for the canonical penprobe demo).",
+            )
+        )
+    map_distal = str(metrics.get("map_distal_tool_id") or "").upper()
+    if tip_tool_id and map_distal and map_distal != tip_tool_id:
+        issues.append(
+            RunValidationIssue(
+                "FAIL",
+                f"map_distal_tool_id={map_distal!r} disagrees with tip_tool_id={tip_tool_id!r}. "
+                "Rebuild the map from a run that used the expected distal tool.",
+            )
+        )
     for filename, label in [
         ("two_segment_penprobe_lookup_demo_summary.txt", "demo summary"),
         ("demo_trace.csv", "demo trace CSV"),
