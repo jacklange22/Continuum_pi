@@ -1,0 +1,49 @@
+# Two-segment slow motion demo (presentation only).
+#
+# This is NOT data collection, NOT closed-loop control, and NOT model
+# validation. It drives the stacked dual-segment robot through a bounded
+# smooth command-space pattern (figure-8, circle, sweep, ...) and records
+# what was commanded + servo telemetry. The bundle is tagged
+# demo_only=True / valid_for_model_training=False on every artifact.
+#
+# Defaults match the recommended first-demo settings (conservative).
+# Walk up the amplitude ladder (0.10 -> 0.25 -> 0.50 -> 0.75 -> 1.00 cm)
+# only after the smaller amplitude completes without overcurrent or
+# unexpected motion.
+
+pattern: figure8          # figure8 | circle | oval | sweep_x | sweep_y | raster | clover | neutral_pulse | custom_lissajous
+amplitude_cm: 0.25        # 0.10 / 0.25 / 0.50 / 0.75 / 1.00 cm presets
+cycle_duration_s: 45.0    # seconds per pattern cycle (full traverse)
+cycles: 2                 # number of full cycles inside the ramp envelope
+update_rate_hz: 3.0       # bus write rate
+ramp_in_s: 5.0            # smooth amplitude ramp from neutral
+ramp_out_s: 5.0           # smooth amplitude ramp back to neutral
+hold_at_start_s: 1.0      # hold at neutral before the ramp-in starts
+hold_at_end_s: 1.0        # hold at neutral after the ramp-out finishes
+
+coupling: phase_shifted   # same_direction | opposite_direction | phase_shifted | top_scaled | bottom_only | top_only
+top_scale: 0.5
+phase_offset_deg: 90.0
+lissajous_a: 1.0
+lissajous_b: 2.0
+lissajous_phase_deg: 0.0
+raster_ratio: 3.0
+random_seed: 0
+
+# Safety caps -- tighter than collect-pose defaults; raise deliberately.
+max_tick_delta_from_startup: 200
+hard_max_tick_delta_from_startup: 600
+max_step_ticks_per_update: 25
+current_warning_ma: 800
+sustained_overcurrent_ma: 1200
+sustained_overcurrent_sample_count: 3
+top_segment_tendon_routing_compensation: true
+return_to_neutral_at_end: true
+
+# Mode + provenance. dry_run defaults to True so the operator can preview
+# the trajectory and trace bundle without writing the bus. Flip to False
+# for the actual live demo.
+dry_run: true
+allow_servo_only_test_run: false
+tracker_overlay_enabled: false
+run_label: ""

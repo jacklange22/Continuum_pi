@@ -102,6 +102,18 @@ from continuum_robot.experiments.workspace_repeatability_map import (
     DEFAULT_VISITS_PER_TARGET as WORKSPACE_DEFAULT_VISITS_PER_TARGET,
     WorkspaceRepeatabilityMapConfig,
 )
+from continuum_robot.experiments.two_segment_slow_motion_demo import (
+    TwoSegmentSlowMotionDemoConfig,
+)
+from continuum_robot.demo.two_segment_motion_patterns import (
+    AMPLITUDE_PRESETS_CM as SLOW_MOTION_AMPLITUDE_PRESETS_CM,
+    DEFAULT_AMPLITUDE_CM as SLOW_MOTION_DEFAULT_AMPLITUDE_CM,
+    SUPPORTED_COUPLINGS as SLOW_MOTION_COUPLINGS,
+    SUPPORTED_PATTERNS as SLOW_MOTION_PATTERNS,
+    PatternRequest as SlowMotionPatternRequest,
+    generate_pattern_trajectory as slow_motion_generate_pattern_trajectory,
+    max_pair_amplitude as slow_motion_max_pair_amplitude,
+)
 from continuum_robot.gui.controllers.experiment_controller import ExperimentViewState
 from continuum_robot.gui.theme import COLORS, chip_stylesheet, semantic_chip_colors
 from continuum_robot.gui.view_utils import editable_update_blocked, preserve_scroll_position, set_line_edit_text, set_spinbox_value, set_text_document
@@ -2486,8 +2498,8 @@ class TwoSegmentCollectPoseDatasetPage(ExperimentPageBase):
         self.settle_spin.setSingleStep(0.05)
         self.settle_spin.setToolTip(
             "Seconds to wait after each goal-position write before the tracker reads.\n"
-            "Default 2.0 s is conservatively above the tendon + constant-curvature\n"
-            "relaxation window. Drop to 0.1–0.5 s once the rig is settled and you want throughput."
+            "Default 3.0 s is conservatively above the tendon + constant-curvature\n"
+            "relaxation window. Shorten only after the rig is settled and you want throughput."
         )
         self.settle_spin.valueChanged.connect(lambda value: self.controller.set_config_value("settle_time_s", float(value)))
         # Operator-facing preview of derived safety + plan.
@@ -3655,7 +3667,7 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
         self.advanced_card.body_layout.addWidget(capture_label)
         capture_hint = QLabel(
             "Per-sample cycle: write command → wait Post-Write Settle (bus flush, default 0 s) → "
-            "wait Settle Time (mechanical settling, default 0.15 s) → request a tracker reading. "
+            "wait Settle Time (mechanical settling, default 3.0 s) → request a tracker reading. "
             "If no fresh reading arrives within Capture Timeout (default 1 s), the sample is rejected and the runner moves on."
         )
         capture_hint.setProperty("role", "hint")
@@ -3824,7 +3836,7 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
             self.tracker_frames_per_position_spin,
             int(self.controller.get_config_value("tracker_samples_per_command", 1)),
         )
-        self._set_double(self.settle_time_spin, float(self.controller.get_config_value("settle_time_s", 0.15)))
+        self._set_double(self.settle_time_spin, float(self.controller.get_config_value("settle_time_s", 3.0)))
         self._set_double(self.capture_timeout_spin, float(self.controller.get_config_value("capture_timeout_s", 1.0)))
         self._set_double(self.tracker_age_spin, float(self.controller.get_config_value("max_tracker_age_s", 0.15)))
         self._set_double(self.workspace_amplitude_spin, float(self.controller.get_config_value("workspace_amplitude_cm", 1.0)))
@@ -3955,7 +3967,7 @@ class CollectPoseCommandDatasetPage(ExperimentPageBase):
             )
             or 0.02
         )
-        settle_time_s = float(self.controller.get_config_value("settle_time_s", 0.15))
+        settle_time_s = float(self.controller.get_config_value("settle_time_s", 3.0))
         capture_timeout_s = float(self.controller.get_config_value("capture_timeout_s", 1.0))
         if mode == "hysteresis_path_dependence":
             planned_commands = (
@@ -5610,6 +5622,249 @@ class DynamicModelingDatasetPage(ExperimentPageBase):
         )
 
 
+class TwoSegmentSlowMotionDemoPage(ExperimentPageBase):
+    """Operator page for the two-segment slow motion presentation demo.
+
+    Bounded smooth command-space pattern (figure-8, circle, sweep, ...) over
+    the dual-segment workspace. Open-loop, demo-only -- the page makes the
+    demo-only contract visible to the operator on every screen.
+    """
+
+    refresh_policy = "manual"
+    page_hint = (
+        "Open-loop two-segment motion demo. Drives the stacked robot through "
+        "a slow smooth command pattern. NOT data collection; NOT closed-loop; "
+        "NOT thesis-grade. Start with figure-8 at 0.25 cm for 1-2 cycles."
+    )
+
+    def __init__(self, controller, experiment_name: str, parent=None) -> None:
+        super().__init__(controller, experiment_name, parent)
+        self.run_button.setText("Run Slow Motion Demo")
+
+    def _build_parameter_sections(self) -> None:
+        pattern_card = ExperimentCard(
+            "Motion Pattern",
+            "Smooth command-space path. Amplitude is in tip-target cm per segment; the "
+            "trajectory ramps from neutral, runs the chosen cycles, and ramps back.",
+        )
+        pattern_form = QFormLayout()
+        self.pattern_combo = QComboBox()
+        for name in SLOW_MOTION_PATTERNS:
+            self.pattern_combo.addItem(name, name)
+        self.pattern_combo.currentTextChanged.connect(
+            lambda value: self.controller.set_config_value("pattern", str(value))
+        )
+        self.amplitude_combo = QComboBox()
+        for preset in SLOW_MOTION_AMPLITUDE_PRESETS_CM:
+            self.amplitude_combo.addItem(f"{preset:.2f} cm", float(preset))
+        self.amplitude_combo.currentIndexChanged.connect(self._on_amplitude_changed)
+        self.cycle_duration_spin = QDoubleSpinBox()
+        self.cycle_duration_spin.setRange(1.0, 600.0)
+        self.cycle_duration_spin.setDecimals(1)
+        self.cycle_duration_spin.setSingleStep(5.0)
+        self.cycle_duration_spin.setSuffix(" s")
+        self.cycle_duration_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("cycle_duration_s", float(value))
+        )
+        self.cycles_spin = QSpinBox()
+        self.cycles_spin.setRange(1, 100)
+        self.cycles_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("cycles", int(value))
+        )
+        self.update_rate_spin = QDoubleSpinBox()
+        self.update_rate_spin.setRange(0.5, 30.0)
+        self.update_rate_spin.setDecimals(1)
+        self.update_rate_spin.setSingleStep(0.5)
+        self.update_rate_spin.setSuffix(" Hz")
+        self.update_rate_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("update_rate_hz", float(value))
+        )
+        self.ramp_in_spin = QDoubleSpinBox()
+        self.ramp_in_spin.setRange(0.0, 60.0)
+        self.ramp_in_spin.setDecimals(1)
+        self.ramp_in_spin.setSingleStep(0.5)
+        self.ramp_in_spin.setSuffix(" s")
+        self.ramp_in_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("ramp_in_s", float(value))
+        )
+        self.ramp_out_spin = QDoubleSpinBox()
+        self.ramp_out_spin.setRange(0.0, 60.0)
+        self.ramp_out_spin.setDecimals(1)
+        self.ramp_out_spin.setSingleStep(0.5)
+        self.ramp_out_spin.setSuffix(" s")
+        self.ramp_out_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("ramp_out_s", float(value))
+        )
+        pattern_form.addRow("Pattern", self.pattern_combo)
+        pattern_form.addRow("Amplitude", self.amplitude_combo)
+        pattern_form.addRow("Cycle Duration", self.cycle_duration_spin)
+        pattern_form.addRow("Cycles", self.cycles_spin)
+        pattern_form.addRow("Update Rate", self.update_rate_spin)
+        pattern_form.addRow("Ramp In", self.ramp_in_spin)
+        pattern_form.addRow("Ramp Out", self.ramp_out_spin)
+        pattern_card.body_layout.addLayout(pattern_form)
+        self.parameter_layout.addWidget(pattern_card)
+
+        coupling_card = ExperimentCard(
+            "Top/Bottom Coupling",
+            "Choose how the top segment's command relates to the bottom segment's command.",
+        )
+        coupling_form = QFormLayout()
+        self.coupling_combo = QComboBox()
+        for name in SLOW_MOTION_COUPLINGS:
+            self.coupling_combo.addItem(name, name)
+        self.coupling_combo.currentTextChanged.connect(
+            lambda value: self.controller.set_config_value("coupling", str(value))
+        )
+        self.top_scale_spin = QDoubleSpinBox()
+        self.top_scale_spin.setRange(0.0, 2.0)
+        self.top_scale_spin.setDecimals(2)
+        self.top_scale_spin.setSingleStep(0.05)
+        self.top_scale_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("top_scale", float(value))
+        )
+        self.phase_offset_spin = QDoubleSpinBox()
+        self.phase_offset_spin.setRange(-360.0, 360.0)
+        self.phase_offset_spin.setDecimals(1)
+        self.phase_offset_spin.setSingleStep(15.0)
+        self.phase_offset_spin.setSuffix(" deg")
+        self.phase_offset_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("phase_offset_deg", float(value))
+        )
+        coupling_form.addRow("Coupling", self.coupling_combo)
+        coupling_form.addRow("Top Scale", self.top_scale_spin)
+        coupling_form.addRow("Phase Offset", self.phase_offset_spin)
+        coupling_card.body_layout.addLayout(coupling_form)
+        self.parameter_layout.addWidget(coupling_card)
+
+        safety_card = ExperimentCard(
+            "Safety + Run Mode",
+            "Tick caps and overcurrent thresholds. Dry-run defaults ON so the operator "
+            "can preview before writing the bus.",
+        )
+        safety_form = QFormLayout()
+        self.soft_cap_spin = QSpinBox()
+        self.soft_cap_spin.setRange(1, 4096)
+        self.soft_cap_spin.setSingleStep(50)
+        self.soft_cap_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_tick_delta_from_startup", int(value))
+        )
+        self.hard_cap_spin = QSpinBox()
+        self.hard_cap_spin.setRange(1, 4096)
+        self.hard_cap_spin.setSingleStep(50)
+        self.hard_cap_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("hard_max_tick_delta_from_startup", int(value))
+        )
+        self.step_cap_spin = QSpinBox()
+        self.step_cap_spin.setRange(1, 1024)
+        self.step_cap_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("max_step_ticks_per_update", int(value))
+        )
+        self.current_warning_spin = QSpinBox()
+        self.current_warning_spin.setRange(0, 10000)
+        self.current_warning_spin.setSingleStep(50)
+        self.current_warning_spin.setSuffix(" mA")
+        self.current_warning_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("current_warning_ma", int(value))
+        )
+        self.sustained_current_spin = QSpinBox()
+        self.sustained_current_spin.setRange(0, 10000)
+        self.sustained_current_spin.setSingleStep(50)
+        self.sustained_current_spin.setSuffix(" mA")
+        self.sustained_current_spin.valueChanged.connect(
+            lambda value: self.controller.set_config_value("sustained_overcurrent_ma", int(value))
+        )
+        self.dry_run_check = QCheckBox(
+            "Dry run / preview only (default ON; flip OFF for actual live demo)"
+        )
+        self.dry_run_check.toggled.connect(
+            lambda value: self.controller.set_config_value("dry_run", bool(value))
+        )
+        self.return_to_neutral_check = QCheckBox("Return to neutral on finalize")
+        self.return_to_neutral_check.toggled.connect(
+            lambda value: self.controller.set_config_value("return_to_neutral_at_end", bool(value))
+        )
+        self.run_label_edit = QLineEdit()
+        self.run_label_edit.setPlaceholderText("optional short label persisted into summary")
+        self.run_label_edit.editingFinished.connect(
+            lambda: self.controller.set_config_value("run_label", self.run_label_edit.text().strip())
+        )
+        safety_form.addRow("Soft Tick Cap", self.soft_cap_spin)
+        safety_form.addRow("Hard Tick Cap", self.hard_cap_spin)
+        safety_form.addRow("Max Step Ticks / Update", self.step_cap_spin)
+        safety_form.addRow("Warning Current", self.current_warning_spin)
+        safety_form.addRow("Sustained Overcurrent", self.sustained_current_spin)
+        safety_form.addRow("Run Label", self.run_label_edit)
+        safety_card.body_layout.addLayout(safety_form)
+        safety_card.body_layout.addWidget(self.dry_run_check)
+        safety_card.body_layout.addWidget(self.return_to_neutral_check)
+        self.parameter_layout.addWidget(safety_card)
+
+        preview_card = ExperimentCard(
+            "Preview",
+            "Trajectory summary computed from the current pattern + amplitude.",
+        )
+        self.preview_label = QLabel("preview pending")
+        self.preview_label.setWordWrap(True)
+        self.preview_label.setProperty("role", "muted")
+        preview_card.body_layout.addWidget(self.preview_label)
+        self.parameter_layout.addWidget(preview_card)
+
+    def _on_amplitude_changed(self) -> None:
+        value = self.amplitude_combo.currentData()
+        if value is None:
+            return
+        self.controller.set_config_value("amplitude_cm", float(value))
+
+    def _sync_parameters_from_state(self, state: ExperimentViewState) -> None:
+        _ = state
+        config = TwoSegmentSlowMotionDemoConfig.from_dict(self.controller.config_payload())
+        self._set_combo_value(self.pattern_combo, config.pattern)
+        # Pick the closest preset entry for the amplitude.
+        closest_index = 0
+        closest_delta = abs(SLOW_MOTION_AMPLITUDE_PRESETS_CM[0] - config.amplitude_cm)
+        for index, preset in enumerate(SLOW_MOTION_AMPLITUDE_PRESETS_CM):
+            delta = abs(float(preset) - float(config.amplitude_cm))
+            if delta < closest_delta:
+                closest_delta = delta
+                closest_index = index
+        with QSignalBlocker(self.amplitude_combo):
+            self.amplitude_combo.setCurrentIndex(closest_index)
+        self._set_double(self.cycle_duration_spin, float(config.cycle_duration_s))
+        self._set_spin(self.cycles_spin, int(config.cycles))
+        self._set_double(self.update_rate_spin, float(config.update_rate_hz))
+        self._set_double(self.ramp_in_spin, float(config.ramp_in_s))
+        self._set_double(self.ramp_out_spin, float(config.ramp_out_s))
+        self._set_combo_value(self.coupling_combo, config.coupling)
+        self._set_double(self.top_scale_spin, float(config.top_scale))
+        self._set_double(self.phase_offset_spin, float(config.phase_offset_deg))
+        self._set_spin(self.soft_cap_spin, int(config.max_tick_delta_from_startup))
+        self._set_spin(self.hard_cap_spin, int(config.hard_max_tick_delta_from_startup))
+        self._set_spin(self.step_cap_spin, int(config.max_step_ticks_per_update))
+        self._set_spin(self.current_warning_spin, int(config.current_warning_ma))
+        self._set_spin(self.sustained_current_spin, int(config.sustained_overcurrent_ma))
+        self._set_checkbox(self.dry_run_check, bool(config.dry_run))
+        self._set_checkbox(self.return_to_neutral_check, bool(config.return_to_neutral_at_end))
+        self._set_line_text(self.run_label_edit, str(config.run_label or ""))
+        self._refresh_preview(config=config)
+
+    def _refresh_preview(self, *, config: TwoSegmentSlowMotionDemoConfig) -> None:
+        try:
+            trajectory = slow_motion_generate_pattern_trajectory(config.pattern_request())
+            sample_count = len(trajectory)
+            observed_amplitude = slow_motion_max_pair_amplitude(trajectory)
+            total_duration = trajectory[-1].elapsed_s if trajectory else 0.0
+            self.preview_label.setText(
+                f"Pattern '{config.pattern}', amplitude {config.amplitude_cm:.2f} cm, "
+                f"{config.cycles} cycles, ~{total_duration:.1f} s total; "
+                f"{sample_count} bus writes at {config.update_rate_hz:.1f} Hz; "
+                f"observed peak pair amplitude {observed_amplitude:.3f} cm "
+                f"({config.coupling} coupling)."
+            )
+        except Exception as exc:  # bad config -- surface in the panel
+            self.preview_label.setText(f"Preview unavailable: {exc}")
+
+
 def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBase:
     """Return the custom page widget for one supported experiment."""
     factories: dict[str, Callable[[object], ExperimentPageBase]] = {
@@ -5626,6 +5881,7 @@ def build_experiment_page(controller, experiment_name: str) -> ExperimentPageBas
         "two_segment_startup_validation": lambda ctrl: TwoSegmentStartupValidationPage(ctrl, "two_segment_startup_validation"),
         "two_segment_collect_pose_command_dataset": lambda ctrl: TwoSegmentCollectPoseDatasetPage(ctrl, "two_segment_collect_pose_command_dataset"),
         "two_segment_repeatability": lambda ctrl: TwoSegmentRepeatabilityPage(ctrl, "two_segment_repeatability"),
+        "two_segment_slow_motion_demo": lambda ctrl: TwoSegmentSlowMotionDemoPage(ctrl, "two_segment_slow_motion_demo"),
         "pretension_validation": lambda ctrl: PretensionValidationPage(ctrl, "pretension_validation"),
         "penprobe_chasing_demo": lambda ctrl: PenprobeChasingDemoPage(ctrl, "penprobe_chasing_demo"),
         "command_schedule_validation": lambda ctrl: CommandScheduleValidationPage(ctrl, "command_schedule_validation"),

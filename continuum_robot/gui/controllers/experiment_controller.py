@@ -90,6 +90,7 @@ MODE_EXPERIMENT_VISIBILITY: dict[str, set[str]] = {
         "two_segment_startup_validation",
         "two_segment_collect_pose_command_dataset",
         "two_segment_repeatability",
+        "two_segment_slow_motion_demo",
         "registration_validation",
         "pivot_validation",
         "neutral_setpoint_drift_validation",
@@ -1235,6 +1236,22 @@ class ExperimentController:
             if valid_ratio is not None:
                 parts.append(f"valid={float(valid_ratio) * 100:.0f}%")
             return " ".join(parts)
+        if experiment_name == "two_segment_slow_motion_demo":
+            pattern = metrics.get("pattern", "?")
+            amplitude = metrics.get("amplitude_cm")
+            sample_count = metrics.get("sample_count")
+            sent = metrics.get("command_sent_count")
+            max_current = metrics.get("max_current_observed_ma")
+            parts = [f"pattern={pattern}"]
+            if amplitude is not None:
+                parts.append(f"±{float(amplitude):.2f}cm")
+            if sample_count is not None:
+                parts.append(f"samples={int(sample_count)}")
+            if sent is not None:
+                parts.append(f"sent={int(sent)}")
+            if max_current is not None:
+                parts.append(f"maxI={int(max_current)}mA")
+            return " ".join(parts)
         if experiment_name == "registration_validation":
             summary = metrics.get("translation_delta_to_consensus_summary_mm", {}) or {}
             value = summary.get("mean")
@@ -1934,6 +1951,10 @@ class ExperimentController:
             if bool(config_payload.get("allow_lower_trust_runtime_tip", False)):
                 return "live dynamic modeling (lower-trust tip)"
             return "live dynamic modeling dataset"
+        if experiment_name == "two_segment_slow_motion_demo":
+            if bool(config_payload.get("dry_run", True)):
+                return "dry-run two-segment demo"
+            return "live two-segment slow motion demo"
         if experiment_name == "command_schedule_validation":
             return "software validation"
         if experiment_name == "tracker_timing_validation":
@@ -2010,6 +2031,17 @@ class ExperimentController:
                 f"dur {dur_text} @ {sample_hz:.0f}Hz "
                 f"(~{planned_rows} rows), cmd {cmd_hz:.0f}Hz, "
                 f"soft cap {soft_cap} ticks, step ≤{step_cap} ticks"
+            )
+        if experiment_name == "two_segment_slow_motion_demo":
+            pattern = str(config_payload.get("pattern", "figure8") or "figure8")
+            amplitude = float(config_payload.get("amplitude_cm", 0.25) or 0.25)
+            cycles = int(config_payload.get("cycles", 2) or 2)
+            cycle_s = float(config_payload.get("cycle_duration_s", 45.0) or 45.0)
+            coupling = str(config_payload.get("coupling", "phase_shifted") or "phase_shifted")
+            dry_suffix = " (dry-run)" if bool(config_payload.get("dry_run", True)) else ""
+            return (
+                f"{pattern} ±{amplitude:.2f} cm × {cycles} cycle(s) @ {cycle_s:.0f}s/cycle, "
+                f"{coupling}{dry_suffix}"
             )
         if experiment_name == "aurora_grid_accuracy":
             captured_points = config_payload.get("captured_points", []) or []

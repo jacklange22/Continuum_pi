@@ -42,6 +42,9 @@ from continuum_robot.experiments.workspace_repeatability_map import (
 from continuum_robot.experiments.dynamic_modeling_dataset import (
     DynamicModelingDatasetConfig,
 )
+from continuum_robot.experiments.two_segment_slow_motion_demo import (
+    TwoSegmentSlowMotionDemoConfig,
+)
 from continuum_robot.experiments.penprobe_chasing_demo import (
     MAPPING_AGGRESSIVE_TICK_DEMO,
     MAPPING_PAIRED_XY_PROPORTIONAL,
@@ -2416,6 +2419,144 @@ def evaluate_preflight(
                     "long_run",
                     "Long Run",
                     f"Planned duration is {duration_text}. Validate at 30 s and 5 min first; verify disk space before launching long runs.",
+                )
+            )
+
+    elif experiment_name == "two_segment_slow_motion_demo":
+        # Open-loop presentation demo. Required: dual_segment mode, all-8
+        # startup accepted, bottom/top assembly confirmed, soft cap < hard
+        # cap. Warning: high amplitude, missing tracker (does NOT block).
+        # Dry-run short-circuits hardware gates and tags the bundle as
+        # not_thesis_evidence via the controller.
+        config = TwoSegmentSlowMotionDemoConfig.from_dict(payload)
+        dry_run = bool(config.dry_run)
+        checks.append(
+            _info(
+                "demo_only",
+                "Demo Only",
+                "This is a presentation-only motion pattern demo. The output bundle is tagged "
+                "demo_only=True and is NOT valid for model training or thesis repeatability.",
+            )
+        )
+        if dry_run:
+            checks.append(
+                _warning(
+                    "mode",
+                    "Run Mode",
+                    "Dry-run is ON: the trajectory and trace will be produced WITHOUT writing the servo bus.",
+                )
+            )
+        else:
+            checks.append(_ok("mode", "Run Mode", "Live slow motion demo (servo bus writes enabled)."))
+        operating_context = settings.robot.operating_context()
+        if operating_context.operating_mode != "dual_segment":
+            checks.append(
+                _blocked(
+                    "operating_mode",
+                    "Operating Mode",
+                    f"Two-segment slow motion demo requires dual_segment mode; current mode is {operating_context.operating_mode}.",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "operating_mode",
+                    "Operating Mode",
+                    f"Operating in dual_segment with active servos {list(operating_context.expected_servo_ids)}.",
+                )
+            )
+        assembly_issues = list(getattr(operating_context, "physical_assembly_issues", []) or [])
+        if assembly_issues:
+            checks.append(
+                _blocked(
+                    "physical_assembly",
+                    "Bottom/Top Assembly",
+                    "Two-segment demo requires a confirmed bottom/top physical assembly. "
+                    f"Issues: {'; '.join(assembly_issues)}",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "physical_assembly",
+                    "Bottom/Top Assembly",
+                    f"Bottom={operating_context.bottom_segment_key} servos {list(operating_context.bottom_servo_ids)}; "
+                    f"top={operating_context.top_segment_key} servos {list(operating_context.top_servo_ids)}.",
+                )
+            )
+        if not dry_run:
+            if not servo_connected:
+                checks.append(
+                    _blocked(
+                        "servo_service",
+                        "Servo Service",
+                        "Live slow motion demo requires a connected ServoService.",
+                    )
+                )
+            else:
+                checks.append(_ok("servo_service", "Servo Service", "ServoService is connected."))
+            expected_ids = [int(v) for v in operating_context.expected_servo_ids]
+            missing_neutrals = [sid for sid in expected_ids if int(sid) not in neutral_setpoints]
+            if missing_neutrals:
+                checks.append(
+                    _blocked(
+                        "neutral_setpoints",
+                        "All-8 Startup Reference",
+                        f"Missing neutral / startup ticks for servo(s) {missing_neutrals}. "
+                        "Run two_segment_startup_validation first.",
+                    )
+                )
+            else:
+                checks.append(
+                    _ok(
+                        "neutral_setpoints",
+                        "All-8 Startup Reference",
+                        f"Neutral setpoints loaded for servos {expected_ids}.",
+                    )
+                )
+        if int(config.max_tick_delta_from_startup) > int(config.hard_max_tick_delta_from_startup):
+            checks.append(
+                _blocked(
+                    "tick_cap",
+                    "Tick Cap",
+                    f"max_tick_delta_from_startup={int(config.max_tick_delta_from_startup)} exceeds hard cap "
+                    f"{int(config.hard_max_tick_delta_from_startup)}.",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "tick_cap",
+                    "Tick Cap",
+                    f"Soft cap {int(config.max_tick_delta_from_startup)} ticks, "
+                    f"hard cap {int(config.hard_max_tick_delta_from_startup)} ticks, "
+                    f"max step {int(config.max_step_ticks_per_update)} ticks/update.",
+                )
+            )
+        if float(config.amplitude_cm) > 0.5:
+            checks.append(
+                _warning(
+                    "amplitude",
+                    "Amplitude",
+                    f"Amplitude {float(config.amplitude_cm):.2f} cm is above the 0.50 cm recommended range. "
+                    "Ramp from 0.25 cm if the rig has not been verified at this amplitude.",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "amplitude",
+                    "Amplitude",
+                    f"Amplitude {float(config.amplitude_cm):.2f} cm is within the conservative demo range.",
+                )
+            )
+        if not dry_run and tracker_ready is False:
+            checks.append(
+                _warning(
+                    "tracker",
+                    "Tracker",
+                    "Tracker is not ready. Slow motion demo is open-loop so this does NOT block; "
+                    "the trace will record without distal/intermediate tip pose.",
                 )
             )
 
