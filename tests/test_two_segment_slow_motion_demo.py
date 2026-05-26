@@ -224,6 +224,31 @@ class TestDryRunExecute:
         assert (first.bottom_x_cm, first.bottom_y_cm) == (0.0, 0.0)
         assert (last.bottom_x_cm, last.bottom_y_cm) == (0.0, 0.0)
 
+    def test_dry_run_does_not_call_exclusive_bus_operation(self) -> None:
+        # Regression: dry-run should not try to acquire bus ownership
+        # because there is no live servo_service to lock against.
+        config = TwoSegmentSlowMotionDemoConfig.from_dict(
+            {
+                "amplitude_cm": 0.10,
+                "cycle_duration_s": 1.0,
+                "cycles": 1,
+                "ramp_in_s": 0.1,
+                "ramp_out_s": 0.1,
+                "hold_at_start_s": 0.0,
+                "hold_at_end_s": 0.0,
+                "dry_run": True,
+            }
+        )
+        experiment = TwoSegmentSlowMotionDemoExperiment(config=config)
+        session = _StubSession()
+        experiment.setup(session)
+        experiment.execute(session)
+        # If the demo tried to acquire bus ownership on a stub session, the
+        # MagicMock(servo_service=None) would have raised AttributeError on
+        # exclusive_bus_operation. Reaching here means the demo correctly
+        # short-circuits the lock for dry-run.
+        assert len(session.samples) > 0
+
     def test_summary_marks_demo_only(self) -> None:
         config = TwoSegmentSlowMotionDemoConfig.from_dict(
             {
@@ -278,6 +303,194 @@ def _trace_rows(n: int = 3) -> list[DemoTraceRow]:
             )
         )
     return rows
+
+
+class _BusOwnershipRecorder:
+    """Records enter/exit of ``exclusive_bus_operation`` and orders all bus writes."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+        self.entered = False
+        self.write_calls: list[dict[int, int]] = []
+
+    def exclusive_bus_operation(self, *, owner: str, reason: str | None = None, servo_id=None):
+        self.events.append(("acquire", {"owner": owner, "reason": reason}))
+        recorder = self
+
+        class _Ctx:
+            def __enter__(self_inner):
+                recorder.entered = True
+                recorder.events.append(("enter", {}))
+                return self_inner
+
+            def __exit__(self_inner, exc_type, exc, tb):
+                recorder.events.append(("exit", {"exc_type": exc_type.__name__ if exc_type else None}))
+                recorder.entered = False
+                return False
+
+        return _Ctx()
+
+
+class _LiveServoServiceStub:
+    """ServoService stub that records bus writes and tracks exclusive ownership."""
+
+    is_connected = True
+    mapper = None  # filled in below
+
+    def __init__(self) -> None:
+        self.bus_recorder = _BusOwnershipRecorder()
+        self.write_calls: list[dict[int, int]] = []
+        self.telemetry_calls = 0
+
+    def exclusive_bus_operation(self, **kwargs):
+        return self.bus_recorder.exclusive_bus_operation(**kwargs)
+
+    def _write_goal_positions(self, positions_by_id: dict[int, int]) -> None:
+        # Asserts the lock is held when the write happens — exactly what the
+        # production guard would do, but we surface it as a test failure
+        # rather than a ServoBusBusyError so the test diff is readable.
+        assert self.bus_recorder.entered, (
+            "two_segment_slow_motion_demo wrote the bus without holding exclusive ownership; "
+            "this regresses the fix for spurious 'bus is owned' errors mid-demo."
+        )
+        self.write_calls.append(dict(positions_by_id))
+
+    def read_live_telemetry(self, servo_ids):
+        self.telemetry_calls += 1
+        # Return a minimal telemetry shape — no current, no position, no jam.
+        from types import SimpleNamespace
+        return {
+            int(sid): SimpleNamespace(
+                present_position=2048,
+                present_current_ma=10,
+                present_current_raw_unit=10,
+            )
+            for sid in servo_ids
+        }
+
+
+class _LiveMapperStub:
+    def to_goal_positions(self, displacements_cm, neutral_ticks):
+        # No-op mapping: a flat command rounds to the same ticks as neutral.
+        return [int(neutral) for neutral in neutral_ticks]
+
+
+class TestLiveBusOwnership:
+    """Regression coverage for the missing exclusive_bus_operation wrap."""
+
+    def _make_live_session(self) -> tuple[_StubSession, _LiveServoServiceStub]:
+        session = _StubSession()
+        servo_service = _LiveServoServiceStub()
+        servo_service.mapper = _LiveMapperStub()
+        session.context.servo_service = servo_service
+        # Build an operating context shape with commanded ids 1..8 and
+        # bottom_segment_key=segment_a so the demo can drive a real loop.
+        from types import SimpleNamespace
+        # to_flat() pulls segment definitions from context.metadata() rather
+        # than from .segments directly. Provide a metadata payload that
+        # carries the canonical segment_a / segment_b structure.
+        segments_metadata = {
+            "segment_a": {"key": "segment_a", "servo_ids": [1, 2, 3, 4]},
+            "segment_b": {"key": "segment_b", "servo_ids": [5, 6, 7, 8]},
+        }
+        op_context = SimpleNamespace(
+            operating_mode="dual_segment",
+            commanded_servo_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+            expected_servo_ids=[1, 2, 3, 4, 5, 6, 7, 8],
+            bottom_segment_key="segment_a",
+            top_segment_key="segment_b",
+            bottom_servo_ids=[1, 2, 3, 4],
+            top_servo_ids=[5, 6, 7, 8],
+            physical_assembly_issues=[],
+            segment_order=["segment_a", "segment_b"],
+        )
+        op_context.metadata = lambda: {"segments": segments_metadata}
+        session.context.settings = SimpleNamespace(
+            robot=SimpleNamespace(operating_context=lambda: op_context)
+        )
+        return session, servo_service
+
+    def test_live_demo_acquires_exclusive_bus_before_writing(self) -> None:
+        config = TwoSegmentSlowMotionDemoConfig.from_dict(
+            {
+                "amplitude_cm": 0.10,
+                "cycle_duration_s": 1.0,
+                "cycles": 1,
+                "ramp_in_s": 0.1,
+                "ramp_out_s": 0.1,
+                "hold_at_start_s": 0.0,
+                "hold_at_end_s": 0.0,
+                "update_rate_hz": 5.0,
+                "dry_run": False,
+            }
+        )
+        experiment = TwoSegmentSlowMotionDemoExperiment(config=config)
+        # Build the trajectory directly (skip setup, which reaches into
+        # the real ServoService.resolve_startup_reference_ticks path).
+        from continuum_robot.experiments.two_segment_slow_motion_demo import (
+            generate_pattern_trajectory,
+        )
+        experiment._trajectory = generate_pattern_trajectory(config.pattern_request())
+        experiment._startup_ticks_by_servo = {sid: 2048 for sid in range(1, 9)}
+        experiment._startup_provenance = {"accepted_all_8_startup": True, "source": "test"}
+        session, servo_service = self._make_live_session()
+
+        # Jump straight to execute to exercise the bus-ownership wrap.
+        experiment.execute(session)
+
+        events = servo_service.bus_recorder.events
+        # Exactly one acquire → enter → exit cycle for the whole run.
+        kinds = [event[0] for event in events]
+        assert kinds.count("acquire") == 1
+        assert kinds.count("enter") == 1
+        assert kinds.count("exit") == 1
+        # Acquire happens before any bus write.
+        first_event = events[0]
+        assert first_event[0] == "acquire"
+        assert first_event[1]["owner"] == "two_segment_slow_motion_demo"
+        # At least one write actually landed (sanity).
+        assert servo_service.write_calls, "expected at least one bus write during the live demo loop"
+        # And the assertion inside _write_goal_positions enforces "lock held".
+
+    def test_live_demo_releases_lock_even_on_safety_halt(self) -> None:
+        # Configure overcurrent thresholds so the FIRST telemetry triggers a halt.
+        # The demo should still release the bus.
+        config = TwoSegmentSlowMotionDemoConfig.from_dict(
+            {
+                "amplitude_cm": 0.10,
+                "cycle_duration_s": 1.0,
+                "cycles": 1,
+                "ramp_in_s": 0.1,
+                "ramp_out_s": 0.1,
+                "hold_at_start_s": 0.0,
+                "hold_at_end_s": 0.0,
+                "update_rate_hz": 5.0,
+                "sustained_overcurrent_ma": 1,
+                "sustained_overcurrent_sample_count": 1,
+                "dry_run": False,
+            }
+        )
+        experiment = TwoSegmentSlowMotionDemoExperiment(config=config)
+        from continuum_robot.experiments.two_segment_slow_motion_demo import (
+            generate_pattern_trajectory,
+        )
+        experiment._trajectory = generate_pattern_trajectory(config.pattern_request())
+        experiment._startup_ticks_by_servo = {sid: 2048 for sid in range(1, 9)}
+        experiment._startup_provenance = {"accepted_all_8_startup": True, "source": "test"}
+        session, servo_service = self._make_live_session()
+
+        experiment.execute(session)
+
+        events = servo_service.bus_recorder.events
+        # Acquire + enter at start, exit at end — exactly one cycle even
+        # when the run aborts early on overcurrent.
+        kinds = [event[0] for event in events]
+        assert kinds[0] == "acquire"
+        assert kinds[-1] == "exit"
+        assert kinds.count("exit") == 1
+        # The exit happened cleanly (no exception propagated through __exit__).
+        exit_event = next(event for event in events if event[0] == "exit")
+        assert exit_event[1]["exc_type"] is None
 
 
 class TestOutputBundle:

@@ -617,7 +617,16 @@ class ExperimentController:
         if state.preflight_report.requires_confirmation and not confirm_overwrite:
             raise RuntimeError("Run requires explicit overwrite confirmation.")
         if state.run_active:
-            raise RuntimeError("Experiment is already running.")
+            # Be specific so the operator knows which run blocked the click.
+            # The page-level re-entrancy guard usually prevents this from
+            # surfacing at all, but if it does the message points at the
+            # current run rather than reading as a generic "already
+            # running" mystery.
+            current = self.state.selected_experiment or "an experiment"
+            raise RuntimeError(
+                f"Cannot start a new run while {current} is still running. "
+                "Wait for it to finish or click Stop first."
+            )
 
         with self._lock:
             self._stop_event.clear()

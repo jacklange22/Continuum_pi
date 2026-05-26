@@ -402,6 +402,20 @@ class ExperimentPageBase(QWidget):
         return ()
 
     def _run(self) -> None:
+        # Re-entrancy guard. Qt button signals can fire faster than the
+        # state-driven ``run_button.setEnabled(False)`` update, so a quick
+        # double-click would race past the controller's ``run_active`` check
+        # and surface the controller's "Experiment is already running." error
+        # to the operator. Hold a local flag that we flip as soon as the
+        # click handler enters, and clear in ``finally``.
+        if getattr(self, "_run_click_in_flight", False):
+            return
+        self._run_click_in_flight = True
+        # Disable the button immediately rather than waiting for the state
+        # update loop to propagate. The button is re-enabled by the next
+        # ``set_state`` call after the run completes (or fails) and the
+        # controller sets ``state.run_active = False``.
+        self.run_button.setEnabled(False)
         try:
             report = self.controller.refresh().preflight_report
             if report.requires_confirmation:
@@ -412,6 +426,9 @@ class ExperimentPageBase(QWidget):
                     f"The following output(s) already exist and will be overwritten:\n\n{details}\n\nContinue?",
                 )
                 if response != QMessageBox.Yes:
+                    # Operator cancelled — re-enable so they can try again
+                    # without waiting for the state loop.
+                    self.run_button.setEnabled(True)
                     return
                 self.controller.run(confirm_overwrite=True)
             else:
@@ -419,7 +436,13 @@ class ExperimentPageBase(QWidget):
         except Exception as exc:
             LOG.exception("Experiment page run action failed")
             set_text_document(self.status_text, f"Run action failed: {exc}", stick_to_bottom_if_at_bottom=True)
+            # Run did not start cleanly — re-enable the button so the
+            # operator can try again rather than waiting for the
+            # next state propagation to notice ``run_active`` is still False.
+            self.run_button.setEnabled(True)
             return
+        finally:
+            self._run_click_in_flight = False
 
     def _load_selected_history_item(self, item: QListWidgetItem) -> None:
         raw_path = item.data(Qt.UserRole)

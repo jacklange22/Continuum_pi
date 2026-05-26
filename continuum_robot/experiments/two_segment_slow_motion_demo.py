@@ -507,145 +507,176 @@ class TwoSegmentSlowMotionDemoExperiment(BaseExperiment):
             else _DryRunMapper()
         )
 
+        # Acquire exclusive servo-bus ownership for the duration of the demo so
+        # that background telemetry pollers and other concurrent code paths do
+        # not race the demo's writes (every other live-motion experiment does
+        # this; the slow motion demo was missing it, which produced spurious
+        # "bus is owned by active … background refresh is paused" errors
+        # mid-run that the operator perceived as "experiment already running").
+        # Dry-run skips the lock because there is no live bus and no
+        # servo_service to lock against on a stub session.
+        live_bus_lock = (
+            not self.config.dry_run
+            and servo_service is not None
+            and getattr(servo_service, "is_connected", False)
+        )
+        bus_owner_cm = None
+        if live_bus_lock:
+            bus_owner_cm = servo_service.exclusive_bus_operation(
+                owner="two_segment_slow_motion_demo",
+                reason=f"slow motion {self.config.pattern} pattern, {self.config.cycles} cycle(s)",
+            )
+            bus_owner_cm.__enter__()
+
         previous_elapsed = 0.0
-        for index, point in enumerate(self._trajectory):
-            if session.stop_requested():
-                self._stop_reason = "operator_stop"
-                break
-            command = build_two_segment_command_for_point(
-                point, bottom_segment_key=bottom_segment_key or SEGMENT_A
-            )
-            intended_flat = command.to_flat(context=context)
-            if self.config.top_segment_tendon_routing_compensation:
-                servo_flat, _info = _apply_top_routing_compensation(intended_flat, context=context)
-            else:
-                servo_flat = list(intended_flat)
-            goal_ticks = mapper.to_goal_positions(servo_flat, startup_ticks)
-            goals_by_servo = {int(servo_id): int(goal) for servo_id, goal in zip(commanded_ids, goal_ticks)}
-
-            skip_reason: str | None = None
-            command_sent = False
-            present_ticks_by_servo: dict[int, int | None] = {int(s): None for s in commanded_ids}
-            max_current_ma: int | None = None
-            safety_state = "ok"
-
-            if self._safety_halted:
-                skip_reason = "safety_halt"
-                safety_state = "halted"
-            elif self.config.dry_run or servo_service is None:
-                skip_reason = "dry_run"
-                safety_state = "dry_run"
-            else:
-                # Step-size guard. If max_step_ticks_per_update would be
-                # violated, we DO interpolate towards the goal via the same
-                # bus path (no special interim mode) by simply skipping the
-                # write this tick and recording the skip in the trace; the
-                # operator can review and rerun with a smaller cycle. This
-                # never writes a faster step than configured.
-                violation, observed, offender = _max_step_violation(
-                    goals_by_servo=goals_by_servo,
-                    previous_goals_by_servo=self._previous_goals_by_servo,
-                    max_step_ticks=int(self.config.max_step_ticks_per_update),
+        try:
+            for index, point in enumerate(self._trajectory):
+                if session.stop_requested():
+                    self._stop_reason = "operator_stop"
+                    break
+                command = build_two_segment_command_for_point(
+                    point, bottom_segment_key=bottom_segment_key or SEGMENT_A
                 )
-                if violation and self._previous_goals_by_servo:
-                    skip_reason = (
-                        f"step_limit: servo {offender} would step {observed} ticks > cap "
-                        f"{int(self.config.max_step_ticks_per_update)}"
-                    )
-                    safety_state = "step_clamped"
+                intended_flat = command.to_flat(context=context)
+                if self.config.top_segment_tendon_routing_compensation:
+                    servo_flat, _info = _apply_top_routing_compensation(intended_flat, context=context)
                 else:
-                    try:
-                        writer = getattr(servo_service, "_write_goal_positions", None)
-                        if not callable(writer):
-                            raise RuntimeError("ServoService all-8 raw goal writer is unavailable.")
-                        writer(goals_by_servo)
-                        command_sent = True
-                        self._previous_goals_by_servo = dict(goals_by_servo)
-                    except Exception as exc:
-                        skip_reason = f"bus_error: {exc}"
-                        safety_state = "bus_error"
-                if command_sent and not self.config.dry_run:
-                    try:
-                        telemetry = servo_service.read_live_telemetry(commanded_ids)
-                        for servo_id, item in telemetry.items():
-                            if item is None:
-                                continue
-                            value = getattr(item, "present_position", None)
-                            if value is not None:
-                                present_ticks_by_servo[int(servo_id)] = int(value)
-                        max_current_ma = _telemetry_max_current_ma(telemetry)
-                        if max_current_ma is not None:
-                            if self._max_current_observed_ma is None or max_current_ma > self._max_current_observed_ma:
-                                self._max_current_observed_ma = max_current_ma
-                            if max_current_ma >= int(self.config.sustained_overcurrent_ma):
-                                self._consecutive_overcurrent_cycles += 1
-                            else:
-                                self._consecutive_overcurrent_cycles = 0
-                            if self._consecutive_overcurrent_cycles >= int(self.config.sustained_overcurrent_sample_count):
-                                self._safety_halted = True
-                                self._stop_reason = "sustained_overcurrent"
-                                safety_state = "overcurrent_halt"
-                                LOG.warning(
-                                    "two_segment_slow_motion_demo: sustained overcurrent halt at sample %s",
-                                    int(index),
-                                )
-                    except Exception as exc:
-                        skip_reason = f"telemetry_error: {exc}"
-                        safety_state = "telemetry_error"
+                    servo_flat = list(intended_flat)
+                goal_ticks = mapper.to_goal_positions(servo_flat, startup_ticks)
+                goals_by_servo = {int(servo_id): int(goal) for servo_id, goal in zip(commanded_ids, goal_ticks)}
 
-            self._trace.append(
-                DemoTraceRow(
-                    sample_index=int(point.sample_index),
-                    elapsed_s=float(point.elapsed_s),
-                    phase_label=str(point.phase_label),
-                    bottom_x_cm=float(point.bottom_x_cm),
-                    bottom_y_cm=float(point.bottom_y_cm),
-                    top_x_cm=float(point.top_x_cm),
-                    top_y_cm=float(point.top_y_cm),
-                    intended_flat_cm=list(intended_flat),
-                    servo_flat_cm=list(servo_flat),
-                    goal_ticks_by_servo=dict(goals_by_servo),
-                    present_ticks_by_servo=dict(present_ticks_by_servo),
-                    max_current_ma=max_current_ma,
-                    command_sent=bool(command_sent),
-                    skip_reason=skip_reason,
-                    safety_state=safety_state,
-                )
-            )
-            session.add_sample(
-                ExperimentTimeseriesSample(
-                    monotonic_time_s=float(point.elapsed_s),
-                    wall_time_utc=datetime.now(timezone.utc).isoformat(),
-                    phase=str(point.phase_label),
-                    step_index=int(index),
-                    sample_index=int(index),
-                    commanded_cable_deltas_cm=list(intended_flat),
-                    commanded_motor_values={str(k): int(v) for k, v in goals_by_servo.items()},
-                    status_flags=["demo_only", "not_thesis_evidence"]
-                    + (["dry_run"] if self.config.dry_run else [])
-                    + (["safety_halt"] if self._safety_halted else []),
-                    extra={
-                        "record_kind": "two_segment_slow_motion_demo_point",
-                        "pattern": self.config.pattern,
-                        "bottom_x_cm": float(point.bottom_x_cm),
-                        "bottom_y_cm": float(point.bottom_y_cm),
-                        "top_x_cm": float(point.top_x_cm),
-                        "top_y_cm": float(point.top_y_cm),
-                        "skip_reason": skip_reason,
-                        "command_sent": bool(command_sent),
-                        "safety_state": safety_state,
-                    },
-                )
-            )
-            session.update_progress(index + 1, len(self._trajectory), {"phase": point.phase_label})
+                skip_reason: str | None = None
+                command_sent = False
+                present_ticks_by_servo: dict[int, int | None] = {int(s): None for s in commanded_ids}
+                max_current_ma: int | None = None
+                safety_state = "ok"
 
-            # Sleep to the next tick.
-            dt = max(0.0, float(point.elapsed_s) - float(previous_elapsed))
-            if dt > 0.0 and not self.config.dry_run:
-                sleep_fn(dt)
-            previous_elapsed = float(point.elapsed_s)
-            if self._safety_halted:
-                break
+                if self._safety_halted:
+                    skip_reason = "safety_halt"
+                    safety_state = "halted"
+                elif self.config.dry_run or servo_service is None:
+                    skip_reason = "dry_run"
+                    safety_state = "dry_run"
+                else:
+                    # Step-size guard. If max_step_ticks_per_update would be
+                    # violated, we DO interpolate towards the goal via the same
+                    # bus path (no special interim mode) by simply skipping the
+                    # write this tick and recording the skip in the trace; the
+                    # operator can review and rerun with a smaller cycle. This
+                    # never writes a faster step than configured.
+                    violation, observed, offender = _max_step_violation(
+                        goals_by_servo=goals_by_servo,
+                        previous_goals_by_servo=self._previous_goals_by_servo,
+                        max_step_ticks=int(self.config.max_step_ticks_per_update),
+                    )
+                    if violation and self._previous_goals_by_servo:
+                        skip_reason = (
+                            f"step_limit: servo {offender} would step {observed} ticks > cap "
+                            f"{int(self.config.max_step_ticks_per_update)}"
+                        )
+                        safety_state = "step_clamped"
+                    else:
+                        try:
+                            writer = getattr(servo_service, "_write_goal_positions", None)
+                            if not callable(writer):
+                                raise RuntimeError("ServoService all-8 raw goal writer is unavailable.")
+                            writer(goals_by_servo)
+                            command_sent = True
+                            self._previous_goals_by_servo = dict(goals_by_servo)
+                        except Exception as exc:
+                            skip_reason = f"bus_error: {exc}"
+                            safety_state = "bus_error"
+                    if command_sent and not self.config.dry_run:
+                        try:
+                            telemetry = servo_service.read_live_telemetry(commanded_ids)
+                            for servo_id, item in telemetry.items():
+                                if item is None:
+                                    continue
+                                value = getattr(item, "present_position", None)
+                                if value is not None:
+                                    present_ticks_by_servo[int(servo_id)] = int(value)
+                            max_current_ma = _telemetry_max_current_ma(telemetry)
+                            if max_current_ma is not None:
+                                if self._max_current_observed_ma is None or max_current_ma > self._max_current_observed_ma:
+                                    self._max_current_observed_ma = max_current_ma
+                                if max_current_ma >= int(self.config.sustained_overcurrent_ma):
+                                    self._consecutive_overcurrent_cycles += 1
+                                else:
+                                    self._consecutive_overcurrent_cycles = 0
+                                if self._consecutive_overcurrent_cycles >= int(self.config.sustained_overcurrent_sample_count):
+                                    self._safety_halted = True
+                                    self._stop_reason = "sustained_overcurrent"
+                                    safety_state = "overcurrent_halt"
+                                    LOG.warning(
+                                        "two_segment_slow_motion_demo: sustained overcurrent halt at sample %s",
+                                        int(index),
+                                    )
+                        except Exception as exc:
+                            skip_reason = f"telemetry_error: {exc}"
+                            safety_state = "telemetry_error"
+
+                self._trace.append(
+                    DemoTraceRow(
+                        sample_index=int(point.sample_index),
+                        elapsed_s=float(point.elapsed_s),
+                        phase_label=str(point.phase_label),
+                        bottom_x_cm=float(point.bottom_x_cm),
+                        bottom_y_cm=float(point.bottom_y_cm),
+                        top_x_cm=float(point.top_x_cm),
+                        top_y_cm=float(point.top_y_cm),
+                        intended_flat_cm=list(intended_flat),
+                        servo_flat_cm=list(servo_flat),
+                        goal_ticks_by_servo=dict(goals_by_servo),
+                        present_ticks_by_servo=dict(present_ticks_by_servo),
+                        max_current_ma=max_current_ma,
+                        command_sent=bool(command_sent),
+                        skip_reason=skip_reason,
+                        safety_state=safety_state,
+                    )
+                )
+                session.add_sample(
+                    ExperimentTimeseriesSample(
+                        monotonic_time_s=float(point.elapsed_s),
+                        wall_time_utc=datetime.now(timezone.utc).isoformat(),
+                        phase=str(point.phase_label),
+                        step_index=int(index),
+                        sample_index=int(index),
+                        commanded_cable_deltas_cm=list(intended_flat),
+                        commanded_motor_values={str(k): int(v) for k, v in goals_by_servo.items()},
+                        status_flags=["demo_only", "not_thesis_evidence"]
+                        + (["dry_run"] if self.config.dry_run else [])
+                        + (["safety_halt"] if self._safety_halted else []),
+                        extra={
+                            "record_kind": "two_segment_slow_motion_demo_point",
+                            "pattern": self.config.pattern,
+                            "bottom_x_cm": float(point.bottom_x_cm),
+                            "bottom_y_cm": float(point.bottom_y_cm),
+                            "top_x_cm": float(point.top_x_cm),
+                            "top_y_cm": float(point.top_y_cm),
+                            "skip_reason": skip_reason,
+                            "command_sent": bool(command_sent),
+                            "safety_state": safety_state,
+                        },
+                    )
+                )
+                session.update_progress(index + 1, len(self._trajectory), {"phase": point.phase_label})
+
+                # Sleep to the next tick.
+                dt = max(0.0, float(point.elapsed_s) - float(previous_elapsed))
+                if dt > 0.0 and not self.config.dry_run:
+                    sleep_fn(dt)
+                previous_elapsed = float(point.elapsed_s)
+                if self._safety_halted:
+                    break
+        finally:
+            if bus_owner_cm is not None:
+                try:
+                    bus_owner_cm.__exit__(None, None, None)
+                except Exception as exc:  # belt-and-braces; do not mask the run
+                    LOG.warning(
+                        "two_segment_slow_motion_demo: bus ownership release failed: %s",
+                        exc,
+                    )
 
         if self._stop_reason == "not_started":
             self._stop_reason = "completed"
@@ -668,8 +699,21 @@ class TwoSegmentSlowMotionDemoExperiment(BaseExperiment):
             # ramp here: the trajectory's ramp_out already coasted the robot
             # to neutral; this is a safety belt-and-braces final write so
             # that if the trajectory was interrupted the bus is at neutral.
-            neutral_goals = {int(servo_id): int(value) for servo_id, value in self._startup_ticks_by_servo.items()}
-            writer(neutral_goals)
+            # Acquire exclusive ownership here too: the execute() loop has
+            # already released the bus (finally block) by the time finalize
+            # runs, so any background poller could be holding it. Without
+            # the wrap the neutral write would race the poller and could
+            # fail with the same "bus already owned" error that this fix
+            # addresses for the main loop.
+            with servo_service.exclusive_bus_operation(
+                owner="two_segment_slow_motion_demo:finalize",
+                reason="return-to-neutral after slow motion demo",
+            ):
+                neutral_goals = {
+                    int(servo_id): int(value)
+                    for servo_id, value in self._startup_ticks_by_servo.items()
+                }
+                writer(neutral_goals)
         except Exception as exc:  # safety belt-and-braces; do not mask the run
             LOG.warning("two_segment_slow_motion_demo: return-to-neutral failed: %s", exc)
 
