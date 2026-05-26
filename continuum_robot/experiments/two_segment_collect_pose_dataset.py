@@ -1107,6 +1107,29 @@ def write_two_segment_dataset_outputs(
     with paths["sample_failure_events"].open("w", encoding="utf-8") as handle:
         for event in list(sample_failure_events or []):
             handle.write(json.dumps(event) + "\n")
+    # Thesis-quality figure set, additive alongside the legacy reports. Mirrors
+    # the single-segment collect_pose_command_dataset ``thesis_*`` contract and
+    # adds per-segment + dataset-quality + current-load panels specific to the
+    # two-segment data shape. Failures here must not block the legacy outputs.
+    try:
+        from continuum_robot.experiments.two_segment_modeling_dataset_outputs import (
+            write_two_segment_thesis_figures,
+        )
+        thesis_paths = write_two_segment_thesis_figures(
+            output_dir=output_dir,
+            metrics=metrics,
+            samples=samples,
+            sample_failure_events=list(sample_failure_events or []),
+        )
+        for key, path in thesis_paths.items():
+            paths[key] = path
+    except Exception:
+        # Operator already has the legacy reports; emit a warning but do not
+        # propagate so the rest of the bundle still lands.
+        import logging as _logging
+        _logging.getLogger(__name__).exception(
+            "Two-segment thesis figure set failed to render; legacy reports unaffected"
+        )
     return paths
 
 
