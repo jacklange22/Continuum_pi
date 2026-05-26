@@ -199,6 +199,79 @@ best_model: ann (xyz_rmse_mm=2.1)
 Each model's full status is in `model_status.json`. Physics-model gating is in
 `physics_model_parameter_report.txt`.
 
+## Stage 4b: Two-segment workspace repeatability (200 × 20, ~3 hr)
+
+Hardware-ready data-collection workflow that mirrors the single-segment
+`workspace_repeatability_map` discipline for the stacked rig. **Not** a
+presentation demo — it produces a thesis-style repeatability evidence
+folder.
+
+**Protocol:**
+- Generate **200** distinct two-segment workspace targets (default 4D
+  Latin hypercube over `bottom_x / bottom_y / top_x / top_y`).
+- Visit each target **20** times = **4000 accepted target captures**.
+- Round-robin shuffled visit order — each cycle reshuffles all 200 targets.
+- Each visit: `neutral → target → settle → capture → neutral`.
+- Primary metric: distal-tip XYZ scatter at the configured `distal_tip`
+  tool (default `0A`) in robot base frame.
+- Intermediate / orientation captured when available, never required.
+
+**Run defaults (override in GUI / YAML):**
+```yaml
+target_count: 200
+repeats_per_target: 20
+max_segment_displacement_cm: 0.25      # bench day starts conservative
+target_generator_mode: "workspace_latin_hypercube"
+random_seed: 0
+neutral_settle_s: 1.0
+target_settle_s: 1.0
+return_to_neutral_between_visits: true
+expected_distal_tool_id: "0A"
+allow_servo_only_test_run: false       # require accepted all-8 startup
+run_trust_mode: "repeatability_run"
+physical_assembly_confirmed_by_operator: true
+```
+
+**Smoke first (~3 min, no thesis claim):**
+```yaml
+target_count: 5
+repeats_per_target: 2
+max_segment_displacement_cm: 0.10
+dry_run: true                          # GUI preview path; never writes goals
+```
+
+**Full hardware run (~3 hr at default settle):**
+- Smoke must pass, all-8 startup artifact accepted, bottom/top confirmed.
+- Power on rig at 1 Mbps.
+- Click *Run Two-Segment Workspace Repeatability* in the GUI Experiment tab.
+- Inspect `repeatability_metrics.json` + `two_segment_thesis_*.png` after.
+
+**Outputs (in the run folder):**
+- `two_segment_workspace_repeatability_summary.txt`
+- `repeatability_targets.json`, `repeatability_visit_plan.csv`
+- `target_captures.csv`, `samples.jsonl`, `failure_events.jsonl`
+- `repeatability_metrics.json`, `repeatability_metrics.csv`
+- `per_target_repeatability.csv`
+- 4 thesis figures: workspace_rms_3d, workspace_rms_map, rms_vs_amplitude,
+  2d_repeatability_map
+
+**Relationship to existing experiments:**
+- `two_segment_repeatability` (scaffold) — small ring/combined target set,
+  3 visits — kept for quick smoke and pretension regression checks.
+- `two_segment_workspace_repeatability` (this section) — 200 × 20 protocol,
+  the canonical thesis evidence run.
+- `workspace_repeatability_map` (single-segment) — 100 × 15 single-segment
+  protocol that this experiment mirrors in shape.
+
+**Limitations to report honestly:**
+- Targets are **commanded** in 4D tendon space; the demo does not
+  closed-loop chase a desired distal XYZ.
+- The reported RMS includes tracker noise + tendon hysteresis +
+  command-repeat error; treat it as a floor on closed-loop accuracy.
+- `0A` is the **coil origin**, not a calibrated physical tip unless you
+  add a tip-calibration step.
+- A run can be COMPLETE even if RMS is large; report it.
+
 ## Stage 5b: Two-segment 0B → 0A penprobe lookup demo (~10 min, presentation-only)
 
 After collecting one or more trusted dual-segment datasets (Stage 2), you can

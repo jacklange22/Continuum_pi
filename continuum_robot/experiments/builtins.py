@@ -56,6 +56,9 @@ from continuum_robot.experiments.two_segment_collect_pose_dataset import (
 from continuum_robot.experiments.two_segment_penprobe_lookup_demo import (
     TwoSegmentPenprobeLookupDemoExperiment,
 )
+from continuum_robot.experiments.two_segment_workspace_repeatability import (
+    TwoSegmentWorkspaceRepeatabilityExperiment,
+)
 from continuum_robot.experiments.two_segment_repeatability import (
     TwoSegmentRepeatabilityExperiment,
 )
@@ -13189,6 +13192,14 @@ def register_builtin_experiments(registry) -> None:
         category="validation",
         tags=["Two Segment", "Repeatability", "Open Loop"],
         factory=TwoSegmentRepeatabilityExperiment.from_dict,
+    )
+    registry.register(
+        name=TwoSegmentWorkspaceRepeatabilityExperiment.name,
+        title="Two-Segment Workspace Repeatability",
+        description=TwoSegmentWorkspaceRepeatabilityExperiment.description,
+        category="validation",
+        tags=["Two Segment", "Repeatability", "Workspace", "All-8"],
+        factory=TwoSegmentWorkspaceRepeatabilityExperiment.from_dict,
     )
     registry.register(
         name=TwoSegmentPenprobeLookupDemoExperiment.name,

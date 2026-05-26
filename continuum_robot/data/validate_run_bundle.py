@@ -157,6 +157,8 @@ def validate_run_folder(run_dir: Path) -> RunValidationReport:
         _check_two_segment_modeling(issues, run_dir=run_dir, metrics=metrics)
     if experiment_name == "two_segment_repeatability":
         _check_physical_assembly_metadata(issues, metrics)
+    if experiment_name == "two_segment_workspace_repeatability":
+        _check_two_segment_workspace_repeatability(issues, run_dir=run_dir, metrics=metrics)
     if experiment_name == "two_segment_penprobe_lookup_demo":
         _check_two_segment_penprobe_lookup_demo(issues, run_dir=run_dir, metrics=metrics)
     if experiment_name == "registration_sampling_study":
@@ -450,6 +452,83 @@ def _check_two_segment_collect_pose_dataset(
     extra = first.get("extra") if isinstance(first.get("extra"), dict) else {}
     if "role_observations" not in extra or "missing_required_pose_roles" not in extra:
         issues.append(RunValidationIssue("WARN", "First sample is missing two-segment pose role observation metadata."))
+
+
+def _check_two_segment_workspace_repeatability(
+    issues: list[RunValidationIssue],
+    *,
+    run_dir: Path,
+    metrics: dict[str, Any],
+) -> None:
+    """Validate a two_segment_workspace_repeatability run folder.
+
+    The protocol expects 200 targets × 20 repeats by default; configurable
+    counts are allowed but the run must record them in metrics. Required
+    artifacts: per-target CSV, metrics JSON, summary text. Required
+    behavior: demo_only=false, valid_for_model_training=false (data is
+    repeatability evidence, not training-valid by default).
+    """
+    if metrics.get("demo_only") is not False:
+        issues.append(
+            RunValidationIssue("FAIL", "two_segment_workspace_repeatability must set demo_only=false.")
+        )
+    if metrics.get("valid_for_model_training") is not False:
+        issues.append(
+            RunValidationIssue(
+                "FAIL",
+                "two_segment_workspace_repeatability must not set valid_for_model_training=true by default.",
+            )
+        )
+    if metrics.get("valid_for_repeatability_analysis") is not True:
+        issues.append(
+            RunValidationIssue(
+                "WARN",
+                "two_segment_workspace_repeatability run should set valid_for_repeatability_analysis=true.",
+            )
+        )
+    target_count = int(metrics.get("target_count") or 0)
+    repeats_per_target = int(metrics.get("repeats_per_target") or 0)
+    accepted = int(metrics.get("accepted_captures") or 0)
+    planned = int(metrics.get("planned_visits") or (target_count * repeats_per_target))
+    if target_count == 0:
+        issues.append(RunValidationIssue("WARN", "Missing target_count metric."))
+    if repeats_per_target == 0:
+        issues.append(RunValidationIssue("WARN", "Missing repeats_per_target metric."))
+    if planned > 0 and accepted < planned:
+        issues.append(
+            RunValidationIssue(
+                "WARN",
+                f"Accepted captures {accepted} < planned {planned}; check rejected_captures + stop_reason.",
+            )
+        )
+    summary = metrics.get("repeatability_summary") if isinstance(metrics.get("repeatability_summary"), dict) else {}
+    below_min = int(summary.get("targets_below_minimum_repeats") or 0)
+    if below_min:
+        issues.append(
+            RunValidationIssue(
+                "WARN",
+                f"{below_min} target(s) have fewer than minimum_repeats_per_target accepted repeats.",
+            )
+        )
+    for filename, label in [
+        ("two_segment_workspace_repeatability_summary.txt", "summary text"),
+        ("repeatability_metrics.json", "metrics JSON"),
+        ("per_target_repeatability.csv", "per-target CSV"),
+        ("target_captures.csv", "captures CSV"),
+        ("repeatability_targets.json", "targets JSON"),
+        ("repeatability_visit_plan.csv", "visit plan CSV"),
+    ]:
+        if not (run_dir / filename).exists():
+            issues.append(RunValidationIssue("WARN", f"{filename} is missing ({label})."))
+    # Figure presence is informational (matplotlib may be unavailable).
+    for filename in (
+        "two_segment_thesis_01_workspace_rms_3d.png",
+        "two_segment_thesis_02_workspace_rms_map.png",
+        "two_segment_thesis_03_rms_vs_amplitude.png",
+        "two_segment_thesis_04_2d_repeatability_map.png",
+    ):
+        if not (run_dir / filename).exists():
+            issues.append(RunValidationIssue("INFO", f"{filename} is missing (thesis figure)."))
 
 
 def _check_two_segment_penprobe_lookup_demo(
