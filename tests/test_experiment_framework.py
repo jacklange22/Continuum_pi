@@ -865,6 +865,35 @@ def test_dataset_writer_roundtrip_loads_canonical_bundle(tmp_path: Path) -> None
     assert bundle.summary.success is True
 
 
+def test_experiment_summary_from_dict_tolerates_unknown_top_level_keys() -> None:
+    """Regression: legacy runs whose ``summary.json`` was clobbered by an
+    experiment's ``write_outputs`` (e.g. the pre-2026-05-26 slow motion
+    demo bug) include non-schema keys at the top level. ``from_dict`` must
+    move those into ``experiment_metrics`` rather than raising
+    ``TypeError: __init__() got an unexpected keyword argument``.
+    """
+    payload = {
+        "schema_version": "1.0",
+        "experiment_name": "two_segment_slow_motion_demo",
+        "run_id": "abc",
+        "success": True,
+        "sample_counts": {"total": 0},
+        "dropped_frames": 0,
+        "invalid_transforms": 0,
+        "stage_pass_fail": {"execute": "passed"},
+        # Unknown keys from the slow motion demo's flat metric dict:
+        "closed_loop_control": False,
+        "demo_only": True,
+        "valid_for_model_training": False,
+        "motion_pattern_demo": True,
+    }
+    summary = ExperimentSummary.from_dict(payload)
+    assert summary.experiment_name == "two_segment_slow_motion_demo"
+    # Unknown keys land in experiment_metrics so callers can still see them.
+    assert summary.experiment_metrics["closed_loop_control"] is False
+    assert summary.experiment_metrics["demo_only"] is True
+
+
 def test_dataset_writer_uses_timestamp_experiment_name_and_collision_suffix(tmp_path: Path, monkeypatch) -> None:
     class _FixedDateTime:
         @staticmethod

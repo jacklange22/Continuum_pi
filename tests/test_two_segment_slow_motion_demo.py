@@ -536,12 +536,48 @@ class TestOutputBundle:
         config = TwoSegmentSlowMotionDemoConfig.from_dict({"amplitude_cm": 0.10})
         rows = _trace_rows()
         write_demo_summary(tmp_path, summary={"sample_count": len(rows)}, config=config, trace=rows)
-        summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+        # Demo-specific summary now lives at demo_summary.json so it does
+        # not clobber the canonical summary.json (which holds the
+        # ExperimentSummary schema). The canonical file is unaffected and
+        # the demo's flat metric dict lives alongside it.
+        summary = json.loads((tmp_path / "demo_summary.json").read_text(encoding="utf-8"))
         assert summary["demo_only"] is True
         assert summary["valid_for_model_training"] is False
         text = (tmp_path / "two_segment_slow_motion_demo_summary.txt").read_text(encoding="utf-8")
         assert "demo_only: True" in text
         assert "valid_for_model_training: False" in text
+
+    def test_summary_writer_does_not_overwrite_canonical_summary_json(self, tmp_path: Path) -> None:
+        # Simulate the order the runner uses: first the canonical writer
+        # drops summary.json with the ExperimentSummary schema, then the
+        # experiment's write_outputs runs. The demo must NOT replace
+        # summary.json — that broke load_dataset because the flat demo
+        # metrics dict has non-schema keys (closed_loop_control, etc.).
+        canonical = {
+            "schema_version": "1.0",
+            "experiment_name": "two_segment_slow_motion_demo",
+            "run_id": "abc123",
+            "success": True,
+            "sample_counts": {"total": 0},
+            "dropped_frames": 0,
+            "invalid_transforms": 0,
+            "stage_pass_fail": {"setup": "passed"},
+            "experiment_metrics": {},
+            "warning_messages": [],
+            "error_messages": [],
+        }
+        (tmp_path / "summary.json").write_text(json.dumps(canonical, indent=2), encoding="utf-8")
+        config = TwoSegmentSlowMotionDemoConfig.from_dict({"amplitude_cm": 0.10})
+        rows = _trace_rows()
+        write_demo_summary(tmp_path, summary={"sample_count": len(rows)}, config=config, trace=rows)
+        # Canonical summary.json still loadable via the strict schema.
+        from continuum_robot.experiments.schemas import ExperimentSummary
+        reloaded = ExperimentSummary.from_dict(
+            json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+        )
+        assert reloaded.experiment_name == "two_segment_slow_motion_demo"
+        # And the demo's view lives at demo_summary.json.
+        assert (tmp_path / "demo_summary.json").exists()
 
 
 # ---------------------------------------------------------------------------

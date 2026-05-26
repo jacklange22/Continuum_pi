@@ -914,7 +914,14 @@ def write_demo_summary(
     metrics.setdefault("valid_for_thesis_repeatability", False)
     metrics.setdefault("motion_pattern_demo", True)
     metrics.setdefault("closed_loop_control", False)
-    (output_dir / "summary.json").write_text(
+    # Write the demo-flavoured summary to a SEPARATE filename so we do not
+    # clobber the canonical ``summary.json`` written by ExperimentDatasetWriter.
+    # The canonical file follows the ExperimentSummary dataclass schema
+    # (schema_version / experiment_name / sample_counts / ...); rewriting it
+    # with a flat metric dict made ExperimentSummary.from_dict() fail later
+    # with "got an unexpected keyword argument 'closed_loop_control'" the
+    # next time the GUI/CLI tried to reload the run.
+    (output_dir / "demo_summary.json").write_text(
         json.dumps(metrics, indent=2, sort_keys=True, default=str), encoding="utf-8"
     )
     lines = [

@@ -94,8 +94,33 @@ class ExperimentSummary:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ExperimentSummary":
-        """Construct summary from a dictionary payload."""
-        return cls(**payload)
+        """Construct summary from a dictionary payload.
+
+        Tolerant of unknown top-level keys: anything that is not a declared
+        ExperimentSummary field is moved into ``experiment_metrics`` instead
+        of raising ``TypeError: __init__ got an unexpected keyword argument``.
+        This lets the loader survive older runs whose summary.json was
+        written by an experiment that flattened extra metric keys to the
+        top level (the slow-motion-demo bug pre-2026-05-26 did this — see
+        ``two_segment_slow_motion_demo.write_demo_summary``).
+        """
+        known = {field_name for field_name in cls.__dataclass_fields__}
+        payload = dict(payload or {})
+        kwargs: dict[str, Any] = {}
+        extra_metrics: dict[str, Any] = {}
+        for key, value in payload.items():
+            if key in known:
+                kwargs[key] = value
+            else:
+                extra_metrics[key] = value
+        if extra_metrics:
+            metrics = dict(kwargs.get("experiment_metrics") or {})
+            # Existing experiment_metrics values take precedence — extras
+            # only fill in keys that aren't already there.
+            for key, value in extra_metrics.items():
+                metrics.setdefault(key, value)
+            kwargs["experiment_metrics"] = metrics
+        return cls(**kwargs)
 
 
 @dataclass
