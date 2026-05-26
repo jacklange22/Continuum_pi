@@ -1691,6 +1691,127 @@ def evaluate_preflight(
             )
         )
 
+    elif experiment_name == "two_segment_workspace_repeatability":
+        # Full 200 × 20 workspace repeatability protocol. Mirrors the
+        # single-segment workspace_repeatability_map gates: dual_segment,
+        # confirmed bottom/top assembly, all-8 servo readiness, baud
+        # advisory, tracker for distal labels, amplitude advisory.
+        operating_context = settings.robot.operating_context()
+        if operating_context.operating_mode != "dual_segment":
+            checks.append(_blocked("operating_mode", "Operating Mode", DUAL_SEGMENT_BLOCK_MESSAGE))
+        else:
+            checks.append(
+                _ok("operating_mode", "Operating Mode", "dual_segment two-segment workspace repeatability is selected.")
+            )
+        checks.append(_physical_assembly_check(operating_context))
+        checks.append(_baud_advisory_check(settings))
+        if not servo_connected:
+            checks.append(
+                _blocked(
+                    "servo_service",
+                    "Servo Service",
+                    "Two-segment workspace repeatability requires a connected ServoService for all-8 motion + telemetry.",
+                )
+            )
+        else:
+            checks.append(_ok("servo_service", "Servo Service", "ServoService is connected for all-8 motion + telemetry."))
+        if not tracker_ready:
+            checks.append(
+                _warning(
+                    "tracking",
+                    "Tracking",
+                    "Tracker is unavailable. Distal-XYZ labels cannot be captured, so per-target repeatability metrics will be missing.",
+                )
+            )
+        else:
+            checks.append(_ok("tracking", "Tracking", "Tracker is available for distal_tip XYZ labels."))
+        amplitude_cm = float(payload.get("max_segment_displacement_cm", 0.25) or 0.25)
+        target_count = int(payload.get("target_count", 200) or 200)
+        repeats = int(payload.get("repeats_per_target", 20) or 20)
+        planned_visits = target_count * repeats
+        if amplitude_cm > 0.5:
+            checks.append(
+                _warning(
+                    "amplitude",
+                    "Amplitude",
+                    f"max_segment_displacement_cm = {amplitude_cm:.2f} cm exceeds the 0.50 cm conservative bench ramp. "
+                    "Ramp from 0.25 → 0.50 → 0.75 → 1.00 once the rig is verified at each step.",
+                )
+            )
+        else:
+            checks.append(
+                _ok(
+                    "amplitude",
+                    "Amplitude",
+                    f"max_segment_displacement_cm = {amplitude_cm:.2f} cm is within the conservative bench range.",
+                )
+            )
+        if planned_visits > 4500:
+            checks.append(
+                _warning(
+                    "planned_visits",
+                    "Planned Visits",
+                    f"Planned visits = {planned_visits} (>~3 hr at default settles). Smoke a smaller run first.",
+                )
+            )
+        else:
+            checks.append(
+                _info(
+                    "planned_visits",
+                    "Planned Visits",
+                    f"Planned visits = {planned_visits} (target_count × repeats_per_target).",
+                )
+            )
+        checks.append(
+            _info(
+                "scope",
+                "Scope",
+                "Workspace repeatability data collection. Primary metric: distal_tip XYZ scatter per target. "
+                "Run is valid for repeatability analysis; not model-training valid by default.",
+            )
+        )
+
+    elif experiment_name == "two_segment_penprobe_lookup_demo":
+        # Defensive branch for the demo experiment so preflight doesn't
+        # block its selection with "Unsupported". Detailed gates (map
+        # presence, target/tip tool availability) are enforced inside
+        # the experiment's setup() / precheck().
+        operating_context = settings.robot.operating_context()
+        if operating_context.operating_mode != "dual_segment":
+            checks.append(_blocked("operating_mode", "Operating Mode", DUAL_SEGMENT_BLOCK_MESSAGE))
+        else:
+            checks.append(_ok("operating_mode", "Operating Mode", "dual_segment two-segment penprobe lookup demo is selected."))
+        checks.append(_physical_assembly_check(operating_context))
+        checks.append(_baud_advisory_check(settings))
+        if not servo_connected:
+            checks.append(
+                _blocked(
+                    "servo_service",
+                    "Servo Service",
+                    "Two-segment penprobe lookup demo requires a connected ServoService.",
+                )
+            )
+        else:
+            checks.append(_ok("servo_service", "Servo Service", "ServoService is connected for all-8 commands."))
+        if not tracker_ready:
+            checks.append(
+                _warning(
+                    "tracking",
+                    "Tracking",
+                    "Tracker is unavailable. The 0B target tool cannot be read; the demo will not issue commands.",
+                )
+            )
+        else:
+            checks.append(_ok("tracking", "Tracking", "Tracker is available for 0B target + 0A tip (tip optional)."))
+        checks.append(
+            _info(
+                "scope",
+                "Scope",
+                "DEMO ONLY. Feedforward nearest-map-point lookup, not closed-loop control. "
+                "Not valid for thesis / model-training evidence.",
+            )
+        )
+
     elif experiment_name == "pretension_validation":
         config = PretensionValidationExperimentConfig.from_dict(payload)
         if not servo_connected:

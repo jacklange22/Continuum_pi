@@ -588,6 +588,79 @@ def test_validator_fails_when_demo_only_or_model_training_true(tmp_path: Path) -
     assert any("valid_for_model_training" in m for m in fails)
 
 
+def test_preflight_does_not_block_workspace_repeatability_as_unsupported(tmp_path: Path) -> None:
+    """Regression: the preflight if/elif chain must KNOW this experiment.
+
+    The chain previously fell through to ``"Unsupported experiment selection"``
+    for any new experiment that wasn't enumerated. This test fires preflight
+    directly and proves the dispatch reaches the workspace-repeatability
+    branch (any other gating issues are fine — they aren't "unsupported").
+    """
+    from types import SimpleNamespace
+    from continuum_robot.gui.experiment_preflight import evaluate_preflight
+
+    settings = _settings()
+    settings.robot.bottom_segment_key = "segment_b"
+    settings.robot.top_segment_key = "segment_a"
+    settings.robot.physical_assembly_confirmed_by_operator = True
+    snapshot = SimpleNamespace(
+        selected_backend_name="mock",
+        backend_identity="mock",
+        canonical_state="disconnected",
+    )
+    report = evaluate_preflight(
+        experiment_name="two_segment_workspace_repeatability",
+        config_payload={"target_count": 200, "repeats_per_target": 20, "max_segment_displacement_cm": 0.5},
+        config_error=None,
+        settings=settings,
+        tracking_snapshot=snapshot,
+        servo_connected=True,
+        neutral_setpoints={},
+        registration_path=tmp_path / "registration.json",
+        output_root=tmp_path / "data" / "experiments",
+        planned_output_dir=tmp_path / "data" / "experiments" / "two_segment_workspace_repeatability" / "stub",
+        project_root=tmp_path,
+    )
+    # The bug we are guarding against: "Unsupported experiment selection: ..."
+    unsupported_msgs = [
+        msg for msg in report.blocking_messages if "Unsupported experiment selection" in msg
+    ]
+    assert not unsupported_msgs, f"preflight still routing to Unsupported branch: {report.blocking_messages}"
+
+
+def test_preflight_does_not_block_penprobe_lookup_demo_as_unsupported(tmp_path: Path) -> None:
+    """Same regression for the penprobe lookup demo."""
+    from types import SimpleNamespace
+    from continuum_robot.gui.experiment_preflight import evaluate_preflight
+
+    settings = _settings()
+    settings.robot.bottom_segment_key = "segment_b"
+    settings.robot.top_segment_key = "segment_a"
+    settings.robot.physical_assembly_confirmed_by_operator = True
+    snapshot = SimpleNamespace(
+        selected_backend_name="mock",
+        backend_identity="mock",
+        canonical_state="disconnected",
+    )
+    report = evaluate_preflight(
+        experiment_name="two_segment_penprobe_lookup_demo",
+        config_payload={"map_path": "data/missing.json", "target_tool_id": "0B", "tip_tool_id": "0A"},
+        config_error=None,
+        settings=settings,
+        tracking_snapshot=snapshot,
+        servo_connected=True,
+        neutral_setpoints={},
+        registration_path=tmp_path / "registration.json",
+        output_root=tmp_path / "data" / "experiments",
+        planned_output_dir=tmp_path / "data" / "experiments" / "two_segment_penprobe_lookup_demo" / "stub",
+        project_root=tmp_path,
+    )
+    unsupported_msgs = [
+        msg for msg in report.blocking_messages if "Unsupported experiment selection" in msg
+    ]
+    assert not unsupported_msgs, f"preflight still routing to Unsupported branch: {report.blocking_messages}"
+
+
 def test_validator_warns_when_accepted_less_than_planned(tmp_path: Path) -> None:
     run_dir = _write_good_workspace_repeatability_run(tmp_path)
     summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
