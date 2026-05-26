@@ -4,7 +4,7 @@ max_segment_displacement_cm: 0.25
 max_tick_delta_from_startup: 320
 samples_per_pattern: 1
 capture_repeats: 1
-settle_time_s: 0.0
+settle_time_s: 3.0
 allow_servo_only_test_run: true
 run_trust_mode: "servo_only"
 capture_tracker_snapshot: true
@@ -22,8 +22,8 @@ drop_sample_on_transport_error: true
 pattern_count_budget: 0
 random_seed: 0
 grid_points_per_axis: 5
-command_ramp_step_cm: null
-command_ramp_settle_time_s: 0.05
+command_ramp_step_cm: 0.05
+command_ramp_settle_time_s: 0.10
 current_warning_ma: 800
 sustained_overcurrent_ma: 1200
 sustained_overcurrent_sample_count: 3

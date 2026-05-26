@@ -116,8 +116,10 @@ dynamixel_settings:
   require_voltage_for_motion: true
   require_temperature_for_motion: true
   require_fresh_telemetry_for_motion: true
-  default_profile_velocity: null
-  default_profile_acceleration: null
+  # Motor-babble bench default: low global DYNAMIXEL profile before every
+  # goal-position write. Set null to leave firmware profile untouched.
+  default_profile_velocity: 3
+  default_profile_acceleration: 1
   single_segment_auto_configure_motion_defaults: true
   single_segment_experiment_preferred_operating_mode: 3
   single_segment_experiment_allowed_operating_modes: [3]

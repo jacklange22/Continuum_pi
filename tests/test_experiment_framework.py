@@ -24,6 +24,7 @@ from continuum_robot.config.schemas import (
 from continuum_robot.config.settings import Settings
 from continuum_robot.experiments.dataset_io import ExperimentDatasetLoader, ExperimentDatasetWriter
 from continuum_robot.experiments import dataset_io
+from continuum_robot.experiments.builtins import CollectPoseCommandDatasetConfig
 from continuum_robot.experiments.experiment_runner import ExperimentRunner
 from continuum_robot.experiments.framework import BaseExperiment, ExperimentHardwareRequirements, ExperimentSession
 from continuum_robot.experiments.registry import ExperimentRegistry
@@ -58,6 +59,27 @@ def _settings() -> Settings:
             latest_registration_path="data/registrations/latest_registration.json",
         ),
     )
+
+
+def test_collect_pose_command_dataset_defaults_are_conservative_for_motor_babble() -> None:
+    config = CollectPoseCommandDatasetConfig.from_dict({})
+
+    assert config.settle_time_s == 3.0
+    assert config.command_transition_ramp_enabled is True
+    assert config.max_delta_cm_per_ramp_step == 0.05
+    assert config.ramp_step_settle_s == 0.10
+    explicit = CollectPoseCommandDatasetConfig.from_dict(
+        {
+            "settle_time_s": 0.2,
+            "command_transition_ramp_enabled": False,
+            "max_delta_cm_per_ramp_step": None,
+            "ramp_step_settle_s": 0.0,
+        }
+    )
+    assert explicit.settle_time_s == 0.2
+    assert explicit.command_transition_ramp_enabled is False
+    assert explicit.max_delta_cm_per_ramp_step is None
+    assert explicit.ramp_step_settle_s == 0.0
 
 
 def _parallel_single_settings() -> Settings:

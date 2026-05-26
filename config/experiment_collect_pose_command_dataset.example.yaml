@@ -20,7 +20,7 @@ tracker_sample_period_s:        # null → reuse capture_poll_interval_s
 averaged_label_enabled:         # null → auto-true iff tracker_samples_per_command > 1
 export_first_sample_label: true
 export_averaged_sample_label:   # null → auto-true iff averaged_label_enabled
-settle_time_s: 0.15
+settle_time_s: 3.0
 max_tracker_age_s: 0.15
 capture_timeout_s: 1.0
 capture_poll_interval_s: 0.02
@@ -63,9 +63,9 @@ current_spike_resync_enabled: true
 current_spike_cooldown_s: 0.25
 current_spike_return_to_previous_safe_goal: false
 current_spike_max_events_per_servo: 6
-command_transition_ramp_enabled: false
-max_delta_cm_per_ramp_step:
-ramp_step_settle_s: 0.05
+command_transition_ramp_enabled: true
+max_delta_cm_per_ramp_step: 0.05
+ramp_step_settle_s: 0.10
 ramp_include_telemetry_checks: true
 ramp_log_intermediate_telemetry: false
 profile_velocity_ticks_per_s:

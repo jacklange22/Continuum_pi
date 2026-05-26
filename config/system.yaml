@@ -93,14 +93,18 @@ dynamixel_settings:
   #   profile_velocity:     N * 0.229 rev/min  (5 -> ~1.1 rev/min ≈ 6.9 deg/sec)
   #   profile_acceleration: N * 214.577 rev/min²  (1 -> ~3.6 rev/sec²)
   # Firmware default = 0 = unlimited; bumping these in adds a real ramp.
-  # Lowered 2026-05-19 from 15/4 → 5/1 for the early two-segment bench-up:
+  # Lowered 2026-05-25 from 5/1 -> 3/1 for motor-babble collection:
+  # command schedules now default to 3 s settle plus small transition ramps,
+  # and the hardware profile should remain visibly deliberate during all-8
+  # two-segment writes.
+  # Prior step (2026-05-19): 15/4 -> 5/1 for the early two-segment bench-up:
   # operator wants the servos visibly slower while sign convention and
   # bottom/top assembly are still being confirmed. This is the safer-zone
   # default; bump back toward 15/4 once the bench is settled and the long
   # collect-pose runs need throughput.
-  # Prior step (2026-05-18): 30/8 → 15/4 to halve peak current spikes for
+  # Prior step (2026-05-18): 30/8 -> 15/4 to halve peak current spikes for
   # 12-hour unattended runs.
-  default_profile_velocity: 5
+  default_profile_velocity: 3
   default_profile_acceleration: 1
   single_segment_auto_configure_motion_defaults: true
   single_segment_experiment_preferred_operating_mode: 3

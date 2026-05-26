@@ -578,6 +578,8 @@ def test_two_segment_dataset_config_has_range_ramp_and_current_defaults() -> Non
     assert config.max_segment_displacement_mm == 10.0
     assert config.continue_until_valid_samples is True
     assert config.target_valid_sample_count == 10000
+    assert config.command_ramp_step_cm == 0.05
+    assert config.command_ramp_settle_time_s == 0.10
     assert config.current_warning_ma == 800
     assert config.sustained_overcurrent_ma == 1200
 
@@ -607,12 +609,14 @@ def test_tick_budget_for_segment_amplitude_cm_scales_with_amplitude_and_compensa
     assert tick_budget_for_segment_amplitude_cm(0.0001, spool_diameter_cm=2.0) >= 1
 
 
-def test_two_segment_dataset_config_default_settle_time_is_two_seconds() -> None:
-    """Policy 2026-05-19: settle_time_s default is 2.0 s (safer bench-up default)."""
+def test_two_segment_dataset_config_default_settle_time_is_three_seconds() -> None:
+    """Policy 2026-05-25: settle_time_s default is 3.0 s (safer motor-babble default)."""
     config = TwoSegmentCollectPoseDatasetConfig.from_dict({})
-    assert config.settle_time_s == 2.0
+    assert config.settle_time_s == 3.0
     explicit = TwoSegmentCollectPoseDatasetConfig.from_dict({"settle_time_s": 0.5})
     assert explicit.settle_time_s == 0.5  # explicit override still wins
+    no_ramp = TwoSegmentCollectPoseDatasetConfig.from_dict({"command_ramp_step_cm": None})
+    assert no_ramp.command_ramp_step_cm is None
 
 
 def test_two_segment_dataset_config_top_routing_compensation_defaults_on() -> None:
@@ -1094,6 +1098,7 @@ def test_two_segment_collect_pose_dataset_command_ramping_splits_large_jumps(tmp
         "samples_per_pattern": 1,
         "capture_repeats": 1,
         "long_run_recovery_enabled": True,
+        "command_ramp_step_cm": 0.0,
     }
 
     # Baseline: no ramping.
